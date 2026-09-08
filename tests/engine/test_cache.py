@@ -61,7 +61,10 @@ class TestStore:
 
     def test_array_round_trip(self, store: CacheStore) -> None:
         target = store.prepare("things", "key", ".npz")
-        original = {"a": np.arange(10), "b": np.ones((2, 3), dtype=np.float32)}
+        original: dict[str, np.ndarray] = {
+            "a": np.arange(10),
+            "b": np.ones((2, 3), dtype=np.float32),
+        }
         save_arrays(target, original)
 
         loaded = load_arrays(target)
@@ -148,10 +151,17 @@ class TestFilmstrip:
     def test_lookup_by_time(self, sample_av: SampleMedia) -> None:
         filmstrip = build_filmstrip(sample_av.path, interval=Fraction(1, 2), height=24)
         assert filmstrip is not None
-        assert np.array_equal(filmstrip.at(Fraction(0)), filmstrip.tile(0))
-        assert np.array_equal(filmstrip.at(Fraction(1)), filmstrip.tile(2))
+
+        def same(seconds: int, index: int) -> bool:
+            found, expected = filmstrip.at(Fraction(seconds)), filmstrip.tile(index)
+            assert found is not None
+            assert expected is not None
+            return bool(np.array_equal(found, expected))
+
+        assert same(0, 0)
+        assert same(1, 2)
         # 範囲を越えたら最後の 1 枚で頭打ち。
-        assert np.array_equal(filmstrip.at(Fraction(100)), filmstrip.tile(filmstrip.count - 1))
+        assert same(100, filmstrip.count - 1)
 
     def test_out_of_range_tile(self, sample_av: SampleMedia) -> None:
         filmstrip = build_filmstrip(sample_av.path, interval=Fraction(1, 2), height=24)
