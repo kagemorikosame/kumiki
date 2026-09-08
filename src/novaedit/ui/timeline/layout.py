@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
-from novaedit.core.model import Timeline, Track, TrackId
+from novaedit.core.model import Timeline, Track, TrackId, TrackKind
 from novaedit.ui.theme import Metrics
 
 __all__ = ["TimelineLayout", "TrackBand"]
@@ -122,10 +122,15 @@ class TimelineLayout:
     def bands(self, timeline: Timeline) -> tuple[TrackBand, ...]:
         """各トラックの縦位置。
 
-        映像トラックは上から下へ番号が増えるが、表示は逆にする。タイムラインの
-        上にあるトラックが手前、というのが Premiere / AviUtl と同じ感覚。
+        上から V2, V1, A1, A2 の順に並べる。Premiere / AviUtl と同じで、
+        映像は番号が大きいほど手前（上）、音声は番号が小さいほど上に来る。
+
+        全トラックを一律に逆順にすると音声が映像より上へ来てしまう。
+        種類で分けてから並べる必要がある。
         """
-        ordered = list(reversed(timeline.tracks))
+        video = [t for t in timeline.tracks if t.kind is TrackKind.VIDEO]
+        audio = [t for t in timeline.tracks if t.kind is TrackKind.AUDIO]
+        ordered = [*reversed(video), *audio]
         bands: list[TrackBand] = []
         top = Metrics.RULER_HEIGHT - self.scroll_y
         for track in ordered:

@@ -114,11 +114,26 @@ class TestVertical:
             ),
         )
 
-    def test_tracks_are_stacked_top_down_in_reverse(self, video_media: MediaItem) -> None:
-        # タイムラインの上にあるトラックが手前。Premiere / AviUtl と同じ感覚。
+    def test_video_sits_above_audio(self, video_media: MediaItem) -> None:
+        # Premiere / AviUtl と同じ並び。全トラックを一律に逆順にすると
+        # 音声が映像より上へ来てしまう。
         timeline = self._timeline(video_media)
         bands = TimelineLayout().bands(timeline)
         assert [band.track.name for band in bands] == ["V1", "A1"]
+
+    def test_track_order_within_each_kind(self) -> None:
+        # 映像は番号が大きいほど上、音声は番号が小さいほど上。
+        timeline = Timeline(
+            rate=FrameRate(30),
+            tracks=(
+                Track(kind=TrackKind.VIDEO, name="V1"),
+                Track(kind=TrackKind.VIDEO, name="V2"),
+                Track(kind=TrackKind.AUDIO, name="A1"),
+                Track(kind=TrackKind.AUDIO, name="A2"),
+            ),
+        )
+        bands = TimelineLayout().bands(timeline)
+        assert [band.track.name for band in bands] == ["V2", "V1", "A1", "A2"]
 
     def test_bands_start_below_the_ruler(self, video_media: MediaItem) -> None:
         bands = TimelineLayout().bands(self._timeline(video_media))

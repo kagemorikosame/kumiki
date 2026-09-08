@@ -53,6 +53,9 @@ def make_sample(
     audio: bool = True,
     sample_rate: int = 44100,
     tone_hz: int = 440,
+    #: 音量の増幅（dB）。lavfi の sine は振幅が 0.1 程度しかないので、
+    #: 実運用に近い波形が要るときに持ち上げる。
+    gain_db: float = 0.0,
     pattern: str = "testsrc2",
     keyframe_interval: int | None = None,
 ) -> SampleMedia:
@@ -71,12 +74,10 @@ def make_sample(
     source = f"{pattern}=size={width}x{height}:rate={fps}:duration={duration}"
     command += ["-f", "lavfi", "-i", source]
     if audio:
-        command += [
-            "-f",
-            "lavfi",
-            "-i",
-            f"sine=frequency={tone_hz}:duration={duration}:sample_rate={sample_rate}",
-        ]
+        tone = f"sine=frequency={tone_hz}:duration={duration}:sample_rate={sample_rate}"
+        if gain_db:
+            tone += f",volume={gain_db}dB"
+        command += ["-f", "lavfi", "-i", tone]
 
     command += ["-c:v", "libx264", "-pix_fmt", "yuv420p"]
     if keyframe_interval is not None:

@@ -284,6 +284,8 @@ class MainWindow(QMainWindow):
             self.execute_all(commands, f"素材を読み込み: {len(paths)} 件")
         if failures:
             self.statusBar().showMessage(failures[0], 5000)
+        elif commands:
+            self.statusBar().showMessage(f"{len(paths)} 件を読み込んだ", 3000)
 
     def _insert_media_by_id(self, media_id: str) -> None:
         project = self._document.project
