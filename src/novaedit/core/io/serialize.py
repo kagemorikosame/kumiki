@@ -50,10 +50,14 @@ __all__ = [
     "FORMAT_NAME",
     "FORMAT_VERSION",
     "ProjectFileError",
+    "effect_from_json",
+    "effect_to_json",
     "load_project",
     "project_from_dict",
     "project_to_dict",
     "save_project",
+    "source_from_json",
+    "source_to_json",
 ]
 
 FORMAT_NAME = "novaedit-project"
@@ -209,7 +213,8 @@ def _params_from_json(raw: object, field: str) -> dict[str, ParamValue]:
     return {name: _param_from_json(value) for name, value in raw.items()}
 
 
-def _effect_to_json(effect: Effect) -> dict[str, Any]:
+def effect_to_json(effect: Effect) -> dict[str, Any]:
+    """エフェクト 1 つを辞書へ。プリセットの保存でも使う。"""
     return {
         "id": effect.id,
         "kind": effect.kind,
@@ -218,7 +223,8 @@ def _effect_to_json(effect: Effect) -> dict[str, Any]:
     }
 
 
-def _effect_from_json(raw: object) -> Effect:
+def effect_from_json(raw: object) -> Effect:
+    """:func:`effect_to_json` の逆。"""
     data = _require(raw, "effect")
     return Effect(
         kind=_get_str(data, "kind"),
@@ -228,11 +234,11 @@ def _effect_from_json(raw: object) -> Effect:
     )
 
 
-def _source_to_json(source: GeneratedSource) -> dict[str, Any]:
+def source_to_json(source: GeneratedSource) -> dict[str, Any]:
     return {"kind": source.kind, "params": _params_to_json(source.params)}
 
 
-def _source_from_json(raw: object) -> GeneratedSource:
+def source_from_json(raw: object) -> GeneratedSource:
     data = _require(raw, "source")
     return GeneratedSource(
         kind=_get_str(data, "kind"),
@@ -398,7 +404,7 @@ def _clip_to_json(clip: Clip) -> dict[str, Any]:
         "timeline_start": clip.timeline_start,
         "duration": clip.duration,
         "media_id": clip.media_id,
-        "source": _source_to_json(clip.source) if clip.source is not None else None,
+        "source": source_to_json(clip.source) if clip.source is not None else None,
         "source_in": _fraction_to_json(clip.source_in),
         "stream_index": clip.stream_index,
         "speed": _fraction_to_json(clip.speed),
@@ -406,7 +412,7 @@ def _clip_to_json(clip: Clip) -> dict[str, Any]:
         "blend_mode": clip.blend_mode,
         "link_group": clip.link_group,
         "enabled": clip.enabled,
-        "effects": [_effect_to_json(e) for e in clip.effects],
+        "effects": [effect_to_json(e) for e in clip.effects],
     }
 
 
@@ -428,11 +434,11 @@ def _clip_from_json(raw: object) -> Clip:
         timeline_start=_get_int(data, "timeline_start"),
         duration=_get_int(data, "duration"),
         media_id=MediaId(media_id) if media_id is not None else None,
-        source=_source_from_json(source_raw) if source_raw is not None else None,
+        source=source_from_json(source_raw) if source_raw is not None else None,
         source_in=_fraction_from_json(data.get("source_in", 0), "source_in"),
         stream_index=_get_int(data, "stream_index", 0),
         speed=_fraction_from_json(data.get("speed", 1), "speed"),
-        effects=tuple(_effect_from_json(e) for e in _get_list(data, "effects")),
+        effects=tuple(effect_from_json(e) for e in _get_list(data, "effects")),
         opacity=opacity,
         blend_mode=_get_str(data, "blend_mode", "normal"),
         link_group=GroupId(link_group) if link_group is not None else None,
@@ -452,7 +458,7 @@ def _track_to_json(track: Track) -> dict[str, Any]:
         "height": track.height,
         "volume_db": track.volume_db,
         "pan": track.pan,
-        "effects": [_effect_to_json(e) for e in track.effects],
+        "effects": [effect_to_json(e) for e in track.effects],
         "clips": [_clip_to_json(c) for c in track.clips],
     }
 
@@ -469,7 +475,7 @@ def _track_from_json(raw: object) -> Track:
         kind=kind,
         name=_get_str(data, "name"),
         clips=tuple(_clip_from_json(c) for c in _get_list(data, "clips")),
-        effects=tuple(_effect_from_json(e) for e in _get_list(data, "effects")),
+        effects=tuple(effect_from_json(e) for e in _get_list(data, "effects")),
         locked=_get_bool(data, "locked", False),
         muted=_get_bool(data, "muted", False),
         solo=_get_bool(data, "solo", False),

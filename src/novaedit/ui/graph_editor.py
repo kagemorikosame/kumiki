@@ -1,0 +1,431 @@
+"""グラフエディタ。キーフレームの値と補間曲線を直接いじる。
+
+数値欄だけでも打点はできるが、「じわっと始めて最後に止める」ような動きは
+曲線を見ないと調整できない。値の時間変化を線として見せ、点をつまんで動かせる
+ようにする。
+
+自分ではプロジェクトを書き換えない。操作はコマンドとして外へ出す。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtGui import QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPen
+from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+
+from novaedit.core.commands import (
+    Command,
+    MoveKeyframe,
+    ParamPath,
+    ParamTarget,
+    RemoveKeyframe,
+    SetKeyframe,
+    resolve_param,
+)
+from novaedit.core.model import AnimatedValue, Interpolation, Keyframe, Project
+from novaedit.effects import ParameterSpec, TrackSpec, registry
+from novaedit.effects.sources import source_registry
+from novaedit.ui.theme import Colors
+
+__all__ = ["GraphEditor"]
+
+#: 補間方法の表示名。
+INTERPOLATION_LABELS: dict[Interpolation, str] = {
+    Interpolation.HOLD: "瞬間移動",
+    Interpolation.LINEAR: "直線",
+    Interpolation.EASE_IN: "加速",
+    Interpolation.EASE_OUT: "減速",
+    Interpolation.EASE_IN_OUT: "加減速",
+    Interpolation.BEZIER: "曲線",
+}
+
+#: 点をつかめる距離（ピクセル）。
+_GRAB_RADIUS = 8
+
+#: グラフの余白。値の上下端が枠に張り付くと、つまみにくい。
+_MARGIN = 18
+
+
+@dataclass(frozen=True, slots=True)
+class _Plot:
+    """グラフの座標変換。値とフレームを画面座標へ。"""
+
+    width: int
+    height: int
+    start_frame: int
+    end_frame: int
+    minimum: float
+    maximum: float
+
+    def to_x(self, frame: float) -> float:
+        span = max(1, self.end_frame - self.start_frame)
+        usable = self.width - _MARGIN * 2
+        return _MARGIN + (frame - self.start_frame) / span * usable
+
+    def to_y(self, value: float) -> float:
+        span = self.maximum - self.minimum or 1.0
+        usable = self.height - _MARGIN * 2
+        # 値が大きいほど上。グラフとしての向き。
+        return self.height - _MARGIN - (value - self.minimum) / span * usable
+
+    def to_frame(self, x: float) -> int:
+        span = max(1, self.end_frame - self.start_frame)
+        usable = max(1, self.width - _MARGIN * 2)
+        return round(self.start_frame + (x - _MARGIN) / usable * span)
+
+    def to_value(self, y: float) -> float:
+        span = self.maximum - self.minimum or 1.0
+        usable = max(1, self.height - _MARGIN * 2)
+        return self.minimum + (self.height - _MARGIN - y) / usable * span
+
+
+class GraphEditor(QWidget):
+    """1 つのパラメータの時間変化を編集する。"""
+
+    commands_requested = Signal(list, str)
+    #: 再生ヘッドを動かしたい。グラフ上をクリックしたとき。
+    seek_requested = Signal(int)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._project: Project | None = None
+        self._path: ParamPath | None = None
+        self._frame = 0
+        self._dragging: int | None = None
+
+        self._title = QLabel("パラメータを選んでください", self)
+        self._title.setStyleSheet(f"color: {Colors.TEXT_MUTED.name()};")
+
+        self._interpolation = QComboBox(self)
+        for kind, label in INTERPOLATION_LABELS.items():
+            self._interpolation.addItem(label, kind)
+        self._interpolation.setEnabled(False)
+        self._interpolation.currentIndexChanged.connect(self._on_interpolation)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(8, 4, 8, 4)
+        header.addWidget(self._title, 1)
+        header.addWidget(QLabel("補間", self))
+        header.addWidget(self._interpolation)
+
+        self._canvas = _Canvas(self)
+        self._canvas.changed.connect(self._on_canvas_command)
+        self._canvas.seek_requested.connect(self.seek_requested.emit)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addLayout(header)
+        layout.addWidget(self._canvas, 1)
+        self.setMinimumHeight(160)
+
+    def set_project(self, project: Project) -> None:
+        self._project = project
+        self._refresh()
+
+    def set_path(self, path: ParamPath | None) -> None:
+        self._path = path
+        self._refresh()
+
+    def set_frame(self, frame: int) -> None:
+        self._frame = frame
+        self._canvas.set_frame(frame)
+        value = self._value()
+        if isinstance(value, AnimatedValue) and value.is_animated:
+            self._show_interpolation(value)
+
+    def _refresh(self) -> None:
+        spec = self._spec()
+        value = self._value()
+        self._title.setText(self._describe(spec))
+
+        animated = isinstance(value, AnimatedValue) and value.is_animated
+        self._interpolation.setEnabled(animated)
+        if animated:
+            assert value is not None
+            self._show_interpolation(value)
+        self._canvas.set_curve(self._path, spec, value, self._clip_start())
+
+    def _show_interpolation(self, value: AnimatedValue) -> None:
+        """再生ヘッドの区間の補間方法を選択欄へ反映する。
+
+        常に先頭の項目を出していると、実際は直線なのに「瞬間移動」と
+        表示され続けることになる。
+        """
+        current = self._active_keyframe(value)
+        if current is None:
+            return
+        index = self._interpolation.findData(current.interpolation)
+        if index < 0:
+            return
+        self._interpolation.blockSignals(True)
+        try:
+            self._interpolation.setCurrentIndex(index)
+        finally:
+            self._interpolation.blockSignals(False)
+
+    def _active_keyframe(self, value: AnimatedValue) -> Keyframe | None:
+        """再生ヘッドが乗っている区間の始点。区間の性質はここが持つ。"""
+        local = self._frame - self._clip_start()
+        found = None
+        for keyframe in value.keyframes:
+            if keyframe.frame <= local:
+                found = keyframe
+        return found or (value.keyframes[0] if value.keyframes else None)
+
+    def _describe(self, spec: TrackSpec | None) -> str:
+        if self._path is None or spec is None:
+            return "パラメータを選んでください"
+        owner = {
+            ParamTarget.EFFECT: "エフェクト",
+            ParamTarget.SOURCE: "内容",
+            ParamTarget.CLIP: "クリップ",
+        }[self._path.target]
+        return f"{owner}: {spec.label}"
+
+    def _clip_start(self) -> int:
+        """クリップ先頭のフレーム。キーフレームはここからの相対で持つ。"""
+        if self._project is None or self._path is None:
+            return 0
+        located = self._project.timeline.locate_clip(self._path.clip_id)
+        return located[1].timeline_start if located is not None else 0
+
+    def _value(self) -> AnimatedValue | None:
+        if self._project is None or self._path is None:
+            return None
+        value = resolve_param(self._project, self._path)
+        return value if isinstance(value, AnimatedValue) else None
+
+    def _spec(self) -> TrackSpec | None:
+        """編集対象の仕様。数値スライダー以外はグラフにできない。"""
+        if self._project is None or self._path is None:
+            return None
+        if self._path.target is ParamTarget.CLIP:
+            return TrackSpec(self._path.name, "不透明度", 0, 1, 1, step=0.01)
+
+        located = self._project.timeline.locate_clip(self._path.clip_id)
+        if located is None:
+            return None
+        _, clip = located
+
+        # エフェクトと生成オブジェクトは別の型だが、spec() の形は同じ。
+        # 欲しいのはパラメータ仕様だけなので、ここで 1 本にまとめる。
+        spec: ParameterSpec | None = None
+        if self._path.target is ParamTarget.SOURCE:
+            if clip.source is not None:
+                source = source_registry.get(clip.source.kind)
+                spec = source.spec(self._path.name) if source is not None else None
+        else:
+            effect = next((e for e in clip.effects if e.id == self._path.effect_id), None)
+            definition = registry.get(effect.kind) if effect is not None else None
+            spec = definition.spec(self._path.name) if definition is not None else None
+
+        return spec if isinstance(spec, TrackSpec) else None
+
+    def _on_canvas_command(self, command: Command) -> None:
+        self.commands_requested.emit([command], command.label)
+
+    def _on_interpolation(self, index: int) -> None:
+        value = self._value()
+        if self._path is None or value is None or not value.is_animated:
+            return
+        kind = self._interpolation.itemData(index)
+        # 再生ヘッドの手前にあるキーフレームの出方を変える。区間の性質は
+        # 「その区間の始点」が持っているため。
+        target = self._active_keyframe(value)
+        if target is None:
+            return
+
+        self.commands_requested.emit(
+            [
+                SetKeyframe(
+                    self._path,
+                    target.frame,
+                    target.value,
+                    interpolation=kind,
+                    control_points=(0.42, 0.0, 0.58, 1.0) if kind is Interpolation.BEZIER else None,
+                )
+            ],
+            "補間方法を変更",
+        )
+
+
+class _Canvas(QWidget):
+    """グラフの描画と、点の操作。"""
+
+    changed = Signal(object)
+    seek_requested = Signal(int)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._path: ParamPath | None = None
+        self._spec: TrackSpec | None = None
+        self._value: AnimatedValue | None = None
+        self._clip_start = 0
+        self._frame = 0
+        self._dragging: int | None = None
+        self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def set_curve(
+        self,
+        path: ParamPath | None,
+        spec: TrackSpec | None,
+        value: AnimatedValue | None,
+        clip_start: int,
+    ) -> None:
+        self._path = path
+        self._spec = spec
+        self._value = value
+        self._clip_start = clip_start
+        self.update()
+
+    def set_frame(self, frame: int) -> None:
+        self._frame = frame
+        self.update()
+
+    def _plot(self) -> _Plot | None:
+        if self._spec is None or self._value is None:
+            return None
+        frames = [k.frame for k in self._value.keyframes]
+        start = min([*frames, 0])
+        end = max([*frames, start + 30])
+        # 値の範囲は仕様の全域ではなく、実際に使っている範囲に合わせる。
+        # 0..4000 の仕様で 0..100 しか使っていないと、線がほぼ平らに見える。
+        values = [k.value for k in self._value.keyframes] or [self._spec.default]
+        low, high = min(values), max(values)
+        if high - low < 1e-6:
+            low, high = low - 1.0, high + 1.0
+        pad = (high - low) * 0.15
+        return _Plot(self.width(), self.height(), start, end + 1, low - pad, high + pad)
+
+    def paintEvent(self, event: object) -> None:  # noqa: N802 - Qt の命名規約
+        del event
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), Colors.TIMELINE_BACKGROUND)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        plot = self._plot()
+        if plot is None or self._value is None:
+            painter.setPen(QPen(Colors.TEXT_MUTED, 1))
+            painter.drawText(
+                self.rect(),
+                Qt.AlignmentFlag.AlignCenter,
+                "キーフレームのあるパラメータを選ぶと、ここに曲線が出ます",
+            )
+            return
+
+        self._draw_grid(painter, plot)
+        self._draw_curve(painter, plot)
+        self._draw_keyframes(painter, plot)
+        self._draw_playhead(painter, plot)
+
+    def _draw_grid(self, painter: QPainter, plot: _Plot) -> None:
+        painter.setPen(QPen(Colors.TRACK_SEPARATOR, 1))
+        for step in range(5):
+            y = _MARGIN + (self.height() - _MARGIN * 2) * step / 4
+            painter.drawLine(QPointF(_MARGIN, y), QPointF(self.width() - _MARGIN, y))
+
+        painter.setPen(QPen(Colors.TEXT_MUTED, 1))
+        painter.drawText(QPointF(4, _MARGIN + 4), f"{plot.maximum:.4g}")
+        painter.drawText(QPointF(4, self.height() - _MARGIN + 4), f"{plot.minimum:.4g}")
+
+    def _draw_curve(self, painter: QPainter, plot: _Plot) -> None:
+        assert self._value is not None
+        path = QPainterPath()
+        # 実際の評価関数を 1 ピクセルずつ引く。曲線の式を描画側で作り直すと、
+        # 表示と実際の動きがずれる。
+        for x in range(_MARGIN, self.width() - _MARGIN + 1):
+            frame = plot.to_frame(x)
+            y = plot.to_y(self._value.at(frame))
+            if x == _MARGIN:
+                path.moveTo(x, y)
+            else:
+                path.lineTo(x, y)
+        painter.setPen(QPen(Colors.ACCENT, 2))
+        painter.drawPath(path)
+
+    def _draw_keyframes(self, painter: QPainter, plot: _Plot) -> None:
+        assert self._value is not None
+        painter.setPen(QPen(Colors.SELECTION, 1))
+        for index, keyframe in enumerate(self._value.keyframes):
+            centre = QPointF(plot.to_x(keyframe.frame), plot.to_y(keyframe.value))
+            painter.setBrush(Colors.PLAYHEAD if index == self._dragging else Colors.SELECTION)
+            painter.drawRect(QRectF(centre.x() - 4, centre.y() - 4, 8, 8))
+
+    def _draw_playhead(self, painter: QPainter, plot: _Plot) -> None:
+        x = plot.to_x(self._frame - self._clip_start)
+        if _MARGIN <= x <= self.width() - _MARGIN:
+            painter.setPen(QPen(Colors.PLAYHEAD, 1))
+            painter.drawLine(QPointF(x, 0), QPointF(x, self.height()))
+
+    # --- 入力 ---
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt の命名規約
+        plot = self._plot()
+        if plot is None or self._value is None or self._path is None:
+            return
+        position = event.position()
+
+        index = self._hit(plot, position)
+        if event.button() == Qt.MouseButton.RightButton:
+            if index is not None:
+                self.changed.emit(RemoveKeyframe(self._path, self._value.keyframes[index].frame))
+            return
+
+        if index is not None:
+            self._dragging = index
+            self.update()
+            return
+
+        # 何も無い場所を押したら再生ヘッドを動かす。曲線と再生位置を
+        # 見比べながら調整できる。
+        self.seek_requested.emit(self._clip_start + plot.to_frame(position.x()))
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt の命名規約
+        if self._dragging is None or self._value is None or self._path is None:
+            return
+        plot = self._plot()
+        if plot is None or self._spec is None:
+            return
+
+        keyframe = self._value.keyframes[self._dragging]
+        value = self._spec.clamp(plot.to_value(event.position().y()))
+        frame = max(0, plot.to_frame(event.position().x()))
+
+        # 隣のキーフレームを追い越させない。追い越すと順序が崩れ、
+        # モデル側の検査で弾かれる。
+        others = [k.frame for i, k in enumerate(self._value.keyframes) if i != self._dragging]
+        lower = max([f for f in others if f < keyframe.frame], default=-1)
+        upper = min([f for f in others if f > keyframe.frame], default=10**9)
+        frame = min(max(frame, lower + 1), upper - 1)
+
+        self.changed.emit(MoveKeyframe(self._path, keyframe.frame, frame, value))
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt の命名規約
+        del event
+        self._dragging = None
+        self.update()
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802 - Qt の命名規約
+        deleting = event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace)
+        selected = self._path is not None and self._value is not None and self._dragging is not None
+        if deleting and selected:
+            assert self._path is not None
+            assert self._value is not None
+            assert self._dragging is not None
+            self.changed.emit(
+                RemoveKeyframe(self._path, self._value.keyframes[self._dragging].frame)
+            )
+            return
+        super().keyPressEvent(event)
+
+    def _hit(self, plot: _Plot, position: QPointF) -> int | None:
+        assert self._value is not None
+        for index, keyframe in enumerate(self._value.keyframes):
+            centre = QPointF(plot.to_x(keyframe.frame), plot.to_y(keyframe.value))
+            if (centre - position).manhattanLength() <= _GRAB_RADIUS * 2:
+                return index
+        return None

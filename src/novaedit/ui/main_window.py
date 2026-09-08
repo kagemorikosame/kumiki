@@ -22,12 +22,27 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from novaedit.core.commands import Command, Document, insert_media
+from novaedit.core.commands import (
+    Command,
+    Document,
+    ParamPath,
+    insert_generated,
+    insert_media,
+)
 from novaedit.core.io import SUFFIX, ProjectFileError, load_project, save_project
-from novaedit.core.model import MediaId, Project, ProjectSettings
+from novaedit.core.model import (
+    ClipId,
+    GeneratedSource,
+    MediaId,
+    Project,
+    ProjectSettings,
+)
+from novaedit.effects.sources import SHAPE, TEXT
 from novaedit.engine.cache import MediaAnalyzer
 from novaedit.engine.decode import ProbeError, probe_media
 from novaedit.ui.export_dialog import ExportDialog
+from novaedit.ui.graph_editor import GraphEditor
+from novaedit.ui.inspector import InspectorPanel
 from novaedit.ui.media_pool import MediaPoolWidget
 from novaedit.ui.playback import PlaybackController
 from novaedit.ui.preview import PreviewWidget
@@ -81,6 +96,8 @@ class MainWindow(QMainWindow):
         self._transport = TransportBar(project.rate, self)
         self._timeline = TimelineView(project, self._analyzer, self)
         self._media_pool = MediaPoolWidget(project, self)
+        self._inspector = InspectorPanel(self)
+        self._graph = GraphEditor(self)
         self._playback = PlaybackController(project, self)
 
         viewer = QWidget(self)
@@ -98,6 +115,25 @@ class MainWindow(QMainWindow):
             Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
         )
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, pool_dock)
+
+        inspector_dock = QDockWidget("オブジェクト設定", self)
+        inspector_dock.setWidget(self._inspector)
+        inspector_dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
+        )
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, inspector_dock)
+        self.resizeDocks([inspector_dock], [320], Qt.Orientation.Horizontal)
+
+        graph_dock = QDockWidget("グラフエディタ", self)
+        graph_dock.setWidget(self._graph)
+        graph_dock.setAllowedAreas(
+            Qt.DockWidgetArea.RightDockWidgetArea | Qt.DockWidgetArea.BottomDockWidgetArea
+        )
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, graph_dock)
+        # 既定では畳んでおく。曲線を触るのは慣れてからで、最初から出ていると
+        # 画面が狭くなるだけになる。
+        graph_dock.hide()
+        self._graph_dock = graph_dock
 
         timeline_dock = QDockWidget("タイムライン", self)
         timeline_dock.setWidget(self._timeline)
@@ -138,6 +174,10 @@ class MainWindow(QMainWindow):
             lambda: self._timeline.delete_selected(ripple=True),
         )
 
+        object_menu = self._menu("オブジェクト")
+        self._add(object_menu, "テキストを追加", QKeySequence("Ctrl+T"), self.add_text)
+        self._add(object_menu, "図形を追加", QKeySequence("Ctrl+Shift+T"), self.add_shape)
+
         view_menu = self._menu("表示")
         self._add(
             view_menu, "拡大", QKeySequence.StandardKey.ZoomIn, lambda: self._timeline.zoom(1.25)
@@ -146,6 +186,12 @@ class MainWindow(QMainWindow):
             view_menu, "縮小", QKeySequence.StandardKey.ZoomOut, lambda: self._timeline.zoom(0.8)
         )
         self._add(view_menu, "全体を表示", QKeySequence("Shift+Z"), self._timeline.zoom_to_fit)
+        self._add(
+            view_menu,
+            "グラフエディタ",
+            QKeySequence("Ctrl+G"),
+            lambda: self._graph_dock.setVisible(not self._graph_dock.isVisible()),
+        )
 
         playback_menu = self._menu("再生")
         self._add(playback_menu, "再生 / 停止", QKeySequence("Space"), self._playback.toggle)
@@ -178,6 +224,13 @@ class MainWindow(QMainWindow):
 
         self._media_pool.import_requested.connect(self.import_media)
         self._media_pool.insert_requested.connect(self._insert_media_by_id)
+
+        self._timeline.selection_changed.connect(self._on_selection_changed)
+        self._inspector.commands_requested.connect(self.execute_all)
+        self._inspector.preview_requested.connect(self._preview_command)
+        self._inspector.curve_selected.connect(self._show_curve)
+        self._graph.commands_requested.connect(self.execute_all)
+        self._graph.seek_requested.connect(self._seek)
 
         self._transport.play_toggled.connect(self._playback.toggle)
         self._transport.step_requested.connect(
@@ -229,6 +282,8 @@ class MainWindow(QMainWindow):
         project = self._document.project
         self._timeline.set_project(project)
         self._media_pool.set_project(project)
+        self._inspector.set_project(project)
+        self._graph.set_project(project)
         self._preview.set_project(project)
         self._playback.set_project(project)
         self._transport.set_rate(project.rate)
@@ -287,6 +342,33 @@ class MainWindow(QMainWindow):
         elif commands:
             self.statusBar().showMessage(f"{len(paths)} 件を読み込んだ", 3000)
 
+    def add_text(self) -> None:
+        """再生ヘッドの位置にテキストを置く。"""
+        self._insert_generated(TEXT.create(), "テキストを追加")
+
+    def add_shape(self) -> None:
+        self._insert_generated(SHAPE.create(), "図形を追加")
+
+    def _insert_generated(self, source: GeneratedSource, label: str) -> None:
+        commands = insert_generated(
+            self._document.project, source, at_frame=self._timeline.playhead
+        )
+        self.execute_all(commands, label)
+        # 置いたものをすぐ選ぶ。設定パネルが開いていないと、
+        # 追加したのに何も起きていないように見える。
+        placed = self._last_added_clip()
+        if placed is not None:
+            self._timeline.select(placed)
+
+    def _last_added_clip(self) -> ClipId | None:
+        """再生ヘッドの位置にある、生成オブジェクトのクリップ。"""
+        frame = self._timeline.playhead
+        for track in reversed(list(self._document.project.timeline.video_tracks())):
+            clip = track.clip_at(frame)
+            if clip is not None and clip.source is not None:
+                return clip.id
+        return None
+
     def _insert_media_by_id(self, media_id: str) -> None:
         project = self._document.project
         media = project.find_media(MediaId(media_id))
@@ -311,19 +393,46 @@ class MainWindow(QMainWindow):
     def _seek(self, frame: int) -> None:
         frame = max(0, min(frame, self._document.project.duration))
         self._timeline.set_playhead(frame)
-        self._preview.set_frame(frame)
-        self._transport.set_frame(frame)
+        self._show_frame(frame)
         self._playback.set_frame(frame)
 
-    def _on_playhead_moved(self, frame: int) -> None:
+    def _show_frame(self, frame: int) -> None:
         self._preview.set_frame(frame)
         self._transport.set_frame(frame)
+        self._inspector.set_frame(frame)
+        self._graph.set_frame(frame)
+
+    def _on_selection_changed(self, clip_id: str) -> None:
+        selected = ClipId(clip_id) if clip_id else None
+        self._inspector.set_clip(selected)
+        if selected is None:
+            self._graph.set_path(None)
+
+    def _show_curve(self, path: ParamPath) -> None:
+        self._graph.set_path(path)
+        self._graph_dock.show()
+        self._graph_dock.raise_()
+
+    def _preview_command(self, command: Command) -> None:
+        """履歴に残さず、プレビューだけ更新する。
+
+        スライダーのドラッグ中に呼ばれる。1 回のドラッグで数十の取り消し段を
+        作らないための逃げ道で、指を離した時点で本来のコマンドが飛んでくる。
+        """
+        try:
+            preview = command.apply(self._document.project)
+        except (ValueError, KeyError):
+            return
+        self._preview.set_project(preview)
+        self._preview.update()
+
+    def _on_playhead_moved(self, frame: int) -> None:
+        self._show_frame(frame)
         self._playback.set_frame(frame)
 
     def _on_playback_frame(self, frame: int) -> None:
         self._timeline.set_playhead(frame)
-        self._preview.set_frame(frame)
-        self._transport.set_frame(frame)
+        self._show_frame(frame)
 
     # --- ファイル ---
 

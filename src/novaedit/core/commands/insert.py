@@ -16,6 +16,7 @@ from novaedit.core.commands.base import Command
 from novaedit.core.commands.edit import AddClip, AddMedia, AddTrack
 from novaedit.core.model import (
     Clip,
+    GeneratedSource,
     MediaItem,
     Project,
     Track,
@@ -24,11 +25,14 @@ from novaedit.core.model import (
 )
 from novaedit.core.timebase import Rounding, seconds_to_frame
 
-__all__ = ["DEFAULT_STILL_FRAMES", "insert_media"]
+__all__ = ["DEFAULT_GENERATED_FRAMES", "DEFAULT_STILL_FRAMES", "insert_generated", "insert_media"]
 
 #: 静止画をタイムラインへ置くときの既定の長さ（フレーム）。
 #: 30fps で 5 秒。Premiere の既定と同じくらい。
 DEFAULT_STILL_FRAMES = 150
+
+#: テキストや図形を置くときの既定の長さ（フレーム）。30fps で 5 秒。
+DEFAULT_GENERATED_FRAMES = 150
 
 
 def insert_media(
@@ -112,5 +116,46 @@ def _find_or_create(project: Project, kind: TrackKind, commands: list[Command]) 
     prefix = "V" if kind is TrackKind.VIDEO else "A"
     index = sum(1 for t in project.timeline.tracks if t.kind is kind) + 1
     track = Track(kind=kind, name=f"{prefix}{index}")
+    commands.append(AddTrack(track))
+    return track
+
+
+def insert_generated(
+    project: Project,
+    source: GeneratedSource,
+    *,
+    at_frame: int | None = None,
+    duration: int = DEFAULT_GENERATED_FRAMES,
+) -> list[Command]:
+    """テキストや図形をタイムラインへ置く。
+
+    素材を持たないので、置く先は必ず映像トラック。既存のクリップと重ならない
+    よう、指定位置に空きが無ければ新しいトラックを作る。テロップは元の映像に
+    重ねたいのが普通で、既存クリップを避けて後ろへ並べるのは意図と違う。
+    """
+    commands: list[Command] = []
+    start = project.duration if at_frame is None else max(0, at_frame)
+    track = _free_video_track(project, start, duration, commands)
+    commands.append(
+        AddClip(
+            track.id,
+            Clip(timeline_start=start, duration=duration, source=source),
+        )
+    )
+    return commands
+
+
+def _free_video_track(
+    project: Project, start: int, duration: int, commands: list[Command]
+) -> Track:
+    """``[start, start + duration)`` が空いている映像トラックを探す。無ければ作る。"""
+    for track in project.timeline.video_tracks():
+        if track.locked:
+            continue
+        if not any(clip.overlaps(start, start + duration) for clip in track.clips):
+            return track
+
+    index = sum(1 for t in project.timeline.tracks if t.kind is TrackKind.VIDEO) + 1
+    track = Track(kind=TrackKind.VIDEO, name=f"V{index}")
     commands.append(AddTrack(track))
     return track

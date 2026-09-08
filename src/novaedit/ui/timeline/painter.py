@@ -17,6 +17,7 @@ from PySide6.QtGui import QColor, QFont, QFontMetrics, QImage, QPainter, QPen
 
 from novaedit.core.model import Clip, MediaItem, Timeline, TrackKind
 from novaedit.core.timebase import FrameRate, format_timecode
+from novaedit.effects.sources import source_registry
 from novaedit.engine.audio import Waveform
 from novaedit.engine.cache import Filmstrip
 from novaedit.ui.theme import Colors, Metrics
@@ -194,7 +195,7 @@ def _draw_clip_label(painter: QPainter, rect: QRect, clip: Clip, media: MediaIte
     label_rect = QRect(rect.left(), rect.top(), rect.width(), Metrics.CLIP_LABEL_HEIGHT)
     painter.fillRect(label_rect, QColor(0, 0, 0, 90))
 
-    name = media.name if media is not None else "（素材なし）"
+    name = _clip_name(clip, media)
     if clip.speed != 1:
         name = f"{name}  ×{float(clip.speed):g}"
     painter.setPen(QPen(Colors.CLIP_LABEL, 1))
@@ -206,6 +207,25 @@ def _draw_clip_label(painter: QPainter, rect: QRect, clip: Clip, media: MediaIte
         Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
         name,
     )
+
+
+def _clip_name(clip: Clip, media: MediaItem | None) -> str:
+    """クリップに出す名前。
+
+    生成オブジェクトは素材を持たないので、素材名だけを見ると全部「素材なし」に
+    なってしまう。テキストは中身の先頭を添えると、並んだときに見分けが付く。
+    """
+    if media is not None:
+        return media.name
+    if clip.source is None:
+        return "（空）"
+
+    definition = source_registry.get(clip.source.kind)
+    label = definition.label if definition is not None else clip.source.kind
+    text = clip.source.params.get("text")
+    if isinstance(text, str) and text.strip():
+        return f"{label}: {text.splitlines()[0][:16]}"
+    return label
 
 
 def _draw_filmstrip(
