@@ -248,6 +248,52 @@ class TestSplit:
         audio_bounds = [(c.timeline_start, c.duration) for c in split.timeline.tracks[1].clips]
         assert video_bounds == audio_bounds == [(0, 25), (25, 35)]
 
+    def test_split_halves_get_separate_link_groups(
+        self, video_media: MediaItem, project: Project
+    ) -> None:
+        # 分割してできた左右が同じリンクグループに残ると、片方を削除したときに
+        # もう片方まで消える。左右は別のグループにし、映像と音声の対応だけ保つ。
+        group: GroupId = new_group_id()
+        audio_track = Track(kind=TrackKind.AUDIO, name="A1")
+        with_track = AddTrack(audio_track).apply(project)
+
+        video_clip = replace(make_clip(0, 60, video_media), link_group=group)
+        audio_clip = replace(make_clip(0, 60, video_media), link_group=group, stream_index=1)
+        placed = AddClip(_only_track(with_track).id, video_clip).apply(with_track)
+        placed = AddClip(audio_track.id, audio_clip).apply(placed)
+
+        split = SplitClip(video_clip.id, 25).apply(placed)
+        video_left, video_right = split.timeline.tracks[0].clips
+        audio_left, audio_right = split.timeline.tracks[1].clips
+
+        assert video_left.link_group == audio_left.link_group == group
+        assert video_right.link_group == audio_right.link_group
+        assert video_right.link_group != group
+
+    def test_deleting_one_half_keeps_the_other(
+        self, video_media: MediaItem, project: Project
+    ) -> None:
+        group: GroupId = new_group_id()
+        audio_track = Track(kind=TrackKind.AUDIO, name="A1")
+        with_track = AddTrack(audio_track).apply(project)
+
+        video_clip = replace(make_clip(0, 60, video_media), link_group=group)
+        audio_clip = replace(make_clip(0, 60, video_media), link_group=group, stream_index=1)
+        placed = AddClip(_only_track(with_track).id, video_clip).apply(with_track)
+        placed = AddClip(audio_track.id, audio_clip).apply(placed)
+
+        split = SplitClip(video_clip.id, 25).apply(placed)
+        head = split.timeline.tracks[0].clips[0]
+        removed = RemoveClip(head.id, ripple=True).apply(split)
+
+        # 映像・音声とも後半だけが残り、詰められて先頭に来る。
+        assert [(c.timeline_start, c.duration) for c in removed.timeline.tracks[0].clips] == [
+            (0, 35)
+        ]
+        assert [(c.timeline_start, c.duration) for c in removed.timeline.tracks[1].clips] == [
+            (0, 35)
+        ]
+
 
 class TestTrim:
     def test_trim_head_advances_source(self, video_media: MediaItem, project: Project) -> None:

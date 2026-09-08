@@ -269,8 +269,55 @@ class Compositor:
         """合成結果を sRGB 符号化した ``(高さ, 幅, 4)`` の uint8 配列で返す。"""
         # リニアの結果をもう 1 パス通して sRGB へ符号化する。glReadPixels に
         # RGBA16F から直接 uint8 で読ませると、変換式が実装依存になる。
-        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self._resolve_fbo)
-        GL.glViewport(0, 0, self.width, self.height)
+        self._resolve(self._resolve_fbo, (0, 0, self.width, self.height))
+
+        GL.glPixelStorei(GL.GL_PACK_ALIGNMENT, 1)
+        raw = GL.glReadPixels(0, 0, self.width, self.height, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE)
+        image = np.frombuffer(raw, dtype=np.uint8).reshape(self.height, self.width, 4)
+        # GL は左下原点で返すので、画像として扱えるよう上下を戻す。
+        return np.ascontiguousarray(image[::-1])
+
+    def present(
+        self,
+        framebuffer: int,
+        viewport: tuple[int, int, int, int],
+        *,
+        letterbox: bool = True,
+    ) -> None:
+        """合成結果を画面（や任意のフレームバッファ）へ直接出す。
+
+        プレビュー表示用。:meth:`read` と違って CPU へ戻さないので、GPU から
+        CPU へ、また GPU へ、という往復が要らない。1080p なら 1 フレームあたり
+        8MB の転送が消える。
+
+        ``letterbox`` が真なら、``viewport`` の中で縦横比を保って収める。
+        プレビュー枠の形が映像と違っても歪まない。
+        """
+        x, y, width, height = viewport
+        if width <= 0 or height <= 0:
+            return
+
+        target = viewport
+        if letterbox:
+            placed = fit_placement(self.width, self.height, width, height)
+            target = (
+                x + int(placed.left),
+                y + int(placed.top),
+                max(1, int(placed.width)),
+                max(1, int(placed.height)),
+            )
+
+        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, framebuffer)
+        GL.glViewport(x, y, width, height)
+        GL.glDisable(GL.GL_BLEND)
+        GL.glClearColor(0.0, 0.0, 0.0, 1.0)
+        GL.glClear(GL.GL_COLOR_BUFFER_BIT)
+        self._resolve(framebuffer, target)
+
+    def _resolve(self, framebuffer: int, viewport: tuple[int, int, int, int]) -> None:
+        """リニアの合成結果を sRGB へ符号化して ``framebuffer`` へ描く。"""
+        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, framebuffer)
+        GL.glViewport(*viewport)
         GL.glDisable(GL.GL_BLEND)
         GL.glUseProgram(self._resolve_program)
         GL.glUniform4f(
@@ -283,12 +330,6 @@ class Compositor:
         GL.glBindVertexArray(self._vao)
         GL.glDrawArrays(GL.GL_TRIANGLE_STRIP, 0, 4)
         GL.glBindVertexArray(0)
-
-        GL.glPixelStorei(GL.GL_PACK_ALIGNMENT, 1)
-        raw = GL.glReadPixels(0, 0, self.width, self.height, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE)
-        image = np.frombuffer(raw, dtype=np.uint8).reshape(self.height, self.width, 4)
-        # GL は左下origin で返すので、画像として扱えるよう上下を戻す。
-        return np.ascontiguousarray(image[::-1])
 
     def release(self) -> None:
         self._release_framebuffers()

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from fractions import Fraction
 from pathlib import Path
 
 import pytest
+from PySide6.QtGui import QSurfaceFormat
+from PySide6.QtWidgets import QApplication
 
 from novaedit.core.model import (
     AudioStreamInfo,
@@ -20,9 +23,25 @@ from novaedit.core.model import (
     VideoStreamInfo,
 )
 from novaedit.core.timebase import FrameRate
+from novaedit.engine.gpu import preferred_surface_format
 from tests.media_fixtures import SampleMedia, ffmpeg_available, make_sample
 
 RATE_30 = FrameRate(30)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def qt_application() -> Iterator[QApplication]:
+    """テスト全体で 1 つだけ QApplication を用意する。
+
+    ウィジェットには QApplication が要るが、GL のテストが先に走ると
+    QGuiApplication だけが作られ、あとから QApplication を作れなくなる
+    （Qt の制約）。ここで最初に上位の QApplication を作っておけば、
+    どちらのテストも同じインスタンスを使える。
+    """
+    existing = QApplication.instance()
+    application = existing if isinstance(existing, QApplication) else QApplication([])
+    QSurfaceFormat.setDefaultFormat(preferred_surface_format())
+    yield application
 
 
 @pytest.fixture

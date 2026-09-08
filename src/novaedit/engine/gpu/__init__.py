@@ -2,7 +2,9 @@
 
 from novaedit.engine.gpu.compositor import Compositor, Placement, Texture, fit_placement
 from novaedit.engine.gpu.context import (
+    CurrentGLContext,
     GLContextError,
+    GLScope,
     OffscreenGLContext,
     ensure_qt_application,
     preferred_surface_format,
@@ -10,7 +12,9 @@ from novaedit.engine.gpu.context import (
 
 __all__ = [
     "Compositor",
+    "CurrentGLContext",
     "GLContextError",
+    "GLScope",
     "OffscreenGLContext",
     "Placement",
     "Texture",

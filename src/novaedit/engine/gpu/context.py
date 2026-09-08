@@ -11,6 +11,7 @@ Qt のコンテキストと二重管理になり、共有もできなくなる�
 from __future__ import annotations
 
 from types import TracebackType
+from typing import Protocol
 
 from PySide6.QtCore import QCoreApplication
 from PySide6.QtGui import (
@@ -22,7 +23,9 @@ from PySide6.QtGui import (
 )
 
 __all__ = [
+    "CurrentGLContext",
     "GLContextError",
+    "GLScope",
     "OffscreenGLContext",
     "ensure_qt_application",
     "preferred_surface_format",
@@ -35,6 +38,26 @@ REQUIRED_GL_VERSION = (4, 3)
 
 class GLContextError(RuntimeError):
     """OpenGL コンテキストを用意できない。"""
+
+
+class GLScope(Protocol):
+    """GL を触る間だけコンテキストを current にする、という約束。
+
+    実装は 2 つある。自前でコンテキストを持つ :class:`OffscreenGLContext` と、
+    Qt がすでに current にしている状況で使う :class:`CurrentGLContext`。
+    描画側はどちらを渡されても同じ書き方で済む。
+    """
+
+    def __enter__(self) -> object: ...
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None: ...
+
+    def release(self) -> None: ...
 
 
 def preferred_surface_format() -> QSurfaceFormat:
@@ -133,3 +156,29 @@ class OffscreenGLContext:
             self.done_current()
             self._depth = 0
         self._surface.destroy()
+
+
+class CurrentGLContext:
+    """すでに current になっているコンテキストを表す、何もしないスコープ。
+
+    ``QOpenGLWidget`` の ``initializeGL`` / ``paintGL`` の中では Qt がすでに
+    コンテキストを current にしている。そこで :class:`OffscreenGLContext` を
+    使うと、別のコンテキストに切り替わって描画先を見失う。
+
+    :class:`FrameRenderer` のような「スコープに入ってから GL を触る」書き方を
+    変えずに済ませるために、入口だけ用意して何もしない実装を置く。
+    """
+
+    def __enter__(self) -> CurrentGLContext:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        return None
+
+    def release(self) -> None:
+        """所有していないので何もしない。"""

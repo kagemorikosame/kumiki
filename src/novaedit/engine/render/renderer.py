@@ -15,7 +15,7 @@ import numpy as np
 from novaedit.core.model import Clip, MediaId, Project, Track
 from novaedit.core.timebase import FrameRate
 from novaedit.engine.decode import ProbeError, VideoDecoder
-from novaedit.engine.gpu import Compositor, OffscreenGLContext, Texture
+from novaedit.engine.gpu import Compositor, GLScope, OffscreenGLContext, Texture
 
 __all__ = ["FrameRenderer", "RenderQuality"]
 
@@ -50,13 +50,17 @@ class FrameRenderer:
 
     GL コンテキストを持つので、生成したスレッドの上でだけ使うこと。再生用と
     書き出し用で別インスタンスにする。
+
+    ``context`` を省略すると自前でオフスクリーンのコンテキストを作る。Qt の
+    ウィジェットの中から使うときは、すでに current になっているので
+    :class:`~novaedit.engine.gpu.CurrentGLContext` を渡す。
     """
 
     def __init__(
         self,
         project: Project,
         *,
-        context: OffscreenGLContext | None = None,
+        context: GLScope | None = None,
         quality: RenderQuality = FULL_QUALITY,
     ) -> None:
         self._project = project
@@ -105,25 +109,38 @@ class FrameRenderer:
         with self._context:
             self._compositor.resize(width, height)
 
+    @property
+    def compositor(self) -> Compositor:
+        """合成結果を直接画面へ出したいときの逃げ道。プレビューが使う。"""
+        return self._compositor
+
+    def compose(self, frame: int) -> None:
+        """``frame`` を合成する。結果は CPU へ戻さず GPU 上に残る。
+
+        画面に出すだけなら往復が要らない。:meth:`render` はこれを呼んでから
+        読み出しているだけ。
+        """
+        if self._closed:
+            raise RuntimeError("閉じたレンダラは使えない")
+
+        rate = self._project.rate
+        self._compositor.begin()
+        for track in self._project.timeline.video_tracks():
+            if track.muted:
+                continue
+            clip = track.clip_at(frame)
+            if clip is None or not clip.enabled:
+                continue
+            self._draw_clip(track, clip, frame, rate)
+
     def render(self, frame: int) -> np.ndarray:
         """``frame`` の合成結果を sRGB の ``(高さ, 幅, 4)`` uint8 で返す。
 
         映像トラックを下から順に重ねる。タイムラインの下のトラックが奥、
         上のトラックが手前という Premiere / AviUtl と同じ並び。
         """
-        if self._closed:
-            raise RuntimeError("閉じたレンダラは使えない")
-
-        rate = self._project.rate
         with self._context:
-            self._compositor.begin()
-            for track in self._project.timeline.video_tracks():
-                if track.muted:
-                    continue
-                clip = track.clip_at(frame)
-                if clip is None or not clip.enabled:
-                    continue
-                self._draw_clip(track, clip, frame, rate)
+            self.compose(frame)
             return self._compositor.read()
 
     def close(self) -> None:

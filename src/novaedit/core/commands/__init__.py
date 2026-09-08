@@ -20,8 +20,10 @@ from novaedit.core.commands.edit import (
     TrimClip,
 )
 from novaedit.core.commands.history import Document, HistoryEntry
+from novaedit.core.commands.insert import DEFAULT_STILL_FRAMES, insert_media
 
 __all__ = [
+    "DEFAULT_STILL_FRAMES",
     "AddClip",
     "AddMedia",
     "AddTrack",
@@ -36,4 +38,5 @@ __all__ = [
     "SetTranscript",
     "SplitClip",
     "TrimClip",
+    "insert_media",
 ]

@@ -21,6 +21,7 @@ from novaedit.core.model import (
     TrackKind,
     Transcript,
     new_clip_id,
+    new_group_id,
 )
 
 __all__ = [
@@ -268,6 +269,11 @@ class SplitClip(Command):
 
         rate = project.rate
         timeline = project.timeline
+        # 右側は新しいリンクグループにする。元のままだと、分割してできた左右が
+        # 同じグループに残り、片方を削除するともう片方まで消える。新しいグループを
+        # 映像・音声の右側どうしで共有するので、分割後もリンクは保たれる。
+        right_group = new_group_id() if clip.link_group is not None else None
+
         for track_id, target in _linked_group(project, clip):
             if not target.contains(self.frame):
                 # リンク先の長さが違う場合。片方だけ割ると同期が崩れるので何もしない。
@@ -284,6 +290,7 @@ class SplitClip(Command):
                 duration=target.timeline_end - self.frame,
                 # 右側は、左側が消費したソース時間の分だけ後ろから始まる。
                 source_in=target.source_in + left_duration * rate.frame_duration * target.speed,
+                link_group=right_group,
             )
             others = tuple(c for c in track.clips if c.id != target.id)
             timeline = timeline.replace_track(track.with_clips((*others, left, right)))
