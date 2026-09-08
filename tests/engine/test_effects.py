@@ -1,0 +1,456 @@
+"""エフェクトと生成オブジェクト。
+
+判定を確実にするため、映像素材ではなく図形やテキストを使う。testsrc2 のような
+模様の上では「変わった／変わらない」しか言えず、どう変わるべきかを書けない。
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Iterator
+
+import numpy as np
+import pytest
+
+from novaedit.core.model import (
+    AnimatedValue,
+    Clip,
+    Effect,
+    GeneratedSource,
+    Keyframe,
+    Project,
+    ProjectSettings,
+    Track,
+    TrackKind,
+)
+from novaedit.core.timebase import FrameRate
+from novaedit.effects import ColorSpec, TrackSpec, registry
+from novaedit.effects.sources import SHAPE, TEXT, source_registry
+from novaedit.engine.gpu import BlendMode, GLContextError, OffscreenGLContext, srgb_to_linear
+from novaedit.engine.render import FrameRenderer
+from novaedit.engine.sources import render_source
+
+WIDTH, HEIGHT = 200, 200
+
+
+@pytest.fixture(scope="session")
+def gl() -> Iterator[OffscreenGLContext]:
+    try:
+        context = OffscreenGLContext()
+    except GLContextError as exc:
+        pytest.skip(f"OpenGL コンテキストを作れない: {exc}")
+    yield context
+    context.release()
+
+
+@pytest.fixture
+def draw(gl: OffscreenGLContext) -> Callable[..., np.ndarray]:
+    """1 クリップだけのプロジェクトを描いて画像を返す。"""
+
+    def render(
+        source: GeneratedSource,
+        effects: tuple[Effect, ...] = (),
+        *,
+        frame: int = 0,
+        blend: str = BlendMode.NORMAL,
+    ) -> np.ndarray:
+        project = Project.create(
+            ProjectSettings(width=WIDTH, height=HEIGHT, frame_rate=FrameRate(30))
+        )
+        track = Track(
+            kind=TrackKind.VIDEO,
+            clips=(
+                Clip(
+                    timeline_start=0,
+                    duration=60,
+                    source=source,
+                    effects=effects,
+                    blend_mode=blend,
+                ),
+            ),
+        )
+        project = project.with_timeline(
+            project.timeline.__class__(rate=project.rate, tracks=(track,))
+        )
+        renderer = FrameRenderer(project, context=gl)
+        try:
+            return renderer.render(frame)
+        finally:
+            renderer.close()
+
+    return render
+
+
+def white_square(size: int = 100) -> GeneratedSource:
+    """中央に置いた白い正方形。位置と大きさが分かっているので判定しやすい。"""
+    return SHAPE.create(shape="rect", width=size, height=size, color=(1.0, 1.0, 1.0, 1.0))
+
+
+def centre(image: np.ndarray) -> list[int]:
+    return [int(v) for v in image[HEIGHT // 2, WIDTH // 2, :3]]
+
+
+def lit_pixels(image: np.ndarray, threshold: int = 20) -> int:
+    return int((image[..., :3].max(axis=2) > threshold).sum())
+
+
+class TestParameterSpecs:
+    def test_track_clamps_out_of_range(self) -> None:
+        spec = TrackSpec("radius", "範囲", 0, 100, 10)
+        assert spec.coerce(500).static == 100
+        assert spec.coerce(-5).static == 0
+
+    def test_track_keeps_animation(self) -> None:
+        # キーフレームの付いた値は、範囲で切らずにそのまま通す。
+        spec = TrackSpec("radius", "範囲", 0, 100, 10)
+        animated = AnimatedValue(keyframes=(Keyframe(frame=0, value=0.0),))
+        assert spec.coerce(animated) is animated
+
+    def test_track_rejects_bad_definition(self) -> None:
+        with pytest.raises(ValueError, match="既定値が範囲外"):
+            TrackSpec("x", "X", 0, 10, 50)
+
+    def test_color_pads_missing_alpha(self) -> None:
+        spec = ColorSpec("color", "色")
+        assert spec.coerce((1.0, 0.5, 0.0)) == (1.0, 0.5, 0.0, 1.0)
+
+    def test_garbage_falls_back_to_the_default(self) -> None:
+        # 配布エイリアスから読んだ値は型が信用できない。既定値へ寄せる。
+        spec = TrackSpec("radius", "範囲", 0, 100, 10)
+        assert spec.coerce("でたらめ").static == 10
+
+
+class TestRegistry:
+    def test_standard_effects_are_registered(self) -> None:
+        # P2 の完了条件が標準エフェクト 10 種。
+        assert len(registry) >= 10
+
+    def test_every_effect_has_a_shader_and_parameters(self) -> None:
+        for definition in registry.all():
+            assert definition.fragment_shader, f"{definition.kind}: シェーダが無い"
+            assert definition.parameters, f"{definition.kind}: パラメータが無い"
+
+    def test_defaults_round_trip_through_normalize(self) -> None:
+        for definition in registry.all():
+            params = definition.default_params()
+            assert definition.normalize(params) == params
+
+    def test_unknown_effect_is_not_an_error(self) -> None:
+        assert registry.get("存在しない") is None
+
+    def test_duplicate_registration_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="すでに登録"):
+            registry.register(registry.require("blur"))
+
+
+class TestShaders:
+    def test_every_effect_compiles(self, gl: OffscreenGLContext) -> None:
+        # コンパイルできないエフェクトは黙って素通しになる仕様なので、
+        # 「絵が出た」だけでは検出できない。1 つずつ通して確かめる。
+        from novaedit.engine.gpu.effects import EffectProcessor
+        from novaedit.engine.gpu.glutil import ScreenQuad
+
+        with gl:
+            quad = ScreenQuad()
+            processor = EffectProcessor(16, 16, quad)
+            try:
+                for definition in registry.all():
+                    assert processor.has_work((definition.create(),)), (
+                        f"{definition.kind}: シェーダをコンパイルできない"
+                    )
+            finally:
+                processor.release()
+                quad.release()
+
+
+class TestColorEffect:
+    def test_brightness(self, draw: Callable[..., np.ndarray]) -> None:
+        grey = SHAPE.create(shape="rect", width=180, height=180, color=(0.5, 0.5, 0.5, 1.0))
+        plain = draw(grey)
+        brighter = draw(grey, (registry.require("color").create(brightness=50),))
+        assert centre(brighter)[0] > centre(plain)[0]
+
+    def test_saturation_to_zero_makes_grey(self, draw: Callable[..., np.ndarray]) -> None:
+        red = SHAPE.create(shape="rect", width=180, height=180, color=(1.0, 0.2, 0.2, 1.0))
+        desaturated = draw(red, (registry.require("color").create(saturation=-100),))
+        r, g, b = centre(desaturated)
+        assert abs(r - g) <= 2
+        assert abs(g - b) <= 2
+
+    def test_defaults_change_nothing(self, draw: Callable[..., np.ndarray]) -> None:
+        square = white_square()
+        assert np.array_equal(draw(square), draw(square, (registry.require("color").create(),)))
+
+
+class TestGeometryEffects:
+    def test_transform_moves_the_image(self, draw: Callable[..., np.ndarray]) -> None:
+        square = white_square(60)
+        moved = draw(square, (registry.require("transform").create(pos_x=60),))
+        # 中央は空き、右へずれた位置に現れる。
+        assert moved[HEIGHT // 2, WIDTH // 2, 0] < 20
+        assert moved[HEIGHT // 2, WIDTH // 2 + 60, 0] > 200
+
+    def test_transform_scale(self, draw: Callable[..., np.ndarray]) -> None:
+        square = white_square(60)
+        plain = lit_pixels(draw(square))
+        doubled = lit_pixels(draw(square, (registry.require("transform").create(scale=200),)))
+        assert doubled == pytest.approx(plain * 4, rel=0.15)
+
+    def test_crop_cuts_the_edges(self, draw: Callable[..., np.ndarray]) -> None:
+        square = white_square(180)
+        cropped = draw(square, (registry.require("crop").create(top=80, bottom=80),))
+        assert cropped[HEIGHT // 2, WIDTH // 2, 0] > 200
+        assert cropped[10, WIDTH // 2, 0] < 20
+
+    def test_mask_hides_the_outside(self, draw: Callable[..., np.ndarray]) -> None:
+        square = white_square(180)
+        masked = draw(
+            square,
+            (registry.require("mask").create(shape="ellipse", mask_width=60, mask_height=60),),
+        )
+        assert masked[HEIGHT // 2, WIDTH // 2, 0] > 200
+        assert masked[HEIGHT // 2, 20, 0] < 20
+
+    def test_mask_invert(self, draw: Callable[..., np.ndarray]) -> None:
+        square = white_square(180)
+        masked = draw(
+            square,
+            (
+                registry.require("mask").create(
+                    shape="ellipse", mask_width=60, mask_height=60, invert=True
+                ),
+            ),
+        )
+        assert masked[HEIGHT // 2, WIDTH // 2, 0] < 20
+        assert masked[HEIGHT // 2, 20, 0] > 200
+
+
+class TestBlurEffects:
+    def test_blur_softens_the_edge(self, draw: Callable[..., np.ndarray]) -> None:
+        square = white_square(80)
+        sharp = draw(square)
+        blurred = draw(square, (registry.require("blur").create(radius=12),))
+
+        # 縁の外側に色がにじみ出る。
+        edge_x = WIDTH // 2 + 44
+        assert sharp[HEIGHT // 2, edge_x, 0] < 20
+        assert blurred[HEIGHT // 2, edge_x, 0] > 20
+
+    def test_blur_does_not_darken_the_edge(self, draw: Callable[..., np.ndarray]) -> None:
+        # ストレートアルファのまま畳むと、透明画素の黒が混ざって縁が黒ずむ。
+        # 事前乗算で畳んでいれば、白い四角の縁は白いままにじむ。
+        square = white_square(80)
+        blurred = draw(square, (registry.require("blur").create(radius=10),))
+        row = blurred[HEIGHT // 2, WIDTH // 2 : WIDTH // 2 + 50, :3]
+        lit = row[row.max(axis=1) > 30]
+        assert lit.size > 0
+        # にじんだ部分も無彩色（白）のままであること。
+        assert int(np.abs(lit[:, 0].astype(int) - lit[:, 2].astype(int)).max()) <= 3
+
+    def test_glow_brightens_around_the_shape(self, draw: Callable[..., np.ndarray]) -> None:
+        square = white_square(60)
+        plain = draw(square)
+        glowing = draw(
+            square,
+            (registry.require("glow").create(threshold=0.2, intensity=200, radius=20),),
+        )
+        outside = (HEIGHT // 2, WIDTH // 2 + 40)
+        assert plain[outside][0] < 20
+        assert glowing[outside][0] > plain[outside][0]
+
+    def test_sharpen_keeps_flat_areas_flat(self, draw: Callable[..., np.ndarray]) -> None:
+        square = white_square(120)
+        sharpened = draw(square, (registry.require("sharpen").create(strength=200),))
+        assert centre(sharpened)[0] > 200
+
+    def test_mosaic_makes_uniform_blocks(self, draw: Callable[..., np.ndarray]) -> None:
+        square = white_square(101)
+        blocky = draw(square, (registry.require("mosaic").create(size=40),))
+        # 縁がブロックの境界に揃うので、中間の値がほとんど無くなる。
+        values = blocky[..., 0]
+        midtones = int(((values > 40) & (values < 210)).sum())
+        assert midtones < 400
+
+
+class TestDecorationEffects:
+    def test_border_surrounds_the_shape(self, draw: Callable[..., np.ndarray]) -> None:
+        square = white_square(60)
+        bordered = draw(
+            square,
+            (registry.require("border").create(width=8, color=(1.0, 0.0, 0.0, 1.0)),),
+        )
+        just_outside = bordered[HEIGHT // 2, WIDTH // 2 + 34]
+        assert just_outside[0] > 100, "縁が描かれていない"
+        assert just_outside[1] < 80, "縁が赤くない"
+        assert centre(bordered)[1] > 200, "中身が塗り潰されている"
+
+    def test_shadow_falls_in_the_requested_direction(self, draw: Callable[..., np.ndarray]) -> None:
+        # Y は正が上。変形の pos_y と揃っていないと、同じ「Y」の表示で
+        # 上下が反対に動くことになる。
+        square = white_square(60)
+        effect = registry.require("shadow")
+        down = draw(square, (effect.create(offset_y=-20, blur=0, opacity=100),))
+        up = draw(square, (effect.create(offset_y=20, blur=0, opacity=100),))
+
+        below = (HEIGHT // 2 + 45, WIDTH // 2)
+        above = (HEIGHT // 2 - 45, WIDTH // 2)
+        assert down[below][3] == 255
+        assert down[below][0] < 20, "下に影が出ていない"
+        assert up[above][0] < 20, "上に影が出ていない"
+
+    def test_noise_varies_over_time(self, draw: Callable[..., np.ndarray]) -> None:
+        square = white_square(120)
+        effect = registry.require("noise").create(strength=60, animate=True)
+        assert not np.array_equal(
+            draw(square, (effect,), frame=0), draw(square, (effect,), frame=7)
+        )
+
+    def test_static_noise_is_stable(self, draw: Callable[..., np.ndarray]) -> None:
+        square = white_square(120)
+        effect = registry.require("noise").create(strength=60, animate=False)
+        assert np.array_equal(draw(square, (effect,), frame=0), draw(square, (effect,), frame=7))
+
+
+class TestChromaKey:
+    def test_removes_the_key_colour(self, draw: Callable[..., np.ndarray]) -> None:
+        green = SHAPE.create(shape="rect", width=180, height=180, color=(0.0, 1.0, 0.0, 1.0))
+        keyed = draw(
+            green,
+            (
+                registry.require("chroma_key").create(
+                    key_color=(0.0, 1.0, 0.0, 1.0), similarity=30, smoothness=10
+                ),
+            ),
+        )
+        assert centre(keyed)[1] < 30, "緑が抜けていない"
+
+    def test_keeps_other_colours(self, draw: Callable[..., np.ndarray]) -> None:
+        red = SHAPE.create(shape="rect", width=180, height=180, color=(1.0, 0.0, 0.0, 1.0))
+        keyed = draw(
+            red,
+            (registry.require("chroma_key").create(key_color=(0.0, 1.0, 0.0, 1.0)),),
+        )
+        assert centre(keyed)[0] > 200
+
+
+class TestKeyframes:
+    def test_effect_parameters_animate(self, draw: Callable[..., np.ndarray]) -> None:
+        # P2 の完了条件のもう半分。エフェクトの値が時間で変わること。
+        square = white_square(60)
+        moving = Effect(
+            kind="transform",
+            params={
+                **registry.require("transform").default_params(),
+                "pos_x": AnimatedValue(
+                    keyframes=(
+                        Keyframe(frame=0, value=0.0),
+                        Keyframe(frame=30, value=60.0),
+                    )
+                ),
+            },
+        )
+        at_start = draw(square, (moving,), frame=0)
+        at_end = draw(square, (moving,), frame=30)
+
+        assert at_start[HEIGHT // 2, WIDTH // 2, 0] > 200
+        assert at_end[HEIGHT // 2, WIDTH // 2, 0] < 20
+        assert at_end[HEIGHT // 2, WIDTH // 2 + 60, 0] > 200
+
+    def test_source_parameters_animate(self, draw: Callable[..., np.ndarray]) -> None:
+        growing = GeneratedSource(
+            kind="shape",
+            params={
+                **SHAPE.default_params(),
+                "width": AnimatedValue(
+                    keyframes=(
+                        Keyframe(frame=0, value=20.0),
+                        Keyframe(frame=30, value=180.0),
+                    )
+                ),
+            },
+        )
+        assert lit_pixels(draw(growing, frame=30)) > lit_pixels(draw(growing, frame=0)) * 4
+
+
+class TestSources:
+    def test_text_draws_something(self) -> None:
+        image = render_source(TEXT.create(text="あア亜A", size=48), WIDTH, HEIGHT)
+        assert image is not None
+        assert int((image[..., 3] > 0).sum()) > 0
+
+    def test_empty_text_draws_nothing(self) -> None:
+        image = render_source(TEXT.create(text=""), WIDTH, HEIGHT)
+        assert image is not None
+        assert int((image[..., 3] > 0).sum()) == 0
+
+    def test_text_border_widens_the_glyphs(self) -> None:
+        plain = render_source(TEXT.create(text="あ", size=64, border_width=0), WIDTH, HEIGHT)
+        outlined = render_source(TEXT.create(text="あ", size=64, border_width=6), WIDTH, HEIGHT)
+        assert plain is not None
+        assert outlined is not None
+        assert int((outlined[..., 3] > 0).sum()) > int((plain[..., 3] > 0).sum())
+
+    @pytest.mark.parametrize("shape", ["rect", "rounded", "ellipse", "triangle", "star"])
+    def test_every_shape_draws(self, shape: str) -> None:
+        image = render_source(SHAPE.create(shape=shape, width=120, height=120), WIDTH, HEIGHT)
+        assert image is not None
+        assert int((image[..., 3] > 0).sum()) > 0
+
+    def test_shape_size_is_respected(self) -> None:
+        small = render_source(SHAPE.create(shape="rect", width=40, height=40), WIDTH, HEIGHT)
+        large = render_source(SHAPE.create(shape="rect", width=80, height=80), WIDTH, HEIGHT)
+        assert small is not None
+        assert large is not None
+        assert int((large[..., 3] > 0).sum()) == pytest.approx(
+            int((small[..., 3] > 0).sum()) * 4, rel=0.1
+        )
+
+    def test_unknown_source(self) -> None:
+        assert render_source(GeneratedSource(kind="なにか"), WIDTH, HEIGHT) is None
+
+    def test_image_has_no_row_padding(self) -> None:
+        # QImage は行ごとに詰め物を入れることがある。幅だけで整形すると絵が斜めにずれる。
+        image = render_source(SHAPE.create(shape="rect", width=10, height=10), 101, 51)
+        assert image is not None
+        assert image.shape == (51, 101, 4)
+
+    def test_registry(self) -> None:
+        assert "text" in source_registry
+        assert "shape" in source_registry
+        assert source_registry.get("なにか") is None
+
+
+class TestColourConversion:
+    def test_srgb_to_linear(self) -> None:
+        assert srgb_to_linear(0.0) == 0.0
+        assert srgb_to_linear(1.0) == pytest.approx(1.0)
+        # sRGB の中間 (0.5) はリニアでは 0.21 前後。ここを取り違えると、
+        # 色パラメータを指定した縁取りや影の色が明るく出る。
+        assert srgb_to_linear(0.5) == pytest.approx(0.2140, abs=0.001)
+
+
+class TestBlendModes:
+    def test_add_is_brighter_than_normal(self, gl: OffscreenGLContext) -> None:
+        project = Project.create(
+            ProjectSettings(width=WIDTH, height=HEIGHT, frame_rate=FrameRate(30))
+        )
+        grey = SHAPE.create(shape="rect", width=180, height=180, color=(0.5, 0.5, 0.5, 1.0))
+
+        def stack(blend: str) -> np.ndarray:
+            lower = Track(
+                kind=TrackKind.VIDEO,
+                clips=(Clip(timeline_start=0, duration=30, source=grey),),
+            )
+            upper = Track(
+                kind=TrackKind.VIDEO,
+                clips=(Clip(timeline_start=0, duration=30, source=grey, blend_mode=blend),),
+            )
+            stacked = project.with_timeline(
+                project.timeline.__class__(rate=project.rate, tracks=(lower, upper))
+            )
+            renderer = FrameRenderer(stacked, context=gl)
+            try:
+                return renderer.render(0)
+            finally:
+                renderer.close()
+
+        assert centre(stack(BlendMode.ADD))[0] > centre(stack(BlendMode.NORMAL))[0]

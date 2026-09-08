@@ -13,7 +13,7 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from fractions import Fraction
 
-from novaedit.core.model.effect import AnimatedValue, Effect
+from novaedit.core.model.effect import AnimatedValue, Effect, ParamValue
 from novaedit.core.model.ids import (
     ClipId,
     GroupId,
@@ -24,7 +24,23 @@ from novaedit.core.model.ids import (
 )
 from novaedit.core.timebase import FrameRate
 
-__all__ = ["Clip", "Marker", "Timeline", "Track", "TrackKind"]
+__all__ = ["Clip", "GeneratedSource", "Marker", "Timeline", "Track", "TrackKind"]
+
+
+@dataclass(frozen=True, slots=True)
+class GeneratedSource:
+    """素材を持たないクリップの中身。テキストや図形。
+
+    :class:`~novaedit.core.model.Effect` と同じく ``kind`` と ``params`` だけを持つ。
+    フィルタと生成物は役割が違うので型は分けるが、パラメータの仕組みは共有する。
+    設定 UI もプリセットも 1 つの実装で済ませるため。
+    """
+
+    kind: str
+    params: dict[str, ParamValue] = field(default_factory=dict)
+
+    def with_param(self, name: str, value: ParamValue) -> GeneratedSource:
+        return GeneratedSource(kind=self.kind, params={**self.params, name: value})
 
 
 class TrackKind(Enum):
@@ -45,6 +61,9 @@ class Clip:
     #: タイムライン上の長さ（フレーム）。1 以上。
     duration: int
     media_id: MediaId | None = None
+    #: 素材を持たないクリップの中身（テキスト・図形）。``media_id`` が
+    #: ``None`` のときだけ意味を持つ。
+    source: GeneratedSource | None = None
     #: 素材内の開始位置（秒）。
     source_in: Fraction = Fraction(0)
     #: 使用する素材内のストリーム番号。多言語音声などで意味を持つ。
@@ -53,6 +72,9 @@ class Clip:
     speed: Fraction = Fraction(1)
     effects: tuple[Effect, ...] = ()
     opacity: AnimatedValue = field(default_factory=lambda: AnimatedValue(1.0))
+    #: 下のトラックとの重ね方。値は :class:`~novaedit.engine.gpu.BlendMode` の定数。
+    #: 文字列で持つのは、プロジェクトファイルに出るものを列挙型に縛らないため。
+    blend_mode: str = "normal"
     #: 映像と音声を連動させるためのグループ。同じ値を持つクリップは一緒に動く。
     link_group: GroupId | None = None
     enabled: bool = True

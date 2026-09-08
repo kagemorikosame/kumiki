@@ -15,7 +15,16 @@ import numpy as np
 from novaedit.core.model import Clip, MediaId, Project, Track
 from novaedit.core.timebase import FrameRate
 from novaedit.engine.decode import ProbeError, VideoDecoder
-from novaedit.engine.gpu import Compositor, GLScope, OffscreenGLContext, Texture
+from novaedit.engine.gpu import (
+    Compositor,
+    EffectProcessor,
+    GLScope,
+    OffscreenGLContext,
+    Placement,
+    Texture,
+    fit_placement,
+)
+from novaedit.engine.sources import render_source
 
 __all__ = ["FrameRenderer", "RenderQuality"]
 
@@ -71,6 +80,8 @@ class FrameRenderer:
         width, height = quality.apply(*project.settings.resolution)
         with self._context:
             self._compositor = Compositor(width, height)
+            # エフェクト処理は合成と同じ全画面四角形を使い回す。
+            self._effects = EffectProcessor(width, height, self._compositor.quad)
         #: 素材ごとのデコーダ。最近使ったものを残す。
         self._decoders: OrderedDict[tuple[MediaId, int], VideoDecoder] = OrderedDict()
         #: トラックごとの転送用テクスチャ。毎フレーム作り直すと確保と解放で時間を食う。
@@ -95,9 +106,7 @@ class FrameRenderer:
         self._project = project
 
         if project.settings.resolution != previous.settings.resolution:
-            width, height = self._quality.apply(*project.settings.resolution)
-            with self._context:
-                self._compositor.resize(width, height)
+            self._resize(*self._quality.apply(*project.settings.resolution))
 
         alive = {m.id for m in project.media}
         for key in [k for k in self._decoders if k[0] not in alive]:
@@ -105,9 +114,12 @@ class FrameRenderer:
 
     def set_quality(self, quality: RenderQuality) -> None:
         self._quality = quality
-        width, height = quality.apply(*self._project.settings.resolution)
+        self._resize(*quality.apply(*self._project.settings.resolution))
+
+    def _resize(self, width: int, height: int) -> None:
         with self._context:
             self._compositor.resize(width, height)
+            self._effects.resize(width, height)
 
     @property
     def compositor(self) -> Compositor:
@@ -154,23 +166,63 @@ class FrameRenderer:
             for texture in self._textures.values():
                 texture.release()
             self._textures.clear()
+            self._effects.release()
             self._compositor.release()
         if self._owns_context:
             self._context.release()
 
     def _draw_clip(self, track: Track, clip: Clip, frame: int, rate: FrameRate) -> None:
-        if clip.media_id is None:
-            # 素材を持たない生成オブジェクト（テキスト・図形）。エフェクト実装は P2。
-            return
-
-        image = self._decode(clip, frame, rate)
+        image = self._image_for(clip, frame, rate)
         if image is None:
             return
 
         texture = self._texture_for(track.id)
         texture.upload(image)
         local_frame = frame - clip.timeline_start
-        self._compositor.draw(texture, opacity=clip.opacity.at(local_frame))
+        opacity = clip.opacity.at(local_frame)
+
+        if not self._effects.has_work(clip.effects):
+            # エフェクトが無ければ中間バッファを通さない。全画面のパスが 1 回
+            # 増えるだけで、エフェクト無しのクリップでも再生の余裕が削られる。
+            self._compositor.draw(texture, opacity=opacity, blend=clip.blend_mode)
+            return
+
+        placement = fit_placement(
+            texture.width, texture.height, self._compositor.width, self._compositor.height
+        )
+        result = self._effects.apply(
+            texture,
+            clip.effects,
+            frame=local_frame,
+            fps=float(rate.fps),
+            source_rect=placement.to_clip(self._compositor.width, self._compositor.height),
+        )
+        # エフェクトを通した結果は画面いっぱいで GL の向き。収め直しも反転も要らない。
+        self._compositor.draw_handle(
+            result.color,
+            Placement(0.0, 0.0, float(self._compositor.width), float(self._compositor.height)),
+            opacity=opacity,
+            flip=False,
+            blend=clip.blend_mode,
+        )
+
+    def _image_for(self, clip: Clip, frame: int, rate: FrameRate) -> np.ndarray | None:
+        """クリップの元絵。素材由来と生成オブジェクトの両方をここで扱う。"""
+        if clip.media_id is None:
+            return self._generate(clip, frame, rate)
+        return self._decode(clip, frame, rate)
+
+    def _generate(self, clip: Clip, frame: int, rate: FrameRate) -> np.ndarray | None:
+        """素材を持たないクリップ（テキスト・図形）の絵を作る。"""
+        del rate
+        if clip.source is None:
+            return None
+        return render_source(
+            clip.source,
+            self._compositor.width,
+            self._compositor.height,
+            frame=frame - clip.timeline_start,
+        )
 
     def _decode(self, clip: Clip, frame: int, rate: FrameRate) -> np.ndarray | None:
         assert clip.media_id is not None

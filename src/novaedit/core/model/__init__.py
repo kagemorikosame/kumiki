@@ -31,7 +31,14 @@ from novaedit.core.model.ids import (
 )
 from novaedit.core.model.media import AudioStreamInfo, MediaItem, VideoStreamInfo
 from novaedit.core.model.project import Project, ProjectSettings
-from novaedit.core.model.timeline import Clip, Marker, Timeline, Track, TrackKind
+from novaedit.core.model.timeline import (
+    Clip,
+    GeneratedSource,
+    Marker,
+    Timeline,
+    Track,
+    TrackKind,
+)
 from novaedit.core.model.transcript import Transcript, TranscriptSegment, Word
 
 __all__ = [
@@ -41,6 +48,7 @@ __all__ = [
     "ClipId",
     "Effect",
     "EffectId",
+    "GeneratedSource",
     "GroupId",
     "Interpolation",
     "Keyframe",

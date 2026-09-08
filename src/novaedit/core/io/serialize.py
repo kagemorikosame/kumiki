@@ -24,6 +24,7 @@ from novaedit.core.model import (
     ClipId,
     Effect,
     EffectId,
+    GeneratedSource,
     GroupId,
     Interpolation,
     Keyframe,
@@ -198,25 +199,44 @@ def _param_from_json(raw: object) -> ParamValue:
     raise ProjectFileError(f"パラメータとして読めない値: {raw!r}")
 
 
+def _params_to_json(params: dict[str, ParamValue]) -> dict[str, Any]:
+    return {name: _param_to_json(value) for name, value in params.items()}
+
+
+def _params_from_json(raw: object, field: str) -> dict[str, ParamValue]:
+    if not isinstance(raw, dict):
+        raise ProjectFileError(f"{field} がオブジェクトではない: {raw!r}")
+    return {name: _param_from_json(value) for name, value in raw.items()}
+
+
 def _effect_to_json(effect: Effect) -> dict[str, Any]:
     return {
         "id": effect.id,
         "kind": effect.kind,
         "enabled": effect.enabled,
-        "params": {name: _param_to_json(value) for name, value in effect.params.items()},
+        "params": _params_to_json(effect.params),
     }
 
 
 def _effect_from_json(raw: object) -> Effect:
     data = _require(raw, "effect")
-    params_raw = data.get("params", {})
-    if not isinstance(params_raw, dict):
-        raise ProjectFileError(f"params がオブジェクトではない: {params_raw!r}")
     return Effect(
         kind=_get_str(data, "kind"),
-        params={name: _param_from_json(value) for name, value in params_raw.items()},
+        params=_params_from_json(data.get("params", {}), "params"),
         enabled=_get_bool(data, "enabled", True),
         id=EffectId(_get_str(data, "id")),
+    )
+
+
+def _source_to_json(source: GeneratedSource) -> dict[str, Any]:
+    return {"kind": source.kind, "params": _params_to_json(source.params)}
+
+
+def _source_from_json(raw: object) -> GeneratedSource:
+    data = _require(raw, "source")
+    return GeneratedSource(
+        kind=_get_str(data, "kind"),
+        params=_params_from_json(data.get("params", {}), "source.params"),
     )
 
 
@@ -378,10 +398,12 @@ def _clip_to_json(clip: Clip) -> dict[str, Any]:
         "timeline_start": clip.timeline_start,
         "duration": clip.duration,
         "media_id": clip.media_id,
+        "source": _source_to_json(clip.source) if clip.source is not None else None,
         "source_in": _fraction_to_json(clip.source_in),
         "stream_index": clip.stream_index,
         "speed": _fraction_to_json(clip.speed),
         "opacity": _param_to_json(clip.opacity),
+        "blend_mode": clip.blend_mode,
         "link_group": clip.link_group,
         "enabled": clip.enabled,
         "effects": [_effect_to_json(e) for e in clip.effects],
@@ -401,15 +423,18 @@ def _clip_from_json(raw: object) -> Clip:
     if not isinstance(opacity, AnimatedValue):
         raise ProjectFileError(f"opacity がアニメーション値ではない: {opacity!r}")
 
+    source_raw = data.get("source")
     return Clip(
         timeline_start=_get_int(data, "timeline_start"),
         duration=_get_int(data, "duration"),
         media_id=MediaId(media_id) if media_id is not None else None,
+        source=_source_from_json(source_raw) if source_raw is not None else None,
         source_in=_fraction_from_json(data.get("source_in", 0), "source_in"),
         stream_index=_get_int(data, "stream_index", 0),
         speed=_fraction_from_json(data.get("speed", 1), "speed"),
         effects=tuple(_effect_from_json(e) for e in _get_list(data, "effects")),
         opacity=opacity,
+        blend_mode=_get_str(data, "blend_mode", "normal"),
         link_group=GroupId(link_group) if link_group is not None else None,
         enabled=_get_bool(data, "enabled", True),
         id=ClipId(_get_str(data, "id")),
