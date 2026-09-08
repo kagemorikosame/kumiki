@@ -47,3 +47,9 @@ ignore = ["RUF001", "RUF002", "RUF003"]
 python_version = "3.12"
 strict = true
 files = ["src", "tests"]
+
+# PyOpenGL は型情報を配布していない。GL 呼び出しは薄い層に閉じ込めてあるので、
+# ここだけ型検査の対象外にする。
+[[tool.mypy.overrides]]
+module = ["OpenGL.*"]
+ignore_missing_imports = true
