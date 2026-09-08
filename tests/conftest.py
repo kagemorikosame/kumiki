@@ -20,6 +20,7 @@ from novaedit.core.model import (
     VideoStreamInfo,
 )
 from novaedit.core.timebase import FrameRate
+from tests.media_fixtures import SampleMedia, ffmpeg_available, make_sample
 
 RATE_30 = FrameRate(30)
 
@@ -112,3 +113,35 @@ def make_clip(start: int, duration: int, media: MediaItem, source_in: int = 0) -
         media_id=media.id,
         source_in=Fraction(source_in),
     )
+
+
+@pytest.fixture(scope="session")
+def media_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """生成した素材を置く場所。セッション内で使い回す。"""
+    if not ffmpeg_available():
+        pytest.skip("ffmpeg が PATH に無いので実素材のテストを飛ばす")
+    return tmp_path_factory.mktemp("media")
+
+
+@pytest.fixture(scope="session")
+def sample_av(media_dir: Path) -> SampleMedia:
+    """映像 + 音声、320x240 / 30fps / 2 秒。"""
+    return make_sample(media_dir, "av.mp4")
+
+
+@pytest.fixture(scope="session")
+def sample_long(media_dir: Path) -> SampleMedia:
+    """4 秒・GOP 12 の映像のみ素材。シークが GOP をまたぐ様子を見るため。"""
+    return make_sample(
+        media_dir,
+        "long.mp4",
+        duration=4.0,
+        audio=False,
+        keyframe_interval=12,
+    )
+
+
+@pytest.fixture(scope="session")
+def sample_ntsc(media_dir: Path) -> SampleMedia:
+    """29.97fps の素材。分数フレームレートの扱いを確かめるため。"""
+    return make_sample(media_dir, "ntsc.mp4", fps="30000/1001", duration=2.0)
