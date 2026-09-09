@@ -10,8 +10,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
+from PySide6.QtCore import QBuffer, QIODevice, Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QCloseEvent, QImage, QImageWriter, QKeySequence
 from PySide6.QtWidgets import (
     QDockWidget,
     QFileDialog,
@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from novaedit.ai.host import ToolError
 from novaedit.core.commands import (
     Command,
     Document,
@@ -34,12 +35,16 @@ from novaedit.core.model import (
     ClipId,
     GeneratedSource,
     MediaId,
+    MediaItem,
     Project,
     ProjectSettings,
 )
 from novaedit.effects.sources import SHAPE, TEXT
+from novaedit.engine.audio.waveform import Waveform
 from novaedit.engine.cache import MediaAnalyzer
 from novaedit.engine.decode import ProbeError, probe_media
+from novaedit.engine.render import FrameRenderer, RenderQuality
+from novaedit.ui.chat import ChatPanel
 from novaedit.ui.export_dialog import ExportDialog
 from novaedit.ui.graph_editor import GraphEditor
 from novaedit.ui.inspector import InspectorPanel
@@ -76,6 +81,8 @@ class MainWindow(QMainWindow):
             channels=self._document.project.settings.channels,
         )
         self._analysis_dirty = False
+        #: AI が結果を確認するための描画係。初めて求められたときに作る。
+        self._ai_renderer: FrameRenderer | None = None
 
         self._build_widgets()
         self._build_menus()
@@ -100,6 +107,7 @@ class MainWindow(QMainWindow):
         self._inspector = InspectorPanel(self)
         self._graph = GraphEditor(self)
         self._subtitles = SubtitlePanel(project, self._analyzer, self)
+        self._chat = ChatPanel(self, self)
         self._playback = PlaybackController(project, self)
 
         viewer = QWidget(self)
@@ -148,6 +156,16 @@ class MainWindow(QMainWindow):
         self.tabifyDockWidget(pool_dock, subtitle_dock)
         pool_dock.raise_()
         self._subtitle_dock = subtitle_dock
+
+        chat_dock = QDockWidget("AI アシスタント", self)
+        chat_dock.setWidget(self._chat)
+        chat_dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
+        )
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, chat_dock)
+        self.tabifyDockWidget(inspector_dock, chat_dock)
+        inspector_dock.raise_()
+        self._chat_dock = chat_dock
 
         timeline_dock = QDockWidget("タイムライン", self)
         timeline_dock.setWidget(self._timeline)
@@ -207,6 +225,9 @@ class MainWindow(QMainWindow):
         self._add(subtitle_menu, "焼き込み", QKeySequence(), self._subtitles.burn)
         self._add(subtitle_menu, "書き出し…", QKeySequence(), self._subtitles.export_file)
 
+        ai_menu = self._menu("AI")
+        self._add(ai_menu, "アシスタント", QKeySequence("Ctrl+Shift+A"), self.show_chat)
+
         view_menu = self._menu("表示")
         self._add(
             view_menu, "拡大", QKeySequence.StandardKey.ZoomIn, lambda: self._timeline.zoom(1.25)
@@ -264,6 +285,10 @@ class MainWindow(QMainWindow):
         self._subtitles.commands_requested.connect(self.execute_all)
         self._subtitles.seek_requested.connect(self._seek)
         self._subtitles.status_message.connect(
+            lambda message: self.statusBar().showMessage(message, 5000)
+        )
+
+        self._chat.status_message.connect(
             lambda message: self.statusBar().showMessage(message, 5000)
         )
 
@@ -436,6 +461,9 @@ class MainWindow(QMainWindow):
         self._analysis_dirty = True
 
     def _flush_analysis(self) -> None:
+        # AI から始めた起こしの様子も、ついでにここで拾う。専用のタイマーを
+        # もう 1 本増やすほどの頻度ではない。
+        self._subtitles.poll_transcription()
         if not self._analysis_dirty:
             return
         self._analysis_dirty = False
@@ -539,13 +567,115 @@ class MainWindow(QMainWindow):
         self._playback.stop()
         ExportDialog(self._document.project, self).exec()
 
+    # --- AI 連携（EditorHost の実装）---
+    #
+    # AI からの操作も UI と同じ入口を通す。ここが増えないようにしておけば、
+    # 「UI ではできるが AI ではできない」も、その逆も生まれない。
+
+    @property
+    def document(self) -> Document:
+        return self._document
+
+    @property
+    def playhead(self) -> int:
+        return self._timeline.playhead
+
+    def seek(self, frame: int) -> None:
+        self._seek(frame)
+
+    @property
+    def selected_clip(self) -> ClipId | None:
+        return self._timeline.selected_clip
+
+    def select_clip(self, clip_id: ClipId | None) -> None:
+        self._timeline.select(clip_id)
+
+    def apply_commands(self, commands: list[Command], label: str) -> None:
+        """AI からのコマンドを実行する。
+
+        UI 経由の :meth:`execute_all` と違い、失敗を握り潰さず例外にする。
+        AI はエラーの文面を読んで次の手を決めるので、黙って何も起きないのが
+        いちばん困る。
+        """
+        if not commands:
+            return
+        try:
+            with self._document.checkpoint(label):
+                for command in commands:
+                    self._document.execute(command)
+        except (ValueError, KeyError) as exc:
+            raise ToolError(str(exc)) from exc
+        finally:
+            self._on_project_changed()
+
+    def stop_playback(self) -> None:
+        self._playback.stop()
+
+    def render_png(self, frame: int, *, width: int) -> bytes:
+        """そのフレームを合成して PNG にする。
+
+        プレビューのウィジェットとは別のコンテキストで描く。再生用の資源を
+        取り合わないようにするためで、代わりに 1 つ余分にコンテキストを持つ。
+        """
+        project = self._document.project
+        full_width = project.settings.width
+        divisor = max(1, round(full_width / max(width, 1)))
+
+        renderer = self._ai_renderer
+        if renderer is None:
+            renderer = FrameRenderer(project, quality=RenderQuality(divisor))
+            self._ai_renderer = renderer
+        else:
+            renderer.set_project(project)
+            renderer.set_quality(RenderQuality(divisor))
+
+        image = renderer.render(frame)
+        height, image_width = image.shape[0], image.shape[1]
+        picture = QImage(
+            image.tobytes(), image_width, height, image_width * 4, QImage.Format.Format_RGBA8888
+        )
+        buffer = QBuffer()
+        buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+        # QImage.save の書式引数は、この PySide6 では str しか受け取らない
+        # （型情報は bytes だと言う）。食い違いを避けるため QImageWriter を使う。
+        if not QImageWriter(buffer, b"PNG").write(picture):
+            raise ToolError("プレビュー画像を作れませんでした")
+        return bytes(buffer.data().data())
+
+    def probe(self, path: Path) -> MediaItem:
+        try:
+            return probe_media(path)
+        except ProbeError as exc:
+            raise ToolError(str(exc)) from exc
+
+    def analyze(self, media: MediaItem) -> None:
+        self._analyzer.request(media, on_ready=self._on_analysis_ready)
+
+    def waveform(self, media: MediaItem) -> Waveform | None:
+        return self._analyzer.waveform(media)
+
+    def start_transcription(self, media_id: MediaId, model: str) -> str:
+        return self._subtitles.start_transcription(media_id, model)
+
+    def transcription_status(self) -> str:
+        return self._subtitles.transcription_status()
+
+    def show_chat(self) -> None:
+        """AI パネルを前へ出す。"""
+        self._chat_dock.show()
+        self._chat_dock.raise_()
+
     # --- 終了 ---
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt の命名規約
         # 解放の順番が大事。GL 資源はコンテキストが生きているうちに、
         # 再生スレッドはウィジェットが消える前に畳む。
         self._refresh_timer.stop()
+        self._chat.close_session()
         self._playback.close()
+        if self._ai_renderer is not None:
+            self._ai_renderer.close()
+            self._ai_renderer = None
         self._analyzer.close()
         self._preview.shutdown()
         super().closeEvent(event)

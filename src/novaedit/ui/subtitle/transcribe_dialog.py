@@ -158,16 +158,16 @@ class TranscribeDialog(QDialog):
     def _refresh_availability(self) -> None:
         """導入状況を見て、押せるボタンを決める。"""
         status = runtime_status()
-        self._run_button.setEnabled(status.ready)
+        self._run_button.setEnabled(status.installed)
         self._install_button.setEnabled(True)
         # 未導入のときも触れるようにする。ここが「GPU 版を入れるか」の選択を
         # 兼ねていて、切れば CUDA ランタイム（2 GB 弱）を落とさずに済む。
-        self._gpu.setEnabled(status.cuda_ready or not status.ready)
+        self._gpu.setEnabled(status.extra_installed or not status.installed)
 
-        if status.ready:
+        if status.installed:
             self._install_button.setText("環境を更新")
             self._status.setText(status.summary())
-            if not status.cuda_ready:
+            if not status.extra_installed:
                 self._gpu.setChecked(False)
             return
 
@@ -177,10 +177,10 @@ class TranscribeDialog(QDialog):
     def _describe_install(self) -> None:
         """これから入るものを出す。何が落ちてくるのか分かってから始められるように。"""
         status = runtime_status()
-        if status.ready:
+        if status.installed:
             return
         cuda = self._gpu.isChecked()
-        packages = "、".join(status.missing(cuda=cuda))
+        packages = "、".join(status.missing(extra=cuda))
         size = "2 GB" if cuda else "300 MB"
         self._status.setText(
             f"{status.summary()}\n入れるもの: {packages}\n"

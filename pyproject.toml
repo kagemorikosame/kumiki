@@ -21,6 +21,11 @@ asr = [
     "nvidia-cublas-cu12",
     "nvidia-cudnn-cu12>=9.1",
 ]
+ai = [
+    # AI 連携。既定では入れない。実行には Claude Code 本体
+    # （npm install -g @anthropic-ai/claude-code）も要る。
+    "claude-agent-sdk>=0.2",
+]
 dev = [
     "pytest>=8.0",
     "hypothesis>=6.100",

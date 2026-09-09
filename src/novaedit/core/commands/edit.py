@@ -205,7 +205,11 @@ class RemoveClip(Command):
 
 @dataclass(frozen=True, slots=True)
 class MoveClip(Command):
-    """クリップを別の位置、必要なら別のトラックへ動かす。"""
+    """クリップを別の位置、必要なら別のトラックへ動かす。
+
+    リンクされた映像・音声は同じだけ動く。トラックの移動は掴んだクリップだけで、
+    相手は自分のトラックに残る（音声が映像トラックへ飛んでは困る）。
+    """
 
     clip_id: ClipId
     timeline_start: int
@@ -230,6 +234,7 @@ class MoveClip(Command):
             raise ValueError("ロックされたトラックのクリップは動かせない")
         _validate_clip_media(project, target_track, clip)
 
+        delta = self.timeline_start - clip.timeline_start
         timeline = project.timeline
         without = tuple(c for c in source_track.clips if c.id != clip.id)
         timeline = timeline.replace_track(source_track.with_clips(without))
@@ -241,6 +246,18 @@ class MoveClip(Command):
             raise KeyError(f"トラックが見つからない: {target_track.id}")
         moved = clip.moved_to(self.timeline_start)
         timeline = timeline.replace_track(destination.with_clips((*destination.clips, moved)))
+
+        for track_id, partner in _linked_group(project, clip):
+            if partner.id == clip.id:
+                continue
+            track = timeline.find_track(track_id)
+            if track is None or track.locked:
+                continue
+            start = partner.timeline_start + delta
+            if start < 0:
+                raise ValueError("リンクされたクリップがタイムラインの先頭より前へ出る")
+            others = tuple(c for c in track.clips if c.id != partner.id)
+            timeline = timeline.replace_track(track.with_clips((*others, partner.moved_to(start))))
         return project.with_timeline(timeline)
 
 
@@ -322,28 +339,18 @@ class TrimClip(Command):
         located = project.timeline.locate_clip(self.clip_id)
         if located is None:
             raise KeyError(f"クリップが見つからない: {self.clip_id}")
-        track, clip = located
+        _, clip = located
 
-        duration = clip.duration - self.head_delta + self.tail_delta
-        if duration <= 0:
-            raise ValueError(f"トリム後の長さが 0 以下: {duration}")
-
-        source_in = clip.source_in + self.head_delta * project.rate.frame_duration * clip.speed
-        if source_in < 0:
-            raise ValueError("素材の先頭より前はトリムできない")
-
-        trimmed = replace(
-            clip,
-            timeline_start=clip.timeline_start + self.head_delta,
-            duration=duration,
-            source_in=source_in,
-        )
-        if trimmed.timeline_start < 0:
-            raise ValueError("タイムラインの先頭より前へは動かせない")
-
-        others = tuple(c for c in track.clips if c.id != clip.id)
-        updated = track.with_clips((*others, trimmed))
-        return project.with_timeline(project.timeline.replace_track(updated))
+        timeline = project.timeline
+        # リンクされた映像・音声は同じだけ削る。片方だけ縮めると音がずれる。
+        for track_id, target in _linked_group(project, clip):
+            track = timeline.find_track(track_id)
+            if track is None or track.locked:
+                continue
+            others = tuple(c for c in track.clips if c.id != target.id)
+            trimmed = _trimmed(project, target, self.head_delta, self.tail_delta)
+            timeline = timeline.replace_track(track.with_clips((*others, trimmed)))
+        return project.with_timeline(timeline)
 
 
 @dataclass(frozen=True, slots=True)
@@ -358,6 +365,26 @@ class RenameProject(Command):
 
     def apply(self, project: Project) -> Project:
         return project.renamed(self.name)
+
+
+def _trimmed(project: Project, clip: Clip, head_delta: int, tail_delta: int) -> Clip:
+    """端を動かしたクリップを返す。無理な指定は例外にする。"""
+    duration = clip.duration - head_delta + tail_delta
+    if duration <= 0:
+        raise ValueError(f"トリム後の長さが 0 以下: {duration}")
+
+    source_in = clip.source_in + head_delta * project.rate.frame_duration * clip.speed
+    if source_in < 0:
+        raise ValueError("素材の先頭より前はトリムできない")
+    if clip.timeline_start + head_delta < 0:
+        raise ValueError("タイムラインの先頭より前へは動かせない")
+
+    return replace(
+        clip,
+        timeline_start=clip.timeline_start + head_delta,
+        duration=duration,
+        source_in=source_in,
+    )
 
 
 def _require_track(project: Project, track_id: TrackId) -> Track:

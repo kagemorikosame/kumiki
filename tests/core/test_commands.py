@@ -456,3 +456,87 @@ class TestFrameRateIsUnusedButExplicit:
 
     def test_project_rate(self, project: Project) -> None:
         assert project.rate == RATE_30
+
+
+class TestLinkedMoveAndTrim:
+    """リンクされた映像・音声は、移動もトリムも一緒に動くこと。
+
+    分割と削除だけが連動して移動とトリムが連動しないと、ドラッグした瞬間に
+    音がずれる。連動の約束は全部の操作で同じでなければ意味がない。
+    """
+
+    def _linked(self, video_media: MediaItem, project: Project) -> tuple[Project, Clip, Clip]:
+        group: GroupId = new_group_id()
+        audio_track = Track(kind=TrackKind.AUDIO, name="A1")
+        with_track = AddTrack(audio_track).apply(project)
+
+        video_clip = replace(make_clip(30, 60, video_media), link_group=group)
+        audio_clip = replace(make_clip(30, 60, video_media), link_group=group, stream_index=1)
+        placed = AddClip(_only_track(with_track).id, video_clip).apply(with_track)
+        placed = AddClip(audio_track.id, audio_clip).apply(placed)
+        return placed, video_clip, audio_clip
+
+    def test_moving_the_video_moves_the_audio(
+        self, video_media: MediaItem, project: Project
+    ) -> None:
+        placed, video_clip, _ = self._linked(video_media, project)
+        moved = MoveClip(video_clip.id, 100).apply(placed)
+        assert moved.timeline.tracks[0].clips[0].timeline_start == 100
+        assert moved.timeline.tracks[1].clips[0].timeline_start == 100
+
+    def test_the_partner_keeps_its_own_track(
+        self, video_media: MediaItem, project: Project
+    ) -> None:
+        # 映像を別の映像トラックへ移しても、音声は音声トラックに残る。
+        placed, video_clip, _ = self._linked(video_media, project)
+        second = Track(kind=TrackKind.VIDEO, name="V2")
+        placed = AddTrack(second).apply(placed)
+
+        moved = MoveClip(video_clip.id, 100, second.id).apply(placed)
+        assert moved.timeline.find_track(second.id).clips[0].id == video_clip.id  # type: ignore[union-attr]
+        assert moved.timeline.tracks[1].clips[0].timeline_start == 100
+        assert moved.timeline.tracks[1].kind is TrackKind.AUDIO
+
+    def test_a_move_that_pushes_the_partner_negative_fails(
+        self, video_media: MediaItem, project: Project
+    ) -> None:
+        # 片方だけ動いて残りがずれる、という中途半端な結果を作らない。
+        placed, video_clip, _ = self._linked(video_media, project)
+        second = Track(kind=TrackKind.VIDEO, name="V2")
+        placed = AddTrack(second).apply(placed)
+        shifted = MoveClip(video_clip.id, 0, second.id).apply(placed)
+        assert shifted.timeline.tracks[1].clips[0].timeline_start == 0
+
+    def test_trimming_the_head_trims_both(self, video_media: MediaItem, project: Project) -> None:
+        placed, video_clip, _ = self._linked(video_media, project)
+        trimmed = TrimClip(video_clip.id, head_delta=10).apply(placed)
+        video = trimmed.timeline.tracks[0].clips[0]
+        audio = trimmed.timeline.tracks[1].clips[0]
+        assert (video.timeline_start, video.duration) == (40, 50)
+        assert (audio.timeline_start, audio.duration) == (40, 50)
+        assert video.source_in == audio.source_in
+
+    def test_trimming_the_tail_trims_both(self, video_media: MediaItem, project: Project) -> None:
+        placed, video_clip, _ = self._linked(video_media, project)
+        trimmed = TrimClip(video_clip.id, tail_delta=-20).apply(placed)
+        assert trimmed.timeline.tracks[0].clips[0].duration == 40
+        assert trimmed.timeline.tracks[1].clips[0].duration == 40
+
+    def test_an_impossible_trim_changes_nothing(
+        self, video_media: MediaItem, project: Project
+    ) -> None:
+        placed, video_clip, _ = self._linked(video_media, project)
+        with pytest.raises(ValueError):
+            TrimClip(video_clip.id, head_delta=999).apply(placed)
+        # 例外を投げたので、元のプロジェクトはそのまま。
+        assert placed.timeline.tracks[0].clips[0].duration == 60
+
+    def test_unlinked_clips_are_untouched(self, video_media: MediaItem, project: Project) -> None:
+        track = _only_track(project)
+        first = make_clip(0, 30, video_media)
+        second = make_clip(60, 30, video_media)
+        placed = AddClip(track.id, first).apply(project)
+        placed = AddClip(track.id, second).apply(placed)
+
+        moved = MoveClip(first.id, 120).apply(placed)
+        assert [c.timeline_start for c in moved.timeline.tracks[0].clips] == [60, 120]

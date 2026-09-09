@@ -11,47 +11,48 @@ from pathlib import Path
 
 import pytest
 
-from novaedit.asr import environment
+from novaedit import runtime as runtime_module
 from novaedit.asr.environment import (
+    ASR_PACK,
     CUDA_PACKAGES,
     REQUIRED_PACKAGES,
-    PackageStatus,
-    RuntimeStatus,
     install_command,
     install_runtime,
     runtime_status,
 )
+from novaedit.runtime import PackageStatus, PackStatus
 
 
-def _status(*, installed: bool, cuda: bool) -> RuntimeStatus:
-    return RuntimeStatus(
+def _status(*, installed: bool, cuda: bool) -> PackStatus:
+    return PackStatus(
+        pack=ASR_PACK,
         packages=tuple(
             PackageStatus(name, "1.0" if installed else None) for name in REQUIRED_PACKAGES
         ),
-        cuda=tuple(PackageStatus(name, "1.0" if cuda else None) for name in CUDA_PACKAGES),
+        extras=tuple(PackageStatus(name, "1.0" if cuda else None) for name in CUDA_PACKAGES),
     )
 
 
 class TestRuntimeStatus:
     def test_missing_packages_are_reported(self) -> None:
         status = _status(installed=False, cuda=False)
-        assert status.ready is False
-        assert status.missing(cuda=False) == REQUIRED_PACKAGES
+        assert status.installed is False
+        assert status.missing(extra=False) == REQUIRED_PACKAGES
 
     def test_cpu_only_is_ready_but_not_cuda_ready(self) -> None:
         status = _status(installed=True, cuda=False)
-        assert (status.ready, status.cuda_ready) == (True, False)
-        assert status.missing(cuda=True) == CUDA_PACKAGES
-        assert status.missing(cuda=False) == ()
+        assert (status.installed, status.extra_installed) == (True, False)
+        assert status.missing(extra=True) == CUDA_PACKAGES
+        assert status.missing(extra=False) == ()
 
     def test_summary_distinguishes_the_three_states(self) -> None:
         assert "未導入" in _status(installed=False, cuda=False).summary()
-        assert "CPU" in _status(installed=True, cuda=False).summary()
-        assert "GPU" in _status(installed=True, cuda=True).summary()
+        assert "CUDA" in _status(installed=True, cuda=False).summary()
+        assert _status(installed=True, cuda=True).summary() == "導入済み。"
 
     def test_real_lookup_does_not_raise(self) -> None:
         # 入っていない環境で落ちないことが要点。既定では未導入で配布する。
-        assert isinstance(runtime_status().ready, bool)
+        assert isinstance(runtime_status().installed, bool)
 
 
 class TestInstallCommand:
@@ -72,7 +73,7 @@ class TestInstallCommand:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         # 固めた実行ファイルには書き込めないので、専用フォルダへ入れる。
-        monkeypatch.setattr(environment, "runtime_target_dir", lambda: tmp_path / "runtime")
+        monkeypatch.setattr(runtime_module, "runtime_target_dir", lambda: tmp_path / "runtime")
         command = install_command(cuda=False)
         assert "--target" in command
         assert str(tmp_path / "runtime") in command
@@ -102,16 +103,16 @@ class TestInstallRuntime:
 
 class TestActivateRuntime:
     def test_normal_runs_do_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(environment, "runtime_target_dir", lambda: None)
-        assert environment.activate_runtime() is None
+        monkeypatch.setattr(runtime_module, "runtime_target_dir", lambda: None)
+        assert runtime_module.activate_runtime() is None
 
     def test_the_runtime_folder_is_put_on_the_import_path(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         target = tmp_path / "runtime"
         target.mkdir()
-        monkeypatch.setattr(environment, "runtime_target_dir", lambda: target)
+        monkeypatch.setattr(runtime_module, "runtime_target_dir", lambda: target)
         monkeypatch.setattr(sys, "path", list(sys.path))
 
-        assert environment.activate_runtime() == target
+        assert runtime_module.activate_runtime() == target
         assert sys.path[0] == str(target)

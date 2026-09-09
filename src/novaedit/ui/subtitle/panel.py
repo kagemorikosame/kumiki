@@ -30,7 +30,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from novaedit.asr import TranscriptionService, default_backend
+from novaedit.asr import JobKind, TranscribeOptions, TranscriptionService, default_backend
+from novaedit.asr.service import Job
 from novaedit.core.commands import (
     Command,
     MergeWithNext,
@@ -82,6 +83,10 @@ class SubtitlePanel(QWidget):
         self._updating = False
         #: 起こしの実行係。バックエンドの読み込みは重いので、初めて使うときに作る。
         self._service: TranscriptionService | None = None
+        #: AI から始めた起こし。ダイアログを開かずに走らせる経路。
+        self._job: Job | None = None
+        self._job_media: MediaId | None = None
+        self._job_note = ""
 
         self._build()
         self.set_project(project)
@@ -364,6 +369,55 @@ class SubtitlePanel(QWidget):
             self.commands_requested.emit(
                 [SetTranscript(media.id, dialog.transcript)], f"字幕を起こす: {media.name}"
             )
+
+    def start_transcription(self, media_id: MediaId, model: str) -> str:
+        """起こしを始める。AI からの依頼を受ける入口。
+
+        ダイアログを開かずに走らせる。数分かかるので、終わったかどうかは
+        :meth:`transcription_status` で見る。
+        """
+        media = self._project.find_media(media_id)
+        if media is None:
+            raise KeyError(f"素材が見つからない: {media_id}")
+        if self._service is None:
+            self._service = TranscriptionService(default_backend())
+        if not self._service.backend.is_available():
+            raise RuntimeError("起こしの実行環境が入っていません。字幕パネルから導入できます")
+
+        options = TranscribeOptions(model=model)
+        self._job = self._service.start(media.id, media.path, options)
+        self._job_media = media.id
+        self._job_note = "始めた"
+        self.select_media(media.id)
+        return f"{media.name} の起こしを始めました"
+
+    def transcription_status(self) -> str:
+        """走っている起こしの様子。"""
+        return self.poll_transcription()
+
+    def poll_transcription(self) -> str:
+        """AI から始めた起こしの様子を拾い、終わっていれば結果を取り込む。
+
+        定期的に呼ばれる。AI が結果を聞きに来なかった場合でも、起こした内容が
+        捨てられないようにするため。
+        """
+        job = self._job
+        if job is None:
+            return self._job_note or "起こしは走っていません"
+        for event in job.poll():
+            if event.kind is JobKind.PROGRESS:
+                self._job_note = f"{int(event.ratio * 100)}% — {event.message}"
+            elif event.kind is JobKind.DONE and event.transcript is not None:
+                self._job = None
+                self._job_note = event.message
+                if self._job_media is not None:
+                    self.commands_requested.emit(
+                        [SetTranscript(self._job_media, event.transcript)], "字幕を起こす"
+                    )
+            else:
+                self._job = None
+                self._job_note = event.message or "終了した"
+        return self._job_note
 
     def clean(self) -> None:
         media = self._current_media()

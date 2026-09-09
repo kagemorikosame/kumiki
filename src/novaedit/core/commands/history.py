@@ -86,22 +86,42 @@ class Document:
         取り消しに同じ回数の操作が必要になる。入れ子にした場合は一番外側だけが
         履歴に載る。
         """
+        self.begin_checkpoint(label)
+        try:
+            yield
+        finally:
+            self.end_checkpoint()
+
+    def begin_checkpoint(self, label: str) -> None:
+        """チェックポイントを開く。:meth:`end_checkpoint` と必ず対にする。
+
+        ``with`` で囲めない場合のための入口。AI エージェントの 1 往復は、開始と
+        終了が別のスレッドから・別の時点で来るので、文の構造には収まらない。
+        """
         if self._checkpoint_depth == 0:
             self._checkpoint_label = label
             self._checkpoint_before = self._project
         self._checkpoint_depth += 1
-        try:
-            yield
-        finally:
-            self._checkpoint_depth -= 1
-            if self._checkpoint_depth == 0:
-                before = self._checkpoint_before
-                self._checkpoint_before = None
-                # 何も変わらなかったチェックポイントは履歴に残さない。
-                # 「取り消しても何も起きない」段が挟まると操作感が悪い。
-                if before is not None and before is not self._project:
-                    self._push_undo(HistoryEntry(self._checkpoint_label, before))
-                    self._redo.clear()
+
+    def end_checkpoint(self) -> None:
+        """チェックポイントを閉じる。開いていなければ何もしない。"""
+        if self._checkpoint_depth == 0:
+            return
+        self._checkpoint_depth -= 1
+        if self._checkpoint_depth > 0:
+            return
+
+        before = self._checkpoint_before
+        self._checkpoint_before = None
+        # 何も変わらなかったチェックポイントは履歴に残さない。
+        # 「取り消しても何も起きない」段が挟まると操作感が悪い。
+        if before is not None and before is not self._project:
+            self._push_undo(HistoryEntry(self._checkpoint_label, before))
+            self._redo.clear()
+
+    @property
+    def in_checkpoint(self) -> bool:
+        return self._checkpoint_depth > 0
 
     @property
     def can_undo(self) -> bool:
