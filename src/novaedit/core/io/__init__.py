@@ -11,10 +11,18 @@ from novaedit.core.io.serialize import (
     project_to_dict,
     save_project,
 )
+from novaedit.core.io.subtitles import (
+    SUBTITLE_FILTER,
+    save_subtitles,
+    to_srt,
+    to_text,
+    to_vtt,
+)
 
 __all__ = [
     "FORMAT_NAME",
     "FORMAT_VERSION",
+    "SUBTITLE_FILTER",
     "SUFFIX",
     "Preset",
     "PresetStore",
@@ -24,4 +32,8 @@ __all__ = [
     "project_from_dict",
     "project_to_dict",
     "save_project",
+    "save_subtitles",
+    "to_srt",
+    "to_text",
+    "to_vtt",
 ]

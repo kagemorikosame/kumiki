@@ -13,6 +13,7 @@ from novaedit.core.commands.base import Command
 from novaedit.core.model import (
     Clip,
     ClipId,
+    GroupId,
     MediaId,
     MediaItem,
     Project,
@@ -23,6 +24,7 @@ from novaedit.core.model import (
     new_clip_id,
     new_group_id,
 )
+from novaedit.core.timebase import FrameRate
 
 __all__ = [
     "AddClip",
@@ -33,6 +35,7 @@ __all__ = [
     "RemoveMedia",
     "RemoveTrack",
     "RenameProject",
+    "RippleCut",
     "SetTranscript",
     "SplitClip",
     "TrimClip",
@@ -388,3 +391,108 @@ def _linked_group(project: Project, clip: Clip) -> list[tuple[TrackId, Clip]]:
         track, found = located
         return [(track.id, found)]
     return [(track.id, found) for track, found in project.timeline.linked_clips(clip.link_group)]
+
+
+@dataclass(frozen=True, slots=True)
+class RippleCut(Command):
+    """タイムラインの範囲をまとめて削除し、後ろを詰める。
+
+    ジェットカットの実体。範囲を 1 つずつ「分割して削除して詰める」形で組み立てる
+    こともできるが、分割で生まれるクリップの ID が実行するまで分からないため、
+    コマンドの列としては書けない。範囲の一覧を受け取って一度に処理する。
+
+    範囲に掛かったクリップは端が削られ、範囲をまたぐクリップは 2 つに分かれる。
+    ロックされたトラックには触れない。触れてしまうと、そのトラックだけ長さが
+    変わらず、以降すべてがずれる。
+    """
+
+    ranges: tuple[tuple[int, int], ...]
+
+    @property
+    def label(self) -> str:
+        return f"無音をカット: {len(self.ranges)} か所"
+
+    def apply(self, project: Project) -> Project:
+        # 後ろから切る。前から切ると、切るたびに残りの範囲がずれて計算し直しになる。
+        for start, end in sorted(_normalized(self.ranges), reverse=True):
+            project = _cut_range(project, start, end)
+        return project
+
+
+def _normalized(ranges: tuple[tuple[int, int], ...]) -> list[tuple[int, int]]:
+    ordered = sorted((start, end) for start, end in ranges if end > start)
+    merged: list[tuple[int, int]] = []
+    for start, end in ordered:
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _cut_range(project: Project, start: int, end: int) -> Project:
+    """``[start, end)`` を全トラックから取り除き、後ろを詰める。"""
+    length = end - start
+    rate = project.rate
+    timeline = project.timeline
+    # 範囲をまたいだクリップの右側に配り直すリンクグループ。左右が同じ
+    # グループに残ると、片方を消したときにもう片方まで消える。映像と音声で
+    # 同じ新グループを共有させたいので、この範囲の処理を通して覚えておく。
+    regrouped: dict[GroupId, GroupId] = {}
+
+    for track in timeline.tracks:
+        if track.locked:
+            continue
+        pieces: list[Clip] = []
+        for clip in track.clips:
+            pieces.extend(_cut_clip(clip, start, end, length, rate, regrouped))
+        timeline = timeline.replace_track(track.with_clips(tuple(pieces)))
+
+    markers = tuple(
+        replace(marker, frame=marker.frame - length) if marker.frame >= end else marker
+        for marker in timeline.markers
+        if not (start <= marker.frame < end)
+    )
+    return project.with_timeline(replace(timeline, markers=markers, work_area=None))
+
+
+def _cut_clip(
+    clip: Clip,
+    start: int,
+    end: int,
+    length: int,
+    rate: FrameRate,
+    regrouped: dict[GroupId, GroupId],
+) -> list[Clip]:
+    """1 つのクリップから範囲を抜く。残るのは 0 個・1 個・2 個のどれか。"""
+    if clip.timeline_end <= start:
+        return [clip]
+    if clip.timeline_start >= end:
+        return [clip.moved_to(clip.timeline_start - length)]
+
+    head = start - clip.timeline_start
+    tail = clip.timeline_end - end
+    if head <= 0 and tail <= 0:
+        return []
+    if head > 0 and tail <= 0:
+        return [replace(clip, duration=head)]
+
+    # 範囲より後ろに残る部分。素材のどこから始まるかを計算し直す。
+    consumed = (end - clip.timeline_start) * rate.frame_duration * clip.speed
+    right = replace(
+        clip,
+        id=new_clip_id() if head > 0 else clip.id,
+        timeline_start=start,
+        duration=tail,
+        source_in=clip.source_in + consumed,
+        link_group=_regroup(clip.link_group, regrouped) if head > 0 else clip.link_group,
+    )
+    return [replace(clip, duration=head), right] if head > 0 else [right]
+
+
+def _regroup(group: GroupId | None, regrouped: dict[GroupId, GroupId]) -> GroupId | None:
+    if group is None:
+        return None
+    if group not in regrouped:
+        regrouped[group] = new_group_id()
+    return regrouped[group]

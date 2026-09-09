@@ -87,8 +87,17 @@ QListWidget, QTreeWidget, QTableWidget {{
     border: 1px solid {Colors.BORDER.name()};
     outline: none;
 }}
-QListWidget::item {{ padding: 3px 6px; }}
-QListWidget::item:selected {{ background-color: {Colors.ACCENT.name()}; color: #12121a; }}
+QListWidget::item, QTreeWidget::item, QTableWidget::item {{ padding: 3px 6px; }}
+QListWidget::item:selected, QTreeWidget::item:selected, QTableWidget::item:selected {{
+    background-color: {Colors.ACCENT.name()};
+    color: #12121a;
+}}
+QHeaderView::section {{
+    background-color: {Colors.PANEL.name()};
+    border: none;
+    border-bottom: 1px solid {Colors.BORDER.name()};
+    padding: 3px 6px;
+}}
 QPushButton, QToolButton {{
     background-color: {Colors.PANEL.name()};
     border: 1px solid {Colors.BORDER.name()};

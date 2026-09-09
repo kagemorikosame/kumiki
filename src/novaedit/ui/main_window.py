@@ -46,6 +46,7 @@ from novaedit.ui.inspector import InspectorPanel
 from novaedit.ui.media_pool import MediaPoolWidget
 from novaedit.ui.playback import PlaybackController
 from novaedit.ui.preview import PreviewWidget
+from novaedit.ui.subtitle import SubtitlePanel
 from novaedit.ui.theme import Colors
 from novaedit.ui.timeline import TimelineView
 from novaedit.ui.transport import TransportBar
@@ -98,6 +99,7 @@ class MainWindow(QMainWindow):
         self._media_pool = MediaPoolWidget(project, self)
         self._inspector = InspectorPanel(self)
         self._graph = GraphEditor(self)
+        self._subtitles = SubtitlePanel(project, self._analyzer, self)
         self._playback = PlaybackController(project, self)
 
         viewer = QWidget(self)
@@ -134,6 +136,18 @@ class MainWindow(QMainWindow):
         # 画面が狭くなるだけになる。
         graph_dock.hide()
         self._graph_dock = graph_dock
+
+        subtitle_dock = QDockWidget("字幕", self)
+        subtitle_dock.setWidget(self._subtitles)
+        subtitle_dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
+        )
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, subtitle_dock)
+        # メディアプールと同じ場所にタブで重ねる。どちらも「素材を選ぶ」ための
+        # パネルで、同時に見る場面が少ない。
+        self.tabifyDockWidget(pool_dock, subtitle_dock)
+        pool_dock.raise_()
+        self._subtitle_dock = subtitle_dock
 
         timeline_dock = QDockWidget("タイムライン", self)
         timeline_dock.setWidget(self._timeline)
@@ -177,6 +191,21 @@ class MainWindow(QMainWindow):
         object_menu = self._menu("オブジェクト")
         self._add(object_menu, "テキストを追加", QKeySequence("Ctrl+T"), self.add_text)
         self._add(object_menu, "図形を追加", QKeySequence("Ctrl+Shift+T"), self.add_shape)
+
+        subtitle_menu = self._menu("字幕")
+        self._add(subtitle_menu, "字幕パネル", QKeySequence("Ctrl+Shift+U"), self.show_subtitles)
+        subtitle_menu.addSeparator()
+        self._add(subtitle_menu, "起こす…", QKeySequence("Ctrl+U"), self.transcribe)
+        self._add(subtitle_menu, "整形…", QKeySequence("Ctrl+Shift+F"), self._subtitles.clean)
+        self._add(
+            subtitle_menu,
+            "無音カット…",
+            QKeySequence("Ctrl+Shift+J"),
+            self._subtitles.jet_cut,
+        )
+        subtitle_menu.addSeparator()
+        self._add(subtitle_menu, "焼き込み", QKeySequence(), self._subtitles.burn)
+        self._add(subtitle_menu, "書き出し…", QKeySequence(), self._subtitles.export_file)
 
         view_menu = self._menu("表示")
         self._add(
@@ -232,6 +261,12 @@ class MainWindow(QMainWindow):
         self._graph.commands_requested.connect(self.execute_all)
         self._graph.seek_requested.connect(self._seek)
 
+        self._subtitles.commands_requested.connect(self.execute_all)
+        self._subtitles.seek_requested.connect(self._seek)
+        self._subtitles.status_message.connect(
+            lambda message: self.statusBar().showMessage(message, 5000)
+        )
+
         self._transport.play_toggled.connect(self._playback.toggle)
         self._transport.step_requested.connect(
             lambda delta: self._seek(self._timeline.playhead + delta)
@@ -284,6 +319,7 @@ class MainWindow(QMainWindow):
         self._media_pool.set_project(project)
         self._inspector.set_project(project)
         self._graph.set_project(project)
+        self._subtitles.set_project(project)
         self._preview.set_project(project)
         self._playback.set_project(project)
         self._transport.set_rate(project.rate)
@@ -369,6 +405,23 @@ class MainWindow(QMainWindow):
                 return clip.id
         return None
 
+    def show_subtitles(self) -> None:
+        """字幕パネルを前へ出す。"""
+        self._subtitle_dock.show()
+        self._subtitle_dock.raise_()
+
+    def transcribe(self) -> None:
+        """選択中の素材を起こす。パネルを出してから始める。
+
+        起こしの実行環境は既定では入っていない。未導入なら、そのダイアログが
+        導入のボタンを出す（:mod:`novaedit.asr.environment` を参照）。
+        """
+        self.show_subtitles()
+        selected = self._media_pool.selected_media_id()
+        if selected is not None:
+            self._subtitles.select_media(selected)
+        self._subtitles.transcribe()
+
     def _insert_media_by_id(self, media_id: str) -> None:
         project = self._document.project
         media = project.find_media(MediaId(media_id))
@@ -401,6 +454,7 @@ class MainWindow(QMainWindow):
         self._transport.set_frame(frame)
         self._inspector.set_frame(frame)
         self._graph.set_frame(frame)
+        self._subtitles.set_frame(frame)
 
     def _on_selection_changed(self, clip_id: str) -> None:
         selected = ClipId(clip_id) if clip_id else None
