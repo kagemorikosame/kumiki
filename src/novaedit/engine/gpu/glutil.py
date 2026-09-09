@@ -14,7 +14,10 @@ from collections.abc import Sequence
 import numpy as np
 from OpenGL import GL
 
-__all__ = ["VERTEX_SHADER", "Framebuffer", "Program", "ScreenQuad", "Texture"]
+__all__ = ["IDENTITY", "VERTEX_SHADER", "Framebuffer", "Program", "ScreenQuad", "Texture"]
+
+#: 単位行列。変換を使わない描画のための既定値。
+IDENTITY: tuple[float, ...] = (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
 
 #: 全画面四角形を描く頂点シェーダ。フラグメント側だけ差し替えれば、どのエフェクトも
 #: 同じ形で書ける。``u_rect`` で描画先の矩形を、``u_flip`` で上下反転を指定する。
@@ -26,10 +29,13 @@ out vec2 v_uv;
 uniform vec4 u_rect;
 // 素材の上下反転。デコードした画像は左上が原点、GL は左下が原点。
 uniform bool u_flip;
+// 追加の変換。回転や拡大を掛けるときに使う。既定は単位行列。
+uniform mat3 u_transform;
 void main() {
     vec2 unit = a_position * 0.5 + 0.5;
     vec2 position = mix(u_rect.xy, u_rect.zw, unit);
-    gl_Position = vec4(position, 0.0, 1.0);
+    vec3 transformed = u_transform * vec3(position, 1.0);
+    gl_Position = vec4(transformed.xy / transformed.z, 0.0, 1.0);
     v_uv = vec2(unit.x, u_flip ? 1.0 - unit.y : unit.y);
 }
 """
@@ -63,6 +69,11 @@ class Program:
         GL.glDeleteShader(fragment)
         self._locations: dict[str, int] = {}
 
+        # uniform の初期値は 0 なので、行列は単位行列に入れ直しておく。
+        # 入れ忘れると、変換を使わない描画が全部潰れて何も出なくなる。
+        self.use()
+        self.set_mat3("u_transform", IDENTITY)
+
     def use(self) -> None:
         GL.glUseProgram(self.handle)
 
@@ -88,6 +99,15 @@ class Program:
 
     def set_vec4(self, name: str, values: Sequence[float]) -> None:
         GL.glUniform4f(self.location(name), *(float(v) for v in values[:4]))
+
+    def set_mat3(self, name: str, values: Sequence[float]) -> None:
+        """3x3 行列を渡す。並びは行優先で 9 個。"""
+        location = self.location(name)
+        if location < 0:
+            return
+        matrix = np.asarray(values, dtype=np.float32).reshape(3, 3)
+        # GL は列優先で読むので転置して渡す。
+        GL.glUniformMatrix3fv(location, 1, GL.GL_TRUE, matrix)
 
     def bind_texture(self, name: str, handle: int, unit: int = 0) -> None:
         GL.glActiveTexture(GL.GL_TEXTURE0 + unit)

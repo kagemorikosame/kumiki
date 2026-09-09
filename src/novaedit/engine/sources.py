@@ -71,7 +71,7 @@ def _resolve(
 
 
 def _draw_text(painter: QPainter, values: dict[str, object], width: int, height: int) -> None:
-    text = str(values.get("text", ""))
+    text = _revealed(str(values.get("text", "")), values)
     if not text:
         return
 
@@ -115,6 +115,73 @@ def _draw_text(painter: QPainter, values: dict[str, object], width: int, height:
         stroker.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         painter.fillPath(stroker.createStroke(path), _color(values.get("border_color")))
 
+    painter.fillPath(path, _color(values.get("color")))
+
+
+def _revealed(text: str, values: dict[str, object]) -> str:
+    """文字送り。先頭から指定の割合だけを出す。
+
+    テロップを 1 文字ずつ出す表現は AviUtl でも定番で、こちらでもキーフレームを
+    打てば同じことができる。改行は文字数に数えない。数えると、行が変わる瞬間に
+    見た目の速度が変わる。
+    """
+    ratio = float(values.get("reveal", 100.0)) / 100.0  # type: ignore[arg-type]
+    if ratio >= 1.0:
+        return text
+    if ratio <= 0.0:
+        return ""
+
+    visible = round(len([c for c in text if c != chr(10)]) * ratio)
+    shown: list[str] = []
+    for character in text:
+        if character == chr(10):
+            shown.append(character)
+            continue
+        if visible <= 0:
+            break
+        shown.append(character)
+        visible -= 1
+    return "".join(shown)
+
+
+def _draw_vertical_text(
+    painter: QPainter,
+    text: str,
+    font: QFont,
+    metrics: QFontMetricsF,
+    values: dict[str, object],
+    width: int,
+    height: int,
+) -> None:
+    """縦書き。行は右から左へ並べる。
+
+    Qt に縦書きの組版は無いので、1 文字ずつ縦に置く。日本語のテロップでは
+    使う場面がはっきりあるので、簡素でも入れておく。
+    """
+    columns = text.split(chr(10))
+    advance = metrics.height() + float(values.get("letter_spacing", 0.0))  # type: ignore[arg-type]
+    column_width = metrics.height() + float(values.get("line_spacing", 0.0))  # type: ignore[arg-type]
+
+    centre_x = width / 2.0 + float(values.get("pos_x", 0.0))  # type: ignore[arg-type]
+    centre_y = height / 2.0 - float(values.get("pos_y", 0.0))  # type: ignore[arg-type]
+    tallest = max((len(column) for column in columns), default=0)
+    left = centre_x + column_width * (len(columns) - 1) / 2.0
+    top = centre_y - advance * tallest / 2.0
+
+    path = QPainterPath()
+    for column_index, column in enumerate(columns):
+        x = left - column_width * column_index
+        for row_index, character in enumerate(column):
+            baseline = top + advance * row_index + metrics.ascent()
+            offset = metrics.horizontalAdvance(character) / 2.0
+            path.addText(QPointF(x - offset, baseline), font, character)
+
+    border_width = float(values.get("border_width", 0.0))  # type: ignore[arg-type]
+    if border_width > 0:
+        stroker = QPainterPathStroker()
+        stroker.setWidth(border_width * 2.0)
+        stroker.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.fillPath(stroker.createStroke(path), _color(values.get("border_color")))
     painter.fillPath(path, _color(values.get("color")))
 
 
@@ -164,10 +231,36 @@ def _shape_path(kind: str, rect: QRectF, values: dict[str, object]) -> QPainterP
         path.lineTo(rect.right(), rect.bottom())
         path.lineTo(rect.left(), rect.bottom())
         path.closeSubpath()
+    elif kind == "pentagon":
+        path = _polygon_path(rect, 5)
+    elif kind == "hexagon":
+        path = _polygon_path(rect, 6)
     elif kind == "star":
         path = _star_path(rect)
     else:
+        # ``background`` もここ。大きさは呼び出し側が画面いっぱいに指定する。
         path.addRect(rect)
+    return path
+
+
+def _polygon_path(rect: QRectF, sides: int) -> QPainterPath:
+    """正多角形。頂点を上に向けて置く。
+
+    AviUtl の五角形・六角形に対応する。頂点の向きを合わせておかないと、
+    移植した資産で図形だけ傾いて見える。
+    """
+    path = QPainterPath()
+    radius_x, radius_y = rect.width() / 2.0, rect.height() / 2.0
+    centre = rect.center()
+    for index in range(sides):
+        angle = 2.0 * np.pi * index / sides - np.pi / 2.0
+        x = centre.x() + np.cos(angle) * radius_x
+        y = centre.y() + np.sin(angle) * radius_y
+        if index == 0:
+            path.moveTo(x, y)
+        else:
+            path.lineTo(x, y)
+    path.closeSubpath()
     return path
 
 

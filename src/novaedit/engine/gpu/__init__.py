@@ -4,6 +4,7 @@ from novaedit.engine.gpu.compositor import (
     BlendMode,
     Compositor,
     Placement,
+    Transform,
     fit_placement,
 )
 from novaedit.engine.gpu.context import (
@@ -17,6 +18,7 @@ from novaedit.engine.gpu.context import (
 from novaedit.engine.gpu.effects import EffectProcessor, srgb_to_linear
 from novaedit.engine.gpu.glutil import (
     FULL_RECT,
+    IDENTITY,
     VERTEX_SHADER,
     Framebuffer,
     Program,
@@ -27,6 +29,7 @@ from novaedit.engine.gpu.glutil import (
 
 __all__ = [
     "FULL_RECT",
+    "IDENTITY",
     "VERTEX_SHADER",
     "BlendMode",
     "Compositor",
@@ -41,6 +44,7 @@ __all__ = [
     "ScreenQuad",
     "ShaderError",
     "Texture",
+    "Transform",
     "ensure_qt_application",
     "fit_placement",
     "preferred_surface_format",

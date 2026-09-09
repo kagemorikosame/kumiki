@@ -11,6 +11,9 @@ dependencies = [
     "numpy>=2.0",
     "PyOpenGL>=3.1.10",
     "sounddevice>=0.5",
+    # AviUtl スクリプトを動かす Lua。既定で入れる（互換機能の土台なので、
+    # 追加導入にすると「スクリプトが動かない」が既定の状態になる）。
+    "lupa>=2.5",
 ]
 
 [project.optional-dependencies]

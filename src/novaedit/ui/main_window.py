@@ -10,8 +10,15 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import QBuffer, QIODevice, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QCloseEvent, QImage, QImageWriter, QKeySequence
+from PySide6.QtCore import QBuffer, QIODevice, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import (
+    QAction,
+    QCloseEvent,
+    QDesktopServices,
+    QImage,
+    QImageWriter,
+    QKeySequence,
+)
 from PySide6.QtWidgets import (
     QDockWidget,
     QFileDialog,
@@ -23,7 +30,9 @@ from PySide6.QtWidgets import (
 )
 
 from novaedit.ai.host import ToolError
+from novaedit.compat.aviutl.exo import ExoFile
 from novaedit.core.commands import (
+    AddMedia,
     Command,
     Document,
     ParamPath,
@@ -62,6 +71,9 @@ __all__ = ["MainWindow"]
 #: 解析はワーカースレッドで終わるので、その通知を待って毎回描き直すのではなく、
 #: まとめて一定間隔で描き直す。素材を 100 本入れたときに描画で埋もれないように。
 ANALYSIS_REFRESH_MS = 250
+
+#: AviUtl のオブジェクトファイル。
+EXO_FILTER = "AviUtl オブジェクト (*.exo *.exa *.exo2 *.exa2);;すべてのファイル (*)"
 
 
 class MainWindow(QMainWindow):
@@ -224,6 +236,18 @@ class MainWindow(QMainWindow):
         subtitle_menu.addSeparator()
         self._add(subtitle_menu, "焼き込み", QKeySequence(), self._subtitles.burn)
         self._add(subtitle_menu, "書き出し…", QKeySequence(), self._subtitles.export_file)
+
+        compat_menu = self._menu("AviUtl")
+        self._add(
+            compat_menu,
+            "オブジェクトを読み込む…",
+            QKeySequence("Ctrl+Shift+O"),
+            self.import_exo,
+        )
+        compat_menu.addSeparator()
+        self._add(compat_menu, "スクリプトを読み直す", QKeySequence(), self.rescan_scripts)
+        self._add(compat_menu, "スクリプトフォルダを開く", QKeySequence(), self.open_script_folder)
+        self._add(compat_menu, "互換性レポート…", QKeySequence(), self.show_compatibility)
 
         ai_menu = self._menu("AI")
         self._add(ai_menu, "アシスタント", QKeySequence("Ctrl+Shift+A"), self.show_chat)
@@ -566,6 +590,97 @@ class MainWindow(QMainWindow):
     def export(self) -> None:
         self._playback.stop()
         ExportDialog(self._document.project, self).exec()
+
+    # --- AviUtl 互換 ---
+
+    def import_exo(self) -> None:
+        """``.exo`` / ``.exa`` をタイムラインへ読み込む。
+
+        参照している素材は先に読み込んでから対応付ける。素材が見つからなくても
+        止めない。テキストや図形だけでも入る方が使い出がある。
+        """
+        from novaedit.compat.aviutl.exo import ExoParseError, load_exo
+        from novaedit.compat.aviutl.mapping import map_exo
+
+        name, _ = QFileDialog.getOpenFileName(
+            self, "AviUtl のオブジェクトを読み込む", "", EXO_FILTER
+        )
+        if not name:
+            return
+
+        source = Path(name)
+        try:
+            exo = load_exo(source)
+        except ExoParseError as exc:
+            QMessageBox.warning(self, "読み込めない", str(exc))
+            return
+
+        media, missing = self._resolve_exo_media(exo, source)
+        commands = map_exo(exo, self._document.project, media=media)
+        if not commands:
+            self.statusBar().showMessage("読み込めるオブジェクトがありませんでした", 5000)
+            return
+
+        self.execute_all(commands, f"AviUtl から読み込み: {source.name}")
+        note = f"{source.name} から {len(exo.objects)} 個を読み込んだ"
+        if missing:
+            note += f"（素材 {len(missing)} 件が見つかりません）"
+        self.statusBar().showMessage(note, 6000)
+
+    def _resolve_exo_media(
+        self, exo: ExoFile, source: Path
+    ) -> tuple[dict[str, MediaId], list[str]]:
+        """``.exo`` が参照している素材を読み込む。
+
+        相対パスは ``.exo`` のある場所からも探す。AviUtl のファイルは素材と
+        一緒に配られることがある。
+        """
+        from novaedit.compat.aviutl.mapping import media_paths
+
+        found: dict[str, MediaId] = {}
+        missing: list[str] = []
+        for raw in media_paths(exo):
+            candidates = [Path(raw), source.parent / Path(raw).name]
+            path = next((c for c in candidates if c.exists()), None)
+            if path is None:
+                missing.append(raw)
+                continue
+            try:
+                media = probe_media(path)
+            except ProbeError:
+                missing.append(raw)
+                continue
+            self.execute(AddMedia(media))
+            self._analyzer.request(media, on_ready=self._on_analysis_ready)
+            found[raw] = media.id
+        return found, missing
+
+    def rescan_scripts(self) -> None:
+        """スクリプトのフォルダを読み直す。"""
+        from novaedit.compat.aviutl.catalog import script_catalog
+
+        catalog = script_catalog()
+        catalog.scan()
+        count = catalog.register_all()
+        self.statusBar().showMessage(f"スクリプトを {count} 本読み込んだ", 4000)
+
+    def open_script_folder(self) -> None:
+        """スクリプトを置く場所をエクスプローラで開く。"""
+        from novaedit.compat.aviutl.catalog import script_catalog
+
+        roots = script_catalog().roots
+        if not roots:
+            self.statusBar().showMessage("スクリプトフォルダが設定されていません", 4000)
+            return
+        target = roots[0]
+        target.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(target)))
+
+    def show_compatibility(self) -> None:
+        """互換性レポートを出す。"""
+        from novaedit.ui.compat_dialog import CompatibilityDialog
+
+        CompatibilityDialog(parent=self).exec()
 
     # --- AI 連携（EditorHost の実装）---
     #

@@ -23,6 +23,7 @@ from novaedit.core.model import (
     VideoStreamInfo,
 )
 from novaedit.core.timebase import FrameRate
+from novaedit.effects import registry
 from novaedit.engine.gpu import preferred_surface_format
 from tests.media_fixtures import SampleMedia, ffmpeg_available, make_sample
 
@@ -42,6 +43,20 @@ def qt_application() -> Iterator[QApplication]:
     application = existing if isinstance(existing, QApplication) else QApplication([])
     QSurfaceFormat.setDefaultFormat(preferred_surface_format())
     yield application
+
+
+@pytest.fixture(autouse=True, scope="module")
+def forget_scripts() -> Iterator[None]:
+    """テストが登録した AviUtl スクリプトを、モジュールごとに片付ける。
+
+    スクリプトの定義はエフェクトの登録簿というアプリ全体の状態に入る。
+    残したままにすると、別のテストが「シェーダの無いエフェクト」を見つけて
+    落ちる。
+    """
+    yield
+    for definition in registry.all():
+        if definition.kind.startswith("aviutl:"):
+            registry.unregister(definition.kind)
 
 
 @pytest.fixture

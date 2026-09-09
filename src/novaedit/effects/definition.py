@@ -89,11 +89,24 @@ class EffectRegistry:
     def __init__(self) -> None:
         self._definitions: dict[str, EffectDefinition] = {}
 
-    def register(self, definition: EffectDefinition) -> EffectDefinition:
-        if definition.kind in self._definitions:
+    def register(self, definition: EffectDefinition, *, replace: bool = False) -> EffectDefinition:
+        """エフェクトを登録する。
+
+        既定では重複を拒む。自前のエフェクトで名前がぶつかるのは書き間違いで、
+        黙って上書きすると、どちらが効いているのか分からなくなる。
+
+        ``replace`` は外から読み込む定義（AviUtl スクリプト）のためにある。
+        こちらは走査のたびに読み直すのが正しく、内容が変わっていれば新しい方を
+        使ってほしい。
+        """
+        if not replace and definition.kind in self._definitions:
             raise ValueError(f"すでに登録されているエフェクト: {definition.kind}")
         self._definitions[definition.kind] = definition
         return definition
+
+    def unregister(self, kind: str) -> None:
+        """登録を外す。スクリプトのフォルダを変えたときに使う。"""
+        self._definitions.pop(kind, None)
 
     def get(self, kind: str) -> EffectDefinition | None:
         return self._definitions.get(kind)

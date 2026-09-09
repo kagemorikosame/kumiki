@@ -12,7 +12,7 @@ from fractions import Fraction
 
 import numpy as np
 
-from novaedit.core.model import Clip, MediaId, Project, Track
+from novaedit.core.model import Clip, Effect, MediaId, Project, Track
 from novaedit.core.timebase import FrameRate
 from novaedit.engine.decode import ProbeError, VideoDecoder
 from novaedit.engine.gpu import (
@@ -22,7 +22,15 @@ from novaedit.engine.gpu import (
     OffscreenGLContext,
     Placement,
     Texture,
+    Transform,
     fit_placement,
+)
+from novaedit.engine.render.scripts import (
+    ScriptStage,
+    requested_effects,
+    script_catalog,
+    script_effects,
+    split_effects,
 )
 from novaedit.engine.sources import render_source
 
@@ -86,6 +94,8 @@ class FrameRenderer:
         self._decoders: OrderedDict[tuple[MediaId, int], VideoDecoder] = OrderedDict()
         #: トラックごとの転送用テクスチャ。毎フレーム作り直すと確保と解放で時間を食う。
         self._textures: dict[str, Texture] = {}
+        #: AviUtl スクリプトを走らせる係。使うまで作らない。
+        self._scripts: ScriptStage | None = None
         self._closed = False
 
     @property
@@ -176,12 +186,18 @@ class FrameRenderer:
         if image is None:
             return
 
-        texture = self._texture_for(track.id)
-        texture.upload(image)
         local_frame = frame - clip.timeline_start
         opacity = clip.opacity.at(local_frame)
+        gpu_effects, scripts = split_effects(clip.effects)
 
-        if not self._effects.has_work(clip.effects):
+        if scripts:
+            self._draw_scripted(track, clip, image, gpu_effects, local_frame, rate, opacity)
+            return
+
+        texture = self._texture_for(track.id)
+        texture.upload(image)
+
+        if not self._effects.has_work(gpu_effects):
             # エフェクトが無ければ中間バッファを通さない。全画面のパスが 1 回
             # 増えるだけで、エフェクト無しのクリップでも再生の余裕が削られる。
             self._compositor.draw(texture, opacity=opacity, blend=clip.blend_mode)
@@ -192,7 +208,7 @@ class FrameRenderer:
         )
         result = self._effects.apply(
             texture,
-            clip.effects,
+            gpu_effects,
             frame=local_frame,
             fps=float(rate.fps),
             source_rect=placement.to_clip(self._compositor.width, self._compositor.height),
@@ -205,6 +221,93 @@ class FrameRenderer:
             flip=False,
             blend=clip.blend_mode,
         )
+
+    def _draw_scripted(
+        self,
+        track: Track,
+        clip: Clip,
+        image: np.ndarray,
+        gpu_effects: tuple[Effect, ...],
+        local_frame: int,
+        rate: FrameRate,
+        opacity: float,
+    ) -> None:
+        """AviUtl スクリプトを積んだクリップを描く。
+
+        スクリプトは「何回・どこへ・どう変形して描くか」を返す。1 回とは限らない
+        （残像や複製を作るスクリプトがある）ので、返ってきた分だけ合成する。
+        """
+        stage = self._script_stage()
+        if stage is None:
+            return
+
+        calls = stage.run(
+            clip,
+            script_effects(clip.effects),
+            image,
+            frame=local_frame,
+            fps=float(rate.fps),
+        )
+        texture = self._texture_for(track.id)
+
+        for call in calls:
+            texture.upload(call.image)
+            transform = Transform(
+                x=call.x,
+                y=call.y,
+                zoom=call.zoom,
+                rotation=call.rz,
+                aspect=call.aspect,
+                pivot_x=call.cx,
+                pivot_y=call.cy,
+                scale_x=call.sx,
+                scale_y=call.sy,
+            )
+            placement = transform.placement(
+                texture.width, texture.height, self._compositor.width, self._compositor.height
+            )
+            matrix = transform.matrix(self._compositor.width, self._compositor.height)
+            combined = gpu_effects + requested_effects(call)
+
+            if not self._effects.has_work(combined):
+                self._compositor.draw(
+                    texture,
+                    placement=placement,
+                    opacity=opacity * call.alpha,
+                    blend=clip.blend_mode,
+                    matrix=matrix,
+                )
+                continue
+
+            result = self._effects.apply(
+                texture,
+                combined,
+                frame=local_frame,
+                fps=float(rate.fps),
+                source_rect=placement.to_clip(self._compositor.width, self._compositor.height),
+            )
+            self._compositor.draw_handle(
+                result.color,
+                Placement(0.0, 0.0, float(self._compositor.width), float(self._compositor.height)),
+                opacity=opacity * call.alpha,
+                flip=False,
+                blend=clip.blend_mode,
+                matrix=matrix,
+            )
+
+    def _script_stage(self) -> ScriptStage | None:
+        """スクリプトを走らせる係。初めて必要になったときに作る。
+
+        Lua ランタイムの用意は数ミリ秒かかる。スクリプトを使わない
+        プロジェクトでその代金を払わせない。
+        """
+        if self._scripts is None:
+            self._scripts = ScriptStage(
+                script_catalog(), screen=(self._compositor.width, self._compositor.height)
+            )
+        else:
+            self._scripts.set_screen(self._compositor.width, self._compositor.height)
+        return self._scripts
 
     def _image_for(self, clip: Clip, frame: int, rate: FrameRate) -> np.ndarray | None:
         """クリップの元絵。素材由来と生成オブジェクトの両方をここで扱う。"""

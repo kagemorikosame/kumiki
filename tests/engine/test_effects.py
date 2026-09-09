@@ -24,10 +24,17 @@ from novaedit.core.model import (
 )
 from novaedit.core.timebase import FrameRate
 from novaedit.effects import ColorSpec, TrackSpec, registry
+from novaedit.effects.definition import EffectDefinition
 from novaedit.effects.sources import SHAPE, TEXT, source_registry
 from novaedit.engine.gpu import BlendMode, GLContextError, OffscreenGLContext, srgb_to_linear
 from novaedit.engine.render import FrameRenderer
 from novaedit.engine.sources import render_source
+
+
+def builtin_effects() -> tuple[EffectDefinition, ...]:
+    """GPU で動く自前のエフェクトだけ。AviUtl スクリプトは Lua なので除く。"""
+    return tuple(d for d in registry.all() if not d.kind.startswith("aviutl:"))
+
 
 WIDTH, HEIGHT = 200, 200
 
@@ -125,7 +132,9 @@ class TestRegistry:
         assert len(registry) >= 10
 
     def test_every_effect_has_a_shader_and_parameters(self) -> None:
-        for definition in registry.all():
+        # AviUtl スクリプトは Lua で動くのでシェーダを持たない。ここでは
+        # 自前の（GPU で動く）エフェクトだけを見る。
+        for definition in builtin_effects():
             assert definition.fragment_shader, f"{definition.kind}: シェーダが無い"
             assert definition.parameters, f"{definition.kind}: パラメータが無い"
 
@@ -153,7 +162,7 @@ class TestShaders:
             quad = ScreenQuad()
             processor = EffectProcessor(16, 16, quad)
             try:
-                for definition in registry.all():
+                for definition in builtin_effects():
                     assert processor.has_work((definition.create(),)), (
                         f"{definition.kind}: シェーダをコンパイルできない"
                     )
