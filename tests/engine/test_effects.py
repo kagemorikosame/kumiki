@@ -198,6 +198,23 @@ class TestGeometryEffects:
         assert moved[HEIGHT // 2, WIDTH // 2, 0] < 20
         assert moved[HEIGHT // 2, WIDTH // 2 + 60, 0] > 200
 
+    def test_transform_moves_up_for_a_positive_y(self, draw: Callable[..., np.ndarray]) -> None:
+        # Y は正が上。テキストの位置・影のずれ・マスクの中心と同じ向きでないと、
+        # 同じ「Y」という表示なのに項目ごとに上下が入れ替わる。
+        square = white_square(40)
+        moved = draw(square, (registry.require("transform").create(pos_y=60),))
+        assert moved[HEIGHT // 2 - 60, WIDTH // 2, 0] > 200, "上へ動いていない"
+        assert moved[HEIGHT // 2 + 60, WIDTH // 2, 0] < 20
+
+    def test_transform_rotates_clockwise(self, draw: Callable[..., np.ndarray]) -> None:
+        # AviUtl の「回転」も時計回り。読み込んだ角度をそのまま渡せる。
+        bar = SHAPE.create(shape="rect", width=20, height=140, color=(1.0, 1.0, 1.0, 1.0))
+        turned = draw(bar, (registry.require("transform").create(rotation=45),))
+        rows, columns = (turned[:, :, 0] > 100).nonzero()
+        upper = columns[rows < HEIGHT // 2].mean()
+        lower = columns[rows > HEIGHT // 2].mean()
+        assert upper > lower, "時計回りになっていない"
+
     def test_transform_scale(self, draw: Callable[..., np.ndarray]) -> None:
         square = white_square(60)
         plain = lit_pixels(draw(square))
@@ -218,6 +235,19 @@ class TestGeometryEffects:
         )
         assert masked[HEIGHT // 2, WIDTH // 2, 0] > 200
         assert masked[HEIGHT // 2, 20, 0] < 20
+
+    def test_mask_centre_moves_up_for_a_positive_y(self, draw: Callable[..., np.ndarray]) -> None:
+        big = white_square(180)
+        masked = draw(
+            big,
+            (
+                registry.require("mask").create(
+                    shape="rect", center_y=60, mask_width=200, mask_height=60, feather=0
+                ),
+            ),
+        )
+        assert masked[HEIGHT // 2 - 60, WIDTH // 2, 0] > 200, "上が残っていない"
+        assert masked[HEIGHT // 2 + 60, WIDTH // 2, 0] < 20
 
     def test_mask_invert(self, draw: Callable[..., np.ndarray]) -> None:
         square = white_square(180)
@@ -305,6 +335,49 @@ class TestDecorationEffects:
         assert down[below][3] == 255
         assert down[below][0] < 20, "下に影が出ていない"
         assert up[above][0] < 20, "上に影が出ていない"
+
+    def test_gradient_runs_from_one_colour_to_the_other(
+        self, draw: Callable[..., np.ndarray]
+    ) -> None:
+        # 角度 90 は上から下。金色のテキストなどはこの向きで作られている。
+        square = white_square(120)
+        painted = draw(
+            square,
+            (
+                registry.require("gradient").create(
+                    start_color=(1.0, 0.0, 0.0, 1.0),
+                    end_color=(0.0, 0.0, 1.0, 1.0),
+                    angle=90,
+                    span=120,
+                    strength=100,
+                ),
+            ),
+        )
+        top = painted[HEIGHT // 2 - 50, WIDTH // 2]
+        bottom = painted[HEIGHT // 2 + 50, WIDTH // 2]
+        assert top[0] > top[2], "上が開始色になっていない"
+        assert bottom[2] > bottom[0], "下が終了色になっていない"
+
+    def test_gradient_keeps_the_alpha(self, draw: Callable[..., np.ndarray]) -> None:
+        # 色だけを塗り替える。不透明度まで触ると、図形の外まで色が付く。
+        square = white_square(60)
+        painted = draw(
+            square,
+            (
+                registry.require("gradient").create(
+                    start_color=(1.0, 0.0, 0.0, 1.0), end_color=(1.0, 0.0, 0.0, 1.0)
+                ),
+            ),
+        )
+        assert painted[4, 4][:3].max() < 8, "図形の外まで塗られている"
+        assert painted[HEIGHT // 2, WIDTH // 2][0] > 200
+
+    def test_gradient_strength_blends_with_the_original(
+        self, draw: Callable[..., np.ndarray]
+    ) -> None:
+        square = white_square(120)
+        none = draw(square, (registry.require("gradient").create(strength=0),))
+        assert centre(none)[0] > 240, "強さ 0 で色が変わっている"
 
     def test_noise_varies_over_time(self, draw: Callable[..., np.ndarray]) -> None:
         square = white_square(120)

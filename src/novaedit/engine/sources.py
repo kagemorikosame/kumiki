@@ -28,6 +28,9 @@ from novaedit.effects.sources import SourceDefinition, source_registry
 
 __all__ = ["render_source"]
 
+#: 縦の基準ごとに、指定した位置より上へ出す割合。``下`` なら全部が上に出る。
+_VERTICAL_SHARE = {"top": 0.0, "middle": 0.5, "bottom": 1.0}
+
 
 def render_source(
     source: GeneratedSource, width: int, height: int, *, frame: int = 0
@@ -84,14 +87,18 @@ def _draw_text(painter: QPainter, values: dict[str, object], width: int, height:
         font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, letter_spacing)
 
     metrics = QFontMetricsF(font)
-    lines = text.split("\n")
+    if bool(values.get("vertical", False)):
+        _draw_vertical_text(painter, text, font, metrics, values, width, height)
+        return
+
+    lines = text.split(chr(10))
     line_height = metrics.height() + float(values.get("line_spacing", 0.0))  # type: ignore[arg-type]
     block_height = line_height * len(lines)
 
     align = str(values.get("align", "center"))
     centre_x = width / 2.0 + float(values.get("pos_x", 0.0))  # type: ignore[arg-type]
     centre_y = height / 2.0 - float(values.get("pos_y", 0.0))  # type: ignore[arg-type]
-    top = centre_y - block_height / 2.0
+    top = centre_y - block_height * _VERTICAL_SHARE.get(str(values.get("valign", "middle")), 0.5)
 
     # 文字を輪郭（パス）として組み立てる。縁取りを外側だけに出すには、
     # 塗りとは別に輪郭を太らせる必要があり、それはパスでしかできない。
@@ -107,15 +114,7 @@ def _draw_text(painter: QPainter, values: dict[str, object], width: int, height:
         baseline = top + line_height * index + metrics.ascent()
         path.addText(QPointF(x, baseline), font, line)
 
-    border_width = float(values.get("border_width", 0.0))  # type: ignore[arg-type]
-    if border_width > 0:
-        stroker = QPainterPathStroker()
-        # 太さは輪郭の中心から両側へ広がるので、指定の 2 倍で外側に指定幅が出る。
-        stroker.setWidth(border_width * 2.0)
-        stroker.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        painter.fillPath(stroker.createStroke(path), _color(values.get("border_color")))
-
-    painter.fillPath(path, _color(values.get("color")))
+    _paint_glyphs(painter, path, values, width, height)
 
 
 def _revealed(text: str, values: dict[str, object]) -> str:
@@ -176,13 +175,112 @@ def _draw_vertical_text(
             offset = metrics.horizontalAdvance(character) / 2.0
             path.addText(QPointF(x - offset, baseline), font, character)
 
+    _paint_glyphs(painter, path, values, width, height)
+
+
+def _paint_glyphs(
+    painter: QPainter,
+    path: QPainterPath,
+    values: dict[str, object],
+    width: int,
+    height: int,
+) -> None:
+    """組み上がった文字の輪郭を、影・縁取り・塗りの順に描く。
+
+    縦書きでも横書きでも飾りの付け方は同じなので、ここに 1 つだけ置く。
+    順番は下から影・縁・塗り。入れ替えると縁が影を隠す。
+    """
+    shadow = _shadow_layer(path, values, width, height)
+    if shadow is not None:
+        painter.drawImage(0, 0, shadow)
+
     border_width = float(values.get("border_width", 0.0))  # type: ignore[arg-type]
     if border_width > 0:
-        stroker = QPainterPathStroker()
-        stroker.setWidth(border_width * 2.0)
-        stroker.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        painter.fillPath(stroker.createStroke(path), _color(values.get("border_color")))
+        painter.fillPath(_stroke(path, border_width), _color(values.get("border_color")))
     painter.fillPath(path, _color(values.get("color")))
+
+
+def _stroke(path: QPainterPath, width: float) -> QPainterPath:
+    """輪郭を太らせたパス。
+
+    太さは輪郭の中心から両側へ広がるので、指定の 2 倍にして外側に指定幅を出す。
+    """
+    stroker = QPainterPathStroker()
+    stroker.setWidth(width * 2.0)
+    stroker.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    return stroker.createStroke(path)
+
+
+def _shadow_layer(
+    path: QPainterPath, values: dict[str, object], width: int, height: int
+) -> QImage | None:
+    """文字の影を別の面に描いて返す。影が無ければ ``None``。
+
+    ぼかしのために 1 枚離す。影は単色なので、ぼかすのは不透明度だけでよく、
+    色の 3 成分はそのままにできる。RGB ごとぼかすと、縁で色がにじむ。
+    """
+    offset_x = float(values.get("shadow_x", 0.0))  # type: ignore[arg-type]
+    offset_y = float(values.get("shadow_y", 0.0))  # type: ignore[arg-type]
+    blur = float(values.get("shadow_blur", 0.0))  # type: ignore[arg-type]
+    colour = _color(values.get("shadow_color"))
+    if (offset_x, offset_y, blur) == (0.0, 0.0, 0.0) or colour.alpha() == 0:
+        return None
+
+    layer = QImage(width, height, QImage.Format.Format_RGBA8888)
+    layer.fill(Qt.GlobalColor.transparent)
+    shifted = QPainterPath(path)
+    # 画面の Y は下向き。設定の Y は上向きなので符号を反転する。
+    shifted.translate(offset_x, -offset_y)
+
+    shadow_painter = QPainter(layer)
+    shadow_painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    border_width = float(values.get("border_width", 0.0))  # type: ignore[arg-type]
+    if border_width > 0:
+        # 縁取りがあるときは、その外形の影が落ちる。塗りだけの影にすると
+        # 縁の分だけ影が細く見える。
+        shadow_painter.fillPath(_stroke(shifted, border_width), colour)
+    shadow_painter.fillPath(shifted, colour)
+    shadow_painter.end()
+
+    if blur <= 0.0:
+        return layer
+    return _blur_alpha(layer, blur)
+
+
+def _blur_alpha(image: QImage, radius: float) -> QImage:
+    """不透明度だけを平均化する。
+
+    箱ぼかしを縦横 2 回ずつ掛ける。厳密なガウスではないが、影の輪郭を
+    やわらげる用途では見分けが付かず、こちらは掛け算が要らない。
+    """
+    span = max(1, round(radius))
+    # ``_to_array`` は元のバッファをそのまま見ていることがあり、書き込めない。
+    array = _to_array(image).copy()
+    alpha = array[:, :, 3].astype(np.float32)
+    for _ in range(2):
+        alpha = _box_blur(alpha, span)
+    array[:, :, 3] = np.clip(alpha, 0.0, 255.0).astype(np.uint8)
+    return QImage(
+        array.tobytes(), image.width(), image.height(), QImage.Format.Format_RGBA8888
+    ).copy()
+
+
+def _box_blur(values: np.ndarray, span: int) -> np.ndarray:
+    """縦横に窓幅 ``2*span+1`` の移動平均を掛ける。
+
+    累積和で求めるので、窓の幅を広げても速さは変わらない。
+    """
+    result = values
+    for axis in (0, 1):
+        padded = np.pad(result, [(span, span) if a == axis else (0, 0) for a in (0, 1)], "edge")
+        cumulative = np.cumsum(padded, axis=axis)
+        zero = np.zeros_like(np.take(cumulative, [0], axis=axis))
+        cumulative = np.concatenate([zero, cumulative], axis=axis)
+        length = result.shape[axis]
+        upper = np.take(cumulative, range(2 * span + 1, 2 * span + 1 + length), axis=axis)
+        lower = np.take(cumulative, range(0, length), axis=axis)
+        result = (upper - lower) / (2 * span + 1)
+    return result
 
 
 def _widest(metrics: QFontMetricsF, lines: list[str]) -> float:

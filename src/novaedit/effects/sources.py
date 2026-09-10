@@ -68,10 +68,25 @@ TEXT = SourceDefinition(
             (("left", "左"), ("center", "中央"), ("right", "右")),
             "center",
         ),
+        # AviUtl の「文字揃え」は横と縦の 2 つを 1 つにまとめた呼び方をする
+        # （``中央揃え[下]`` など）。こちらは別々に持つ。まとめると、片方だけを
+        # 変えたいときに全部の組み合わせを並べることになる。
+        SelectSpec(
+            "valign",
+            "縦の基準",
+            (("top", "上"), ("middle", "中"), ("bottom", "下")),
+            "middle",
+        ),
         TrackSpec("line_spacing", "行間", -50, 200, 0, step=1, unit="px"),
         TrackSpec("letter_spacing", "字間", -20, 100, 0, step=1, unit="px"),
-        TrackSpec("border_width", "縁取りの太さ", 0, 32, 0, step=1, unit="px"),
+        TrackSpec("border_width", "縁取りの太さ", 0, 64, 0, step=1, unit="px"),
         ColorSpec("border_color", "縁取りの色", (0.0, 0.0, 0.0, 1.0)),
+        # 影は「文字の飾り」として文字と一緒に描く。クリップ全体に掛ける
+        # 影エフェクトとは別物で、こちらは 1 文字ずつの輪郭に付く。
+        TrackSpec("shadow_x", "影の X", -200, 200, 0, step=1, unit="px"),
+        TrackSpec("shadow_y", "影の Y", -200, 200, 0, step=1, unit="px"),
+        TrackSpec("shadow_blur", "影のぼかし", 0, 64, 0, step=1, unit="px"),
+        ColorSpec("shadow_color", "影の色", (0.0, 0.0, 0.0, 1.0)),
         CheckSpec("vertical", "縦書き", False),
         TrackSpec("reveal", "文字送り", 0, 100, 100, step=1, unit="%"),
         TrackSpec("pos_x", "X", -4000, 4000, 0, step=1, unit="px"),

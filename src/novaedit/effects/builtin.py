@@ -207,10 +207,14 @@ uniform float anchor_y;
 
 void main() {
     // 出力の座標から入力の座標を逆算する。前方に写すと隙間が空く。
+    //
+    // v_uv の Y は上向き。設定の Y も上向き（正で上へ動く）なので、
+    // ここでは符号をそろえるだけでよい。反転させると、同じ「Y」の表示なのに
+    // テキストや影と上下が逆に動くことになる。
     vec2 pixel = v_uv * u_size;
-    vec2 anchor = u_size * 0.5 + vec2(anchor_x, -anchor_y);
+    vec2 anchor = u_size * 0.5 + vec2(anchor_x, anchor_y);
 
-    pixel -= anchor + vec2(pos_x, -pos_y);
+    pixel -= anchor + vec2(pos_x, pos_y);
 
     float angle = radians(-rotation);
     float c = cos(angle);
@@ -381,7 +385,8 @@ uniform bool invert;
 
 void main() {
     vec2 pixel = v_uv * u_size;
-    vec2 centre = u_size * 0.5 + vec2(center_x, -center_y);
+    // v_uv の Y は上向き。設定の Y も上向き。
+    vec2 centre = u_size * 0.5 + vec2(center_x, center_y);
     vec2 half_size = max(vec2(mask_width, mask_height) * 0.5, vec2(0.5));
     vec2 delta = pixel - centre;
     float edge = max(feather, 0.0001);
@@ -401,6 +406,46 @@ void main() {
     if (invert) inside = 1.0 - inside;
     vec4 color = texture(u_texture, v_uv);
     frag_color = vec4(color.rgb, color.a * inside);
+}
+""")
+
+
+_GRADIENT = _shader("""
+uniform float strength;
+uniform float center_x;
+uniform float center_y;
+uniform float angle;
+uniform float span;
+uniform int shape;
+uniform vec4 start_color;
+uniform vec4 end_color;
+
+void main() {
+    vec4 base = texture(u_texture, v_uv);
+
+    // 中心を原点、右と下を正とした画素座標。
+    // v_uv の Y は上向きなので、ここで下向きに直す。設定の Y も上向きなので
+    // 中心のずらし量も同じように反転する。
+    vec2 pixel = (v_uv - 0.5) * u_size;
+    pixel.y = -pixel.y;
+    vec2 centre = vec2(center_x, -center_y);
+    float length_ = max(span, 1.0);
+
+    float t;
+    if (shape == 1) {
+        // 円形。中心からの距離。
+        t = length(pixel - centre) / length_;
+    } else {
+        // 線形。角度 0 で左から右、90 で上から下。
+        float radian = radians(angle);
+        vec2 direction = vec2(cos(radian), sin(radian));
+        t = dot(pixel - centre, direction) / length_ + 0.5;
+    }
+
+    vec4 ramp = mix(start_color, end_color, clamp(t, 0.0, 1.0));
+    // 元の絵の不透明度はそのまま。グラデーションは色だけを塗り替える。
+    float amount = clamp(strength * 0.01, 0.0, 1.0) * ramp.a;
+    frag_color = vec4(mix(base.rgb, ramp.rgb, amount), base.a);
 }
 """)
 
@@ -510,6 +555,25 @@ def register_builtin_effects() -> None:
                 ColorSpec("color", "色", (1.0, 1.0, 1.0, 1.0)),
             ),
             fragment_shader=_BORDER,
+        )
+    )
+
+    registry.register(
+        EffectDefinition(
+            kind="gradient",
+            label="グラデーション",
+            category="装飾",
+            parameters=(
+                TrackSpec("strength", "強さ", 0, 100, 100, unit="%"),
+                ColorSpec("start_color", "開始色", (1.0, 1.0, 1.0, 1.0)),
+                ColorSpec("end_color", "終了色", (0.0, 0.0, 0.0, 1.0)),
+                SelectSpec("shape", "形状", (("linear", "線形"), ("radial", "円形")), "linear"),
+                TrackSpec("angle", "角度", -360, 360, 90, unit="度"),
+                TrackSpec("span", "幅", 1, 4000, 100, step=1, unit="px"),
+                TrackSpec("center_x", "中心 X", -4000, 4000, 0, step=1, unit="px"),
+                TrackSpec("center_y", "中心 Y", -4000, 4000, 0, step=1, unit="px"),
+            ),
+            fragment_shader=_GRADIENT,
         )
     )
 

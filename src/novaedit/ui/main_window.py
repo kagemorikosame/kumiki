@@ -20,6 +20,7 @@ from PySide6.QtGui import (
     QKeySequence,
 )
 from PySide6.QtWidgets import (
+    QDialog,
     QDockWidget,
     QFileDialog,
     QMainWindow,
@@ -237,12 +238,18 @@ class MainWindow(QMainWindow):
         self._add(subtitle_menu, "焼き込み", QKeySequence(), self._subtitles.burn)
         self._add(subtitle_menu, "書き出し…", QKeySequence(), self._subtitles.export_file)
 
-        compat_menu = self._menu("AviUtl")
+        compat_menu = self._menu("互換")
         self._add(
             compat_menu,
             "オブジェクトを読み込む…",
             QKeySequence("Ctrl+Shift+O"),
             self.import_exo,
+        )
+        self._add(
+            compat_menu,
+            "テンプレート…",
+            QKeySequence("Ctrl+Shift+D"),
+            self.show_templates,
         )
         compat_menu.addSeparator()
         self._add(compat_menu, "スクリプトを読み直す", QKeySequence(), self.rescan_scripts)
@@ -654,6 +661,44 @@ class MainWindow(QMainWindow):
             self._analyzer.request(media, on_ready=self._on_analysis_ready)
             found[raw] = media.id
         return found, missing
+
+    def show_templates(self) -> None:
+        """テンプレートの棚を開いて、選ばれたものを反映する。
+
+        「置く」と「着せる」で行き先が違うだけで、どちらも 1 回の Undo で戻る。
+        """
+        from novaedit.compat.catalog import place, restyle
+        from novaedit.ui.template_dialog import TemplateDialog
+
+        dialog = TemplateDialog(parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.choice is None:
+            return
+
+        action, objects = dialog.choice
+        if action == "restyle":
+            clip_id = self.selected_clip
+            located = (
+                self._document.project.timeline.locate_clip(clip_id)
+                if clip_id is not None
+                else None
+            )
+            if located is None:
+                self.statusBar().showMessage("先にテキストのクリップを選んでください", 5000)
+                return
+            commands = restyle(objects, located[1])
+            if not commands:
+                self.statusBar().showMessage("テキストのクリップにしか適用できません", 5000)
+                return
+            self.execute_all(commands, "テンプレートを適用")
+            self.statusBar().showMessage("デザインを適用した（文字はそのまま）", 5000)
+            return
+
+        commands = place(objects, self._document.project, at_frame=self._timeline.playhead)
+        if not commands:
+            self.statusBar().showMessage("置けるオブジェクトがありませんでした", 5000)
+            return
+        self.execute_all(commands, "テンプレートを配置")
+        self.statusBar().showMessage(f"{len(commands)} 個を置いた", 5000)
 
     def rescan_scripts(self) -> None:
         """スクリプトのフォルダを読み直す。"""

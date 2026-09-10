@@ -60,8 +60,9 @@ class TestParsing:
 
     def test_object_bounds(self) -> None:
         obj = parse_exo(SAMPLE).objects[0]
-        # AviUtl は 1 始まりで終端を含む。60 フレーム目までなので長さは 60。
-        assert (obj.start, obj.end, obj.duration) == (1, 60, 60)
+        # ファイルには 1 始まりで書かれている（start=1 end=60）。読んだ側では
+        # 0 始まりに揃えるので 0..59。終端を含むので長さは 60。
+        assert (obj.start, obj.end, obj.duration) == (0, 59, 60)
         assert obj.layer == 1
 
     def test_entries_keep_their_order(self) -> None:
