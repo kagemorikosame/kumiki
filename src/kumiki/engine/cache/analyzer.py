@@ -96,12 +96,15 @@ class MediaAnalyzer:
                     self._cancelled.add(key)
 
     def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
+        # 投入（_submit）と同じロックの中で止める ロックの外で止めると、投入側が
+        # 「まだ止まっていない」と見た直後に止まり、停止済みの executor へ投げて
+        # RuntimeError になる 投入したキーも _running に残ったままになる
         with self._lock:
+            if self._closed:
+                return
+            self._closed = True
             self._cancelled.update(self._running)
-        self._executor.shutdown(wait=False, cancel_futures=True)
+            self._executor.shutdown(wait=False, cancel_futures=True)
 
     def _submit(
         self,
@@ -110,10 +113,10 @@ class MediaAnalyzer:
         work: Callable[[MediaItem], bool],
         on_ready: Callable[[MediaId], None] | None,
     ) -> None:
-        if self._closed:
-            return
         key = (kind, media.id)
         with self._lock:
+            if self._closed:
+                return
             done = self._waveforms if kind == "waveform" else self._filmstrips
             if media.id in done or key in self._running:
                 return
@@ -131,7 +134,28 @@ class MediaAnalyzer:
             if produced and on_ready is not None:
                 on_ready(media.id)
 
-        self._executor.submit(run)
+        with self._lock:
+            # close と同じロックの中で投げる（close の説明を参照）
+            if self._closed:
+                self._running.discard(key)
+                return
+            self._executor.submit(run)
+
+    def _publish(self, kind: str, media_id: MediaId, result: Waveform | Filmstrip) -> bool:
+        """結果を登録する 取り消されていたら登録しない
+
+        解析は時間が掛かるので、走っている間に素材が外される（forget）ことがある
+        確かめずに登録すると、外した素材の波形やサムネイルが復活する
+        確かめるのと登録するのを同じロックの中で行う
+        """
+        with self._lock:
+            if self._closed or (kind, media_id) in self._cancelled:
+                return False
+            if isinstance(result, Waveform):
+                self._waveforms[media_id] = result
+            else:
+                self._filmstrips[media_id] = result
+            return True
 
     def _is_cancelled(self, kind: str, media_id: MediaId) -> bool:
         with self._lock:
@@ -152,9 +176,7 @@ class MediaAnalyzer:
                 return False
             save_waveform(self._store, key, waveform)
 
-        with self._lock:
-            self._waveforms[media.id] = waveform
-        return True
+        return self._publish("waveform", media.id, waveform)
 
     def _analyze_filmstrip(self, media: MediaItem) -> bool:
         interval = _interval_for(media.duration)
@@ -172,9 +194,7 @@ class MediaAnalyzer:
                 return False
             save_filmstrip(self._store, key, filmstrip)
 
-        with self._lock:
-            self._filmstrips[media.id] = filmstrip
-        return True
+        return self._publish("filmstrip", media.id, filmstrip)
 
 
 def _interval_for(duration: Fraction) -> Fraction:

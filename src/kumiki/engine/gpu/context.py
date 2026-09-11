@@ -140,7 +140,7 @@ class OffscreenGLContext:
 
         **作れたことと使えることは別。** ドライバが無い環境（仮想機械や CI）でも
         Qt は software / GDI の経路でコンテキストを作ってしまう。そこには
-        ``glCreateShader`` のような 4.3 の関数が無く、呼んだ瞬間に PyOpenGL が
+        ``glCreateShader`` のようなシェーダの関数すら無く、呼んだ瞬間に PyOpenGL が
         ``NullFunctionError`` を投げる。
 
         作った直後に確かめておけば、呼び出し側は :class:`GLContextError` 1 つを
@@ -148,6 +148,17 @@ class OffscreenGLContext:
         から中身の分からない例外で落ちるより、ここで止めたほうが原因に近い。
         """
         from OpenGL.GL import glCreateShader, glGenVertexArrays
+
+        # 実際に取れた版を先に見る 下の関数は 2.0 / 3.0 から在るので、3.x の
+        # コンテキストでも素通りしてしまう 4.3 で入った機能（計算シェーダなど）を
+        # 使う所まで進んでから落ちることになる
+        granted = self._context.format()
+        version = (granted.majorVersion(), granted.minorVersion())
+        if version < REQUIRED_GL_VERSION:
+            raise GLContextError(
+                f"OpenGL {REQUIRED_GL_VERSION[0]}.{REQUIRED_GL_VERSION[1]} が要るが、"
+                f"取れたのは {version[0]}.{version[1]} GPU ドライバを確認すること"
+            )
 
         with self:
             missing = [

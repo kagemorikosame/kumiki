@@ -12,6 +12,8 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import tempfile
+import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import cast
@@ -99,17 +101,45 @@ def save_arrays(path: Path, arrays: Mapping[str, np.ndarray], *, compressed: boo
     残らない。壊れたキャッシュは、あとから原因の分かりにくい不具合になる。
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".writing")
+
+    # 一時ファイルは書き込みごとに別の名前にする キャッシュのキーは素材のパスから
+    # 作るので、同じ動画を 2 回読み込むと 2 本の解析が同じ保存先に着く 名前を
+    # 固定すると、片方の差し替えがもう片方の書きかけを奪って FileNotFoundError になる
+    # 末尾を .npz にしておくと、savez が拡張子を勝手に足さない
+    handle, name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".npz")
+    os.close(handle)
+    temporary = Path(name)
 
     # numpy の型スタブは savez の可変キーワードを allow_pickle と同じ bool として
-    # 扱うため、名前付きの配列を渡すと型が合わない。ここで 1 度だけ吸収する。
+    # 扱うため、名前付きの配列を渡すと型が合わない ここで 1 度だけ吸収する
     writer = cast("Callable[..., None]", np.savez_compressed if compressed else np.savez)
-    writer(temporary, **arrays)
-
-    # savez は拡張子 .npz を勝手に足す。
-    written = temporary if temporary.exists() else temporary.with_name(temporary.name + ".npz")
-    written.replace(path)
+    try:
+        writer(temporary, **arrays)
+        _replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
     return path
+
+
+def _replace(source: Path, target: Path, attempts: int = 5) -> None:
+    """一時ファイルを保存先へ差し替える
+
+    Windows では、同じ保存先へ別の書き手が同時に差し替えていると PermissionError に
+    なる（差し替えの途中のファイルは掴めない） 少し待ってやり直す
+
+    それでも取れず、相手が書き終えているなら相手のものを使う 同じキーは同じ素材・
+    同じ条件から作るので、中身も同じになる
+    """
+    for attempt in range(attempts):
+        try:
+            source.replace(target)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                if target.exists():
+                    return
+                raise
+            time.sleep(0.01 * (attempt + 1))
 
 
 def load_arrays(path: Path) -> dict[str, np.ndarray] | None:

@@ -51,14 +51,15 @@ def load_waveform(store: CacheStore, key: str) -> Waveform | None:
             PeakLevel(int(samples_per_peak[index]), data[f"level{index}"])
             for index in range(len(samples_per_peak))
         )
+        if not levels:
+            return None
+        # 付帯の値も同じ try の中で読む 外で読むと、欠けたキャッシュで KeyError に
+        # なり「壊れていたら None」の約束が守れない（作り直す機会を失う）
+        return Waveform(
+            sample_rate=int(data["sample_rate"][0]),
+            channels=int(data["channels"][0]),
+            total_samples=int(data["total_samples"][0]),
+            levels=levels,
+        )
     except (KeyError, IndexError, ValueError):
         return None
-
-    if not levels:
-        return None
-    return Waveform(
-        sample_rate=int(data["sample_rate"][0]),
-        channels=int(data["channels"][0]),
-        total_samples=int(data["total_samples"][0]),
-        levels=levels,
-    )
