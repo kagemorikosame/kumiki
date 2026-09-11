@@ -10,7 +10,7 @@ license = "MIT"
 dependencies = [
     "PySide6>=6.11",
     "av>=18.0",
-    "numpy>=2.0",
+    "numpy>=2.5.3",
     "PyOpenGL>=3.1.10",
     "sounddevice>=0.5",
     # AviUtl スクリプトを動かす Lua。既定で入れる（互換機能の土台なので、
