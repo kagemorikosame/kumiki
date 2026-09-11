@@ -9,9 +9,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from novaedit.compat.aviutl.objapi import ObjectState
-from novaedit.compat.aviutl.report import CompatibilityReport
-from novaedit.compat.aviutl.runtime import LuaScriptRuntime, blank_image, lua_available
+from kumiki.compat.aviutl.objapi import ObjectState
+from kumiki.compat.aviutl.report import CompatibilityReport
+from kumiki.compat.aviutl.runtime import LuaScriptRuntime, blank_image, lua_available
 
 
 @pytest.fixture(scope="module")
@@ -171,11 +171,11 @@ class TestHelpers:
 class TestTextAndFigures:
     def test_setfont_and_mes_make_an_image(self, qt_application: object) -> None:
         del qt_application
-        from novaedit.core.model import GeneratedSource
-        from novaedit.engine.sources import render_source
+        from kumiki.core.model import GeneratedSource
+        from kumiki.engine.sources import render_source
 
         def draw(kind: str, params: dict[str, object], width: int, height: int) -> np.ndarray:
-            from novaedit.core.model import AnimatedValue
+            from kumiki.core.model import AnimatedValue
 
             wrapped = {
                 name: AnimatedValue(float(value)) if isinstance(value, int | float) else value
@@ -194,8 +194,8 @@ class TestTextAndFigures:
 
     def test_load_figure_uses_the_aviutl_names(self, qt_application: object) -> None:
         del qt_application
-        from novaedit.core.model import AnimatedValue, GeneratedSource
-        from novaedit.engine.sources import render_source
+        from kumiki.core.model import AnimatedValue, GeneratedSource
+        from kumiki.engine.sources import render_source
 
         seen: dict[str, object] = {}
 
@@ -261,7 +261,7 @@ class TestSandbox:
 
 class TestSetup:
     def test_param_code_runs_before_the_script(self, runtime: LuaScriptRuntime) -> None:
-        from novaedit.compat.aviutl.control import parse_control
+        from kumiki.compat.aviutl.control import parse_control
 
         header = parse_control("--param:base=5;")
         target = state()

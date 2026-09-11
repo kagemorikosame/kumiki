@@ -12,9 +12,9 @@ from collections.abc import Iterator
 import numpy as np
 import pytest
 
-from novaedit.compat.aviutl.catalog import ScriptCatalog, set_script_catalog
-from novaedit.core.commands import AddClip, AddEffect, AddTrack
-from novaedit.core.model import (
+from kumiki.compat.aviutl.catalog import ScriptCatalog, set_script_catalog
+from kumiki.core.commands import AddClip, AddEffect, AddTrack
+from kumiki.core.model import (
     Clip,
     GeneratedSource,
     Project,
@@ -22,10 +22,10 @@ from novaedit.core.model import (
     Track,
     TrackKind,
 )
-from novaedit.core.timebase import FrameRate
-from novaedit.effects.definition import registry
-from novaedit.engine.gpu import GLContextError, OffscreenGLContext
-from novaedit.engine.render import FrameRenderer
+from kumiki.core.timebase import FrameRate
+from kumiki.effects.definition import registry
+from kumiki.engine.gpu import GLContextError, OffscreenGLContext
+from kumiki.engine.render import FrameRenderer
 
 #: 位置と回転をスライダーで動かすだけのスクリプト。
 MOVE = """--track0:X,-500,500,0,1

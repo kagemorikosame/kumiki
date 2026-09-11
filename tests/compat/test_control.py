@@ -6,8 +6,8 @@
 
 from __future__ import annotations
 
-from novaedit.compat.aviutl.control import parse_control, split_scripts
-from novaedit.effects.spec import (
+from kumiki.compat.aviutl.control import parse_control, split_scripts
+from kumiki.effects.spec import (
     CheckSpec,
     ColorSpec,
     FileSpec,

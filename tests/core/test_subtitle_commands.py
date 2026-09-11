@@ -6,7 +6,7 @@ from fractions import Fraction
 
 import pytest
 
-from novaedit.core.commands import (
+from kumiki.core.commands import (
     AddClip,
     AddSegment,
     MergeWithNext,
@@ -17,7 +17,7 @@ from novaedit.core.commands import (
     SplitSegment,
     burn_subtitles,
 )
-from novaedit.core.model import (
+from kumiki.core.model import (
     AnimatedValue,
     GeneratedSource,
     MediaItem,
@@ -26,7 +26,7 @@ from novaedit.core.model import (
     TranscriptSegment,
     Word,
 )
-from novaedit.core.projection import project_timeline
+from kumiki.core.projection import project_timeline
 from tests.conftest import make_clip
 
 
@@ -70,7 +70,7 @@ class TestSetSegmentText:
         assert updated.segments[0].edited is True
 
     def test_unknown_segment_fails(self, placed: Project, video_media: MediaItem) -> None:
-        from novaedit.core.model import SegmentId
+        from kumiki.core.model import SegmentId
 
         with pytest.raises(KeyError):
             SetSegmentText(video_media.id, SegmentId("なし"), "x").apply(placed)
@@ -203,8 +203,8 @@ class TestBurnSubtitles:
         overlapping = Transcript(
             (TranscriptSegment(start=Fraction(0), end=Fraction(4), text="重なる"),)
         )
-        from novaedit.core.commands import AddTrack
-        from novaedit.core.model import Track, TrackKind
+        from kumiki.core.commands import AddTrack
+        from kumiki.core.model import Track, TrackKind
 
         placed = SetTranscript(video_media.id, overlapping).apply(project)
         second = Track(kind=TrackKind.VIDEO, name="V2")

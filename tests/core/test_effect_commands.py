@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from novaedit.core.commands import (
+from kumiki.core.commands import (
     AddEffect,
     ClearKeyframes,
     Document,
@@ -28,9 +28,9 @@ from novaedit.core.commands import (
     SetSource,
     resolve_param,
 )
-from novaedit.core.io import Preset, PresetStore, ProjectFileError
-from novaedit.core.io.presets import SUFFIX
-from novaedit.core.model import (
+from kumiki.core.io import Preset, PresetStore, ProjectFileError
+from kumiki.core.io.presets import SUFFIX
+from kumiki.core.model import (
     AnimatedValue,
     ClipId,
     Effect,
@@ -43,8 +43,8 @@ from novaedit.core.model import (
     Track,
     TrackKind,
 )
-from novaedit.effects import registry
-from novaedit.effects.sources import SHAPE, TEXT
+from kumiki.effects import registry
+from kumiki.effects.sources import SHAPE, TEXT
 from tests.conftest import make_clip
 
 

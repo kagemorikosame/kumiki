@@ -10,12 +10,12 @@ from pathlib import Path
 
 import pytest
 
-from novaedit.compat.aviutl.encoding import (
+from kumiki.compat.aviutl.encoding import (
     decode_bytes,
     decode_utf16_hex,
     encode_utf16_hex,
 )
-from novaedit.compat.aviutl.exo import ExoParseError, load_exo, parse_exo
+from kumiki.compat.aviutl.exo import ExoParseError, load_exo, parse_exo
 
 SAMPLE = """[exedit]
 width=1920

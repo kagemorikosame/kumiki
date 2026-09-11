@@ -14,18 +14,18 @@ import numpy as np
 import pytest
 from PySide6.QtWidgets import QApplication, QFileDialog
 
-from novaedit.core.commands import (
+from kumiki.core.commands import (
     AddClip,
     Command,
     RippleCut,
     SetSegmentText,
     SetTranscript,
 )
-from novaedit.core.model import MediaItem, Project, Transcript
-from novaedit.engine.audio.waveform import BASE_SAMPLES_PER_PEAK, PeakLevel, Waveform
-from novaedit.engine.cache import MediaAnalyzer
-from novaedit.ui.subtitle import SubtitlePanel
-from novaedit.ui.subtitle.dialogs import JetCutDialog
+from kumiki.core.model import MediaItem, Project, Transcript
+from kumiki.engine.audio.waveform import BASE_SAMPLES_PER_PEAK, PeakLevel, Waveform
+from kumiki.engine.cache import MediaAnalyzer
+from kumiki.ui.subtitle import SubtitlePanel
+from kumiki.ui.subtitle.dialogs import JetCutDialog
 from tests.conftest import make_clip
 
 

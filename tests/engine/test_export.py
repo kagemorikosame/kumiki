@@ -13,11 +13,11 @@ from pathlib import Path
 import av
 import pytest
 
-from novaedit.core.commands import Document, insert_media
-from novaedit.core.model import Project, ProjectSettings
-from novaedit.core.timebase import FrameRate
-from novaedit.engine.decode import probe_media
-from novaedit.engine.encode import (
+from kumiki.core.commands import Document, insert_media
+from kumiki.core.model import Project, ProjectSettings
+from kumiki.core.timebase import FrameRate
+from kumiki.engine.decode import probe_media
+from kumiki.engine.encode import (
     ExportError,
     ExportSettings,
     available_video_codecs,
@@ -183,7 +183,7 @@ class TestRoundTrip:
         output = tmp_path / "audio.mp4"
         export_project(document.project, ExportSettings(path=output, video_codec="libx264"))
 
-        from novaedit.engine.decode import AudioDecoder
+        from kumiki.engine.decode import AudioDecoder
 
         with AudioDecoder(output, sample_rate=48000) as decoder:
             samples = decoder.read_seconds(Fraction(1, 4), Fraction(1, 2))

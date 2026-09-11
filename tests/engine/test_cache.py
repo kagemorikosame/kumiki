@@ -10,8 +10,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from novaedit.engine.audio import analyze_waveform
-from novaedit.engine.cache import (
+from kumiki.engine.audio import analyze_waveform
+from kumiki.engine.cache import (
     CacheStore,
     MediaAnalyzer,
     build_filmstrip,
@@ -23,8 +23,8 @@ from novaedit.engine.cache import (
     save_waveform,
     waveform_key,
 )
-from novaedit.engine.cache.store import load_arrays, save_arrays
-from novaedit.engine.decode import probe_media
+from kumiki.engine.cache.store import load_arrays, save_arrays
+from kumiki.engine.decode import probe_media
 from tests.media_fixtures import SampleMedia
 
 

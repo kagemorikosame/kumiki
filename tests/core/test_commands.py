@@ -7,7 +7,7 @@ from fractions import Fraction
 
 import pytest
 
-from novaedit.core.commands import (
+from kumiki.core.commands import (
     AddClip,
     AddMedia,
     AddTrack,
@@ -21,7 +21,7 @@ from novaedit.core.commands import (
     SplitClip,
     TrimClip,
 )
-from novaedit.core.model import (
+from kumiki.core.model import (
     Clip,
     GroupId,
     MediaItem,
@@ -88,7 +88,7 @@ class TestTrackCommands:
         assert updated.timeline.tracks == ()
 
     def test_remove_unknown_track_fails(self, project: Project) -> None:
-        from novaedit.core.model import TrackId
+        from kumiki.core.model import TrackId
 
         with pytest.raises(KeyError):
             RemoveTrack(TrackId("存在しない")).apply(project)

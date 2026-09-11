@@ -16,11 +16,11 @@ from pathlib import Path
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from novaedit.core.io import load_project
-from novaedit.core.model import Project, ProjectSettings, TrackKind
-from novaedit.core.timebase import FrameRate
-from novaedit.engine.encode import ExportSettings, available_video_codecs, export_project
-from novaedit.ui.main_window import MainWindow
+from kumiki.core.io import load_project
+from kumiki.core.model import Project, ProjectSettings, TrackKind
+from kumiki.core.timebase import FrameRate
+from kumiki.engine.encode import ExportSettings, available_video_codecs, export_project
+from kumiki.ui.main_window import MainWindow
 from tests.media_fixtures import SampleMedia, make_sample
 
 
@@ -153,7 +153,7 @@ class TestSaveAndExport:
         window._seek(45)
         window._timeline.split_at_playhead()
 
-        path = tmp_path / "flow.nvep"
+        path = tmp_path / "flow.kmk"
         window._path = path
         window.save_project()
 

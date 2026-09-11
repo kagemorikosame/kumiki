@@ -17,10 +17,10 @@ from pathlib import Path
 
 import pytest
 
-from novaedit.compat.aviutl.report import CompatibilityReport
-from novaedit.compat.catalog import TemplateCatalog, TemplateEntry, place, restyle
-from novaedit.compat.mapped import MappedObject
-from novaedit.core.model import AnimatedValue, Clip, GeneratedSource, Project
+from kumiki.compat.aviutl.report import CompatibilityReport
+from kumiki.compat.catalog import TemplateCatalog, TemplateEntry, place, restyle
+from kumiki.compat.mapped import MappedObject
+from kumiki.core.model import AnimatedValue, Clip, GeneratedSource, Project
 
 #: 棚に並んだテンプレートと、それを読んだ結果。
 type Loaded = list[tuple[TemplateEntry, list[MappedObject]]]

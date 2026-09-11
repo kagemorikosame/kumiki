@@ -11,11 +11,11 @@ from pathlib import Path
 
 import pytest
 
-from novaedit.compat.aviutl.control import lua_value, parse_control
-from novaedit.compat.aviutl.objapi import ObjectState
-from novaedit.compat.aviutl.report import CompatibilityReport
-from novaedit.compat.aviutl.runtime import LuaScriptRuntime, blank_image
-from novaedit.effects.spec import CheckSpec, ColorSpec, SelectSpec, TextSpec
+from kumiki.compat.aviutl.control import lua_value, parse_control
+from kumiki.compat.aviutl.objapi import ObjectState
+from kumiki.compat.aviutl.report import CompatibilityReport
+from kumiki.compat.aviutl.runtime import LuaScriptRuntime, blank_image
+from kumiki.effects.spec import CheckSpec, ColorSpec, SelectSpec, TextSpec
 
 
 @pytest.fixture(scope="module")

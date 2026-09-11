@@ -7,7 +7,7 @@ from itertools import pairwise
 
 import pytest
 
-from novaedit.core.model import (
+from kumiki.core.model import (
     AnimatedValue,
     Clip,
     Effect,
@@ -22,7 +22,7 @@ from novaedit.core.model import (
     Transcript,
     TranscriptSegment,
 )
-from novaedit.core.timebase import FrameRate
+from kumiki.core.timebase import FrameRate
 from tests.conftest import RATE_30, make_clip
 
 
@@ -124,7 +124,7 @@ class TestProject:
             Project.create(media=(video_media, video_media))
 
     def test_require_media_raises_for_unknown(self, project: Project) -> None:
-        from novaedit.core.model import MediaId
+        from kumiki.core.model import MediaId
 
         with pytest.raises(KeyError):
             project.require_media(MediaId("存在しない"))

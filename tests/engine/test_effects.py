@@ -11,7 +11,7 @@ from collections.abc import Callable, Iterator
 import numpy as np
 import pytest
 
-from novaedit.core.model import (
+from kumiki.core.model import (
     AnimatedValue,
     Clip,
     Effect,
@@ -22,13 +22,13 @@ from novaedit.core.model import (
     Track,
     TrackKind,
 )
-from novaedit.core.timebase import FrameRate
-from novaedit.effects import ColorSpec, TrackSpec, registry
-from novaedit.effects.definition import EffectDefinition
-from novaedit.effects.sources import SHAPE, TEXT, source_registry
-from novaedit.engine.gpu import BlendMode, GLContextError, OffscreenGLContext, srgb_to_linear
-from novaedit.engine.render import FrameRenderer
-from novaedit.engine.sources import render_source
+from kumiki.core.timebase import FrameRate
+from kumiki.effects import ColorSpec, TrackSpec, registry
+from kumiki.effects.definition import EffectDefinition
+from kumiki.effects.sources import SHAPE, TEXT, source_registry
+from kumiki.engine.gpu import BlendMode, GLContextError, OffscreenGLContext, srgb_to_linear
+from kumiki.engine.render import FrameRenderer
+from kumiki.engine.sources import render_source
 
 
 def builtin_effects() -> tuple[EffectDefinition, ...]:
@@ -155,8 +155,8 @@ class TestShaders:
     def test_every_effect_compiles(self, gl: OffscreenGLContext) -> None:
         # コンパイルできないエフェクトは黙って素通しになる仕様なので、
         # 「絵が出た」だけでは検出できない。1 つずつ通して確かめる。
-        from novaedit.engine.gpu.effects import EffectProcessor
-        from novaedit.engine.gpu.glutil import ScreenQuad
+        from kumiki.engine.gpu.effects import EffectProcessor
+        from kumiki.engine.gpu.glutil import ScreenQuad
 
         with gl:
             quad = ScreenQuad()

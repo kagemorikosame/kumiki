@@ -13,8 +13,8 @@ from fractions import Fraction
 import numpy as np
 import pytest
 
-from novaedit.core.commands import AddClip, AddMedia, AddTrack
-from novaedit.core.model import (
+from kumiki.core.commands import AddClip, AddMedia, AddTrack
+from kumiki.core.model import (
     AnimatedValue,
     Clip,
     Keyframe,
@@ -23,9 +23,9 @@ from novaedit.core.model import (
     Track,
     TrackKind,
 )
-from novaedit.core.timebase import FrameRate
-from novaedit.engine.decode import probe_media
-from novaedit.engine.gpu import (
+from kumiki.core.timebase import FrameRate
+from kumiki.engine.decode import probe_media
+from kumiki.engine.gpu import (
     Compositor,
     GLContextError,
     OffscreenGLContext,
@@ -33,7 +33,7 @@ from novaedit.engine.gpu import (
     Texture,
     fit_placement,
 )
-from novaedit.engine.render import FrameRenderer, RenderQuality
+from kumiki.engine.render import FrameRenderer, RenderQuality
 from tests.media_fixtures import SampleMedia
 
 

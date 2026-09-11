@@ -11,9 +11,9 @@ import time
 
 import pytest
 
-from novaedit.ai.bridge import EditorBridge, describe_call
-from novaedit.ai.host import ToolError
-from novaedit.ai.operations import Operation, find_operation
+from kumiki.ai.bridge import EditorBridge, describe_call
+from kumiki.ai.host import ToolError
+from kumiki.ai.operations import Operation, find_operation
 from tests.ai.conftest import FakeHost
 
 
@@ -82,7 +82,7 @@ class TestReadOnlyCalls:
         assert box["result"]["duration_frames"] == 300  # type: ignore[index]
 
     def test_a_frozen_ui_times_out_instead_of_hanging(self, host: FakeHost) -> None:
-        from novaedit.ai import bridge as bridge_module
+        from kumiki.ai import bridge as bridge_module
 
         bridge = EditorBridge(host)
         # pump を一度も呼ばない＝UI が固まっている状況。

@@ -12,12 +12,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from novaedit.core.commands import AddClip, AddMedia, AddTrack
-from novaedit.core.model import Clip, Project, ProjectSettings, Track, TrackKind
-from novaedit.core.timebase import FrameRate
-from novaedit.engine.audio import AudioMixer, analyze_waveform
-from novaedit.engine.audio.waveform import BASE_SAMPLES_PER_PEAK
-from novaedit.engine.decode import probe_media
+from kumiki.core.commands import AddClip, AddMedia, AddTrack
+from kumiki.core.model import Clip, Project, ProjectSettings, Track, TrackKind
+from kumiki.core.timebase import FrameRate
+from kumiki.engine.audio import AudioMixer, analyze_waveform
+from kumiki.engine.audio.waveform import BASE_SAMPLES_PER_PEAK
+from kumiki.engine.decode import probe_media
 from tests.media_fixtures import SampleMedia, make_silent_gap
 
 

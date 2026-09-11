@@ -18,9 +18,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from novaedit.compat.catalog import TemplateCatalog, place, restyle
-from novaedit.core.commands import AddClip, Document
-from novaedit.core.model import (
+from kumiki.compat.catalog import TemplateCatalog, place, restyle
+from kumiki.core.commands import AddClip, Document
+from kumiki.core.model import (
     AnimatedValue,
     Clip,
     GeneratedSource,
@@ -29,9 +29,9 @@ from novaedit.core.model import (
     Track,
     TrackKind,
 )
-from novaedit.core.timebase import FrameRate
-from novaedit.engine.gpu import GLContextError, OffscreenGLContext
-from novaedit.engine.render import FrameRenderer
+from kumiki.core.timebase import FrameRate
+from kumiki.engine.gpu import GLContextError, OffscreenGLContext
+from kumiki.engine.render import FrameRenderer
 
 WIDTH, HEIGHT = 640, 360
 
@@ -298,7 +298,7 @@ class TestTheRealDistributedAliases:
         if not real_aliases:
             pytest.skip("このマシンに AviUtl2 の配布エイリアスが無い")
 
-        from novaedit.compat.catalog import TemplateEntry
+        from kumiki.compat.catalog import TemplateEntry
 
         blank = 0
         for path in real_aliases:

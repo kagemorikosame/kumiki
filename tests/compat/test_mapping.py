@@ -6,12 +6,12 @@
 
 from __future__ import annotations
 
-from novaedit.compat.aviutl.encoding import encode_utf16_hex
-from novaedit.compat.aviutl.exo import parse_exo
-from novaedit.compat.aviutl.mapping import MappedObject, map_exo, map_object
-from novaedit.compat.aviutl.report import CompatibilityReport
-from novaedit.core.model import Project, ProjectSettings
-from novaedit.core.timebase import FrameRate
+from kumiki.compat.aviutl.encoding import encode_utf16_hex
+from kumiki.compat.aviutl.exo import parse_exo
+from kumiki.compat.aviutl.mapping import MappedObject, map_exo, map_object
+from kumiki.compat.aviutl.report import CompatibilityReport
+from kumiki.core.model import Project, ProjectSettings
+from kumiki.core.timebase import FrameRate
 
 RATE = FrameRate(30)
 

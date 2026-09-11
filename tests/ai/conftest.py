@@ -1,6 +1,6 @@
 """AI 層のテスト用のホスト。
 
-:class:`~novaedit.ai.host.EditorHost` を満たす偽物を用意する。ウィジェットを一切
+:class:`~kumiki.ai.host.EditorHost` を満たす偽物を用意する。ウィジェットを一切
 作らずにツールの挙動を確かめられるのは、AI 層が Qt を知らない作りにしてあるため。
 """
 
@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from novaedit.ai.host import ToolError
-from novaedit.core.commands import AddClip, Command, Document
-from novaedit.core.model import (
+from kumiki.ai.host import ToolError
+from kumiki.core.commands import AddClip, Command, Document
+from kumiki.core.model import (
     ClipId,
     MediaId,
     MediaItem,
@@ -24,8 +24,8 @@ from novaedit.core.model import (
     TrackKind,
     Transcript,
 )
-from novaedit.core.timebase import FrameRate
-from novaedit.engine.audio.waveform import Waveform
+from kumiki.core.timebase import FrameRate
+from kumiki.engine.audio.waveform import Waveform
 from tests.conftest import make_clip
 
 RATE_30 = FrameRate(30)

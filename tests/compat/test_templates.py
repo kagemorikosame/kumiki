@@ -12,16 +12,16 @@ from pathlib import Path
 
 import pytest
 
-from novaedit.compat.catalog import TemplateCatalog, place, restyle
-from novaedit.core.commands import AddClip, AddEffect, AddTrack, RemoveEffect, SetSource
-from novaedit.core.model import AnimatedValue, Clip, GeneratedSource, Project
-from novaedit.effects import registry
+from kumiki.compat.catalog import TemplateCatalog, place, restyle
+from kumiki.core.commands import AddClip, AddEffect, AddTrack, RemoveEffect, SetSource
+from kumiki.core.model import AnimatedValue, Clip, GeneratedSource, Project
+from kumiki.effects import registry
 
 
 def value_at(value: object, frame: int = 0) -> float:
     """数値パラメータの、その時刻での値。
 
-    :data:`~novaedit.core.model.ParamValue` は数値とは限らないので、
+    :data:`~kumiki.core.model.ParamValue` は数値とは限らないので、
     数値であることをここで 1 度だけ確かめる。
     """
     assert isinstance(value, AnimatedValue)

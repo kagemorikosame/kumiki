@@ -16,11 +16,11 @@ from pathlib import Path
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from novaedit.asr import CleanupOptions, clean_transcript
-from novaedit.core.commands import RippleCut, SetClipProperty, SetTranscript, SplitClip
-from novaedit.core.io import load_project, save_subtitles
-from novaedit.core.jetcut import plan_cuts
-from novaedit.core.model import (
+from kumiki.asr import CleanupOptions, clean_transcript
+from kumiki.core.commands import RippleCut, SetClipProperty, SetTranscript, SplitClip
+from kumiki.core.io import load_project, save_subtitles
+from kumiki.core.jetcut import plan_cuts
+from kumiki.core.model import (
     Clip,
     MediaItem,
     Project,
@@ -28,11 +28,11 @@ from novaedit.core.model import (
     Transcript,
     TranscriptSegment,
 )
-from novaedit.core.projection import project_timeline
-from novaedit.core.timebase import FrameRate
-from novaedit.engine.audio.silence import SilenceOptions, detect_silence, keep_speech
-from novaedit.engine.audio.waveform import analyze_waveform
-from novaedit.ui.main_window import MainWindow
+from kumiki.core.projection import project_timeline
+from kumiki.core.timebase import FrameRate
+from kumiki.engine.audio.silence import SilenceOptions, detect_silence, keep_speech
+from kumiki.engine.audio.waveform import analyze_waveform
+from kumiki.ui.main_window import MainWindow
 from tests.media_fixtures import make_silent_gap
 
 RATE = FrameRate(30)
@@ -146,8 +146,8 @@ class TestSubtitleFlow:
         assert_subtitles_point_at_the_same_audio(window._document.project, media)
 
         # --- 保存して読み直す ---
-        saved = tmp_path / "字幕.nvep"
-        from novaedit.core.io import save_project
+        saved = tmp_path / "字幕.kmk"
+        from kumiki.core.io import save_project
 
         save_project(window._document.project, saved)
         reopened = load_project(saved)

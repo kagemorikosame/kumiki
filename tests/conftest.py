@@ -10,7 +10,7 @@ import pytest
 from PySide6.QtGui import QSurfaceFormat
 from PySide6.QtWidgets import QApplication
 
-from novaedit.core.model import (
+from kumiki.core.model import (
     AudioStreamInfo,
     Clip,
     MediaItem,
@@ -22,9 +22,9 @@ from novaedit.core.model import (
     TranscriptSegment,
     VideoStreamInfo,
 )
-from novaedit.core.timebase import FrameRate
-from novaedit.effects import registry
-from novaedit.engine.gpu import preferred_surface_format
+from kumiki.core.timebase import FrameRate
+from kumiki.effects import registry
+from kumiki.engine.gpu import preferred_surface_format
 from tests.media_fixtures import SampleMedia, ffmpeg_available, make_sample
 
 RATE_30 = FrameRate(30)

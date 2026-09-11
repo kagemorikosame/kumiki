@@ -1,0 +1,434 @@
+"""エフェクトとパラメータの操作。
+
+パラメータの指し方を :class:`ParamPath` に統一してある。クリップ自身の値も、
+エフェクトの値も、生成オブジェクトの値も同じ形で指せるので、設定 UI も
+キーフレーム編集も AI エージェントも 1 種類のコマンドで済む。
+
+指す先ごとにコマンドを分けると、キーフレームの追加だけで 3 種類を書くことになり、
+どれか 1 つの実装が遅れて「エフェクトはアニメーションするがテキストはしない」
+といったちぐはぐが生まれる。
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass, replace
+from enum import Enum
+from typing import cast
+
+from kumiki.core.commands.base import Command
+from kumiki.core.model import (
+    AnimatedValue,
+    Clip,
+    ClipId,
+    Effect,
+    EffectId,
+    GeneratedSource,
+    Interpolation,
+    Keyframe,
+    ParamValue,
+    Project,
+)
+
+__all__ = [
+    "AddEffect",
+    "ClearKeyframes",
+    "MoveEffect",
+    "MoveKeyframe",
+    "ParamPath",
+    "ParamTarget",
+    "RemoveEffect",
+    "RemoveKeyframe",
+    "SetClipProperty",
+    "SetEffectEnabled",
+    "SetKeyframe",
+    "SetParam",
+    "SetSource",
+    "resolve_param",
+]
+
+
+class ParamTarget(Enum):
+    """パラメータがどこに属しているか。"""
+
+    #: クリップに積んだエフェクトの値。
+    EFFECT = "effect"
+    #: 生成オブジェクト（テキスト・図形）の値。
+    SOURCE = "source"
+    #: クリップ自身の値（不透明度など）。
+    CLIP = "clip"
+
+
+@dataclass(frozen=True, slots=True)
+class ParamPath:
+    """1 つのパラメータの在りか。"""
+
+    clip_id: ClipId
+    target: ParamTarget
+    name: str
+    #: ``target`` が :attr:`ParamTarget.EFFECT` のときだけ意味を持つ。
+    effect_id: EffectId | None = None
+
+    def __post_init__(self) -> None:
+        if self.target is ParamTarget.EFFECT and self.effect_id is None:
+            raise ValueError("エフェクトのパラメータには effect_id が要る")
+
+    @classmethod
+    def of_effect(cls, clip_id: ClipId, effect_id: EffectId, name: str) -> ParamPath:
+        return cls(clip_id, ParamTarget.EFFECT, name, effect_id)
+
+    @classmethod
+    def of_source(cls, clip_id: ClipId, name: str) -> ParamPath:
+        return cls(clip_id, ParamTarget.SOURCE, name)
+
+    @classmethod
+    def of_clip(cls, clip_id: ClipId, name: str) -> ParamPath:
+        return cls(clip_id, ParamTarget.CLIP, name)
+
+
+def resolve_param(project: Project, path: ParamPath) -> ParamValue | None:
+    """今の値を読む。見つからなければ ``None``。"""
+    located = project.timeline.locate_clip(path.clip_id)
+    if located is None:
+        return None
+    _, clip = located
+
+    if path.target is ParamTarget.CLIP:
+        return getattr(clip, path.name, None)
+    if path.target is ParamTarget.SOURCE:
+        return clip.source.params.get(path.name) if clip.source is not None else None
+
+    effect = _find_effect(clip, path.effect_id)
+    return effect.params.get(path.name) if effect is not None else None
+
+
+@dataclass(frozen=True, slots=True)
+class SetParam(Command):
+    """パラメータの値を差し替える。
+
+    キーフレームの付いた値に対して呼ぶと、アニメーションを捨てて静的な値になる。
+    スライダーを触ったときの挙動としてはそれが自然（キーフレームを残したまま
+    値だけ変えると、次のフレームで元へ戻って「効かない」ように見える）。
+    """
+
+    path: ParamPath
+    value: ParamValue
+
+    @property
+    def label(self) -> str:
+        return f"{self.path.name} を変更"
+
+    def apply(self, project: Project) -> Project:
+        return _update_param(project, self.path, lambda _: self.value)
+
+
+@dataclass(frozen=True, slots=True)
+class SetKeyframe(Command):
+    """指定フレームにキーフレームを置く。すでにあれば差し替える。"""
+
+    path: ParamPath
+    frame: int
+    value: float
+    interpolation: Interpolation = Interpolation.LINEAR
+    control_points: tuple[float, float, float, float] | None = None
+
+    @property
+    def label(self) -> str:
+        return f"{self.path.name} にキーフレーム"
+
+    def apply(self, project: Project) -> Project:
+        keyframe = Keyframe(
+            frame=self.frame,
+            value=self.value,
+            interpolation=self.interpolation,
+            control_points=self.control_points,
+        )
+
+        def update(current: ParamValue | None) -> ParamValue:
+            animated = _as_animated(current)
+            others = tuple(k for k in animated.keyframes if k.frame != self.frame)
+            merged = tuple(sorted((*others, keyframe), key=lambda k: k.frame))
+            return AnimatedValue(static=animated.static, keyframes=merged)
+
+        return _update_param(project, self.path, update)
+
+
+@dataclass(frozen=True, slots=True)
+class RemoveKeyframe(Command):
+    """指定フレームのキーフレームを消す。
+
+    最後の 1 つを消したときは、その値を静的値として残す。0 に戻ると、
+    キーフレームを消した瞬間に絵が飛ぶ。
+    """
+
+    path: ParamPath
+    frame: int
+
+    @property
+    def label(self) -> str:
+        return f"{self.path.name} のキーフレームを削除"
+
+    def apply(self, project: Project) -> Project:
+        def update(current: ParamValue | None) -> ParamValue:
+            animated = _as_animated(current)
+            remaining = tuple(k for k in animated.keyframes if k.frame != self.frame)
+            if not remaining:
+                return AnimatedValue(static=animated.at(self.frame))
+            return AnimatedValue(static=animated.static, keyframes=remaining)
+
+        return _update_param(project, self.path, update)
+
+
+@dataclass(frozen=True, slots=True)
+class MoveKeyframe(Command):
+    """キーフレームを別のフレームへ動かし、値も変える。
+
+    グラフエディタで点をつまんで動かす操作。削除と設置の 2 手に分けると、
+    ドラッグ 1 回で履歴が 2 段積まれる。
+    """
+
+    path: ParamPath
+    from_frame: int
+    to_frame: int
+    value: float
+
+    @property
+    def label(self) -> str:
+        return f"{self.path.name} のキーフレームを移動"
+
+    def apply(self, project: Project) -> Project:
+        def update(current: ParamValue | None) -> ParamValue:
+            animated = _as_animated(current)
+            moving = next((k for k in animated.keyframes if k.frame == self.from_frame), None)
+            if moving is None:
+                raise KeyError(f"キーフレームが見つからない: {self.from_frame}")
+
+            # 移動先に別の点があれば、それを置き換える。重なった 2 点は
+            # モデル側の検査で弾かれる。
+            others = tuple(
+                k for k in animated.keyframes if k.frame not in (self.from_frame, self.to_frame)
+            )
+            moved = replace(moving, frame=max(0, self.to_frame), value=self.value)
+            merged = tuple(sorted((*others, moved), key=lambda k: k.frame))
+            return AnimatedValue(static=animated.static, keyframes=merged)
+
+        return _update_param(project, self.path, update)
+
+
+@dataclass(frozen=True, slots=True)
+class ClearKeyframes(Command):
+    """アニメーションを解除し、その時点の値で固定する。"""
+
+    path: ParamPath
+    frame: int = 0
+
+    @property
+    def label(self) -> str:
+        return f"{self.path.name} のアニメーションを解除"
+
+    def apply(self, project: Project) -> Project:
+        def update(current: ParamValue | None) -> ParamValue:
+            animated = _as_animated(current)
+            return AnimatedValue(static=animated.at(self.frame))
+
+        return _update_param(project, self.path, update)
+
+
+@dataclass(frozen=True, slots=True)
+class AddEffect(Command):
+    """クリップにエフェクトを積む。``index`` が ``None`` なら末尾。"""
+
+    clip_id: ClipId
+    effect: Effect
+    index: int | None = None
+
+    @property
+    def label(self) -> str:
+        return "エフェクトを追加"
+
+    def apply(self, project: Project) -> Project:
+        def update(clip: Clip) -> Clip:
+            effects = list(clip.effects)
+            effects.insert(len(effects) if self.index is None else self.index, self.effect)
+            return replace(clip, effects=tuple(effects))
+
+        return _update_clip(project, self.clip_id, update)
+
+
+@dataclass(frozen=True, slots=True)
+class RemoveEffect(Command):
+    clip_id: ClipId
+    effect_id: EffectId
+
+    @property
+    def label(self) -> str:
+        return "エフェクトを削除"
+
+    def apply(self, project: Project) -> Project:
+        def update(clip: Clip) -> Clip:
+            remaining = tuple(e for e in clip.effects if e.id != self.effect_id)
+            if len(remaining) == len(clip.effects):
+                raise KeyError(f"エフェクトが見つからない: {self.effect_id}")
+            return replace(clip, effects=remaining)
+
+        return _update_clip(project, self.clip_id, update)
+
+
+@dataclass(frozen=True, slots=True)
+class MoveEffect(Command):
+    """エフェクトの順番を変える。
+
+    順番は結果に効く。ぼかしてから色を変えるのと、色を変えてからぼかすのは
+    別の絵になる。
+    """
+
+    clip_id: ClipId
+    effect_id: EffectId
+    index: int
+
+    @property
+    def label(self) -> str:
+        return "エフェクトの順番を変更"
+
+    def apply(self, project: Project) -> Project:
+        def update(clip: Clip) -> Clip:
+            effects = list(clip.effects)
+            for position, effect in enumerate(effects):
+                if effect.id == self.effect_id:
+                    effects.pop(position)
+                    effects.insert(max(0, min(self.index, len(effects))), effect)
+                    return replace(clip, effects=tuple(effects))
+            raise KeyError(f"エフェクトが見つからない: {self.effect_id}")
+
+        return _update_clip(project, self.clip_id, update)
+
+
+@dataclass(frozen=True, slots=True)
+class SetEffectEnabled(Command):
+    """エフェクトの有効・無効を切り替える。
+
+    消さずに切れるようにしておくと、掛ける前と後を見比べられる。
+    """
+
+    clip_id: ClipId
+    effect_id: EffectId
+    enabled: bool
+
+    @property
+    def label(self) -> str:
+        return "エフェクトを有効化" if self.enabled else "エフェクトを無効化"
+
+    def apply(self, project: Project) -> Project:
+        def update(clip: Clip) -> Clip:
+            effects = tuple(
+                replace(e, enabled=self.enabled) if e.id == self.effect_id else e
+                for e in clip.effects
+            )
+            return replace(clip, effects=effects)
+
+        return _update_clip(project, self.clip_id, update)
+
+
+@dataclass(frozen=True, slots=True)
+class SetSource(Command):
+    """生成オブジェクトを差し替える。テキストや図形を置くときに使う。"""
+
+    clip_id: ClipId
+    source: GeneratedSource | None
+
+    @property
+    def label(self) -> str:
+        return "内容を変更"
+
+    def apply(self, project: Project) -> Project:
+        return _update_clip(project, self.clip_id, lambda clip: replace(clip, source=self.source))
+
+
+@dataclass(frozen=True, slots=True)
+class SetClipProperty(Command):
+    """クリップ自身の設定を変える。合成方法や速度など。"""
+
+    clip_id: ClipId
+    name: str
+    value: object
+
+    #: 変更を許す項目。任意の属性を書き換えられると、位置や長さを
+    #: 検査なしで壊せてしまう。
+    ALLOWED = ("blend_mode", "speed", "enabled", "stream_index")
+
+    @property
+    def label(self) -> str:
+        return f"クリップの {self.name} を変更"
+
+    def apply(self, project: Project) -> Project:
+        if self.name not in self.ALLOWED:
+            raise ValueError(f"変更できない項目: {self.name}")
+        return _update_clip(
+            project, self.clip_id, lambda clip: _replace_named(clip, **{self.name: self.value})
+        )
+
+
+# --- 補助 -----------------------------------------------------------------
+
+#: 項目名が実行時に決まる差し替え。``dataclasses.replace`` に静的な型は付かないので、
+#: ここ 1 箇所で外す。呼び出し側は名前の妥当性を自分で確かめること。
+_replace_named = cast("Callable[..., Clip]", replace)
+
+
+def _find_effect(clip: Clip, effect_id: EffectId | None) -> Effect | None:
+    return next((e for e in clip.effects if e.id == effect_id), None)
+
+
+def _as_animated(value: ParamValue | None) -> AnimatedValue:
+    """数値パラメータをアニメーション値として扱う。
+
+    静的な数値にキーフレームを打つ操作を、特別扱いせずに書けるようにする。
+    """
+    if isinstance(value, AnimatedValue):
+        return value
+    if isinstance(value, bool):
+        return AnimatedValue(static=float(value))
+    if isinstance(value, int | float):
+        return AnimatedValue(static=float(value))
+    return AnimatedValue()
+
+
+def _update_clip(project: Project, clip_id: ClipId, update: Callable[[Clip], Clip]) -> Project:
+    """クリップ 1 つを差し替える。"""
+    located = project.timeline.locate_clip(clip_id)
+    if located is None:
+        raise KeyError(f"クリップが見つからない: {clip_id}")
+    track, clip = located
+
+    updated = update(clip)
+    others = tuple(c for c in track.clips if c.id != clip.id)
+    return project.with_timeline(
+        project.timeline.replace_track(track.with_clips((*others, updated)))
+    )
+
+
+def _update_param(
+    project: Project, path: ParamPath, update: Callable[[ParamValue | None], ParamValue]
+) -> Project:
+    """パラメータ 1 つを差し替える。指す先ごとの違いをここに閉じ込める。"""
+
+    def change(clip: Clip) -> Clip:
+        if path.target is ParamTarget.CLIP:
+            if not hasattr(clip, path.name):
+                raise KeyError(f"クリップにその項目は無い: {path.name}")
+            return _replace_named(clip, **{path.name: update(getattr(clip, path.name))})
+
+        if path.target is ParamTarget.SOURCE:
+            if clip.source is None:
+                raise KeyError("生成オブジェクトを持たないクリップ")
+            current = clip.source.params.get(path.name)
+            return replace(clip, source=clip.source.with_param(path.name, update(current)))
+
+        effect = _find_effect(clip, path.effect_id)
+        if effect is None:
+            raise KeyError(f"エフェクトが見つからない: {path.effect_id}")
+        updated = effect.with_param(path.name, update(effect.params.get(path.name)))
+        effects = tuple(updated if e.id == effect.id else e for e in clip.effects)
+        return replace(clip, effects=effects)
+
+    return _update_clip(project, path.clip_id, change)

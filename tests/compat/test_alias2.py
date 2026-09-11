@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import pytest
 
-from novaedit.compat.aviutl.exo import parse_exo
-from novaedit.compat.aviutl.mapping import map_object
-from novaedit.compat.aviutl.report import CompatibilityReport
-from novaedit.core.model import AnimatedValue
-from novaedit.core.timebase import FrameRate
+from kumiki.compat.aviutl.exo import parse_exo
+from kumiki.compat.aviutl.mapping import map_object
+from kumiki.compat.aviutl.report import CompatibilityReport
+from kumiki.core.model import AnimatedValue
+from kumiki.core.timebase import FrameRate
 
 RATE = FrameRate(30)
 

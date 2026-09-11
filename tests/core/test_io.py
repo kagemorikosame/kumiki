@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from novaedit.core.commands import AddClip, AddMedia, AddTrack, SetTranscript
-from novaedit.core.io import (
+from kumiki.core.commands import AddClip, AddMedia, AddTrack, SetTranscript
+from kumiki.core.io import (
     FORMAT_NAME,
     FORMAT_VERSION,
     ProjectFileError,
@@ -19,7 +19,7 @@ from novaedit.core.io import (
     project_to_dict,
     save_project,
 )
-from novaedit.core.model import (
+from kumiki.core.model import (
     AnimatedValue,
     Clip,
     Effect,
@@ -35,7 +35,7 @@ from novaedit.core.model import (
     TranscriptSegment,
     Word,
 )
-from novaedit.core.timebase import FrameRate
+from kumiki.core.timebase import FrameRate
 from tests.conftest import make_clip
 
 
@@ -116,13 +116,13 @@ class TestRoundTrip:
         assert project_from_dict(project_to_dict(rich_project)) == rich_project
 
     def test_survives_a_file(self, rich_project: Project, tmp_path: Path) -> None:
-        path = tmp_path / "配信回_07.nvep"
+        path = tmp_path / "配信回_07.kmk"
         save_project(rich_project, path)
         assert load_project(path) == rich_project
 
     def test_repeated_save_load_is_stable(self, rich_project: Project, tmp_path: Path) -> None:
         # 分数を浮動小数で書き出していると、往復のたびに値が動く。
-        path = tmp_path / "p.nvep"
+        path = tmp_path / "p.kmk"
         current = rich_project
         for _ in range(5):
             save_project(current, path)
@@ -132,7 +132,7 @@ class TestRoundTrip:
     def test_fractions_are_written_as_strings(self, tmp_path: Path) -> None:
         settings = ProjectSettings(frame_rate=FrameRate(30000, 1001))
         project = Project.create(settings)
-        path = tmp_path / "ntsc.nvep"
+        path = tmp_path / "ntsc.kmk"
         save_project(project, path)
 
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -141,39 +141,39 @@ class TestRoundTrip:
 
     def test_japanese_is_not_escaped(self, rich_project: Project, tmp_path: Path) -> None:
         # 手で読める・手で直せることが JSON にした理由なので、ここは崩さない。
-        path = tmp_path / "p.nvep"
+        path = tmp_path / "p.kmk"
         save_project(rich_project, path)
         assert "配信回_07" in path.read_text(encoding="utf-8")
 
 
 class TestFileHandling:
     def test_creates_parent_directories(self, tmp_path: Path) -> None:
-        path = tmp_path / "深い" / "階層" / "p.nvep"
+        path = tmp_path / "深い" / "階層" / "p.kmk"
         save_project(Project.create(), path)
         assert path.exists()
 
     def test_no_temporary_file_is_left_behind(self, tmp_path: Path) -> None:
-        path = tmp_path / "p.nvep"
+        path = tmp_path / "p.kmk"
         save_project(Project.create(), path)
-        assert [p.name for p in tmp_path.iterdir()] == ["p.nvep"]
+        assert [p.name for p in tmp_path.iterdir()] == ["p.kmk"]
 
     def test_overwrites_existing_file(self, tmp_path: Path) -> None:
-        path = tmp_path / "p.nvep"
+        path = tmp_path / "p.kmk"
         save_project(Project.create(name="一回目"), path)
         save_project(Project.create(name="二回目"), path)
         assert load_project(path).name == "二回目"
 
     def test_untitled_project_takes_its_filename(self, tmp_path: Path) -> None:
-        path = tmp_path / "夏の思い出.nvep"
+        path = tmp_path / "夏の思い出.kmk"
         save_project(Project.create(), path)
         assert load_project(path).name == "夏の思い出"
 
     def test_missing_file(self, tmp_path: Path) -> None:
         with pytest.raises(ProjectFileError, match="開けない"):
-            load_project(tmp_path / "無い.nvep")
+            load_project(tmp_path / "無い.kmk")
 
     def test_not_json(self, tmp_path: Path) -> None:
-        path = tmp_path / "p.nvep"
+        path = tmp_path / "p.kmk"
         path.write_text("これは JSON ではない", encoding="utf-8")
         with pytest.raises(ProjectFileError, match="JSON として読めない"):
             load_project(path)

@@ -26,10 +26,10 @@ from typing import Any
 
 import pytest
 
-from novaedit.compat.aviutl.report import CompatibilityReport
-from novaedit.compat.ymm4.decorations import map_decorations, map_video_effects
-from novaedit.compat.ymm4.template import Ymm4ParseError, load_template, map_template
-from novaedit.compat.ymm4.values import (
+from kumiki.compat.aviutl.report import CompatibilityReport
+from kumiki.compat.ymm4.decorations import map_decorations, map_video_effects
+from kumiki.compat.ymm4.template import Ymm4ParseError, load_template, map_template
+from kumiki.compat.ymm4.values import (
     animated,
     brush_colour,
     colour,
@@ -38,7 +38,7 @@ from novaedit.compat.ymm4.values import (
     number,
     type_name,
 )
-from novaedit.core.model import AnimatedValue, Interpolation
+from kumiki.core.model import AnimatedValue, Interpolation
 
 #: 実物と同じ書き方のブラシ。
 BRUSH = {

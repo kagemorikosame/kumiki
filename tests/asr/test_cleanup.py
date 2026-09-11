@@ -9,8 +9,8 @@ from fractions import Fraction
 
 import pytest
 
-from novaedit.asr.cleanup import CleanupOptions, clean_text, clean_transcript, wrap_text
-from novaedit.core.model import Transcript, TranscriptSegment
+from kumiki.asr.cleanup import CleanupOptions, clean_text, clean_transcript, wrap_text
+from kumiki.core.model import Transcript, TranscriptSegment
 
 
 class TestFillerRemoval:

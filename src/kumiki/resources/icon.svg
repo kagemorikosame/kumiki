@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <title>Kumiki</title>
+  <desc>アプリのアイコン。組木の印を角丸の地に載せたもの。</desc>
+
+  <!--
+    タスクバーやデスクトップ用。地の色を敷くのは、明るい壁紙の上でも
+    印が消えないようにするため（印だけだと細い棒が背景に紛れる）。
+
+    印の形は assets/logo.svg と同じ。地に載せるぶんだけ少し縮めてある。
+  -->
+
+  <defs>
+    <linearGradient id="ground" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2A2A31"/>
+      <stop offset="1" stop-color="#1B1B1E"/>
+    </linearGradient>
+    <!-- 切り抜きは印の座標系（変形の内側）で効くので、logo.svg と同じ数字。 -->
+    <clipPath id="lap">
+      <circle cx="82" cy="48.3" r="36"/>
+    </clipPath>
+  </defs>
+
+  <rect width="256" height="256" rx="56" fill="url(#ground)"/>
+
+  <!-- 印を 0.8 倍して中央へ（256 の中心に対して 25.6 ずらす） -->
+  <g transform="translate(25.6 25.6) scale(0.8)" stroke-width="33" stroke-linecap="round" fill="none">
+    <line x1="69" y1="40.8" x2="233" y2="135.5" stroke="#8E9BF5"/>
+    <line x1="233" y1="120.5" x2="69" y2="215.2" stroke="#6C79E0"/>
+    <line x1="82" y1="222.7" x2="82" y2="33.3" stroke="#F0A85C"/>
+    <g clip-path="url(#lap)">
+      <line x1="69" y1="40.8" x2="233" y2="135.5" stroke="#8E9BF5"/>
+    </g>
+  </g>
+</svg>

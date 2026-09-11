@@ -13,11 +13,11 @@ from pathlib import Path
 
 import pytest
 
-from novaedit.compat.aviutl.exo import load_exo
-from novaedit.compat.aviutl.mapping import map_object
-from novaedit.compat.aviutl.report import CompatibilityReport
-from novaedit.compat.mapped import MappedObject
-from novaedit.core.timebase import FrameRate
+from kumiki.compat.aviutl.exo import load_exo
+from kumiki.compat.aviutl.mapping import map_object
+from kumiki.compat.aviutl.report import CompatibilityReport
+from kumiki.compat.mapped import MappedObject
+from kumiki.core.timebase import FrameRate
 
 
 def alias_root() -> Path | None:

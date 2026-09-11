@@ -1,6 +1,15 @@
-# NovaEdit
+<img src="docs/logo.png" width="96" align="left" alt="Kumiki">
+
+# Kumiki（組木）
 
 Python 製の動画編集ソフト。AviUtl の表現力、Premiere の操作性、AI エージェントによる編集自動化を 1 つにまとめることを目指しています。
+
+<br clear="left">
+
+名前は日本の木工技法「組木」から。釘を使わず、小さな木片を組み合わせて 1 つの形にする技法です。
+小さな素材を組み上げて 1 本の動画にすること、そして AviUtl のスクリプトや YMM4 のテンプレートと
+自作のものが同じ仕組みに嵌まることの両方を指しています。
+ロゴの三本の棒は互いに組まれていて、中央の空きが再生の記号になっています。
 
 ![編集画面](docs/screenshot.png)
 
@@ -14,12 +23,12 @@ Python 製の動画編集ソフト。AviUtl の表現力、Premiere の操作性
 - GPU 合成によるプレビュー（リニア空間、再生品質の切り替え）
 - 音声再生（オーディオを時計にした A/V 同期）
 - NVENC / CPU での書き出し
-- プロジェクトの保存・読み込み（`.nvep`）と Undo / Redo
+- プロジェクトの保存・読み込み（`.kmk`）と Undo / Redo
 - エフェクト 17 種（色調補正・ぼかし・方向ぼかし・グロー・クロマキー・輝度キー・変形・クリッピング・縁取り・影・グラデーション・単色塗り・不透明度・シャープ・ノイズ・モザイク・マスク）
 - キーフレームアニメーションとグラフエディタ（直線・曲線・加減速・瞬間移動）
 - テキストと図形オブジェクト（縁取り・影・行揃え・縦の基準・縦書き・文字送り、8 種の図形）
 - パラメータ定義から自動生成される設定 UI
-- エフェクト構成のプリセット保存（`.nvpreset`）
+- エフェクト構成のプリセット保存（`.kmkp`）
 - 字幕起こし（faster-whisper）、フィラー語の除去と改行整形、無音カット、SRT / VTT / テキスト書き出し、タイムラインへの焼き込み
 - ソフト内の AI アシスタント。話しかけると実際に編集し、結果を自分で見て確認する
 - AviUtl のスクリプト実行（Lua 5.1）と、`.exo` / `.exa` / `.object` の読み込み
@@ -77,7 +86,7 @@ GPU を使わない選択もでき、その場合は CUDA ランタイム（約 
 ```
 
 パッケージ版（PyInstaller）では実行ファイルの中へは書き込めないので、
-`%LOCALAPPDATA%\NovaEdit\runtime` へ入れ、起動時にそのフォルダを import パスへ足します。
+`%LOCALAPPDATA%\Kumiki\runtime` へ入れ、起動時にそのフォルダを import パスへ足します。
 
 ## AI アシスタント
 
@@ -160,7 +169,7 @@ AviUtl のアニメーション効果（`.anm` / `.anm2`）をそのまま実行
 | オブジェクト | `.exo` / `.exa` の読み込み（テキスト・図形・フィルタ・描画設定・レイヤー） |
 | 文字コード | Shift_JIS と UTF-8 を中身から自動判別 |
 
-スクリプトは `%APPDATA%\NovaEdit\scripts` に置きます。AviUtl2 が入っていれば
+スクリプトは `%APPDATA%\Kumiki\scripts` に置きます。AviUtl2 が入っていれば
 `%PROGRAMDATA%\aviutl2\Script` も自動で見に行くので、**手元の資産をコピーせずに
 そのまま使えます**。
 
@@ -199,7 +208,7 @@ AviUtl のアニメーション効果（`.anm` / `.anm2`）をそのまま実行
 - AviUtl のエイリアス — `%PROGRAMDATA%\aviutl2\Alias` にある `.exa` `.exa2` `.object`
 - YMM4 のアイテムテンプレート — `%LOCALAPPDATA%\YukkuriMovieMaker\ItemTemplate` の `.ymmt`
 
-自分で追加するものは `%APPDATA%\NovaEdit\templates` に置いてください。
+自分で追加するものは `%APPDATA%\Kumiki\templates` に置いてください。
 
 ### 「置く」と「着せる」
 
@@ -324,7 +333,7 @@ python -m venv .venv
 ## 起動
 
 ```bash
-.venv\Scripts\python.exe -m novaedit
+.venv\Scripts\python.exe -m kumiki
 ```
 
 プロジェクトファイルを引数に渡すと、それを開いた状態で起動します。

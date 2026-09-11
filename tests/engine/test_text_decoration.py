@@ -9,8 +9,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from novaedit.core.model import AnimatedValue, GeneratedSource
-from novaedit.engine.sources import render_source
+from kumiki.core.model import AnimatedValue, GeneratedSource
+from kumiki.engine.sources import render_source
 
 SIZE = (320, 240)
 
