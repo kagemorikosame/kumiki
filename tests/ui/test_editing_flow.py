@@ -161,6 +161,7 @@ class TestSaveAndExport:
         assert _clip_counts(reloaded) == _clip_counts(window._document.project)
         assert reloaded.duration == window._document.project.duration
 
+    @pytest.mark.usefixtures("gpu")
     def test_export_produces_a_file(
         self, window: MainWindow, two_clips: tuple[SampleMedia, SampleMedia], tmp_path: Path
     ) -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Iterator
 from fractions import Fraction
 from pathlib import Path
@@ -24,7 +25,7 @@ from kumiki.core.model import (
 )
 from kumiki.core.timebase import FrameRate
 from kumiki.effects import registry
-from kumiki.engine.gpu import preferred_surface_format
+from kumiki.engine.gpu import GLContextError, OffscreenGLContext, preferred_surface_format
 from tests.media_fixtures import SampleMedia, ffmpeg_available, make_sample
 
 RATE_30 = FrameRate(30)
@@ -147,6 +148,35 @@ def make_clip(start: int, duration: int, media: MediaItem, source_in: int = 0) -
         media_id=media.id,
         source_in=Fraction(source_in),
     )
+
+
+@functools.cache
+def gpu_available() -> bool:
+    """OpenGL 4.3 が本当に使えるか。1 セッションで 1 度だけ確かめる。
+
+    GPU の無い環境（CI など）でも Qt はコンテキストを「作れて」しまう。
+    :class:`OffscreenGLContext` は作った直後に関数が呼べるかまで確かめて
+    :class:`GLContextError` を出すので、それを見て判断する。
+
+    書き出しのように**内部で**コンテキストを作るテストは、自前の ``gl``
+    フィクスチャを持たない。そういうテストはこれで飛ばす。
+    """
+    try:
+        context = OffscreenGLContext()
+    except GLContextError:
+        return False
+    context.release()
+    return True
+
+
+@pytest.fixture
+def gpu() -> None:
+    """GPU が要るテストに付ける。無い環境では失敗ではなく飛ばす。
+
+    ``pytestmark = pytest.mark.usefixtures("gpu")`` でモジュールごと付けられる。
+    """
+    if not gpu_available():
+        pytest.skip("OpenGL 4.3 が使えない（GPU ドライバが無い環境）")
 
 
 @pytest.fixture(scope="session")
