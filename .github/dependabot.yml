@@ -1,0 +1,35 @@
+# 依存の更新を自動で提案させる。
+#
+# 公開リポジトリなので、外から見える依存が古いままだと
+# 「既知の脆弱性が放置されている」状態がそのまま晒される。
+
+version: 2
+updates:
+  # GitHub Actions。ここを放置すると、CI が古い実行環境のまま動き続ける。
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    labels: ["dependencies"]
+    commit-message:
+      prefix: "ci"
+
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: monthly
+    labels: ["dependencies"]
+    commit-message:
+      prefix: "deps"
+    # 開発用の道具は、まとめて 1 本の PR にする。
+    # 個別に来ると PR が溢れて、本題のレビューが埋もれる。
+    groups:
+      dev-tools:
+        patterns: ["ruff", "mypy", "pytest*", "hypothesis"]
+    # PySide6 と PyAV は版が上がると描画や復号の挙動が変わる。
+    # 自動では上げず、手元で実素材を通してから判断する。
+    ignore:
+      - dependency-name: "PySide6"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "av"
+        update-types: ["version-update:semver-major"]

@@ -192,6 +192,10 @@ YMM4 互換を、実配布の .ymmt に合わせて書き直す
 
 ## 7. リリース
 
-正式リリースの条件と残りの課題は Obsidian の
-`J:\タスク資料\Task\自作動画編集ソフトプロジェクト\実装ロードマップ.md` を見る。
-自動更新の設計は計画書の F-12。
+正式リリースの条件と残っている課題は
+[Issues](https://github.com/kagemorikosame/kumiki/issues) と
+[マイルストーン](https://github.com/kagemorikosame/kumiki/milestones)で追う。
+
+いまは **β 版**。作りが大きく変わることがある。互換の穴（AviUtl / YMM4 で
+まだ再現できていないもの）は、実際に呼ばれた回数つきで Issue に出す。
+数の多い順に埋める方針なので、回数が書かれていないと優先順位が付けられない。
