@@ -22,7 +22,7 @@ dependencies = [
 asr = [
     # 字幕起こしの実行環境。既定では入れない（合計で 2 GB を超えるため）。
     # ソフト内の「環境を導入」ボタンから、必要になった時点で入れる。
-    "faster-whisper>=1.1",
+    "faster-whisper>=1.2.1",
     "nvidia-cublas-cu12",
     "nvidia-cudnn-cu12>=9.1",
 ]
