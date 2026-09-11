@@ -1,0 +1,48 @@
+name: 機能の要望
+description: こういうことができるようにしてほしい
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        要望ありがとうございます。**何を作りたくて困っているか**が分かると、
+        提案された形とは別の、もっと良い解き方が見つかることがあります。
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: いま何に困っていますか
+      description: 機能の名前ではなく、困っている状況を書いてください。
+      placeholder: 例）同じテロップを 30 個作るのに、毎回同じ設定を手で入れている
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: どうなれば解決しそうですか
+      placeholder: 例）1 つ作ったら、それを「型」として保存して使い回したい
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: いまはどうやって凌いでいますか
+      description: 回避策があるか、他のソフトではどうなっているか。
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: どのあたりの話ですか
+      options:
+        - タイムライン・編集操作
+        - エフェクト・アニメーション
+        - テキスト・字幕
+        - 音声
+        - 書き出し
+        - AviUtl / YMM4 の互換
+        - AI アシスタント
+        - その他・分からない
+    validations:
+      required: true

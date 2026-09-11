@@ -1,0 +1,55 @@
+name: CI
+
+# 手元と同じものを走らせる。CI だけ別の手順にすると、どちらかが必ず腐る。
+#   .venv\Scripts\python.exe tools\verify.py
+# = ruff（書式・規約）→ mypy（strict）→ pytest
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # 同じブランチへ続けて push したとき、古い実行を止める。
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    # Windows 専用のソフトなので、Windows で検証する。
+    runs-on: windows-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.12 は pyproject が宣言している下限。ここで確かめないと宣言が嘘になる。
+        # 3.14 は実際に開発と配布に使う版。
+        python: ["3.12", "3.14"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: 依存を入れる
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+
+      - name: ffmpeg を入れる
+        # 素材を使うテストが要る。無くても各テストが自分で飛ばすので、
+        # ここが失敗しても CI 全体は止めない。
+        continue-on-error: true
+        run: choco install ffmpeg -y --no-progress
+
+      - name: 検証
+        # GPU が無いので OpenGL のテストは自分で飛ぶ。ruff・mypy と、
+        # GL を使わないテストはすべて走る。
+        run: python tools/verify.py
+
+      - name: 何件通ったかを残す
+        if: always()
+        run: python -m pytest -q --no-header -p no:cacheprovider | Select-Object -Last 5
+        shell: pwsh

@@ -1,0 +1,82 @@
+name: 不具合の報告
+description: 動かない・落ちる・思った通りにならない
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        報告ありがとうございます。**再現する手順**が分かると直せる可能性がぐっと上がります。
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 何が起きましたか
+      placeholder: 例）字幕テンプレートを適用すると、文字が画面の外に出てしまう
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 再現する手順
+      placeholder: |
+        1. 素材を読み込む
+        2. 〔互換〕→〔テンプレート…〕を開く
+        3. 「01_Premiere風_標準字幕」を選んで〔タイムラインへ置く〕
+        4. 文字が画面の上に出る
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: どうなるはずだと思いましたか
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Kumiki の版
+      description: 〔ヘルプ〕→〔バージョン情報〕、または実行ファイルの名前
+      placeholder: 0.1.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options:
+        - Windows 11
+        - Windows 10
+        - その他（下に書いてください）
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: 環境（分かる範囲で）
+      description: GPU、他ソフト（AviUtl2 / YMM4）を入れているか、など
+      placeholder: |
+        GPU: RTX 5060 Ti
+        AviUtl2: 入れている（スクリプトあり）
+        YMM4: 入れていない
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: エラーの表示・互換性レポート
+      description: |
+        画面にエラーが出た場合はその文面を。
+        AviUtl / YMM4 の素材まわりなら〔互換〕→〔互換性レポート…〕の内容も。
+      render: text
+
+  - type: textarea
+    id: files
+    attributes:
+      label: 関係するファイル
+      description: |
+        プロジェクト（`.kmk`）やスクリプトを貼れると助かります。
+        **他人が作った配布物は、再配布の条件を確認してから貼ってください。**

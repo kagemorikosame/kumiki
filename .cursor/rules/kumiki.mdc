@@ -1,0 +1,20 @@
+---
+description: Kumiki の開発ルール
+globs:
+  - "**/*.py"
+alwaysApply: true
+---
+
+開発ルールの大本は `docs/development.md`。以下はそのうち特に外しやすい点。
+
+- Python は `.venv\Scripts\python.exe` を使う。素の `python` はランチャースタブで
+  応答が返らない
+- 実装したら `.venv\Scripts\python.exe tools\verify.py` を走らせる
+  （ruff → mypy strict → pytest）
+- コメントは日本語で「なぜ」を書く。何をしているかはコードを読めば分かる
+- TODO をコードに残さない
+- コア層（`src/kumiki/core/`）は PySide6 を import しない
+- 変更は必ず `Command` 経由。モデルを直接書き換えない
+- 版の出どころは `src/kumiki/__init__.py` の `__version__` 1 か所だけ
+- Y 軸は上が正（テキスト・影・変形・マスクすべて）
+- PR はフェーズ単位。`phase/*` ブランチから `main` へ

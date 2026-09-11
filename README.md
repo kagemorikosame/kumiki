@@ -2,6 +2,8 @@
 
 # Kumiki（組木）
 
+[![CI](https://github.com/kagemorikosame/kumiki/actions/workflows/ci.yml/badge.svg)](https://github.com/kagemorikosame/kumiki/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 Python 製の動画編集ソフト。AviUtl の表現力、Premiere の操作性、AI エージェントによる編集自動化を 1 つにまとめることを目指しています。
 
 <br clear="left">
@@ -368,8 +370,17 @@ python -m venv .venv
 .venv\Scripts\python.exe tools\verify.py
 ```
 
-ruff・mypy・pytest をまとめて走らせます。テストは ffmpeg で実素材をその場に生成するので、
+ruff・mypy・pytest をまとめて走らせます。**CI もこれと同じものを走らせる**ので、
+手元で通れば CI でも通ります。テストは ffmpeg で実素材をその場に生成するので、
 バイナリはリポジトリに含まれていません。
+
+| | |
+|---|---|
+| 開発ルール | [docs/development.md](docs/development.md) |
+| PR の送り方 | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| 不具合・要望 | [Issue](../../issues/new/choose) |
+
+PR は**フェーズ単位**で、[CodeRabbit](https://coderabbit.ai/) の自動レビューが付きます。
 
 ## ライセンス
 

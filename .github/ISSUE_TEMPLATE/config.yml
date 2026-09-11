@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 使い方の質問・雑談
+    url: https://github.com/kagemorikosame/kumiki/discussions
+    about: 不具合か要望かはっきりしないことは、まずこちらへどうぞ。
+  - name: 開発に参加する
+    url: https://github.com/kagemorikosame/kumiki/blob/main/CONTRIBUTING.md
+    about: PR の送り方と開発ルール。

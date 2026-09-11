@@ -7,11 +7,12 @@ dist/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.hypothesis/
 .coverage
 htmlcov/
 
-# NovaEdit のキャッシュ・作業ファイル
-*.nvep.bak
+# Kumiki のキャッシュ・作業ファイル
+*.kmk.bak
 cache/
 proxies/
 *.peaks

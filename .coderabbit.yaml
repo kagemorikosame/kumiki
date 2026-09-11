@@ -1,0 +1,82 @@
+# CodeRabbit の設定。PR を出すと自動でレビューが付く。
+# 開発ルールの大本は docs/development.md。ここはその一部を機械に見させるもの。
+#
+# 使い方:
+#   - 追加で見てほしいとき  → PR で「@coderabbitai review」
+#   - 指摘に反論するとき    → そのコメントに返信する（会話できる）
+#
+# 指摘は読んで判断する。機械的に全部直すのでも、全部無視するのでもない。
+# 直さないときは理由を PR のコメントに残す。
+
+language: ja-JP
+
+reviews:
+  # 落ち着いた口調。細かい指摘を大量に出されると本題が埋もれる。
+  profile: chill
+
+  # レビューで PR を止めない。判断はこちらでする。
+  request_changes_workflow: false
+
+  high_level_summary: true
+  review_status: true
+  poem: false
+
+  auto_review:
+    enabled: true
+    # 書きかけ（draft）は見なくてよい。
+    drafts: false
+    base_branches:
+      - main
+
+  path_filters:
+    - "!**/*.png"
+    - "!**/*.ico"
+    - "!**/*.svg"
+    # 他人が作った配布物。こちらの書き方の基準では見ない。
+    - "!tests/fixtures/**"
+
+  path_instructions:
+    - path: "src/kumiki/**/*.py"
+      instructions: |
+        このプロジェクトの約束を見てください。
+
+        - コメントは日本語で「なぜそう書いたか」を説明するもの。
+          何をしているかを言い換えただけのコメントがあれば指摘してください。
+        - TODO / FIXME / XXX をコードに残さない方針です。あれば指摘してください。
+        - `src/kumiki/core/` は GUI に依存しません。ここで PySide6 を
+          import していたら指摘してください。
+        - モデル（Project / Timeline / Clip）の変更は必ず `Command` 経由です。
+          直接書き換えていたら指摘してください。
+        - 座標の Y は上が正です。新しく位置を扱うコードで下向きに
+          なっていないか見てください。
+        - 型は mypy strict で通ります。`type: ignore` に理由が
+          書かれていなければ指摘してください。
+
+    - path: "src/kumiki/compat/**/*.py"
+      instructions: |
+        他ソフト（AviUtl / YMM4）の資産を読む層です。
+
+        - 未対応のものを黙って捨てていないか見てください。
+          `CompatibilityReport` に記録してから先へ進むのが約束です。
+        - 例外で全体を止めていないか見てください。1 種類読めないだけで
+          ファイル全体が落ちるのは避けたい作りです。
+        - 形式の判定を、名前空間やアセンブリ名など版で変わるもので
+          行っていないか見てください（クラス名だけで振り分けます）。
+
+    - path: "tests/**/*.py"
+      instructions: |
+        テストの書き方の約束です。
+
+        - テスト名とコメントに「壊れたときに何が起きるか」が書かれているか
+          見てください。assert が通ることだけを書いたテストは指摘してください。
+        - 実行する機械の状態（GPU の有無、ffmpeg の有無、特定のフォルダの
+          存在）に依存するテストは、無いときに飛ぶようになっているか
+          見てください。
+
+    - path: ".github/workflows/*.yml"
+      instructions: |
+        CI は手元の `tools/verify.py` と同じものを走らせる方針です。
+        片方だけに検査が増えていたら指摘してください。
+
+chat:
+  auto_reply: true
