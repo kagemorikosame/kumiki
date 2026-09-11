@@ -1,28 +1,32 @@
 # Kumiki — コーディングエージェント向けの指示
 
-Codex など、`AGENTS.md` を読む道具向け。**内容は [CLAUDE.md](CLAUDE.md) と同じ。**
-開発ルールの大本は [docs/development.md](docs/development.md)。
+Codex など、`AGENTS.md` を読む道具向け **内容は [CLAUDE.md](CLAUDE.md) と同じ**
+開発ルールの大本は [docs/development.md](docs/development.md)
 
 ## 必ず守ること
 
-1. **Python は `.venv\Scripts\python.exe` を使う。**
-   素の `python` はランチャースタブで、標準入力から読ませると応答が返らない。
+1. **Python は `.venv\Scripts\python.exe` を使う**
+   素の `python` はランチャースタブで、標準入力から読ませると応答が返らない
 
-2. **実装したら `tools\verify.py` を走らせる。**
+2. **実装したら `tools\verify.py` を走らせる**
    ```
    .venv\Scripts\python.exe tools\verify.py
    ```
-   ruff → mypy(strict) → pytest。1 つでも落ちたら終了コードが非 0。
+   ruff → mypy(strict) → pytest 1 つでも落ちたら終了コードが非 0
 
-3. **コメントは日本語で「なぜ」を書く。** 何をしているかはコードを読めば分かる。
+3. **コメントは日本語で「なぜ」を書く** 何をしているかはコードを読めば分かる
 
-4. **TODO を残さない。** やり残しは Issue かロードマップへ。
+4. **文章に句点（まる）を使わない** コメント・docstring・文言・Markdown・コミットメッセージ・PR まで
+   文の途中は半角空白で区切る 字幕整形の句点の一覧やテストの入力データはデータなので残す
+   `tools\punctuation.py` が検査する（`--fix` で書き換え）
 
-5. **互換層（AviUtl / YMM4）は実物を通すまで完成としない。**
+5. **TODO を残さない** やり残しは Issue かロードマップへ
+
+6. **互換層（AviUtl / YMM4）は実物を通すまで完成としない**
 
 ## 作業の単位
 
-PR はフェーズ単位。`phase/*` ブランチを切って `main` へ。`main` へ直接 push しない。
+PR はフェーズ単位 `phase/*` ブランチを切って `main` へ `main` へ直接 push しない
 
 ## 覚えておくと早いこと
 
