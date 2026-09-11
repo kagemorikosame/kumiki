@@ -1,6 +1,8 @@
 [project]
 name = "novaedit"
-version = "0.0.1"
+# 版は src/novaedit/__init__.py の __version__ が唯一の出どころ。
+# 2 か所に書くと、更新の配布で必ずずれる（配った版と中身の版が食い違う）。
+dynamic = ["version"]
 description = "AviUtl 互換と AI エージェント連携を備えた Python 製の動画編集ソフト"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -42,6 +44,9 @@ novaedit = "novaedit.app:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/novaedit/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/novaedit"]
