@@ -1,93 +1,257 @@
-"""YMM4 のアイテムテンプレートと文字装飾。
+"""YMM4 のアイテムテンプレート。
 
-YMM4 は .NET のシリアライザで書き出すので、型が ``$type`` に入り、数値は
-「アニメーション」の形を取りうる。ここで検査しているのは、その 2 つの癖と、
-装飾の列をこちらの持ち物へどう分けるか。
+ここに並んでいるのは全部、**ネットで配布されている実物の ``.ymmt`` を読ませて
+見つかったもの**。最初は形式の推測で書いていて、実物では 1 本も読めなかった。
 
-このマシンに YMM4 は入っていないので、ここにあるのは**実ファイルではなく
-形式に沿って組んだもの**。だから振り分けはクラス名だけで行い、名前空間の
-違いで落ちないことも一緒に検査している。
+見つかった食い違いはどれも「知らなければ当たらない」たぐいのもので、
+
+* ``.ymmt`` は ZIP で、中の ``catalog.json`` が本体
+* 1 ファイルに何本も入っている（実物は 17 本と 106 本）
+* アニメーションの値に**フレーム番号が入っていない**。位置はアイテムの長さと
+  「中間点」から決まる
+* 文字装飾は ``Decorations``（実物では空）ではなく ``Style`` と
+  ``VideoEffects`` の ``OutlineEffect`` に入っている
+
+この検査は、実物と同じ形に組んだ ZIP を作って通す。実物そのものは配布物なので
+リポジトリには置かない（``tests/fixtures/ymm4`` に置けば
+``tests/compat/test_real_ymm4.py`` が拾う）。
 """
 
 from __future__ import annotations
 
 import json
+import zipfile
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from novaedit.compat.aviutl.report import CompatibilityReport
-from novaedit.compat.ymm4.decorations import map_decorations
+from novaedit.compat.ymm4.decorations import map_decorations, map_video_effects
 from novaedit.compat.ymm4.template import Ymm4ParseError, load_template, map_template
-from novaedit.compat.ymm4.values import animated, colour, number, type_name
+from novaedit.compat.ymm4.values import (
+    animated,
+    brush_colour,
+    colour,
+    frame_positions,
+    interpolation_of,
+    number,
+    type_name,
+)
 from novaedit.core.model import AnimatedValue, Interpolation
+
+#: 実物と同じ書き方のブラシ。
+BRUSH = {
+    "Type": "YukkuriMovieMaker.Plugin.Brush.SolidColorBrushPlugin, YukkuriMovieMaker, Version=4.32",
+    "Parameter": {
+        "$type": "YukkuriMovieMaker.Plugin.Brush.SolidColorBrushParameter, YukkuriMovieMaker",
+        "Color": "#FFFFFFFF",
+    },
+}
 
 
 def value_at(value: object, frame: int = 0) -> float:
-    """数値パラメータの、その時刻での値。
-
-    :data:`~novaedit.core.model.ParamValue` は数値とは限らないので、
-    数値であることをここで 1 度だけ確かめる。
-    """
+    """数値パラメータの、その時刻での値。"""
     assert isinstance(value, AnimatedValue)
     return value.at(frame)
 
 
+def still(amount: float) -> dict[str, Any]:
+    """動かないアニメーション。実物はこの形で 1 個だけ持つ。"""
+    return {"Values": [{"Value": amount}], "Span": 0.0, "AnimationType": "なし"}
+
+
+def moving(*amounts: float, style: str = "直線移動") -> dict[str, Any]:
+    return {"Values": [{"Value": a} for a in amounts], "Span": 0.0, "AnimationType": style}
+
+
 def text_item(**fields: Any) -> dict[str, Any]:
+    """実物の ``TextItem`` と同じ形。"""
     base: dict[str, Any] = {
         "$type": "YukkuriMovieMaker.Project.Items.TextItem, YukkuriMovieMaker",
-        "Text": "字幕",
-        "Font": "Noto Sans JP",
-        "FontSize": 60,
-        "FontColor": "#FFFFEE00",
+        "Text": "サンプルテキスト",
+        "Decorations": [],
+        "Font": "Noto Sans JP Black",
+        "FontSize": still(120.0),
+        "LineHeight2": still(100.0),
+        "LetterSpacing2": still(0.0),
+        "BasePoint": "CenterCenter",
+        "FontColor": "#FF2B9FE2",
+        "Style": "Normal",
+        "StyleColor": "#FF000000",
+        "Bold": False,
+        "Italic": False,
+        "X": still(0.0),
+        "Y": still(0.0),
+        "Opacity": still(100.0),
+        "Zoom": still(100.0),
+        "Rotation": still(0.0),
+        "Blend": "Normal",
+        "VideoEffects": [],
         "Frame": 0,
-        "Length": 90,
-        "Layer": 0,
+        "Layer": 4,
+        "KeyFrames": {"Frames": [], "Count": 0},
+        "Length": 300,
     }
     base.update(fields)
     return base
 
 
+def group_item(**fields: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "$type": "YukkuriMovieMaker.Project.Items.GroupItem, YukkuriMovieMaker",
+        "GroupRange": 1,
+        "X": still(0.0),
+        "Y": still(0.0),
+        "Zoom": still(100.0),
+        "Rotation": still(0.0),
+        "Opacity": still(100.0),
+        "Blend": "Normal",
+        "VideoEffects": [],
+        "Frame": 0,
+        "Layer": 5,
+        "KeyFrames": {"Frames": [], "Count": 0},
+        "Length": 300,
+    }
+    base.update(fields)
+    return base
+
+
+def outline(thickness: float = 7.3) -> dict[str, Any]:
+    return {
+        "$type": "YukkuriMovieMaker.Project.Effects.OutlineEffect, YukkuriMovieMaker",
+        "StrokeThickness": still(thickness),
+        "Blur": still(0.0),
+        "StrokeBrush": BRUSH,
+        "IsEnabled": True,
+    }
+
+
+def write_ymmt(path: Path, *templates: dict[str, Any]) -> Path:
+    """実物と同じ ZIP + ``catalog.json`` の形で書き出す。"""
+    catalog = {
+        "FilePath": str(path),
+        "ItemTemplates": list(templates),
+        "VideoEffectTemplates": [],
+        "AudioEffectTemplates": [],
+    }
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("catalog.json", json.dumps(catalog, ensure_ascii=False))
+    return path
+
+
+def template(name: str, *items: dict[str, Any], path: list[str] | None = None) -> dict[str, Any]:
+    return {
+        "Name": name,
+        "Path": path if path is not None else name.split("/"),
+        "Group": None,
+        "KeyGesture": {},
+        "Items": list(items),
+    }
+
+
+class TestTheContainer:
+    def test_a_ymmt_is_a_zip(self, tmp_path: Path) -> None:
+        # 素の JSON だと思って開くと、1 バイト目から落ちる。
+        path = write_ymmt(tmp_path / "束.ymmt", template("見出し", text_item()))
+        assert zipfile.is_zipfile(path)
+        assert len(load_template(path)) == 1
+
+    def test_one_file_holds_many_templates(self, tmp_path: Path) -> None:
+        # 実物は 1 ファイルに 17 本、106 本と入っていた。
+        path = write_ymmt(
+            tmp_path / "束.ymmt",
+            template("あ", text_item()),
+            template("い", text_item()),
+            template("う", text_item()),
+        )
+        assert [t.name for t in load_template(path)] == ["あ", "い", "う"]
+
+    def test_the_classification_comes_from_path(self, tmp_path: Path) -> None:
+        path = write_ymmt(tmp_path / "束.ymmt", template("アニメーション効果/振り子", text_item()))
+        loaded = load_template(path)[0]
+        assert loaded.path == ("アニメーション効果", "振り子")
+        assert loaded.folder == "アニメーション効果"
+
+    def test_a_bare_json_still_works(self, tmp_path: Path) -> None:
+        # 古い書き方、あるいは手で書いたもの。
+        path = tmp_path / "素.ymmt"
+        path.write_text(json.dumps(text_item()), "utf-8")
+        assert len(load_template(path)[0].items) == 1
+
+    def test_broken_json_says_so(self, tmp_path: Path) -> None:
+        path = tmp_path / "壊れ.ymmt"
+        path.write_text("{これは JSON ではない", "utf-8")
+        with pytest.raises(Ymm4ParseError):
+            load_template(path)
+
+
 class TestTypeNames:
     def test_only_the_class_name_is_used(self) -> None:
-        # 名前空間もアセンブリ名も版で変わる。丸ごと突き合わせると、
-        # YMM4 が更新されただけで全部読めなくなる。
-        assert type_name({"$type": "A.B.C.TextItem, Assembly, Version=4.0"}) == "TextItem"
+        # 実物には Version も Culture も PublicKeyToken も入っている。
+        # 丸ごと突き合わせると、YMM4 が更新されただけで全部読めなくなる。
+        raw = "YukkuriMovieMaker.Project.Items.TextItem, YukkuriMovieMaker, Version=4.32.0.2"
+        assert type_name({"$type": raw}) == "TextItem"
 
     def test_a_missing_type_is_empty(self) -> None:
         assert type_name({"Text": "x"}) == ""
         assert type_name("文字列") == ""
 
 
+class TestAnimationPositions:
+    """値の並びがどのフレームに置かれるか。ここが今回いちばん効いた。"""
+
+    def test_the_values_carry_no_frame_number(self) -> None:
+        # 実物の Values は {"Value": …} だけ。番号を探しても無い。
+        assert "Frame" not in moving(0.0, 100.0)["Values"][0]
+
+    def test_positions_come_from_the_middle_points(self) -> None:
+        # 中間点が 60 と 240、長さ 300 なら、区切りは 0/60/240/300 の 4 点。
+        assert frame_positions({"Frames": [60, 240], "Count": 2}, 300, 4) == [0, 60, 240, 300]
+
+    def test_without_middle_points_it_spans_the_whole_item(self) -> None:
+        assert frame_positions({"Frames": [], "Count": 0}, 300, 2) == [0, 300]
+
+    def test_a_mismatch_falls_back_to_even_spacing(self) -> None:
+        # 中間点の数と値の数が食い違っても、始点と終点は合わせる。
+        positions = frame_positions({"Frames": [60], "Count": 1}, 300, 4)
+        assert positions[0] == 0
+        assert positions[-1] == 300
+
+    def test_the_animation_uses_the_whole_length(self) -> None:
+        # 並び順をフレーム番号だと思うと、300 フレームの動きが 2 フレームで終わる。
+        value = animated(moving(0.0, 100.0), length=300, keyframes={"Frames": [], "Count": 0})
+        assert [k.frame for k in value.keyframes] == [0, 300]
+        assert value.at(150) == pytest.approx(50.0)
+
+    def test_a_single_value_is_static(self) -> None:
+        value = animated(still(42.0), length=300)
+        assert value.is_animated is False
+        assert value.at(0) == 42.0
+
+
+class TestInterpolationNames:
+    def test_japanese_names(self) -> None:
+        assert interpolation_of("直線移動") is Interpolation.LINEAR
+        assert interpolation_of("瞬間移動") is Interpolation.HOLD
+
+    def test_english_easing_names(self) -> None:
+        # 実物には Expo_Out / Sine_In / Quart_InOut のような名前が入っていた。
+        assert interpolation_of("Expo_Out") is Interpolation.EASE_OUT
+        assert interpolation_of("Sine_In") is Interpolation.EASE_IN
+        assert interpolation_of("Quart_InOut") is Interpolation.EASE_IN_OUT
+
+    def test_an_unknown_name_falls_back_to_a_straight_line(self) -> None:
+        # 動きの形は違っても、始点と終点は合う。止めるより良い。
+        assert interpolation_of("知らない曲線") is Interpolation.LINEAR
+
+
 class TestValues:
     def test_a_bare_number(self) -> None:
         assert number(60) == 60.0
 
-    def test_an_animation_with_one_value_is_static(self) -> None:
-        value = animated({"Values": [{"Value": 42, "Frame": 0}]})
-        assert value.is_animated is False
-        assert value.at(0) == 42.0
-
-    def test_an_animation_with_several_values_becomes_keyframes(self) -> None:
-        value = animated(
-            {
-                "Values": [{"Value": 0, "Frame": 0}, {"Value": 100, "Frame": 30}],
-                "AnimationType": "直線移動",
-            }
-        )
-        assert value.is_animated is True
-        assert value.at(15) == pytest.approx(50.0)
-
-    def test_the_interpolation_name_is_japanese(self) -> None:
-        value = animated(
-            {"Values": [{"Value": 0, "Frame": 0, "Type": "瞬間移動"}, {"Value": 9, "Frame": 10}]}
-        )
-        assert value.keyframes[0].interpolation is Interpolation.HOLD
-
-    def test_values_out_of_order_are_sorted(self) -> None:
-        value = animated({"Values": [{"Value": 5, "Frame": 20}, {"Value": 1, "Frame": 0}]})
-        assert [k.frame for k in value.keyframes] == [0, 20]
+    def test_an_animation_reads_as_its_first_value(self) -> None:
+        assert number(still(60.0)) == 60.0
 
     def test_alpha_comes_first_in_a_colour(self) -> None:
         # YMM4 は #AARRGGBB。後ろだと思って読むと、不透明のつもりが透明になる。
@@ -96,64 +260,170 @@ class TestValues:
     def test_a_colour_without_alpha_is_opaque(self) -> None:
         assert colour("#00FF00") == pytest.approx((0.0, 1.0, 0.0, 1.0))
 
+    def test_a_brush_hides_its_colour_one_level_down(self) -> None:
+        assert brush_colour(BRUSH) == pytest.approx((1.0, 1.0, 1.0, 1.0))
 
-class TestDecorations:
-    def test_a_border_lands_on_the_text(self) -> None:
-        result = map_decorations(
-            [{"$type": "N.BorderDecoration, A", "Thickness": 6, "Color": "#FF000000"}],
-            CompatibilityReport(),
-        )
-        assert value_at(result.params["border_width"], 0) == 6.0
-        assert result.effects == []
-
-    def test_two_borders_keep_the_thicker_one_on_the_text(self) -> None:
-        # 細いほうをテキストに載せると、太いほうをエフェクトで足したときに
-        # 二重の縁の間隔が変わる。
-        result = map_decorations(
-            [
-                {"$type": "N.BorderDecoration, A", "Thickness": 4, "Color": "#FFFFFFFF"},
-                {"$type": "N.BorderDecoration, A", "Thickness": 12, "Color": "#FF000000"},
-            ],
-            CompatibilityReport(),
-        )
-        assert value_at(result.params["border_width"], 0) == 12.0
-        assert [e.kind for e in result.effects] == ["border"]
-        assert value_at(result.effects[0].params["width"]) == 4.0
-
-    def test_a_shadow_lands_on_the_text(self) -> None:
-        result = map_decorations(
-            [{"$type": "N.ShadowDecoration, A", "X": 5, "Y": 5, "Blur": 3}],
-            CompatibilityReport(),
-        )
-        assert value_at(result.params["shadow_x"], 0) == 5.0
-        assert value_at(result.params["shadow_blur"], 0) == 3.0
-
-    def test_a_gradient_becomes_an_effect(self) -> None:
-        result = map_decorations(
-            [{"$type": "N.GradationDecoration, A", "Colors": ["#FFFF0000", "#FF0000FF"]}],
-            CompatibilityReport(),
-        )
-        assert [e.kind for e in result.effects] == ["gradient"]
-
-    def test_an_unknown_decoration_is_recorded_not_dropped(self) -> None:
-        report = CompatibilityReport()
-        map_decorations([{"$type": "N.SparkleDecoration, A"}], report)
-        assert any("SparkleDecoration" in line for line in report.lines())
-
-    def test_something_that_is_not_a_list_is_ignored(self) -> None:
-        assert map_decorations(None, CompatibilityReport()).params == {}
+    def test_a_brush_that_is_not_a_single_colour_keeps_the_default(self) -> None:
+        # 格子やノイズのブラシは色 1 つで表せない。
+        grid = {"Type": "…GridLineBrushPlugin", "Parameter": {"$type": "…GridLineBrushParameter"}}
+        assert brush_colour(grid, (0.0, 0.0, 0.0, 1.0)) == (0.0, 0.0, 0.0, 1.0)
 
 
-class TestTemplate:
-    def test_a_text_item_becomes_a_text_clip(self) -> None:
-        mapped = map_template([text_item()], report=CompatibilityReport())
-        assert len(mapped) == 1
-        source = mapped[0].clip.source
+class TestTextFields:
+    def mapped(self, **fields: Any) -> Any:
+        source = map_template([text_item(**fields)], report=CompatibilityReport())[0].clip.source
         assert source is not None
-        assert source.kind == "text"
-        assert source.params["text"] == "字幕"
-        assert source.params["font"] == "Noto Sans JP"
+        return source
 
+    def test_the_field_is_bold_not_is_bold(self) -> None:
+        # 実物のキーは Bold / Italic。IsBold では永久に太字にならない。
+        assert self.mapped(Bold=True).params["bold"] is True
+        assert self.mapped(Italic=True).params["italic"] is True
+
+    def test_the_font_and_colour(self) -> None:
+        source = self.mapped()
+        assert source.params["font"] == "Noto Sans JP Black"
+        assert source.params["color"] == pytest.approx((0x2B / 255, 0x9F / 255, 0xE2 / 255, 1.0))
+
+    def test_the_line_height_is_a_percentage(self) -> None:
+        # LineHeight2 は 100 が標準。画素数だと思って渡すと、標準のつもりが
+        # 100px の行間になる。
+        assert value_at(self.mapped().params["line_spacing"]) == 0.0
+        wide = self.mapped(LineHeight2=still(150.0))
+        assert value_at(wide.params["line_spacing"]) == pytest.approx(120.0 * 0.5)
+
+    def test_the_base_point_splits_into_two(self) -> None:
+        source = self.mapped(BasePoint="LeftBottom")
+        assert (source.params["align"], source.params["valign"]) == ("left", "bottom")
+
+    def test_the_default_base_point(self) -> None:
+        source = self.mapped()
+        assert (source.params["align"], source.params["valign"]) == ("center", "middle")
+
+    def test_the_style_becomes_a_decoration(self) -> None:
+        source = self.mapped(Style="ThickBorder", StyleColor="#FF112233")
+        assert value_at(source.params["border_width"]) > 0
+        assert source.params["border_color"] == pytest.approx(
+            (0x11 / 255, 0x22 / 255, 0x33 / 255, 1.0)
+        )
+
+    def test_an_unknown_style_is_recorded(self) -> None:
+        report = CompatibilityReport()
+        map_template([text_item(Style="キラキラ")], report=report)
+        assert any("キラキラ" in line for line in report.lines())
+
+
+class TestVideoEffects:
+    """実物の飾りは ``Decorations`` ではなくここに入っていた。"""
+
+    def test_the_outline_effect_becomes_the_text_border(self) -> None:
+        item = text_item(VideoEffects=[outline(7.3)])
+        source = map_template([item], report=CompatibilityReport())[0].clip.source
+        assert source is not None
+        assert value_at(source.params["border_width"]) == pytest.approx(7.3)
+        assert source.params["border_color"] == pytest.approx((1.0, 1.0, 1.0, 1.0))
+
+    def test_two_outlines_stack(self) -> None:
+        item = text_item(VideoEffects=[outline(4.0), outline(12.0)])
+        mapped = map_template([item], report=CompatibilityReport())[0]
+        source = mapped.clip.source
+        assert source is not None
+        # 太いほうを文字に、細いほうをエフェクトとして外側に積む。
+        assert value_at(source.params["border_width"]) == pytest.approx(12.0)
+        assert [e.kind for e in mapped.clip.effects] == ["border"]
+
+    def test_a_disabled_effect_is_skipped(self) -> None:
+        effect = outline(9.0)
+        effect["IsEnabled"] = False
+        item = text_item(VideoEffects=[effect])
+        source = map_template([item], report=CompatibilityReport())[0].clip.source
+        assert source is not None
+        assert "border_width" not in source.params
+
+    def test_the_zoom_effect_keeps_moving(self) -> None:
+        # 素の数で読むと、登場アニメーションが止まったまま出る。
+        effect = {
+            "$type": "YukkuriMovieMaker.Project.Effects.ZoomEffect, YukkuriMovieMaker",
+            "Zoom": moving(0.0, 100.0, style="Expo_Out"),
+            "ZoomY": still(100.0),
+            "IsEnabled": True,
+        }
+        result = map_video_effects(
+            [effect], CompatibilityReport(), length=300, keyframes={"Frames": [], "Count": 0}
+        )
+        scale = result.effects[0].params["scale"]
+        assert isinstance(scale, AnimatedValue)
+        assert [k.frame for k in scale.keyframes] == [0, 300]
+        assert scale.keyframes[0].interpolation is Interpolation.EASE_OUT
+
+    def test_the_rotate_effect_uses_the_z_axis(self) -> None:
+        effect = {
+            "$type": "YukkuriMovieMaker.Project.Effects.RotateEffect, YukkuriMovieMaker",
+            "X": still(0.0),
+            "Y": still(0.0),
+            "Z": still(60.0),
+            "IsEnabled": True,
+        }
+        result = map_video_effects([effect], CompatibilityReport(), length=300)
+        assert value_at(result.effects[0].params["rotation"]) == 60.0
+
+    def test_the_fill_effect_takes_its_colour_from_the_brush(self) -> None:
+        effect = {
+            "$type": "YukkuriMovieMaker.Project.Effects.FillForegroundEffect, YukkuriMovieMaker",
+            "Opacity": still(50.0),
+            "Brush": BRUSH,
+            "IsEnabled": True,
+        }
+        result = map_video_effects([effect], CompatibilityReport(), length=300)
+        assert result.effects[0].kind == "fill"
+        assert value_at(result.effects[0].params["amount"]) == 50.0
+
+    def test_the_colour_correction_is_re_centred(self) -> None:
+        # YMM4 は 100 が「変化なし」。こちらは 0 が変化なし。
+        effect = {
+            "$type": "YukkuriMovieMaker.Project.Effects.ColorCorrectionEffect, YukkuriMovieMaker",
+            "Lightness": still(110.0),
+            "Contrast": still(130.0),
+            "Saturation": still(100.0),
+            "IsEnabled": True,
+        }
+        result = map_video_effects([effect], CompatibilityReport(), length=300)
+        params = result.effects[0].params
+        assert value_at(params["brightness"]) == pytest.approx(10.0)
+        assert value_at(params["contrast"]) == pytest.approx(30.0)
+        assert value_at(params["saturation"]) == pytest.approx(0.0)
+
+    def test_an_unknown_effect_is_recorded_not_dropped(self) -> None:
+        report = CompatibilityReport()
+        map_video_effects(
+            [{"$type": "N.MeshDeformationEffect, A", "IsEnabled": True}], report, length=1
+        )
+        assert any("MeshDeformationEffect" in line for line in report.lines())
+
+
+class TestGroups:
+    def test_a_group_moves_its_effects_onto_the_content(self) -> None:
+        # GroupItem は入れ物で、それ自体は絵を持たない。こちらに入れ子は無いので
+        # 中身へ移して平らにする。
+        group = group_item(VideoEffects=[outline(6.0)])
+        mapped = map_template([text_item(), group], report=CompatibilityReport())
+        assert len(mapped) == 1
+        assert [e.kind for e in mapped[0].clip.effects] == ["border"]
+
+    def test_a_group_on_its_own_becomes_an_effects_only_template(self) -> None:
+        # 「アニメーション効果/振り子」のような、中身を持たないテンプレート。
+        group = group_item(Rotation=moving(0.0, 30.0))
+        mapped = map_template([group], report=CompatibilityReport())
+        assert len(mapped) == 1
+        assert mapped[0].clip.source is None
+        assert mapped[0].kind == "effects"
+        assert [e.kind for e in mapped[0].clip.effects] == ["transform"]
+
+    def test_a_group_with_nothing_to_give_produces_nothing(self) -> None:
+        assert map_template([group_item()], report=CompatibilityReport()) == []
+
+
+class TestPlacement:
     def test_the_layer_shifts_by_one(self) -> None:
         # YMM4 のレイヤーは 0 始まり、こちらのトラックは 1 始まり。
         assert map_template([text_item(Layer=2)], report=CompatibilityReport())[0].layer == 3
@@ -162,29 +432,26 @@ class TestTemplate:
         clip = map_template([text_item(Frame=30, Length=120)], report=CompatibilityReport())[0].clip
         assert (clip.timeline_start, clip.duration) == (30, 120)
 
-    def test_the_position_becomes_a_transform(self) -> None:
-        mapped = map_template([text_item(X=100, Y=200)], report=CompatibilityReport())[0]
+    def test_the_opacity_is_a_percentage(self) -> None:
+        clip = map_template([text_item(Opacity=still(40.0))], report=CompatibilityReport())[0].clip
+        assert clip.opacity.at(0) == pytest.approx(0.4)
+
+    def test_the_y_axis_is_flipped(self) -> None:
+        mapped = map_template([text_item(Y=still(200.0))], report=CompatibilityReport())[0]
         assert mapped.clip.effects[0].kind == "transform"
-        # YMM4 の Y は下向き。こちらは上向き。
         assert value_at(mapped.clip.effects[0].params["pos_y"]) == pytest.approx(-200.0)
 
-    def test_an_animated_position_keeps_its_keyframes(self) -> None:
-        item = text_item(X={"Values": [{"Value": 0, "Frame": 0}, {"Value": 300, "Frame": 60}]})
-        effect = map_template([item], report=CompatibilityReport())[0].clip.effects[0]
-        assert value_at(effect.params["pos_x"], 30) == pytest.approx(150.0)
-
     def test_a_still_item_adds_no_transform(self) -> None:
-        mapped = map_template([text_item()], report=CompatibilityReport())[0]
-        assert mapped.clip.effects == ()
+        assert map_template([text_item()], report=CompatibilityReport())[0].clip.effects == ()
 
-    def test_decorations_reach_the_text(self) -> None:
-        item = text_item(
-            Decorations=[{"$type": "N.BorderDecoration, A", "Thickness": 8, "Color": "#FF000000"}]
-        )
-        source = map_template([item], report=CompatibilityReport())[0].clip.source
-        assert source is not None
-        assert value_at(source.params["border_width"], 0) == 8.0
+    def test_an_unsupported_blend_is_recorded(self) -> None:
+        report = CompatibilityReport()
+        mapped = map_template([text_item(Blend="HardMix")], report=report)
+        assert mapped[0].clip.blend_mode == "normal"
+        assert any("HardMix" in line for line in report.lines())
 
+
+class TestOtherItems:
     def test_a_media_item_returns_its_path(self) -> None:
         item = {
             "$type": "YukkuriMovieMaker.Project.Items.VideoItem, YukkuriMovieMaker",
@@ -196,29 +463,35 @@ class TestTemplate:
 
     def test_an_unknown_item_is_recorded_and_skipped(self) -> None:
         report = CompatibilityReport()
-        mapped = map_template([{"$type": "N.TachieItem, A"}], report=report)
-        assert mapped == []
+        assert map_template([{"$type": "N.TachieItem, A"}], report=report) == []
         assert any("TachieItem" in line for line in report.lines())
 
+    def test_an_effect_item_becomes_a_shape(self) -> None:
+        item = {
+            "$type": "YukkuriMovieMaker.Project.Items.EffectItem, YukkuriMovieMaker",
+            "ShapeType2": "YukkuriMovieMaker.Shape.BackgroundShapePlugin, YukkuriMovieMaker",
+            "ShapeParameter": {
+                "$type": "YukkuriMovieMaker.Project.Items.BackgroundShapeParameter, YMM",
+                "Color": "#FF00FF00",
+            },
+            "Length": 300,
+            "Layer": 6,
+        }
+        source = map_template([item], report=CompatibilityReport())[0].clip.source
+        assert source is not None
+        assert source.params["shape"] == "background"
+        assert source.params["color"] == pytest.approx((0.0, 1.0, 0.0, 1.0))
 
-class TestLoading:
-    def test_a_bare_item(self, tmp_path: Path) -> None:
-        path = tmp_path / "字幕.ymmt"
-        path.write_text(json.dumps(text_item()), "utf-8")
-        assert len(load_template(path)) == 1
 
-    def test_items_in_a_wrapper(self, tmp_path: Path) -> None:
-        path = tmp_path / "束.ymmt"
-        path.write_text(json.dumps({"Items": [text_item(), text_item()]}), "utf-8")
-        assert len(load_template(path)) == 2
+class TestDecorationsList:
+    """``Decorations`` は実物では空だったが、形式にはあるので読めるままにする。"""
 
-    def test_a_byte_order_mark_is_tolerated(self, tmp_path: Path) -> None:
-        path = tmp_path / "bom.ymmt"
-        path.write_text(json.dumps(text_item()), "utf-8-sig")
-        assert len(load_template(path)) == 1
+    def test_a_border_decoration(self) -> None:
+        result = map_decorations(
+            [{"$type": "N.BorderDecoration, A", "Thickness": 6, "Color": "#FF000000"}],
+            CompatibilityReport(),
+        )
+        assert value_at(result.params["border_width"]) == 6.0
 
-    def test_broken_json_says_so(self, tmp_path: Path) -> None:
-        path = tmp_path / "壊れ.ymmt"
-        path.write_text("{これは JSON ではない", "utf-8")
-        with pytest.raises(Ymm4ParseError):
-            load_template(path)
+    def test_something_that_is_not_a_list_is_ignored(self) -> None:
+        assert map_decorations(None, CompatibilityReport()).params == {}

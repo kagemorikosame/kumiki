@@ -1,0 +1,3 @@
+# 配布されている .ymmt はリポジトリに入れない。
+# ここへ置くと tests/compat/test_real_ymm4.py が拾って検査する。
+*.ymmt

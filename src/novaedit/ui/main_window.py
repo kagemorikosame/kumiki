@@ -690,7 +690,7 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage("テキストのクリップにしか適用できません", 5000)
                 return
             self.execute_all(commands, "テンプレートを適用")
-            self.statusBar().showMessage("デザインを適用した（文字はそのまま）", 5000)
+            self.statusBar().showMessage("テンプレートを適用した（文字と長さはそのまま）", 5000)
             return
 
         commands = place(objects, self._document.project, at_frame=self._timeline.playhead)

@@ -450,6 +450,61 @@ void main() {
 """)
 
 
+_FILL = _shader("""
+uniform vec4 color;
+uniform float amount;
+
+void main() {
+    // 形はそのままに、色だけを塗る。不透明度に触ると輪郭の外まで色が出る。
+    vec4 base = texture(u_texture, v_uv);
+    float mixing = clamp(amount * 0.01, 0.0, 1.0) * color.a;
+    frag_color = vec4(mix(base.rgb, color.rgb, mixing), base.a);
+}
+""")
+
+
+_OPACITY = _shader("""
+uniform float amount;
+
+void main() {
+    vec4 color = texture(u_texture, v_uv);
+    frag_color = vec4(color.rgb, color.a * clamp(amount * 0.01, 0.0, 1.0));
+}
+""")
+
+
+_DIRECTIONAL_BLUR = _shader("""
+uniform float radius;
+uniform float angle;
+
+void main() {
+    // 1 方向にだけ伸ばす。角度 0 で横、90 で縦。
+    float radian = radians(angle);
+    frag_color = blur1d(u_texture, v_uv, vec2(cos(radian), sin(radian)), radius);
+}
+""")
+
+
+_LUMINANCE_KEY = _shader("""
+uniform float threshold;
+uniform float smoothness;
+uniform bool invert;
+
+void main() {
+    vec4 color = texture(u_texture, v_uv);
+    float luma = dot(max(color.rgb, 0.0), LUMA);
+
+    float edge = clamp(threshold * 0.01, 0.0, 1.0);
+    float feather = max(smoothness * 0.01, 0.001);
+    // 明るいところを残す。反転すると暗いところが残る。
+    float keep = smoothstep(edge - feather, edge + feather, luma);
+    if (invert) keep = 1.0 - keep;
+
+    frag_color = vec4(color.rgb, color.a * keep);
+}
+""")
+
+
 def register_builtin_effects() -> None:
     """標準エフェクトを一覧へ登録する。読み込み時に 1 度だけ呼ばれる。"""
     if "color" in registry:
@@ -591,6 +646,56 @@ def register_builtin_effects() -> None:
             ),
             fragment_shader=_SHADOW,
             passes=2,
+        )
+    )
+
+    registry.register(
+        EffectDefinition(
+            kind="fill",
+            label="単色塗り",
+            category="色",
+            parameters=(
+                ColorSpec("color", "色", (1.0, 1.0, 1.0, 1.0)),
+                TrackSpec("amount", "強さ", 0, 100, 100, unit="%"),
+            ),
+            fragment_shader=_FILL,
+        )
+    )
+
+    registry.register(
+        EffectDefinition(
+            kind="opacity",
+            label="不透明度",
+            category="合成",
+            parameters=(TrackSpec("amount", "不透明度", 0, 100, 100, unit="%"),),
+            fragment_shader=_OPACITY,
+        )
+    )
+
+    registry.register(
+        EffectDefinition(
+            kind="directional_blur",
+            label="方向ぼかし",
+            category="ぼかし",
+            parameters=(
+                TrackSpec("radius", "範囲", 0, 96, 16, unit="px"),
+                TrackSpec("angle", "角度", -360, 360, 0, unit="度"),
+            ),
+            fragment_shader=_DIRECTIONAL_BLUR,
+        )
+    )
+
+    registry.register(
+        EffectDefinition(
+            kind="luminance_key",
+            label="輝度キー",
+            category="合成",
+            parameters=(
+                TrackSpec("threshold", "しきい値", 0, 100, 50, unit="%"),
+                TrackSpec("smoothness", "境界のぼかし", 0, 100, 10, unit="%"),
+                CheckSpec("invert", "暗いところを残す", False),
+            ),
+            fragment_shader=_LUMINANCE_KEY,
         )
     )
 

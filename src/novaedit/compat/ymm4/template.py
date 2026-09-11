@@ -1,40 +1,60 @@
 """YMM4 のアイテムテンプレート（``.ymmt``）を、こちらのクリップへ写す。
 
-中身は .NET のシリアライザが書いた JSON で、要素の種類が ``$type`` に入る。
-包み方は版で変わりうる（そのままアイテム 1 つ、``Items`` の配列、``Item`` に
-1 つ）ので、どれで来ても読めるようにしてある。
+**``.ymmt`` は ZIP。** 中に ``catalog.json`` が 1 つ入っていて、その中身がこの形。
 
-**振り分けはクラス名だけで行う。** 名前空間もアセンブリ名も版で変わる。
+.. code-block:: json
+
+    {"FilePath": "C:\\…\\なにか.ymmt",
+     "ItemTemplates": [{"Name": "アニメーション効果/振り子",
+                        "Path": ["アニメーション効果", "振り子"],
+                        "Items": [ … ]}],
+     "VideoEffectTemplates": [],
+     "AudioEffectTemplates": []}
+
+**1 ファイルに何本も入っている。** 手元で確かめた配布物は 17 本と 106 本だった。
+だから :func:`load_template` はテンプレートの**列**を返し、棚
+（:mod:`novaedit.compat.catalog`）はそれを 1 本ずつ並べる。
+
+アイテムの種類は ``$type`` に入る。振り分けは**クラス名だけ**で行う。実物には
+``Version=4.32.0.2, Culture=neutral, PublicKeyToken=null`` まで書かれていて、
+丸ごと突き合わせると YMM4 が更新されただけで読めなくなる。
+
 知らない種類が来たら、その名前を :mod:`~novaedit.compat.aviutl.report` に残して
 先へ進む。1 種類読めないだけでテンプレート全体が落ちるのは割に合わない。
-
-.. note::
-
-   このマシンに YMM4 は入っていないため、実際に書き出されたファイルでの
-   突き合わせができていない。読めなかった項目は必ず記録に残るので、
-   実ファイルを 1 つ通せば足りない対応がそのまま一覧に出る。
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import replace
+import zipfile
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 from novaedit.compat.aviutl.report import CompatibilityReport, global_report
 from novaedit.compat.mapped import MappedObject
-from novaedit.compat.ymm4.decorations import map_decorations
+from novaedit.compat.ymm4.decorations import map_decorations, map_video_effects
 from novaedit.compat.ymm4.values import animated, colour, number, type_name
 from novaedit.core.model import AnimatedValue, Clip, Effect, GeneratedSource, ParamValue
 from novaedit.effects.definition import registry
 
-__all__ = ["TEMPLATE_SUFFIXES", "Ymm4ParseError", "load_template", "map_template"]
+__all__ = [
+    "CATALOG_NAME",
+    "TEMPLATE_SUFFIXES",
+    "ItemTemplate",
+    "Ymm4ParseError",
+    "load_template",
+    "map_template",
+]
 
 #: アイテムテンプレートの拡張子。
 TEMPLATE_SUFFIXES = (".ymmt",)
 
+#: ZIP の中に入っているファイルの名前。
+CATALOG_NAME = "catalog.json"
+
 #: YMM4 の合成モードと、こちらの呼び名。
+#: こちらに無いものは通常扱いにして記録に残す。
 _BLEND_MODES: dict[str, str] = {
     "Normal": "normal",
     "通常": "normal",
@@ -46,19 +66,20 @@ _BLEND_MODES: dict[str, str] = {
     "スクリーン": "screen",
 }
 
+#: ``BasePoint`` の横と縦。``CenterCenter`` ``LeftTop`` のように 2 つ並ぶ。
+_HORIZONTAL = (("Left", "left"), ("Right", "right"), ("Center", "center"))
+_VERTICAL = (("Top", "top"), ("Bottom", "bottom"), ("Center", "middle"))
+
 #: 図形の種類。
 _SHAPES: dict[str, str] = {
     "Rectangle": "rect",
-    "四角形": "rect",
+    "Square": "rect",
     "RoundedRectangle": "rounded",
-    "角丸四角形": "rounded",
     "Ellipse": "ellipse",
     "Circle": "ellipse",
-    "円": "ellipse",
     "Triangle": "triangle",
-    "三角形": "triangle",
     "Star": "star",
-    "星": "star",
+    "Background": "background",
 }
 
 #: 素材を参照するアイテム。中身ではなくパスだけを返す。
@@ -69,35 +90,100 @@ _MEDIA_ITEMS: dict[str, str] = {
     "VoiceItem": "音声ファイル",
 }
 
+#: 中身を持たないアイテム。読めないのではなく、それ自体は絵を持たない。
+#:
+#: ``GroupItem`` はまとめた相手に掛かるエフェクトを持つ入れ物。AviUtl の
+#: 「フィルタオブジェクト」に近い。:func:`map_template` が中身へ移す。
+_CONTAINER_ITEMS = frozenset({"GroupItem"})
+
 
 class Ymm4ParseError(ValueError):
     """``.ymmt`` として読めない。"""
 
 
-def load_template(path: Path) -> list[dict[str, Any]]:
-    """ファイルを読んで、アイテムの列を返す。
+@dataclass(frozen=True, slots=True)
+class ItemTemplate:
+    """カタログに入っているテンプレート 1 本。"""
 
-    YMM4 は UTF-8 で書く。BOM が付くことがあるので ``utf-8-sig`` で開く。
-    """
+    name: str
+    #: ``["アニメーション効果", "振り子"]`` のような分類。
+    path: tuple[str, ...] = ()
+    items: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+
+    @property
+    def folder(self) -> str:
+        """分類の先頭。棚の見出しに使う。"""
+        return self.path[0] if len(self.path) > 1 else ""
+
+
+def load_template(path: Path) -> list[ItemTemplate]:
+    """ファイルを読んで、入っているテンプレートの列を返す。"""
     target = Path(path)
     try:
-        raw = target.read_text(encoding="utf-8-sig")
+        raw = _read_catalog(target)
     except OSError as exc:
         raise Ymm4ParseError(f"開けない: {target} ({exc})") from exc
+
     try:
         document = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise Ymm4ParseError(f"{target.name}: JSON として読めない ({exc})") from exc
-    return _items_of(document, target.name)
+    return _templates_of(document, target)
 
 
-def _items_of(document: Any, name: str) -> list[dict[str, Any]]:
-    """包み方の違いを吸収して、アイテムの列を取り出す。"""
+def _read_catalog(path: Path) -> str:
+    """``.ymmt`` の中身を取り出す。
+
+    ZIP なら ``catalog.json`` を、そうでなければファイルそのものを読む。
+    BOM が付くことがあるので ``utf-8-sig`` で開く。
+    """
+    if zipfile.is_zipfile(path):
+        with zipfile.ZipFile(path) as archive:
+            names = [name for name in archive.namelist() if name.endswith(".json")]
+            chosen = CATALOG_NAME if CATALOG_NAME in names else (names[0] if names else "")
+            if not chosen:
+                raise Ymm4ParseError(f"{path.name}: {CATALOG_NAME} が入っていない")
+            return archive.read(chosen).decode("utf-8-sig")
+    return path.read_text(encoding="utf-8-sig")
+
+
+def _templates_of(document: Any, path: Path) -> list[ItemTemplate]:
+    """包み方の違いを吸収して、テンプレートの列を取り出す。"""
+    if isinstance(document, dict):
+        catalogued = document.get("ItemTemplates")
+        if isinstance(catalogued, list):
+            built = [_template_of(entry) for entry in catalogued if isinstance(entry, dict)]
+            found = [item for item in built if item.items]
+            if found:
+                return found
+            raise Ymm4ParseError(f"{path.name}: アイテムの入ったテンプレートが無い")
+
+    # 古い形、あるいはアイテムだけを書き出したもの。
+    items = _bare_items(document)
+    if items:
+        return [ItemTemplate(name=path.stem, items=tuple(items))]
+    raise Ymm4ParseError(f"{path.name}: アイテムが見つからない")
+
+
+def _template_of(entry: dict[str, Any]) -> ItemTemplate:
+    raw_path = entry.get("Path")
+    parts = tuple(str(part) for part in raw_path) if isinstance(raw_path, list) else ()
+    name = str(entry.get("Name") or (parts[-1] if parts else ""))
+    items = entry.get("Items")
+    return ItemTemplate(
+        name=name,
+        path=parts,
+        items=tuple(item for item in items if isinstance(item, dict))
+        if isinstance(items, list)
+        else (),
+    )
+
+
+def _bare_items(document: Any) -> list[dict[str, Any]]:
     if isinstance(document, list):
         return [item for item in document if isinstance(item, dict)]
     if not isinstance(document, dict):
-        raise Ymm4ParseError(f"{name}: アイテムが見つからない")
-
+        return []
     for key in ("Items", "TimelineItems", "Contents"):
         found = document.get(key)
         if isinstance(found, list):
@@ -105,45 +191,109 @@ def _items_of(document: Any, name: str) -> list[dict[str, Any]]:
     single = document.get("Item")
     if isinstance(single, dict):
         return [single]
-    if "$type" in document:
-        return [document]
-    raise Ymm4ParseError(f"{name}: アイテムが見つからない")
+    return [document] if "$type" in document else []
 
 
 def map_template(
     items: list[dict[str, Any]], *, report: CompatibilityReport | None = None
 ) -> list[MappedObject]:
-    """アイテムの列をクリップへ。写せなかったものは飛ばす。"""
+    """アイテムの列をクリップへ。写せなかったものは飛ばす。
+
+    ``GroupItem`` は中身を持たない入れ物で、まとめた相手に掛かるエフェクトを
+    持っている。こちらのモデルに入れ子は無いので、**同じテンプレートの中身へ
+    エフェクトを移して**平らにする。
+
+    手元の配布物はどれも「中身 1 つ + グループ 1 つ」の形（``GroupRange`` は 1）
+    だったので、この移し方でずれない。中身が無いテンプレート
+    （``アニメーション効果/振り子`` のようなもの）は**エフェクトだけ**の
+    結果になり、既にあるクリップへ着せて使う。
+    """
     log = report if report is not None else global_report
-    mapped = [_map_item(item, log) for item in items]
-    return [item for item in mapped if item is not None]
+
+    contents: list[MappedObject] = []
+    grouped: list[Effect] = []
+    for item in items:
+        if type_name(item) in _CONTAINER_ITEMS:
+            grouped.extend(_group_effects(item, log))
+            continue
+        mapped = _map_item(item, log)
+        if mapped is not None:
+            contents.append(mapped)
+
+    if not grouped:
+        return contents
+    if not contents:
+        # 中身のないテンプレート。エフェクトだけを返す。
+        return [
+            MappedObject(
+                clip=Clip(timeline_start=0, duration=1, effects=tuple(grouped)),
+                layer=1,
+                kind="effects",
+                has_span=False,
+            )
+        ]
+    return [
+        replace(item, clip=replace(item.clip, effects=(*item.clip.effects, *grouped)))
+        for item in contents
+    ]
+
+
+def _group_effects(item: dict[str, Any], log: CompatibilityReport) -> list[Effect]:
+    """``GroupItem`` が持っているエフェクト。位置の動きも含む。
+
+    グループに付いた縁取りは、文字そのものの飾りではなく**まとめた絵の外側**に
+    掛かる。だからテキストの設定ではなく縁取りエフェクトとして扱う。
+    """
+    length = max(1, int(number(item.get("Length"), 1.0)))
+    keyframes = item.get("KeyFrames")
+    video = map_video_effects(item.get("VideoEffects"), log, length=length, keyframes=keyframes)
+
+    outlines: list[Effect] = []
+    border = registry.get("border")
+    width = video.params.get("border_width")
+    if border is not None and isinstance(width, AnimatedValue) and width.static > 0:
+        outlines.append(border.create(width=width, color=video.params.get("border_color")))
+
+    return [*_placement(item, length, keyframes), *outlines, *video.effects]
 
 
 def _map_item(item: dict[str, Any], log: CompatibilityReport) -> MappedObject | None:
     name = type_name(item)
+
+    length = max(1, int(number(item.get("Length"), 1.0)))
+    keyframes = item.get("KeyFrames")
+
     source, media_path, kind = _content(item, name, log)
     if source is None and not media_path:
         return None
 
     effects: list[Effect] = []
+    video = map_video_effects(item.get("VideoEffects"), log, length=length, keyframes=keyframes)
     if source is not None and source.kind == "text":
         decorations = map_decorations(
-            item.get("Decorations"), log, size=number(item.get("FontSize"), 64.0)
+            item.get("Decorations"),
+            log,
+            size=number(item.get("FontSize"), 64.0),
+            style=str(item.get("Style") or ""),
+            style_colour=item.get("StyleColor"),
         )
-        source = GeneratedSource(kind="text", params={**source.params, **decorations.params})
+        merged = {**source.params, **decorations.params, **video.params}
+        source = GeneratedSource(kind="text", params=merged)
         effects.extend(decorations.effects)
+    effects.extend(video.effects)
 
-    effects[0:0] = _placement(item)
+    effects[0:0] = _placement(item, length, keyframes)
 
-    length = max(1, int(number(item.get("Length"), 1.0)))
     return MappedObject(
         clip=Clip(
             timeline_start=max(0, int(number(item.get("Frame"), 0.0))),
             duration=length,
             source=source,
             effects=tuple(effects),
-            opacity=_opacity(item),
-            blend_mode=_BLEND_MODES.get(str(item.get("Blend") or "Normal"), "normal"),
+            opacity=animated(
+                item.get("Opacity"), 100.0, length=length, keyframes=keyframes, scale=0.01
+            ),
+            blend_mode=_blend_of(item, log),
         ),
         # YMM4 のレイヤーは 0 始まり。こちらのトラックは 1 始まり。
         layer=max(1, int(number(item.get("Layer"), 0.0)) + 1),
@@ -153,9 +303,13 @@ def _map_item(item: dict[str, Any], log: CompatibilityReport) -> MappedObject | 
     )
 
 
-def _opacity(item: dict[str, Any]) -> AnimatedValue:
-    """不透明度。YMM4 は 0..100 で持つ。"""
-    return AnimatedValue(min(max(number(item.get("Opacity"), 100.0) / 100.0, 0.0), 1.0))
+def _blend_of(item: dict[str, Any], log: CompatibilityReport) -> str:
+    raw = str(item.get("Blend") or "Normal")
+    mode = _BLEND_MODES.get(raw)
+    if mode is None:
+        log.note_missing(f"YMM4 の合成モード: {raw}")
+        return "normal"
+    return mode
 
 
 def _content(
@@ -163,7 +317,7 @@ def _content(
 ) -> tuple[GeneratedSource | None, str, str]:
     if name in ("TextItem", "Text"):
         return _text(item), "", "text"
-    if name in ("ShapeItem", "Shape"):
+    if name in ("ShapeItem", "EffectItem", "Shape"):
         return _shape(item, log), "", "shape"
 
     media = _MEDIA_ITEMS.get(name)
@@ -175,15 +329,27 @@ def _content(
 
 
 def _text(item: dict[str, Any]) -> GeneratedSource:
+    length = max(1, int(number(item.get("Length"), 1.0)))
+    keyframes = item.get("KeyFrames")
+    size = number(item.get("FontSize"), 64.0)
+    align, valign = _base_point(item)
+
     params: dict[str, ParamValue] = {
         "text": str(item.get("Text") or ""),
-        "size": animated(item.get("FontSize"), 64.0),
+        "size": animated(item.get("FontSize"), 64.0, length=length, keyframes=keyframes),
         "color": colour(item.get("FontColor"), (1.0, 1.0, 1.0, 1.0)),
-        "bold": bool(item.get("IsBold")),
-        "italic": bool(item.get("IsItalic")),
-        "line_spacing": animated(item.get("LineHeight2"), 0.0),
-        "letter_spacing": animated(item.get("LetterSpacing2"), 0.0),
-        "align": _align(item),
+        "bold": bool(item.get("Bold")),
+        "italic": bool(item.get("Italic")),
+        # ``LineHeight2`` は百分率（100 が標準）。画素数だと思って渡すと、
+        # 標準のつもりが 100px の行間になる。
+        "line_spacing": AnimatedValue(
+            size * (number(item.get("LineHeight2"), 100.0) - 100.0) / 100.0
+        ),
+        "letter_spacing": animated(
+            item.get("LetterSpacing2"), 0.0, length=length, keyframes=keyframes
+        ),
+        "align": align,
+        "valign": valign,
         "vertical": _is_vertical(item),
     }
     font = item.get("Font")
@@ -192,13 +358,12 @@ def _text(item: dict[str, Any]) -> GeneratedSource:
     return GeneratedSource(kind="text", params=params)
 
 
-def _align(item: dict[str, Any]) -> str:
-    raw = str(item.get("BasePoint") or item.get("HorizontalAlignment") or "")
-    if "Left" in raw or "左" in raw:
-        return "left"
-    if "Right" in raw or "右" in raw:
-        return "right"
-    return "center"
+def _base_point(item: dict[str, Any]) -> tuple[str, str]:
+    """``BasePoint`` を横と縦に分ける。``CenterCenter`` のように 2 つ並ぶ。"""
+    raw = str(item.get("BasePoint") or "")
+    align = next((value for key, value in _HORIZONTAL if raw.startswith(key)), "center")
+    valign = next((value for key, value in _VERTICAL if raw.endswith(key)), "middle")
+    return align, valign
 
 
 def _is_vertical(item: dict[str, Any]) -> bool:
@@ -207,23 +372,35 @@ def _is_vertical(item: dict[str, Any]) -> bool:
 
 
 def _shape(item: dict[str, Any], log: CompatibilityReport) -> GeneratedSource:
-    raw = str(item.get("Type") or item.get("ShapeType") or "Rectangle")
-    shape = _SHAPES.get(raw)
+    parameter = item.get("ShapeParameter")
+    parameter = parameter if isinstance(parameter, dict) else {}
+
+    # 種類はプラグイン名に入っている（``BackgroundShapePlugin`` など）。
+    raw = str(item.get("ShapeType2") or item.get("ShapeType") or item.get("Type") or "")
+    plugin = raw.partition(",")[0].rpartition(".")[2]
+    shape = next(
+        (value for key, value in _SHAPES.items() if plugin.startswith(key)),
+        None,
+    )
     if shape is None:
-        log.note_missing(f"YMM4 の図形: {raw}")
+        shape = _SHAPES.get(type_name(parameter).removesuffix("ShapeParameter"), "")
+    if not shape:
+        log.note_missing(f"YMM4 の図形: {plugin or type_name(parameter) or '種類不明'}")
         shape = "rect"
+
     return GeneratedSource(
         kind="shape",
         params={
             "shape": shape,
-            "width": animated(item.get("Width"), 400.0),
-            "height": animated(item.get("Height"), 400.0),
-            "color": colour(item.get("Color"), (1.0, 1.0, 1.0, 1.0)),
+            "width": AnimatedValue(number(parameter.get("Width"), 400.0)),
+            "height": AnimatedValue(number(parameter.get("Height"), 400.0)),
+            "color": colour(parameter.get("Color"), (1.0, 1.0, 1.0, 1.0)),
+            "line_width": AnimatedValue(number(parameter.get("StrokeThickness"), 0.0)),
         },
     )
 
 
-def _placement(item: dict[str, Any]) -> list[Effect]:
+def _placement(item: dict[str, Any], length: int, keyframes: Any) -> list[Effect]:
     """位置・拡大・回転を変形エフェクトへ。
 
     AviUtl 側（:func:`~novaedit.compat.aviutl.mapping.map_object`）と同じ扱いに
@@ -233,25 +410,18 @@ def _placement(item: dict[str, Any]) -> list[Effect]:
     if definition is None:  # pragma: no cover - 標準エフェクトは必ずある
         return []
 
-    pos_x = animated(item.get("X"), 0.0)
-    pos_y = animated(item.get("Y"), 0.0)
-    zoom = animated(item.get("Zoom"), 100.0)
-    rotation = animated(item.get("Rotation"), 0.0)
-    if not any(
-        value.is_animated or value.static != rest
-        for value, rest in ((pos_x, 0.0), (pos_y, 0.0), (zoom, 100.0), (rotation, 0.0))
-    ):
+    pos_x = animated(item.get("X"), 0.0, length=length, keyframes=keyframes)
+    # YMM4 の Y は下向き。こちらは上向き。
+    pos_y = _negated(animated(item.get("Y"), 0.0, length=length, keyframes=keyframes))
+    zoom = animated(item.get("Zoom"), 100.0, length=length, keyframes=keyframes)
+    rotation = animated(item.get("Rotation"), 0.0, length=length, keyframes=keyframes)
+
+    resting = ((pos_x, 0.0), (pos_y, 0.0), (zoom, 100.0), (rotation, 0.0))
+    if not any(value.is_animated or value.static != rest for value, rest in resting):
         return []
 
     return [
-        definition.create(
-            pos_x=pos_x,
-            # YMM4 の Y は下向き。こちらは上向き。
-            pos_y=_negated(pos_y),
-            scale=zoom,
-            scale_y=zoom,
-            rotation=rotation,
-        )
+        definition.create(pos_x=pos_x, pos_y=pos_y, scale=zoom, scale_y=zoom, rotation=rotation)
     ]
 
 

@@ -65,6 +65,11 @@ class TemplateEntry:
     folder: str = ""
     #: ``"aviutl"`` か ``"ymm4"``。
     source: str = "aviutl"
+    #: ``.ymmt`` の中の何本目か。
+    #:
+    #: AviUtl のエイリアスは 1 ファイル 1 本だが、YMM4 のアイテムテンプレートは
+    #: **1 ファイルに何本も入っている**（手元の配布物は 17 本と 106 本だった）。
+    index: int = 0
 
     @property
     def label(self) -> str:
@@ -74,7 +79,10 @@ class TemplateEntry:
         """中身を読んで、写した結果を返す。"""
         log = report if report is not None else global_report
         if self.source == "ymm4":
-            return map_template(load_template(self.path), report=log)
+            templates = load_template(self.path)
+            if not 0 <= self.index < len(templates):
+                return []
+            return map_template(list(templates[self.index].items), report=log)
 
         exo = load_exo(self.path)
         mapped = [map_object(obj, FrameRate(30, 1), report=log) for obj in exo.objects]
@@ -100,10 +108,10 @@ class TemplateCatalog:
                 resolved = path.resolve()
                 if resolved in seen:
                     continue
-                entry = _entry_for(path, root)
-                if entry is not None:
+                entries = _entries_for(path, root)
+                if entries:
                     seen.add(resolved)
-                    found.append(entry)
+                    found.extend(entries)
         self._entries = found
         return found
 
@@ -122,18 +130,39 @@ class TemplateCatalog:
         return next((entry for entry in self._entries if entry.name == name), None)
 
 
-def _entry_for(path: Path, root: Path) -> TemplateEntry | None:
-    suffix = path.suffix.lower()
-    if suffix in _AVIUTL_SUFFIXES:
-        source = "aviutl"
-    elif suffix in _YMM4_SUFFIXES:
-        source = "ymm4"
-    else:
-        return None
+def _entries_for(path: Path, root: Path) -> list[TemplateEntry]:
+    """1 ファイルから並ぶテンプレート。
 
+    AviUtl のエイリアスは 1 本。YMM4 のアイテムテンプレートは中を開いて数える。
+    """
+    suffix = path.suffix.lower()
     relative = path.parent.relative_to(root)
     folder = str(relative) if str(relative) != "." else root.name
-    return TemplateEntry(name=path.stem, path=path, folder=folder, source=source)
+
+    if suffix in _AVIUTL_SUFFIXES:
+        return [TemplateEntry(name=path.stem, path=path, folder=folder, source="aviutl")]
+    if suffix not in _YMM4_SUFFIXES:
+        return []
+
+    try:
+        templates = load_template(path)
+    except (Ymm4ParseError, OSError):
+        # 読めないものは棚に出さない。開くまで中身が分からない形式なので、
+        # 一覧に並べてから「読めません」と言うより出さないほうが分かりやすい。
+        return []
+
+    return [
+        TemplateEntry(
+            name=template.name or f"{path.stem} {index + 1}",
+            path=path,
+            # 配布物は ``アニメーション効果/振り子`` のように分類を持っている。
+            # ファイル名だけで並べると 100 本超が 1 つの見出しに潰れる。
+            folder=f"{path.stem} / {template.folder}" if template.folder else path.stem,
+            source="ymm4",
+            index=index,
+        )
+        for index, template in enumerate(templates)
+    ]
 
 
 def default_template_roots() -> tuple[Path, ...]:
@@ -183,6 +212,9 @@ def place(
     ``track_id`` を渡せばそのトラックへまとめて置く。渡さなければ、元の
     レイヤー番号に対応する映像トラックへ置く（無ければ作る）。
     """
+    # 中身を持たないもの（エフェクトだけのテンプレート）は置けない。
+    # 空のクリップを置いても何も映らないので、:func:`restyle` で着せて使う。
+    objects = [item for item in objects if item.clip.source is not None or item.media_path]
     if not objects:
         return []
 
@@ -213,9 +245,24 @@ def place(
 def restyle(objects: list[MappedObject], clip: Clip) -> list[Command]:
     """テンプレートの見た目を、今あるクリップへ着せる。
 
-    使うのはテキストオブジェクトを持つ最初の 1 つだけ。字幕テンプレートは
-    1 オブジェクトで配られるし、複数あってもどれを着せるべきかは決められない。
+    2 通りある。
+
+    * **中身のあるテンプレート** — テキストオブジェクトを持つ最初の 1 つを使い、
+      文字と時間は今のまま、見た目だけを入れ替える。字幕テンプレートはこれ
+    * **エフェクトだけのテンプレート** — YMM4 の「アニメーション効果」のように
+      中身を持たないもの。今のクリップに**エフェクトを足す**だけで、
+      中身には触らない。だからテキスト以外のクリップにも着せられる
     """
+    if not objects:
+        return []
+
+    effects_only = all(item.clip.source is None and not item.media_path for item in objects)
+    if effects_only:
+        added = [effect for item in objects for effect in item.clip.effects]
+        if not added:
+            return []
+        return [AddEffect(clip.id, effect) for effect in added]
+
     template = next(
         (item for item in objects if item.clip.source and item.clip.source.kind == "text"),
         None,

@@ -168,15 +168,33 @@ class TemplateDialog(QDialog):
             return
 
         self._detail.setText(self._describe(entry))
+        # 絵を持たないテンプレート（YMM4 のアニメーション効果など）は置けない。
+        # 着せることしかできないので、そちらだけを押せるようにする。
+        self._place_button.setEnabled(
+            any(item.clip.source is not None or item.media_path for item in self._loaded)
+        )
         self._restyle_button.setEnabled(
             any(item.clip.source and item.clip.source.kind == "text" for item in self._loaded)
+            or self._is_effects_only()
         )
         self._notes.addItems(self._report.lines())
         self._show_preview()
 
+    def _is_effects_only(self) -> bool:
+        return bool(self._loaded) and all(
+            item.clip.source is None and not item.media_path for item in self._loaded
+        )
+
     def _describe(self, entry: TemplateEntry) -> str:
-        kinds = [item.kind or "?" for item in self._loaded]
         effects = sum(len(item.clip.effects) for item in self._loaded)
+        if self._is_effects_only():
+            return (
+                f"{entry.path}\n"
+                f"エフェクトだけのテンプレート（{effects} 段）\n"
+                "中身は持ちません。選んだクリップに効果を足す形で使います。"
+            )
+
+        kinds = [item.kind or "?" for item in self._loaded]
         return (
             f"{entry.path}\n"
             f"{len(self._loaded)} オブジェクト（{'、'.join(kinds)}）／エフェクト {effects} 段\n"
