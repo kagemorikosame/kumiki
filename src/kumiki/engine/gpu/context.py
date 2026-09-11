@@ -88,6 +88,23 @@ def ensure_qt_application() -> QCoreApplication:
     return QGuiApplication([])
 
 
+def _reported_gl_version() -> str:
+    """ドライバが名乗っている版。取れなければ「不明」。
+
+    案内を親切にするためだけの問い合わせなので、**失敗しても止めない**。
+    壊れたコンテキストでは ``glGetString`` 自体が ``invalid operation`` を
+    返すことがあり、そこで例外を出すと本来伝えたい内容が伝わらなくなる。
+    """
+    try:
+        from OpenGL.GL import GL_VERSION, glGetString
+
+        raw = glGetString(GL_VERSION)
+    except Exception:
+        # 版を取れないこと自体は異常ではない。案内の文面が「不明」になるだけ。
+        return "不明"
+    return raw.decode("ascii", "replace") if raw else "不明"
+
+
 class OffscreenGLContext:
     """画面を持たない GL コンテキスト。
 
@@ -130,7 +147,7 @@ class OffscreenGLContext:
         見ればよくなる（テストは飛ばし、アプリは案内を出す）。描画の奥まで進んで
         から中身の分からない例外で落ちるより、ここで止めたほうが原因に近い。
         """
-        from OpenGL.GL import GL_VERSION, glCreateShader, glGenVertexArrays, glGetString
+        from OpenGL.GL import glCreateShader, glGenVertexArrays
 
         with self:
             missing = [
@@ -142,12 +159,11 @@ class OffscreenGLContext:
                 if not bool(function)
             ]
             if missing:
-                raw = glGetString(GL_VERSION)
-                reported = raw.decode("ascii", "replace") if raw else "不明"
                 raise GLContextError(
                     f"OpenGL {REQUIRED_GL_VERSION[0]}.{REQUIRED_GL_VERSION[1]} "
                     f"の関数が見つからない（{'、'.join(missing)}）。"
-                    f"ドライバが返した版は {reported}。GPU ドライバを確認すること"
+                    f"ドライバが返した版は {_reported_gl_version()}。"
+                    "GPU ドライバを確認すること"
                 )
 
     @property
