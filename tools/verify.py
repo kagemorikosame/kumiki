@@ -1,9 +1,9 @@
-"""ruff・mypy・pytest をまとめて走らせる。
+"""ruff・mypy・pytest をまとめて走らせる
 
     .venv\\Scripts\\python.exe tools\\verify.py
 
-1 つでも落ちたら終了コードが非 0 になる。シェルでパイプに繋ぐと終了コードが
-最後のコマンドのものに化けるので、判定はここで行う。
+1 つでも落ちたら終了コードが非 0 になる シェルでパイプに繋ぐと終了コードが
+最後のコマンドのものに化けるので、判定はここで行う
 """
 
 from __future__ import annotations
@@ -23,6 +23,8 @@ STEPS: list[tuple[str, list[str]]] = [
     ("ruff (規約)", ["-m", "ruff", "check", *TARGETS]),
     ("mypy", ["-m", "mypy", "src", "tests"]),
     ("pytest", ["-m", "pytest", "-q"]),
+    # 文章に句点を使わない約束 データとしての句点は見ない（tools/punctuation.py）
+    ("句点", ["tools/punctuation.py"]),
 ]
 
 

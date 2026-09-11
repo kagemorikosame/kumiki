@@ -1,11 +1,11 @@
-"""標準エフェクト。
+"""標準エフェクト
 
-シェーダはすべてリニア空間・ストレートアルファで受け取り、同じ形で返す。
-ぼかしを伴うものは内部で事前乗算アルファに直してから畳む。ストレートのまま
-畳むと、透明な画素の色（多くは黒）が混ざって縁が黒ずむ。
+シェーダはすべてリニア空間・ストレートアルファで受け取り、同じ形で返す
+ぼかしを伴うものは内部で事前乗算アルファに直してから畳む ストレートのまま
+畳むと、透明な画素の色（多くは黒）が混ざって縁が黒ずむ
 
 使える uniform は :class:`~kumiki.effects.definition.EffectDefinition` の
-説明を参照。
+説明を参照
 """
 
 from __future__ import annotations
@@ -15,8 +15,8 @@ from kumiki.effects.spec import CheckSpec, ColorSpec, SelectSpec, TrackSpec, Val
 
 __all__ = ["PRELUDE", "register_builtin_effects"]
 
-#: すべてのフラグメントシェーダの先頭に付く共通部分。
-#: uniform の宣言と、よく使う小さな関数を置く。
+#: すべてのフラグメントシェーダの先頭に付く共通部分
+#: uniform の宣言と、よく使う小さな関数を置く
 PRELUDE = """
 #version 430 core
 in vec2 v_uv;
@@ -34,8 +34,8 @@ const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);  // Rec.709
 vec4 premul(vec4 c) { return vec4(c.rgb * c.a, c.a); }
 vec4 unpremul(vec4 c) { return c.a > 0.0001 ? vec4(c.rgb / c.a, c.a) : vec4(0.0); }
 
-// 事前乗算アルファでぼかす。ストレートのまま畳むと、透明な画素の色が
-// 混ざって縁が黒ずむ。
+// 事前乗算アルファでぼかす ストレートのまま畳むと、透明な画素の色が
+// 混ざって縁が黒ずむ
 vec4 blur1d(sampler2D tex, vec2 uv, vec2 direction, float radius) {
     if (radius < 0.5) return texture(tex, uv);
     float sigma = max(radius * 0.5, 0.5);
@@ -53,7 +53,7 @@ vec4 blur1d(sampler2D tex, vec2 uv, vec2 direction, float radius) {
     return unpremul(sum / total);
 }
 
-// 0..1 の擬似乱数。
+// 0..1 の擬似乱数
 float hash(vec2 p) {
     return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
 }
@@ -76,8 +76,8 @@ void main() {
 
     rgb *= 1.0 + brightness / 100.0;
 
-    // コントラストの支点は 0.18。リニア空間での中間グレーがそこにあるので、
-    // 0.5 を支点にすると暗部だけが極端に動く。
+    // コントラストの支点は 0.18 リニア空間での中間グレーがそこにあるので、
+    // 0.5 を支点にすると暗部だけが極端に動く
     rgb = (rgb - 0.18) * (1.0 + contrast / 100.0) + 0.18;
 
     float luma = dot(max(rgb, 0.0), LUMA);
@@ -87,7 +87,7 @@ void main() {
         float angle = radians(hue);
         float c = cos(angle);
         float s = sin(angle);
-        // YIQ 空間での回転。輝度を保ったまま色相だけを回せる。
+        // YIQ 空間での回転 輝度を保ったまま色相だけを回せる
         mat3 rotation = mat3(
             0.299 + 0.701 * c + 0.168 * s, 0.587 - 0.587 * c + 0.330 * s,
             0.114 - 0.114 * c - 0.497 * s,
@@ -108,7 +108,7 @@ _BLUR = _shader("""
 uniform float radius;
 
 void main() {
-    // 横と縦に分けて畳む。1 回で 2 次元のカーネルを回すと、計算量が半径の 2 乗になる。
+    // 横と縦に分けて畳む 1 回で 2 次元のカーネルを回すと、計算量が半径の 2 乗になる
     vec2 direction = u_pass == 0 ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
     frag_color = blur1d(u_texture, v_uv, direction, radius);
 }
@@ -124,7 +124,7 @@ void main() {
     vec2 direction = u_pass == 0 ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
 
     if (u_pass == 0) {
-        // 明るい部分だけを抜き出してから、横方向にぼかす。
+        // 明るい部分だけを抜き出してから、横方向にぼかす
         float sigma = max(radius * 0.5, 0.5);
         vec2 step = direction / u_size;
         vec4 sum = vec4(0.0);
@@ -142,7 +142,7 @@ void main() {
         return;
     }
 
-    // 縦方向にぼかしてから、元の絵へ加算する。
+    // 縦方向にぼかしてから、元の絵へ加算する
     float sigma = max(radius * 0.5, 0.5);
     vec2 step = direction / u_size;
     vec4 sum = vec4(0.0);
@@ -172,8 +172,8 @@ uniform float spill;
 void main() {
     vec4 color = texture(u_texture, v_uv);
 
-    // 色相と彩度で比べる。明るさの違いで抜けが変わると、照明ムラのある
-    // 実写グリーンバックがまったく抜けない。
+    // 色相と彩度で比べる 明るさの違いで抜けが変わると、照明ムラのある
+    // 実写グリーンバックがまったく抜けない
     float key_luma = dot(key_color.rgb, LUMA);
     float luma = dot(color.rgb, LUMA);
     vec2 difference = (color.rgb - vec3(luma)).xy - (key_color.rgb - vec3(key_luma)).xy;
@@ -185,7 +185,7 @@ void main() {
 
     vec3 rgb = color.rgb;
     if (spill > 0.0) {
-        // 縁に残る背景色を、輝度を保ったまま抜く。
+        // 縁に残る背景色を、輝度を保ったまま抜く
         float excess = dot(rgb - vec3(luma), normalize(key_color.rgb - vec3(key_luma) + 1e-6));
         rgb -= normalize(key_color.rgb - vec3(key_luma) + 1e-6)
              * max(excess, 0.0) * (spill / 100.0);
@@ -206,11 +206,11 @@ uniform float anchor_x;
 uniform float anchor_y;
 
 void main() {
-    // 出力の座標から入力の座標を逆算する。前方に写すと隙間が空く。
+    // 出力の座標から入力の座標を逆算する 前方に写すと隙間が空く
     //
-    // v_uv の Y は上向き。設定の Y も上向き（正で上へ動く）なので、
-    // ここでは符号をそろえるだけでよい。反転させると、同じ「Y」の表示なのに
-    // テキストや影と上下が逆に動くことになる。
+    // v_uv の Y は上向き 設定の Y も上向き（正で上へ動く）なので、
+    // ここでは符号をそろえるだけでよい 反転させると、同じ「Y」の表示なのに
+    // テキストや影と上下が逆に動くことになる
     vec2 pixel = v_uv * u_size;
     vec2 anchor = u_size * 0.5 + vec2(anchor_x, anchor_y);
 
@@ -245,7 +245,7 @@ uniform float feather;
 
 void main() {
     vec2 pixel = v_uv * u_size;
-    // v_uv は GL の向き（下が 0）。上下の指定を画像の向きに合わせる。
+    // v_uv は GL の向き（下が 0） 上下の指定を画像の向きに合わせる
     float from_top = u_size.y - pixel.y;
     float from_bottom = pixel.y;
 
@@ -272,7 +272,7 @@ void main() {
         return;
     }
 
-    // 周囲を見て、近くに不透明な画素があれば縁として塗る。
+    // 周囲を見て、近くに不透明な画素があれば縁として塗る
     float coverage = 0.0;
     int steps = int(min(width, 32.0));
     for (int y = -steps; y <= steps; ++y) {
@@ -283,7 +283,7 @@ void main() {
         }
     }
 
-    // 縁の上に元の絵を重ねる（over 合成）。
+    // 縁の上に元の絵を重ねる（over 合成）
     vec4 edge = vec4(color.rgb, color.a * coverage);
     vec3 rgb = base.rgb * base.a + edge.rgb * edge.a * (1.0 - base.a);
     float alpha = base.a + edge.a * (1.0 - base.a);
@@ -301,9 +301,9 @@ uniform vec4 color;
 
 void main() {
     if (u_pass == 0) {
-        // 影の形を作って横にぼかす。位置は元の絵からずらす。
-        // Y は正が上。変形エフェクトの pos_y と揃えてある。ここだけ逆にすると、
-        // 同じ「Y」という表示で上下が反対に動くことになる。
+        // 影の形を作って横にぼかす 位置は元の絵からずらす
+        // Y は正が上 変形エフェクトの pos_y と揃えてある ここだけ逆にすると、
+        // 同じ「Y」という表示で上下が反対に動くことになる
         vec2 shift = -vec2(offset_x, offset_y) / u_size;
         vec4 shape = blur1d(u_texture, v_uv + shift, vec2(1.0, 0.0), blur);
         frag_color = vec4(color.rgb, shape.a * color.a * (opacity / 100.0));
@@ -313,7 +313,7 @@ void main() {
     vec4 shadow = blur1d(u_texture, v_uv, vec2(0.0, 1.0), blur);
     vec4 base = texture(u_source, v_uv);
 
-    // 影の上に元の絵を載せる。
+    // 影の上に元の絵を載せる
     vec3 rgb = base.rgb * base.a + shadow.rgb * shadow.a * (1.0 - base.a);
     float alpha = base.a + shadow.a * (1.0 - base.a);
     frag_color = unpremul(vec4(rgb, alpha));
@@ -333,7 +333,7 @@ void main() {
              + premul(texture(u_texture, v_uv - vec2(0.0, texel.y)));
     vec4 blurred = unpremul(sum * 0.25);
 
-    // アンシャープマスク。ぼかしとの差を戻す量で鋭さが決まる。
+    // アンシャープマスク ぼかしとの差を戻す量で鋭さが決まる
     vec3 rgb = center.rgb + (center.rgb - blurred.rgb) * (strength / 100.0);
     frag_color = vec4(max(rgb, 0.0), center.a);
 }
@@ -385,7 +385,7 @@ uniform bool invert;
 
 void main() {
     vec2 pixel = v_uv * u_size;
-    // v_uv の Y は上向き。設定の Y も上向き。
+    // v_uv の Y は上向き 設定の Y も上向き
     vec2 centre = u_size * 0.5 + vec2(center_x, center_y);
     vec2 half_size = max(vec2(mask_width, mask_height) * 0.5, vec2(0.5));
     vec2 delta = pixel - centre;
@@ -393,11 +393,11 @@ void main() {
 
     float inside;
     if (shape == 0) {
-        // 矩形。各辺からの距離のうち最も内側を採る。
+        // 矩形 各辺からの距離のうち最も内側を採る
         vec2 distance = half_size - abs(delta);
         inside = min(smoothstep(0.0, edge, distance.x), smoothstep(0.0, edge, distance.y));
     } else {
-        // 楕円。正規化してから半径 1 の円として測る。
+        // 楕円 正規化してから半径 1 の円として測る
         float radius = length(delta / half_size);
         float scale = min(half_size.x, half_size.y);
         inside = smoothstep(0.0, edge / scale, 1.0 - radius);
@@ -423,9 +423,9 @@ uniform vec4 end_color;
 void main() {
     vec4 base = texture(u_texture, v_uv);
 
-    // 中心を原点、右と下を正とした画素座標。
-    // v_uv の Y は上向きなので、ここで下向きに直す。設定の Y も上向きなので
-    // 中心のずらし量も同じように反転する。
+    // 中心を原点、右と下を正とした画素座標
+    // v_uv の Y は上向きなので、ここで下向きに直す 設定の Y も上向きなので
+    // 中心のずらし量も同じように反転する
     vec2 pixel = (v_uv - 0.5) * u_size;
     pixel.y = -pixel.y;
     vec2 centre = vec2(center_x, -center_y);
@@ -433,17 +433,17 @@ void main() {
 
     float t;
     if (shape == 1) {
-        // 円形。中心からの距離。
+        // 円形 中心からの距離
         t = length(pixel - centre) / length_;
     } else {
-        // 線形。角度 0 で左から右、90 で上から下。
+        // 線形 角度 0 で左から右、90 で上から下
         float radian = radians(angle);
         vec2 direction = vec2(cos(radian), sin(radian));
         t = dot(pixel - centre, direction) / length_ + 0.5;
     }
 
     vec4 ramp = mix(start_color, end_color, clamp(t, 0.0, 1.0));
-    // 元の絵の不透明度はそのまま。グラデーションは色だけを塗り替える。
+    // 元の絵の不透明度はそのまま グラデーションは色だけを塗り替える
     float amount = clamp(strength * 0.01, 0.0, 1.0) * ramp.a;
     frag_color = vec4(mix(base.rgb, ramp.rgb, amount), base.a);
 }
@@ -455,7 +455,7 @@ uniform vec4 color;
 uniform float amount;
 
 void main() {
-    // 形はそのままに、色だけを塗る。不透明度に触ると輪郭の外まで色が出る。
+    // 形はそのままに、色だけを塗る 不透明度に触ると輪郭の外まで色が出る
     vec4 base = texture(u_texture, v_uv);
     float mixing = clamp(amount * 0.01, 0.0, 1.0) * color.a;
     frag_color = vec4(mix(base.rgb, color.rgb, mixing), base.a);
@@ -478,7 +478,7 @@ uniform float radius;
 uniform float angle;
 
 void main() {
-    // 1 方向にだけ伸ばす。角度 0 で横、90 で縦。
+    // 1 方向にだけ伸ばす 角度 0 で横、90 で縦
     float radian = radians(angle);
     frag_color = blur1d(u_texture, v_uv, vec2(cos(radian), sin(radian)), radius);
 }
@@ -496,7 +496,7 @@ void main() {
 
     float edge = clamp(threshold * 0.01, 0.0, 1.0);
     float feather = max(smoothness * 0.01, 0.001);
-    // 明るいところを残す。反転すると暗いところが残る。
+    // 明るいところを残す 反転すると暗いところが残る
     float keep = smoothstep(edge - feather, edge + feather, luma);
     if (invert) keep = 1.0 - keep;
 
@@ -506,7 +506,7 @@ void main() {
 
 
 def register_builtin_effects() -> None:
-    """標準エフェクトを一覧へ登録する。読み込み時に 1 度だけ呼ばれる。"""
+    """標準エフェクトを一覧へ登録する 読み込み時に 1 度だけ呼ばれる"""
     if "color" in registry:
         return
 

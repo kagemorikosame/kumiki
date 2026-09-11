@@ -1,11 +1,11 @@
-"""素材に紐付いた字幕を、タイムライン上の位置へ投影する。
+"""素材に紐付いた字幕を、タイムライン上の位置へ投影する
 
-字幕はソース時刻でしか持っていない。タイムライン上のどこに出るかは、その素材を
-参照しているクリップごとに毎回ここで計算する。
+字幕はソース時刻でしか持っていない タイムライン上のどこに出るかは、その素材を
+参照しているクリップごとに毎回ここで計算する
 
-この方式にしているのは「同期を取らない」ため。字幕にタイムライン位置を持たせると、
+この方式にしているのは「同期を取らない」ため 字幕にタイムライン位置を持たせると、
 カット・トリム・移動・速度変更・複製のすべてに追従処理が必要になり、どれか 1 つ
-漏れた瞬間にずれる。位置を持たせなければ、ずれようがない。
+漏れた瞬間にずれる 位置を持たせなければ、ずれようがない
 """
 
 from __future__ import annotations
@@ -29,15 +29,15 @@ __all__ = ["ProjectedSubtitle", "project_clip", "project_timeline"]
 
 @dataclass(frozen=True, slots=True)
 class ProjectedSubtitle:
-    """タイムライン上に現れた字幕 1 枚。"""
+    """タイムライン上に現れた字幕 1 枚"""
 
     segment: TranscriptSegment
     clip_id: ClipId
     track_id: TrackId
-    #: タイムライン上の表示範囲（フレーム）。``end_frame`` は含まない。
+    #: タイムライン上の表示範囲（フレーム） ``end_frame`` は含まない
     start_frame: int
     end_frame: int
-    #: クリップの端で切り詰められたか。UI で「続きがある」表示に使う。
+    #: クリップの端で切り詰められたか UI で「続きがある」表示に使う
     clipped_head: bool = False
     clipped_tail: bool = False
 
@@ -49,10 +49,10 @@ class ProjectedSubtitle:
 def project_clip(
     clip: Clip, media: MediaItem, rate: FrameRate, track_id: TrackId
 ) -> Iterator[ProjectedSubtitle]:
-    """1 つのクリップに現れる字幕を返す。
+    """1 つのクリップに現れる字幕を返す
 
     クリップが使っているソース範囲に重なるセグメントだけが対象で、はみ出した分は
-    クリップの端で切り詰められる。
+    クリップの端で切り詰められる
     """
     transcript = media.transcript
     if transcript is None:
@@ -69,7 +69,7 @@ def project_clip(
         end_offset = _source_to_clip_frame(visible_end, clip, rate, Rounding.CEIL)
 
         start_offset = max(0, min(start_offset, clip.duration - 1))
-        # 表示は最低 1 フレーム。丸めの結果 0 フレームになると画面に出ない。
+        # 表示は最低 1 フレーム 丸めの結果 0 フレームになると画面に出ない
         end_offset = max(start_offset + 1, min(end_offset, clip.duration))
 
         yield ProjectedSubtitle(
@@ -84,10 +84,10 @@ def project_clip(
 
 
 def project_timeline(project: Project) -> Iterator[ProjectedSubtitle]:
-    """タイムライン全体に現れる字幕を、開始位置順に返す。
+    """タイムライン全体に現れる字幕を、開始位置順に返す
 
-    同じ素材を複数回置けば、字幕もその回数だけ現れる。これは意図した挙動で、
-    素材を使い回したときに字幕が片方にしか出ないことの方が驚きが大きい。
+    同じ素材を複数回置けば、字幕もその回数だけ現れる これは意図した挙動で、
+    素材を使い回したときに字幕が片方にしか出ないことの方が驚きが大きい
     """
     projected: list[ProjectedSubtitle] = []
     for track in project.timeline.tracks:
@@ -106,10 +106,10 @@ def project_timeline(project: Project) -> Iterator[ProjectedSubtitle]:
 def _source_to_clip_frame(
     source_time: Fraction, clip: Clip, rate: FrameRate, rounding: Rounding
 ) -> int:
-    """ソース秒を、クリップ先頭からの相対フレームへ。
+    """ソース秒を、クリップ先頭からの相対フレームへ
 
     速度変更を掛けたクリップでは、ソース時間の進みとタイムライン時間の進みが
-    ``clip.speed`` 倍だけ違う。
+    ``clip.speed`` 倍だけ違う
     """
     elapsed = (source_time - clip.source_in) / clip.speed
     return seconds_to_frame(elapsed, rate, rounding)

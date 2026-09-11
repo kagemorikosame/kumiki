@@ -1,8 +1,8 @@
-"""字幕起こし。バックエンド抽象・実行環境の導入・整形。
+"""字幕起こし バックエンド抽象・実行環境の導入・整形
 
 字幕は素材に紐付き、タイムライン上の位置は投影で決まる
-（:mod:`kumiki.core.projection`）。ここが返すのはソース時刻だけで、
-タイムラインのことは何も知らない。
+（:mod:`kumiki.core.projection`） ここが返すのはソース時刻だけで、
+タイムラインのことは何も知らない
 """
 
 from kumiki.asr.backend import (
@@ -60,10 +60,10 @@ __all__ = [
 
 
 def default_backend() -> TranscriptionBackend:
-    """既定のバックエンド。
+    """既定のバックエンド
 
-    import はここで初めて行う。faster-whisper 本体はさらに遅らせてあるので、
-    未導入の環境でもこの関数は成功する。
+    import はここで初めて行う faster-whisper 本体はさらに遅らせてあるので、
+    未導入の環境でもこの関数は成功する
     """
     from kumiki.asr.whisper import FasterWhisperBackend
 

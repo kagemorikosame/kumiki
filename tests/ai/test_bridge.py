@@ -1,7 +1,7 @@
-"""AI スレッドと UI スレッドの橋渡し。
+"""AI スレッドと UI スレッドの橋渡し
 
-実際にスレッドを 2 本使って確かめる。片方だけで書くと、待ち合わせの取りこぼしが
-すり抜ける。
+実際にスレッドを 2 本使って確かめる 片方だけで書くと、待ち合わせの取りこぼしが
+すり抜ける
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ WRITE = _operation("split_clip")
 
 
 def pump_until(bridge: EditorBridge, done: threading.Event, timeout: float = 5.0) -> None:
-    """UI スレッドの代わりに、終わるまで仕事を拾い続ける。"""
+    """UI スレッドの代わりに、終わるまで仕事を拾い続ける"""
     deadline = time.monotonic() + timeout
     while not done.is_set() and time.monotonic() < deadline:
         bridge.pump()
@@ -39,7 +39,7 @@ def pump_until(bridge: EditorBridge, done: threading.Event, timeout: float = 5.0
 def call_in_thread(
     bridge: EditorBridge, operation: Operation, arguments: dict[str, object]
 ) -> tuple[threading.Event, dict[str, object]]:
-    """AI スレッドのつもりでツールを呼ぶ。"""
+    """AI スレッドのつもりでツールを呼ぶ"""
     done = threading.Event()
     box: dict[str, object] = {}
 
@@ -71,7 +71,7 @@ class TestReadOnlyCalls:
         pump_until(bridge, done)
 
         assert done.is_set()
-        # 仕事をしたのは pump を呼んだ側（＝UI スレッド役）。
+        # 仕事をしたのは pump を呼んだ側（＝UI スレッド役）
         assert pumped_on == [threading.get_ident()]
 
     def test_reads_need_no_approval(self, host: FakeHost) -> None:
@@ -85,7 +85,7 @@ class TestReadOnlyCalls:
         from kumiki.ai import bridge as bridge_module
 
         bridge = EditorBridge(host)
-        # pump を一度も呼ばない＝UI が固まっている状況。
+        # pump を一度も呼ばない＝UI が固まっている状況
         original = bridge_module.CALL_TIMEOUT
         bridge_module.CALL_TIMEOUT = 0.05
         try:
@@ -101,7 +101,7 @@ class TestApproval:
         bridge = EditorBridge(host)
         done, _ = call_in_thread(bridge, WRITE, {"clip_id": clip, "frame": 100})
 
-        # 許可を出すまでは何も起きない。
+        # 許可を出すまでは何も起きない
         approval = None
         deadline = time.monotonic() + 5.0
         while approval is None and time.monotonic() < deadline:
@@ -169,7 +169,7 @@ class TestApproval:
 
 class TestCancel:
     def test_cancelling_releases_a_waiting_approval(self, host: FakeHost) -> None:
-        # 承認待ちのまま中断すると、AI スレッドが 10 分止まる。畳んで返す。
+        # 承認待ちのまま中断すると、AI スレッドが 10 分止まる 畳んで返す
         clip = str(host.document.project.timeline.tracks[0].clips[0].id)
         bridge = EditorBridge(host)
         done, box = call_in_thread(bridge, WRITE, {"clip_id": clip, "frame": 100})
@@ -200,7 +200,7 @@ class TestCancel:
 
 class TestDescribeCall:
     def test_arguments_are_shown_with_the_description(self) -> None:
-        # ツール名だけでは何が起きるか分からない。押す前に見えるようにする。
+        # ツール名だけでは何が起きるか分からない 押す前に見えるようにする
         text = describe_call(WRITE, {"clip_id": "abc", "frame": 100})
         assert "clip_id=abc" in text
         assert "frame=100" in text

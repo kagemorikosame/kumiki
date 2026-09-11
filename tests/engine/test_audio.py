@@ -1,6 +1,6 @@
-"""波形解析とミックス。
+"""波形解析とミックス
 
-音のずれは編集の終盤まで気づきにくいので、位置とレベルを数値で押さえる。
+音のずれは編集の終盤まで気づきにくいので、位置とレベルを数値で押さえる
 """
 
 from __future__ import annotations
@@ -23,13 +23,13 @@ from tests.media_fixtures import SampleMedia, make_silent_gap
 
 @pytest.fixture(scope="session")
 def gapped_audio(media_dir: Path) -> Path:
-    """前後に音、真ん中が無音の 6 秒の素材。"""
+    """前後に音、真ん中が無音の 6 秒の素材"""
     return make_silent_gap(media_dir, "gapped.wav", duration=6.0)
 
 
 class TestWaveform:
     def test_builds_multiple_levels(self, sample_av: SampleMedia) -> None:
-        # 1 段階だけだと、拡大時は粗く縮小時は読む量が多すぎる。
+        # 1 段階だけだと、拡大時は粗く縮小時は読む量が多すぎる
         waveform = analyze_waveform(sample_av.path)
         assert waveform is not None
         assert len(waveform.levels) >= 2
@@ -44,7 +44,7 @@ class TestWaveform:
         assert float(waveform.duration) == pytest.approx(2.0, abs=0.1)
 
     def test_peaks_bracket_the_signal(self, sample_av: SampleMedia) -> None:
-        # min は必ず max 以下。逆転していれば描画が破綻する。
+        # min は必ず max 以下 逆転していれば描画が破綻する
         waveform = analyze_waveform(sample_av.path)
         assert waveform is not None
         for level in waveform.levels:
@@ -53,9 +53,9 @@ class TestWaveform:
     def test_level_matches_the_zoom(self, sample_av: SampleMedia) -> None:
         waveform = analyze_waveform(sample_av.path)
         assert waveform is not None
-        # 極端に拡大したら最も細かい段階。
+        # 極端に拡大したら最も細かい段階
         assert waveform.level_for(1).samples_per_peak == BASE_SAMPLES_PER_PEAK
-        # 極端に縮小したら最も粗い段階。
+        # 極端に縮小したら最も粗い段階
         assert waveform.level_for(10**9).samples_per_peak == waveform.levels[-1].samples_per_peak
 
     def test_envelope_shape(self, sample_av: SampleMedia) -> None:
@@ -66,7 +66,7 @@ class TestWaveform:
         assert np.all(envelope[:, :, 0] <= envelope[:, :, 1])
 
     def test_envelope_finds_the_silence(self, gapped_audio: Path) -> None:
-        # 真ん中が無音の素材。エンベロープの真ん中だけ振幅が落ちること。
+        # 真ん中が無音の素材 エンベロープの真ん中だけ振幅が落ちること
         waveform = analyze_waveform(gapped_audio)
         assert waveform is not None
         envelope = waveform.envelope(0, waveform.total_samples, 30)
@@ -83,7 +83,7 @@ class TestWaveform:
         assert waveform.envelope(0, 1000, 0).shape == (0, 2, 2)
 
     def test_can_be_cancelled(self, sample_av: SampleMedia) -> None:
-        # 素材を差し替えたのに前の解析が走り続ける、という状態を避ける。
+        # 素材を差し替えたのに前の解析が走り続ける、という状態を避ける
         assert analyze_waveform(sample_av.path, should_cancel=lambda: True) is None
 
     def test_reports_progress(self, sample_av: SampleMedia) -> None:
@@ -97,7 +97,7 @@ class TestWaveform:
 
 @pytest.fixture
 def audio_project(sample_av: SampleMedia) -> Project:
-    """2 秒の素材を音声トラックへ 1 本置いたプロジェクト。"""
+    """2 秒の素材を音声トラックへ 1 本置いたプロジェクト"""
     media = probe_media(sample_av.path)
     project = Project.create(
         ProjectSettings(width=320, height=240, frame_rate=FrameRate(30), sample_rate=48000)
@@ -125,7 +125,7 @@ class TestMixer:
         assert rms(block) > 0.0
 
     def test_silence_outside_the_clip(self, audio_project: Project) -> None:
-        # クリップは 60 フレーム = 2 秒。その後ろは無音。
+        # クリップは 60 フレーム = 2 秒 その後ろは無音
         mixer = AudioMixer(audio_project)
         try:
             beyond = mixer.render(48000 * 5, 4800)
@@ -134,7 +134,7 @@ class TestMixer:
         assert np.all(beyond == 0.0)
 
     def test_clip_position_shifts_the_audio(self, audio_project: Project) -> None:
-        # クリップを 1 秒後ろへ動かすと、0 秒地点は無音、1 秒地点に音が来る。
+        # クリップを 1 秒後ろへ動かすと、0 秒地点は無音、1 秒地点に音が来る
         track = audio_project.timeline.tracks[0]
         moved = track.clips[0].moved_to(30)
         project = audio_project.with_timeline(
@@ -166,7 +166,7 @@ class TestMixer:
         finally:
             mixer.close()
 
-        # -6dB はおよそ半分。
+        # -6dB はおよそ半分
         assert rms(reduced) / rms(full) == pytest.approx(0.5, abs=0.02)
 
     def test_muted_track_is_silent(self, audio_project: Project) -> None:
@@ -181,7 +181,7 @@ class TestMixer:
             mixer.close()
 
     def test_solo_silences_the_others(self, audio_project: Project) -> None:
-        # もう 1 本トラックを足し、片方だけソロにする。
+        # もう 1 本トラックを足し、片方だけソロにする
         media = audio_project.media[0]
         second = Track(kind=TrackKind.AUDIO, name="A2", solo=True)
         project = AddTrack(second).apply(audio_project)
@@ -201,7 +201,7 @@ class TestMixer:
         finally:
             mixer.close()
 
-        # ソロにした 1 本だけが鳴るので、元の 1 本と同じレベルになる。
+        # ソロにした 1 本だけが鳴るので、元の 1 本と同じレベルになる
         assert rms(soloed) == pytest.approx(rms(single), rel=0.01)
 
     def test_two_tracks_add_up(self, audio_project: Project) -> None:
@@ -228,7 +228,7 @@ class TestMixer:
 
     def test_does_not_clip_internally(self, audio_project: Project) -> None:
         # 内部で頭打ちにすると、後段のフェードやラウドネス調整で潰れた音しか
-        # 扱えなくなる。合成段では 1.0 を超えたままにしておく。
+        # 扱えなくなる 合成段では 1.0 を超えたままにしておく
         track = audio_project.timeline.tracks[0]
         loud = audio_project.with_timeline(
             audio_project.timeline.replace_track(replace(track, volume_db=40.0))
@@ -241,8 +241,8 @@ class TestMixer:
         assert np.abs(block).max() > 1.0
 
     def test_pan_keeps_power_constant(self, audio_project: Project) -> None:
-        # 単純な線形パンだと中央で音圧が下がる。定電力なら左右に振っても
-        # 全体のパワーが変わらない。
+        # 単純な線形パンだと中央で音圧が下がる 定電力なら左右に振っても
+        # 全体のパワーが変わらない
         track = audio_project.timeline.tracks[0]
         mixer = AudioMixer(audio_project)
         try:
@@ -260,11 +260,11 @@ class TestMixer:
             mixer.close()
 
         assert rms(panned) == pytest.approx(rms(centred), rel=0.02)
-        # 完全に右へ振ったので左は無音。
+        # 完全に右へ振ったので左は無音
         assert rms(panned[:, 0]) < rms(panned[:, 1]) * 0.01
 
     def test_speed_shortens_the_source_consumed(self, audio_project: Project) -> None:
-        # 2 倍速のクリップの 0.5 秒地点は、等倍の 1 秒地点と同じ音。
+        # 2 倍速のクリップの 0.5 秒地点は、等倍の 1 秒地点と同じ音
         track = audio_project.timeline.tracks[0]
         fast = replace(track.clips[0], speed=Fraction(2), duration=30)
         project = audio_project.with_timeline(
@@ -283,7 +283,7 @@ class TestMixer:
         finally:
             mixer.close()
 
-        # 2 倍速側の 1 サンプルが等倍側の 2 サンプルに対応する。
+        # 2 倍速側の 1 サンプルが等倍側の 2 サンプルに対応する
         assert rms(sped) == pytest.approx(rms(normal), rel=0.15)
 
     def test_render_frames(self, audio_project: Project) -> None:
@@ -292,7 +292,7 @@ class TestMixer:
             block = mixer.render_frames(0, 30)
         finally:
             mixer.close()
-        # 30fps の 30 フレーム = 1 秒 = 48000 サンプル。
+        # 30fps の 30 フレーム = 1 秒 = 48000 サンプル
         assert block.shape == (48000, 2)
 
     def test_video_only_media_contributes_nothing(

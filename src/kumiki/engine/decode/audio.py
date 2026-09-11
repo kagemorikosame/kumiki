@@ -1,8 +1,8 @@
-"""音声のデコードとリサンプル。
+"""音声のデコードとリサンプル
 
 呼び出し側はプロジェクトのサンプリングレート・チャンネル数で欲しがるので、素材が
-何であってもここで揃えて返す。返すのは常に float32 の ``(サンプル数, チャンネル数)``。
-編集中の音量計算やミックスを float でやる方が、クリッピングの扱いが素直になる。
+何であってもここで揃えて返す 返すのは常に float32 の ``(サンプル数, チャンネル数)``
+編集中の音量計算やミックスを float でやる方が、クリッピングの扱いが素直になる
 """
 
 from __future__ import annotations
@@ -22,21 +22,21 @@ from kumiki.engine.decode.probe import ProbeError, probe_media
 
 __all__ = ["AudioDecoder"]
 
-#: この秒数までなら、シークせず順方向にデコードして目的位置まで進む。
+#: この秒数までなら、シークせず順方向にデコードして目的位置まで進む
 FORWARD_DECODE_WINDOW = Fraction(1, 2)
 
-#: シーク時に目的位置より手前へ余分に戻る秒数。
+#: シーク時に目的位置より手前へ余分に戻る秒数
 #: AAC などはフレーム先頭にデコーダのプライミング（無効サンプル）を含むため、
-#: 目的位置ちょうどへ飛ぶとその無音混じりの領域を掴んでしまう。助走させて捨てる。
+#: 目的位置ちょうどへ飛ぶとその無音混じりの領域を掴んでしまう 助走させて捨てる
 SEEK_PREROLL = Fraction(1, 4)
 
 _LAYOUTS = {1: "mono", 2: "stereo", 6: "5.1", 8: "7.1"}
 
 
 class AudioDecoder:
-    """1 本の音声ストリームから、指定した範囲のサンプルを取り出す。
+    """1 本の音声ストリームから、指定した範囲のサンプルを取り出す
 
-    スレッドセーフではない。素材ごと・再生系統ごとに 1 つずつ持つこと。
+    スレッドセーフではない 素材ごと・再生系統ごとに 1 つずつ持つこと
     """
 
     def __init__(
@@ -71,8 +71,8 @@ class AudioDecoder:
             if stream_index is None
             else next((s for s in streams if s.index == stream_index), streams[0])
         )
-        # 音声は 1 本のストリームを順に読むだけなので、映像ほど並列化の効果は無い。
-        # それでも AAC の復号はスレッドが効くので有効にしておく。
+        # 音声は 1 本のストリームを順に読むだけなので、映像ほど並列化の効果は無い
+        # それでも AAC の復号はスレッドが効くので有効にしておく
         self._stream.codec_context.thread_type = "AUTO"
 
         item = probe_media(self._path)
@@ -84,9 +84,9 @@ class AudioDecoder:
 
         self._resampler = self._new_resampler()
         self._frames = self._container.decode(self._stream)
-        #: 読み込み済みだがまだ返していないサンプル。``(サンプル数, チャンネル数)``。
+        #: 読み込み済みだがまだ返していないサンプル ``(サンプル数, チャンネル数)``
         self._buffer = _empty(self._channels)
-        #: ``_buffer`` の先頭に対応する出力サンプル番号。
+        #: ``_buffer`` の先頭に対応する出力サンプル番号
         self._buffer_start = 0
         self._position_known = False
         self._exhausted = False
@@ -122,10 +122,10 @@ class AudioDecoder:
         self._container.close()
 
     def read(self, start_sample: int, count: int) -> np.ndarray:
-        """出力レートでの ``start_sample`` から ``count`` サンプルを返す。
+        """出力レートでの ``start_sample`` から ``count`` サンプルを返す
 
-        素材の範囲外は無音で埋める。長さが足りないからといって短い配列を返すと、
-        呼び出し側が毎回長さを揃える羽目になり、そこでずれが生まれる。
+        素材の範囲外は無音で埋める 長さが足りないからといって短い配列を返すと、
+        呼び出し側が毎回長さを揃える羽目になり、そこでずれが生まれる
         """
         if count <= 0:
             return _empty(self._channels)
@@ -134,7 +134,7 @@ class AudioDecoder:
         if start_sample + count <= 0:
             return out
 
-        # 素材の先頭より前を要求された分は無音のまま残す。
+        # 素材の先頭より前を要求された分は無音のまま残す
         offset = max(0, -start_sample)
         cursor = max(0, start_sample)
         remaining = count - offset
@@ -150,13 +150,13 @@ class AudioDecoder:
 
             buffer_end = self._buffer_start + len(self._buffer)
             if buffer_end <= cursor:
-                # まるごと目的位置より手前。捨てて次を読む。
+                # まるごと目的位置より手前 捨てて次を読む
                 self._buffer = _empty(self._channels)
                 self._buffer_start = buffer_end
                 continue
 
             if self._buffer_start > cursor:
-                # シークが行き過ぎた等で穴が空いている。その分は無音で埋める。
+                # シークが行き過ぎた等で穴が空いている その分は無音で埋める
                 gap = min(remaining, self._buffer_start - cursor)
                 offset += gap
                 cursor += gap
@@ -175,7 +175,7 @@ class AudioDecoder:
         return out
 
     def read_seconds(self, start: Fraction, duration: Fraction) -> np.ndarray:
-        """秒で指定して読む。フレーム境界を扱わない呼び出し側のための入口。"""
+        """秒で指定して読む フレーム境界を扱わない呼び出し側のための入口"""
         start_sample = int(start * self._sample_rate)
         count = int(duration * self._sample_rate)
         return self.read(start_sample, count)
@@ -204,22 +204,22 @@ class AudioDecoder:
         except av.error.FFmpegError:
             self._container.seek(0, stream=self._stream, backward=True)
 
-        # リサンプラは内部に前のフレームの続きを持っているので、シークしたら作り直す。
-        # 使い回すと、飛んだ先の音に前の位置の尻尾が混ざる。
+        # リサンプラは内部に前のフレームの続きを持っているので、シークしたら作り直す
+        # 使い回すと、飛んだ先の音に前の位置の尻尾が混ざる
         self._resampler = self._new_resampler()
         self._frames = self._container.decode(self._stream)
         self._buffer = _empty(self._channels)
         self._exhausted = False
-        # 着地点は要求位置より手前のキーフレームになる。実際の位置は最初に読めた
-        # フレームの PTS から決めるので、ここでは未確定にしておく。
+        # 着地点は要求位置より手前のキーフレームになる 実際の位置は最初に読めた
+        # フレームの PTS から決めるので、ここでは未確定にしておく
         self._buffer_start = 0
         self._position_known = False
 
     def _fill(self) -> bool:
-        """サンプルが得られるまでデコードを進める。1 つでも足せたら ``True``。
+        """サンプルが得られるまでデコードを進める 1 つでも足せたら ``True``
 
-        リサンプラは 1 フレーム入れても出力を返さないことがある（内部に溜める）。
-        1 回で諦めると、呼び出し側は「もう読めない」と誤解して途中で打ち切る。
+        リサンプラは 1 フレーム入れても出力を返さないことがある（内部に溜める）
+        1 回で諦めると、呼び出し側は「もう読めない」と誤解して途中で打ち切る
         """
         while not self._exhausted:
             try:
@@ -236,15 +236,15 @@ class AudioDecoder:
         return False
 
     def _flush_resampler(self) -> bool:
-        """リサンプラに残っているサンプルを吐き出す。"""
+        """リサンプラに残っているサンプルを吐き出す"""
         return self._resample_into_buffer(None)
 
     def _resample_into_buffer(self, frame: av.AudioFrame | None) -> bool:
-        """フレームをリサンプルしてバッファへ足す。何か得られたら ``True``。
+        """フレームをリサンプルしてバッファへ足す 何か得られたら ``True``
 
         リサンプル後のフレームは出力レートのタイムベースで PTS を持つので、
-        PTS がそのまま出力サンプル番号になる。シーク直後の実際の着地位置は
-        これでしか分からない。
+        PTS がそのまま出力サンプル番号になる シーク直後の実際の着地位置は
+        これでしか分からない
         """
         produced = False
         for resampled in self._resampler.resample(frame):
@@ -266,7 +266,7 @@ class AudioDecoder:
 
 
 def _planar_to_interleaved(frame: av.AudioFrame) -> np.ndarray:
-    """``fltp`` のフレームを ``(サンプル数, チャンネル数)`` へ。"""
+    """``fltp`` のフレームを ``(サンプル数, チャンネル数)`` へ"""
     array = frame.to_ndarray()
     if array.ndim == 1:
         array = array.reshape(1, -1)
@@ -278,7 +278,7 @@ def _empty(channels: int) -> np.ndarray:
 
 
 def _output_sample_index(frame: av.AudioFrame, sample_rate: int) -> int | None:
-    """リサンプル後のフレームの先頭が、出力の何サンプル目にあたるか。"""
+    """リサンプル後のフレームの先頭が、出力の何サンプル目にあたるか"""
     if frame.pts is None:
         return None
     time_base = Fraction(frame.time_base) if frame.time_base else Fraction(1, sample_rate)

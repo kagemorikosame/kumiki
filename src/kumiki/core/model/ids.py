@@ -1,7 +1,7 @@
-"""モデル要素の識別子。
+"""モデル要素の識別子
 
 型ごとに :func:`typing.NewType` を分けているのは、``TrackId`` を受け取るべき場所に
-``ClipId`` を渡す取り違えを mypy に検出させるため。実行時の表現はただの文字列。
+``ClipId`` を渡す取り違えを mypy に検出させるため 実行時の表現はただの文字列
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ SegmentId = NewType("SegmentId", str)
 
 
 def _generate() -> str:
-    # 16 桁あれば衝突は実用上考えなくてよく、プロジェクトファイルも読みやすい。
+    # 16 桁あれば衝突は実用上考えなくてよく、プロジェクトファイルも読みやすい
     return uuid.uuid4().hex[:16]
 
 

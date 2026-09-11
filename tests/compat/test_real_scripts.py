@@ -1,8 +1,8 @@
-"""実際に配布されているスクリプトが使っている書き方。
+"""実際に配布されているスクリプトが使っている書き方
 
-資料に載っている書き方と、現物で使われている書き方は食い違うことがある。
-ここに並んでいるのは全部、実配布スクリプトを動かして見つかったもの。
-どれか 1 つ欠けるだけでスクリプトは 1 行目で落ちる。
+資料に載っている書き方と、現物で使われている書き方は食い違うことがある
+ここに並んでいるのは全部、実配布スクリプトを動かして見つかったもの
+どれか 1 つ欠けるだけでスクリプトは 1 行目で落ちる
 """
 
 from __future__ import annotations
@@ -64,13 +64,13 @@ class TestHeaderSyntax:
 
 class TestValueTypes:
     def test_colours_arrive_as_numbers(self) -> None:
-        # AviUtl では色は 0xRRGGBB の数値。タプルのまま渡すと
-        # ``color / 65536`` のような計算でいきなり落ちる。
+        # AviUtl では色は 0xRRGGBB の数値 タプルのまま渡すと
+        # ``color / 65536`` のような計算でいきなり落ちる
         spec = ColorSpec("col", "色", (1.0, 0.5, 0.0, 1.0))
         assert lua_value(spec, (1.0, 0.5, 0.0, 1.0)) == 0xFF7F00
 
     def test_checks_arrive_as_booleans(self) -> None:
-        # 配布スクリプトは ``if bold then`` と書く。
+        # 配布スクリプトは ``if bold then`` と書く
         assert lua_value(CheckSpec("bold", "太字", True), 1) is True
 
     def test_numeric_choices_arrive_as_numbers(self) -> None:
@@ -85,7 +85,7 @@ class TestValueTypes:
 class TestGlobalVariables:
     def test_named_parameters_are_plain_globals(self, runtime: LuaScriptRuntime) -> None:
         # --track@offset_x:… と書いたスクリプトは obj.offset_x ではなく
-        # 素の offset_x を読む。実配布スクリプトはどれもこの書き方。
+        # 素の offset_x を読む 実配布スクリプトはどれもこの書き方
         target = state()
         target.values["offset_x"] = 25.0
         runtime.run("obj.ox = offset_x * 2", target)
@@ -93,7 +93,7 @@ class TestGlobalVariables:
 
     def test_values_from_a_previous_run_do_not_leak(self, runtime: LuaScriptRuntime) -> None:
         # 残っていると、自分では設定していない値を読めてしまい、
-        # 動いたり動かなかったりする。
+        # 動いたり動かなかったりする
         first = state()
         first.values["only_here"] = 5.0
         runtime.run("obj.ox = only_here", first)
@@ -107,18 +107,18 @@ class TestGlobalVariables:
         target = state()
         target.values["caption"] = "見出し"
         runtime.run("obj.ox = string.len(caption)", target)
-        assert target.ox == 9.0  # UTF-8 のバイト数。Lua の string.len と同じ
+        assert target.ox == 9.0  # UTF-8 のバイト数 Lua の string.len と同じ
 
 
 class TestScaleFields:
     def test_sx_and_sy_are_writable(self, runtime: LuaScriptRuntime) -> None:
-        # 拡張描画のスクリプトは軸ごとの倍率を触る。
+        # 拡張描画のスクリプトは軸ごとの倍率を触る
         target = state()
         runtime.run("obj.sx = 2  obj.sy = 0.5", target)
         assert (target.sx, target.sy) == (2.0, 0.5)
 
     def test_reading_sx_before_writing_gives_one(self, runtime: LuaScriptRuntime) -> None:
-        # nil だと ``keep_sx * scale`` のような計算で落ちる。
+        # nil だと ``keep_sx * scale`` のような計算で落ちる
         target = state()
         runtime.run("obj.ox = obj.sx", target)
         assert target.ox == 1.0
@@ -168,8 +168,8 @@ class TestModules:
         assert target.ox == 7.0
 
     def test_a_native_module_is_refused_with_a_reason(self, tmp_path: Path) -> None:
-        # AviUtl2 の .mod2 は中身が DLL のことがある。黙って nil を返すと
-        # 「なぜか動かない」で終わる。
+        # AviUtl2 の .mod2 は中身が DLL のことがある 黙って nil を返すと
+        # 「なぜか動かない」で終わる
         (tmp_path / "ネイティブ.mod2").write_bytes(b"MZ\x90\x00" + b"\x00" * 64)
         report = CompatibilityReport()
         runtime = LuaScriptRuntime(report=report, instruction_limit=200_000)
@@ -179,7 +179,7 @@ class TestModules:
         assert any("native" in line for line in report.lines())
 
     def test_modules_outside_the_script_folder_are_refused(self, tmp_path: Path) -> None:
-        # 任意のパスを開けると、読み込んだだけでディスクを読まれうる。
+        # 任意のパスを開けると、読み込んだだけでディスクを読まれうる
         report = CompatibilityReport()
         runtime = LuaScriptRuntime(report=report, instruction_limit=200_000)
         runtime.set_roots((tmp_path,))
@@ -201,7 +201,7 @@ class TestModules:
 
 class TestIdentifiers:
     def test_obj_id_is_a_number(self, runtime: LuaScriptRuntime) -> None:
-        # nil だと比較や演算で落ちる。
+        # nil だと比較や演算で落ちる
         target = state(index=3)
         runtime.run("obj.ox = obj.id", target)
         assert target.ox == 3.0

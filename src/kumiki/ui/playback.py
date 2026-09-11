@@ -1,8 +1,8 @@
-"""再生の制御。
+"""再生の制御
 
-音を時計にする。映像は「今どこを再生しているか」を音に尋ねて、その位置の
-フレームを出す。映像を時計にすると、映像が遅れたときに音を飛ばすことになり、
-途切れが即座に耳につく。音は途切れさせず、映像側がコマを落として追いつく。
+音を時計にする 映像は「今どこを再生しているか」を音に尋ねて、その位置の
+フレームを出す 映像を時計にすると、映像が遅れたときに音を飛ばすことになり、
+途切れが即座に耳につく 音は途切れさせず、映像側がコマを落として追いつく
 """
 
 from __future__ import annotations
@@ -15,19 +15,19 @@ from kumiki.engine.audio import AudioMixer, AudioPlayer, PlaybackError
 
 __all__ = ["PlaybackController"]
 
-#: 再生位置を見に行く間隔（ミリ秒）。フレーム間隔より細かくしておかないと、
-#: 表示するフレームが飛ぶ。
+#: 再生位置を見に行く間隔（ミリ秒） フレーム間隔より細かくしておかないと、
+#: 表示するフレームが飛ぶ
 POLL_INTERVAL_MS = 8
 
 
 class PlaybackController(QObject):
-    """再生・停止と、再生位置の通知。"""
+    """再生・停止と、再生位置の通知"""
 
-    #: 再生位置が進んだ。引数はフレーム番号。
+    #: 再生位置が進んだ 引数はフレーム番号
     frame_changed = Signal(int)
-    #: 再生状態が変わった。
+    #: 再生状態が変わった
     state_changed = Signal(bool)
-    #: 音声出力を開けなかった等。引数はメッセージ。
+    #: 音声出力を開けなかった等 引数はメッセージ
     failed = Signal(str)
 
     def __init__(self, project: Project, parent: QObject | None = None) -> None:
@@ -58,7 +58,7 @@ class PlaybackController(QObject):
         self._mixer.set_project(project)
 
     def set_frame(self, frame: int) -> None:
-        """再生ヘッドを動かす。再生中なら、その位置から再生し直す。"""
+        """再生ヘッドを動かす 再生中なら、その位置から再生し直す"""
         self._frame = max(0, frame)
         if self._playing:
             self._restart_from(self._frame)
@@ -71,7 +71,7 @@ class PlaybackController(QObject):
             return
         end = self._project.duration
         if self._frame >= end:
-            # 末尾で押されたら頭から。止まったままより意図に近い。
+            # 末尾で押されたら頭から 止まったままより意図に近い
             self._frame = 0
 
         self._start_frame = self._frame
@@ -131,7 +131,7 @@ class PlaybackController(QObject):
             return
 
         if not self._player.is_playing:
-            # デバイスが止まった。位置だけ末尾へ送って停止する。
+            # デバイスが止まった 位置だけ末尾へ送って停止する
             self.stop()
             return
 

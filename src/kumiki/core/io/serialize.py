@@ -1,11 +1,11 @@
-""".kmk プロジェクトファイルの読み書き。
+""".kmk プロジェクトファイルの読み書き
 
-JSON にしているのは、外部ツールと AI エージェントから素直に扱えるようにするため。
+JSON にしているのは、外部ツールと AI エージェントから素直に扱えるようにするため
 バイナリにすると、AI がプロジェクトを直接読んで状況を把握することも、ユーザーが
-壊れたファイルを手で直すこともできなくなる。
+壊れたファイルを手で直すこともできなくなる
 
-秒は必ず ``"1001/30000"`` のような分数文字列で書き出す。浮動小数にすると保存と
-読み込みを繰り返すだけで値が動く。
+秒は必ず ``"1001/30000"`` のような分数文字列で書き出す 浮動小数にすると保存と
+読み込みを繰り返すだけで値が動く
 """
 
 from __future__ import annotations
@@ -64,19 +64,19 @@ __all__ = [
 FORMAT_NAME = "kumiki-project"
 FORMAT_VERSION = 1
 
-#: プロジェクトファイルの拡張子。
+#: プロジェクトファイルの拡張子
 SUFFIX = ".kmk"
 
-#: 読むときだけ受け付ける、昔の名前と拡張子。
+#: 読むときだけ受け付ける、昔の名前と拡張子
 #:
-#: 公開前に ``NovaEdit`` から改名した。手元に保存済みのものがあるかもしれないので、
-#: **読む側だけ**受ける。書くときは常に新しい名前で書く。
+#: 公開前に ``NovaEdit`` から改名した 手元に保存済みのものがあるかもしれないので、
+#: **読む側だけ**受ける 書くときは常に新しい名前で書く
 LEGACY_FORMAT_NAMES = ("novaedit-project",)
 LEGACY_SUFFIXES = (".nvep",)
 
 
 class ProjectFileError(Exception):
-    """プロジェクトファイルが読めない、または想定した形をしていない。"""
+    """プロジェクトファイルが読めない、または想定した形をしていない"""
 
 
 # --- 基本型 ---------------------------------------------------------------
@@ -187,8 +187,8 @@ def _keyframe_from_json(raw: object) -> Keyframe:
 
 def _param_to_json(value: ParamValue) -> Any:
     if isinstance(value, AnimatedValue):
-        # アニメーションしていない値は素の数値で書く。プロジェクトファイルの
-        # 大半はこちらなので、これだけでファイルサイズがかなり変わる。
+        # アニメーションしていない値は素の数値で書く プロジェクトファイルの
+        # 大半はこちらなので、これだけでファイルサイズがかなり変わる
         if not value.is_animated:
             return {"static": value.static}
         return {
@@ -222,7 +222,7 @@ def _params_from_json(raw: object, field: str) -> dict[str, ParamValue]:
 
 
 def effect_to_json(effect: Effect) -> dict[str, Any]:
-    """エフェクト 1 つを辞書へ。プリセットの保存でも使う。"""
+    """エフェクト 1 つを辞書へ プリセットの保存でも使う"""
     return {
         "id": effect.id,
         "kind": effect.kind,
@@ -232,7 +232,7 @@ def effect_to_json(effect: Effect) -> dict[str, Any]:
 
 
 def effect_from_json(raw: object) -> Effect:
-    """:func:`effect_to_json` の逆。"""
+    """:func:`effect_to_json` の逆"""
     data = _require(raw, "effect")
     return Effect(
         kind=_get_str(data, "kind"),
@@ -534,7 +534,7 @@ def _timeline_from_json(raw: object) -> Timeline:
 
 
 def project_to_dict(project: Project) -> dict[str, Any]:
-    """プロジェクトを JSON にできる辞書へ。"""
+    """プロジェクトを JSON にできる辞書へ"""
     settings = project.settings
     return {
         "format": FORMAT_NAME,
@@ -554,7 +554,7 @@ def project_to_dict(project: Project) -> dict[str, Any]:
 
 
 def project_from_dict(data: object) -> Project:
-    """:func:`project_to_dict` の出力からプロジェクトを復元する。"""
+    """:func:`project_to_dict` の出力からプロジェクトを復元する"""
     root = _require(data, "プロジェクト")
 
     format_name = _get_str(root, "format")
@@ -562,11 +562,11 @@ def project_from_dict(data: object) -> Project:
         raise ProjectFileError(f"Kumiki のプロジェクトファイルではない: format={format_name!r}")
     version = _get_int(root, "version", 0)
     if version > FORMAT_VERSION:
-        # 壊れているのではなく、こちらが古い。直す手立てを言う。
-        # 自動更新を入れたあとは、ここが「更新してください」の入口になる。
+        # 壊れているのではなく、こちらが古い 直す手立てを言う
+        # 自動更新を入れたあとは、ここが「更新してください」の入口になる
         raise ProjectFileError(
-            f"新しい形式のプロジェクトファイル (version {version})。"
-            f"このバージョンが対応しているのは {FORMAT_VERSION} までです。"
+            f"新しい形式のプロジェクトファイル (version {version})"
+            f"このバージョンが対応しているのは {FORMAT_VERSION} までです"
             "Kumiki を新しい版に更新してください"
         )
 
@@ -596,11 +596,11 @@ def project_from_dict(data: object) -> Project:
 
 
 def save_project(project: Project, path: Path) -> None:
-    """プロジェクトをファイルへ書き出す。
+    """プロジェクトをファイルへ書き出す
 
-    一時ファイルへ書いてから差し替える。書き込み中に落ちても、既存のプロジェクト
-    ファイルは無傷で残る。編集作業をまるごと失うのが一番痛い失敗なので、
-    ここは常に atomic にする。
+    一時ファイルへ書いてから差し替える 書き込み中に落ちても、既存のプロジェクト
+    ファイルは無傷で残る 編集作業をまるごと失うのが一番痛い失敗なので、
+    ここは常に atomic にする
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -615,7 +615,7 @@ def save_project(project: Project, path: Path) -> None:
 
 
 def load_project(path: Path) -> Project:
-    """プロジェクトファイルを読み込む。"""
+    """プロジェクトファイルを読み込む"""
     path = Path(path)
     try:
         text = path.read_text(encoding="utf-8")
@@ -627,7 +627,7 @@ def load_project(path: Path) -> Project:
         raise ProjectFileError(f"JSON として読めない: {path} ({exc})") from exc
 
     project = project_from_dict(data)
-    # ファイル名をプロジェクト名の既定にする。名前が入っていない古いファイル対策。
+    # ファイル名をプロジェクト名の既定にする 名前が入っていない古いファイル対策
     if not project.name or project.name == "無題":
         project = replace(project, name=path.stem)
     return project

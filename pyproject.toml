@@ -1,7 +1,7 @@
 [project]
 name = "kumiki"
-# 版は src/kumiki/__init__.py の __version__ が唯一の出どころ。
-# 2 か所に書くと、更新の配布で必ずずれる（配った版と中身の版が食い違う）。
+# 版は src/kumiki/__init__.py の __version__ が唯一の出どころ
+# 2 か所に書くと、更新の配布で必ずずれる（配った版と中身の版が食い違う）
 dynamic = ["version"]
 description = "AviUtl 互換と AI エージェント連携を備えた Python 製の動画編集ソフト"
 readme = "README.md"
@@ -13,22 +13,22 @@ dependencies = [
     "numpy>=2.0",
     "PyOpenGL>=3.1.10",
     "sounddevice>=0.5",
-    # AviUtl スクリプトを動かす Lua。既定で入れる（互換機能の土台なので、
-    # 追加導入にすると「スクリプトが動かない」が既定の状態になる）。
+    # AviUtl スクリプトを動かす Lua 既定で入れる（互換機能の土台なので、
+    # 追加導入にすると「スクリプトが動かない」が既定の状態になる）
     "lupa>=2.5",
 ]
 
 [project.optional-dependencies]
 asr = [
-    # 字幕起こしの実行環境。既定では入れない（合計で 2 GB を超えるため）。
-    # ソフト内の「環境を導入」ボタンから、必要になった時点で入れる。
+    # 字幕起こしの実行環境 既定では入れない（合計で 2 GB を超えるため）
+    # ソフト内の「環境を導入」ボタンから、必要になった時点で入れる
     "faster-whisper>=1.1",
     "nvidia-cublas-cu12",
     "nvidia-cudnn-cu12>=9.1",
 ]
 ai = [
-    # AI 連携。既定では入れない。実行には Claude Code 本体
-    # （npm install -g @anthropic-ai/claude-code）も要る。
+    # AI 連携 既定では入れない 実行には Claude Code 本体
+    # （npm install -g @anthropic-ai/claude-code）も要る
     "claude-agent-sdk>=0.2",
 ]
 dev = [
@@ -68,12 +68,12 @@ python_version = "3.12"
 strict = true
 files = ["src", "tests"]
 
-# PyOpenGL は型情報を配布していない。GL 呼び出しは薄い層に閉じ込めてあるので、
-# ここだけ型検査の対象外にする。
+# PyOpenGL は型情報を配布していない GL 呼び出しは薄い層に閉じ込めてあるので、
+# ここだけ型検査の対象外にする
 #
 # faster_whisper と claude_agent_sdk は**任意の依存**で、既定では入らない
-# （字幕起こしと AI 連携の実行環境。合計 2 GB を超えるため）。入っていない
-# 環境でも型検査が通るようにしておく。入っている環境では実物で検査される。
+# （字幕起こしと AI 連携の実行環境 合計 2 GB を超えるため） 入っていない
+# 環境でも型検査が通るようにしておく 入っている環境では実物で検査される
 [[tool.mypy.overrides]]
 module = ["OpenGL.*", "faster_whisper.*", "sounddevice", "claude_agent_sdk.*"]
 ignore_missing_imports = true

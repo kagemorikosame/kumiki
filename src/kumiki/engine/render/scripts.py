@@ -1,12 +1,12 @@
-"""AviUtl スクリプトを描画の流れに組み込む。
+"""AviUtl スクリプトを描画の流れに組み込む
 
-スクリプトは 1 枚の画像と描画パラメータを書き換える。その結果は「何回・どこへ・
+スクリプトは 1 枚の画像と描画パラメータを書き換える その結果は「何回・どこへ・
 どう変形して描くか」の一覧（:class:`~kumiki.compat.aviutl.objapi.DrawCall`）に
-なるので、レンダラはそれを順に合成すればよい。
+なるので、レンダラはそれを順に合成すればよい
 
-**Lua は Qt を知らない。** テキストや図形を作る ``obj.load`` は
-:func:`~kumiki.engine.sources.render_source` に委ねる。互換層をエンジンから
-切り離しておくと、互換層だけをテストできる。
+**Lua は Qt を知らない** テキストや図形を作る ``obj.load`` は
+:func:`~kumiki.engine.sources.render_source` に委ねる 互換層をエンジンから
+切り離しておくと、互換層だけをテストできる
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ __all__ = [
 
 
 def split_effects(effects: tuple[Effect, ...]) -> tuple[tuple[Effect, ...], tuple[Effect, ...]]:
-    """エフェクトを「GPU で処理するもの」と「スクリプト」に分ける。"""
+    """エフェクトを「GPU で処理するもの」と「スクリプト」に分ける"""
     gpu = tuple(e for e in effects if not e.kind.startswith(PREFIX))
     scripts = tuple(e for e in effects if e.kind.startswith(PREFIX))
     return gpu, scripts
@@ -43,17 +43,17 @@ def script_effects(effects: tuple[Effect, ...]) -> tuple[Effect, ...]:
 
 
 class ScriptStage:
-    """クリップに積まれた AviUtl スクリプトを走らせる係。
+    """クリップに積まれた AviUtl スクリプトを走らせる係
 
-    Lua ランタイムは 1 つを使い回す。フレームごとに作り直すと、標準ライブラリの
-    用意だけで描画の余裕を食う。
+    Lua ランタイムは 1 つを使い回す フレームごとに作り直すと、標準ライブラリの
+    用意だけで描画の余裕を食う
     """
 
     def __init__(self, catalog: ScriptCatalog, *, screen: tuple[int, int]) -> None:
         self._catalog = catalog
         self._screen = screen
         self._runtime = LuaScriptRuntime(render_source=self._render_source)
-        # 共通処理のファイル（.mod2）はスクリプトと同じ場所に置かれている。
+        # 共通処理のファイル（.mod2）はスクリプトと同じ場所に置かれている
         self._runtime.set_roots(catalog.roots)
 
     def set_screen(self, width: int, height: int) -> None:
@@ -69,10 +69,10 @@ class ScriptStage:
         fps: float,
         layer: int = 0,
     ) -> tuple[DrawCall, ...]:
-        """スクリプトを順に走らせ、描画の一覧を返す。
+        """スクリプトを順に走らせ、描画の一覧を返す
 
-        1 つの状態を渡していくのは AviUtl と同じ。前のスクリプトが動かした位置に、
-        次のスクリプトがさらに手を入れる形になる。
+        1 つの状態を渡していくのは AviUtl と同じ 前のスクリプトが動かした位置に、
+        次のスクリプトがさらに手を入れる形になる
         """
         state = ObjectState(
             image=image,
@@ -102,7 +102,7 @@ class ScriptStage:
     def _render_source(
         self, kind: str, params: dict[str, object], width: int, height: int
     ) -> np.ndarray:
-        """``obj.load`` から呼ばれる。テキストや図形を絵にする。"""
+        """``obj.load`` から呼ばれる テキストや図形を絵にする"""
         source = GeneratedSource(kind=kind, params=_as_params(kind, params))
         drawn = render_source(source, max(1, width), max(1, height))
         if drawn is None:  # pragma: no cover - 種類は呼び出し側が決めている
@@ -111,10 +111,10 @@ class ScriptStage:
 
 
 def _apply_params(state: ObjectState, effect: Effect, frame: int) -> None:
-    """設定欄の値を ``obj`` から見える形へ移す。
+    """設定欄の値を ``obj`` から見える形へ移す
 
     ``track0``…``track3`` と ``check0`` は AviUtl の決まった名前へ、それ以外は
-    名前付きの値として置く。スクリプトはどちらの書き方もする。
+    名前付きの値として置く スクリプトはどちらの書き方もする
     """
     definition = registry.get(effect.kind)
     specs = definition.parameters if definition is not None else ()
@@ -135,10 +135,10 @@ def _apply_params(state: ObjectState, effect: Effect, frame: int) -> None:
 
 
 def _as_params(kind: str, values: dict[str, object]) -> dict[str, ParamValue]:
-    """``obj.load`` の引数を、生成オブジェクトのパラメータへ。
+    """``obj.load`` の引数を、生成オブジェクトのパラメータへ
 
-    数値は :class:`AnimatedValue` に包む。生成側はキーフレームを想定した形で
-    値を読むため。
+    数値は :class:`AnimatedValue` に包む 生成側はキーフレームを想定した形で
+    値を読むため
     """
     del kind
     params: dict[str, ParamValue] = {}
@@ -155,7 +155,7 @@ def _as_params(kind: str, values: dict[str, object]) -> dict[str, ParamValue]:
 
 
 def requested_effects(call: DrawCall) -> tuple[Effect, ...]:
-    """``obj.effect`` で頼まれたフィルタを、こちらのエフェクトへ。"""
+    """``obj.effect`` で頼まれたフィルタを、こちらのエフェクトへ"""
     return tuple(_to_effect(request) for request in call.effects)
 
 
@@ -172,7 +172,7 @@ def _to_effect(request: EffectRequest) -> Effect:
     return Effect(kind=request.kind, params=params)
 
 
-#: AviUtl のパラメータ名と、こちらの名前の対応。
+#: AviUtl のパラメータ名と、こちらの名前の対応
 _PARAM_NAMES: dict[str, str] = {
     "範囲": "radius",
     "強さ": "strength",

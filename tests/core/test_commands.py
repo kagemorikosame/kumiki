@@ -1,4 +1,4 @@
-"""編集コマンドと Undo 履歴。"""
+"""編集コマンドと Undo 履歴"""
 
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ class TestMediaCommands:
         updated = AddMedia(audio_media).apply(project)
         assert len(updated.media) == 2
         assert updated.find_media(audio_media.id) is not None
-        # 元のプロジェクトは変わらない。
+        # 元のプロジェクトは変わらない
         assert len(project.media) == 1
 
     def test_add_duplicate_media_fails(self, video_media: MediaItem, project: Project) -> None:
@@ -115,7 +115,7 @@ class TestClipCommands:
     def test_audio_only_media_rejected_on_video_track(
         self, audio_media: MediaItem, project: Project
     ) -> None:
-        # 映像トラックに音声素材を置くと、再生時に無音の穴になる。置いた時点で弾く。
+        # 映像トラックに音声素材を置くと、再生時に無音の穴になる 置いた時点で弾く
         with_audio = AddMedia(audio_media).apply(project)
         track = _only_track(with_audio)
         with pytest.raises(ValueError, match="映像が無い"):
@@ -200,7 +200,7 @@ class TestSplit:
 
         split = SplitClip(clip.id, 30).apply(placed)
         left, right = _only_track(split).clips
-        # 左が 30 フレーム = 1 秒を消費したので、右は 1 + 1 = 2 秒から始まる。
+        # 左が 30 フレーム = 1 秒を消費したので、右は 1 + 1 = 2 秒から始まる
         assert left.source_in == Fraction(1)
         assert right.source_in == Fraction(2)
 
@@ -211,7 +211,7 @@ class TestSplit:
 
         split = SplitClip(clip.id, 30).apply(placed)
         _, right = _only_track(split).clips
-        # 2 倍速なので 30 フレーム（1 秒）の再生で 2 秒分のソースを消費する。
+        # 2 倍速なので 30 フレーム（1 秒）の再生で 2 秒分のソースを消費する
         assert right.source_in == Fraction(2)
 
     def test_left_keeps_id(self, video_media: MediaItem, project: Project) -> None:
@@ -233,7 +233,7 @@ class TestSplit:
             SplitClip(clip.id, frame).apply(placed)
 
     def test_split_follows_linked_audio(self, video_media: MediaItem, project: Project) -> None:
-        # 映像と音声がリンクしていれば、片方を割るともう片方も同じ位置で割れる。
+        # 映像と音声がリンクしていれば、片方を割るともう片方も同じ位置で割れる
         group: GroupId = new_group_id()
         audio_track = Track(kind=TrackKind.AUDIO, name="A1")
         with_track = AddTrack(audio_track).apply(project)
@@ -252,7 +252,7 @@ class TestSplit:
         self, video_media: MediaItem, project: Project
     ) -> None:
         # 分割してできた左右が同じリンクグループに残ると、片方を削除したときに
-        # もう片方まで消える。左右は別のグループにし、映像と音声の対応だけ保つ。
+        # もう片方まで消える 左右は別のグループにし、映像と音声の対応だけ保つ
         group: GroupId = new_group_id()
         audio_track = Track(kind=TrackKind.AUDIO, name="A1")
         with_track = AddTrack(audio_track).apply(project)
@@ -286,7 +286,7 @@ class TestSplit:
         head = split.timeline.tracks[0].clips[0]
         removed = RemoveClip(head.id, ripple=True).apply(split)
 
-        # 映像・音声とも後半だけが残り、詰められて先頭に来る。
+        # 映像・音声とも後半だけが残り、詰められて先頭に来る
         assert [(c.timeline_start, c.duration) for c in removed.timeline.tracks[0].clips] == [
             (0, 35)
         ]
@@ -305,7 +305,7 @@ class TestTrim:
         result = _only_track(trimmed).clips[0]
         assert result.timeline_start == 30
         assert result.duration == 30
-        # 素材の中身は動かない。先頭を 1 秒分削っただけ。
+        # 素材の中身は動かない 先頭を 1 秒分削っただけ
         assert result.source_in == Fraction(1)
 
     def test_trim_tail_only_changes_duration(
@@ -371,7 +371,7 @@ class TestDocument:
     def test_checkpoint_collapses_into_one_step(
         self, video_media: MediaItem, project: Project
     ) -> None:
-        # AI は 1 つの指示で何十回も編集する。それが 1 回の取り消しで戻ることが要件。
+        # AI は 1 つの指示で何十回も編集する それが 1 回の取り消しで戻ることが要件
         document = Document(project)
         track = _only_track(project)
         with document.checkpoint("AI: 無音をカット"):
@@ -394,7 +394,7 @@ class TestDocument:
         assert document.history_labels == ("外側",)
 
     def test_empty_checkpoint_is_not_recorded(self, project: Project) -> None:
-        # 「取り消しても何も起きない」段が履歴に挟まると操作感が悪い。
+        # 「取り消しても何も起きない」段が履歴に挟まると操作感が悪い
         document = Document(project)
         with document.checkpoint("何もしない"):
             pass
@@ -408,7 +408,7 @@ class TestDocument:
             document.execute(RenameProject("途中"))
             document.execute(AddMedia(video_media))
 
-        # 成功した分は残り、まとめて 1 回で取り消せる。
+        # 成功した分は残り、まとめて 1 回で取り消せる
         assert document.project.name == "途中"
         assert document.history_labels == ("途中で失敗",)
         document.undo()
@@ -452,17 +452,17 @@ class TestDocument:
 
 
 class TestFrameRateIsUnusedButExplicit:
-    """conftest の RATE_30 がプロジェクト設定と一致していることの確認。"""
+    """conftest の RATE_30 がプロジェクト設定と一致していることの確認"""
 
     def test_project_rate(self, project: Project) -> None:
         assert project.rate == RATE_30
 
 
 class TestLinkedMoveAndTrim:
-    """リンクされた映像・音声は、移動もトリムも一緒に動くこと。
+    """リンクされた映像・音声は、移動もトリムも一緒に動くこと
 
     分割と削除だけが連動して移動とトリムが連動しないと、ドラッグした瞬間に
-    音がずれる。連動の約束は全部の操作で同じでなければ意味がない。
+    音がずれる 連動の約束は全部の操作で同じでなければ意味がない
     """
 
     def _linked(self, video_media: MediaItem, project: Project) -> tuple[Project, Clip, Clip]:
@@ -487,7 +487,7 @@ class TestLinkedMoveAndTrim:
     def test_the_partner_keeps_its_own_track(
         self, video_media: MediaItem, project: Project
     ) -> None:
-        # 映像を別の映像トラックへ移しても、音声は音声トラックに残る。
+        # 映像を別の映像トラックへ移しても、音声は音声トラックに残る
         placed, video_clip, _ = self._linked(video_media, project)
         second = Track(kind=TrackKind.VIDEO, name="V2")
         placed = AddTrack(second).apply(placed)
@@ -500,7 +500,7 @@ class TestLinkedMoveAndTrim:
     def test_a_move_that_pushes_the_partner_negative_fails(
         self, video_media: MediaItem, project: Project
     ) -> None:
-        # 片方だけ動いて残りがずれる、という中途半端な結果を作らない。
+        # 片方だけ動いて残りがずれる、という中途半端な結果を作らない
         placed, video_clip, _ = self._linked(video_media, project)
         second = Track(kind=TrackKind.VIDEO, name="V2")
         placed = AddTrack(second).apply(placed)
@@ -528,7 +528,7 @@ class TestLinkedMoveAndTrim:
         placed, video_clip, _ = self._linked(video_media, project)
         with pytest.raises(ValueError):
             TrimClip(video_clip.id, head_delta=999).apply(placed)
-        # 例外を投げたので、元のプロジェクトはそのまま。
+        # 例外を投げたので、元のプロジェクトはそのまま
         assert placed.timeline.tracks[0].clips[0].duration == 60
 
     def test_unlinked_clips_are_untouched(self, video_media: MediaItem, project: Project) -> None:

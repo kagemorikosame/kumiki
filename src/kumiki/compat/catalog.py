@@ -1,18 +1,18 @@
-"""外部のテンプレートを 1 つの棚に並べる。
+"""外部のテンプレートを 1 つの棚に並べる
 
-集めるのは 2 種類。
+集めるのは 2 種類
 
 * AviUtl のエイリアス — ``.exa`` ``.exa2`` ``.object``（AviUtl2 世代）
 * YMM4 のアイテムテンプレート — ``.ymmt``
 
 読み方は違うが、出てくるものは同じ :class:`~kumiki.compat.mapped.MappedObject`
-なので、タイムラインへ置く処理は 1 つで済む。
+なので、タイムラインへ置く処理は 1 つで済む
 
-**字幕テンプレートは「置く」だけでなく「今のクリップに着せる」ことができる。**
+**字幕テンプレートは「置く」だけでなく「今のクリップに着せる」ことができる**
 配布されている字幕エイリアスは、見本の文字（``字幕テキスト`` など）が入った
-テキストオブジェクトとして配られている。そのまま置くと、字幕を打ち直すことに
-なる。:func:`restyle` は文字と時間を今のクリップのまま残し、見た目だけを
-入れ替える。
+テキストオブジェクトとして配られている そのまま置くと、字幕を打ち直すことに
+なる :func:`restyle` は文字と時間を今のクリップのまま残し、見た目だけを
+入れ替える
 """
 
 from __future__ import annotations
@@ -42,33 +42,33 @@ __all__ = [
     "template_catalog",
 ]
 
-#: AviUtl 側で読む拡張子。
+#: AviUtl 側で読む拡張子
 _AVIUTL_SUFFIXES = (".exa", ".exa2", ".object", ".exo", ".exo2")
 
-#: YMM4 側で読む拡張子。
+#: YMM4 側で読む拡張子
 _YMM4_SUFFIXES = (".ymmt",)
 
-#: 文字だけを差し替えて着せ替えるときに、テンプレート側から**取らない**設定。
+#: 文字だけを差し替えて着せ替えるときに、テンプレート側から**取らない**設定
 #:
-#: 文字そのものと文字送りは、今のクリップの持ち物。見た目を変えたいだけなのに
-#: 中身まで置き換わったら、それは着せ替えではない。
+#: 文字そのものと文字送りは、今のクリップの持ち物 見た目を変えたいだけなのに
+#: 中身まで置き換わったら、それは着せ替えではない
 _KEPT_ON_RESTYLE = frozenset({"text", "reveal"})
 
 
 @dataclass(frozen=True, slots=True)
 class TemplateEntry:
-    """棚に並ぶテンプレート 1 つ。"""
+    """棚に並ぶテンプレート 1 つ"""
 
     name: str
     path: Path
-    #: 置かれていたフォルダ名。配布物はフォルダで分かれているので、そのまま出す。
+    #: 置かれていたフォルダ名 配布物はフォルダで分かれているので、そのまま出す
     folder: str = ""
-    #: ``"aviutl"`` か ``"ymm4"``。
+    #: ``"aviutl"`` か ``"ymm4"``
     source: str = "aviutl"
-    #: ``.ymmt`` の中の何本目か。
+    #: ``.ymmt`` の中の何本目か
     #:
     #: AviUtl のエイリアスは 1 ファイル 1 本だが、YMM4 のアイテムテンプレートは
-    #: **1 ファイルに何本も入っている**（手元の配布物は 17 本と 106 本だった）。
+    #: **1 ファイルに何本も入っている**（手元の配布物は 17 本と 106 本だった）
     index: int = 0
 
     @property
@@ -76,7 +76,7 @@ class TemplateEntry:
         return self.name
 
     def load(self, *, report: CompatibilityReport | None = None) -> list[MappedObject]:
-        """中身を読んで、写した結果を返す。"""
+        """中身を読んで、写した結果を返す"""
         log = report if report is not None else global_report
         if self.source == "ymm4":
             templates = load_template(self.path)
@@ -90,13 +90,13 @@ class TemplateEntry:
 
 
 class TemplateCatalog:
-    """フォルダを走査して並べる。"""
+    """フォルダを走査して並べる"""
 
     def __init__(self) -> None:
         self._entries: list[TemplateEntry] = []
 
     def scan(self, roots: tuple[Path, ...]) -> list[TemplateEntry]:
-        """走査してこの棚を入れ替える。読めないファイルは黙って飛ばす。"""
+        """走査してこの棚を入れ替える 読めないファイルは黙って飛ばす"""
         found: list[TemplateEntry] = []
         seen: set[Path] = set()
         for root in roots:
@@ -119,7 +119,7 @@ class TemplateCatalog:
         return tuple(self._entries)
 
     def folders(self) -> tuple[str, ...]:
-        """出てきたフォルダ名を、並んだ順のまま重複なく。"""
+        """出てきたフォルダ名を、並んだ順のまま重複なく"""
         names: list[str] = []
         for entry in self._entries:
             if entry.folder not in names:
@@ -131,9 +131,9 @@ class TemplateCatalog:
 
 
 def _entries_for(path: Path, root: Path) -> list[TemplateEntry]:
-    """1 ファイルから並ぶテンプレート。
+    """1 ファイルから並ぶテンプレート
 
-    AviUtl のエイリアスは 1 本。YMM4 のアイテムテンプレートは中を開いて数える。
+    AviUtl のエイリアスは 1 本 YMM4 のアイテムテンプレートは中を開いて数える
     """
     suffix = path.suffix.lower()
     relative = path.parent.relative_to(root)
@@ -147,16 +147,16 @@ def _entries_for(path: Path, root: Path) -> list[TemplateEntry]:
     try:
         templates = load_template(path)
     except (Ymm4ParseError, OSError):
-        # 読めないものは棚に出さない。開くまで中身が分からない形式なので、
-        # 一覧に並べてから「読めません」と言うより出さないほうが分かりやすい。
+        # 読めないものは棚に出さない 開くまで中身が分からない形式なので、
+        # 一覧に並べてから「読めません」と言うより出さないほうが分かりやすい
         return []
 
     return [
         TemplateEntry(
             name=template.name or f"{path.stem} {index + 1}",
             path=path,
-            # 配布物は ``アニメーション効果/振り子`` のように分類を持っている。
-            # ファイル名だけで並べると 100 本超が 1 つの見出しに潰れる。
+            # 配布物は ``アニメーション効果/振り子`` のように分類を持っている
+            # ファイル名だけで並べると 100 本超が 1 つの見出しに潰れる
             folder=f"{path.stem} / {template.folder}" if template.folder else path.stem,
             source="ymm4",
             index=index,
@@ -166,10 +166,10 @@ def _entries_for(path: Path, root: Path) -> list[TemplateEntry]:
 
 
 def default_template_roots() -> tuple[Path, ...]:
-    """既定で見に行くフォルダ。
+    """既定で見に行くフォルダ
 
     スクリプトと同じ考え方で、**すでに持っている資産をコピーせずに使える**ことを
-    優先する。AviUtl2 や YMM4 が入っていれば、そのフォルダをそのまま見る。
+    優先する AviUtl2 や YMM4 が入っていれば、そのフォルダをそのまま見る
     """
     roots: list[Path] = []
     appdata = os.environ.get("APPDATA")
@@ -194,7 +194,7 @@ def template_catalog() -> TemplateCatalog:
 
 
 def set_template_catalog(catalog: TemplateCatalog) -> None:
-    """棚を差し替える。テストと、フォルダ設定を変えたときに使う。"""
+    """棚を差し替える テストと、フォルダ設定を変えたときに使う"""
     global _catalog
     _catalog = catalog
 
@@ -207,13 +207,13 @@ def place(
     track_id: TrackId | None = None,
     default_duration: int = DEFAULT_GENERATED_FRAMES,
 ) -> list[Command]:
-    """写した結果をタイムラインへ置くコマンドの列。
+    """写した結果をタイムラインへ置くコマンドの列
 
-    ``track_id`` を渡せばそのトラックへまとめて置く。渡さなければ、元の
-    レイヤー番号に対応する映像トラックへ置く（無ければ作る）。
+    ``track_id`` を渡せばそのトラックへまとめて置く 渡さなければ、元の
+    レイヤー番号に対応する映像トラックへ置く（無ければ作る）
     """
-    # 中身を持たないもの（エフェクトだけのテンプレート）は置けない。
-    # 空のクリップを置いても何も映らないので、:func:`restyle` で着せて使う。
+    # 中身を持たないもの（エフェクトだけのテンプレート）は置けない
+    # 空のクリップを置いても何も映らないので、:func:`restyle` で着せて使う
     objects = [item for item in objects if item.clip.source is not None or item.media_path]
     if not objects:
         return []
@@ -225,9 +225,9 @@ def place(
         else _tracks_for(project, {item.layer for item in objects}, commands)
     )
 
-    # 一番早いオブジェクトが ``at_frame`` に来るように、まとめてずらす。
+    # 一番早いオブジェクトが ``at_frame`` に来るように、まとめてずらす
     # エイリアスは元のタイムライン上の位置を持ったままなので、そのまま置くと
-    # 指定した場所ではなく元あった場所へ行く。
+    # 指定した場所ではなく元あった場所へ行く
     origin = min(item.clip.timeline_start for item in objects)
 
     for item in objects:
@@ -243,15 +243,15 @@ def place(
 
 
 def restyle(objects: list[MappedObject], clip: Clip) -> list[Command]:
-    """テンプレートの見た目を、今あるクリップへ着せる。
+    """テンプレートの見た目を、今あるクリップへ着せる
 
-    2 通りある。
+    2 通りある
 
     * **中身のあるテンプレート** — テキストオブジェクトを持つ最初の 1 つを使い、
-      文字と時間は今のまま、見た目だけを入れ替える。字幕テンプレートはこれ
+      文字と時間は今のまま、見た目だけを入れ替える 字幕テンプレートはこれ
     * **エフェクトだけのテンプレート** — YMM4 の「アニメーション効果」のように
-      中身を持たないもの。今のクリップに**エフェクトを足す**だけで、
-      中身には触らない。だからテキスト以外のクリップにも着せられる
+      中身を持たないもの 今のクリップに**エフェクトを足す**だけで、
+      中身には触らない だからテキスト以外のクリップにも着せられる
     """
     if not objects:
         return []
@@ -300,5 +300,5 @@ def _tracks_for(project: Project, layers: set[int], commands: list[Command]) -> 
     return tracks
 
 
-#: 読み込みに失敗したときに投げられる例外。呼び出し側はこれだけ捕まえればよい。
+#: 読み込みに失敗したときに投げられる例外 呼び出し側はこれだけ捕まえればよい
 TemplateError = (ExoParseError, Ymm4ParseError)

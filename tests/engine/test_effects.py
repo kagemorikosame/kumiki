@@ -1,7 +1,7 @@
-"""エフェクトと生成オブジェクト。
+"""エフェクトと生成オブジェクト
 
-判定を確実にするため、映像素材ではなく図形やテキストを使う。testsrc2 のような
-模様の上では「変わった／変わらない」しか言えず、どう変わるべきかを書けない。
+判定を確実にするため、映像素材ではなく図形やテキストを使う testsrc2 のような
+模様の上では「変わった／変わらない」しか言えず、どう変わるべきかを書けない
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ from kumiki.engine.sources import render_source
 
 
 def builtin_effects() -> tuple[EffectDefinition, ...]:
-    """GPU で動く自前のエフェクトだけ。AviUtl スクリプトは Lua なので除く。"""
+    """GPU で動く自前のエフェクトだけ AviUtl スクリプトは Lua なので除く"""
     return tuple(d for d in registry.all() if not d.kind.startswith("aviutl:"))
 
 
@@ -51,7 +51,7 @@ def gl() -> Iterator[OffscreenGLContext]:
 
 @pytest.fixture
 def draw(gl: OffscreenGLContext) -> Callable[..., np.ndarray]:
-    """1 クリップだけのプロジェクトを描いて画像を返す。"""
+    """1 クリップだけのプロジェクトを描いて画像を返す"""
 
     def render(
         source: GeneratedSource,
@@ -88,7 +88,7 @@ def draw(gl: OffscreenGLContext) -> Callable[..., np.ndarray]:
 
 
 def white_square(size: int = 100) -> GeneratedSource:
-    """中央に置いた白い正方形。位置と大きさが分かっているので判定しやすい。"""
+    """中央に置いた白い正方形 位置と大きさが分かっているので判定しやすい"""
     return SHAPE.create(shape="rect", width=size, height=size, color=(1.0, 1.0, 1.0, 1.0))
 
 
@@ -107,7 +107,7 @@ class TestParameterSpecs:
         assert spec.coerce(-5).static == 0
 
     def test_track_keeps_animation(self) -> None:
-        # キーフレームの付いた値は、範囲で切らずにそのまま通す。
+        # キーフレームの付いた値は、範囲で切らずにそのまま通す
         spec = TrackSpec("radius", "範囲", 0, 100, 10)
         animated = AnimatedValue(keyframes=(Keyframe(frame=0, value=0.0),))
         assert spec.coerce(animated) is animated
@@ -121,19 +121,19 @@ class TestParameterSpecs:
         assert spec.coerce((1.0, 0.5, 0.0)) == (1.0, 0.5, 0.0, 1.0)
 
     def test_garbage_falls_back_to_the_default(self) -> None:
-        # 配布エイリアスから読んだ値は型が信用できない。既定値へ寄せる。
+        # 配布エイリアスから読んだ値は型が信用できない 既定値へ寄せる
         spec = TrackSpec("radius", "範囲", 0, 100, 10)
         assert spec.coerce("でたらめ").static == 10
 
 
 class TestRegistry:
     def test_standard_effects_are_registered(self) -> None:
-        # P2 の完了条件が標準エフェクト 10 種。
+        # P2 の完了条件が標準エフェクト 10 種
         assert len(registry) >= 10
 
     def test_every_effect_has_a_shader_and_parameters(self) -> None:
-        # AviUtl スクリプトは Lua で動くのでシェーダを持たない。ここでは
-        # 自前の（GPU で動く）エフェクトだけを見る。
+        # AviUtl スクリプトは Lua で動くのでシェーダを持たない ここでは
+        # 自前の（GPU で動く）エフェクトだけを見る
         for definition in builtin_effects():
             assert definition.fragment_shader, f"{definition.kind}: シェーダが無い"
             assert definition.parameters, f"{definition.kind}: パラメータが無い"
@@ -154,7 +154,7 @@ class TestRegistry:
 class TestShaders:
     def test_every_effect_compiles(self, gl: OffscreenGLContext) -> None:
         # コンパイルできないエフェクトは黙って素通しになる仕様なので、
-        # 「絵が出た」だけでは検出できない。1 つずつ通して確かめる。
+        # 「絵が出た」だけでは検出できない 1 つずつ通して確かめる
         from kumiki.engine.gpu.effects import EffectProcessor
         from kumiki.engine.gpu.glutil import ScreenQuad
 
@@ -194,20 +194,20 @@ class TestGeometryEffects:
     def test_transform_moves_the_image(self, draw: Callable[..., np.ndarray]) -> None:
         square = white_square(60)
         moved = draw(square, (registry.require("transform").create(pos_x=60),))
-        # 中央は空き、右へずれた位置に現れる。
+        # 中央は空き、右へずれた位置に現れる
         assert moved[HEIGHT // 2, WIDTH // 2, 0] < 20
         assert moved[HEIGHT // 2, WIDTH // 2 + 60, 0] > 200
 
     def test_transform_moves_up_for_a_positive_y(self, draw: Callable[..., np.ndarray]) -> None:
-        # Y は正が上。テキストの位置・影のずれ・マスクの中心と同じ向きでないと、
-        # 同じ「Y」という表示なのに項目ごとに上下が入れ替わる。
+        # Y は正が上 テキストの位置・影のずれ・マスクの中心と同じ向きでないと、
+        # 同じ「Y」という表示なのに項目ごとに上下が入れ替わる
         square = white_square(40)
         moved = draw(square, (registry.require("transform").create(pos_y=60),))
         assert moved[HEIGHT // 2 - 60, WIDTH // 2, 0] > 200, "上へ動いていない"
         assert moved[HEIGHT // 2 + 60, WIDTH // 2, 0] < 20
 
     def test_transform_rotates_clockwise(self, draw: Callable[..., np.ndarray]) -> None:
-        # AviUtl の「回転」も時計回り。読み込んだ角度をそのまま渡せる。
+        # AviUtl の「回転」も時計回り 読み込んだ角度をそのまま渡せる
         bar = SHAPE.create(shape="rect", width=20, height=140, color=(1.0, 1.0, 1.0, 1.0))
         turned = draw(bar, (registry.require("transform").create(rotation=45),))
         rows, columns = (turned[:, :, 0] > 100).nonzero()
@@ -269,20 +269,20 @@ class TestBlurEffects:
         sharp = draw(square)
         blurred = draw(square, (registry.require("blur").create(radius=12),))
 
-        # 縁の外側に色がにじみ出る。
+        # 縁の外側に色がにじみ出る
         edge_x = WIDTH // 2 + 44
         assert sharp[HEIGHT // 2, edge_x, 0] < 20
         assert blurred[HEIGHT // 2, edge_x, 0] > 20
 
     def test_blur_does_not_darken_the_edge(self, draw: Callable[..., np.ndarray]) -> None:
-        # ストレートアルファのまま畳むと、透明画素の黒が混ざって縁が黒ずむ。
-        # 事前乗算で畳んでいれば、白い四角の縁は白いままにじむ。
+        # ストレートアルファのまま畳むと、透明画素の黒が混ざって縁が黒ずむ
+        # 事前乗算で畳んでいれば、白い四角の縁は白いままにじむ
         square = white_square(80)
         blurred = draw(square, (registry.require("blur").create(radius=10),))
         row = blurred[HEIGHT // 2, WIDTH // 2 : WIDTH // 2 + 50, :3]
         lit = row[row.max(axis=1) > 30]
         assert lit.size > 0
-        # にじんだ部分も無彩色（白）のままであること。
+        # にじんだ部分も無彩色（白）のままであること
         assert int(np.abs(lit[:, 0].astype(int) - lit[:, 2].astype(int)).max()) <= 3
 
     def test_glow_brightens_around_the_shape(self, draw: Callable[..., np.ndarray]) -> None:
@@ -304,7 +304,7 @@ class TestBlurEffects:
     def test_mosaic_makes_uniform_blocks(self, draw: Callable[..., np.ndarray]) -> None:
         square = white_square(101)
         blocky = draw(square, (registry.require("mosaic").create(size=40),))
-        # 縁がブロックの境界に揃うので、中間の値がほとんど無くなる。
+        # 縁がブロックの境界に揃うので、中間の値がほとんど無くなる
         values = blocky[..., 0]
         midtones = int(((values > 40) & (values < 210)).sum())
         assert midtones < 400
@@ -323,8 +323,8 @@ class TestDecorationEffects:
         assert centre(bordered)[1] > 200, "中身が塗り潰されている"
 
     def test_shadow_falls_in_the_requested_direction(self, draw: Callable[..., np.ndarray]) -> None:
-        # Y は正が上。変形の pos_y と揃っていないと、同じ「Y」の表示で
-        # 上下が反対に動くことになる。
+        # Y は正が上 変形の pos_y と揃っていないと、同じ「Y」の表示で
+        # 上下が反対に動くことになる
         square = white_square(60)
         effect = registry.require("shadow")
         down = draw(square, (effect.create(offset_y=-20, blur=0, opacity=100),))
@@ -339,7 +339,7 @@ class TestDecorationEffects:
     def test_gradient_runs_from_one_colour_to_the_other(
         self, draw: Callable[..., np.ndarray]
     ) -> None:
-        # 角度 90 は上から下。金色のテキストなどはこの向きで作られている。
+        # 角度 90 は上から下 金色のテキストなどはこの向きで作られている
         square = white_square(120)
         painted = draw(
             square,
@@ -359,7 +359,7 @@ class TestDecorationEffects:
         assert bottom[2] > bottom[0], "下が終了色になっていない"
 
     def test_gradient_keeps_the_alpha(self, draw: Callable[..., np.ndarray]) -> None:
-        # 色だけを塗り替える。不透明度まで触ると、図形の外まで色が付く。
+        # 色だけを塗り替える 不透明度まで触ると、図形の外まで色が付く
         square = white_square(60)
         painted = draw(
             square,
@@ -416,7 +416,7 @@ class TestChromaKey:
 
 class TestKeyframes:
     def test_effect_parameters_animate(self, draw: Callable[..., np.ndarray]) -> None:
-        # P2 の完了条件のもう半分。エフェクトの値が時間で変わること。
+        # P2 の完了条件のもう半分 エフェクトの値が時間で変わること
         square = white_square(60)
         moving = Effect(
             kind="transform",
@@ -490,7 +490,7 @@ class TestSources:
         assert render_source(GeneratedSource(kind="なにか"), WIDTH, HEIGHT) is None
 
     def test_image_has_no_row_padding(self) -> None:
-        # QImage は行ごとに詰め物を入れることがある。幅だけで整形すると絵が斜めにずれる。
+        # QImage は行ごとに詰め物を入れることがある 幅だけで整形すると絵が斜めにずれる
         image = render_source(SHAPE.create(shape="rect", width=10, height=10), 101, 51)
         assert image is not None
         assert image.shape == (51, 101, 4)
@@ -505,8 +505,8 @@ class TestColourConversion:
     def test_srgb_to_linear(self) -> None:
         assert srgb_to_linear(0.0) == 0.0
         assert srgb_to_linear(1.0) == pytest.approx(1.0)
-        # sRGB の中間 (0.5) はリニアでは 0.21 前後。ここを取り違えると、
-        # 色パラメータを指定した縁取りや影の色が明るく出る。
+        # sRGB の中間 (0.5) はリニアでは 0.21 前後 ここを取り違えると、
+        # 色パラメータを指定した縁取りや影の色が明るく出る
         assert srgb_to_linear(0.5) == pytest.approx(0.2140, abs=0.001)
 
 

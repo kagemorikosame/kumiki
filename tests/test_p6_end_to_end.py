@@ -1,12 +1,12 @@
-"""P6 の完了条件そのもの。
+"""P6 の完了条件そのもの
 
-**配布テンプレートが読み込めて、見た目が再現される。**
+**配布テンプレートが読み込めて、見た目が再現される**
 
-対応表を通ったかではなく、**画面に出た画素**で確かめる。エイリアスを読んで
-着せ替えて、実際に描いて、指定された色がそこにあるかを見る。
+対応表を通ったかではなく、**画面に出た画素**で確かめる エイリアスを読んで
+着せ替えて、実際に描いて、指定された色がそこにあるかを見る
 
-読ませるのは、このマシンに実際に置かれている配布エイリアス。無ければ同じ書き方の
-見本に切り替える（他のマシンでも通るように）。
+読ませるのは、このマシンに実際に置かれている配布エイリアス 無ければ同じ書き方の
+見本に切り替える（他のマシンでも通るように）
 """
 
 from __future__ import annotations
@@ -35,12 +35,12 @@ from kumiki.engine.render import FrameRenderer
 
 WIDTH, HEIGHT = 640, 360
 
-#: 実物を通すときの画面。配布物は 1080p 前提で座標が書かれているので、
-#: 小さい画面で描くと画面外へ出て真っ黒になる。
+#: 実物を通すときの画面 配布物は 1080p 前提で座標が書かれているので、
+#: 小さい画面で描くと画面外へ出て真っ黒になる
 FULL = (1920, 1080)
 
-#: 実物が無いときの見本。手元の配布エイリアスと同じ書き方に揃えてある。
-#: 黄色い文字に黒い太縁、下寄せ、赤い二重縁。
+#: 実物が無いときの見本 手元の配布エイリアスと同じ書き方に揃えてある
+#: 黄色い文字に黒い太縁、下寄せ、赤い二重縁
 FALLBACK = (
     "[Object]"
     + chr(10)
@@ -101,7 +101,7 @@ def gl() -> Iterator[OffscreenGLContext]:
 
 @pytest.fixture(scope="module")
 def template(tmp_path_factory: pytest.TempPathFactory) -> TemplateCatalog:
-    """棚を 1 つ用意する。実物があればそれ、無ければ見本。"""
+    """棚を 1 つ用意する 実物があればそれ、無ければ見本"""
     catalog = TemplateCatalog()
     root = tmp_path_factory.mktemp("テンプレート")
     (root / "見本.object").write_text(FALLBACK, "utf-8")
@@ -119,7 +119,7 @@ def real_aliases() -> tuple[Path, ...]:
 
 
 def project_with_my_subtitle() -> Project:
-    """自分で打った字幕が 1 つだけ載ったプロジェクト。"""
+    """自分で打った字幕が 1 つだけ載ったプロジェクト"""
     project = Project.create(ProjectSettings(width=WIDTH, height=HEIGHT, frame_rate=FrameRate(30)))
     track = Track(
         kind=TrackKind.VIDEO,
@@ -150,19 +150,19 @@ def draw(project: Project, gl: OffscreenGLContext, frame: int = 0) -> np.ndarray
 
 
 def count(image: np.ndarray, red: int, green: int, blue: int, slack: int = 40) -> int:
-    """指定した色に近い画素の数。"""
+    """指定した色に近い画素の数"""
     target = np.array([red, green, blue], dtype=np.int16)
     difference = np.abs(image[:, :, :3].astype(np.int16) - target).max(axis=2)
     return int((difference <= slack).sum())
 
 
 def ink(image: np.ndarray) -> int:
-    """背景でない画素の数。背景は黒なので、色が付いていれば数える。"""
+    """背景でない画素の数 背景は黒なので、色が付いていれば数える"""
     return int((image[:, :, :3].max(axis=2) > 24).sum())
 
 
 def _without_decoration(project: Project) -> Project:
-    """文字装飾だけを外した同じプロジェクト。比較のために作る。"""
+    """文字装飾だけを外した同じプロジェクト 比較のために作る"""
     from dataclasses import replace
 
     track = project.timeline.tracks[0]
@@ -179,7 +179,7 @@ def _without_decoration(project: Project) -> Project:
 
 @pytest.fixture(scope="module")
 def restyled(template: TemplateCatalog) -> Project:
-    """自分で打った字幕に、見本のデザインを着せたあとのプロジェクト。"""
+    """自分で打った字幕に、見本のデザインを着せたあとのプロジェクト"""
     document = Document(project_with_my_subtitle())
     clip = document.project.timeline.tracks[0].clips[0]
     entry = template.find("見本")
@@ -193,7 +193,7 @@ def restyled(template: TemplateCatalog) -> Project:
 
 
 class TestRestylingMyOwnSubtitle:
-    """自分で打った字幕に、配布デザインを着せる。ここが本命。"""
+    """自分で打った字幕に、配布デザインを着せる ここが本命"""
 
     def test_my_text_is_still_mine(self, restyled: Project) -> None:
         source = restyled.timeline.tracks[0].clips[0].source
@@ -207,7 +207,7 @@ class TestRestylingMyOwnSubtitle:
     def test_the_letters_turn_the_template_colour(
         self, restyled: Project, gl: OffscreenGLContext
     ) -> None:
-        # 文字色 ffee00。着せる前は白なので、黄色が出ていれば効いている。
+        # 文字色 ffee00 着せる前は白なので、黄色が出ていれば効いている
         before = draw(project_with_my_subtitle(), gl)
         after = draw(restyled, gl)
         assert count(before, 255, 238, 0) < 20
@@ -216,10 +216,10 @@ class TestRestylingMyOwnSubtitle:
     def test_the_outline_from_the_decoration_is_drawn(
         self, restyled: Project, gl: OffscreenGLContext
     ) -> None:
-        """``文字装飾=縁取り文字（太）`` の黒縁が、実際に画面を占めている。
+        """``文字装飾=縁取り文字（太）`` の黒縁が、実際に画面を占めている
 
-        背景が黒なので「黒い画素があるか」では確かめられない。装飾を外した
-        同じ絵と比べて、文字のまわりが太っているかを見る。
+        背景が黒なので「黒い画素があるか」では確かめられない 装飾を外した
+        同じ絵と比べて、文字のまわりが太っているかを見る
         """
         bare = _without_decoration(restyled)
         assert ink(draw(restyled, gl)) > ink(draw(bare, gl)) * 1.1
@@ -227,11 +227,11 @@ class TestRestylingMyOwnSubtitle:
     def test_the_stacked_border_effect_is_drawn(
         self, restyled: Project, gl: OffscreenGLContext
     ) -> None:
-        # エイリアスに積まれていた赤い縁取りフィルタ。
+        # エイリアスに積まれていた赤い縁取りフィルタ
         assert count(draw(restyled, gl), 255, 0, 0) > 100
 
     def test_one_undo_puts_everything_back(self, template: TemplateCatalog) -> None:
-        # 1 回の操作は 1 回の取り消しで戻る。
+        # 1 回の操作は 1 回の取り消しで戻る
         document = Document(project_with_my_subtitle())
         clip = document.project.timeline.tracks[0].clips[0]
         entry = template.find("見本")
@@ -250,7 +250,7 @@ class TestRestylingMyOwnSubtitle:
 
 
 class TestPlacingATemplate:
-    """見本の文字ごとタイムラインへ置く。新しくテロップを作るとき。"""
+    """見本の文字ごとタイムラインへ置く 新しくテロップを作るとき"""
 
     def test_it_lands_at_the_playhead_and_draws(
         self, template: TemplateCatalog, gl: OffscreenGLContext
@@ -273,7 +273,7 @@ class TestPlacingATemplate:
         assert len(added) == 1
         assert added[0].timeline_start == 90
 
-        # 置いた場所で実際に描ける。
+        # 置いた場所で実際に描ける
         assert count(draw(document.project, gl, frame=95), 255, 238, 0) > 200
 
     def test_placing_does_not_touch_what_was_there(self, template: TemplateCatalog) -> None:
@@ -290,7 +290,7 @@ class TestPlacingATemplate:
 
 
 class TestTheRealDistributedAliases:
-    """実際に配られているものを、全部通す。"""
+    """実際に配られているものを、全部通す"""
 
     def test_every_one_of_them_renders_something(
         self, real_aliases: tuple[Path, ...], gl: OffscreenGLContext
@@ -320,6 +320,6 @@ class TestTheRealDistributedAliases:
             if image[:, :, :3].max() <= 8:
                 blank += 1
 
-        # 中身が Lua の埋め込みだけのものは、こちらでは絵にならない。
-        # それ以外が真っ黒なら、どこかで読み落としている。
+        # 中身が Lua の埋め込みだけのものは、こちらでは絵にならない
+        # それ以外が真っ黒なら、どこかで読み落としている
         assert blank <= 2, f"{blank} 本が真っ黒になった"

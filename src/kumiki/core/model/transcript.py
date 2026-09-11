@@ -1,8 +1,8 @@
-"""字幕起こしの結果。
+"""字幕起こしの結果
 
-時刻はすべて**素材内のソース秒**で持つ。タイムライン上の位置は持たない。これが
+時刻はすべて**素材内のソース秒**で持つ タイムライン上の位置は持たない これが
 この設計の要で、クリップをどう切っても並べ替えても、字幕は投影で位置が決まるため
-同期処理そのものが不要になる（:mod:`kumiki.core.projection` を参照）。
+同期処理そのものが不要になる（:mod:`kumiki.core.projection` を参照）
 """
 
 from __future__ import annotations
@@ -18,10 +18,10 @@ __all__ = ["Transcript", "TranscriptSegment", "Word"]
 
 @dataclass(frozen=True, slots=True)
 class Word:
-    """単語単位のタイムスタンプ。
+    """単語単位のタイムスタンプ
 
-    既定では取得しない設定にするが、内部的にはクリップ分割時の境界決定に使う。
-    単語境界で切れれば、字幕が文の途中でぶつ切りにならない。
+    既定では取得しない設定にするが、内部的にはクリップ分割時の境界決定に使う
+    単語境界で切れれば、字幕が文の途中でぶつ切りにならない
     """
 
     start: Fraction
@@ -31,14 +31,14 @@ class Word:
 
 @dataclass(frozen=True, slots=True)
 class TranscriptSegment:
-    """1 つの発話区間。字幕 1 枚に対応する。"""
+    """1 つの発話区間 字幕 1 枚に対応する"""
 
     start: Fraction
     end: Fraction
     text: str
     words: tuple[Word, ...] = ()
     speaker: str | None = None
-    #: 人手または AI で編集済みか。再起こしの際に上書きしてよいかの判断に使う。
+    #: 人手または AI で編集済みか 再起こしの際に上書きしてよいかの判断に使う
     edited: bool = False
     id: SegmentId = field(default_factory=new_segment_id)
 
@@ -51,11 +51,11 @@ class TranscriptSegment:
         return self.end - self.start
 
     def overlaps(self, start: Fraction, end: Fraction) -> bool:
-        """``[start, end)`` と重なるか。接するだけの場合は重ならない扱い。"""
+        """``[start, end)`` と重なるか 接するだけの場合は重ならない扱い"""
         return self.start < end and start < self.end
 
     def with_text(self, text: str) -> TranscriptSegment:
-        """本文を差し替え、編集済みとして印を付けた新しいセグメントを返す。"""
+        """本文を差し替え、編集済みとして印を付けた新しいセグメントを返す"""
         return TranscriptSegment(
             start=self.start,
             end=self.end,
@@ -69,11 +69,11 @@ class TranscriptSegment:
 
 @dataclass(frozen=True, slots=True)
 class Transcript:
-    """1 つの素材に対する起こし結果。"""
+    """1 つの素材に対する起こし結果"""
 
     segments: tuple[TranscriptSegment, ...] = ()
     language: str = ""
-    #: 生成に使ったモデル名。結果の再現性と、再起こしの要否判断のために残す。
+    #: 生成に使ったモデル名 結果の再現性と、再起こしの要否判断のために残す
     model: str = ""
 
     def __post_init__(self) -> None:
@@ -88,13 +88,13 @@ class Transcript:
         return iter(self.segments)
 
     def overlapping(self, start: Fraction, end: Fraction) -> Iterator[TranscriptSegment]:
-        """ソース時刻 ``[start, end)`` に重なるセグメントを順に返す。"""
+        """ソース時刻 ``[start, end)`` に重なるセグメントを順に返す"""
         for segment in self.segments:
             if segment.overlaps(start, end):
                 yield segment
 
     def replace_segment(self, segment: TranscriptSegment) -> Transcript:
-        """同じ ID のセグメントを差し替えた新しい :class:`Transcript` を返す。"""
+        """同じ ID のセグメントを差し替えた新しい :class:`Transcript` を返す"""
         found = False
         replaced = []
         for existing in self.segments:

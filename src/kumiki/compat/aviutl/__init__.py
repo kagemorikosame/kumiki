@@ -1,4 +1,4 @@
-"""AviUtl 互換。
+"""AviUtl 互換
 
 - :mod:`~kumiki.compat.aviutl.exo` — ``.exo`` / ``.exa`` の読み込み
 - :mod:`~kumiki.compat.aviutl.control` — 制御文字からパラメータ定義へ
@@ -7,8 +7,8 @@
 - :mod:`~kumiki.compat.aviutl.objapi` — ``obj`` API
 - :mod:`~kumiki.compat.aviutl.report` — 未対応 API の記録
 
-Lua は既定で入っている（``lupa``）。互換機能を使わない起動で読み込まれることは
-無いよう、重い import はすべて関数の中に閉じてある。
+Lua は既定で入っている（``lupa``） 互換機能を使わない起動で読み込まれることは
+無いよう、重い import はすべて関数の中に閉じてある
 """
 
 from kumiki.compat.aviutl.catalog import PREFIX, ScriptCatalog, ScriptEntry
@@ -34,5 +34,5 @@ __all__ = [
 
 
 def is_script_effect(kind: str) -> bool:
-    """そのエフェクト種別が AviUtl スクリプトか。"""
+    """そのエフェクト種別が AviUtl スクリプトか"""
     return kind.startswith(PREFIX)

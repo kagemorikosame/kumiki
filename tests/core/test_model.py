@@ -1,4 +1,4 @@
-"""モデルの不変条件と補間の振る舞い。"""
+"""モデルの不変条件と補間の振る舞い"""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ class TestClip:
             Clip(timeline_start=0, duration=10, media_id=video_media.id, speed=Fraction(0))
 
     def test_source_out_accounts_for_speed(self, video_media: MediaItem) -> None:
-        # 30 フレーム = 1 秒。2 倍速なら 2 秒分のソースを消費する。
+        # 30 フレーム = 1 秒 2 倍速なら 2 秒分のソースを消費する
         clip = Clip(timeline_start=0, duration=30, media_id=video_media.id, speed=Fraction(2))
         assert clip.source_out(RATE_30) == Fraction(2)
 
@@ -56,7 +56,7 @@ class TestTrack:
             )
 
     def test_allows_touching_clips(self, video_media: MediaItem) -> None:
-        # 端が接するのは重なりではない。カット直後の状態がこれ。
+        # 端が接するのは重なりではない カット直後の状態がこれ
         track = Track(
             kind=TrackKind.VIDEO,
             clips=(make_clip(0, 30, video_media), make_clip(30, 30, video_media)),
@@ -146,7 +146,7 @@ class TestAnimatedValue:
         assert value.at(10) == 100.0
 
     def test_clamps_outside_range(self) -> None:
-        # 外挿するとトリムしただけで画面外へ飛んでいく。端で頭打ちにする。
+        # 外挿するとトリムしただけで画面外へ飛んでいく 端で頭打ちにする
         value = AnimatedValue(
             keyframes=(Keyframe(frame=10, value=5.0), Keyframe(frame=20, value=15.0))
         )
@@ -203,7 +203,7 @@ class TestAnimatedValue:
                 Keyframe(frame=10, value=10.0),
             )
         )
-        # (0,0,1,1) は直線と同じ曲線。
+        # (0,0,1,1) は直線と同じ曲線
         assert value.at(5) == pytest.approx(5.0, abs=1e-4)
 
     def test_bezier_requires_control_points(self) -> None:
@@ -243,7 +243,7 @@ class TestTranscript:
             )
 
     def test_overlapping_excludes_touching(self, transcript: Transcript) -> None:
-        # 1..3 のセグメントに対して 3..4 は接するだけ。重なり扱いしない。
+        # 1..3 のセグメントに対して 3..4 は接するだけ 重なり扱いしない
         assert list(transcript.overlapping(Fraction(3), Fraction(4))) == []
         assert len(list(transcript.overlapping(Fraction(2), Fraction(5)))) == 2
 

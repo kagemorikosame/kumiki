@@ -1,8 +1,8 @@
-"""AI に見せる編集操作。
+"""AI に見せる編集操作
 
 ここが AI からの唯一の入口なので、読み取りが正しい形を返すことと、変更が
-ちゃんと履歴に載ることを押さえる。失敗したときの文面も見る。AI はエラーの
-文面だけを頼りに次の手を決めるため。
+ちゃんと履歴に載ることを押さえる 失敗したときの文面も見る AI はエラーの
+文面だけを頼りに次の手を決めるため
 """
 
 from __future__ import annotations
@@ -20,10 +20,10 @@ from tests.ai.conftest import FakeHost
 
 
 def run(host: FakeHost, tool: str, /, **arguments: Any) -> Any:
-    """ツールを 1 つ呼ぶ。
+    """ツールを 1 つ呼ぶ
 
-    引数は位置専用にしてある。ツールの引数に ``name`` があるので、普通に書くと
-    この関数の引数と衝突する。
+    引数は位置専用にしてある ツールの引数に ``name`` があるので、普通に書くと
+    この関数の引数と衝突する
     """
     operation = find_operation(tool)
     assert operation is not None, f"そんなツールは無い: {tool}"
@@ -46,8 +46,8 @@ class TestCatalogue:
         assert len(set(names)) == len(names)
 
     def test_read_and_write_are_separated(self) -> None:
-        # この区別が確認ダイアログの要否を決める。読み取りに writes が付くと、
-        # 一覧を見るだけで許可を求められることになる。
+        # この区別が確認ダイアログの要否を決める 読み取りに writes が付くと、
+        # 一覧を見るだけで許可を求められることになる
         assert find_operation("list_clips") is not None
         assert find_operation("list_clips").writes is False  # type: ignore[union-attr]
         assert find_operation("split_clip").writes is True  # type: ignore[union-attr]
@@ -77,7 +77,7 @@ class TestReading:
 
     def test_get_subtitles_returns_timeline_positions(self, host: FakeHost) -> None:
         rows = run(host, "get_subtitles")
-        # 素材の 1 秒は 30 フレーム目。AI が見るのは編集後の位置。
+        # 素材の 1 秒は 30 フレーム目 AI が見るのは編集後の位置
         assert [row["start"] for row in rows] == [30, 120, 210]
         assert rows[0]["text"] == "今日は"
 
@@ -94,7 +94,7 @@ class TestReading:
 
 class TestPreviewFrame:
     def test_playback_stops_before_drawing(self, host: FakeHost) -> None:
-        # 再生しながら別のフレームを描くと GL の資源を取り合う。
+        # 再生しながら別のフレームを描くと GL の資源を取り合う
         result = run(host, "preview_frame", frame=60)
         assert host.stopped == 1
         assert isinstance(result, ImageResult)
@@ -290,7 +290,7 @@ class TestJetCut:
     def test_silence_becomes_a_cut(self, host: FakeHost) -> None:
         from tests.ui.test_subtitle_panel import make_waveform
 
-        # 先頭に無音、あとは鳴っている素材。
+        # 先頭に無音、あとは鳴っている素材
         host.stub_waveform = make_waveform([(0.0, 400), (0.5, 1500)])
         media = host.document.project.media[0]
         result = run(host, "jet_cut", media_id=str(media.id), keep_speech=False)
@@ -305,7 +305,7 @@ class TestImport:
         result = run(host, "import_media", paths=[str(target)])
         assert len(result["imported"]) == 1
         assert host.probed == [target]
-        # 波形とサムネイルの用意も頼む。頼まないと無音カットがいつまでも使えない。
+        # 波形とサムネイルの用意も頼む 頼まないと無音カットがいつまでも使えない
         assert len(host.analyzed) == 1
 
     def test_a_missing_file_is_reported(self, host: FakeHost, tmp_path: Path) -> None:
@@ -335,10 +335,10 @@ class TestNavigation:
 
 
 class TestParameterCoercion:
-    """AI が渡した値を、パラメータ定義に従って寄せること。
+    """AI が渡した値を、パラメータ定義に従って寄せること
 
-    ここを通さないと、色に "#FFFFFF" という文字列がそのまま入る。描画側は
-    黙って無視するので、見た目が変わらないまま「やりました」と言われる。
+    ここを通さないと、色に "#FFFFFF" という文字列がそのまま入る 描画側は
+    黙って無視するので、見た目が変わらないまま「やりました」と言われる
     """
 
     def _text_clip(self, host: FakeHost) -> str:
@@ -379,7 +379,7 @@ class TestParameterCoercion:
         clip = self._text_clip(host)
         run(host, "set_param", clip_id=clip, name="size", value=9999)
         size = self._source_params(host, clip)["size"]
-        # サイズの上限は 512。範囲外を渡しても定義の側に寄る。
+        # サイズの上限は 512 範囲外を渡しても定義の側に寄る
         assert isinstance(size, AnimatedValue)
         assert float(size.at(0)) == 512.0
 
@@ -413,7 +413,7 @@ class TestParameterCoercion:
         assert effect.params["color"] == (0.0, 1.0, 0.0, 1.0)
 
     def test_the_colour_format_is_advertised(self, host: FakeHost) -> None:
-        # 形式を伝えておかないと、AI は色名や rgb() を送ってくる。
+        # 形式を伝えておかないと、AI は色名や rgb() を送ってくる
         rows = run(host, "list_effects")
         text = next(row for row in rows if row["kind"] == "text")
         color = next(p for p in text["parameters"] if p["name"] == "color")

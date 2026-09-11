@@ -1,4 +1,4 @@
-"""波形ピークの永続化。"""
+"""波形ピークの永続化"""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ __all__ = ["NAMESPACE", "SUFFIX", "load_waveform", "save_waveform", "waveform_ke
 NAMESPACE = "waveform"
 SUFFIX = ".peaks.npz"
 
-#: 保存形式の版。段階の作り方を変えたら上げる。読めない版は捨てて作り直す。
+#: 保存形式の版 段階の作り方を変えたら上げる 読めない版は捨てて作り直す
 FORMAT_VERSION = 1
 
 
@@ -24,7 +24,7 @@ def waveform_key(path: Path, sample_rate: int, channels: int) -> str:
 
 
 def save_waveform(store: CacheStore, key: str, waveform: Waveform) -> Path:
-    """ピークをファイルへ書き出す。"""
+    """ピークをファイルへ書き出す"""
     arrays: dict[str, np.ndarray] = {
         "version": np.array([FORMAT_VERSION]),
         "sample_rate": np.array([waveform.sample_rate]),
@@ -32,13 +32,13 @@ def save_waveform(store: CacheStore, key: str, waveform: Waveform) -> Path:
         "total_samples": np.array([waveform.total_samples]),
         "samples_per_peak": np.array([level.samples_per_peak for level in waveform.levels]),
     }
-    # 段階ごとに配列の形が違うので、1 つにまとめず個別の名前で入れる。
+    # 段階ごとに配列の形が違うので、1 つにまとめず個別の名前で入れる
     arrays.update({f"level{index}": level.peaks for index, level in enumerate(waveform.levels)})
     return save_arrays(store.prepare(NAMESPACE, key, SUFFIX), arrays)
 
 
 def load_waveform(store: CacheStore, key: str) -> Waveform | None:
-    """保存済みのピークを読む。無い・壊れている・版が違うなら ``None``。"""
+    """保存済みのピークを読む 無い・壊れている・版が違うなら ``None``"""
     data = load_arrays(store.path_for(NAMESPACE, key, SUFFIX))
     if data is None:
         return None

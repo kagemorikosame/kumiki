@@ -1,9 +1,9 @@
-"""オブジェクト設定パネル。
+"""オブジェクト設定パネル
 
-選んだクリップの中身とエフェクトを、パラメータ定義から自動で組み立てて見せる。
-エフェクトを増やしてもここに手を入れる必要は無い。
+選んだクリップの中身とエフェクトを、パラメータ定義から自動で組み立てて見せる
+エフェクトを増やしてもここに手を入れる必要は無い
 
-自分ではプロジェクトを書き換えない。操作はすべてコマンドとして外へ出す。
+自分ではプロジェクトを書き換えない 操作はすべてコマンドとして外へ出す
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ from kumiki.ui.theme import Colors
 
 __all__ = ["InspectorPanel"]
 
-#: 合成方法の表示名。
+#: 合成方法の表示名
 BLEND_LABELS = {
     BlendMode.NORMAL: "通常",
     BlendMode.ADD: "加算",
@@ -57,13 +57,13 @@ BLEND_LABELS = {
 
 
 class InspectorPanel(QWidget):
-    """選択中のクリップの設定。"""
+    """選択中のクリップの設定"""
 
-    #: 編集操作。引数はコマンドの一覧と、履歴に出す操作名。
+    #: 編集操作 引数はコマンドの一覧と、履歴に出す操作名
     commands_requested = Signal(list, str)
-    #: ドラッグ中の途中経過。履歴に残さずプレビューだけ更新する。
+    #: ドラッグ中の途中経過 履歴に残さずプレビューだけ更新する
     preview_requested = Signal(object)
-    #: グラフエディタで開くパラメータが選ばれた。
+    #: グラフエディタで開くパラメータが選ばれた
     curve_selected = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -72,7 +72,7 @@ class InspectorPanel(QWidget):
         self._clip_id: ClipId | None = None
         self._presets = PresetStore()
         self._frame = 0
-        #: パラメータごとの入力欄。プロジェクトが変わったときに値を入れ直す。
+        #: パラメータごとの入力欄 プロジェクトが変わったときに値を入れ直す
         self._editors: dict[tuple[str, str], ParameterEditor] = {}
 
         self._title = QLabel("クリップを選んでください", self)
@@ -123,7 +123,7 @@ class InspectorPanel(QWidget):
         self._rebuild()
 
     def set_frame(self, frame: int) -> None:
-        """再生位置。キーフレームの打点とアニメーション中の表示値に使う。"""
+        """再生位置 キーフレームの打点とアニメーション中の表示値に使う"""
         if frame == self._frame:
             return
         self._frame = frame
@@ -138,11 +138,11 @@ class InspectorPanel(QWidget):
         return located[1] if located is not None else None
 
     def _rebuild(self) -> None:
-        """中身を作り直す。
+        """中身を作り直す
 
         値だけ入れ直せば済む場合も多いが、エフェクトの増減や並べ替えを
-        差分で追うと取りこぼしが出る。組み直す方が確実で、選択中の 1 クリップ
-        ぶんなら十分に速い。
+        差分で追うと取りこぼしが出る 組み直す方が確実で、選択中の 1 クリップ
+        ぶんなら十分に速い
         """
         self._editors.clear()
         while self._body_layout.count():
@@ -234,9 +234,9 @@ class InspectorPanel(QWidget):
         section.action_requested.connect(self._emit)
 
         if definition is None:
-            # 定義の無いエフェクトは触らせない。値の意味が分からないまま
-            # 書き換えると、対応する版で開いたときに壊れて見える。
-            section.add_note("このエフェクトの定義が見つかりません。設定は保持されます。")
+            # 定義の無いエフェクトは触らせない 値の意味が分からないまま
+            # 書き換えると、対応する版で開いたときに壊れて見える
+            section.add_note("このエフェクトの定義が見つかりません 設定は保持されます")
             return section
 
         for spec in definition.parameters:
@@ -258,7 +258,7 @@ class InspectorPanel(QWidget):
         return editor
 
     def _keyframe_button(self, path: ParamPath, value: ParamValue | None) -> QWidget | None:
-        """キーフレームの打点ボタン。数値パラメータにだけ付く。"""
+        """キーフレームの打点ボタン 数値パラメータにだけ付く"""
         if not isinstance(value, AnimatedValue) and value is not None:
             return None
 
@@ -281,8 +281,8 @@ class InspectorPanel(QWidget):
         current = self._current_value(path)
         animating = isinstance(current, AnimatedValue) and current.is_animated
         if animating and isinstance(value, AnimatedValue):
-            # アニメーション中の値を触ったら、その位置のキーフレームを動かす。
-            # 静的値で上書きすると、打ったキーフレームが黙って消える。
+            # アニメーション中の値を触ったら、その位置のキーフレームを動かす
+            # 静的値で上書きすると、打ったキーフレームが黙って消える
             self._emit(SetKeyframe(path, self._frame, value.static))
             return
         self._emit(SetParam(path, value))
@@ -338,10 +338,10 @@ class InspectorPanel(QWidget):
         self._emit(AddEffect(clip.id, definition.create()), f"{definition.label}を追加")
 
     def _show_preset_menu(self) -> None:
-        """プリセットの保存と適用。
+        """プリセットの保存と適用
 
-        保存するのはエフェクトの列ごと。見た目のほとんどは複数のエフェクトの
-        組み合わせでできているので、1 つずつ保存しても使い物にならない。
+        保存するのはエフェクトの列ごと 見た目のほとんどは複数のエフェクトの
+        組み合わせでできているので、1 つずつ保存しても使い物にならない
         """
         clip = self._clip()
         if clip is None:
@@ -392,7 +392,7 @@ class InspectorPanel(QWidget):
         self.commands_requested.emit([command], label or command.label)
 
     def _refresh_animated(self) -> None:
-        """キーフレームで決まる値を、今のフレームの値に更新する。"""
+        """キーフレームで決まる値を、今のフレームの値に更新する"""
         clip = self._clip()
         if clip is None:
             return
@@ -414,7 +414,7 @@ class InspectorPanel(QWidget):
 
 
 class _Section(QFrame):
-    """1 つの見出しと、その下のパラメータ行。"""
+    """1 つの見出しと、その下のパラメータ行"""
 
     action_requested = Signal(object)
 
@@ -498,7 +498,7 @@ class _Section(QFrame):
     ) -> QToolButton:
         button = QToolButton()
         button.setText(text)
-        button.setToolTip("順番を変える。掛ける順で結果が変わる")
+        button.setToolTip("順番を変える 掛ける順で結果が変わる")
         button.setAutoRaise(True)
         button.setEnabled(enabled)
         button.clicked.connect(

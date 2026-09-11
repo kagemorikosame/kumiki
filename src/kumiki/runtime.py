@@ -1,15 +1,15 @@
-"""追加機能の実行環境を、ソフト内から導入する。
+"""追加機能の実行環境を、ソフト内から導入する
 
 字幕起こしも AI 連携も、依存が重い（前者は 2 GB 超、後者は Claude Code 本体を
-要求する）。これを最初から同梱すると、その機能を使わない人にまで負担させることに
-なるので、**初期状態では未導入**とし、必要になった時点で画面のボタンから入れる。
+要求する） これを最初から同梱すると、その機能を使わない人にまで負担させることに
+なるので、**初期状態では未導入**とし、必要になった時点で画面のボタンから入れる
 
-機能ごとに :class:`FeaturePack` を 1 つ定義する。導入の手順・状態の見せ方・ログの
-流し方は全部の機能で同じなので、ここに 1 つだけ置く。
+機能ごとに :class:`FeaturePack` を 1 つ定義する 導入の手順・状態の見せ方・ログの
+流し方は全部の機能で同じなので、ここに 1 つだけ置く
 
 パッケージ版（PyInstaller）では ``sys.executable`` がアプリ本体になり、そこへは
-書き込めない。その場合は ``--target`` で専用フォルダへ入れ、起動時にそのフォルダを
-``sys.path`` へ足す。:func:`activate_runtime` がその役目を負う。
+書き込めない その場合は ``--target`` で専用フォルダへ入れ、起動時にそのフォルダを
+``sys.path`` へ足す :func:`activate_runtime` がその役目を負う
 """
 
 from __future__ import annotations
@@ -33,13 +33,13 @@ __all__ = [
     "runtime_target_dir",
 ]
 
-#: 導入したものを置くフォルダの名前（パッケージ版のみ）。
+#: 導入したものを置くフォルダの名前（パッケージ版のみ）
 _RUNTIME_DIR = "runtime"
 
 
 @dataclass(frozen=True, slots=True)
 class PackageStatus:
-    """1 つのパッケージの導入状況。"""
+    """1 つのパッケージの導入状況"""
 
     name: str
     version: str | None
@@ -51,28 +51,28 @@ class PackageStatus:
 
 @dataclass(frozen=True, slots=True)
 class FeaturePack:
-    """1 つの機能を動かすのに要るもの。
+    """1 つの機能を動かすのに要るもの
 
-    ``extra`` は「あると良いが無くても動く」もの。字幕起こしの CUDA ランタイムが
-    これにあたり、外せば導入量を大きく減らせる。
+    ``extra`` は「あると良いが無くても動く」もの 字幕起こしの CUDA ランタイムが
+    これにあたり、外せば導入量を大きく減らせる
     """
 
     key: str
     label: str
-    #: pip の指定。名前だけでも、バージョン条件付きでもよい。
+    #: pip の指定 名前だけでも、バージョン条件付きでもよい
     required: tuple[str, ...]
     extra: tuple[str, ...] = ()
-    #: ``extra`` を入れると何ができるようになるか。
+    #: ``extra`` を入れると何ができるようになるか
     extra_label: str = ""
-    #: おおよその導入量（MB）。何が起きるかを先に見せるために使う。
+    #: おおよその導入量（MB） 何が起きるかを先に見せるために使う
     size_mb: int = 0
     extra_size_mb: int = 0
-    #: PATH 上に必要な外部コマンド。pip では入らないものを表す。
+    #: PATH 上に必要な外部コマンド pip では入らないものを表す
     commands: tuple[str, ...] = ()
-    #: 外部コマンドが無いときの案内。
+    #: 外部コマンドが無いときの案内
     command_hint: str = ""
-    #: コマンドの探し方。既定は PATH だけ。PATH に載らない場所へ入る
-    #: ものがあるので、機能ごとに差し替えられるようにしてある。
+    #: コマンドの探し方 既定は PATH だけ PATH に載らない場所へ入る
+    #: ものがあるので、機能ごとに差し替えられるようにしてある
     locate: Callable[[str], object | None] = shutil.which
 
     def status(self) -> PackStatus:
@@ -89,17 +89,17 @@ class FeaturePack:
 
 @dataclass(frozen=True, slots=True)
 class PackStatus:
-    """機能が動く状態にあるか。"""
+    """機能が動く状態にあるか"""
 
     pack: FeaturePack
     packages: tuple[PackageStatus, ...]
     extras: tuple[PackageStatus, ...] = ()
-    #: PATH に見つからなかった外部コマンド。
+    #: PATH に見つからなかった外部コマンド
     missing_commands: tuple[str, ...] = field(default_factory=tuple)
 
     @property
     def installed(self) -> bool:
-        """pip で入るものが揃っているか。"""
+        """pip で入るものが揃っているか"""
         return all(p.installed for p in self.packages)
 
     @property
@@ -108,11 +108,11 @@ class PackStatus:
 
     @property
     def ready(self) -> bool:
-        """実際に動かせるか。外部コマンドも含めて見る。"""
+        """実際に動かせるか 外部コマンドも含めて見る"""
         return self.installed and not self.missing_commands
 
     def missing(self, *, extra: bool) -> tuple[str, ...]:
-        """まだ入っていないものの pip 指定。"""
+        """まだ入っていないものの pip 指定"""
         pending = [p.name for p in self.packages if not p.installed]
         if extra:
             pending.extend(p.name for p in self.extras if not p.installed)
@@ -125,20 +125,20 @@ class PackStatus:
         return total
 
     def summary(self) -> str:
-        """画面に 1 行で出す説明。"""
+        """画面に 1 行で出す説明"""
         if not self.installed:
-            return "未導入。ここから環境を用意できます。"
+            return "未導入 ここから環境を用意できます"
         if self.missing_commands:
             missing = "、".join(self.missing_commands)
             hint = f" {self.pack.command_hint}" if self.pack.command_hint else ""
-            return f"導入済み。ただし {missing} が見つかりません。{hint}"
+            return f"導入済み ただし {missing} が見つかりません {hint}"
         if self.extras and not self.extra_installed:
-            return f"導入済み。{self.pack.extra_label}は入っていません。"
-        return "導入済み。"
+            return f"導入済み {self.pack.extra_label}は入っていません"
+        return "導入済み"
 
 
 def _name_of(requirement: str) -> str:
-    """``faster-whisper>=1.1`` のような指定から配布名だけを取り出す。"""
+    """``faster-whisper>=1.1`` のような指定から配布名だけを取り出す"""
     for separator in (">=", "<=", "==", "~=", ">", "<", "[", "!"):
         index = requirement.find(separator)
         if index > 0:
@@ -154,12 +154,12 @@ def _version(name: str) -> str | None:
 
 
 def _is_frozen() -> bool:
-    """PyInstaller などで固めた実行ファイルとして動いているか。"""
+    """PyInstaller などで固めた実行ファイルとして動いているか"""
     return bool(getattr(sys, "frozen", False))
 
 
 def runtime_target_dir() -> Path | None:
-    """導入先の専用フォルダ。通常の実行では ``None``（動いている環境へ直接入れる）。"""
+    """導入先の専用フォルダ 通常の実行では ``None``（動いている環境へ直接入れる）"""
     if not _is_frozen():
         return None
     base = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_DATA_HOME")
@@ -168,17 +168,17 @@ def runtime_target_dir() -> Path | None:
 
 
 def activate_runtime() -> Path | None:
-    """専用フォルダへ入れたものを import できるようにする。
+    """専用フォルダへ入れたものを import できるようにする
 
-    起動時に 1 度呼ぶ。通常の実行では何もしない。
+    起動時に 1 度呼ぶ 通常の実行では何もしない
     """
     target = runtime_target_dir()
     if target is None or not target.exists():
         return None
     path = str(target)
     if path not in sys.path:
-        # 先頭へ入れる。同名の古いものが同梱されていた場合に、あとから入れた方を
-        # 使わせるため。
+        # 先頭へ入れる 同名の古いものが同梱されていた場合に、あとから入れた方を
+        # 使わせるため
         sys.path.insert(0, path)
     return target
 
@@ -186,10 +186,10 @@ def activate_runtime() -> Path | None:
 def install_command(
     pack: FeaturePack, *, extra: bool = True, upgrade: bool = False, python: str | None = None
 ) -> list[str]:
-    """導入に使う ``pip`` のコマンド列を組み立てる。
+    """導入に使う ``pip`` のコマンド列を組み立てる
 
     実行せずに文字列として得られるようにしてあるのは、画面に「これを実行します」と
-    出すため。何が入るのか分からないままダウンロードが始まるのは不安が大きい。
+    出すため 何が入るのか分からないままダウンロードが始まるのは不安が大きい
     """
     command = [python or sys.executable, "-m", "pip", "install"]
     if upgrade:
@@ -209,10 +209,10 @@ def install_runtime(
     should_cancel: Callable[[], bool] | None = None,
     command: Sequence[str] | None = None,
 ) -> int:
-    """``pip`` を子プロセスで走らせる。戻り値は終了コード（0 が成功）。
+    """``pip`` を子プロセスで走らせる 戻り値は終了コード（0 が成功）
 
-    出力は 1 行ずつ ``on_output`` へ渡す。まとめて最後に渡すと、数分間なにも
-    起きていないように見える。
+    出力は 1 行ずつ ``on_output`` へ渡す まとめて最後に渡すと、数分間なにも
+    起きていないように見える
     """
     if command is None:
         if pack is None:
@@ -227,11 +227,11 @@ def install_runtime(
         target.mkdir(parents=True, exist_ok=True)
 
     creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    # 子プロセスの出力を UTF-8 に揃える。Windows の既定は cp932 で、素材やユーザー名に
-    # 日本語が入っているとログが文字化けし、失敗の原因が読めなくなる。
+    # 子プロセスの出力を UTF-8 に揃える Windows の既定は cp932 で、素材やユーザー名に
+    # 日本語が入っているとログが文字化けし、失敗の原因が読めなくなる
     child_env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
     try:
-        # 引数はここで組み立てたものだけで、shell も通さない。
+        # 引数はここで組み立てたものだけで、shell も通さない
         process = subprocess.Popen(
             argv,
             stdout=subprocess.PIPE,

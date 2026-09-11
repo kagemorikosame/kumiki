@@ -1,20 +1,20 @@
-"""YMM4 の文字装飾と映像エフェクトを、こちらの持ち物へ写す。
+"""YMM4 の文字装飾と映像エフェクトを、こちらの持ち物へ写す
 
-**実物を見て分かったこと。** 配布テンプレートの ``Decorations`` は空で、飾りは
-次の 2 か所に入っていた。
+**実物を見て分かったこと** 配布テンプレートの ``Decorations`` は空で、飾りは
+次の 2 か所に入っていた
 
-* ``Style`` / ``StyleColor`` — テキストアイテム自身が持つ文字装飾。AviUtl2 の
+* ``Style`` / ``StyleColor`` — テキストアイテム自身が持つ文字装飾 AviUtl2 の
   ``文字装飾`` と同じもので、:mod:`kumiki.compat.decoration` の語彙に載る
-* ``VideoEffects`` — 積まれた映像エフェクトの列。手元の 2 本では
+* ``VideoEffects`` — 積まれた映像エフェクトの列 手元の 2 本では
   ``OutlineEffect``（縁取り）が 152 回と圧倒的に多く、これが YMM4 の縁取りの
   実体だった
 
-だから ``Decorations`` だけを見ていると、**縁取りが 1 つも出ない**。ここでは
-3 つとも読む。
+だから ``Decorations`` だけを見ていると、**縁取りが 1 つも出ない** ここでは
+3 つとも読む
 
 こちらのテキストオブジェクトが自前で持てる飾りは縁取りと影の 1 つずつなので、
 縁取りが複数あるときは**一番太いもの**をテキストに載せ、残りは縁取りエフェクト
-として外側に積む。重ね順は YMM4 と同じ「内側から外側へ」になる。
+として外側に積む 重ね順は YMM4 と同じ「内側から外側へ」になる
 """
 
 from __future__ import annotations
@@ -36,10 +36,10 @@ from kumiki.effects.definition import registry
 
 __all__ = ["DecorationResult", "map_decorations", "map_video_effects"]
 
-#: YMM4 の ``Style``（テキストの文字装飾）と、AviUtl2 での呼び名。
+#: YMM4 の ``Style``（テキストの文字装飾）と、AviUtl2 での呼び名
 #:
 #: 中身は同じものなので、:mod:`kumiki.compat.decoration` の表に寄せて
-#: 太さの決め方を 1 か所にまとめる。
+#: 太さの決め方を 1 か所にまとめる
 _STYLES: dict[str, str] = {
     "Normal": "標準文字",
     "Shadow": "影付き文字",
@@ -53,11 +53,11 @@ _STYLES: dict[str, str] = {
 
 @dataclass(slots=True)
 class DecorationResult:
-    """装飾を分けた結果。"""
+    """装飾を分けた結果"""
 
-    #: テキストオブジェクトへ直接載せる設定。
+    #: テキストオブジェクトへ直接載せる設定
     params: dict[str, ParamValue] = field(default_factory=dict)
-    #: 外側に積むエフェクト。内側から外側の順。
+    #: 外側に積むエフェクト 内側から外側の順
     effects: list[Effect] = field(default_factory=list)
 
 
@@ -69,10 +69,10 @@ def map_decorations(
     style: str = "",
     style_colour: Any = None,
 ) -> DecorationResult:
-    """文字の飾りを読む。
+    """文字の飾りを読む
 
     ``decorations`` は ``Decorations`` の列（実物では空のことが多い）、
-    ``style`` は ``Style``、``style_colour`` は ``StyleColor``。
+    ``style`` は ``Style``、``style_colour`` は ``StyleColor``
     """
     result = DecorationResult()
 
@@ -105,11 +105,11 @@ def map_decorations(
     return result
 
 
-#: ``VideoEffects`` の種類と、こちらのエフェクト種別。
+#: ``VideoEffects`` の種類と、こちらのエフェクト種別
 #:
-#: 手元の配布テンプレート 2 本に出てきた 50 種あまりのうち、同じ絵になるものだけ。
-#: 残りは記録に残して素通しにする。似た別のもので代用すると、直したつもりの
-#: 無い違いが出る。
+#: 手元の配布テンプレート 2 本に出てきた 50 種あまりのうち、同じ絵になるものだけ
+#: 残りは記録に残して素通しにする 似た別のもので代用すると、直したつもりの
+#: 無い違いが出る
 _VIDEO_EFFECTS: dict[str, str] = {
     "GaussianBlurEffect": "blur",
     "BlurEffect": "blur",
@@ -132,10 +132,10 @@ _VIDEO_EFFECTS: dict[str, str] = {
 def map_video_effects(
     effects: Any, report: CompatibilityReport, *, length: int = 1, keyframes: Any = None
 ) -> DecorationResult:
-    """``VideoEffects`` の列を読む。
+    """``VideoEffects`` の列を読む
 
     縁取り（``OutlineEffect``）はテキストの飾りとして扱えるので、
-    :class:`DecorationResult` に分けて返す。
+    :class:`DecorationResult` に分けて返す
     """
     result = DecorationResult()
     if not isinstance(effects, list):
@@ -189,7 +189,7 @@ def _video_effect(name: str, entry: dict[str, Any], length: int, keyframes: Any)
         definition = registry.get("color")
         if definition is None:  # pragma: no cover - 標準エフェクトは必ずある
             return None
-        # YMM4 は 100 を「変化なし」にする百分率。こちらは 0 が変化なし。
+        # YMM4 は 100 を「変化なし」にする百分率 こちらは 0 が変化なし
         return definition.create(
             brightness=AnimatedValue(number(entry.get("Lightness"), 100.0) - 100.0),
             contrast=AnimatedValue(number(entry.get("Contrast"), 100.0) - 100.0),
@@ -205,7 +205,7 @@ def _video_effect(name: str, entry: dict[str, Any], length: int, keyframes: Any)
         definition = registry.get("fill")
         if definition is None:  # pragma: no cover - 標準エフェクトは必ずある
             return None
-        # 合成モードまでは写せない。塗る色と強さだけを合わせる。
+        # 合成モードまでは写せない 塗る色と強さだけを合わせる
         return definition.create(
             color=brush_colour(entry.get("Brush"), (1.0, 1.0, 1.0, 1.0)),
             amount=value("Opacity", 100.0),
@@ -219,7 +219,7 @@ def _video_effect(name: str, entry: dict[str, Any], length: int, keyframes: Any)
         definition = registry.get("luminance_key")
         if definition is None:  # pragma: no cover - 標準エフェクトは必ずある
             return None
-        # ``Mode`` が ``Dark`` なら暗いところを抜く。``IsInvert`` はその反転。
+        # ``Mode`` が ``Dark`` なら暗いところを抜く ``IsInvert`` はその反転
         dark = str(entry.get("Mode") or "") == "Dark"
         return definition.create(
             threshold=value("Threshold", 50.0),
@@ -230,26 +230,26 @@ def _video_effect(name: str, entry: dict[str, Any], length: int, keyframes: Any)
         definition = registry.get("transform")
         if definition is None:  # pragma: no cover - 標準エフェクトは必ずある
             return None
-        # YMM4 の Y は下向き。こちらは上向き。
+        # YMM4 の Y は下向き こちらは上向き
         return definition.create(pos_x=value("X"), pos_y=value("Y", scale=-1.0))
     if kind == "monochrome":
         definition = registry.get("color")
         if definition is None:  # pragma: no cover - 標準エフェクトは必ずある
             return None
-        # 単色化。色を抜くところまでは同じ絵になる。着色まではできない。
+        # 単色化 色を抜くところまでは同じ絵になる 着色まではできない
         return definition.create(saturation=-100)
     if kind == "zoom":
         definition = registry.get("transform")
         if definition is None:  # pragma: no cover - 標準エフェクトは必ずある
             return None
-        # 拡大率は ``Zoom`` に縦横それぞれの ``ZoomX`` ``ZoomY`` が掛かる。
-        # どれも動きうるので、素の数で読むと登場アニメーションが止まる。
+        # 拡大率は ``Zoom`` に縦横それぞれの ``ZoomX`` ``ZoomY`` が掛かる
+        # どれも動きうるので、素の数で読むと登場アニメーションが止まる
         return definition.create(scale=value("Zoom", 100.0), scale_y=value("ZoomY", 100.0))
     if kind == "rotate":
         definition = registry.get("transform")
         if definition is None:  # pragma: no cover - 標準エフェクトは必ずある
             return None
-        # 平面の回転は Z 軸。X / Y 軸は板を傾ける立体的な変形で、写せない。
+        # 平面の回転は Z 軸 X / Y 軸は板を傾ける立体的な変形で、写せない
         return definition.create(rotation=value("Z"))
     if kind == "crop":
         definition = registry.get("crop")
@@ -271,11 +271,11 @@ def _place_borders(
     borders: list[tuple[float, tuple[float, float, float, float]]],
     result: DecorationResult,
 ) -> None:
-    """縁取りを、テキスト側 1 本とエフェクト側の残りに分ける。
+    """縁取りを、テキスト側 1 本とエフェクト側の残りに分ける
 
-    一番太いものをテキストに持たせるのは、それが文字の形をいちばん強く決めるから。
+    一番太いものをテキストに持たせるのは、それが文字の形をいちばん強く決めるから
     細いほうをテキストに載せると、太いほうをエフェクトで足したときに二重の縁の
-    間隔が変わる。
+    間隔が変わる
     """
     usable = [item for item in borders if item[0] > 0.0]
     if not usable:
@@ -298,7 +298,7 @@ def _place_borders(
 
 def _shadow(entry: dict[str, Any], result: DecorationResult, size: float) -> None:
     if "shadow_x" in result.params:
-        # 2 つ目以降の影は載せられない。黙って捨てず、エフェクトの影として積む。
+        # 2 つ目以降の影は載せられない 黙って捨てず、エフェクトの影として積む
         definition = registry.get("shadow")
         if definition is not None:
             result.effects.append(

@@ -1,4 +1,4 @@
-"""AI チャットパネル。"""
+"""AI チャットパネル"""
 
 from kumiki.ui.chat.panel import ChatPanel
 

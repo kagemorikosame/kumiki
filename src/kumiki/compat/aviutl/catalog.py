@@ -1,22 +1,22 @@
-"""スクリプトのフォルダを走査して、使える形に並べる。
+"""スクリプトのフォルダを走査して、使える形に並べる
 
-AviUtl はスクリプトを拡張子で区別する。
+AviUtl はスクリプトを拡張子で区別する
 
 ===========  ==========================================================
-``.anm``     アニメーション効果。オブジェクトの動きを作る。一番多い
-``.obj``     カスタムオブジェクト。中身そのものを作る
+``.anm``     アニメーション効果 オブジェクトの動きを作る 一番多い
+``.obj``     カスタムオブジェクト 中身そのものを作る
 ``.scn``     シーンチェンジ
 ``.cam``     カメラ効果
 ``.tra``     トラックバー変化（移動方法）
 ===========  ==========================================================
 
-AviUtl2 世代では末尾に ``2`` が付く（``.anm2`` など）。読み方は同じなので、
-拡張子から種類だけを取り出して同じように扱う。
+AviUtl2 世代では末尾に ``2`` が付く（``.anm2`` など） 読み方は同じなので、
+拡張子から種類だけを取り出して同じように扱う
 
 見つけたスクリプトは :class:`~kumiki.effects.EffectDefinition` として
-エフェクトの一覧へ登録する。**そうすると設定 UI もプリセットもキーフレームも
-自前のエフェクトとまったく同じ経路に乗る。** これが制御文字を
-``ParameterSpec`` へ写しておいた狙い。
+エフェクトの一覧へ登録する **そうすると設定 UI もプリセットもキーフレームも
+自前のエフェクトとまったく同じ経路に乗る** これが制御文字を
+``ParameterSpec`` へ写しておいた狙い
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ __all__ = [
     "set_script_catalog",
 ]
 
-#: 読み込む拡張子と、その種類。
+#: 読み込む拡張子と、その種類
 SCRIPT_SUFFIXES: dict[str, str] = {
     ".anm": "anm",
     ".obj": "obj",
@@ -63,22 +63,22 @@ KIND_LABELS: dict[str, str] = {
     "tra": "トラックバー変化",
 }
 
-#: エフェクト種別の接頭辞。プロジェクトファイルにそのまま出るので変えない。
+#: エフェクト種別の接頭辞 プロジェクトファイルにそのまま出るので変えない
 PREFIX = "aviutl:"
 
 
 @dataclass(frozen=True, slots=True)
 class ScriptEntry:
-    """使えるスクリプト 1 つ。"""
+    """使えるスクリプト 1 つ"""
 
-    #: エフェクト種別。``aviutl:フォルダ/ファイル.anm:名前``。
+    #: エフェクト種別 ``aviutl:フォルダ/ファイル.anm:名前``
     identifier: str
     kind: str
     name: str
     path: Path
     source: str
     header: ScriptHeader
-    #: スクリプトが置かれている実際のフォルダ。共通処理（.mod2）を探すのに使う。
+    #: スクリプトが置かれている実際のフォルダ 共通処理（.mod2）を探すのに使う
     folder: Path | None = None
 
     @property
@@ -90,10 +90,10 @@ class ScriptEntry:
         return KIND_LABELS.get(self.kind, "AviUtl")
 
     def definition(self) -> EffectDefinition:
-        """エフェクトの定義として見せる。
+        """エフェクトの定義として見せる
 
-        ``fragment_shader`` は持たない。GPU のシェーダではなく Lua で動くので、
-        描画側（:mod:`kumiki.engine.render`）が種別を見て振り分ける。
+        ``fragment_shader`` は持たない GPU のシェーダではなく Lua で動くので、
+        描画側（:mod:`kumiki.engine.render`）が種別を見て振り分ける
         """
         return EffectDefinition(
             kind=self.identifier,
@@ -104,10 +104,10 @@ class ScriptEntry:
 
 
 def default_script_roots() -> tuple[Path, ...]:
-    """既定で見に行くフォルダ。
+    """既定で見に行くフォルダ
 
-    アプリ自身のフォルダに加えて、AviUtl2 が入っていればその ``Script`` も見る。
-    すでに持っている資産を、わざわざコピーしなくても使えるようにするため。
+    アプリ自身のフォルダに加えて、AviUtl2 が入っていればその ``Script`` も見る
+    すでに持っている資産を、わざわざコピーしなくても使えるようにするため
     """
     roots: list[Path] = []
     appdata = os.environ.get("APPDATA")
@@ -121,7 +121,7 @@ def default_script_roots() -> tuple[Path, ...]:
 
 
 class ScriptCatalog:
-    """スクリプトを探して覚えておく。"""
+    """スクリプトを探して覚えておく"""
 
     def __init__(
         self,
@@ -134,10 +134,10 @@ class ScriptCatalog:
         self._entries: dict[str, ScriptEntry] = {}
 
     def scan(self) -> tuple[ScriptEntry, ...]:
-        """フォルダを走査して一覧を作り直す。
+        """フォルダを走査して一覧を作り直す
 
-        読めないファイルがあっても止まらない。1 つのスクリプトのせいで
-        他の数百本が使えなくなる方が困る。
+        読めないファイルがあっても止まらない 1 つのスクリプトのせいで
+        他の数百本が使えなくなる方が困る
         """
         self._entries.clear()
         for root in self.roots:
@@ -149,10 +149,10 @@ class ScriptCatalog:
         return self.all()
 
     def register_all(self) -> int:
-        """一覧をエフェクトの登録簿へ入れる。戻り値は登録した数。
+        """一覧をエフェクトの登録簿へ入れる 戻り値は登録した数
 
-        すでにある同名の定義は差し替える。スクリプトは編集されうるもので、
-        走査し直したときに古い設定欄が残る方が困る。
+        すでにある同名の定義は差し替える スクリプトは編集されうるもので、
+        走査し直したときに古い設定欄が残る方が困る
         """
         count = 0
         for entry in self._entries.values():
@@ -170,7 +170,7 @@ class ScriptCatalog:
         return self._entries.get(identifier)
 
     def add_text(self, identifier: str, text: str, *, kind: str = "anm") -> ScriptEntry:
-        """ファイルを介さずに 1 本足す。試験と、貼り付けからの取り込み用。"""
+        """ファイルを介さずに 1 本足す 試験と、貼り付けからの取り込み用"""
         section = split_scripts(text)[0]
         entry = ScriptEntry(
             identifier=identifier,
@@ -228,12 +228,12 @@ def _script_files(root: Path) -> Iterator[Path]:
         yield from root.rglob(f"*{suffix}")
 
 
-#: アプリ全体で 1 つ。描画側も UI も同じ一覧を見る。
+#: アプリ全体で 1 つ 描画側も UI も同じ一覧を見る
 _catalog: ScriptCatalog | None = None
 
 
 def script_catalog() -> ScriptCatalog:
-    """共有のスクリプト一覧。初めて呼ばれたときに走査する。"""
+    """共有のスクリプト一覧 初めて呼ばれたときに走査する"""
     global _catalog
     if _catalog is None:
         _catalog = ScriptCatalog()
@@ -243,7 +243,7 @@ def script_catalog() -> ScriptCatalog:
 
 
 def set_script_catalog(catalog: ScriptCatalog) -> None:
-    """一覧を差し替える。試験と、フォルダを変えたときに使う。"""
+    """一覧を差し替える 試験と、フォルダを変えたときに使う"""
     global _catalog
     _catalog = catalog
     catalog.register_all()

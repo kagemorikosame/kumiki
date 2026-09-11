@@ -1,11 +1,11 @@
-"""字幕の編集コマンドと、タイムラインへの焼き込み。
+"""字幕の編集コマンドと、タイムラインへの焼き込み
 
 字幕は素材（:class:`~kumiki.core.model.MediaItem`）に属するので、ここの操作は
-どれもタイムラインを触らない。1 か所直せば、その素材を使っているすべての箇所に
-同時に反映される。素材を 3 回置いていても、直すのは 1 回で済む。
+どれもタイムラインを触らない 1 か所直せば、その素材を使っているすべての箇所に
+同時に反映される 素材を 3 回置いていても、直すのは 1 回で済む
 
-例外は :func:`burn_subtitles` で、これだけはタイムラインへテキストを並べる。
-書き出し先が字幕に対応していない場合や、装飾を凝りたい場合の逃げ道。
+例外は :func:`burn_subtitles` で、これだけはタイムラインへテキストを並べる
+書き出し先が字幕に対応していない場合や、装飾を凝りたい場合の逃げ道
 """
 
 from __future__ import annotations
@@ -38,13 +38,13 @@ __all__ = [
     "burn_subtitles",
 ]
 
-#: 焼き込むテキストオブジェクトで、本文を入れるパラメータ名。
+#: 焼き込むテキストオブジェクトで、本文を入れるパラメータ名
 TEXT_PARAM = "text"
 
 
 @dataclass(frozen=True, slots=True)
 class SetSegmentText(Command):
-    """字幕 1 枚の本文を書き換える。"""
+    """字幕 1 枚の本文を書き換える"""
 
     media_id: MediaId
     segment_id: SegmentId
@@ -62,7 +62,7 @@ class SetSegmentText(Command):
 
 @dataclass(frozen=True, slots=True)
 class RetimeSegment(Command):
-    """字幕 1 枚の時刻を動かす。値はソース秒。"""
+    """字幕 1 枚の時刻を動かす 値はソース秒"""
 
     media_id: MediaId
     segment_id: SegmentId
@@ -83,7 +83,7 @@ class RetimeSegment(Command):
 
 @dataclass(frozen=True, slots=True)
 class RemoveSegment(Command):
-    """字幕 1 枚を消す。"""
+    """字幕 1 枚を消す"""
 
     media_id: MediaId
     segment_id: SegmentId
@@ -100,7 +100,7 @@ class RemoveSegment(Command):
 
 @dataclass(frozen=True, slots=True)
 class AddSegment(Command):
-    """字幕を 1 枚足す。起こしを使わずに手で入れる場合に使う。"""
+    """字幕を 1 枚足す 起こしを使わずに手で入れる場合に使う"""
 
     media_id: MediaId
     start: Fraction
@@ -120,11 +120,11 @@ class AddSegment(Command):
 
 @dataclass(frozen=True, slots=True)
 class SplitSegment(Command):
-    """字幕 1 枚を、ソース時刻 ``at`` で 2 枚に割る。
+    """字幕 1 枚を、ソース時刻 ``at`` で 2 枚に割る
 
-    単語タイムスタンプがあればその境界で本文を分ける。無ければ時間の比で分ける。
+    単語タイムスタンプがあればその境界で本文を分ける 無ければ時間の比で分ける
     どちらにしても文の途中で切れることはあるので、割ったあとに手で直せるよう、
-    分けた両方に編集済みの印は付けない。
+    分けた両方に編集済みの印は付けない
     """
 
     media_id: MediaId
@@ -162,7 +162,7 @@ class SplitSegment(Command):
 
 @dataclass(frozen=True, slots=True)
 class MergeWithNext(Command):
-    """字幕を次の 1 枚と繋げる。認識が細かく割れすぎたときに使う。"""
+    """字幕を次の 1 枚と繋げる 認識が細かく割れすぎたときに使う"""
 
     media_id: MediaId
     segment_id: SegmentId
@@ -182,8 +182,8 @@ class MergeWithNext(Command):
         merged = TranscriptSegment(
             start=segment.start,
             end=following.end,
-            # 改行ではなく空白で繋ぐ。折り返しは整形が決めるもので、ここで行を
-            # 確定させると、整形を掛け直したときに二重に折り返される。
+            # 改行ではなく空白で繋ぐ 折り返しは整形が決めるもので、ここで行を
+            # 確定させると、整形を掛け直したときに二重に折り返される
             text=" ".join(parts),
             words=segment.words + following.words,
             speaker=segment.speaker or following.speaker,
@@ -201,13 +201,13 @@ def burn_subtitles(
     track_name: str = "字幕",
     text_param: str = TEXT_PARAM,
 ) -> list[Command]:
-    """いま画面に出る字幕を、テキストオブジェクトとしてタイムラインへ並べる。
+    """いま画面に出る字幕を、テキストオブジェクトとしてタイムラインへ並べる
 
-    投影した結果をそのまま置くので、この時点のカット状態が固定される。あとから
-    素材を切っても焼き込んだテキストは動かない。だから仕上げの最後に使う。
+    投影した結果をそのまま置くので、この時点のカット状態が固定される あとから
+    素材を切っても焼き込んだテキストは動かない だから仕上げの最後に使う
 
-    重なる字幕は前の方を切り詰める。1 本のトラックにクリップを重ねられないため。
-    重ねたい場合は、焼き込む前に字幕側を整理する。
+    重なる字幕は前の方を切り詰める 1 本のトラックにクリップを重ねられないため
+    重ねたい場合は、焼き込む前に字幕側を整理する
     """
     projected = list(project_timeline(project))
     if not projected:
@@ -260,10 +260,10 @@ def _swap(transcript: Transcript, segment: TranscriptSegment) -> list[Transcript
 
 
 def _rebuilt(transcript: Transcript, segments: list[TranscriptSegment]) -> Transcript:
-    """順序を整えて作り直す。
+    """順序を整えて作り直す
 
-    :class:`Transcript` は開始時刻の昇順を不変条件にしている。時刻を動かす操作で
-    並びが崩れるので、呼び出し側が気にせずに済むようここで整える。
+    :class:`Transcript` は開始時刻の昇順を不変条件にしている 時刻を動かす操作で
+    並びが崩れるので、呼び出し側が気にせずに済むようここで整える
     """
     ordered = sorted(segments, key=lambda s: (s.start, s.end))
     return Transcript(tuple(ordered), language=transcript.language, model=transcript.model)
@@ -275,7 +275,7 @@ def _store(project: Project, media_id: MediaId, transcript: Transcript) -> Proje
 
 
 def _split_text(segment: TranscriptSegment, at: Fraction) -> tuple[str, str]:
-    """本文を分割位置で分ける。"""
+    """本文を分割位置で分ける"""
     text = segment.text.strip()
     if segment.words:
         head = "".join(w.text for w in segment.words if w.start < at).strip()

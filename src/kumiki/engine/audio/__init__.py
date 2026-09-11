@@ -1,4 +1,4 @@
-"""音声の解析・合成・再生。"""
+"""音声の解析・合成・再生"""
 
 from kumiki.engine.audio.mixer import AudioMixer
 from kumiki.engine.audio.player import AudioPlayer, PlaybackError

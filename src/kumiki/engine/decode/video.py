@@ -1,8 +1,8 @@
-"""映像のデコードとシーク。
+"""映像のデコードとシーク
 
-編集ソフトの再生は「順方向に読み続ける」のと「任意の位置へ飛ぶ」が交互に来る。
+編集ソフトの再生は「順方向に読み続ける」のと「任意の位置へ飛ぶ」が交互に来る
 順方向は前のフレームから続けて読むのが圧倒的に速く、飛ぶときはキーフレームまで
-戻ってから読み直すしかない。この 2 つを使い分けるのがこのクラスの仕事。
+戻ってから読み直すしかない この 2 つを使い分けるのがこのクラスの仕事
 """
 
 from __future__ import annotations
@@ -21,15 +21,15 @@ from kumiki.engine.decode.probe import ProbeError, probe_media
 
 __all__ = ["VideoDecoder"]
 
-#: この秒数までなら、シークせず順方向にデコードして目的位置まで進む。
-#: シークはキーフレームまで戻るので、GOP 1 つ分を読み直すより前進の方が速いことが多い。
+#: この秒数までなら、シークせず順方向にデコードして目的位置まで進む
+#: シークはキーフレームまで戻るので、GOP 1 つ分を読み直すより前進の方が速いことが多い
 FORWARD_DECODE_WINDOW = Fraction(1)
 
 
 class VideoDecoder:
-    """1 本の映像ストリームからフレームを取り出す。
+    """1 本の映像ストリームからフレームを取り出す
 
-    スレッドセーフではない。素材ごと・再生系統ごとに 1 つずつ持つこと。
+    スレッドセーフではない 素材ごと・再生系統ごとに 1 つずつ持つこと
     """
 
     def __init__(self, path: Path, stream_index: int | None = None) -> None:
@@ -49,7 +49,7 @@ class VideoDecoder:
             if stream_index is None
             else next((s for s in streams if s.index == stream_index), streams[0])
         )
-        # スレッド並列デコードは 4K 素材で目に見えて効く。
+        # スレッド並列デコードは 4K 素材で目に見えて効く
         self._stream.thread_type = "AUTO"
 
         item = probe_media(self._path)
@@ -60,9 +60,9 @@ class VideoDecoder:
         self._duration = item.duration
 
         self._frames = self._container.decode(self._stream)
-        #: 今「表示されている」フレーム。最後に返したもの。
+        #: 今「表示されている」フレーム 最後に返したもの
         self._current: av.VideoFrame | None = None
-        #: 1 つ先読みしたフレーム。これの時刻が来るまで ``_current`` が表示され続ける。
+        #: 1 つ先読みしたフレーム これの時刻が来るまで ``_current`` が表示され続ける
         self._pending: av.VideoFrame | None = None
 
     @property
@@ -88,10 +88,10 @@ class VideoDecoder:
         self._container.close()
 
     def frame_at(self, seconds: Fraction) -> np.ndarray | None:
-        """``seconds`` の時点で表示されているフレームを RGBA uint8 で返す。
+        """``seconds`` の時点で表示されているフレームを RGBA uint8 で返す
 
-        戻り値は ``(高さ, 幅, 4)``。素材の終端を越えた場合は ``None``。
-        回転情報を持つ素材では、表示すべき向きに直してから返す。
+        戻り値は ``(高さ, 幅, 4)`` 素材の終端を越えた場合は ``None``
+        回転情報を持つ素材では、表示すべき向きに直してから返す
         """
         target = max(Fraction(0), Fraction(seconds))
         if self._duration > 0 and target >= self._duration:
@@ -103,10 +103,10 @@ class VideoDecoder:
         return _to_rgba(frame, self._info.rotation)
 
     def _decode_at(self, target: Fraction) -> av.VideoFrame | None:
-        """``target`` を超えない最後のフレームを返す。それが表示中のフレーム。
+        """``target`` を超えない最後のフレームを返す それが表示中のフレーム
 
-        あるフレームがいつまで表示されるかは、次のフレームを読むまで分からない。
-        そこで常に 1 つ先読みし、その時刻が来るまで手前のフレームを返し続ける。
+        あるフレームがいつまで表示されるかは、次のフレームを読むまで分からない
+        そこで常に 1 つ先読みし、その時刻が来るまで手前のフレームを返し続ける
         """
         if self._needs_seek(target):
             self._seek(target)
@@ -115,7 +115,7 @@ class VideoDecoder:
             if self._pending is None:
                 self._pending = self._read_next()
                 if self._pending is None:
-                    # 終端。最後に読めたフレームがそのまま表示され続ける。
+                    # 終端 最後に読めたフレームがそのまま表示され続ける
                     return self._current
 
             if self._current is None or _frame_time(self._pending) <= target:
@@ -134,7 +134,7 @@ class VideoDecoder:
             return None
 
     def _needs_seek(self, target: Fraction) -> bool:
-        """順方向デコードで届かない位置ならシークが必要。"""
+        """順方向デコードで届かない位置ならシークが必要"""
         if self._current is None:
             return target > FORWARD_DECODE_WINDOW
         position = _frame_time(self._current)
@@ -143,10 +143,10 @@ class VideoDecoder:
         return target - position > FORWARD_DECODE_WINDOW
 
     def _seek(self, target: Fraction) -> None:
-        """``target`` 以前のキーフレームへ飛ぶ。
+        """``target`` 以前のキーフレームへ飛ぶ
 
-        ``backward=True`` で必ず手前のキーフレームに着地させる。行き過ぎると
-        目的フレームを飛び越してしまい、もう一度シークし直すことになる。
+        ``backward=True`` で必ず手前のキーフレームに着地させる 行き過ぎると
+        目的フレームを飛び越してしまい、もう一度シークし直すことになる
         """
         time_base = self._stream.time_base or Fraction(1, 1000)
         pts = seconds_to_pts(target, Fraction(time_base), Rounding.FLOOR)
@@ -161,16 +161,16 @@ class VideoDecoder:
 
 
 def _frame_time(frame: av.VideoFrame) -> Fraction:
-    """フレームの表示時刻（秒）。``time`` は float なので PTS から作り直す。"""
+    """フレームの表示時刻（秒） ``time`` は float なので PTS から作り直す"""
     if frame.pts is None or frame.time_base is None:
         return Fraction(0)
     return frame.pts * Fraction(frame.time_base)
 
 
 def _to_rgba(frame: av.VideoFrame, rotation: int) -> np.ndarray:
-    """デコード済みフレームを RGBA の配列へ。回転があれば適用する。"""
+    """デコード済みフレームを RGBA の配列へ 回転があれば適用する"""
     image = frame.to_ndarray(format="rgba")
     if rotation == 0:
         return image
-    # np.rot90 は反時計回りなので、時計回り 90 度は k=-1 にあたる。
+    # np.rot90 は反時計回りなので、時計回り 90 度は k=-1 にあたる
     return np.ascontiguousarray(np.rot90(image, k=-rotation // 90))

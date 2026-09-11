@@ -1,8 +1,8 @@
-"""タイムラインの座標変換。
+"""タイムラインの座標変換
 
-描画・当たり判定・ドラッグがすべてこの変換を通る。ここがずれると「見えているのに
-掴めない」といった、原因の分かりにくい不具合になる。GUI に依存しない計算なので
-単体で固める。
+描画・当たり判定・ドラッグがすべてこの変換を通る ここがずれると「見えているのに
+掴めない」といった、原因の分かりにくい不具合になる GUI に依存しない計算なので
+単体で固める
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ class TestHorizontal:
         assert scrolled.frame_to_x(50) == HEADER
 
     def test_frame_at_never_goes_negative(self) -> None:
-        # ヘッダの上をクリックしても負のフレームにはしない。
+        # ヘッダの上をクリックしても負のフレームにはしない
         layout = TimelineLayout(pixels_per_frame=2.0)
         assert layout.frame_at(0) == 0
         assert layout.frame_at(HEADER - 40) == 0
@@ -49,7 +49,7 @@ class TestHorizontal:
     def test_frames_in_width(self) -> None:
         layout = TimelineLayout(pixels_per_frame=2.0)
         assert layout.frames_in(HEADER + 200) == 100.0
-        # ヘッダより狭いウィンドウでも負にならない。
+        # ヘッダより狭いウィンドウでも負にならない
         assert layout.frames_in(10) == 0.0
 
     def test_visible_range_covers_the_screen(self) -> None:
@@ -61,7 +61,7 @@ class TestHorizontal:
 
 class TestZoom:
     def test_anchor_frame_stays_put(self) -> None:
-        # マウス位置を基準にしないと、拡大するたびに見ていた場所が画面外へ逃げる。
+        # マウス位置を基準にしないと、拡大するたびに見ていた場所が画面外へ逃げる
         layout = TimelineLayout(pixels_per_frame=2.0, scroll_frame=100.0)
         anchor_x = HEADER + 300.0
         before = layout.x_to_frame(anchor_x)
@@ -95,7 +95,7 @@ class TestFollowPlayhead:
         layout = TimelineLayout(pixels_per_frame=2.0)
         followed = layout.ensure_visible(500, HEADER + 400)
         assert followed.scroll_frame > 0
-        # 端ぴったりではなく余裕を持たせる。再生中に細かく折り返すと見づらい。
+        # 端ぴったりではなく余裕を持たせる 再生中に細かく折り返すと見づらい
         assert followed.scroll_frame < 500
 
     def test_scrolls_back_when_the_playhead_moves_left(self) -> None:
@@ -115,14 +115,14 @@ class TestVertical:
         )
 
     def test_video_sits_above_audio(self, video_media: MediaItem) -> None:
-        # Premiere / AviUtl と同じ並び。全トラックを一律に逆順にすると
-        # 音声が映像より上へ来てしまう。
+        # Premiere / AviUtl と同じ並び 全トラックを一律に逆順にすると
+        # 音声が映像より上へ来てしまう
         timeline = self._timeline(video_media)
         bands = TimelineLayout().bands(timeline)
         assert [band.track.name for band in bands] == ["V1", "A1"]
 
     def test_track_order_within_each_kind(self) -> None:
-        # 映像は番号が大きいほど上、音声は番号が小さいほど上。
+        # 映像は番号が大きいほど上、音声は番号が小さいほど上
         timeline = Timeline(
             rate=FrameRate(30),
             tracks=(

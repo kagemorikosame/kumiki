@@ -1,10 +1,10 @@
-"""P3 の完了条件。
+"""P3 の完了条件
 
 「起こし → 整形 → ジェットカット → 保存・読み直し → 書き出し」が一本通り、
-その全部を通して**字幕が素材の同じ場所を指したまま**であること。
+その全部を通して**字幕が素材の同じ場所を指したまま**であること
 
 追従の確認は、投影された字幕の開始フレームを素材のソース秒へ戻して、元の
-セグメントの開始時刻と一致するかで見る。位置がずれていればここで必ず落ちる。
+セグメントの開始時刻と一致するかで見る 位置がずれていればここで必ず落ちる
 """
 
 from __future__ import annotations
@@ -37,8 +37,8 @@ from tests.media_fixtures import make_silent_gap
 
 RATE = FrameRate(30)
 
-#: 認識器が返したことにする起こし結果。素材は 1..2 秒が無音なので、その前後に
-#: 発話があるという想定にする。フィラー語をわざと混ぜてある。
+#: 認識器が返したことにする起こし結果 素材は 1..2 秒が無音なので、その前後に
+#: 発話があるという想定にする フィラー語をわざと混ぜてある
 FAKE_RESULT = Transcript(
     segments=(
         TranscriptSegment(Fraction(1, 10), Fraction(9, 10), "えーと、前半です"),
@@ -59,12 +59,12 @@ def window(qt_application: QApplication) -> Iterator[MainWindow]:
 
 @pytest.fixture(scope="session")
 def speech(media_dir: Path) -> Path:
-    """3 秒の音声。1..2 秒が無音。"""
+    """3 秒の音声 1..2 秒が無音"""
     return make_silent_gap(media_dir, "p3_speech.wav", duration=3.0)
 
 
 def source_time_at(project: Project, media: MediaItem, frame: int) -> Fraction | None:
-    """タイムラインのフレームで鳴っている、素材内の位置。"""
+    """タイムラインのフレームで鳴っている、素材内の位置"""
     for track in project.timeline.tracks:
         for clip in track.clips:
             if clip.media_id != media.id or not clip.contains(frame):
@@ -75,10 +75,10 @@ def source_time_at(project: Project, media: MediaItem, frame: int) -> Fraction |
 
 
 def assert_subtitles_point_at_the_same_audio(project: Project, media: MediaItem) -> None:
-    """字幕の開始位置で鳴っている音が、その字幕の元の位置と一致すること。
+    """字幕の開始位置で鳴っている音が、その字幕の元の位置と一致すること
 
-    ずれの許容は 1 フレーム。投影は「その秒を含むフレーム」へ落とすので、
-    切り捨てた分だけは必ず手前へ寄る。
+    ずれの許容は 1 フレーム 投影は「その秒を含むフレーム」へ落とすので、
+    切り捨てた分だけは必ず手前へ寄る
     """
     tolerance = project.rate.frame_duration
     projected = list(project_timeline(project))
@@ -105,7 +105,7 @@ class TestSubtitleFlow:
         media = project.media[0]
         assert media.has_audio
 
-        # --- 起こし（結果だけを差し込む。認識器そのものは tests/asr で見る）---
+        # --- 起こし（結果だけを差し込む 認識器そのものは tests/asr で見る）---
         window.execute(SetTranscript(media.id, FAKE_RESULT))
         assert_subtitles_point_at_the_same_audio(window._document.project, media)
 
@@ -178,7 +178,7 @@ class TestSubtitleFlow:
         window.execute(RippleCut(((0, 15),)))
         assert placement() != before
 
-        # 字幕は素材に付いているので、カットを戻せば表示位置も一緒に戻る。
+        # 字幕は素材に付いているので、カットを戻せば表示位置も一緒に戻る
         window.undo()
         assert placement() == before
 

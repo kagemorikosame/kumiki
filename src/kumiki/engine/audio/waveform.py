@@ -1,10 +1,10 @@
-"""波形表示のためのピーク解析。
+"""波形表示のためのピーク解析
 
-タイムラインは 1 ピクセルに数百〜数十万サンプルを描く。毎回それだけの音声を
+タイムラインは 1 ピクセルに数百〜数十万サンプルを描く 毎回それだけの音声を
 読み直すのは論外なので、あらかじめ min/max のピークを段階的な解像度で作っておき、
-表示倍率に応じて使い分ける。
+表示倍率に応じて使い分ける
 
-段階を持たせるのが要点。1 段階だけだと、拡大時は粗く、縮小時は読む量が多すぎる。
+段階を持たせるのが要点 1 段階だけだと、拡大時は粗く、縮小時は読む量が多すぎる
 """
 
 from __future__ import annotations
@@ -20,24 +20,24 @@ from kumiki.engine.decode import AudioDecoder
 
 __all__ = ["PeakLevel", "Waveform", "analyze_waveform"]
 
-#: 最も細かい段階で、1 ピークにまとめるサンプル数。
-#: 48kHz なら 1 ピーク約 5.3ms。編集で見る最大倍率でも十分細かい。
+#: 最も細かい段階で、1 ピークにまとめるサンプル数
+#: 48kHz なら 1 ピーク約 5.3ms 編集で見る最大倍率でも十分細かい
 BASE_SAMPLES_PER_PEAK = 256
 
-#: 段階ごとの粗さの比。8 倍ずつ粗くする。
+#: 段階ごとの粗さの比 8 倍ずつ粗くする
 LEVEL_RATIO = 8
 
-#: 一度に読むサンプル数。大きすぎるとメモリを、小さすぎると呼び出し回数を食う。
+#: 一度に読むサンプル数 大きすぎるとメモリを、小さすぎると呼び出し回数を食う
 CHUNK_SAMPLES = 1 << 18
 
 
 @dataclass(frozen=True, slots=True)
 class PeakLevel:
-    """1 段階分のピーク。
+    """1 段階分のピーク
 
-    ``peaks`` の形は ``(ピーク数, チャンネル数, 2)``。最後の次元が ``(最小, 最大)``。
+    ``peaks`` の形は ``(ピーク数, チャンネル数, 2)`` 最後の次元が ``(最小, 最大)``
     平均や絶対値の最大ではなく min/max を持つのは、波形の非対称性（打楽器など）を
-    潰さないため。
+    潰さないため
     """
 
     samples_per_peak: int
@@ -54,7 +54,7 @@ class PeakLevel:
 
 @dataclass(frozen=True, slots=True)
 class Waveform:
-    """1 本の音声ストリームのピーク一式。"""
+    """1 本の音声ストリームのピーク一式"""
 
     sample_rate: int
     channels: int
@@ -70,10 +70,10 @@ class Waveform:
         return Fraction(self.total_samples, self.sample_rate)
 
     def level_for(self, samples_per_pixel: float) -> PeakLevel:
-        """表示倍率に見合う段階を選ぶ。
+        """表示倍率に見合う段階を選ぶ
 
-        1 ピクセルあたりのサンプル数を超えない中で最も粗い段階を返す。粗すぎると
-        ピークが 1 個も入らないピクセルができ、波形が途切れて見える。
+        1 ピクセルあたりのサンプル数を超えない中で最も粗い段階を返す 粗すぎると
+        ピークが 1 個も入らないピクセルができ、波形が途切れて見える
         """
         chosen = self.levels[0]
         for level in self.levels:
@@ -84,10 +84,10 @@ class Waveform:
         return chosen
 
     def envelope(self, start_sample: int, end_sample: int, columns: int) -> np.ndarray:
-        """``[start_sample, end_sample)`` を ``columns`` 本に束ねた min/max を返す。
+        """``[start_sample, end_sample)`` を ``columns`` 本に束ねた min/max を返す
 
-        形は ``(columns, チャンネル数, 2)``。範囲外は 0 で埋める。描画側は
-        この配列をそのまま縦線として描けばよい。
+        形は ``(columns, チャンネル数, 2)`` 範囲外は 0 で埋める 描画側は
+        この配列をそのまま縦線として描けばよい
         """
         if columns <= 0 or end_sample <= start_sample:
             return np.zeros((max(columns, 0), self.channels, 2), dtype=np.float32)
@@ -96,8 +96,8 @@ class Waveform:
         level = self.level_for(span / columns)
         out = np.zeros((columns, self.channels, 2), dtype=np.float32)
 
-        # 各列が対応するピーク範囲を一括で求める。列ごとに Python で回すと、
-        # 横 2000 ピクセルのタイムラインで描画のたびに効いてくる。
+        # 各列が対応するピーク範囲を一括で求める 列ごとに Python で回すと、
+        # 横 2000 ピクセルのタイムラインで描画のたびに効いてくる
         edges = start_sample + np.linspace(0, span, columns + 1)
         starts = np.floor(edges[:-1] / level.samples_per_peak).astype(np.int64)
         stops = np.ceil(edges[1:] / level.samples_per_peak).astype(np.int64)
@@ -123,11 +123,11 @@ def analyze_waveform(
     progress: Callable[[float], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
 ) -> Waveform | None:
-    """素材を読み切ってピークを作る。
+    """素材を読み切ってピークを作る
 
-    重い処理なのでバックグラウンドで呼ぶ前提。``should_cancel`` が真を返したら
-    途中で ``None`` を返して抜ける。素材を差し替えたのに前の解析が走り続ける、
-    という状態を避けるため。
+    重い処理なのでバックグラウンドで呼ぶ前提 ``should_cancel`` が真を返したら
+    途中で ``None`` を返して抜ける 素材を差し替えたのに前の解析が走り続ける、
+    という状態を避けるため
     """
     with AudioDecoder(
         path, sample_rate=sample_rate, channels=channels, stream_index=stream_index
@@ -147,7 +147,7 @@ def analyze_waveform(
     peaks = np.concatenate(base, axis=0) if base else np.zeros((0, channels, 2), dtype=np.float32)
     levels = [PeakLevel(BASE_SAMPLES_PER_PEAK, peaks)]
 
-    # 粗い段階は、細かい段階から作る。元の音声を読み直す必要は無い。
+    # 粗い段階は、細かい段階から作る 元の音声を読み直す必要は無い
     while levels[-1].count > 1:
         coarser = _coarsen(levels[-1])
         if coarser.count == levels[-1].count:
@@ -165,7 +165,7 @@ def analyze_waveform(
 
 
 def _chunks(decoder: AudioDecoder, total: int) -> Iterator[np.ndarray]:
-    """素材を先頭から順に読み出す。"""
+    """素材を先頭から順に読み出す"""
     cursor = 0
     while cursor < total:
         count = min(CHUNK_SAMPLES, total - cursor)
@@ -174,12 +174,12 @@ def _chunks(decoder: AudioDecoder, total: int) -> Iterator[np.ndarray]:
 
 
 def _reduce(samples: np.ndarray, samples_per_peak: int) -> np.ndarray:
-    """``(サンプル数, チャンネル数)`` を ``(ピーク数, チャンネル数, 2)`` へ。"""
+    """``(サンプル数, チャンネル数)`` を ``(ピーク数, チャンネル数, 2)`` へ"""
     count, channels = samples.shape
     groups = (count + samples_per_peak - 1) // samples_per_peak
     padded_length = groups * samples_per_peak
     if padded_length != count:
-        # 端数は最後のサンプルで埋める。0 で埋めると、末尾に無い谷が生まれる。
+        # 端数は最後のサンプルで埋める 0 で埋めると、末尾に無い谷が生まれる
         pad = np.repeat(samples[-1:], padded_length - count, axis=0)
         samples = np.concatenate([samples, pad], axis=0)
 
@@ -191,7 +191,7 @@ def _reduce(samples: np.ndarray, samples_per_peak: int) -> np.ndarray:
 
 
 def _coarsen(level: PeakLevel) -> PeakLevel:
-    """1 段階粗いピークを作る。"""
+    """1 段階粗いピークを作る"""
     count = level.count
     groups = (count + LEVEL_RATIO - 1) // LEVEL_RATIO
     padded_length = groups * LEVEL_RATIO

@@ -1,15 +1,15 @@
-"""テンプレートの棚。AviUtl のエイリアスと YMM4 のアイテムテンプレートを並べる。
+"""テンプレートの棚 AviUtl のエイリアスと YMM4 のアイテムテンプレートを並べる
 
 配布されている字幕デザインは、見本の文字が入ったテキストオブジェクトとして
-配られている。使い方は 2 通りあり、両方できるようにしてある。
+配られている 使い方は 2 通りあり、両方できるようにしてある
 
-* **タイムラインへ置く** — 見本の文字ごと置く。新しくテロップを作るとき。
-* **選択中のクリップに適用** — 今の文字と長さを残して、見た目だけ着せ替える。
-  すでに打ってある字幕にデザインを当てるとき。こちらが本命。
+* **タイムラインへ置く** — 見本の文字ごと置く 新しくテロップを作るとき
+* **選択中のクリップに適用** — 今の文字と長さを残して、見た目だけ着せ替える
+  すでに打ってある字幕にデザインを当てるとき こちらが本命
 
-下絵は**文字と図形だけ**を描いたもの。縁取りやグラデーションは GPU のエフェクト
-として積まれるので、ここには出ない。出せない部分を出せているように見せると、
-選ぶときの判断を誤らせる。
+下絵は**文字と図形だけ**を描いたもの 縁取りやグラデーションは GPU のエフェクト
+として積まれるので、ここには出ない 出せない部分を出せているように見せると、
+選ぶときの判断を誤らせる
 """
 
 from __future__ import annotations
@@ -41,15 +41,15 @@ from kumiki.ui.theme import Colors
 
 __all__ = ["TemplateDialog"]
 
-#: 下絵の大きさ。一覧の横に置くので、縦横比だけ合わせた小さめのもの。
+#: 下絵の大きさ 一覧の横に置くので、縦横比だけ合わせた小さめのもの
 _PREVIEW = (384, 216)
 
-#: 下絵を描くときの実寸。配布物は 1080p を前提にしている。
+#: 下絵を描くときの実寸 配布物は 1080p を前提にしている
 _CANVAS = (1920, 1080)
 
 
 class TemplateDialog(QDialog):
-    """テンプレートを選んで、置くか着せるかを決める。"""
+    """テンプレートを選んで、置くか着せるかを決める"""
 
     def __init__(
         self, catalog: TemplateCatalog | None = None, parent: QWidget | None = None
@@ -109,14 +109,14 @@ class TemplateDialog(QDialog):
         layout.addLayout(columns, 1)
         layout.addWidget(buttons)
 
-        #: 選ばれた結果。``("place" | "restyle", 写した結果)``。
+        #: 選ばれた結果 ``("place" | "restyle", 写した結果)``
         self.choice: tuple[str, list[MappedObject]] | None = None
         self.refresh()
 
     # --- 一覧 ---
 
     def refresh(self) -> None:
-        """棚を読み直して並べ直す。"""
+        """棚を読み直して並べ直す"""
         from kumiki.compat.catalog import default_template_roots
 
         self._catalog.scan(default_template_roots())
@@ -137,8 +137,8 @@ class TemplateDialog(QDialog):
         self._tree.expandAll()
         if not groups:
             self._detail.setText(
-                "テンプレートが見つかりません。"
-                "AviUtl2 の Alias フォルダか、YMM4 の ItemTemplate フォルダを探します。"
+                "テンプレートが見つかりません"
+                "AviUtl2 の Alias フォルダか、YMM4 の ItemTemplate フォルダを探します"
             )
         self._on_selected()
 
@@ -168,8 +168,8 @@ class TemplateDialog(QDialog):
             return
 
         self._detail.setText(self._describe(entry))
-        # 絵を持たないテンプレート（YMM4 のアニメーション効果など）は置けない。
-        # 着せることしかできないので、そちらだけを押せるようにする。
+        # 絵を持たないテンプレート（YMM4 のアニメーション効果など）は置けない
+        # 着せることしかできないので、そちらだけを押せるようにする
         self._place_button.setEnabled(
             any(item.clip.source is not None or item.media_path for item in self._loaded)
         )
@@ -191,25 +191,25 @@ class TemplateDialog(QDialog):
             return (
                 f"{entry.path}\n"
                 f"エフェクトだけのテンプレート（{effects} 段）\n"
-                "中身は持ちません。選んだクリップに効果を足す形で使います。"
+                "中身は持ちません 選んだクリップに効果を足す形で使います"
             )
 
         kinds = [item.kind or "?" for item in self._loaded]
         return (
             f"{entry.path}\n"
             f"{len(self._loaded)} オブジェクト（{'、'.join(kinds)}）／エフェクト {effects} 段\n"
-            "下絵は文字と図形だけ。縁取りやグラデーションは含まれていません。"
+            "下絵は文字と図形だけ 縁取りやグラデーションは含まれていません"
         )
 
     def _show_preview(self) -> None:
-        """先頭のオブジェクトの中身だけを描く。"""
+        """先頭のオブジェクトの中身だけを描く"""
         from kumiki.engine.sources import render_source
 
         source = next((item.clip.source for item in self._loaded if item.clip.source), None)
         if source is None:
             return
-        # 1080p で描いてから縮める。文字の大きさは 1080p を前提に決められて
-        # いるので、小さい画面にそのまま描くと画面からはみ出す。
+        # 1080p で描いてから縮める 文字の大きさは 1080p を前提に決められて
+        # いるので、小さい画面にそのまま描くと画面からはみ出す
         array = render_source(source, *_CANVAS)
         if array is None:  # pragma: no cover - 既知の種別なら必ず描ける
             return

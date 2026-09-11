@@ -1,31 +1,31 @@
-"""YMM4 の JSON に出てくる値の読み方。
+"""YMM4 の JSON に出てくる値の読み方
 
-YMM4 は .NET のシリアライザで書き出しているので、型の名前が ``$type`` に入る。
+YMM4 は .NET のシリアライザで書き出しているので、型の名前が ``$type`` に入る
 
 .. code-block:: json
 
     {"$type": "YukkuriMovieMaker.Project.Items.TextItem, YukkuriMovieMaker"}
 
-**振り分けにはクラス名だけを使う。** 名前空間もアセンブリ名も版で変わる（実物には
-``Version=4.32.0.2, Culture=neutral, PublicKeyToken=null`` まで入っていた）。丸ごと
-突き合わせると、YMM4 が更新されただけで全部読めなくなる。
+**振り分けにはクラス名だけを使う** 名前空間もアセンブリ名も版で変わる（実物には
+``Version=4.32.0.2, Culture=neutral, PublicKeyToken=null`` まで入っていた） 丸ごと
+突き合わせると、YMM4 が更新されただけで全部読めなくなる
 
-数値は素の数でも「アニメーション」でも書かれる。後者はこの形。
+数値は素の数でも「アニメーション」でも書かれる 後者はこの形
 
 .. code-block:: json
 
     {"Values": [{"Value": -90.0}, {"Value": 0.0}], "Span": 0.0, "AnimationType": "Expo_Out"}
 
-**``Values`` にフレーム番号は入っていない。** YMM4 はアイテムの長さと「中間点」で
-位置が決まる仕組みで、値の並びはその区切りに 1 対 1 で対応する。
+**``Values`` にフレーム番号は入っていない** YMM4 はアイテムの長さと「中間点」で
+位置が決まる仕組みで、値の並びはその区切りに 1 対 1 で対応する
 
 .. code-block:: text
 
     KeyFrames.Frames = [60, 240]、Length = 300
     → 区切りは 0, 60, 240, 300 の 4 点 → Values も 4 個
 
-だから :func:`animated` はフレーム位置を**外から**受け取る。ここを取り違えると、
-300 フレームかけて動くはずのものが 2 フレームで終わる。
+だから :func:`animated` はフレーム位置を**外から**受け取る ここを取り違えると、
+300 フレームかけて動くはずのものが 2 フレームで終わる
 """
 
 from __future__ import annotations
@@ -44,11 +44,11 @@ __all__ = [
     "type_name",
 ]
 
-#: YMM4 の移動方法と、こちらの補間方法。
+#: YMM4 の移動方法と、こちらの補間方法
 #:
-#: 日本語の名前（YMM4 の UI がそのまま出る）と、英語のイージング名が混ざる。
+#: 日本語の名前（YMM4 の UI がそのまま出る）と、英語のイージング名が混ざる
 #: 英語のほうは ``Expo_Out`` ``Sine_In`` ``Quart_InOut`` のように
-#: ``<曲線>_<向き>`` の形なので、向きだけを見れば足りる。
+#: ``<曲線>_<向き>`` の形なので、向きだけを見れば足りる
 INTERPOLATIONS: dict[str, Interpolation] = {
     "なし": Interpolation.HOLD,
     "瞬間移動": Interpolation.HOLD,
@@ -59,7 +59,7 @@ INTERPOLATIONS: dict[str, Interpolation] = {
     "加減速": Interpolation.EASE_IN_OUT,
 }
 
-#: 英語のイージング名の末尾と、こちらの補間方法。
+#: 英語のイージング名の末尾と、こちらの補間方法
 _EASING_SUFFIXES: tuple[tuple[str, Interpolation], ...] = (
     ("_InOut", Interpolation.EASE_IN_OUT),
     ("_Out", Interpolation.EASE_OUT),
@@ -68,10 +68,10 @@ _EASING_SUFFIXES: tuple[tuple[str, Interpolation], ...] = (
 
 
 def type_name(value: Any) -> str:
-    """``$type`` からクラス名だけを取り出す。
+    """``$type`` からクラス名だけを取り出す
 
     ``"名前空間.クラス名, アセンブリ, Version=…"`` の形なので、最初のカンマの前を
-    取って最後の ``.`` から後ろを見る。``$type`` が無ければ空文字。
+    取って最後の ``.`` から後ろを見る ``$type`` が無ければ空文字
     """
     if not isinstance(value, dict):
         return ""
@@ -82,7 +82,7 @@ def type_name(value: Any) -> str:
 
 
 def number(value: Any, default: float = 0.0) -> float:
-    """素の数として読む。アニメーションなら最初の値。"""
+    """素の数として読む アニメーションなら最初の値"""
     if isinstance(value, bool):
         return float(value)
     if isinstance(value, int | float):
@@ -101,10 +101,10 @@ def number(value: Any, default: float = 0.0) -> float:
 
 
 def interpolation_of(name: str) -> Interpolation:
-    """移動方法の名前を補間方法へ。知らない名前は直線にする。
+    """移動方法の名前を補間方法へ 知らない名前は直線にする
 
-    動きの形は違っても、始点と終点は合う。知らないものを止めてしまうと、
-    そこだけ動かないアニメーションになって原因が分かりにくい。
+    動きの形は違っても、始点と終点は合う 知らないものを止めてしまうと、
+    そこだけ動かないアニメーションになって原因が分かりにくい
     """
     found = INTERPOLATIONS.get(name)
     if found is not None:
@@ -116,10 +116,10 @@ def interpolation_of(name: str) -> Interpolation:
 
 
 def frame_positions(keyframes: Any, length: int, count: int) -> list[int]:
-    """値の並びに対応するフレーム位置。
+    """値の並びに対応するフレーム位置
 
     YMM4 の「中間点」（``KeyFrames.Frames``）がアイテムを区切り、その境目が
-    そのまま値の位置になる。中間点が無ければ、先頭と末尾に均等に割る。
+    そのまま値の位置になる 中間点が無ければ、先頭と末尾に均等に割る
     """
     middle: list[int] = []
     if isinstance(keyframes, dict):
@@ -131,8 +131,8 @@ def frame_positions(keyframes: Any, length: int, count: int) -> list[int]:
     if len(positions) == count:
         return positions
 
-    # 中間点の数と値の数が食い違うファイルもありうる。等間隔に割り振って、
-    # 少なくとも始点と終点は合わせる。
+    # 中間点の数と値の数が食い違うファイルもありうる 等間隔に割り振って、
+    # 少なくとも始点と終点は合わせる
     span = max(1, length)
     return [round(span * index / max(1, count - 1)) for index in range(count)]
 
@@ -145,11 +145,11 @@ def animated(
     keyframes: Any = None,
     scale: float = 1.0,
 ) -> AnimatedValue:
-    """アニメーションを :class:`AnimatedValue` へ。
+    """アニメーションを :class:`AnimatedValue` へ
 
-    ``length`` と ``keyframes`` はアイテムの長さと中間点。値が 2 つ以上あるときに
-    だけ使う。``scale`` は単位をそろえるための倍率（YMM4 の百分率をこちらの
-    0..1 にするなど）。
+    ``length`` と ``keyframes`` はアイテムの長さと中間点 値が 2 つ以上あるときに
+    だけ使う ``scale`` は単位をそろえるための倍率（YMM4 の百分率をこちらの
+    0..1 にするなど）
     """
     if not isinstance(value, dict):
         return AnimatedValue(number(value, default) * scale)
@@ -172,7 +172,7 @@ def animated(
     positions = frame_positions(keyframes, length, len(numbers))
     built: list[Keyframe] = []
     for frame, amount in zip(positions, numbers, strict=True):
-        # 同じフレームに 2 つは置けない。中間点が端に重なると起きる。
+        # 同じフレームに 2 つは置けない 中間点が端に重なると起きる
         if built and built[-1].frame >= frame:
             continue
         built.append(
@@ -192,10 +192,10 @@ def animated(
 def colour(
     value: Any, default: tuple[float, float, float, float] = (1.0, 1.0, 1.0, 1.0)
 ) -> tuple[float, float, float, float]:
-    """``#AARRGGBB`` / ``#RRGGBB`` を 0..1 の組へ。
+    """``#AARRGGBB`` / ``#RRGGBB`` を 0..1 の組へ
 
-    YMM4 はアルファを**先頭**に置く。後ろだと思って読むと、不透明のつもりの色が
-    透明になる。
+    YMM4 はアルファを**先頭**に置く 後ろだと思って読むと、不透明のつもりの色が
+    透明になる
     """
     if not isinstance(value, str):
         return default
@@ -216,16 +216,16 @@ def colour(
 def brush_colour(
     brush: Any, default: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0)
 ) -> tuple[float, float, float, float]:
-    """ブラシから色を取り出す。
+    """ブラシから色を取り出す
 
-    YMM4 のブラシは差し替え式（単色・格子・ノイズ…）で、こういう形をしている。
+    YMM4 のブラシは差し替え式（単色・格子・ノイズ…）で、こういう形をしている
 
     .. code-block:: json
 
         {"Type": "…SolidColorBrushPlugin, …",
          "Parameter": {"$type": "…SolidColorBrushParameter, …", "Color": "#FFFFFFFF"}}
 
-    単色以外は色 1 つで表せないので、既定のままにする。
+    単色以外は色 1 つで表せないので、既定のままにする
     """
     if not isinstance(brush, dict):
         return default

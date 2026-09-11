@@ -1,8 +1,8 @@
-"""基本的な編集コマンド。
+"""基本的な編集コマンド
 
-どれも純関数で、失敗するときは例外を投げる。トラック内でクリップが重ならないことなどの
+どれも純関数で、失敗するときは例外を投げる トラック内でクリップが重ならないことなどの
 不変条件は :class:`~kumiki.core.model.Track` 側で検査されるので、ここで作った
-おかしな状態はモデル構築時点で弾かれる。
+おかしな状態はモデル構築時点で弾かれる
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ __all__ = [
 
 @dataclass(frozen=True, slots=True)
 class AddMedia(Command):
-    """メディアプールに素材を追加する。"""
+    """メディアプールに素材を追加する"""
 
     item: MediaItem
 
@@ -60,10 +60,10 @@ class AddMedia(Command):
 
 @dataclass(frozen=True, slots=True)
 class RemoveMedia(Command):
-    """素材をメディアプールから外す。
+    """素材をメディアプールから外す
 
-    その素材を使っているクリップが 1 つでもあれば失敗する。参照だけ残して
-    素材を消すと、あとから原因の分からない再生エラーになるため。
+    その素材を使っているクリップが 1 つでもあれば失敗する 参照だけ残して
+    素材を消すと、あとから原因の分からない再生エラーになるため
     """
 
     media_id: MediaId
@@ -88,10 +88,10 @@ class RemoveMedia(Command):
 
 @dataclass(frozen=True, slots=True)
 class SetTranscript(Command):
-    """素材の字幕起こし結果を差し替える。
+    """素材の字幕起こし結果を差し替える
 
     字幕はトラックではなく素材に紐付くので、この 1 操作でその素材を使っている
-    すべての箇所の字幕が同時に変わる。
+    すべての箇所の字幕が同時に変わる
     """
 
     media_id: MediaId
@@ -108,7 +108,7 @@ class SetTranscript(Command):
 
 @dataclass(frozen=True, slots=True)
 class AddTrack(Command):
-    """トラックを追加する。``index`` が ``None`` なら末尾。"""
+    """トラックを追加する ``index`` が ``None`` なら末尾"""
 
     track: Track
     index: int | None = None
@@ -128,7 +128,7 @@ class AddTrack(Command):
 
 @dataclass(frozen=True, slots=True)
 class RemoveTrack(Command):
-    """トラックを、載っているクリップごと削除する。"""
+    """トラックを、載っているクリップごと削除する"""
 
     track_id: TrackId
 
@@ -146,7 +146,7 @@ class RemoveTrack(Command):
 
 @dataclass(frozen=True, slots=True)
 class AddClip(Command):
-    """トラックにクリップを置く。既存のクリップと重なる場合は失敗する。"""
+    """トラックにクリップを置く 既存のクリップと重なる場合は失敗する"""
 
     track_id: TrackId
     clip: Clip
@@ -167,10 +167,10 @@ class AddClip(Command):
 
 @dataclass(frozen=True, slots=True)
 class RemoveClip(Command):
-    """クリップを削除する。
+    """クリップを削除する
 
-    ``ripple`` が真なら、同じトラックの後続クリップを詰める。リンクされた
-    映像・音声も同時に削除される。
+    ``ripple`` が真なら、同じトラックの後続クリップを詰める リンクされた
+    映像・音声も同時に削除される
     """
 
     clip_id: ClipId
@@ -205,10 +205,10 @@ class RemoveClip(Command):
 
 @dataclass(frozen=True, slots=True)
 class MoveClip(Command):
-    """クリップを別の位置、必要なら別のトラックへ動かす。
+    """クリップを別の位置、必要なら別のトラックへ動かす
 
-    リンクされた映像・音声は同じだけ動く。トラックの移動は掴んだクリップだけで、
-    相手は自分のトラックに残る（音声が映像トラックへ飛んでは困る）。
+    リンクされた映像・音声は同じだけ動く トラックの移動は掴んだクリップだけで、
+    相手は自分のトラックに残る（音声が映像トラックへ飛んでは困る）
     """
 
     clip_id: ClipId
@@ -240,7 +240,7 @@ class MoveClip(Command):
         timeline = timeline.replace_track(source_track.with_clips(without))
 
         # 同一トラック内の移動では、直前の replace_track で反映済みのトラックを
-        # 取り直さないと、取り除いたはずのクリップが復活する。
+        # 取り直さないと、取り除いたはずのクリップが復活する
         destination = timeline.find_track(target_track.id)
         if destination is None:
             raise KeyError(f"トラックが見つからない: {target_track.id}")
@@ -263,10 +263,10 @@ class MoveClip(Command):
 
 @dataclass(frozen=True, slots=True)
 class SplitClip(Command):
-    """クリップを ``frame`` の位置で 2 つに割る。
+    """クリップを ``frame`` の位置で 2 つに割る
 
-    左側は元の ID を保ち、右側が新しい ID を得る。リンクされた映像・音声も
-    同じ位置で割られるので、片方だけずれることはない。
+    左側は元の ID を保ち、右側が新しい ID を得る リンクされた映像・音声も
+    同じ位置で割られるので、片方だけずれることはない
     """
 
     clip_id: ClipId
@@ -289,14 +289,14 @@ class SplitClip(Command):
 
         rate = project.rate
         timeline = project.timeline
-        # 右側は新しいリンクグループにする。元のままだと、分割してできた左右が
-        # 同じグループに残り、片方を削除するともう片方まで消える。新しいグループを
-        # 映像・音声の右側どうしで共有するので、分割後もリンクは保たれる。
+        # 右側は新しいリンクグループにする 元のままだと、分割してできた左右が
+        # 同じグループに残り、片方を削除するともう片方まで消える 新しいグループを
+        # 映像・音声の右側どうしで共有するので、分割後もリンクは保たれる
         right_group = new_group_id() if clip.link_group is not None else None
 
         for track_id, target in _linked_group(project, clip):
             if not target.contains(self.frame):
-                # リンク先の長さが違う場合。片方だけ割ると同期が崩れるので何もしない。
+                # リンク先の長さが違う場合 片方だけ割ると同期が崩れるので何もしない
                 continue
             track = timeline.find_track(track_id)
             if track is None:
@@ -308,7 +308,7 @@ class SplitClip(Command):
                 id=new_clip_id(),
                 timeline_start=self.frame,
                 duration=target.timeline_end - self.frame,
-                # 右側は、左側が消費したソース時間の分だけ後ろから始まる。
+                # 右側は、左側が消費したソース時間の分だけ後ろから始まる
                 source_in=target.source_in + left_duration * rate.frame_duration * target.speed,
                 link_group=right_group,
             )
@@ -319,16 +319,16 @@ class SplitClip(Command):
 
 @dataclass(frozen=True, slots=True)
 class TrimClip(Command):
-    """クリップの端を動かす。
+    """クリップの端を動かす
 
-    ``head`` を動かすとソース範囲の開始位置も一緒にずれる（素材の中身は動かない）。
-    ``tail`` は長さだけを変える。
+    ``head`` を動かすとソース範囲の開始位置も一緒にずれる（素材の中身は動かない）
+    ``tail`` は長さだけを変える
     """
 
     clip_id: ClipId
-    #: 先頭を動かす量（フレーム）。正で短く、負で長くなる。
+    #: 先頭を動かす量（フレーム） 正で短く、負で長くなる
     head_delta: int = 0
-    #: 末尾を動かす量（フレーム）。正で長く、負で短くなる。
+    #: 末尾を動かす量（フレーム） 正で長く、負で短くなる
     tail_delta: int = 0
 
     @property
@@ -342,7 +342,7 @@ class TrimClip(Command):
         _, clip = located
 
         timeline = project.timeline
-        # リンクされた映像・音声は同じだけ削る。片方だけ縮めると音がずれる。
+        # リンクされた映像・音声は同じだけ削る 片方だけ縮めると音がずれる
         for track_id, target in _linked_group(project, clip):
             track = timeline.find_track(track_id)
             if track is None or track.locked:
@@ -355,7 +355,7 @@ class TrimClip(Command):
 
 @dataclass(frozen=True, slots=True)
 class RenameProject(Command):
-    """プロジェクト名を変える。"""
+    """プロジェクト名を変える"""
 
     name: str
 
@@ -368,7 +368,7 @@ class RenameProject(Command):
 
 
 def _trimmed(project: Project, clip: Clip, head_delta: int, tail_delta: int) -> Clip:
-    """端を動かしたクリップを返す。無理な指定は例外にする。"""
+    """端を動かしたクリップを返す 無理な指定は例外にする"""
     duration = clip.duration - head_delta + tail_delta
     if duration <= 0:
         raise ValueError(f"トリム後の長さが 0 以下: {duration}")
@@ -395,10 +395,10 @@ def _require_track(project: Project, track_id: TrackId) -> Track:
 
 
 def _validate_clip_media(project: Project, track: Track, clip: Clip) -> None:
-    """クリップの素材がトラックの種類に合っているかを確かめる。
+    """クリップの素材がトラックの種類に合っているかを確かめる
 
-    映像トラックに音声しか持たない素材を置くと、再生時に何も出ない無音の穴になる。
-    置いた時点で気付ける方がよい。
+    映像トラックに音声しか持たない素材を置くと、再生時に何も出ない無音の穴になる
+    置いた時点で気付ける方がよい
     """
     if clip.media_id is None:
         return
@@ -410,7 +410,7 @@ def _validate_clip_media(project: Project, track: Track, clip: Clip) -> None:
 
 
 def _linked_group(project: Project, clip: Clip) -> list[tuple[TrackId, Clip]]:
-    """リンクされたクリップをまとめて返す。リンクが無ければ自分だけ。"""
+    """リンクされたクリップをまとめて返す リンクが無ければ自分だけ"""
     if clip.link_group is None:
         located = project.timeline.locate_clip(clip.id)
         if located is None:
@@ -422,15 +422,15 @@ def _linked_group(project: Project, clip: Clip) -> list[tuple[TrackId, Clip]]:
 
 @dataclass(frozen=True, slots=True)
 class RippleCut(Command):
-    """タイムラインの範囲をまとめて削除し、後ろを詰める。
+    """タイムラインの範囲をまとめて削除し、後ろを詰める
 
-    ジェットカットの実体。範囲を 1 つずつ「分割して削除して詰める」形で組み立てる
+    ジェットカットの実体 範囲を 1 つずつ「分割して削除して詰める」形で組み立てる
     こともできるが、分割で生まれるクリップの ID が実行するまで分からないため、
-    コマンドの列としては書けない。範囲の一覧を受け取って一度に処理する。
+    コマンドの列としては書けない 範囲の一覧を受け取って一度に処理する
 
-    範囲に掛かったクリップは端が削られ、範囲をまたぐクリップは 2 つに分かれる。
-    ロックされたトラックには触れない。触れてしまうと、そのトラックだけ長さが
-    変わらず、以降すべてがずれる。
+    範囲に掛かったクリップは端が削られ、範囲をまたぐクリップは 2 つに分かれる
+    ロックされたトラックには触れない 触れてしまうと、そのトラックだけ長さが
+    変わらず、以降すべてがずれる
     """
 
     ranges: tuple[tuple[int, int], ...]
@@ -440,7 +440,7 @@ class RippleCut(Command):
         return f"無音をカット: {len(self.ranges)} か所"
 
     def apply(self, project: Project) -> Project:
-        # 後ろから切る。前から切ると、切るたびに残りの範囲がずれて計算し直しになる。
+        # 後ろから切る 前から切ると、切るたびに残りの範囲がずれて計算し直しになる
         for start, end in sorted(_normalized(self.ranges), reverse=True):
             project = _cut_range(project, start, end)
         return project
@@ -458,13 +458,13 @@ def _normalized(ranges: tuple[tuple[int, int], ...]) -> list[tuple[int, int]]:
 
 
 def _cut_range(project: Project, start: int, end: int) -> Project:
-    """``[start, end)`` を全トラックから取り除き、後ろを詰める。"""
+    """``[start, end)`` を全トラックから取り除き、後ろを詰める"""
     length = end - start
     rate = project.rate
     timeline = project.timeline
-    # 範囲をまたいだクリップの右側に配り直すリンクグループ。左右が同じ
-    # グループに残ると、片方を消したときにもう片方まで消える。映像と音声で
-    # 同じ新グループを共有させたいので、この範囲の処理を通して覚えておく。
+    # 範囲をまたいだクリップの右側に配り直すリンクグループ 左右が同じ
+    # グループに残ると、片方を消したときにもう片方まで消える 映像と音声で
+    # 同じ新グループを共有させたいので、この範囲の処理を通して覚えておく
     regrouped: dict[GroupId, GroupId] = {}
 
     for track in timeline.tracks:
@@ -491,7 +491,7 @@ def _cut_clip(
     rate: FrameRate,
     regrouped: dict[GroupId, GroupId],
 ) -> list[Clip]:
-    """1 つのクリップから範囲を抜く。残るのは 0 個・1 個・2 個のどれか。"""
+    """1 つのクリップから範囲を抜く 残るのは 0 個・1 個・2 個のどれか"""
     if clip.timeline_end <= start:
         return [clip]
     if clip.timeline_start >= end:
@@ -504,7 +504,7 @@ def _cut_clip(
     if head > 0 and tail <= 0:
         return [replace(clip, duration=head)]
 
-    # 範囲より後ろに残る部分。素材のどこから始まるかを計算し直す。
+    # 範囲より後ろに残る部分 素材のどこから始まるかを計算し直す
     consumed = (end - clip.timeline_start) * rate.frame_duration * clip.speed
     right = replace(
         clip,

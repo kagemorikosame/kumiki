@@ -1,7 +1,7 @@
-"""書き出し。
+"""書き出し
 
-実際にファイルを作って、読み直せることまで確かめる。書き出しは最後の工程なので、
-ここが壊れていると編集作業がまるごと無駄になる。
+実際にファイルを作って、読み直せることまで確かめる 書き出しは最後の工程なので、
+ここが壊れていると編集作業がまるごと無駄になる
 """
 
 from __future__ import annotations
@@ -25,14 +25,14 @@ from kumiki.engine.encode import (
 )
 from tests.media_fixtures import SampleMedia, make_sample
 
-# 書き出しは内部で GL コンテキストを作って合成する。GPU の無い環境では
-# 作れても使えないので、失敗ではなく飛ばす。
+# 書き出しは内部で GL コンテキストを作って合成する GPU の無い環境では
+# 作れても使えないので、失敗ではなく飛ばす
 pytestmark = pytest.mark.usefixtures("gpu")
 
 
 @pytest.fixture
 def ready_project(sample_av: SampleMedia) -> Project:
-    """映像 + 音声を 1 本置いた 320x240 / 30fps のプロジェクト。"""
+    """映像 + 音声を 1 本置いた 320x240 / 30fps のプロジェクト"""
     document = Document(
         Project.create(ProjectSettings(width=320, height=240, frame_rate=FrameRate(30)))
     )
@@ -43,7 +43,7 @@ def ready_project(sample_av: SampleMedia) -> Project:
 
 @pytest.fixture
 def silent_project(sample_long: SampleMedia) -> Project:
-    """映像のみのプロジェクト。音声ストリームを作らない経路の確認用。"""
+    """映像のみのプロジェクト 音声ストリームを作らない経路の確認用"""
     document = Document(
         Project.create(ProjectSettings(width=320, height=240, frame_rate=FrameRate(30)))
     )
@@ -57,7 +57,7 @@ class TestCodecs:
         assert available_video_codecs(), "書き出せるコーデックが 1 つも無い"
 
     def test_preference_order_is_respected(self) -> None:
-        # GPU コーデックが使えるなら先に来る。CPU より圧倒的に速い。
+        # GPU コーデックが使えるなら先に来る CPU より圧倒的に速い
         codecs = available_video_codecs()
         if "h264_nvenc" in codecs and "libx264" in codecs:
             assert codecs.index("h264_nvenc") < codecs.index("libx264")
@@ -122,7 +122,7 @@ class TestExport:
         assert seen == sorted(seen)
 
     def test_cancel_leaves_no_file(self, ready_project: Project, tmp_path: Path) -> None:
-        # 中途半端なファイルが残ると、書き出せたのかどうか分からなくなる。
+        # 中途半端なファイルが残ると、書き出せたのかどうか分からなくなる
         output = tmp_path / "cancelled.mp4"
         stop = threading.Event()
 
@@ -162,7 +162,7 @@ class TestRoundTrip:
     def test_exported_file_can_be_edited_again(
         self, ready_project: Project, tmp_path: Path
     ) -> None:
-        # 書き出したものを読み込み直せること。中間ファイルとして使う経路。
+        # 書き出したものを読み込み直せること 中間ファイルとして使う経路
         output = tmp_path / "again.mp4"
         export_project(ready_project, ExportSettings(path=output, video_codec="libx264"))
 
@@ -176,7 +176,7 @@ class TestRoundTrip:
         assert len(list(document.project.timeline.audio_tracks())) == 1
 
     def test_audio_survives(self, media_dir: Path, tmp_path: Path) -> None:
-        # 音が無音になっていないこと。書き出し経路で最も見落としやすい。
+        # 音が無音になっていないこと 書き出し経路で最も見落としやすい
         loud = make_sample(media_dir, "loud.mp4", duration=1.5, tone_hz=440)
         document = Document(
             Project.create(ProjectSettings(width=320, height=240, frame_rate=FrameRate(30)))

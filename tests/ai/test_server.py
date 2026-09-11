@@ -1,7 +1,7 @@
-"""操作を MCP ツールへ包むところ。
+"""操作を MCP ツールへ包むところ
 
-SDK は追加導入なので、入っていない環境ではこのファイルごと飛ばす。ツールの
-中身そのものは :mod:`tests.ai.test_operations` で見ているので、ここは包み方だけ。
+SDK は追加導入なので、入っていない環境ではこのファイルごと飛ばす ツールの
+中身そのものは :mod:`tests.ai.test_operations` で見ているので、ここは包み方だけ
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from tests.ai.conftest import FakeHost
 
 
 def call_tool(bridge: EditorBridge, tool: Any, arguments: dict[str, Any]) -> dict[str, Any]:
-    """ツールを呼びつつ、UI スレッドの代わりに仕事を拾う。"""
+    """ツールを呼びつつ、UI スレッドの代わりに仕事を拾う"""
     box: dict[str, Any] = {}
     done = threading.Event()
 
@@ -74,7 +74,7 @@ class TestServer:
         from kumiki.ai.operations import OPERATIONS
 
         assert len(build_tools(EditorBridge(host))) == len(OPERATIONS)
-        # サーバそのものも組み立てられること。
+        # サーバそのものも組み立てられること
         assert build_server(EditorBridge(host))["type"] == "sdk"
 
     def test_a_read_returns_json_text(self, host: FakeHost) -> None:
@@ -93,11 +93,11 @@ class TestServer:
         image = result["content"][0]
         assert image["mimeType"] == "image/png"
         assert base64.b64decode(image["data"]).startswith(b"\x89PNG")
-        # 説明文も付ける。画像だけだと、それがどのフレームか分からない。
+        # 説明文も付ける 画像だけだと、それがどのフレームか分からない
         assert "00:00:01:00" in result["content"][1]["text"]
 
     def test_a_failure_is_reported_as_an_error_result(self, host: FakeHost) -> None:
-        # 例外を投げると会話が止まる。失敗も結果として返し、次の手を選ばせる。
+        # 例外を投げると会話が止まる 失敗も結果として返し、次の手を選ばせる
         bridge = EditorBridge(host)
         tool = find(build_tools(bridge), "split_clip")
 
@@ -110,7 +110,7 @@ class TestServer:
         tool = find(build_tools(bridge), "split_clip")
         clip = str(host.document.project.timeline.tracks[0].clips[0].id)
 
-        # call_tool は届いた確認を許可する。許可した結果として分割される。
+        # call_tool は届いた確認を許可する 許可した結果として分割される
         call_tool(bridge, tool, {"clip_id": clip, "frame": 100})
         assert len(host.document.project.timeline.tracks[0].clips) == 2
 

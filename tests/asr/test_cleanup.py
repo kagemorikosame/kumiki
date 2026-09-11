@@ -1,6 +1,6 @@
-"""起こし結果の整形。
+"""起こし結果の整形
 
-外部依存が無いので、起こしの実行環境を入れていなくても動く。
+外部依存が無いので、起こしの実行環境を入れていなくても動く
 """
 
 from __future__ import annotations
@@ -18,15 +18,15 @@ class TestFillerRemoval:
         assert clean_text("えーと、今日は編集します") == "今日は編集します"
 
     def test_longer_fillers_win(self) -> None:
-        # 「えー」を先に消すと「えーと」が「と」になって残る。長い方から当てる。
+        # 「えー」を先に消すと「えーと」が「と」になって残る 長い方から当てる
         assert clean_text("えーと編集します") == "編集します"
 
     def test_english_fillers_need_word_boundaries(self) -> None:
-        # "um" が "column" の中に当たってはいけない。
+        # "um" が "column" の中に当たってはいけない
         assert clean_text("um, the column is here") == "the column is here"
 
     def test_words_kept_by_default_can_be_added(self) -> None:
-        # 「なんか」は意味を持つことがあるので既定では残す。
+        # 「なんか」は意味を持つことがあるので既定では残す
         assert "なんか" in clean_text("なんか変です")
         options = CleanupOptions(fillers=("なんか",))
         assert clean_text("なんか変です", options) == "変です"
@@ -41,7 +41,7 @@ class TestRepeats:
         assert clean_text("the the file") == "the file"
 
     def test_reduplicated_japanese_words_survive(self) -> None:
-        # 「いろいろ」を「いろ」にしてはいけない。2 文字の畳語は対象外。
+        # 「いろいろ」を「いろ」にしてはいけない 2 文字の畳語は対象外
         assert clean_text("いろいろ試します") == "いろいろ試します"
 
     def test_immediate_restatement_collapses(self) -> None:
@@ -61,7 +61,7 @@ class TestPunctuation:
         assert clean_text("今日は、編集します。", options) == "今日は 編集します"
 
     def test_leading_punctuation_is_dropped(self) -> None:
-        # フィラーを消した跡に読点だけが残る。
+        # フィラーを消した跡に読点だけが残る
         assert clean_text("えーと、そうですね") == "そうですね"
 
     def test_unknown_mode_is_rejected(self) -> None:
@@ -81,13 +81,13 @@ class TestWrapping:
         assert wrapped == "あいうえお\nかきくけこ\nさしすせそ"
 
     def test_forbidden_characters_do_not_start_a_line(self) -> None:
-        # 「ー」が行頭に来ないよう、1 文字手前で切る。
+        # 「ー」が行頭に来ないよう、1 文字手前で切る
         wrapped = wrap_text("あいうえおーかきくけこ", 5, max_lines=3)
         assert wrapped == "あいうえ\nおーかき\nくけこ"
 
     def test_the_last_two_lines_are_balanced(self) -> None:
-        # 上限いっぱいで切ると 1 文字だけの行ができる。字幕としては見苦しいので、
-        # 残りが 2 行に収まるときは長さを揃える。
+        # 上限いっぱいで切ると 1 文字だけの行ができる 字幕としては見苦しいので、
+        # 残りが 2 行に収まるときは長さを揃える
         assert wrap_text("あいうえおかきくけこさ", 10) == "あいうえおか\nきくけこさ"
 
     def test_lines_beyond_the_limit_are_merged_into_the_last(self) -> None:
@@ -112,7 +112,7 @@ class TestCleanTranscript:
         assert [s.text for s in cleaned.segments] == ["本題です"]
 
     def test_unchanged_segments_are_not_marked_as_edited(self) -> None:
-        # 印を付けると、起こし直したときに手で直したものと区別が付かなくなる。
+        # 印を付けると、起こし直したときに手で直したものと区別が付かなくなる
         cleaned = clean_transcript(self._transcript("本題です"))
         assert cleaned.segments[0].edited is False
 

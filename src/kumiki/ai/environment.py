@@ -1,8 +1,8 @@
-"""AI 連携の実行環境。
+"""AI 連携の実行環境
 
-字幕起こしと同じく、既定では入っていない（:mod:`kumiki.runtime` を参照）。
+字幕起こしと同じく、既定では入っていない（:mod:`kumiki.runtime` を参照）
 Agent SDK 自体は小さいが、実行には **Claude Code 本体**（Node 製の ``claude``
-コマンド）が要る。これは pip では入らないので、見つからないときは案内だけ出す。
+コマンド）が要る これは pip では入らないので、見つからないときは案内だけ出す
 """
 
 from __future__ import annotations
@@ -26,12 +26,12 @@ REQUIRED_PACKAGES: tuple[str, ...] = ("claude-agent-sdk>=0.2",)
 
 
 def find_claude_cli() -> Path | None:
-    """``claude`` の実行ファイルを探す。
+    """``claude`` の実行ファイルを探す
 
-    PATH だけを見ると取りこぼす。Claude Code の公式インストーラは
+    PATH だけを見ると取りこぼす Claude Code の公式インストーラは
     ``~/.local/bin`` へ置くが、そこを PATH に足すのは shell の設定であって、
-    エクスプローラから起動した GUI アプリには引き継がれないことがある。
-    「入れてあるのに見つからない」が一番分かりにくい失敗なので、既知の場所も見る。
+    エクスプローラから起動した GUI アプリには引き継がれないことがある
+    「入れてあるのに見つからない」が一番分かりにくい失敗なので、既知の場所も見る
     """
     found = shutil.which("claude")
     if found:
@@ -50,7 +50,7 @@ AI_PACK = FeaturePack(
     required=REQUIRED_PACKAGES,
     size_mb=40,
     commands=("claude",),
-    command_hint="npm install -g @anthropic-ai/claude-code で入れられます。",
+    command_hint="npm install -g @anthropic-ai/claude-code で入れられます",
     locate=lambda name: find_claude_cli() if name == "claude" else shutil.which(name),
 )
 

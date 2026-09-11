@@ -1,7 +1,7 @@
-"""Lua ランタイムと ``obj`` API。
+"""Lua ランタイムと ``obj`` API
 
-配布スクリプトは他人が書いたコードで、読み込むだけで走る。サンドボックスと
-実行時間の上限は「動くこと」と同じくらい大事なので、そこも見る。
+配布スクリプトは他人が書いたコードで、読み込むだけで走る サンドボックスと
+実行時間の上限は「動くこと」と同じくらい大事なので、そこも見る
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from kumiki.compat.aviutl.runtime import LuaScriptRuntime, blank_image, lua_avai
 
 @pytest.fixture(scope="module")
 def runtime() -> LuaScriptRuntime:
-    """使い回すランタイム。作るのに数ミリ秒かかる。"""
+    """使い回すランタイム 作るのに数ミリ秒かかる"""
     return LuaScriptRuntime(instruction_limit=200_000)
 
 
@@ -26,11 +26,11 @@ def state(width: int = 64, height: int = 64, **fields: object) -> ObjectState:
 
 class TestAvailability:
     def test_lua_is_there_by_default(self) -> None:
-        # P5 の前提。追加導入なしで動くこと。
+        # P5 の前提 追加導入なしで動くこと
         assert lua_available() is True
 
     def test_it_is_lua_5_1(self, runtime: LuaScriptRuntime) -> None:
-        # AviUtl 本体が 5.1。配布スクリプトは unpack や setfenv を普通に使う。
+        # AviUtl 本体が 5.1 配布スクリプトは unpack や setfenv を普通に使う
         target = state()
         runtime.run("obj.ox = (_VERSION == 'Lua 5.1') and 1 or 0", target)
         assert target.ox == 1.0
@@ -65,15 +65,15 @@ class TestFields:
         assert target.ox == 50.0
 
     def test_check0_is_a_number(self, runtime: LuaScriptRuntime) -> None:
-        # AviUtl では 0 か 1。真偽値で返すと ``obj.check0 == 1`` が偽になる。
+        # AviUtl では 0 か 1 真偽値で返すと ``obj.check0 == 1`` が偽になる
         target = state()
         target.check0 = True
         runtime.run("obj.ox = obj.check0", target)
         assert target.ox == 1.0
 
     def test_named_parameters_are_visible(self, runtime: LuaScriptRuntime) -> None:
-        # 名前付きの値は、大域変数としても obj 越しにも読める。配布スクリプトは
-        # 前者を使うが、どちらで書かれていても動くようにしてある。
+        # 名前付きの値は、大域変数としても obj 越しにも読める 配布スクリプトは
+        # 前者を使うが、どちらで書かれていても動くようにしてある
         target = state()
         target.values["amount"] = 7.0
         runtime.run("obj.ox = amount  obj.oy = obj.amount", target)
@@ -95,7 +95,7 @@ class TestDrawing:
         assert result.draws[0].x == 40.0
 
     def test_explicit_draws_replace_the_automatic_one(self, runtime: LuaScriptRuntime) -> None:
-        # 残像や複製を作るスクリプトはこの仕組みで動いている。
+        # 残像や複製を作るスクリプトはこの仕組みで動いている
         result = runtime.run("for i=1,4 do obj.draw(i*10, 0, 0, 1, 0.25) end", state())
         assert [call.x for call in result.draws] == [10.0, 20.0, 30.0, 40.0]
         assert all(call.alpha == 0.25 for call in result.draws)
@@ -145,7 +145,7 @@ class TestHelpers:
         assert (target.ox, target.oy) == (16.0, 4.0)
 
     def test_rand_is_stable_within_a_frame(self, runtime: LuaScriptRuntime) -> None:
-        # 毎回ばらつくと、1 フレーム描き直すたびに絵が変わる。
+        # 毎回ばらつくと、1 フレーム描き直すたびに絵が変わる
         first = state(frame=7)
         runtime.run("obj.ox = obj.rand(0, 1000)", first)
         second = state(frame=7)
@@ -224,8 +224,8 @@ class TestSandbox:
         assert runtime.run('os.execute("calc")', state()).failed is True
 
     def test_require_only_reaches_the_script_folders(self, runtime: LuaScriptRuntime) -> None:
-        # require は塞がずに、スクリプトフォルダの中だけへ向けてある。配布物は
-        # 共通処理を別ファイルへ切り出しており、塞ぐと 1 行目で落ちる。
+        # require は塞がずに、スクリプトフォルダの中だけへ向けてある 配布物は
+        # 共通処理を別ファイルへ切り出しており、塞ぐと 1 行目で落ちる
         target = state()
         result = runtime.run('obj.ox = require("どこにも無い") == nil and 1 or 0', target)
         assert result.failed is False
@@ -237,13 +237,13 @@ class TestSandbox:
         assert target.ox == 1.0
 
     def test_an_infinite_loop_is_cut_off(self, runtime: LuaScriptRuntime) -> None:
-        # 掛けておかないと、編集画面が戻ってこなくなる。
+        # 掛けておかないと、編集画面が戻ってこなくなる
         result = runtime.run("while true do end", state())
         assert result.failed is True
         assert "長すぎ" in result.message
 
     def test_a_failure_still_draws_the_original(self, runtime: LuaScriptRuntime) -> None:
-        # 1 つのスクリプトの失敗でフレームが真っ黒になる方が困る。
+        # 1 つのスクリプトの失敗でフレームが真っ黒になる方が困る
         result = runtime.run("error('わざと')", state())
         assert result.failed is True
         assert len(result.draws) == 1

@@ -1,10 +1,10 @@
-"""OpenGL の下回り。シェーダ、フレームバッファ、テクスチャ、全画面四角形。
+"""OpenGL の下回り シェーダ、フレームバッファ、テクスチャ、全画面四角形
 
-合成もエフェクトも同じ道具を使う。ここに集めておかないと、エフェクトを足すたびに
-似たような GL 呼び出しの塊が増えていく。
+合成もエフェクトも同じ道具を使う ここに集めておかないと、エフェクトを足すたびに
+似たような GL 呼び出しの塊が増えていく
 
-どれも「GL コンテキストが current な状態で使う」という前提を共有する。
-生成・使用・解放をすべて同じコンテキスト上で行うこと。
+どれも「GL コンテキストが current な状態で使う」という前提を共有する
+生成・使用・解放をすべて同じコンテキスト上で行うこと
 """
 
 from __future__ import annotations
@@ -16,20 +16,20 @@ from OpenGL import GL
 
 __all__ = ["IDENTITY", "VERTEX_SHADER", "Framebuffer", "Program", "ScreenQuad", "Texture"]
 
-#: 単位行列。変換を使わない描画のための既定値。
+#: 単位行列 変換を使わない描画のための既定値
 IDENTITY: tuple[float, ...] = (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
 
-#: 全画面四角形を描く頂点シェーダ。フラグメント側だけ差し替えれば、どのエフェクトも
-#: 同じ形で書ける。``u_rect`` で描画先の矩形を、``u_flip`` で上下反転を指定する。
+#: 全画面四角形を描く頂点シェーダ フラグメント側だけ差し替えれば、どのエフェクトも
+#: 同じ形で書ける ``u_rect`` で描画先の矩形を、``u_flip`` で上下反転を指定する
 VERTEX_SHADER = """
 #version 430 core
 layout(location = 0) in vec2 a_position;
 out vec2 v_uv;
-// 描画先の矩形。クリップ空間 (-1..1) で left, bottom, right, top。
+// 描画先の矩形 クリップ空間 (-1..1) で left, bottom, right, top
 uniform vec4 u_rect;
-// 素材の上下反転。デコードした画像は左上が原点、GL は左下が原点。
+// 素材の上下反転 デコードした画像は左上が原点、GL は左下が原点
 uniform bool u_flip;
-// 追加の変換。回転や拡大を掛けるときに使う。既定は単位行列。
+// 追加の変換 回転や拡大を掛けるときに使う 既定は単位行列
 uniform mat3 u_transform;
 void main() {
     vec2 unit = a_position * 0.5 + 0.5;
@@ -42,15 +42,15 @@ void main() {
 
 _QUAD = np.array([-1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0], dtype=np.float32)
 
-#: 描画先いっぱいに広げる矩形。エフェクトのように全面を塗るときに使う。
+#: 描画先いっぱいに広げる矩形 エフェクトのように全面を塗るときに使う
 FULL_RECT = (-1.0, -1.0, 1.0, 1.0)
 
 
 class Program:
-    """コンパイル済みのシェーダ。
+    """コンパイル済みのシェーダ
 
-    uniform の位置を初回に引いて覚える。描画のたびに ``glGetUniformLocation`` を
-    呼ぶと、エフェクトを重ねたときに無視できない回数の問い合わせになる。
+    uniform の位置を初回に引いて覚える 描画のたびに ``glGetUniformLocation`` を
+    呼ぶと、エフェクトを重ねたときに無視できない回数の問い合わせになる
     """
 
     def __init__(self, vertex_source: str, fragment_source: str) -> None:
@@ -69,8 +69,8 @@ class Program:
         GL.glDeleteShader(fragment)
         self._locations: dict[str, int] = {}
 
-        # uniform の初期値は 0 なので、行列は単位行列に入れ直しておく。
-        # 入れ忘れると、変換を使わない描画が全部潰れて何も出なくなる。
+        # uniform の初期値は 0 なので、行列は単位行列に入れ直しておく
+        # 入れ忘れると、変換を使わない描画が全部潰れて何も出なくなる
         self.use()
         self.set_mat3("u_transform", IDENTITY)
 
@@ -78,7 +78,7 @@ class Program:
         GL.glUseProgram(self.handle)
 
     def location(self, name: str) -> int:
-        """uniform の位置。無い名前は -1 で、GL 側が黙って無視する。"""
+        """uniform の位置 無い名前は -1 で、GL 側が黙って無視する"""
         cached = self._locations.get(name)
         if cached is None:
             cached = int(GL.glGetUniformLocation(self.handle, name))
@@ -101,12 +101,12 @@ class Program:
         GL.glUniform4f(self.location(name), *(float(v) for v in values[:4]))
 
     def set_mat3(self, name: str, values: Sequence[float]) -> None:
-        """3x3 行列を渡す。並びは行優先で 9 個。"""
+        """3x3 行列を渡す 並びは行優先で 9 個"""
         location = self.location(name)
         if location < 0:
             return
         matrix = np.asarray(values, dtype=np.float32).reshape(3, 3)
-        # GL は列優先で読むので転置して渡す。
+        # GL は列優先で読むので転置して渡す
         GL.glUniformMatrix3fv(location, 1, GL.GL_TRUE, matrix)
 
     def bind_texture(self, name: str, handle: int, unit: int = 0) -> None:
@@ -121,11 +121,11 @@ class Program:
 
 
 class ShaderError(RuntimeError):
-    """シェーダをコンパイルまたはリンクできない。"""
+    """シェーダをコンパイルまたはリンクできない"""
 
 
 class ScreenQuad:
-    """全画面四角形。すべての描画がこれ 1 つを使い回す。"""
+    """全画面四角形 すべての描画がこれ 1 つを使い回す"""
 
     def __init__(self) -> None:
         self._vao = int(GL.glGenVertexArrays(1))
@@ -151,11 +151,11 @@ class ScreenQuad:
 
 
 class Texture:
-    """GPU 上の 1 枚の画像。
+    """GPU 上の 1 枚の画像
 
-    ``srgb`` が真なら ``GL_SRGB8_ALPHA8`` で作る。素材は sRGB で符号化されて
-    いるので、シェーダから読んだ時点でリニアに戻っていてほしい。エフェクトの
-    途中結果はすでにリニアなので、そちらは偽にする。
+    ``srgb`` が真なら ``GL_SRGB8_ALPHA8`` で作る 素材は sRGB で符号化されて
+    いるので、シェーダから読んだ時点でリニアに戻っていてほしい エフェクトの
+    途中結果はすでにリニアなので、そちらは偽にする
     """
 
     def __init__(self, width: int, height: int, *, srgb: bool = True) -> None:
@@ -181,14 +181,14 @@ class Texture:
 
     @classmethod
     def from_array(cls, image: np.ndarray, *, srgb: bool = True) -> Texture:
-        """``(高さ, 幅, 4)`` の uint8 配列からテクスチャを作る。"""
+        """``(高さ, 幅, 4)`` の uint8 配列からテクスチャを作る"""
         height, width = image.shape[:2]
         texture = cls(width, height, srgb=srgb)
         texture.upload(image)
         return texture
 
     def upload(self, image: np.ndarray) -> None:
-        """画素を書き込む。大きさが違えば作り直す。"""
+        """画素を書き込む 大きさが違えば作り直す"""
         if image.ndim != 3 or image.shape[2] != 4 or image.dtype != np.uint8:
             raise ValueError(f"RGBA uint8 の配列が必要: shape={image.shape}, dtype={image.dtype}")
 
@@ -230,10 +230,10 @@ class Texture:
 
 
 class Framebuffer:
-    """描画先。カラーテクスチャ 1 枚を持つ。
+    """描画先 カラーテクスチャ 1 枚を持つ
 
-    既定は ``RGBA16F``。エフェクトを重ねるとリニア値が 0..1 に収まらないことが
-    あり（グローの加算など）、8bit だとそこで潰れて後段のエフェクトに渡らない。
+    既定は ``RGBA16F`` エフェクトを重ねるとリニア値が 0..1 に収まらないことが
+    あり（グローの加算など）、8bit だとそこで潰れて後段のエフェクトに渡らない
     """
 
     def __init__(self, width: int, height: int, *, internal_format: int = GL.GL_RGBA16F) -> None:
@@ -278,7 +278,7 @@ class Framebuffer:
         self._create()
 
     def bind(self, *, clear: tuple[float, float, float, float] | None = None) -> None:
-        """描画先にする。``clear`` を渡すとその色で塗り潰す。"""
+        """描画先にする ``clear`` を渡すとその色で塗り潰す"""
         GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self.handle)
         GL.glViewport(0, 0, self.width, self.height)
         if clear is not None:
@@ -295,9 +295,9 @@ class Framebuffer:
 
 
 def _set_sampling() -> None:
-    """拡大縮小は線形、端は繰り返さずに引き伸ばす。
+    """拡大縮小は線形、端は繰り返さずに引き伸ばす
 
-    端を繰り返すと、ぼかしの際に反対側の色が回り込む。
+    端を繰り返すと、ぼかしの際に反対側の色が回り込む
     """
     GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_LINEAR)
     GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_LINEAR)
@@ -316,7 +316,7 @@ def _compile(kind: int, source: str) -> int:
 
 
 def _numbered(source: str) -> str:
-    """エラー箇所を探せるよう、行番号を付けて返す。"""
+    """エラー箇所を探せるよう、行番号を付けて返す"""
     return "\n".join(f"{index:3d}| {line}" for index, line in enumerate(source.splitlines(), 1))
 
 

@@ -1,4 +1,4 @@
-"""タイムライン表示。"""
+"""タイムライン表示"""
 
 from kumiki.ui.timeline.layout import TimelineLayout, TrackBand
 from kumiki.ui.timeline.view import TimelineView

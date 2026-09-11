@@ -1,4 +1,4 @@
-"""環境の疎通確認。実装に入る前に、前提が揃っているかをここで潰す。
+"""環境の疎通確認 実装に入る前に、前提が揃っているかをここで潰す
 
 .venv/Scripts/python.exe tools/check_env.py
 """
@@ -12,7 +12,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-# cmd.exe の既定コードページ (cp932) だと日本語が化けるので UTF-8 に固定する。
+# cmd.exe の既定コードページ (cp932) だと日本語が化けるので UTF-8 に固定する
 if isinstance(sys.stdout, io.TextIOWrapper):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

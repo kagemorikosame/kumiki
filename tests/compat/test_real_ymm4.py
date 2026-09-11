@@ -1,14 +1,14 @@
-"""実際に配布されている ``.ymmt`` を、全部読ませてみる。
+"""実際に配布されている ``.ymmt`` を、全部読ませてみる
 
-``tests/fixtures/ymm4`` に ``.ymmt`` を置くと、ここが拾って通す。配布物なので
-リポジトリには入れていない（無ければ黙って飛ばす）。
+``tests/fixtures/ymm4`` に ``.ymmt`` を置くと、ここが拾って通す 配布物なので
+リポジトリには入れていない（無ければ黙って飛ばす）
 
-開発中は、ネットで配布されている 2 本を置いて確かめた。
+開発中は、ネットで配布されている 2 本を置いて確かめた
 
 * ``AviUtlアニメーション効果.ymmt`` — 17 本（うづき）
 * ``YMM4Teテンプレート一式.ymmt`` — 106 本（てとら）
 
-ここが落ちたときに疑うのは対応表であって、テンプレートではない。
+ここが落ちたときに疑うのは対応表であって、テンプレートではない
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from kumiki.compat.catalog import TemplateCatalog, TemplateEntry, place, restyle
 from kumiki.compat.mapped import MappedObject
 from kumiki.core.model import AnimatedValue, Clip, GeneratedSource, Project
 
-#: 棚に並んだテンプレートと、それを読んだ結果。
+#: 棚に並んだテンプレートと、それを読んだ結果
 type Loaded = list[tuple[TemplateEntry, list[MappedObject]]]
 
 ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "ymm4"
@@ -45,13 +45,13 @@ def loaded(catalog: TemplateCatalog) -> Loaded:
 
 
 def test_every_file_yields_templates(catalog: TemplateCatalog) -> None:
-    # 1 ファイルに何本も入っている。0 本なら包み方を読み違えている。
+    # 1 ファイルに何本も入っている 0 本なら包み方を読み違えている
     assert len(catalog.all()) >= len(FILES)
 
 
 def test_most_templates_produce_something(loaded: Loaded) -> None:
     # 中身もエフェクトも出ないものは、要求しているエフェクトがこちらに
-    # 無いものだけのはず。全体の 2 割を超えたら読み落としを疑う。
+    # 無いものだけのはず 全体の 2 割を超えたら読み落としを疑う
     empty = [entry.name for entry, objects in loaded if not objects]
     assert len(empty) < len(loaded) * 0.2, f"空になった: {empty[:10]}"
 
@@ -68,7 +68,7 @@ def test_the_text_survives(loaded: Loaded) -> None:
 
 
 def test_the_fonts_survive(loaded: Loaded) -> None:
-    # 配布物はフォント指定が肝。既定フォントに落ちていたら見た目が別物になる。
+    # 配布物はフォント指定が肝 既定フォントに落ちていたら見た目が別物になる
     named = [
         item
         for _, objects in loaded
@@ -79,8 +79,8 @@ def test_the_fonts_survive(loaded: Loaded) -> None:
 
 
 def test_the_outlines_survive(loaded: Loaded) -> None:
-    # 縁取りは ``OutlineEffect`` に入っている。``Decorations`` だけを見ていると
-    # 1 つも出ない。
+    # 縁取りは ``OutlineEffect`` に入っている ``Decorations`` だけを見ていると
+    # 1 つも出ない
     bordered = [
         item
         for _, objects in loaded
@@ -91,10 +91,10 @@ def test_the_outlines_survive(loaded: Loaded) -> None:
 
 
 def test_the_animations_span_the_whole_item(loaded: Loaded) -> None:
-    """動くパラメータが、2 フレームで終わっていないこと。
+    """動くパラメータが、2 フレームで終わっていないこと
 
     ``Values`` の並び順をフレーム番号だと思って読むと、300 フレームかけて動く
-    はずのものが 2 フレームで終わる。見た目には「動いていない」になる。
+    はずのものが 2 フレームで終わる 見た目には「動いていない」になる
     """
     spans: list[int] = []
     for _, objects in loaded:
@@ -108,7 +108,7 @@ def test_the_animations_span_the_whole_item(loaded: Loaded) -> None:
 
 
 def test_effect_only_templates_can_be_worn(loaded: Loaded) -> None:
-    """中身のないテンプレート（アニメーション効果）は、今のクリップに着せられる。"""
+    """中身のないテンプレート（アニメーション効果）は、今のクリップに着せられる"""
     effects_only = [
         objects
         for _, objects in loaded
@@ -123,12 +123,12 @@ def test_effect_only_templates_can_be_worn(loaded: Loaded) -> None:
     )
     commands = restyle(effects_only[0], clip)
     assert commands
-    # 中身には触らない。エフェクトを足すだけ。
+    # 中身には触らない エフェクトを足すだけ
     assert all(type(command).__name__ == "AddEffect" for command in commands)
 
 
 def test_effect_only_templates_are_not_placed(loaded: Loaded) -> None:
-    # 絵を持たないので、置いても何も映らない。
+    # 絵を持たないので、置いても何も映らない
     effects_only = [
         objects
         for _, objects in loaded

@@ -1,4 +1,4 @@
-"""オブジェクト設定パネル。"""
+"""オブジェクト設定パネル"""
 
 from kumiki.ui.inspector.panel import InspectorPanel
 from kumiki.ui.inspector.widgets import ParameterEditor, create_editor
