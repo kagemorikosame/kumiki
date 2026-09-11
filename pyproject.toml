@@ -70,6 +70,10 @@ files = ["src", "tests"]
 
 # PyOpenGL は型情報を配布していない。GL 呼び出しは薄い層に閉じ込めてあるので、
 # ここだけ型検査の対象外にする。
+#
+# faster_whisper と claude_agent_sdk は**任意の依存**で、既定では入らない
+# （字幕起こしと AI 連携の実行環境。合計 2 GB を超えるため）。入っていない
+# 環境でも型検査が通るようにしておく。入っている環境では実物で検査される。
 [[tool.mypy.overrides]]
-module = ["OpenGL.*", "faster_whisper.*", "sounddevice"]
+module = ["OpenGL.*", "faster_whisper.*", "sounddevice", "claude_agent_sdk.*"]
 ignore_missing_imports = true

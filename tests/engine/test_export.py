@@ -25,6 +25,10 @@ from kumiki.engine.encode import (
 )
 from tests.media_fixtures import SampleMedia, make_sample
 
+# 書き出しは内部で GL コンテキストを作って合成する。GPU の無い環境では
+# 作れても使えないので、失敗ではなく飛ばす。
+pytestmark = pytest.mark.usefixtures("gpu")
+
 
 @pytest.fixture
 def ready_project(sample_av: SampleMedia) -> Project:

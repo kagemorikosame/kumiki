@@ -6,6 +6,11 @@
 
 :mod:`kumiki.ai.operations` に並べた操作を、ここで 1 つずつ MCP ツールへ包む。
 包む処理は全部同じなので、ツールを足すときに触るのは operations だけで済む。
+
+**SDK の import は関数の中で行う。** AI 連携の実行環境は同梱しておらず、
+ソフト内の導入ボタンで後から入れる（計画書 F-9-9）。ここで表に import すると、
+未導入の環境では**このモジュールを読み込んだだけで落ち**、繋がっている
+チャットパネル経由で UI 全体が起動しなくなる。
 """
 
 from __future__ import annotations
@@ -13,10 +18,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from claude_agent_sdk import SdkMcpTool, create_sdk_mcp_server
-from claude_agent_sdk.types import McpSdkServerConfig
+if TYPE_CHECKING:
+    from claude_agent_sdk import SdkMcpTool
+    from claude_agent_sdk.types import McpSdkServerConfig
 
 from kumiki.ai.bridge import EditorBridge
 from kumiki.ai.host import ToolError
@@ -54,11 +60,14 @@ def build_tools(bridge: EditorBridge) -> list[SdkMcpTool[Any]]:
 
 def build_server(bridge: EditorBridge) -> McpSdkServerConfig:
     """ブリッジに繋がった MCP サーバを作る。"""
+    from claude_agent_sdk import create_sdk_mcp_server
+
     return create_sdk_mcp_server(name=SERVER_NAME, version="1.0.0", tools=build_tools(bridge))
 
 
 def _wrap(operation: Operation, bridge: EditorBridge) -> SdkMcpTool[Any]:
     """1 つの操作を MCP ツールにする。"""
+    from claude_agent_sdk import SdkMcpTool
 
     async def handler(arguments: dict[str, Any]) -> dict[str, Any]:
         loop = asyncio.get_running_loop()

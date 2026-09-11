@@ -88,6 +88,23 @@ def ensure_qt_application() -> QCoreApplication:
     return QGuiApplication([])
 
 
+def _reported_gl_version() -> str:
+    """ドライバが名乗っている版。取れなければ「不明」。
+
+    案内を親切にするためだけの問い合わせなので、**失敗しても止めない**。
+    壊れたコンテキストでは ``glGetString`` 自体が ``invalid operation`` を
+    返すことがあり、そこで例外を出すと本来伝えたい内容が伝わらなくなる。
+    """
+    try:
+        from OpenGL.GL import GL_VERSION, glGetString
+
+        raw = glGetString(GL_VERSION)
+    except Exception:
+        # 版を取れないこと自体は異常ではない。案内の文面が「不明」になるだけ。
+        return "不明"
+    return raw.decode("ascii", "replace") if raw else "不明"
+
+
 class OffscreenGLContext:
     """画面を持たない GL コンテキスト。
 
@@ -116,6 +133,49 @@ class OffscreenGLContext:
             )
 
         self._depth = 0
+        self._require_usable_gl()
+
+    def _require_usable_gl(self) -> None:
+        """要求した版の関数が本当に呼べるかを確かめる。
+
+        **作れたことと使えることは別。** ドライバが無い環境（仮想機械や CI）でも
+        Qt は software / GDI の経路でコンテキストを作ってしまう。そこには
+        ``glCreateShader`` のようなシェーダの関数すら無く、呼んだ瞬間に PyOpenGL が
+        ``NullFunctionError`` を投げる。
+
+        作った直後に確かめておけば、呼び出し側は :class:`GLContextError` 1 つを
+        見ればよくなる（テストは飛ばし、アプリは案内を出す）。描画の奥まで進んで
+        から中身の分からない例外で落ちるより、ここで止めたほうが原因に近い。
+        """
+        from OpenGL.GL import glCreateShader, glGenVertexArrays
+
+        # 実際に取れた版を先に見る 下の関数は 2.0 / 3.0 から在るので、3.x の
+        # コンテキストでも素通りしてしまう 4.3 で入った機能（計算シェーダなど）を
+        # 使う所まで進んでから落ちることになる
+        granted = self._context.format()
+        version = (granted.majorVersion(), granted.minorVersion())
+        if version < REQUIRED_GL_VERSION:
+            raise GLContextError(
+                f"OpenGL {REQUIRED_GL_VERSION[0]}.{REQUIRED_GL_VERSION[1]} が要るが、"
+                f"取れたのは {version[0]}.{version[1]} GPU ドライバを確認すること"
+            )
+
+        with self:
+            missing = [
+                name
+                for name, function in (
+                    ("glCreateShader", glCreateShader),
+                    ("glGenVertexArrays", glGenVertexArrays),
+                )
+                if not bool(function)
+            ]
+            if missing:
+                raise GLContextError(
+                    f"OpenGL {REQUIRED_GL_VERSION[0]}.{REQUIRED_GL_VERSION[1]} "
+                    f"の関数が見つからない（{'、'.join(missing)}）。"
+                    f"ドライバが返した版は {_reported_gl_version()}。"
+                    "GPU ドライバを確認すること"
+                )
 
     @property
     def context(self) -> QOpenGLContext:

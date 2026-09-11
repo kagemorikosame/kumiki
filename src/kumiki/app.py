@@ -1,4 +1,4 @@
-"""アプリケーションの入口。
+r"""アプリケーションの入口。
 
 .venv\Scripts\python.exe -m kumiki
 """

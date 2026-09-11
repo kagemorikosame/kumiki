@@ -49,7 +49,13 @@ jobs:
         # GL を使わないテストはすべて走る。
         run: python tools/verify.py
 
-      - name: 何件通ったかを残す
+      - name: 何件通って何件飛んだかを残す
+        # verify.py の中の pytest は -q が二重に掛かり、集計行を出さない。
+        # GPU の無い CI では GL のテストが大量に飛ぶので、「通った」だけでは
+        # 何を確かめたのか分からない。件数を実行の要約に残す。
         if: always()
-        run: python -m pytest -q --no-header -p no:cacheprovider | Select-Object -Last 5
         shell: pwsh
+        run: |
+          $summary = python -m pytest -o addopts="" -q --no-header -p no:cacheprovider | Select-Object -Last 1
+          "### Python ${{ matrix.python }}: $summary" >> $env:GITHUB_STEP_SUMMARY
+          $summary

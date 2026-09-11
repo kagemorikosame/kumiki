@@ -14,22 +14,20 @@ updates:
     commit-message:
       prefix: "ci"
 
+  # pip は**脆弱性の修正だけ**を受ける（版上げの PR は出させない）。
+  #
+  # ロックファイルが無いので、Dependabot にできるのは pyproject の下限
+  # （>=2.0 など）を最新へ引き上げることだけ。下限は「これ以上なら動く」を
+  # 意図して低く書いているので、上げても得るものが無く、使える環境を狭める。
+  # 最初の push で 5 本来て、全部これだった。
+  #
+  # 脆弱性の修正（security updates）はこの設定と関係なく届く。
+  # ロックファイルを入れたら（配布のパッケージングで要る）見直す。
   - package-ecosystem: pip
     directory: "/"
     schedule:
       interval: monthly
+    open-pull-requests-limit: 0
     labels: ["dependencies"]
     commit-message:
       prefix: "deps"
-    # 開発用の道具は、まとめて 1 本の PR にする。
-    # 個別に来ると PR が溢れて、本題のレビューが埋もれる。
-    groups:
-      dev-tools:
-        patterns: ["ruff", "mypy", "pytest*", "hypothesis"]
-    # PySide6 と PyAV は版が上がると描画や復号の挙動が変わる。
-    # 自動では上げず、手元で実素材を通してから判断する。
-    ignore:
-      - dependency-name: "PySide6"
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "av"
-        update-types: ["version-update:semver-major"]

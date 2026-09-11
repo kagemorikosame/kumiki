@@ -2,8 +2,8 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
-build/
-dist/
+/build/
+/dist/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
@@ -11,8 +11,12 @@ dist/
 .coverage
 htmlcov/
 
-# Kumiki のキャッシュ・作業ファイル
+# Kumiki の実行時キャッシュ・作業ファイル
+#
+# 先頭の / は「リポジトリ直下だけ」の意味。これを付けないと、
+# src/kumiki/engine/cache/ のような同名のソースまで巻き込む。
+# 実際に巻き込んでいて、push するまで誰も気付かなかった。
+/cache/
+/proxies/
 *.kmk.bak
-cache/
-proxies/
 *.peaks
