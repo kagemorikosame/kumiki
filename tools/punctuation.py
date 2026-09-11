@@ -117,27 +117,40 @@ def _offsets(text: str) -> list[int]:
     return starts
 
 
-def _docstring_starts(tree: ast.AST) -> set[tuple[int, int]]:
-    """式文としての文字列（docstring と、属性の説明に置く文字列）の開始位置"""
-    found: set[tuple[int, int]] = set()
+type Span = tuple[tuple[int, int], tuple[int, int]]
+
+
+def _docstring_spans(tree: ast.AST) -> list[Span]:
+    """式文としての文字列（docstring と、属性の説明に置く文字列）の範囲
+
+    開始位置だけで見ると、つないで書いた docstring（"前半" "後半"）の後半を
+    取りこぼす ast には 1 つの式だが、字句では文字列が 2 つに分かれる
+    """
+    found: list[Span] = []
     for node in ast.walk(tree):
         if (
             isinstance(node, ast.Expr)
             and isinstance(node.value, ast.Constant)
             and isinstance(node.value.value, str)
+            and node.end_lineno is not None
+            and node.end_col_offset is not None
         ):
-            found.add((node.lineno, node.col_offset))
+            found.append(((node.lineno, node.col_offset), (node.end_lineno, node.end_col_offset)))
     return found
 
 
+def _within(position: tuple[int, int], spans: list[Span]) -> bool:
+    return any(start <= position < end for start, end in spans)
+
+
 def scan_python(path: Path) -> list[Hit]:
-    text = path.read_text(encoding="utf-8")
+    text = _read(path)
     if MARU not in text:
         return []
 
     relative = _relative(path)
     literals_are_prose = relative.startswith("src/") and relative not in DATA_LITERAL_FILES
-    docstrings = _docstring_starts(ast.parse(text))
+    docstrings = _docstring_spans(ast.parse(text))
     starts = _offsets(text)
 
     hits: list[Hit] = []
@@ -147,7 +160,7 @@ def scan_python(path: Path) -> list[Hit]:
         if token.type == tokenize.COMMENT:
             prose = True
         elif token.type == tokenize.STRING:
-            prose = token.start in docstrings or literals_are_prose
+            prose = _within(token.start, docstrings) or literals_are_prose
         elif token.type == getattr(tokenize, "FSTRING_MIDDLE", -1):
             prose = literals_are_prose
         else:
@@ -169,7 +182,7 @@ def scan_python(path: Path) -> list[Hit]:
 
 
 def scan_text(path: Path) -> list[Hit]:
-    text = path.read_text(encoding="utf-8")
+    text = _read(path)
     starts = _offsets(text)
     hits: list[Hit] = []
     for index, character in enumerate(text):
@@ -180,10 +193,28 @@ def scan_text(path: Path) -> list[Hit]:
     return hits
 
 
+def _read(path: Path) -> str:
+    """改行をそのまま保って読む
+
+    read_text は改行を LF に揃え、write_text は Windows で CRLF に戻す 往復させると
+    触っていない行まで改行が変わる
+    """
+    return path.read_bytes().decode("utf-8")
+
+
+def _is_inside(path: Path, root: Path) -> bool:
+    """リポジトリの中の実体か
+
+    シンボリックリンクを辿ると、--fix がリポジトリの外のファイルを書き換える
+    PR にリンクを 1 つ混ぜるだけで、手元で走らせた人の別のファイルを壊せてしまう
+    """
+    return not path.is_symlink() and path.resolve().is_relative_to(root.resolve())
+
+
 def targets(root: Path = ROOT) -> list[Path]:
     found: list[Path] = []
     for path in sorted(root.rglob("*")):
-        if not path.is_file() or _is_skipped(path):
+        if not path.is_file() or _is_skipped(path) or not _is_inside(path, root):
             continue
         if path.suffix == ".py" or path.suffix in TEXT_SUFFIXES or path.name == "CODEOWNERS":
             found.append(path)
@@ -196,12 +227,14 @@ def scan(path: Path) -> list[Hit]:
 
 def fix(path: Path, hits: list[Hit]) -> None:
     """後ろから書き換える 前から直すと、後ろの位置がずれる"""
-    text = path.read_text(encoding="utf-8")
+    if not _is_inside(path, ROOT):
+        raise ValueError(f"リポジトリの外は書き換えない: {path}")
+    text = _read(path)
     starts = _offsets(text)
     for hit in sorted(hits, key=lambda h: (h.line, h.column), reverse=True):
         index = starts[hit.line - 1] + hit.column
         text = text[:index] + hit.replacement + text[index + 1 :]
-    path.write_text(text, encoding="utf-8")
+    path.write_bytes(text.encode("utf-8"))
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -18,7 +18,8 @@ Codex など、`AGENTS.md` を読む道具向け **内容は [CLAUDE.md](CLAUDE.
 
 4. **文章に句点（まる）を使わない** コメント・docstring・文言・Markdown・コミットメッセージ・PR まで
    文の途中は半角空白で区切る 字幕整形の句点の一覧やテストの入力データはデータなので残す
-   `tools\punctuation.py` が検査する（`--fix` で書き換え）
+   リポジトリの中のファイルは `tools\punctuation.py` が検査する（`--fix` で書き換え）
+   コミットメッセージと PR の本文は道具では見ないので、書くときに気を付ける
 
 5. **TODO を残さない** やり残しは Issue かロードマップへ
 
@@ -26,7 +27,7 @@ Codex など、`AGENTS.md` を読む道具向け **内容は [CLAUDE.md](CLAUDE.
 
 ## 作業の単位
 
-PR はフェーズ単位 `phase/*` ブランチを切って `main` へ `main` へ直接 push しない
+PR はフェーズ単位 `phase/*` ブランチを切って `main` へ PR を出す `main` へ直接 push しない
 
 ## 覚えておくと早いこと
 

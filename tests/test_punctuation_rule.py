@@ -45,13 +45,18 @@ class TestData:
         assert MARU in cleanup._BREAK_AFTER
         assert MARU in cleanup._FORBIDDEN_AT_LINE_START
 
-    def test_the_cleanup_literals_are_not_checked(self, tool: ModuleType) -> None:
+    @pytest.mark.parametrize(
+        "definition",
+        ["_LEADING_PUNCTUATION =", "_BREAK_AFTER =", "_FORBIDDEN_AT_LINE_START =", "re.sub("],
+    )
+    def test_the_cleanup_literals_are_not_checked(self, tool: ModuleType, definition: str) -> None:
+        # どれか 1 つでも書き換えられると、字幕の改行位置・行頭禁則・読点の扱いが
+        # 変わる 例外にはならず、出来上がった字幕が少し変になるだけで気付きにくい
         path = ROOT / "src" / "kumiki" / "asr" / "cleanup.py"
         lines = path.read_text(encoding="utf-8").splitlines()
-        hits = tool.scan(path)
-        assert all(
-            MARU not in lines[hit.line - 1] or "_BREAK" not in lines[hit.line - 1] for hit in hits
-        )
+        targets = {number for number, line in enumerate(lines, 1) if definition in line}
+        assert targets, f"{definition} が見つからない（名前が変わったならここも直す）"
+        assert not {hit.line for hit in tool.scan(path)} & targets
 
     def test_string_literals_in_tests_are_data(
         self, tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -76,6 +81,7 @@ class TestProse:
         return path.read_text(encoding="utf-8")
 
     def test_the_end_of_a_line_just_loses_it(self, tool: ModuleType, tmp_path: Path) -> None:
+        # 空白を残すと行末に空白が溜まり、差分と整形の検査が汚れる
         assert self.scan(tool, tmp_path, f"終わる{MARU}\n") == "終わる\n"
 
     def test_two_sentences_on_a_line_get_a_space(self, tool: ModuleType, tmp_path: Path) -> None:
@@ -83,9 +89,11 @@ class TestProse:
         assert self.scan(tool, tmp_path, f"一つ目{MARU}二つ目\n") == "一つ目 二つ目\n"
 
     def test_before_a_closing_bracket_it_just_goes(self, tool: ModuleType, tmp_path: Path) -> None:
+        # 空白を入れると「言う 」と括弧の内側に空きができて不自然になる
         assert self.scan(tool, tmp_path, f"「言う{MARU}」\n") == "「言う」\n"
 
     def test_closing_bold_sticks_to_the_sentence(self, tool: ModuleType, tmp_path: Path) -> None:
+        # 閉じの前に空白を入れると Markdown の太字が閉じず、後ろの文まで太字になる
         assert self.scan(tool, tmp_path, f"**大事{MARU}** 次\n") == "**大事** 次\n"
 
     def test_opening_bold_keeps_a_space(self, tool: ModuleType, tmp_path: Path) -> None:
@@ -101,3 +109,46 @@ class TestProse:
         # 閉じの前に空白があると太字が閉じない
         text = f"前 **落ちたら\n終了コードが非 0{MARU}** 次\n"
         assert self.scan(tool, tmp_path, text) == "前 **落ちたら\n終了コードが非 0** 次\n"
+
+
+class TestSafety:
+    def test_line_endings_are_kept(
+        self, tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 改行を揃え直すと、句点と関係の無い行まで全部が差分になる
+        # Windows の read_text / write_text の往復でこれが起きる
+        monkeypatch.setattr(tool, "ROOT", tmp_path)
+        path = tmp_path / "crlf.md"
+        crlf = chr(13) + chr(10)
+        path.write_bytes(f"一つ目{MARU}{crlf}二つ目{crlf}".encode())
+        tool.fix(path, tool.scan(path))
+        assert path.read_bytes() == f"一つ目{crlf}二つ目{crlf}".encode()
+
+    def test_the_second_half_of_a_joined_docstring_is_prose(
+        self, tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 開始位置だけで docstring を見分けると、つないで書いた後半を取りこぼす
+        # 取りこぼした句点は検査にも書き換えにも掛からず、そのまま残る
+        monkeypatch.setattr(tool, "ROOT", tmp_path)
+        (tmp_path / "src").mkdir()
+        path = tmp_path / "src" / "x.py"
+        source = ["def f() -> None:", f'    "前半" "後半{MARU}"', ""]
+        path.write_text(chr(10).join(source), encoding="utf-8")
+        assert len(tool.scan(path)) == 1
+
+    def test_a_symlink_is_not_followed(
+        self, tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 辿ると、PR に混ぜたリンク 1 つで --fix がリポジトリの外を書き換える
+        outside = tmp_path / "outside.md"
+        outside.write_text(f"外{MARU}", encoding="utf-8")
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        try:
+            (repo / "link.md").symlink_to(outside)
+        except OSError:
+            pytest.skip("この環境ではシンボリックリンクを作れない（Windows の開発者モードが無い）")
+        monkeypatch.setattr(tool, "ROOT", repo)
+        assert tool.targets(repo) == []
+        with pytest.raises(ValueError, match="外"):
+            tool.fix(repo / "link.md", [])
