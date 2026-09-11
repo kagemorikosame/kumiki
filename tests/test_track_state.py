@@ -106,10 +106,12 @@ class TestSetTrackState:
 
 class TestSetResolution:
     def test_the_size_changes(self) -> None:
+        # 壊れると、設定画面で選んだ解像度と書き出した動画の解像度が食い違う
         changed = SetResolution(1080, 1920).apply(Project.create())
         assert changed.settings.resolution == (1080, 1920)
 
     def test_the_frame_rate_is_untouched(self) -> None:
+        # 一緒に変わると、フレーム番号で持っている全クリップの時刻がずれる
         project = Project.create()
         assert SetResolution(1280, 720).apply(project).rate == project.rate
 
@@ -121,9 +123,11 @@ class TestSetResolution:
 
     @pytest.mark.parametrize("size", [(0, 1080), (1920, 10000)])
     def test_out_of_range_is_refused(self, size: tuple[int, int]) -> None:
+        # 受け付けると、GPU のテクスチャが作れずプレビューごと落ちる
         with pytest.raises(ValueError):
             SetResolution(*size).apply(Project.create())
 
     def test_it_survives_saving(self) -> None:
+        # 壊れると、開き直すたびに解像度が 1920x1080 へ戻る
         changed = SetResolution(1080, 1080).apply(Project.create())
         assert project_from_dict(project_to_dict(changed)).settings.resolution == (1080, 1080)

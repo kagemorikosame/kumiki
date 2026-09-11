@@ -105,6 +105,11 @@ class TimelineView(QWidget):
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMinimumHeight(160)
+        # 中身は自前で描いているので、読み上げソフトにはこの名前しか伝わらない
+        self.setAccessibleName("タイムライン")
+        self.setAccessibleDescription(
+            "選んだクリップのトラックは Shift+M でミュート、Shift+S でソロ、Shift+L でロック"
+        )
 
     # --- 外から差し替えるもの ---
 
@@ -397,6 +402,22 @@ class TimelineView(QWidget):
         event.accept()
 
     # --- 操作 ---
+
+    def toggle_selected_track(self, attribute: str) -> bool:
+        """選んでいるクリップのトラックの ``muted`` ``solo`` ``locked`` を切り替える
+
+        ヘッダのボタンは描いた矩形でフォーカスが来ないので、キーボードからはこちらを
+        使う 選択が無ければ何もしない（どのトラックか分からないまま切り替えない）
+        """
+        if self._selected is None:
+            return False
+        located = self._project.timeline.locate_clip(self._selected)
+        if located is None:
+            return False
+        track = located[0]
+        command = SetTrackState(track.id, **{attribute: not getattr(track, attribute)})
+        self._request([command], command.label)
+        return True
 
     def split_at_playhead(self) -> None:
         """再生ヘッドの位置で、そこにあるクリップをすべて分割する

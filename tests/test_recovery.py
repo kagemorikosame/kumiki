@@ -22,11 +22,16 @@ from kumiki.core.model import Project
 
 
 def crash(session: RecoverySession) -> None:
-    """落ちたことにする 退避は消さずに錠だけ手放す（プロセスが消えたときと同じ）"""
+    """落ちたことにする 退避は消さずに錠だけ手放す（プロセスが消えたときと同じ）
+
+    錠には自分のプロセス番号が入っている Windows 以外ではその番号で生死を見るので、
+    番号として読めない値に書き換えないと、このテストのプロセスが生きている扱いになる
+    """
     lock = session._lock
     assert lock is not None
     lock.close()
     session._lock = None
+    (session.path.parent / f"{session.session}.lock").write_text("終了済み", encoding="utf-8")
 
 
 class TestRecovery:
@@ -91,6 +96,18 @@ class TestRecovery:
         assert find_orphans(tmp_path) == []
         assert session.path.exists()
 
+    def test_a_crash_during_the_first_save_is_still_found(self, tmp_path: Path) -> None:
+        # 中身を書いた直後、メモを書く前に落ちた形 メモだけを数えていると、
+        # 最初の 30 秒ぶんの作業が復元の候補に出ずに消える
+        session = RecoverySession(tmp_path)
+        session.save(Project.create(name="最初の退避"), None)
+        (tmp_path / "recovery" / f"{session.session}.json").unlink()
+        crash(session)
+
+        (entry,) = find_orphans(tmp_path)
+        assert entry.path == session.path
+        assert load_project(entry.path).name == "最初の退避"
+
     def test_two_sessions_do_not_share_a_file(self, tmp_path: Path) -> None:
         first, second = RecoverySession(tmp_path), RecoverySession(tmp_path)
         try:
@@ -102,9 +119,11 @@ class TestRecovery:
 
 class TestBackup:
     def test_nothing_to_back_up_before_the_first_save(self, tmp_path: Path) -> None:
+        # 壊れると、初めての保存が「控えるものが無い」例外で失敗する
         assert backup_before_save(tmp_path / "無い.kmk", tmp_path / "state") is None
 
     def test_the_previous_contents_are_kept(self, tmp_path: Path) -> None:
+        # 壊れると、上書きで壊した保存を戻せない（バックアップの意味が無くなる）
         target = tmp_path / "本編.kmk"
         target.write_text("前の中身", "utf-8")
         copied = backup_before_save(target, tmp_path / "state")
@@ -112,6 +131,7 @@ class TestBackup:
         assert copied.read_text("utf-8") == "前の中身"
 
     def test_old_generations_are_pruned(self, tmp_path: Path) -> None:
+        # 壊れると、保存するたびに控えが増え続けてディスクを埋める
         target = tmp_path / "本編.kmk"
         for index in range(4):
             target.write_text(str(index), "utf-8")
@@ -128,6 +148,7 @@ class TestBackup:
 
     @pytest.mark.parametrize("name", ["a:b*c?.kmk", "con.kmk"])
     def test_awkward_names_still_get_a_folder(self, tmp_path: Path, name: str) -> None:
+        # Windows で使えない文字や予約名がそのまま残ると、控えのフォルダを作れず控えが取れない
         folder = backup_folder(tmp_path / name, tmp_path / "state")
         folder.mkdir(parents=True)
         assert folder.is_dir()

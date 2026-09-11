@@ -17,9 +17,10 @@ from PySide6.QtGui import QKeySequence
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDialogButtonBox
 
-from kumiki.core.commands import Command, RenameProject, SetTrackState
+from kumiki.core.commands import AddClip, Command, RenameProject, SetTrackState
 from kumiki.core.io import RecoverySession, backup_folder, find_orphans
-from kumiki.core.model import Project, ProjectSettings, Track, TrackKind
+from kumiki.core.model import Clip, Project, ProjectSettings, Track, TrackKind
+from kumiki.effects.sources import TEXT
 from kumiki.engine.cache import MediaAnalyzer
 from kumiki.ui.main_window import MainWindow
 from kumiki.ui.project_settings_dialog import ProjectSettingsDialog
@@ -76,8 +77,28 @@ class TestTrackButtons:
         assert view.playhead == 40
 
     def test_the_rest_of_the_header_still_scrubs(self, view: TimelineView) -> None:
+        # ボタンの判定が広がりすぎると、ヘッダを押しても再生ヘッドが先頭へ戻らなくなる
+        # ヘッダの x はタイムラインの左端より左なので、フレーム 0 へ行くのが正しい
+        view.set_playhead(40)
         QTest.mouseClick(view, Qt.MouseButton.LeftButton, pos=QPoint(10, 280))
-        assert view.playhead >= 0
+        assert view.playhead == 0
+
+    def test_the_keyboard_can_toggle_the_selected_track(self, view: TimelineView) -> None:
+        # ボタンは描いた矩形なのでフォーカスが来ない マウスを使えない人が
+        # ミュートできなくならないよう、選んだクリップのトラックをキーで切り替える
+        track = view.project.timeline.tracks[0]
+        clip = Clip(timeline_start=0, duration=30, source=TEXT.create())
+        view.set_project(AddClip(track.id, clip).apply(view.project))
+        view.select(clip.id)
+        received: list[list[Command]] = []
+        view.commands_requested.connect(lambda commands, _label: received.append(commands))
+
+        assert view.toggle_selected_track("muted")
+        assert received == [[SetTrackState(track.id, muted=True)]]
+
+    def test_the_keyboard_toggle_needs_a_selection(self, view: TimelineView) -> None:
+        # どのトラックか分からないまま切り替えると、見えていないトラックが消音される
+        assert not view.toggle_selected_track("solo")
 
     def test_buttons_fit_in_the_smallest_track(self, view: TimelineView) -> None:
         # 名前の下の段に置くと、最小の高さでボタンがはみ出して押せない
@@ -134,6 +155,8 @@ class TestRestoring:
         assert lock is not None
         lock.close()
         crashed._lock = None
+
+        (crashed.path.parent / f"{crashed.session}.lock").write_text("終了済み", "utf-8")
 
         (entry,) = find_orphans()
         assert window.restore_recovery(entry)

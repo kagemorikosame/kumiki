@@ -8,6 +8,7 @@ UI のどこから来た操作も、必ず :meth:`MainWindow.execute` を通っ�
 from __future__ import annotations
 
 import contextlib
+import functools
 from collections.abc import Callable
 from pathlib import Path
 
@@ -283,6 +284,20 @@ class MainWindow(QMainWindow):
             QKeySequence("Shift+Del"),
             lambda: self._timeline.delete_selected(ripple=True),
         )
+        edit_menu.addSeparator()
+        # ヘッダのボタンと同じ切り替えをメニューにも置く キーボードだけで操作する人の
+        # 入口で、ショートカットの設定にも載る
+        for text, key, attribute in (
+            ("トラックをミュート", "Shift+M", "muted"),
+            ("トラックをソロ", "Shift+S", "solo"),
+            ("トラックをロック", "Shift+L", "locked"),
+        ):
+            self._add(
+                edit_menu,
+                text,
+                QKeySequence(key),
+                functools.partial(self._toggle_track, attribute),
+            )
 
         object_menu = self._menu("オブジェクト")
         self._add(object_menu, "テキストを追加", QKeySequence("Ctrl+T"), self.add_text)
@@ -493,8 +508,14 @@ class MainWindow(QMainWindow):
 
     @property
     def is_modified(self) -> bool:
-        """最後に保存してから変わっているか"""
+        """同一性で比べる 中身の等しさで比べると、履歴 1 段ごとにツリー全体を
+        比較することになり、大きなプロジェクトでタイトルの更新が重くなる
+        """
         return self._document.project is not self._saved
+
+    def _toggle_track(self, attribute: str) -> None:
+        if not self._timeline.toggle_selected_track(attribute):
+            self.statusBar().showMessage("先にクリップを選んでください（そのトラックが対象）", 4000)
 
     def _update_title(self) -> None:
         name = self._path.name if self._path is not None else self._document.project.name
@@ -741,13 +762,18 @@ class MainWindow(QMainWindow):
         )
         if not name:
             return False
+        # 保存できたときだけ新しい名前に切り替える 先に切り替えると、失敗しても
+        # タイトル・次の保存先・退避のメモが、書けなかった場所を指したままになる
+        previous = self._path
         self._path = Path(name)
         saved = self.save_project()
+        if not saved:
+            self._path = previous
         self._update_title()
         return saved
 
     def open_backup_folder(self) -> None:
-        """いま開いているプロジェクトのバックアップの置き場を開く"""
+        """控えは %LOCALAPPDATA% の奥にあり、場所を知らないと辿り着けない"""
         if self._path is None:
             self.statusBar().showMessage("まだ保存していないので、バックアップはありません", 5000)
             return

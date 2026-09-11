@@ -58,7 +58,11 @@ def default_state_root() -> Path:
 
 @dataclass(frozen=True, slots=True)
 class RecoveryEntry:
-    """前回のどこかの起動が残していった退避 1 件"""
+    """前回のどこかの起動が残していった退避 1 件
+
+    メモ（``.json``）が無いときは ``name`` が「無題」、``saved_at`` がファイルの
+    更新時刻になる 最初の退避の途中で落ちると、中身だけ書けてメモが無い
+    """
 
     session: str
     path: Path
@@ -135,20 +139,29 @@ def find_orphans(root: Path | None = None) -> list[RecoveryEntry]:
     if not folder.is_dir():
         return []
 
+    # メモと中身のどちらか一方しか無いものも拾う 中身から先に書くので、最初の
+    # 退避の途中で落ちると中身だけが残る メモだけを数えるとそれを見落とす
+    sessions = {path.stem for path in folder.glob("*.json")} | {
+        path.name.removesuffix(SUFFIX) for path in folder.glob(f"*{SUFFIX}")
+    }
     found: list[RecoveryEntry] = []
-    for meta_path in folder.glob("*.json"):
-        session = meta_path.stem
+    for session in sessions:
         if _is_alive(folder, session):
             continue
+        meta_path = folder / f"{session}.json"
         project_path = folder / f"{session}{SUFFIX}"
         if not project_path.is_file():
             meta_path.unlink(missing_ok=True)
             continue
-        try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            saved_at = datetime.fromisoformat(str(meta["saved_at"]))
-        except (OSError, ValueError, KeyError, TypeError):
-            continue
+        if meta_path.is_file():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                saved_at = datetime.fromisoformat(str(meta["saved_at"]))
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+        else:
+            meta = {}
+            saved_at = datetime.fromtimestamp(project_path.stat().st_mtime)
         source = meta.get("source")
         found.append(
             RecoveryEntry(
