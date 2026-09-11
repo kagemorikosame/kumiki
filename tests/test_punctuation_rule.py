@@ -69,6 +69,16 @@ class TestData:
         monkeypatch.setattr(tool, "ROOT", tmp_path)
         assert tool.scan(path) == []
 
+    def test_string_literals_in_tools_are_prose(
+        self, tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 道具の出力も人が読む 外していたので verify.py の「すべて通過」に句点が残っていた
+        tools = tmp_path / "tools"
+        tools.mkdir()
+        path = write(tools, "x.py", f'print("通過{MARU}")\n')
+        monkeypatch.setattr(tool, "ROOT", tmp_path)
+        assert len(tool.scan(path)) == 1
+
 
 class TestProse:
     @pytest.fixture(autouse=True)

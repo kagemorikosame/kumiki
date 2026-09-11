@@ -12,7 +12,7 @@ from fractions import Fraction
 
 import numpy as np
 
-from kumiki.core.model import Clip, Effect, MediaId, Project, Track
+from kumiki.core.model import Clip, Effect, MediaId, Project, Track, TrackKind
 from kumiki.core.timebase import FrameRate
 from kumiki.engine.decode import ProbeError, VideoDecoder
 from kumiki.engine.gpu import (
@@ -147,9 +147,7 @@ class FrameRenderer:
 
         rate = self._project.rate
         self._compositor.begin()
-        for track in self._project.timeline.video_tracks():
-            if track.muted:
-                continue
+        for track in self._project.timeline.active_tracks(TrackKind.VIDEO):
             clip = track.clip_at(frame)
             if clip is None or not clip.enabled:
                 continue

@@ -212,6 +212,21 @@ class Timeline:
     def audio_tracks(self) -> Iterator[Track]:
         return (t for t in self.tracks if t.kind is TrackKind.AUDIO)
 
+    def active_tracks(self, kind: TrackKind) -> tuple[Track, ...]:
+        """実際に映る／聞こえるトラック 並びは :attr:`tracks` のまま
+
+        ミュートを除き、同じ種類にソロが 1 本でもあればソロのものだけを残す
+        ミュートとソロが両方付いていればミュートが勝ち、そのソロはほかを止めない
+        止めると、ソロを外し忘れたトラックをミュートしただけで全部が無音になる
+
+        プレビュー・ミキサ・書き出しの 3 か所が必ずここを通る 判断が分かれると
+        「プレビューでは消えているのに書き出すと出る」が起きる 実際に書き出しだけ
+        ソロを見ていなかった
+        """
+        tracks = [t for t in self.tracks if t.kind is kind]
+        soloed = any(t.solo and not t.muted for t in tracks)
+        return tuple(t for t in tracks if not t.muted and (t.solo or not soloed))
+
     def find_track(self, track_id: TrackId) -> Track | None:
         for track in self.tracks:
             if track.id == track_id:

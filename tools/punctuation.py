@@ -17,6 +17,7 @@ r"""文章に句点（まる）を使わない、という約束を確かめる
 コメント                           文章
 docstring（式文としての文字列）    文章
 ``src`` の文字列リテラル           文章（画面や例外に出る）
+``tools`` の文字列リテラル         文章（端末に出る）
 ``tests`` の文字列リテラル         データ（入力と期待値）
 ``cleanup.py`` の文字列リテラル    データ（句点の一覧）
 =================================  ======================
@@ -149,7 +150,10 @@ def scan_python(path: Path) -> list[Hit]:
         return []
 
     relative = _relative(path)
-    literals_are_prose = relative.startswith("src/") and relative not in DATA_LITERAL_FILES
+    # tools の出力も人が読む文章 ここを外していたので「すべて通過」に句点が残っていた
+    literals_are_prose = (
+        relative.startswith(("src/", "tools/")) and relative not in DATA_LITERAL_FILES
+    )
     docstrings = _docstring_spans(ast.parse(text))
     starts = _offsets(text)
 

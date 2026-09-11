@@ -46,6 +46,21 @@ def qt_application() -> Iterator[QApplication]:
     yield application
 
 
+@pytest.fixture(autouse=True)
+def isolated_user_folders(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """設定・退避・キャッシュの置き場を、テストごとの一時フォルダへ向ける
+
+    向けないと、テストで窓を閉じるたびに開発者本人の画面配置とショートカットが
+    上書きされる 途中で落ちたテストの退避は、次にアプリを起動したときに
+    「前回の作業を復元しますか」と出てくる
+    """
+    base = tmp_path_factory.mktemp("user")
+    monkeypatch.setenv("APPDATA", str(base / "roaming"))
+    monkeypatch.setenv("LOCALAPPDATA", str(base / "local"))
+
+
 @pytest.fixture(autouse=True, scope="module")
 def forget_scripts() -> Iterator[None]:
     """テストが登録した AviUtl スクリプトを、モジュールごとに片付ける

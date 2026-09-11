@@ -52,7 +52,10 @@ FAKE_RESULT = Transcript(
 @pytest.fixture
 def window(qt_application: QApplication) -> Iterator[MainWindow]:
     del qt_application
-    created = MainWindow(Project.create(ProjectSettings(width=320, height=240, frame_rate=RATE)))
+    created = MainWindow(
+        Project.create(ProjectSettings(width=320, height=240, frame_rate=RATE)),
+        confirm_unsaved=False,
+    )
     yield created
     created.close()
 

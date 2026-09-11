@@ -24,12 +24,14 @@ from kumiki.ui.theme import Colors, Metrics
 from kumiki.ui.timeline.layout import TimelineLayout, TrackBand
 
 __all__ = [
+    "TRACK_BUTTONS",
     "draw_clip",
     "draw_playhead",
     "draw_ruler",
     "draw_track_background",
     "draw_track_header",
     "to_qimage",
+    "track_button_rects",
 ]
 
 #: 目盛りの間隔として使える値（フレーム数の基準となる秒数）
@@ -118,8 +120,49 @@ def draw_track_background(painter: QPainter, band: TrackBand, width: int) -> Non
     painter.drawLine(0, band.bottom - 1, width, band.bottom - 1)
 
 
-def draw_track_header(painter: QPainter, band: TrackBand) -> None:
-    """トラック名とミュート・ソロ・ロックの状態"""
+#: ヘッダの切り替えボタン（属性名、表示、説明、押している間の色）
+#: 描画と当たり判定の両方がこの並びを使う
+TRACK_BUTTONS: tuple[tuple[str, str, str, QColor], ...] = (
+    ("muted", "M", "ミュート", Colors.TRACK_MUTE),
+    ("solo", "S", "ソロ（同じ種類のほかのトラックを止める）", Colors.TRACK_SOLO),
+    ("locked", "L", "ロック（クリップを動かせなくする）", Colors.TRACK_LOCK),
+)
+
+_BUTTON_WIDTH = 18
+_BUTTON_HEIGHT = 16
+_BUTTON_GAP = 2
+
+
+def track_button_rects(band: TrackBand) -> list[tuple[str, str, QRect]]:
+    """ヘッダの切り替えボタンの位置 ``(属性名, 説明, 矩形)`` の並び
+
+    名前と同じ行の右端に置く 名前の下の段に置くと、トラックを最小の高さ
+    （28 画素）まで縮めたときにボタンがはみ出して押せなくなる
+    """
+    count = len(TRACK_BUTTONS)
+    left = Metrics.TRACK_HEADER_WIDTH - 6 - count * _BUTTON_WIDTH - (count - 1) * _BUTTON_GAP
+    return [
+        (
+            attribute,
+            tip,
+            QRect(
+                left + index * (_BUTTON_WIDTH + _BUTTON_GAP),
+                band.top + 5,
+                _BUTTON_WIDTH,
+                _BUTTON_HEIGHT,
+            ),
+        )
+        for index, (attribute, _, tip, _) in enumerate(TRACK_BUTTONS)
+    ]
+
+
+def draw_track_header(painter: QPainter, band: TrackBand, *, active: bool = True) -> None:
+    """トラック名と、ミュート・ソロ・ロックの切り替えボタン
+
+    ``active`` が偽なら名前を薄くする ミュートだけでなく、ほかのトラックの
+    ソロで止まっている場合も同じ見た目にする どちらも「いま出ていない」ことに
+    変わりはなく、ボタンの色だけでは後者に気付けない
+    """
     rect = QRect(0, band.top, Metrics.TRACK_HEADER_WIDTH, band.height)
     painter.fillRect(rect, Colors.TRACK_HEADER)
     painter.setPen(QPen(Colors.BORDER, 1))
@@ -128,22 +171,29 @@ def draw_track_header(painter: QPainter, band: TrackBand) -> None:
     )
 
     track = band.track
-    painter.setPen(QPen(Colors.TEXT if not track.muted else Colors.TEXT_MUTED, 1))
+    buttons = track_button_rects(band)
+    painter.setPen(QPen(Colors.TEXT if active else Colors.TEXT_MUTED, 1))
     name = track.name or ("映像" if track.kind is TrackKind.VIDEO else "音声")
-    painter.drawText(QRect(8, band.top + 4, 90, 16), Qt.AlignmentFlag.AlignVCenter, name)
+    name_width = buttons[0][2].left() - 8 - 4
+    elided = QFontMetrics(painter.font()).elidedText(name, Qt.TextElideMode.ElideRight, name_width)
+    painter.drawText(
+        QRect(8, band.top + 5, name_width, _BUTTON_HEIGHT), Qt.AlignmentFlag.AlignVCenter, elided
+    )
 
-    flags = []
-    if track.muted:
-        flags.append("M")
-    if track.solo:
-        flags.append("S")
-    if track.locked:
-        flags.append("L")
-    if flags:
-        painter.setPen(QPen(Colors.ACCENT, 1))
-        painter.drawText(
-            QRect(8, band.top + 20, 90, 14), Qt.AlignmentFlag.AlignVCenter, " ".join(flags)
-        )
+    font = QFont(painter.font())
+    font.setPointSizeF(7.5)
+    font.setBold(True)
+    painter.save()
+    painter.setFont(font)
+    for (attribute, _, button), (_, letter, _, colour) in zip(buttons, TRACK_BUTTONS, strict=True):
+        on = bool(getattr(track, attribute))
+        if on:
+            painter.fillRect(button, colour)
+        painter.setPen(QPen(colour if on else Colors.BORDER, 1))
+        painter.drawRect(button.adjusted(0, 0, -1, -1))
+        painter.setPen(QPen(Colors.WINDOW if on else Colors.TEXT_MUTED, 1))
+        painter.drawText(button, Qt.AlignmentFlag.AlignCenter, letter)
+    painter.restore()
 
 
 def draw_clip(

@@ -20,8 +20,15 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QWidget
 
-from kumiki.core.commands import Command, MoveClip, RemoveClip, SplitClip, TrimClip
-from kumiki.core.model import Clip, ClipId, GroupId, Project, TrackId
+from kumiki.core.commands import (
+    Command,
+    MoveClip,
+    RemoveClip,
+    SetTrackState,
+    SplitClip,
+    TrimClip,
+)
+from kumiki.core.model import Clip, ClipId, GroupId, Project, TrackId, TrackKind
 from kumiki.engine.cache import MediaAnalyzer
 from kumiki.ui.theme import Colors, Metrics
 from kumiki.ui.timeline.layout import TimelineLayout
@@ -31,6 +38,7 @@ from kumiki.ui.timeline.painter import (
     draw_ruler,
     draw_track_background,
     draw_track_header,
+    track_button_rects,
     visible_clips,
 )
 
@@ -181,10 +189,15 @@ class TimelineView(QWidget):
 
         self._draw_drag_preview(painter)
 
+        active = {
+            track.id
+            for kind in (TrackKind.VIDEO, TrackKind.AUDIO)
+            for track in timeline.active_tracks(kind)
+        }
         for band in self._layout.bands(timeline):
             if band.bottom <= Metrics.RULER_HEIGHT or band.top >= self.height():
                 continue
-            draw_track_header(painter, band)
+            draw_track_header(painter, band, active=band.track.id in active)
 
         draw_ruler(painter, self._layout, width, self._project.rate)
         draw_playhead(painter, self._layout, self._playhead, self.height())
@@ -252,6 +265,9 @@ class TimelineView(QWidget):
             return
         position = event.position().toPoint()
 
+        if self._toggle_track_button(position):
+            return
+
         if position.y() < Metrics.RULER_HEIGHT or position.x() < Metrics.TRACK_HEADER_WIDTH:
             self._drag = DragState(kind=DragKind.PLAYHEAD)
             self._scrub(position)
@@ -283,6 +299,8 @@ class TimelineView(QWidget):
 
         if self._drag.kind is DragKind.NONE:
             self._update_cursor(position)
+            button = self._track_button_at(position)
+            self.setToolTip(button[1] if button is not None else "")
             return
 
         if self._drag.kind is DragKind.PLAYHEAD:
@@ -426,6 +444,35 @@ class TimelineView(QWidget):
         self.set_playhead(self._layout.frame_at(position.x()), follow=False)
         self._follow_playhead = True
         self.playhead_moved.emit(self._playhead)
+
+    def _track_button_at(self, position: QPoint) -> tuple[TrackId, str, str] | None:
+        """ヘッダの切り替えボタンの上なら ``(トラック, 説明, 属性名)``"""
+        if position.x() >= Metrics.TRACK_HEADER_WIDTH or position.y() < Metrics.RULER_HEIGHT:
+            return None
+        band = self._layout.band_at(self._project.timeline, position.y())
+        if band is None:
+            return None
+        for attribute, tip, rect in track_button_rects(band):
+            if rect.contains(position):
+                return band.track.id, tip, attribute
+        return None
+
+    def _toggle_track_button(self, position: QPoint) -> bool:
+        """ボタンの上なら切り替えのコマンドを出して真を返す
+
+        再生ヘッドは動かさない ミュートを押すたびに見ていた場所が飛ぶと、
+        聞き比べのたびに位置を戻すことになる
+        """
+        hit = self._track_button_at(position)
+        if hit is None:
+            return False
+        track_id, _, attribute = hit
+        track = self._project.timeline.find_track(track_id)
+        if track is None:
+            return False
+        command = SetTrackState(track_id, **{attribute: not getattr(track, attribute)})
+        self._request([command], command.label)
+        return True
 
     def _clip_at(self, position: QPoint) -> tuple[TrackId, Clip] | None:
         for band, clip, rect in visible_clips(self._project.timeline, self._layout, self.width()):

@@ -8,6 +8,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from PySide6.QtCore import QTimer
 from PySide6.QtGui import QIcon, QSurfaceFormat
 from PySide6.QtWidgets import QApplication
 
@@ -38,14 +39,18 @@ def main(argv: list[str] | None = None) -> int:
     application.setStyleSheet(STYLE_SHEET)
 
     project = None
+    path = None
     if len(arguments) > 1:
         try:
             project = load_project(Path(arguments[1]))
+            path = Path(arguments[1])
         except ProjectFileError as exc:
             print(f"プロジェクトを開けない: {exc}", file=sys.stderr)
 
-    window = MainWindow(project)
+    window = MainWindow(project, path=path)
     window.show()
+    # 窓が描かれてから尋ねる 先に尋ねると、何のソフトの話かが分からない
+    QTimer.singleShot(0, window.offer_recovery)
     return application.exec()
 
 

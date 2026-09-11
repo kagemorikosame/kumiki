@@ -36,6 +36,8 @@ __all__ = [
     "RemoveTrack",
     "RenameProject",
     "RippleCut",
+    "SetResolution",
+    "SetTrackState",
     "SetTranscript",
     "SplitClip",
     "TrimClip",
@@ -351,6 +353,81 @@ class TrimClip(Command):
             trimmed = _trimmed(project, target, self.head_delta, self.tail_delta)
             timeline = timeline.replace_track(track.with_clips((*others, trimmed)))
         return project.with_timeline(timeline)
+
+
+@dataclass(frozen=True, slots=True)
+class SetTrackState(Command):
+    """トラックのミュート・ソロ・ロックを切り替える ``None`` の項目は触らない
+
+    ロック中のトラックでも切り替えられる ロックはクリップを守るためのもので、
+    聞こえ方まで固めると「ロックしたら消音できない」になる
+    """
+
+    track_id: TrackId
+    muted: bool | None = None
+    solo: bool | None = None
+    locked: bool | None = None
+
+    @property
+    def label(self) -> str:
+        names = [
+            (on if value else off)
+            for value, on, off in (
+                (self.muted, "ミュート", "ミュートを解除"),
+                (self.solo, "ソロ", "ソロを解除"),
+                (self.locked, "ロック", "ロックを解除"),
+            )
+            if value is not None
+        ]
+        return "、".join(names) or "トラックの状態を変更"
+
+    def apply(self, project: Project) -> Project:
+        track = _require_track(project, self.track_id)
+        if self.muted is None and self.solo is None and self.locked is None:
+            return project
+        updated = replace(
+            track,
+            muted=track.muted if self.muted is None else self.muted,
+            solo=track.solo if self.solo is None else self.solo,
+            locked=track.locked if self.locked is None else self.locked,
+        )
+        return project.with_timeline(project.timeline.replace_track(updated))
+
+
+#: 解像度として受け付ける範囲（画素）
+#: 下は縮小プレビューが潰れない程度、上は 8K まで GPU のテクスチャ上限もこのあたり
+MIN_RESOLUTION = 16
+MAX_RESOLUTION = 8192
+
+
+@dataclass(frozen=True, slots=True)
+class SetResolution(Command):
+    """出力の解像度を変える
+
+    クリップは動かさない 位置は画面中央からの画素数で持っているので、中央に
+    置いたものは中央のまま残る 端に寄せたものは、広げれば内側へ、縮めれば外へ出る
+
+    縦横とも偶数に限る 書き出しの yuv420p は色を 2x2 画素ごとに持つので、奇数だと
+    エンコーダが断る 書き出しの最後で分かっても遅いので、決める時点で止める
+    """
+
+    width: int
+    height: int
+
+    @property
+    def label(self) -> str:
+        return f"解像度を変更: {self.width}x{self.height}"
+
+    def apply(self, project: Project) -> Project:
+        for name, value in (("横", self.width), ("縦", self.height)):
+            if not MIN_RESOLUTION <= value <= MAX_RESOLUTION:
+                raise ValueError(
+                    f"{name}の画素数は {MIN_RESOLUTION}〜{MAX_RESOLUTION} にしてください: {value}"
+                )
+            if value % 2:
+                raise ValueError(f"{name}の画素数は偶数にしてください（書き出せないため）: {value}")
+        settings = replace(project.settings, width=self.width, height=self.height)
+        return replace(project, settings=settings)
 
 
 @dataclass(frozen=True, slots=True)

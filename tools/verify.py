@@ -42,7 +42,7 @@ def main() -> int:
     if failures:
         print("失敗: " + "、".join(failures))
         return 1
-    print("すべて通過。")
+    print("すべて通過")
     return 0
 
 

@@ -10,7 +10,7 @@ from collections import OrderedDict
 
 import numpy as np
 
-from kumiki.core.model import Clip, MediaId, Project, Track
+from kumiki.core.model import Clip, MediaId, Project, Track, TrackKind
 from kumiki.core.timebase import FrameRate
 from kumiki.engine.decode import AudioDecoder, ProbeError
 
@@ -76,11 +76,7 @@ class AudioMixer:
 
         out = np.zeros((count, self.channels), dtype=np.float32)
         rate = self._project.rate
-        soloed = any(t.solo for t in self._project.timeline.audio_tracks())
-
-        for track in self._project.timeline.audio_tracks():
-            if track.muted or (soloed and not track.solo):
-                continue
+        for track in self._project.timeline.active_tracks(TrackKind.AUDIO):
             self._mix_track(out, track, start_sample, count, rate)
         return out
 

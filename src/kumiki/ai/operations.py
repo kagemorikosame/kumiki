@@ -30,7 +30,9 @@ from kumiki.core.commands import (
     SetClipProperty,
     SetKeyframe,
     SetParam,
+    SetResolution,
     SetSegmentText,
+    SetTrackState,
     SetTranscript,
     SplitClip,
     TrimClip,
@@ -208,6 +210,7 @@ def _list_tracks(host: EditorHost, arguments: dict[str, Any]) -> object:
             "clip_count": len(track.clips),
             "locked": track.locked,
             "muted": track.muted,
+            "solo": track.solo,
         }
         for track in _project(host).timeline.tracks
     ]
@@ -388,6 +391,34 @@ def _add_track(host: EditorHost, arguments: dict[str, Any]) -> object:
     track = Track(kind=track_kind, name=str(arguments.get("name") or f"{prefix}{index}"))
     host.apply_commands([AddTrack(track)], f"トラックを追加: {track.name}")
     return {"track_id": str(track.id), "name": track.name}
+
+
+def _set_track_state(host: EditorHost, arguments: dict[str, Any]) -> object:
+    track_id = str(arguments.get("track_id", ""))
+    track = next((t for t in _project(host).timeline.tracks if str(t.id) == track_id), None)
+    if track is None:
+        raise ToolError(f"トラックが見つかりません: {track_id}（list_tracks で確かめてください）")
+    changes: dict[str, bool] = {
+        name: bool(arguments[name]) for name in ("muted", "solo", "locked") if name in arguments
+    }
+    if not changes:
+        raise ToolError("muted・solo・locked のどれかを指定してください")
+    command = SetTrackState(
+        track.id,
+        muted=changes.get("muted"),
+        solo=changes.get("solo"),
+        locked=changes.get("locked"),
+    )
+    host.apply_commands([command], command.label)
+    result: dict[str, object] = {"track_id": track_id}
+    result.update(changes)
+    return result
+
+
+def _set_resolution(host: EditorHost, arguments: dict[str, Any]) -> object:
+    command = SetResolution(int(arguments.get("width", 0)), int(arguments.get("height", 0)))
+    host.apply_commands([command], command.label)
+    return {"resolution": f"{command.width}x{command.height}"}
 
 
 def _place_media(host: EditorHost, arguments: dict[str, Any]) -> object:
@@ -836,6 +867,37 @@ OPERATIONS: tuple[Operation, ...] = (
         description="トラックを足す",
         schema=_schema({"kind": _string("video か audio"), "name": _string("表示名")}),
         handler=_add_track,
+        writes=True,
+    ),
+    Operation(
+        name="set_track_state",
+        description=(
+            "トラックのミュート・ソロ・ロックを切り替える 指定しなかった項目はそのまま"
+            "ソロは同じ種類（映像なら映像）のほかのトラックを止める"
+        ),
+        schema=_schema(
+            {
+                "track_id": _string("対象のトラック"),
+                "muted": _boolean("ミュートするか"),
+                "solo": _boolean("ソロにするか"),
+                "locked": _boolean("ロックするか"),
+            },
+            ["track_id"],
+        ),
+        handler=_set_track_state,
+        writes=True,
+    ),
+    Operation(
+        name="set_resolution",
+        description=(
+            "出力の解像度を変える 縦横とも偶数 クリップの位置は中央からの画素数なので"
+            "中央のものは中央に残る 縦動画なら 1080x1920"
+        ),
+        schema=_schema(
+            {"width": _integer("横の画素数"), "height": _integer("縦の画素数")},
+            ["width", "height"],
+        ),
+        handler=_set_resolution,
         writes=True,
     ),
     Operation(
