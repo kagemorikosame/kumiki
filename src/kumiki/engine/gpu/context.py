@@ -116,6 +116,39 @@ class OffscreenGLContext:
             )
 
         self._depth = 0
+        self._require_usable_gl()
+
+    def _require_usable_gl(self) -> None:
+        """要求した版の関数が本当に呼べるかを確かめる。
+
+        **作れたことと使えることは別。** ドライバが無い環境（仮想機械や CI）でも
+        Qt は software / GDI の経路でコンテキストを作ってしまう。そこには
+        ``glCreateShader`` のような 4.3 の関数が無く、呼んだ瞬間に PyOpenGL が
+        ``NullFunctionError`` を投げる。
+
+        作った直後に確かめておけば、呼び出し側は :class:`GLContextError` 1 つを
+        見ればよくなる（テストは飛ばし、アプリは案内を出す）。描画の奥まで進んで
+        から中身の分からない例外で落ちるより、ここで止めたほうが原因に近い。
+        """
+        from OpenGL.GL import GL_VERSION, glCreateShader, glGenVertexArrays, glGetString
+
+        with self:
+            missing = [
+                name
+                for name, function in (
+                    ("glCreateShader", glCreateShader),
+                    ("glGenVertexArrays", glGenVertexArrays),
+                )
+                if not bool(function)
+            ]
+            if missing:
+                raw = glGetString(GL_VERSION)
+                reported = raw.decode("ascii", "replace") if raw else "不明"
+                raise GLContextError(
+                    f"OpenGL {REQUIRED_GL_VERSION[0]}.{REQUIRED_GL_VERSION[1]} "
+                    f"の関数が見つからない（{'、'.join(missing)}）。"
+                    f"ドライバが返した版は {reported}。GPU ドライバを確認すること"
+                )
 
     @property
     def context(self) -> QOpenGLContext:
