@@ -554,9 +554,12 @@ def project_from_dict(data: object) -> Project:
         raise ProjectFileError(f"NovaEdit のプロジェクトファイルではない: format={format_name!r}")
     version = _get_int(root, "version", 0)
     if version > FORMAT_VERSION:
+        # 壊れているのではなく、こちらが古い。直す手立てを言う。
+        # 自動更新を入れたあとは、ここが「更新してください」の入口になる。
         raise ProjectFileError(
             f"新しい形式のプロジェクトファイル (version {version})。"
-            f"このバージョンが対応しているのは {FORMAT_VERSION} まで"
+            f"このバージョンが対応しているのは {FORMAT_VERSION} までです。"
+            "NovaEdit を新しい版に更新してください"
         )
 
     settings_data = _require(root.get("settings"), "settings")
