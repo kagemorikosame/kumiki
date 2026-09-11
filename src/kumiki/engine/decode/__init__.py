@@ -1,4 +1,4 @@
-"""素材の解析とデコード。"""
+"""素材の解析とデコード"""
 
 from kumiki.engine.decode.audio import AudioDecoder
 from kumiki.engine.decode.probe import ProbeError, probe_media

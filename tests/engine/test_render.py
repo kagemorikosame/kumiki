@@ -1,7 +1,7 @@
-"""GPU 合成とフレームレンダラ。
+"""GPU 合成とフレームレンダラ
 
-色の扱いを厚めに確認する。符号化されたままの値を混ぜると半透明やフェードが
-暗く沈むが、絵としては「なんとなく変」に見えるだけで気づきにくい。数値で押さえる。
+色の扱いを厚めに確認する 符号化されたままの値を混ぜると半透明やフェードが
+暗く沈むが、絵としては「なんとなく変」に見えるだけで気づきにくい 数値で押さえる
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ from tests.media_fixtures import SampleMedia
 
 @pytest.fixture(scope="session")
 def gl_context() -> Iterator[OffscreenGLContext]:
-    """オフスクリーンの GL コンテキスト。作れない環境ではテストを飛ばす。"""
+    """オフスクリーンの GL コンテキスト 作れない環境ではテストを飛ばす"""
     try:
         context = OffscreenGLContext()
     except GLContextError as exc:
@@ -67,7 +67,7 @@ def linear_to_srgb(value: float) -> float:
 
 class TestPlacement:
     def test_fits_inside_a_wider_frame(self) -> None:
-        # 正方形を横長のフレームへ。左右に余白ができる。
+        # 正方形を横長のフレームへ 左右に余白ができる
         assert fit_placement(100, 100, 200, 100) == Placement(50.0, 0.0, 100.0, 100.0)
 
     def test_fits_inside_a_taller_frame(self) -> None:
@@ -85,8 +85,8 @@ class TestPlacement:
 
 class TestCompositor:
     def test_opaque_layer_round_trips_exactly(self, gl_context: OffscreenGLContext) -> None:
-        # sRGB で入れた値がリニアを経由して同じ値で戻ること。ここがずれると
-        # 何も加工していない素材の色が変わってしまう。
+        # sRGB で入れた値がリニアを経由して同じ値で戻ること ここがずれると
+        # 何も加工していない素材の色が変わってしまう
         with gl_context:
             compositor = Compositor(32, 16)
             texture = Texture.from_array(solid(32, 16, (128, 64, 200)))
@@ -100,8 +100,8 @@ class TestCompositor:
         assert result[8, 16, :3].tolist() == [128, 64, 200]
 
     def test_blending_happens_in_linear_space(self, gl_context: OffscreenGLContext) -> None:
-        # sRGB 128 を 50% で黒に重ねる。符号化されたまま混ぜれば 64、
-        # リニアで混ぜれば 92 前後。ここが 64 なら色管理が壊れている。
+        # sRGB 128 を 50% で黒に重ねる 符号化されたまま混ぜれば 64、
+        # リニアで混ぜれば 92 前後 ここが 64 なら色管理が壊れている
         with gl_context:
             compositor = Compositor(16, 16)
             texture = Texture.from_array(solid(16, 16, (128, 128, 128)))
@@ -128,7 +128,7 @@ class TestCompositor:
             back.release()
             front.release()
 
-        # 後に描いた方が手前。
+        # 後に描いた方が手前
         assert result[8, 8, :3].tolist() == [0, 255, 0]
 
     def test_transparent_layer_leaves_the_background(self, gl_context: OffscreenGLContext) -> None:
@@ -149,7 +149,7 @@ class TestCompositor:
     def test_letterboxing_leaves_the_background_visible(
         self, gl_context: OffscreenGLContext
     ) -> None:
-        # 正方形の素材を横長のフレームへ。左右に背景が残る。
+        # 正方形の素材を横長のフレームへ 左右に背景が残る
         with gl_context:
             compositor = Compositor(64, 32)
             texture = Texture.from_array(solid(32, 32, (255, 255, 255)))
@@ -163,7 +163,7 @@ class TestCompositor:
         assert result[16, 2, :3].tolist() == [0, 0, 0], "左端に余白が無い"
 
     def test_orientation_is_preserved(self, gl_context: OffscreenGLContext) -> None:
-        # GL は左下原点、画像は左上原点。上下が入れ替わっていないか確かめる。
+        # GL は左下原点、画像は左上原点 上下が入れ替わっていないか確かめる
         image = np.zeros((16, 16, 4), dtype=np.uint8)
         image[..., 3] = 255
         image[:4, :, 0] = 255  # 上端だけ赤
@@ -200,7 +200,7 @@ class TestCompositor:
 
 @pytest.fixture
 def rendered_project(sample_av: SampleMedia) -> Project:
-    """320x240 の素材を 1 本置いた 320x240 のプロジェクト。"""
+    """320x240 の素材を 1 本置いた 320x240 のプロジェクト"""
     media = probe_media(sample_av.path)
     project = Project.create(ProjectSettings(width=320, height=240, frame_rate=FrameRate(30)))
     project = AddMedia(media).apply(project)
@@ -234,7 +234,7 @@ class TestFrameRenderer:
     def test_gap_between_clips_renders_black(
         self, rendered_project: Project, gl_context: OffscreenGLContext
     ) -> None:
-        # クリップの外側は何も無い。前のフレームが残ると「消したのに映る」になる。
+        # クリップの外側は何も無い 前のフレームが残ると「消したのに映る」になる
         renderer = FrameRenderer(rendered_project, context=gl_context)
         try:
             renderer.render(0)
@@ -332,7 +332,7 @@ class TestFrameRenderer:
     def test_offline_media_renders_black_instead_of_crashing(
         self, rendered_project: Project, gl_context: OffscreenGLContext
     ) -> None:
-        # 素材が 1 本行方不明でも、プロジェクト全体が開けなくなってはいけない。
+        # 素材が 1 本行方不明でも、プロジェクト全体が開けなくなってはいけない
         original = rendered_project.media[0]
         broken = replace(original, path=original.path.parent / "行方不明.mp4")
         project = rendered_project.replace_media(broken)
@@ -358,7 +358,7 @@ class TestFrameRenderer:
     def test_speed_changes_which_source_frame_is_shown(
         self, rendered_project: Project, gl_context: OffscreenGLContext
     ) -> None:
-        # 2 倍速のクリップは、15 フレーム目でソースの 30 フレーム目を映す。
+        # 2 倍速のクリップは、15 フレーム目でソースの 30 フレーム目を映す
         track = rendered_project.timeline.tracks[0]
         fast = replace(track.clips[0], speed=Fraction(2), duration=30)
         project = rendered_project.with_timeline(

@@ -1,7 +1,7 @@
-"""字幕パネル。
+"""字幕パネル
 
-パネルは自分ではプロジェクトを書き換えない。出てくるのはコマンドだけなので、
-ここでは「どの操作でどのコマンドが出るか」を見る。
+パネルは自分ではプロジェクトを書き換えない 出てくるのはコマンドだけなので、
+ここでは「どの操作でどのコマンドが出るか」を見る
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from tests.conftest import make_clip
 
 
 class StubAnalyzer(MediaAnalyzer):
-    """波形を持っているふりをする解析器。"""
+    """波形を持っているふりをする解析器"""
 
     def __init__(self, waveform: Waveform | None = None) -> None:
         self._stub = waveform
@@ -89,7 +89,7 @@ class TestListing:
         self, panel: tuple[SubtitlePanel, list[tuple[list[Command], str]]]
     ) -> None:
         widget, _ = panel
-        # 素材の 1 秒は 30 フレーム目。30fps なので 00:00:01:00。
+        # 素材の 1 秒は 30 フレーム目 30fps なので 00:00:01:00
         assert widget._table.rowCount() == 3
         item = widget._table.item(0, 0)
         assert item is not None
@@ -108,7 +108,7 @@ class TestListing:
         self, panel: tuple[SubtitlePanel, list[tuple[list[Command], str]]], placed: Project
     ) -> None:
         widget, _ = panel
-        # クリップを冒頭 2 秒だけにすると、後ろ 2 枚はどこにも出なくなる。
+        # クリップを冒頭 2 秒だけにすると、後ろ 2 枚はどこにも出なくなる
         trimmed = placed.timeline.tracks[0].clips[0]
         from dataclasses import replace
 
@@ -141,7 +141,7 @@ class TestEditing:
     def test_rebuilding_the_list_does_not_issue_commands(
         self, panel: tuple[SubtitlePanel, list[tuple[list[Command], str]]], placed: Project
     ) -> None:
-        # 作り直しのたびに編集コマンドが飛ぶと、履歴が埋まる。
+        # 作り直しのたびに編集コマンドが飛ぶと、履歴が埋まる
         widget, issued = panel
         widget.set_project(placed)
         assert issued == []
@@ -152,7 +152,7 @@ class TestPlayheadFollowing:
         self, panel: tuple[SubtitlePanel, list[tuple[list[Command], str]]]
     ) -> None:
         widget, _ = panel
-        widget.set_frame(150)  # 5 秒目。2 枚目（4..6 秒）の範囲。
+        widget.set_frame(150)  # 5 秒目 2 枚目（4..6 秒）の範囲
         assert widget._table.currentRow() == 1
 
     def test_clicking_a_row_asks_to_seek(
@@ -167,7 +167,7 @@ class TestPlayheadFollowing:
     def test_following_the_playhead_does_not_seek_back(
         self, panel: tuple[SubtitlePanel, list[tuple[list[Command], str]]]
     ) -> None:
-        # 再生ヘッドに追従して行を選んだだけで移動を要求すると、再生が引っ掛かる。
+        # 再生ヘッドに追従して行を選んだだけで移動を要求すると、再生が引っ掛かる
         widget, _ = panel
         seeks: list[int] = []
         widget.seek_requested.connect(seeks.append)
@@ -193,7 +193,7 @@ class TestJetCut:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         del qt_application
-        # 先頭 200 ピーク（約 1.07 秒）だけ無音の素材。
+        # 先頭 200 ピーク（約 1.07 秒）だけ無音の素材
         analyzer = StubAnalyzer(make_waveform([(0.0, 400), (0.5, 1500)]))
         widget = SubtitlePanel(placed, analyzer)
         issued: list[tuple[list[Command], str]] = []
@@ -204,9 +204,9 @@ class TestJetCut:
 
         commands, label = issued[-1]
         assert isinstance(commands[0], RippleCut)
-        # 無音は 0..2.13 秒。余白 0.1 秒で内側へ寄り、さらに 1 秒から始まる字幕を
-        # 守るので 0.1..0.9 秒。フレームへ落として 3..27。波形が静かでも、
-        # 起こせている区間は切らない。
+        # 無音は 0..2.13 秒 余白 0.1 秒で内側へ寄り、さらに 1 秒から始まる字幕を
+        # 守るので 0.1..0.9 秒 フレームへ落として 3..27 波形が静かでも、
+        # 起こせている区間は切らない
         assert commands[0].ranges == ((3, 27),)
         assert "無音カット" in label
         widget.deleteLater()
@@ -220,7 +220,7 @@ class TestBurnAndExport:
         widget.burn()
         commands, label = issued[-1]
         assert label == "字幕を焼き込み"
-        # トラックを 1 本足して、字幕 3 枚をテキストとして置く。
+        # トラックを 1 本足して、字幕 3 枚をテキストとして置く
         assert len(commands) == 4
 
     def test_export_writes_the_file(

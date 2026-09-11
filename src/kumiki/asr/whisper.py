@@ -1,12 +1,12 @@
-"""faster-whisper（CTranslate2）による起こし。
+"""faster-whisper（CTranslate2）による起こし
 
-このモジュールは**読み込まれただけでは何も import しない**。faster-whisper の
-import は数秒かかり、CUDA の DLL 探索まで走る。字幕を使わない起動でその代償を
-払わせないため、実際に起こすときまで遅らせている。
+このモジュールは**読み込まれただけでは何も import しない** faster-whisper の
+import は数秒かかり、CUDA の DLL 探索まで走る 字幕を使わない起動でその代償を
+払わせないため、実際に起こすときまで遅らせている
 
 導入されていない環境でも :meth:`FasterWhisperBackend.is_available` は落ちずに
-偽を返す。これが「未導入の状態で起動し、必要になったらソフト内から入れる」という
-配布方針の前提になる（:mod:`kumiki.asr.environment` を参照）。
+偽を返す これが「未導入の状態で起動し、必要になったらソフト内から入れる」という
+配布方針の前提になる（:mod:`kumiki.asr.environment` を参照）
 """
 
 from __future__ import annotations
@@ -28,10 +28,10 @@ __all__ = ["FasterWhisperBackend"]
 
 
 class FasterWhisperBackend:
-    """faster-whisper を呼ぶバックエンド。
+    """faster-whisper を呼ぶバックエンド
 
-    読み込んだモデルは保持する。1 本目と 2 本目で同じモデルなら、2 回目は
-    数秒の読み込みを省ける。
+    読み込んだモデルは保持する 1 本目と 2 本目で同じモデルなら、2 回目は
+    数秒の読み込みを省ける
     """
 
     def __init__(self) -> None:
@@ -46,7 +46,7 @@ class FasterWhisperBackend:
         return runtime_status().ready
 
     def unload(self) -> None:
-        """モデルを解放する。GPU のメモリを書き出しへ譲りたいときに呼ぶ。"""
+        """モデルを解放する GPU のメモリを書き出しへ譲りたいときに呼ぶ"""
         self._model = None
         self._loaded_with = None
 
@@ -87,8 +87,8 @@ class FasterWhisperBackend:
 
         collected: list[TranscriptSegment] = []
         try:
-            # segments は生成器で、回した分だけ認識が進む。ここで中断を見るので、
-            # 「止めたのに GPU が回り続ける」状態にならない。
+            # segments は生成器で、回した分だけ認識が進む ここで中断を見るので、
+            # 「止めたのに GPU が回り続ける」状態にならない
             for raw in segments:
                 if should_cancel is not None and should_cancel():
                     return None
@@ -118,7 +118,7 @@ class FasterWhisperBackend:
             from faster_whisper import WhisperModel
         except ImportError as exc:
             raise AsrError(
-                "起こしの実行環境が入っていません。字幕パネルの「環境を導入」から用意してください。"
+                "起こしの実行環境が入っていません 字幕パネルの「環境を導入」から用意してください"
             ) from exc
 
         try:
@@ -134,7 +134,7 @@ class FasterWhisperBackend:
 
 
 def _to_segment(raw: Any) -> TranscriptSegment | None:
-    """faster-whisper のセグメントをモデルの形へ。"""
+    """faster-whisper のセグメントをモデルの形へ"""
     text = str(getattr(raw, "text", "")).strip()
     if not text:
         return None
@@ -156,10 +156,10 @@ def _to_segment(raw: Any) -> TranscriptSegment | None:
 
 
 def _ordered(segments: list[TranscriptSegment]) -> list[TranscriptSegment]:
-    """開始時刻の昇順に整える。
+    """開始時刻の昇順に整える
 
-    :class:`~kumiki.core.model.Transcript` は順序を不変条件にしている。認識器が
-    まれに前後した時刻を返すので、モデルへ渡す前にここで揃える。例外にして
-    起こし全体を捨てるのは割に合わない。
+    :class:`~kumiki.core.model.Transcript` は順序を不変条件にしている 認識器が
+    まれに前後した時刻を返すので、モデルへ渡す前にここで揃える 例外にして
+    起こし全体を捨てるのは割に合わない
     """
     return sorted(segments, key=lambda s: (s.start, s.end))

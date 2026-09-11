@@ -1,4 +1,4 @@
-"""OpenGL による合成とエフェクト処理。"""
+"""OpenGL による合成とエフェクト処理"""
 
 from kumiki.engine.gpu.compositor import (
     BlendMode,

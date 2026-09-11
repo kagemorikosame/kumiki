@@ -1,11 +1,11 @@
-"""起こしをバックグラウンドで走らせる。
+"""起こしをバックグラウンドで走らせる
 
-数分かかる処理なので、UI スレッドで回すわけにはいかない。かといってワーカー
-スレッドから直接ウィジェットを触るのも危ない（Qt が落ちる）。
+数分かかる処理なので、UI スレッドで回すわけにはいかない かといってワーカー
+スレッドから直接ウィジェットを触るのも危ない（Qt が落ちる）
 
 そこで、ワーカーは出来事をキューへ積むだけにして、UI 側は自分の都合の良い間隔で
-:meth:`Job.poll` して取り出す。:class:`~kumiki.engine.cache.MediaAnalyzer` が
-解析結果を一定間隔で反映しているのと同じ考え方で、Qt に依存しないので試験も書ける。
+:meth:`Job.poll` して取り出す :class:`~kumiki.engine.cache.MediaAnalyzer` が
+解析結果を一定間隔で反映しているのと同じ考え方で、Qt に依存しないので試験も書ける
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ class JobKind(Enum):
 
 @dataclass(frozen=True, slots=True)
 class JobEvent:
-    """ワーカーからの 1 件の知らせ。"""
+    """ワーカーからの 1 件の知らせ"""
 
     kind: JobKind
     ratio: float = 0.0
@@ -48,7 +48,7 @@ class JobEvent:
 
 
 class Job:
-    """走っている（または走り終わった）起こし 1 件。"""
+    """走っている（または走り終わった）起こし 1 件"""
 
     def __init__(self, media_id: MediaId, path: Path) -> None:
         self.media_id = media_id
@@ -67,11 +67,11 @@ class Job:
         return self._cancel.is_set()
 
     def cancel(self) -> None:
-        """中断を頼む。実際に止まるのは次の区切りまで。"""
+        """中断を頼む 実際に止まるのは次の区切りまで"""
         self._cancel.set()
 
     def poll(self) -> list[JobEvent]:
-        """溜まった出来事を取り出す。ブロックしない。"""
+        """溜まった出来事を取り出す ブロックしない"""
         drained: list[JobEvent] = []
         while True:
             try:
@@ -80,7 +80,7 @@ class Job:
                 return drained
 
     def wait(self, timeout: float | None = None) -> bool:
-        """終わるまで待つ。試験と終了処理のためにある。"""
+        """終わるまで待つ 試験と終了処理のためにある"""
         return self._done.wait(timeout)
 
     def _emit(self, event: JobEvent) -> None:
@@ -88,10 +88,10 @@ class Job:
 
 
 class TranscriptionService:
-    """起こしの実行を受け付ける。
+    """起こしの実行を受け付ける
 
-    同時に走らせるのは 1 件だけ。音声認識は GPU とメモリを丸ごと使うので、
-    2 件並べても速くならず、どちらも落ちる可能性が上がるだけ。
+    同時に走らせるのは 1 件だけ 音声認識は GPU とメモリを丸ごと使うので、
+    2 件並べても速くならず、どちらも落ちる可能性が上がるだけ
     """
 
     def __init__(self, backend: TranscriptionBackend) -> None:
@@ -109,7 +109,7 @@ class TranscriptionService:
             return self._current is not None and self._current.running
 
     def start(self, media_id: MediaId, path: Path, options: TranscribeOptions) -> Job:
-        """起こしを始める。すでに走っていれば :class:`RuntimeError`。"""
+        """起こしを始める すでに走っていれば :class:`RuntimeError`"""
         with self._lock:
             if self._current is not None and self._current.running:
                 raise RuntimeError("すでに起こしが走っている")

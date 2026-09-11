@@ -1,4 +1,4 @@
-"""解析結果のディスクキャッシュと、その非同期な用意。"""
+"""解析結果のディスクキャッシュと、その非同期な用意"""
 
 from kumiki.engine.cache.analyzer import MediaAnalyzer
 from kumiki.engine.cache.store import CacheStore, default_cache_root, media_key

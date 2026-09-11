@@ -1,8 +1,8 @@
-"""YMM4（ゆっくりMovieMaker4）の資産を読む。
+"""YMM4（ゆっくりMovieMaker4）の資産を読む
 
 対応するのは**アイテムテンプレート**（``.ymmt``）と、その中の**文字装飾**
-（``Decorations``）。プロジェクト（``.ymmp``）まるごとの取り込みは範囲外だが、
-読み手は同じ ``$type`` 振り分けで書いてあるので、そのまま広げられる。
+（``Decorations``） プロジェクト（``.ymmp``）まるごとの取り込みは範囲外だが、
+読み手は同じ ``$type`` 振り分けで書いてあるので、そのまま広げられる
 
 - :mod:`~kumiki.compat.ymm4.json` — ``$type`` 付き JSON の読み方
 - :mod:`~kumiki.compat.ymm4.template` — アイテムテンプレート → クリップ

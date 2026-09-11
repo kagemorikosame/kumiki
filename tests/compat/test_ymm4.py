@@ -1,20 +1,20 @@
-"""YMM4 のアイテムテンプレート。
+"""YMM4 のアイテムテンプレート
 
 ここに並んでいるのは全部、**ネットで配布されている実物の ``.ymmt`` を読ませて
-見つかったもの**。最初は形式の推測で書いていて、実物では 1 本も読めなかった。
+見つかったもの** 最初は形式の推測で書いていて、実物では 1 本も読めなかった
 
 見つかった食い違いはどれも「知らなければ当たらない」たぐいのもので、
 
 * ``.ymmt`` は ZIP で、中の ``catalog.json`` が本体
 * 1 ファイルに何本も入っている（実物は 17 本と 106 本）
-* アニメーションの値に**フレーム番号が入っていない**。位置はアイテムの長さと
+* アニメーションの値に**フレーム番号が入っていない** 位置はアイテムの長さと
   「中間点」から決まる
 * 文字装飾は ``Decorations``（実物では空）ではなく ``Style`` と
   ``VideoEffects`` の ``OutlineEffect`` に入っている
 
-この検査は、実物と同じ形に組んだ ZIP を作って通す。実物そのものは配布物なので
+この検査は、実物と同じ形に組んだ ZIP を作って通す 実物そのものは配布物なので
 リポジトリには置かない（``tests/fixtures/ymm4`` に置けば
-``tests/compat/test_real_ymm4.py`` が拾う）。
+``tests/compat/test_real_ymm4.py`` が拾う）
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ from kumiki.compat.ymm4.values import (
 )
 from kumiki.core.model import AnimatedValue, Interpolation
 
-#: 実物と同じ書き方のブラシ。
+#: 実物と同じ書き方のブラシ
 BRUSH = {
     "Type": "YukkuriMovieMaker.Plugin.Brush.SolidColorBrushPlugin, YukkuriMovieMaker, Version=4.32",
     "Parameter": {
@@ -51,13 +51,13 @@ BRUSH = {
 
 
 def value_at(value: object, frame: int = 0) -> float:
-    """数値パラメータの、その時刻での値。"""
+    """数値パラメータの、その時刻での値"""
     assert isinstance(value, AnimatedValue)
     return value.at(frame)
 
 
 def still(amount: float) -> dict[str, Any]:
-    """動かないアニメーション。実物はこの形で 1 個だけ持つ。"""
+    """動かないアニメーション 実物はこの形で 1 個だけ持つ"""
     return {"Values": [{"Value": amount}], "Span": 0.0, "AnimationType": "なし"}
 
 
@@ -66,7 +66,7 @@ def moving(*amounts: float, style: str = "直線移動") -> dict[str, Any]:
 
 
 def text_item(**fields: Any) -> dict[str, Any]:
-    """実物の ``TextItem`` と同じ形。"""
+    """実物の ``TextItem`` と同じ形"""
     base: dict[str, Any] = {
         "$type": "YukkuriMovieMaker.Project.Items.TextItem, YukkuriMovieMaker",
         "Text": "サンプルテキスト",
@@ -128,7 +128,7 @@ def outline(thickness: float = 7.3) -> dict[str, Any]:
 
 
 def write_ymmt(path: Path, *templates: dict[str, Any]) -> Path:
-    """実物と同じ ZIP + ``catalog.json`` の形で書き出す。"""
+    """実物と同じ ZIP + ``catalog.json`` の形で書き出す"""
     catalog = {
         "FilePath": str(path),
         "ItemTemplates": list(templates),
@@ -152,13 +152,13 @@ def template(name: str, *items: dict[str, Any], path: list[str] | None = None) -
 
 class TestTheContainer:
     def test_a_ymmt_is_a_zip(self, tmp_path: Path) -> None:
-        # 素の JSON だと思って開くと、1 バイト目から落ちる。
+        # 素の JSON だと思って開くと、1 バイト目から落ちる
         path = write_ymmt(tmp_path / "束.ymmt", template("見出し", text_item()))
         assert zipfile.is_zipfile(path)
         assert len(load_template(path)) == 1
 
     def test_one_file_holds_many_templates(self, tmp_path: Path) -> None:
-        # 実物は 1 ファイルに 17 本、106 本と入っていた。
+        # 実物は 1 ファイルに 17 本、106 本と入っていた
         path = write_ymmt(
             tmp_path / "束.ymmt",
             template("あ", text_item()),
@@ -174,7 +174,7 @@ class TestTheContainer:
         assert loaded.folder == "アニメーション効果"
 
     def test_a_bare_json_still_works(self, tmp_path: Path) -> None:
-        # 古い書き方、あるいは手で書いたもの。
+        # 古い書き方、あるいは手で書いたもの
         path = tmp_path / "素.ymmt"
         path.write_text(json.dumps(text_item()), "utf-8")
         assert len(load_template(path)[0].items) == 1
@@ -188,8 +188,8 @@ class TestTheContainer:
 
 class TestTypeNames:
     def test_only_the_class_name_is_used(self) -> None:
-        # 実物には Version も Culture も PublicKeyToken も入っている。
-        # 丸ごと突き合わせると、YMM4 が更新されただけで全部読めなくなる。
+        # 実物には Version も Culture も PublicKeyToken も入っている
+        # 丸ごと突き合わせると、YMM4 が更新されただけで全部読めなくなる
         raw = "YukkuriMovieMaker.Project.Items.TextItem, YukkuriMovieMaker, Version=4.32.0.2"
         assert type_name({"$type": raw}) == "TextItem"
 
@@ -199,27 +199,27 @@ class TestTypeNames:
 
 
 class TestAnimationPositions:
-    """値の並びがどのフレームに置かれるか。ここが今回いちばん効いた。"""
+    """値の並びがどのフレームに置かれるか ここが今回いちばん効いた"""
 
     def test_the_values_carry_no_frame_number(self) -> None:
-        # 実物の Values は {"Value": …} だけ。番号を探しても無い。
+        # 実物の Values は {"Value": …} だけ 番号を探しても無い
         assert "Frame" not in moving(0.0, 100.0)["Values"][0]
 
     def test_positions_come_from_the_middle_points(self) -> None:
-        # 中間点が 60 と 240、長さ 300 なら、区切りは 0/60/240/300 の 4 点。
+        # 中間点が 60 と 240、長さ 300 なら、区切りは 0/60/240/300 の 4 点
         assert frame_positions({"Frames": [60, 240], "Count": 2}, 300, 4) == [0, 60, 240, 300]
 
     def test_without_middle_points_it_spans_the_whole_item(self) -> None:
         assert frame_positions({"Frames": [], "Count": 0}, 300, 2) == [0, 300]
 
     def test_a_mismatch_falls_back_to_even_spacing(self) -> None:
-        # 中間点の数と値の数が食い違っても、始点と終点は合わせる。
+        # 中間点の数と値の数が食い違っても、始点と終点は合わせる
         positions = frame_positions({"Frames": [60], "Count": 1}, 300, 4)
         assert positions[0] == 0
         assert positions[-1] == 300
 
     def test_the_animation_uses_the_whole_length(self) -> None:
-        # 並び順をフレーム番号だと思うと、300 フレームの動きが 2 フレームで終わる。
+        # 並び順をフレーム番号だと思うと、300 フレームの動きが 2 フレームで終わる
         value = animated(moving(0.0, 100.0), length=300, keyframes={"Frames": [], "Count": 0})
         assert [k.frame for k in value.keyframes] == [0, 300]
         assert value.at(150) == pytest.approx(50.0)
@@ -236,13 +236,13 @@ class TestInterpolationNames:
         assert interpolation_of("瞬間移動") is Interpolation.HOLD
 
     def test_english_easing_names(self) -> None:
-        # 実物には Expo_Out / Sine_In / Quart_InOut のような名前が入っていた。
+        # 実物には Expo_Out / Sine_In / Quart_InOut のような名前が入っていた
         assert interpolation_of("Expo_Out") is Interpolation.EASE_OUT
         assert interpolation_of("Sine_In") is Interpolation.EASE_IN
         assert interpolation_of("Quart_InOut") is Interpolation.EASE_IN_OUT
 
     def test_an_unknown_name_falls_back_to_a_straight_line(self) -> None:
-        # 動きの形は違っても、始点と終点は合う。止めるより良い。
+        # 動きの形は違っても、始点と終点は合う 止めるより良い
         assert interpolation_of("知らない曲線") is Interpolation.LINEAR
 
 
@@ -254,7 +254,7 @@ class TestValues:
         assert number(still(60.0)) == 60.0
 
     def test_alpha_comes_first_in_a_colour(self) -> None:
-        # YMM4 は #AARRGGBB。後ろだと思って読むと、不透明のつもりが透明になる。
+        # YMM4 は #AARRGGBB 後ろだと思って読むと、不透明のつもりが透明になる
         assert colour("#80FF0000") == pytest.approx((1.0, 0.0, 0.0, 128 / 255))
 
     def test_a_colour_without_alpha_is_opaque(self) -> None:
@@ -264,7 +264,7 @@ class TestValues:
         assert brush_colour(BRUSH) == pytest.approx((1.0, 1.0, 1.0, 1.0))
 
     def test_a_brush_that_is_not_a_single_colour_keeps_the_default(self) -> None:
-        # 格子やノイズのブラシは色 1 つで表せない。
+        # 格子やノイズのブラシは色 1 つで表せない
         grid = {"Type": "…GridLineBrushPlugin", "Parameter": {"$type": "…GridLineBrushParameter"}}
         assert brush_colour(grid, (0.0, 0.0, 0.0, 1.0)) == (0.0, 0.0, 0.0, 1.0)
 
@@ -276,7 +276,7 @@ class TestTextFields:
         return source
 
     def test_the_field_is_bold_not_is_bold(self) -> None:
-        # 実物のキーは Bold / Italic。IsBold では永久に太字にならない。
+        # 実物のキーは Bold / Italic IsBold では永久に太字にならない
         assert self.mapped(Bold=True).params["bold"] is True
         assert self.mapped(Italic=True).params["italic"] is True
 
@@ -286,8 +286,8 @@ class TestTextFields:
         assert source.params["color"] == pytest.approx((0x2B / 255, 0x9F / 255, 0xE2 / 255, 1.0))
 
     def test_the_line_height_is_a_percentage(self) -> None:
-        # LineHeight2 は 100 が標準。画素数だと思って渡すと、標準のつもりが
-        # 100px の行間になる。
+        # LineHeight2 は 100 が標準 画素数だと思って渡すと、標準のつもりが
+        # 100px の行間になる
         assert value_at(self.mapped().params["line_spacing"]) == 0.0
         wide = self.mapped(LineHeight2=still(150.0))
         assert value_at(wide.params["line_spacing"]) == pytest.approx(120.0 * 0.5)
@@ -314,7 +314,7 @@ class TestTextFields:
 
 
 class TestVideoEffects:
-    """実物の飾りは ``Decorations`` ではなくここに入っていた。"""
+    """実物の飾りは ``Decorations`` ではなくここに入っていた"""
 
     def test_the_outline_effect_becomes_the_text_border(self) -> None:
         item = text_item(VideoEffects=[outline(7.3)])
@@ -328,7 +328,7 @@ class TestVideoEffects:
         mapped = map_template([item], report=CompatibilityReport())[0]
         source = mapped.clip.source
         assert source is not None
-        # 太いほうを文字に、細いほうをエフェクトとして外側に積む。
+        # 太いほうを文字に、細いほうをエフェクトとして外側に積む
         assert value_at(source.params["border_width"]) == pytest.approx(12.0)
         assert [e.kind for e in mapped.clip.effects] == ["border"]
 
@@ -341,7 +341,7 @@ class TestVideoEffects:
         assert "border_width" not in source.params
 
     def test_the_zoom_effect_keeps_moving(self) -> None:
-        # 素の数で読むと、登場アニメーションが止まったまま出る。
+        # 素の数で読むと、登場アニメーションが止まったまま出る
         effect = {
             "$type": "YukkuriMovieMaker.Project.Effects.ZoomEffect, YukkuriMovieMaker",
             "Zoom": moving(0.0, 100.0, style="Expo_Out"),
@@ -379,7 +379,7 @@ class TestVideoEffects:
         assert value_at(result.effects[0].params["amount"]) == 50.0
 
     def test_the_colour_correction_is_re_centred(self) -> None:
-        # YMM4 は 100 が「変化なし」。こちらは 0 が変化なし。
+        # YMM4 は 100 が「変化なし」 こちらは 0 が変化なし
         effect = {
             "$type": "YukkuriMovieMaker.Project.Effects.ColorCorrectionEffect, YukkuriMovieMaker",
             "Lightness": still(110.0),
@@ -403,15 +403,15 @@ class TestVideoEffects:
 
 class TestGroups:
     def test_a_group_moves_its_effects_onto_the_content(self) -> None:
-        # GroupItem は入れ物で、それ自体は絵を持たない。こちらに入れ子は無いので
-        # 中身へ移して平らにする。
+        # GroupItem は入れ物で、それ自体は絵を持たない こちらに入れ子は無いので
+        # 中身へ移して平らにする
         group = group_item(VideoEffects=[outline(6.0)])
         mapped = map_template([text_item(), group], report=CompatibilityReport())
         assert len(mapped) == 1
         assert [e.kind for e in mapped[0].clip.effects] == ["border"]
 
     def test_a_group_on_its_own_becomes_an_effects_only_template(self) -> None:
-        # 「アニメーション効果/振り子」のような、中身を持たないテンプレート。
+        # 「アニメーション効果/振り子」のような、中身を持たないテンプレート
         group = group_item(Rotation=moving(0.0, 30.0))
         mapped = map_template([group], report=CompatibilityReport())
         assert len(mapped) == 1
@@ -425,7 +425,7 @@ class TestGroups:
 
 class TestPlacement:
     def test_the_layer_shifts_by_one(self) -> None:
-        # YMM4 のレイヤーは 0 始まり、こちらのトラックは 1 始まり。
+        # YMM4 のレイヤーは 0 始まり、こちらのトラックは 1 始まり
         assert map_template([text_item(Layer=2)], report=CompatibilityReport())[0].layer == 3
 
     def test_the_span_comes_from_frame_and_length(self) -> None:
@@ -484,7 +484,7 @@ class TestOtherItems:
 
 
 class TestDecorationsList:
-    """``Decorations`` は実物では空だったが、形式にはあるので読めるままにする。"""
+    """``Decorations`` は実物では空だったが、形式にはあるので読めるままにする"""
 
     def test_a_border_decoration(self) -> None:
         result = map_decorations(

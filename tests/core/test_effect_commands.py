@@ -1,7 +1,7 @@
-"""エフェクトとパラメータの操作、およびプリセット。
+"""エフェクトとパラメータの操作、およびプリセット
 
-キーフレームの編集はここが唯一の入口。UI もグラフエディタも AI もこれを通るので、
-ここが正しければ 3 つとも正しい。
+キーフレームの編集はここが唯一の入口 UI もグラフエディタも AI もこれを通るので、
+ここが正しければ 3 つとも正しい
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ from tests.conftest import make_clip
 
 @pytest.fixture
 def placed(project: Project, video_media: MediaItem) -> Project:
-    """クリップを 1 本置いたプロジェクト。"""
+    """クリップを 1 本置いたプロジェクト"""
     track = project.timeline.tracks[0]
     clip = make_clip(0, 120, video_media)
     return project.with_timeline(project.timeline.replace_track(track.with_clips((clip,))))
@@ -94,7 +94,7 @@ class TestEffectStack:
         assert [e.kind for e in project.timeline.tracks[0].clips[0].effects] == ["color", "blur"]
 
     def test_move_changes_the_order(self, placed: Project) -> None:
-        # 掛ける順で結果が変わる。ぼかしてから色を変えるのと逆は別の絵になる。
+        # 掛ける順で結果が変わる ぼかしてから色を変えるのと逆は別の絵になる
         clip_id = only_clip(placed)
         first, second = blur(), registry.require("color").create()
         project = AddEffect(clip_id, first).apply(placed)
@@ -222,7 +222,7 @@ class TestKeyframes:
         assert len(value.keyframes) == 1
 
     def test_removing_the_last_keeps_the_value(self, placed: Project) -> None:
-        # 0 に戻ると、キーフレームを消した瞬間に絵が飛ぶ。
+        # 0 に戻ると、キーフレームを消した瞬間に絵が飛ぶ
         project, path = self._path(placed)
         project = SetKeyframe(path, 12, 42.0).apply(project)
         project = RemoveKeyframe(path, 12).apply(project)
@@ -243,7 +243,7 @@ class TestKeyframes:
         assert [(k.frame, k.value) for k in value.keyframes] == [(0, 0.0), (45, 80.0)]
 
     def test_move_onto_another_replaces_it(self, placed: Project) -> None:
-        # 重なった 2 点はモデル側の検査で弾かれる。置き換えとして扱う。
+        # 重なった 2 点はモデル側の検査で弾かれる 置き換えとして扱う
         project, path = self._path(placed)
         project = SetKeyframe(path, 0, 0.0).apply(project)
         project = SetKeyframe(path, 30, 60.0).apply(project)
@@ -272,7 +272,7 @@ class TestKeyframes:
 
     def test_works_on_clip_and_source_too(self, project: Project) -> None:
         # 指す先ごとにコマンドが分かれていると、どれかの実装が遅れて
-        # 「エフェクトは動くがテキストは動かない」というちぐはぐが生まれる。
+        # 「エフェクトは動くがテキストは動かない」というちぐはぐが生まれる
         track = project.timeline.tracks[0]
         clip = replace(make_clip(0, 60, _dummy_media()), media_id=None, source=SHAPE.create())
         staged = project.with_timeline(project.timeline.replace_track(track.with_clips((clip,))))
@@ -293,7 +293,7 @@ class TestClipProperties:
         assert updated.timeline.tracks[0].clips[0].blend_mode == "add"
 
     def test_refuses_unknown_fields(self, placed: Project) -> None:
-        # 位置や長さを検査なしで書き換えられると、重なりの不変条件を壊せる。
+        # 位置や長さを検査なしで書き換えられると、重なりの不変条件を壊せる
         with pytest.raises(ValueError, match="変更できない"):
             SetClipProperty(only_clip(placed), "timeline_start", 999).apply(placed)
 
@@ -352,7 +352,7 @@ class TestPresets:
 
     def test_instantiate_gives_fresh_ids(self, store: PresetStore) -> None:
         # 同じプリセットを 2 回適用したとき ID が衝突すると、片方を消したつもりで
-        # 両方消える。
+        # 両方消える
         preset = Preset(name="ぼかし", effects=(blur(),))
         first, second = preset.instantiate(), preset.instantiate()
         assert first[0].id != second[0].id
@@ -375,7 +375,7 @@ class TestPresets:
         assert path.name == f"無題{SUFFIX}"
 
     def test_broken_preset_does_not_hide_the_others(self, store: PresetStore) -> None:
-        # 壊れた 1 つで一覧全体が出なくなると、他のプリセットまで使えなくなる。
+        # 壊れた 1 つで一覧全体が出なくなると、他のプリセットまで使えなくなる
         store.save(Preset(name="よい", effects=(blur(),)))
         broken = store.root / "ユーザー" / f"こわれ{SUFFIX}"
         broken.write_text("これは JSON ではない", encoding="utf-8")
@@ -400,7 +400,7 @@ class TestPresets:
 
 
 def _dummy_media() -> MediaItem:
-    """``make_clip`` に渡すだけの素材。生成オブジェクトでは参照されない。"""
+    """``make_clip`` に渡すだけの素材 生成オブジェクトでは参照されない"""
     return MediaItem(path=Path("dummy.mp4"))
 
 

@@ -1,10 +1,10 @@
-"""グラフエディタ。キーフレームの値と補間曲線を直接いじる。
+"""グラフエディタ キーフレームの値と補間曲線を直接いじる
 
 数値欄だけでも打点はできるが、「じわっと始めて最後に止める」ような動きは
-曲線を見ないと調整できない。値の時間変化を線として見せ、点をつまんで動かせる
-ようにする。
+曲線を見ないと調整できない 値の時間変化を線として見せ、点をつまんで動かせる
+ようにする
 
-自分ではプロジェクトを書き換えない。操作はコマンドとして外へ出す。
+自分ではプロジェクトを書き換えない 操作はコマンドとして外へ出す
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from kumiki.ui.theme import Colors
 
 __all__ = ["GraphEditor"]
 
-#: 補間方法の表示名。
+#: 補間方法の表示名
 INTERPOLATION_LABELS: dict[Interpolation, str] = {
     Interpolation.HOLD: "瞬間移動",
     Interpolation.LINEAR: "直線",
@@ -41,16 +41,16 @@ INTERPOLATION_LABELS: dict[Interpolation, str] = {
     Interpolation.BEZIER: "曲線",
 }
 
-#: 点をつかめる距離（ピクセル）。
+#: 点をつかめる距離（ピクセル）
 _GRAB_RADIUS = 8
 
-#: グラフの余白。値の上下端が枠に張り付くと、つまみにくい。
+#: グラフの余白 値の上下端が枠に張り付くと、つまみにくい
 _MARGIN = 18
 
 
 @dataclass(frozen=True, slots=True)
 class _Plot:
-    """グラフの座標変換。値とフレームを画面座標へ。"""
+    """グラフの座標変換 値とフレームを画面座標へ"""
 
     width: int
     height: int
@@ -67,7 +67,7 @@ class _Plot:
     def to_y(self, value: float) -> float:
         span = self.maximum - self.minimum or 1.0
         usable = self.height - _MARGIN * 2
-        # 値が大きいほど上。グラフとしての向き。
+        # 値が大きいほど上 グラフとしての向き
         return self.height - _MARGIN - (value - self.minimum) / span * usable
 
     def to_frame(self, x: float) -> int:
@@ -82,10 +82,10 @@ class _Plot:
 
 
 class GraphEditor(QWidget):
-    """1 つのパラメータの時間変化を編集する。"""
+    """1 つのパラメータの時間変化を編集する"""
 
     commands_requested = Signal(list, str)
-    #: 再生ヘッドを動かしたい。グラフ上をクリックしたとき。
+    #: 再生ヘッドを動かしたい グラフ上をクリックしたとき
     seek_requested = Signal(int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -149,10 +149,10 @@ class GraphEditor(QWidget):
         self._canvas.set_curve(self._path, spec, value, self._clip_start())
 
     def _show_interpolation(self, value: AnimatedValue) -> None:
-        """再生ヘッドの区間の補間方法を選択欄へ反映する。
+        """再生ヘッドの区間の補間方法を選択欄へ反映する
 
         常に先頭の項目を出していると、実際は直線なのに「瞬間移動」と
-        表示され続けることになる。
+        表示され続けることになる
         """
         current = self._active_keyframe(value)
         if current is None:
@@ -167,7 +167,7 @@ class GraphEditor(QWidget):
             self._interpolation.blockSignals(False)
 
     def _active_keyframe(self, value: AnimatedValue) -> Keyframe | None:
-        """再生ヘッドが乗っている区間の始点。区間の性質はここが持つ。"""
+        """再生ヘッドが乗っている区間の始点 区間の性質はここが持つ"""
         local = self._frame - self._clip_start()
         found = None
         for keyframe in value.keyframes:
@@ -186,7 +186,7 @@ class GraphEditor(QWidget):
         return f"{owner}: {spec.label}"
 
     def _clip_start(self) -> int:
-        """クリップ先頭のフレーム。キーフレームはここからの相対で持つ。"""
+        """クリップ先頭のフレーム キーフレームはここからの相対で持つ"""
         if self._project is None or self._path is None:
             return 0
         located = self._project.timeline.locate_clip(self._path.clip_id)
@@ -199,7 +199,7 @@ class GraphEditor(QWidget):
         return value if isinstance(value, AnimatedValue) else None
 
     def _spec(self) -> TrackSpec | None:
-        """編集対象の仕様。数値スライダー以外はグラフにできない。"""
+        """編集対象の仕様 数値スライダー以外はグラフにできない"""
         if self._project is None or self._path is None:
             return None
         if self._path.target is ParamTarget.CLIP:
@@ -210,8 +210,8 @@ class GraphEditor(QWidget):
             return None
         _, clip = located
 
-        # エフェクトと生成オブジェクトは別の型だが、spec() の形は同じ。
-        # 欲しいのはパラメータ仕様だけなので、ここで 1 本にまとめる。
+        # エフェクトと生成オブジェクトは別の型だが、spec() の形は同じ
+        # 欲しいのはパラメータ仕様だけなので、ここで 1 本にまとめる
         spec: ParameterSpec | None = None
         if self._path.target is ParamTarget.SOURCE:
             if clip.source is not None:
@@ -232,8 +232,8 @@ class GraphEditor(QWidget):
         if self._path is None or value is None or not value.is_animated:
             return
         kind = self._interpolation.itemData(index)
-        # 再生ヘッドの手前にあるキーフレームの出方を変える。区間の性質は
-        # 「その区間の始点」が持っているため。
+        # 再生ヘッドの手前にあるキーフレームの出方を変える 区間の性質は
+        # 「その区間の始点」が持っているため
         target = self._active_keyframe(value)
         if target is None:
             return
@@ -253,7 +253,7 @@ class GraphEditor(QWidget):
 
 
 class _Canvas(QWidget):
-    """グラフの描画と、点の操作。"""
+    """グラフの描画と、点の操作"""
 
     changed = Signal(object)
     seek_requested = Signal(int)
@@ -292,8 +292,8 @@ class _Canvas(QWidget):
         frames = [k.frame for k in self._value.keyframes]
         start = min([*frames, 0])
         end = max([*frames, start + 30])
-        # 値の範囲は仕様の全域ではなく、実際に使っている範囲に合わせる。
-        # 0..4000 の仕様で 0..100 しか使っていないと、線がほぼ平らに見える。
+        # 値の範囲は仕様の全域ではなく、実際に使っている範囲に合わせる
+        # 0..4000 の仕様で 0..100 しか使っていないと、線がほぼ平らに見える
         values = [k.value for k in self._value.keyframes] or [self._spec.default]
         low, high = min(values), max(values)
         if high - low < 1e-6:
@@ -335,8 +335,8 @@ class _Canvas(QWidget):
     def _draw_curve(self, painter: QPainter, plot: _Plot) -> None:
         assert self._value is not None
         path = QPainterPath()
-        # 実際の評価関数を 1 ピクセルずつ引く。曲線の式を描画側で作り直すと、
-        # 表示と実際の動きがずれる。
+        # 実際の評価関数を 1 ピクセルずつ引く 曲線の式を描画側で作り直すと、
+        # 表示と実際の動きがずれる
         for x in range(_MARGIN, self.width() - _MARGIN + 1):
             frame = plot.to_frame(x)
             y = plot.to_y(self._value.at(frame))
@@ -380,8 +380,8 @@ class _Canvas(QWidget):
             self.update()
             return
 
-        # 何も無い場所を押したら再生ヘッドを動かす。曲線と再生位置を
-        # 見比べながら調整できる。
+        # 何も無い場所を押したら再生ヘッドを動かす 曲線と再生位置を
+        # 見比べながら調整できる
         self.seek_requested.emit(self._clip_start + plot.to_frame(position.x()))
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt の命名規約
@@ -395,8 +395,8 @@ class _Canvas(QWidget):
         value = self._spec.clamp(plot.to_value(event.position().y()))
         frame = max(0, plot.to_frame(event.position().x()))
 
-        # 隣のキーフレームを追い越させない。追い越すと順序が崩れ、
-        # モデル側の検査で弾かれる。
+        # 隣のキーフレームを追い越させない 追い越すと順序が崩れ、
+        # モデル側の検査で弾かれる
         others = [k.frame for i, k in enumerate(self._value.keyframes) if i != self._dragging]
         lower = max([f for f in others if f < keyframe.frame], default=-1)
         upper = min([f for f in others if f > keyframe.frame], default=10**9)

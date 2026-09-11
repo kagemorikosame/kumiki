@@ -1,7 +1,7 @@
-"""時間変換のテスト。
+"""時間変換のテスト
 
 ここが狂うと長尺で音ズレになり、しかも症状が出るのが編集の終盤なので、
-往復の正確さは property-based test で押さえる。
+往復の正確さは property-based test で押さえる
 """
 
 from __future__ import annotations
@@ -61,13 +61,13 @@ class TestFrameRate:
         assert FrameRate.parse(text) == expected
 
     def test_decimal_snaps_to_broadcast_rate(self) -> None:
-        # 29.97 と書かれたものは 2997/100 ではなく 30000/1001 を意図している。
-        # 吸着しないと 1 時間で 3 フレーム以上ずれる。
+        # 29.97 と書かれたものは 2997/100 ではなく 30000/1001 を意図している
+        # 吸着しないと 1 時間で 3 フレーム以上ずれる
         assert FrameRate.from_decimal(Fraction("29.97")) == NTSC_30
         assert FrameRate.from_decimal(29.97) == NTSC_30
 
     def test_unusual_rate_is_kept_as_is(self) -> None:
-        # GoPro などが吐く半端なレートを勝手に丸めない。
+        # GoPro などが吐く半端なレートを勝手に丸めない
         assert FrameRate.from_decimal(Fraction("11.5")) == FrameRate(23, 2)
 
     @pytest.mark.parametrize(
@@ -86,7 +86,7 @@ class TestFrameRate:
 
 class TestRounding:
     def test_nearest_rounds_half_away_from_zero(self) -> None:
-        # 組み込み round() の偶数丸めだと、隣り合うフレームで丸め方向が変わる。
+        # 組み込み round() の偶数丸めだと、隣り合うフレームで丸め方向が変わる
         assert seconds_to_frame(Fraction(1, 60), FrameRate(30), Rounding.NEAREST) == 1
         assert seconds_to_frame(Fraction(3, 60), FrameRate(30), Rounding.NEAREST) == 2
 
@@ -106,7 +106,7 @@ class TestFrameSecondsRoundTrip:
         assert seconds_to_frame(seconds, rate, Rounding.FLOOR) == frame
 
     def test_no_drift_over_long_timeline(self) -> None:
-        # 29.97fps で 3 時間。浮動小数だとここで確実にずれる。
+        # 29.97fps で 3 時間 浮動小数だとここで確実にずれる
         frame = 30000 * 3 * 3600 // 1001
         assert seconds_to_frame(frame_to_seconds(frame, NTSC_30), NTSC_30) == frame
 
@@ -124,12 +124,12 @@ class TestAudio:
         assert seconds_to_sample(seconds, sample_rate, Rounding.NEAREST) == sample
 
     def test_frame_to_sample_at_48k(self) -> None:
-        # 30fps / 48kHz はちょうど 1600 サンプルで割り切れる。
+        # 30fps / 48kHz はちょうど 1600 サンプルで割り切れる
         assert frame_to_sample(1, FrameRate(30), 48000) == 1600
         assert frame_to_sample(100, FrameRate(30), 48000) == 160000
 
     def test_frame_to_sample_at_ntsc(self) -> None:
-        # 29.97fps / 48000Hz は割り切れない。1 フレーム = 1601.6 サンプル。
+        # 29.97fps / 48000Hz は割り切れない 1 フレーム = 1601.6 サンプル
         assert frame_to_sample(1, NTSC_30, 48000) == 1602
         assert frame_to_sample(5, NTSC_30, 48000) == 8008
 
@@ -141,8 +141,8 @@ class TestAudio:
     def test_sample_maps_back_into_same_frame(
         self, frame: int, sample_rate: int, rate: FrameRate
     ) -> None:
-        # フレーム先頭のサンプルは、必ず元のフレームか直前のフレームに落ちる。
-        # 直前になるのは NEAREST が切り上げた場合で、1 サンプル以内のずれ。
+        # フレーム先頭のサンプルは、必ず元のフレームか直前のフレームに落ちる
+        # 直前になるのは NEAREST が切り上げた場合で、1 サンプル以内のずれ
         sample = frame_to_sample(frame, rate, sample_rate)
         assert sample_to_frame(sample, sample_rate, rate) in (frame - 1, frame)
 
@@ -157,7 +157,7 @@ class TestPts:
         assert seconds_to_pts(pts_to_seconds(12345, time_base), time_base) == 12345
 
     def test_seek_target_never_overshoots(self) -> None:
-        # シーク用途なので、切り上げて目的フレームを飛び越してはいけない。
+        # シーク用途なので、切り上げて目的フレームを飛び越してはいけない
         time_base = Fraction(1, 1000)
         pts = seconds_to_pts(Fraction(1, 3), time_base)
         assert pts_to_seconds(pts, time_base) <= Fraction(1, 3)
@@ -190,14 +190,14 @@ class TestTimecode:
             (0, "00:00:00;00"),
             (29, "00:00:00;29"),
             (30, "00:00:01;00"),
-            # 1 分の境界で 2 番と 3 番が欠番になる。
+            # 1 分の境界で 2 番と 3 番が欠番になる
             (1798, "00:00:59;28"),
             (1799, "00:00:59;29"),
             (1800, "00:01:00;02"),
             (1801, "00:01:00;03"),
-            # 10 分目は欠番なし。
+            # 10 分目は欠番なし
             (17982, "00:10:00;00"),
-            # 1 時間ちょうどは 107892 フレーム。
+            # 1 時間ちょうどは 107892 フレーム
             (107892, "01:00:00;00"),
         ],
     )
@@ -205,12 +205,12 @@ class TestTimecode:
         assert format_timecode(frame, NTSC_30) == expected
 
     def test_drop_frame_matches_wall_clock(self) -> None:
-        # ドロップフレームの存在理由そのもの。1 時間分のフレームが 01:00:00;00 になる。
+        # ドロップフレームの存在理由そのもの 1 時間分のフレームが 01:00:00;00 になる
         one_hour_frames = seconds_to_frame(Fraction(3600), NTSC_30)
         assert format_timecode(one_hour_frames, NTSC_30) == "01:00:00;00"
 
     def test_non_drop_drifts_from_wall_clock(self) -> None:
-        # 対比。ノンドロップだと 1 時間で 3.6 秒ずれる。これは仕様どおり。
+        # 対比 ノンドロップだと 1 時間で 3.6 秒ずれる これは仕様どおり
         one_hour_frames = seconds_to_frame(Fraction(3600), NTSC_30)
         assert format_timecode(one_hour_frames, NTSC_30, drop_frame=False) == "00:59:56:12"
 
@@ -230,7 +230,7 @@ class TestTimecode:
         assert parse_timecode(format_timecode(frame, rate), rate) == frame
 
     def test_separator_signals_drop_frame(self) -> None:
-        # 10 分地点で両者は 18 フレーム分ずれる。同じ数字列でも区切りで意味が変わる。
+        # 10 分地点で両者は 18 フレーム分ずれる 同じ数字列でも区切りで意味が変わる
         assert parse_timecode("00:10:00;00", NTSC_30) == 17982
         assert parse_timecode("00:10:00:00", NTSC_30) == 18000
 

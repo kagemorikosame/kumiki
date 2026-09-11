@@ -1,7 +1,7 @@
-"""AI 層のテスト用のホスト。
+"""AI 層のテスト用のホスト
 
-:class:`~kumiki.ai.host.EditorHost` を満たす偽物を用意する。ウィジェットを一切
-作らずにツールの挙動を確かめられるのは、AI 層が Qt を知らない作りにしてあるため。
+:class:`~kumiki.ai.host.EditorHost` を満たす偽物を用意する ウィジェットを一切
+作らずにツールの挙動を確かめられるのは、AI 層が Qt を知らない作りにしてあるため
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ RATE_30 = FrameRate(30)
 
 
 class FakeHost:
-    """編集ソフトのふりをする。"""
+    """編集ソフトのふりをする"""
 
     def __init__(self, project: Project) -> None:
         self._document = Document(project)
@@ -79,7 +79,7 @@ class FakeHost:
 
     def render_png(self, frame: int, *, width: int) -> bytes:
         self.rendered.append((frame, width))
-        # PNG の識別子だけ本物にしておく。中身は誰も見ない。
+        # PNG の識別子だけ本物にしておく 中身は誰も見ない
         return b"\x89PNG\r\n\x1a\n" + f"{frame}".encode()
 
     def probe(self, path: Path) -> MediaItem:
@@ -104,10 +104,10 @@ class FakeHost:
 
 
 def make_loaded(video_media: MediaItem, transcript: Transcript) -> Project:
-    """10 秒の素材を 1 本置き、字幕を付けたプロジェクトを組む。
+    """10 秒の素材を 1 本置き、字幕を付けたプロジェクトを組む
 
-    fixture ではなく関数にしてあるのは、別のフォルダのテストからも使うため。
-    conftest の fixture は、そのフォルダの下からしか見えない。
+    fixture ではなく関数にしてあるのは、別のフォルダのテストからも使うため
+    conftest の fixture は、そのフォルダの下からしか見えない
     """
     with_transcript = replace(video_media, transcript=transcript)
     base = Project.create(ProjectSettings(frame_rate=RATE_30), media=(with_transcript,))

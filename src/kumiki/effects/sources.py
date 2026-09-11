@@ -1,10 +1,10 @@
-"""生成オブジェクトの定義。テキストと図形。
+"""生成オブジェクトの定義 テキストと図形
 
-素材を持たないクリップの中身。エフェクトと同じパラメータ仕様に載せてあるので、
-設定 UI もプリセットも同じ実装で扱える。
+素材を持たないクリップの中身 エフェクトと同じパラメータ仕様に載せてあるので、
+設定 UI もプリセットも同じ実装で扱える
 
-描画はここではなく :mod:`kumiki.engine.sources` が行う。テキストの整形と縁取りは
-Qt の描画系に任せるのが現実的で、その依存をこの層に持ち込みたくない。
+描画はここではなく :mod:`kumiki.engine.sources` が行う テキストの整形と縁取りは
+Qt の描画系に任せるのが現実的で、その依存をこの層に持ち込みたくない
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ __all__ = ["SHAPE", "TEXT", "SourceDefinition", "source_registry"]
 
 @dataclass(frozen=True, slots=True)
 class SourceDefinition:
-    """1 種類の生成オブジェクト。"""
+    """1 種類の生成オブジェクト"""
 
     kind: str
     label: str
@@ -69,8 +69,8 @@ TEXT = SourceDefinition(
             "center",
         ),
         # AviUtl の「文字揃え」は横と縦の 2 つを 1 つにまとめた呼び方をする
-        # （``中央揃え[下]`` など）。こちらは別々に持つ。まとめると、片方だけを
-        # 変えたいときに全部の組み合わせを並べることになる。
+        # （``中央揃え[下]`` など） こちらは別々に持つ まとめると、片方だけを
+        # 変えたいときに全部の組み合わせを並べることになる
         SelectSpec(
             "valign",
             "縦の基準",
@@ -81,8 +81,8 @@ TEXT = SourceDefinition(
         TrackSpec("letter_spacing", "字間", -20, 100, 0, step=1, unit="px"),
         TrackSpec("border_width", "縁取りの太さ", 0, 64, 0, step=1, unit="px"),
         ColorSpec("border_color", "縁取りの色", (0.0, 0.0, 0.0, 1.0)),
-        # 影は「文字の飾り」として文字と一緒に描く。クリップ全体に掛ける
-        # 影エフェクトとは別物で、こちらは 1 文字ずつの輪郭に付く。
+        # 影は「文字の飾り」として文字と一緒に描く クリップ全体に掛ける
+        # 影エフェクトとは別物で、こちらは 1 文字ずつの輪郭に付く
         TrackSpec("shadow_x", "影の X", -200, 200, 0, step=1, unit="px"),
         TrackSpec("shadow_y", "影の Y", -200, 200, 0, step=1, unit="px"),
         TrackSpec("shadow_blur", "影のぼかし", 0, 64, 0, step=1, unit="px"),
@@ -128,7 +128,7 @@ SHAPE = SourceDefinition(
 
 
 class SourceRegistry:
-    """生成オブジェクトの一覧。"""
+    """生成オブジェクトの一覧"""
 
     def __init__(self, definitions: tuple[SourceDefinition, ...]) -> None:
         self._definitions = {definition.kind: definition for definition in definitions}

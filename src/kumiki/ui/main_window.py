@@ -1,8 +1,8 @@
-"""メインウィンドウ。各パネルを組み立て、コマンドの実行を一手に引き受ける。
+"""メインウィンドウ 各パネルを組み立て、コマンドの実行を一手に引き受ける
 
 UI のどこから来た操作も、必ず :meth:`MainWindow.execute` を通って
-:class:`~kumiki.core.commands.Document` に入る。AI エージェントも同じ入口を
-使う予定なので、ここが増えないようにしておく。
+:class:`~kumiki.core.commands.Document` に入る AI エージェントも同じ入口を
+使う予定なので、ここが増えないようにしておく
 """
 
 from __future__ import annotations
@@ -74,17 +74,17 @@ from kumiki.ui.transport import TransportBar
 
 __all__ = ["MainWindow"]
 
-#: 解析の完了を画面へ反映する間隔（ミリ秒）。
+#: 解析の完了を画面へ反映する間隔（ミリ秒）
 #: 解析はワーカースレッドで終わるので、その通知を待って毎回描き直すのではなく、
-#: まとめて一定間隔で描き直す。素材を 100 本入れたときに描画で埋もれないように。
+#: まとめて一定間隔で描き直す 素材を 100 本入れたときに描画で埋もれないように
 ANALYSIS_REFRESH_MS = 250
 
-#: AviUtl のオブジェクトファイル。
+#: AviUtl のオブジェクトファイル
 EXO_FILTER = "AviUtl オブジェクト (*.exo *.exa *.exo2 *.exa2);;すべてのファイル (*)"
 
 
 class MainWindow(QMainWindow):
-    """編集画面。"""
+    """編集画面"""
 
     project_changed = Signal(object)
 
@@ -100,7 +100,7 @@ class MainWindow(QMainWindow):
             channels=self._document.project.settings.channels,
         )
         self._analysis_dirty = False
-        #: AI が結果を確認するための描画係。初めて求められたときに作る。
+        #: AI が結果を確認するための描画係 初めて求められたときに作る
         self._ai_renderer: FrameRenderer | None = None
 
         self._build_widgets()
@@ -159,8 +159,8 @@ class MainWindow(QMainWindow):
             Qt.DockWidgetArea.RightDockWidgetArea | Qt.DockWidgetArea.BottomDockWidgetArea
         )
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, graph_dock)
-        # 既定では畳んでおく。曲線を触るのは慣れてからで、最初から出ていると
-        # 画面が狭くなるだけになる。
+        # 既定では畳んでおく 曲線を触るのは慣れてからで、最初から出ていると
+        # 画面が狭くなるだけになる
         graph_dock.hide()
         self._graph_dock = graph_dock
 
@@ -170,8 +170,8 @@ class MainWindow(QMainWindow):
             Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
         )
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, subtitle_dock)
-        # メディアプールと同じ場所にタブで重ねる。どちらも「素材を選ぶ」ための
-        # パネルで、同時に見る場面が少ない。
+        # メディアプールと同じ場所にタブで重ねる どちらも「素材を選ぶ」ための
+        # パネルで、同時に見る場面が少ない
         self.tabifyDockWidget(pool_dock, subtitle_dock)
         pool_dock.raise_()
         self._subtitle_dock = subtitle_dock
@@ -299,7 +299,7 @@ class MainWindow(QMainWindow):
         return action
 
     def _menu(self, title: str) -> QMenu:
-        """メニューを 1 つ作る。``addMenu`` は None を返しうるので、ここで確定させる。"""
+        """メニューを 1 つ作る ``addMenu`` は None を返しうるので、ここで確定させる"""
         menu = self.menuBar().addMenu(title)
         if menu is None:  # pragma: no cover - Qt が None を返すのは異常系のみ
             raise RuntimeError(f"メニューを作れない: {title}")
@@ -343,10 +343,10 @@ class MainWindow(QMainWindow):
     # --- コマンドの実行 ---
 
     def execute(self, command: Command) -> None:
-        """コマンドを 1 つ実行して、画面を更新する。
+        """コマンドを 1 つ実行して、画面を更新する
 
-        失敗しても落とさず、状況をステータスバーへ出す。編集操作は思いどおりに
-        いかないことが普通にあり、そのたびにダイアログが出ると邪魔になる。
+        失敗しても落とさず、状況をステータスバーへ出す 編集操作は思いどおりに
+        いかないことが普通にあり、そのたびにダイアログが出ると邪魔になる
         """
         try:
             self._document.execute(command)
@@ -356,7 +356,7 @@ class MainWindow(QMainWindow):
         self._on_project_changed()
 
     def execute_all(self, commands: list[Command], label: str) -> None:
-        """複数のコマンドを 1 回の Undo で戻せるようにまとめて実行する。"""
+        """複数のコマンドを 1 回の Undo で戻せるようにまとめて実行する"""
         if not commands:
             return
         try:
@@ -412,10 +412,10 @@ class MainWindow(QMainWindow):
             self.import_media([Path(name) for name in names])
 
     def import_media(self, paths: list[Path]) -> None:
-        """素材を読み込んでタイムラインへ置く。
+        """素材を読み込んでタイムラインへ置く
 
-        複数選ばれた場合もまとめて 1 回の Undo で戻せるようにする。
-        10 本読み込んで 10 回取り消す、という操作は誰も望まない。
+        複数選ばれた場合もまとめて 1 回の Undo で戻せるようにする
+        10 本読み込んで 10 回取り消す、という操作は誰も望まない
         """
         commands: list[Command] = []
         failures: list[str] = []
@@ -441,7 +441,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"{len(paths)} 件を読み込んだ", 3000)
 
     def add_text(self) -> None:
-        """再生ヘッドの位置にテキストを置く。"""
+        """再生ヘッドの位置にテキストを置く"""
         self._insert_generated(TEXT.create(), "テキストを追加")
 
     def add_shape(self) -> None:
@@ -452,14 +452,14 @@ class MainWindow(QMainWindow):
             self._document.project, source, at_frame=self._timeline.playhead
         )
         self.execute_all(commands, label)
-        # 置いたものをすぐ選ぶ。設定パネルが開いていないと、
-        # 追加したのに何も起きていないように見える。
+        # 置いたものをすぐ選ぶ 設定パネルが開いていないと、
+        # 追加したのに何も起きていないように見える
         placed = self._last_added_clip()
         if placed is not None:
             self._timeline.select(placed)
 
     def _last_added_clip(self) -> ClipId | None:
-        """再生ヘッドの位置にある、生成オブジェクトのクリップ。"""
+        """再生ヘッドの位置にある、生成オブジェクトのクリップ"""
         frame = self._timeline.playhead
         for track in reversed(list(self._document.project.timeline.video_tracks())):
             clip = track.clip_at(frame)
@@ -468,15 +468,15 @@ class MainWindow(QMainWindow):
         return None
 
     def show_subtitles(self) -> None:
-        """字幕パネルを前へ出す。"""
+        """字幕パネルを前へ出す"""
         self._subtitle_dock.show()
         self._subtitle_dock.raise_()
 
     def transcribe(self) -> None:
-        """選択中の素材を起こす。パネルを出してから始める。
+        """選択中の素材を起こす パネルを出してから始める
 
-        起こしの実行環境は既定では入っていない。未導入なら、そのダイアログが
-        導入のボタンを出す（:mod:`kumiki.asr.environment` を参照）。
+        起こしの実行環境は既定では入っていない 未導入なら、そのダイアログが
+        導入のボタンを出す（:mod:`kumiki.asr.environment` を参照）
         """
         self.show_subtitles()
         selected = self._media_pool.selected_media_id()
@@ -492,14 +492,14 @@ class MainWindow(QMainWindow):
         self.execute_all(insert_media(project, media), f"配置: {media.name}")
 
     def _on_analysis_ready(self, media_id: MediaId) -> None:
-        # ワーカースレッドから呼ばれる。ここでウィジェットに触ると Qt が落ちるので、
-        # 印だけ付けてメインスレッドのタイマーに描き直させる。
+        # ワーカースレッドから呼ばれる ここでウィジェットに触ると Qt が落ちるので、
+        # 印だけ付けてメインスレッドのタイマーに描き直させる
         del media_id
         self._analysis_dirty = True
 
     def _flush_analysis(self) -> None:
-        # AI から始めた起こしの様子も、ついでにここで拾う。専用のタイマーを
-        # もう 1 本増やすほどの頻度ではない。
+        # AI から始めた起こしの様子も、ついでにここで拾う 専用のタイマーを
+        # もう 1 本増やすほどの頻度ではない
         self._subtitles.poll_transcription()
         if not self._analysis_dirty:
             return
@@ -533,10 +533,10 @@ class MainWindow(QMainWindow):
         self._graph_dock.raise_()
 
     def _preview_command(self, command: Command) -> None:
-        """履歴に残さず、プレビューだけ更新する。
+        """履歴に残さず、プレビューだけ更新する
 
-        スライダーのドラッグ中に呼ばれる。1 回のドラッグで数十の取り消し段を
-        作らないための逃げ道で、指を離した時点で本来のコマンドが飛んでくる。
+        スライダーのドラッグ中に呼ばれる 1 回のドラッグで数十の取り消し段を
+        作らないための逃げ道で、指を離した時点で本来のコマンドが飛んでくる
         """
         try:
             preview = command.apply(self._document.project)
@@ -563,7 +563,7 @@ class MainWindow(QMainWindow):
         self._seek(0)
 
     def open_project(self) -> None:
-        # 改名前（NovaEdit）に保存したものも開けるようにしておく。
+        # 改名前（NovaEdit）に保存したものも開けるようにしておく
         patterns = " ".join(f"*{s}" for s in (SUFFIX, *LEGACY_SUFFIXES))
         name, _ = QFileDialog.getOpenFileName(
             self, "プロジェクトを開く", "", f"Kumiki プロジェクト ({patterns})"
@@ -609,10 +609,10 @@ class MainWindow(QMainWindow):
     # --- AviUtl 互換 ---
 
     def import_exo(self) -> None:
-        """``.exo`` / ``.exa`` をタイムラインへ読み込む。
+        """``.exo`` / ``.exa`` をタイムラインへ読み込む
 
-        参照している素材は先に読み込んでから対応付ける。素材が見つからなくても
-        止めない。テキストや図形だけでも入る方が使い出がある。
+        参照している素材は先に読み込んでから対応付ける 素材が見つからなくても
+        止めない テキストや図形だけでも入る方が使い出がある
         """
         from kumiki.compat.aviutl.exo import ExoParseError, load_exo
         from kumiki.compat.aviutl.mapping import map_exo
@@ -645,10 +645,10 @@ class MainWindow(QMainWindow):
     def _resolve_exo_media(
         self, exo: ExoFile, source: Path
     ) -> tuple[dict[str, MediaId], list[str]]:
-        """``.exo`` が参照している素材を読み込む。
+        """``.exo`` が参照している素材を読み込む
 
-        相対パスは ``.exo`` のある場所からも探す。AviUtl のファイルは素材と
-        一緒に配られることがある。
+        相対パスは ``.exo`` のある場所からも探す AviUtl のファイルは素材と
+        一緒に配られることがある
         """
         from kumiki.compat.aviutl.mapping import media_paths
 
@@ -671,9 +671,9 @@ class MainWindow(QMainWindow):
         return found, missing
 
     def show_templates(self) -> None:
-        """テンプレートの棚を開いて、選ばれたものを反映する。
+        """テンプレートの棚を開いて、選ばれたものを反映する
 
-        「置く」と「着せる」で行き先が違うだけで、どちらも 1 回の Undo で戻る。
+        「置く」と「着せる」で行き先が違うだけで、どちらも 1 回の Undo で戻る
         """
         from kumiki.compat.catalog import place, restyle
         from kumiki.ui.template_dialog import TemplateDialog
@@ -709,7 +709,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"{len(commands)} 個を置いた", 5000)
 
     def rescan_scripts(self) -> None:
-        """スクリプトのフォルダを読み直す。"""
+        """スクリプトのフォルダを読み直す"""
         from kumiki.compat.aviutl.catalog import script_catalog
 
         catalog = script_catalog()
@@ -718,7 +718,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"スクリプトを {count} 本読み込んだ", 4000)
 
     def open_script_folder(self) -> None:
-        """スクリプトを置く場所をエクスプローラで開く。"""
+        """スクリプトを置く場所をエクスプローラで開く"""
         from kumiki.compat.aviutl.catalog import script_catalog
 
         roots = script_catalog().roots
@@ -730,15 +730,15 @@ class MainWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(target)))
 
     def show_compatibility(self) -> None:
-        """互換性レポートを出す。"""
+        """互換性レポートを出す"""
         from kumiki.ui.compat_dialog import CompatibilityDialog
 
         CompatibilityDialog(parent=self).exec()
 
     # --- AI 連携（EditorHost の実装）---
     #
-    # AI からの操作も UI と同じ入口を通す。ここが増えないようにしておけば、
-    # 「UI ではできるが AI ではできない」も、その逆も生まれない。
+    # AI からの操作も UI と同じ入口を通す ここが増えないようにしておけば、
+    # 「UI ではできるが AI ではできない」も、その逆も生まれない
 
     @property
     def document(self) -> Document:
@@ -759,11 +759,11 @@ class MainWindow(QMainWindow):
         self._timeline.select(clip_id)
 
     def apply_commands(self, commands: list[Command], label: str) -> None:
-        """AI からのコマンドを実行する。
+        """AI からのコマンドを実行する
 
-        UI 経由の :meth:`execute_all` と違い、失敗を握り潰さず例外にする。
+        UI 経由の :meth:`execute_all` と違い、失敗を握り潰さず例外にする
         AI はエラーの文面を読んで次の手を決めるので、黙って何も起きないのが
-        いちばん困る。
+        いちばん困る
         """
         if not commands:
             return
@@ -780,10 +780,10 @@ class MainWindow(QMainWindow):
         self._playback.stop()
 
     def render_png(self, frame: int, *, width: int) -> bytes:
-        """そのフレームを合成して PNG にする。
+        """そのフレームを合成して PNG にする
 
-        プレビューのウィジェットとは別のコンテキストで描く。再生用の資源を
-        取り合わないようにするためで、代わりに 1 つ余分にコンテキストを持つ。
+        プレビューのウィジェットとは別のコンテキストで描く 再生用の資源を
+        取り合わないようにするためで、代わりに 1 つ余分にコンテキストを持つ
         """
         project = self._document.project
         full_width = project.settings.width
@@ -805,7 +805,7 @@ class MainWindow(QMainWindow):
         buffer = QBuffer()
         buffer.open(QIODevice.OpenModeFlag.WriteOnly)
         # QImage.save の書式引数は、この PySide6 では str しか受け取らない
-        # （型情報は bytes だと言う）。食い違いを避けるため QImageWriter を使う。
+        # （型情報は bytes だと言う） 食い違いを避けるため QImageWriter を使う
         if not QImageWriter(buffer, b"PNG").write(picture):
             raise ToolError("プレビュー画像を作れませんでした")
         return bytes(buffer.data().data())
@@ -829,15 +829,15 @@ class MainWindow(QMainWindow):
         return self._subtitles.transcription_status()
 
     def show_chat(self) -> None:
-        """AI パネルを前へ出す。"""
+        """AI パネルを前へ出す"""
         self._chat_dock.show()
         self._chat_dock.raise_()
 
     # --- 終了 ---
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt の命名規約
-        # 解放の順番が大事。GL 資源はコンテキストが生きているうちに、
-        # 再生スレッドはウィジェットが消える前に畳む。
+        # 解放の順番が大事 GL 資源はコンテキストが生きているうちに、
+        # 再生スレッドはウィジェットが消える前に畳む
         self._refresh_timer.stop()
         self._chat.close_session()
         self._playback.close()

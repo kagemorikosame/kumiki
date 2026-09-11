@@ -1,7 +1,7 @@
-"""起こしのバックグラウンド実行。
+"""起こしのバックグラウンド実行
 
-実際の音声認識は使わない。差し替え可能なバックエンドにしてあるので、ここは
-進捗・完了・中断・失敗の 4 つの経路だけを見る。
+実際の音声認識は使わない 差し替え可能なバックエンドにしてあるので、ここは
+進捗・完了・中断・失敗の 4 つの経路だけを見る
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ RESULT = Transcript((TranscriptSegment(Fraction(0), Fraction(1), "できた"),))
 
 
 class FakeBackend:
-    """好きな振る舞いをさせられるバックエンド。"""
+    """好きな振る舞いをさせられるバックエンド"""
 
     def __init__(
         self,
@@ -53,7 +53,7 @@ class FakeBackend:
         if progress is not None:
             progress(0.5, "途中")
         if self.block is not None:
-            # 中断を確かめるため、合図があるまで待つ。
+            # 中断を確かめるため、合図があるまで待つ
             while not self.block.wait(0.01):
                 if should_cancel is not None and should_cancel():
                     self.cancelled = True
@@ -66,7 +66,7 @@ class FakeBackend:
 def _finish(service: TranscriptionService) -> list[JobEvent]:
     job = service.start(MediaId("m"), Path("素材.mp4"), TranscribeOptions())
     assert job.wait(5.0)
-    # ワーカーが終わってから拾う。UI も同じように、自分の都合で取りに来る。
+    # ワーカーが終わってから拾う UI も同じように、自分の都合で取りに来る
     return list(job.poll())
 
 
@@ -85,7 +85,7 @@ class TestTranscriptionService:
         assert "モデルが無い" in events[-1].message
 
     def test_unexpected_failures_are_caught_too(self) -> None:
-        # 予期しない例外でアプリごと落ちるのが一番まずい。
+        # 予期しない例外でアプリごと落ちるのが一番まずい
         service = TranscriptionService(FakeBackend(error=RuntimeError("想定外")))
         events = _finish(service)
         assert events[-1].kind is JobKind.FAILED

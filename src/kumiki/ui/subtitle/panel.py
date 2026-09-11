@@ -1,11 +1,11 @@
-"""字幕パネル。
+"""字幕パネル
 
-素材を選び、その起こし結果を一覧で編集する。時刻の列に出るのは**タイムライン上の
-位置**で、素材内の時刻ではない。編集中に見たいのは「動画の何分何秒に出るか」で、
-素材のどこかは分かっても仕方がない。その変換は投影
-（:mod:`kumiki.core.projection`）が引き受ける。
+素材を選び、その起こし結果を一覧で編集する 時刻の列に出るのは**タイムライン上の
+位置**で、素材内の時刻ではない 編集中に見たいのは「動画の何分何秒に出るか」で、
+素材のどこかは分かっても仕方がない その変換は投影
+（:mod:`kumiki.core.projection`）が引き受ける
 
-自分ではプロジェクトを書き換えない。操作はすべてコマンドとして外へ出す。
+自分ではプロジェクトを書き換えない 操作はすべてコマンドとして外へ出す
 """
 
 from __future__ import annotations
@@ -56,18 +56,18 @@ from kumiki.ui.theme import Colors
 
 __all__ = ["SubtitlePanel"]
 
-#: 焼き込むテキストの既定。下寄せで、縁取りを付けて読めるようにする。
+#: 焼き込むテキストの既定 下寄せで、縁取りを付けて読めるようにする
 BURN_DEFAULTS = {"size": 48.0, "pos_y": -380.0, "border_width": 4.0}
 
 
 class SubtitlePanel(QWidget):
-    """素材ごとの字幕の一覧と編集。"""
+    """素材ごとの字幕の一覧と編集"""
 
-    #: 編集操作。引数はコマンドの一覧と、履歴に出す操作名。
+    #: 編集操作 引数はコマンドの一覧と、履歴に出す操作名
     commands_requested = Signal(list, str)
-    #: 字幕をクリックしたときの移動先（フレーム）。
+    #: 字幕をクリックしたときの移動先（フレーム）
     seek_requested = Signal(int)
-    #: ステータスバーへ出す文言。
+    #: ステータスバーへ出す文言
     status_message = Signal(str)
 
     def __init__(
@@ -78,12 +78,12 @@ class SubtitlePanel(QWidget):
         self._analyzer = analyzer
         self._media_id: MediaId | None = None
         self._frame = 0
-        #: 表示中の行に対応する字幕。行番号から引く。
+        #: 表示中の行に対応する字幕 行番号から引く
         self._rows: list[tuple[SegmentId, int, int]] = []
         self._updating = False
-        #: 起こしの実行係。バックエンドの読み込みは重いので、初めて使うときに作る。
+        #: 起こしの実行係 バックエンドの読み込みは重いので、初めて使うときに作る
         self._service: TranscriptionService | None = None
-        #: AI から始めた起こし。ダイアログを開かずに走らせる経路。
+        #: AI から始めた起こし ダイアログを開かずに走らせる経路
         self._job: Job | None = None
         self._job_media: MediaId | None = None
         self._job_note = ""
@@ -133,8 +133,8 @@ class SubtitlePanel(QWidget):
         header = self._table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        # 幅が変われば折り返しの行数も変わる。高さを取り直さないと、2 行目が
-        # 隠れて本文の末尾が読めなくなる。
+        # 幅が変われば折り返しの行数も変わる 高さを取り直さないと、2 行目が
+        # 隠れて本文の末尾が読めなくなる
         header.sectionResized.connect(lambda *_: self._table.resizeRowsToContents())
 
         self._empty = QLabel("音声を持つ素材を選んでください", self)
@@ -165,7 +165,7 @@ class SubtitlePanel(QWidget):
         self._reload_rows()
 
     def set_frame(self, frame: int) -> None:
-        """再生ヘッドの位置。いま出ている字幕を強調する。"""
+        """再生ヘッドの位置 いま出ている字幕を強調する"""
         if frame == self._frame:
             return
         self._frame = frame
@@ -183,7 +183,7 @@ class SubtitlePanel(QWidget):
     # --- 一覧 ---
 
     def _reload_media(self) -> None:
-        """素材の選択欄を作り直す。選択は ID で復元する。"""
+        """素材の選択欄を作り直す 選択は ID で復元する"""
         candidates = [item for item in self._project.media if item.has_audio]
         previous = self._media_id
 
@@ -225,10 +225,10 @@ class SubtitlePanel(QWidget):
         return media.transcript.segments
 
     def _reload_rows(self) -> None:
-        """一覧を作り直す。
+        """一覧を作り直す
 
-        時刻はタイムライン上の位置。同じ素材を 2 回置いていれば最初の 1 回の
-        位置を出す。編集の入口としてはそれで足り、2 か所の時刻を並べても迷う。
+        時刻はタイムライン上の位置 同じ素材を 2 回置いていれば最初の 1 回の
+        位置を出す 編集の入口としてはそれで足り、2 か所の時刻を並べても迷う
         """
         media = self._current_media()
         segments = self._segments()
@@ -245,7 +245,7 @@ class SubtitlePanel(QWidget):
             time_item = QTableWidgetItem(when)
             time_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
             if start < 0:
-                # タイムラインに出ていない字幕。素材を切った先で使われていない範囲。
+                # タイムラインに出ていない字幕 素材を切った先で使われていない範囲
                 time_item.setForeground(Colors.TEXT_MUTED)
                 time_item.setToolTip("いまのタイムラインには出ていません")
             self._table.setItem(row, 0, time_item)
@@ -257,7 +257,7 @@ class SubtitlePanel(QWidget):
         self._highlight()
 
     def _placement(self, media: MediaItem) -> dict[SegmentId, tuple[int, int]]:
-        """字幕がタイムラインのどこに出るか。最初に現れた位置だけを持つ。"""
+        """字幕がタイムラインのどこに出るか 最初に現れた位置だけを持つ"""
         found: dict[SegmentId, tuple[int, int]] = {}
         for track in self._project.timeline.tracks:
             for clip in track.clips:
@@ -279,7 +279,7 @@ class SubtitlePanel(QWidget):
         self._cut_button.setEnabled(media is not None)
 
     def _highlight(self) -> None:
-        """再生ヘッドの位置にある字幕を選ぶ。"""
+        """再生ヘッドの位置にある字幕を選ぶ"""
         for row, (_, start, end) in enumerate(self._rows):
             if start <= self._frame < end:
                 if self._table.currentRow() != row:
@@ -333,7 +333,7 @@ class SubtitlePanel(QWidget):
             self._split_at_playhead(segment_id)
 
     def _split_at_playhead(self, segment_id: SegmentId) -> None:
-        """再生ヘッドのソース時刻で字幕を割る。"""
+        """再生ヘッドのソース時刻で字幕を割る"""
         media = self._current_media()
         if media is None or self._media_id is None:
             return
@@ -344,7 +344,7 @@ class SubtitlePanel(QWidget):
         self.commands_requested.emit([SplitSegment(self._media_id, segment_id, at)], "字幕を分割")
 
     def _source_time(self, media: MediaItem, frame: int) -> Fraction | None:
-        """タイムラインのフレームを、この素材のソース秒へ。"""
+        """タイムラインのフレームを、この素材のソース秒へ"""
         for track in self._project.timeline.tracks:
             for clip in track.clips:
                 if clip.media_id != media.id or not clip.contains(frame):
@@ -360,8 +360,8 @@ class SubtitlePanel(QWidget):
         if media is None:
             return
         if self._service is None:
-            # バックエンドの生成はここで初めて行う。実行環境が未導入でも
-            # パネルは開けるようにしておく。
+            # バックエンドの生成はここで初めて行う 実行環境が未導入でも
+            # パネルは開けるようにしておく
             self._service = TranscriptionService(default_backend())
 
         dialog = TranscribeDialog(media, self._service, self)
@@ -371,10 +371,10 @@ class SubtitlePanel(QWidget):
             )
 
     def start_transcription(self, media_id: MediaId, model: str) -> str:
-        """起こしを始める。AI からの依頼を受ける入口。
+        """起こしを始める AI からの依頼を受ける入口
 
-        ダイアログを開かずに走らせる。数分かかるので、終わったかどうかは
-        :meth:`transcription_status` で見る。
+        ダイアログを開かずに走らせる 数分かかるので、終わったかどうかは
+        :meth:`transcription_status` で見る
         """
         media = self._project.find_media(media_id)
         if media is None:
@@ -382,7 +382,7 @@ class SubtitlePanel(QWidget):
         if self._service is None:
             self._service = TranscriptionService(default_backend())
         if not self._service.backend.is_available():
-            raise RuntimeError("起こしの実行環境が入っていません。字幕パネルから導入できます")
+            raise RuntimeError("起こしの実行環境が入っていません 字幕パネルから導入できます")
 
         options = TranscribeOptions(model=model)
         self._job = self._service.start(media.id, media.path, options)
@@ -392,14 +392,14 @@ class SubtitlePanel(QWidget):
         return f"{media.name} の起こしを始めました"
 
     def transcription_status(self) -> str:
-        """走っている起こしの様子。"""
+        """走っている起こしの様子"""
         return self.poll_transcription()
 
     def poll_transcription(self) -> str:
-        """AI から始めた起こしの様子を拾い、終わっていれば結果を取り込む。
+        """AI から始めた起こしの様子を拾い、終わっていれば結果を取り込む
 
-        定期的に呼ばれる。AI が結果を聞きに来なかった場合でも、起こした内容が
-        捨てられないようにするため。
+        定期的に呼ばれる AI が結果を聞きに来なかった場合でも、起こした内容が
+        捨てられないようにするため
         """
         job = self._job
         if job is None:
@@ -458,7 +458,7 @@ class SubtitlePanel(QWidget):
     def _plan(
         self, media: MediaItem, options: SilenceOptions, protect: bool
     ) -> tuple[tuple[int, int], ...]:
-        """無音の検出からタイムライン上の切る範囲までを一続きに。"""
+        """無音の検出からタイムライン上の切る範囲までを一続きに"""
         waveform = self._analyzer.waveform(media)
         if waveform is None:
             return ()

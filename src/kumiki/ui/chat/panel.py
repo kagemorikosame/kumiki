@@ -1,11 +1,11 @@
-"""AI チャットパネル。
+"""AI チャットパネル
 
-編集ソフトの中で Claude と話し、実際の編集をさせる。会話の見た目より、
-**何をされているかが分かること**を優先している。ツールの呼び出しは 1 行ずつ
-出し、変更系は許可を求めてから実行する。
+編集ソフトの中で Claude と話し、実際の編集をさせる 会話の見た目より、
+**何をされているかが分かること**を優先している ツールの呼び出しは 1 行ずつ
+出し、変更系は許可を求めてから実行する
 
-1 つの指示で行われた編集は、まとめて 1 回の Undo で戻せる。AI は 1 つの指示で
-何十回も操作するので、これが無いと取り消しに同じ回数が要る。
+1 つの指示で行われた編集は、まとめて 1 回の Undo で戻せる AI は 1 つの指示で
+何十回も操作するので、これが無いと取り消しに同じ回数が要る
 """
 
 from __future__ import annotations
@@ -34,18 +34,18 @@ from kumiki.ui.theme import Colors
 
 __all__ = ["ChatPanel"]
 
-#: 太字と等幅だけを拾う。Claude の返事は素の Markdown で来るので、
-#: そのまま出すと ** が本文に混ざる。見出しや表まで組む必要は無い。
+#: 太字と等幅だけを拾う Claude の返事は素の Markdown で来るので、
+#: そのまま出すと ** が本文に混ざる 見出しや表まで組む必要は無い
 _BOLD = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
 _CODE = re.compile(r"`([^`]+)`")
 
-#: ワーカーからの知らせを拾う間隔（ミリ秒）。
-#: ここを長くすると、AI の操作が画面へ反映されるまでの間が空く。
+#: ワーカーからの知らせを拾う間隔（ミリ秒）
+#: ここを長くすると、AI の操作が画面へ反映されるまでの間が空く
 POLL_MS = 80
 
 
 class _Input(QPlainTextEdit):
-    """Ctrl+Enter で送る入力欄。"""
+    """Ctrl+Enter で送る入力欄"""
 
     submitted = Signal()
 
@@ -59,9 +59,9 @@ class _Input(QPlainTextEdit):
 
 
 class ChatPanel(QWidget):
-    """Claude と話しながら編集する。"""
+    """Claude と話しながら編集する"""
 
-    #: ステータスバーへ出す文言。
+    #: ステータスバーへ出す文言
     status_message = Signal(str)
 
     def __init__(self, host: EditorHost, parent: QWidget | None = None) -> None:
@@ -71,7 +71,7 @@ class ChatPanel(QWidget):
         self._session: AgentSession | None = None
         self._approval: Approval | None = None
         self._checkpoint_open = False
-        #: 応答が 1 往復終わった回数。無人での確認に使う。
+        #: 応答が 1 往復終わった回数 無人での確認に使う
         self._turns_done = 0
 
         self._build()
@@ -167,7 +167,7 @@ class ChatPanel(QWidget):
     # --- 送受信 ---
 
     def send(self) -> None:
-        """入力欄の内容を送る。"""
+        """入力欄の内容を送る"""
         prompt = self._input.toPlainText().strip()
         if not prompt:
             return
@@ -190,7 +190,7 @@ class ChatPanel(QWidget):
             self._note("中断しています…")
 
     def close_session(self) -> None:
-        """会話を畳む。ウィンドウを閉じるときに呼ぶ。"""
+        """会話を畳む ウィンドウを閉じるときに呼ぶ"""
         self._timer.stop()
         self._setup.cancel()
         if self._session is not None:
@@ -201,7 +201,7 @@ class ChatPanel(QWidget):
     # --- 1 プロンプト = 1 Undo ---
 
     def _open_checkpoint(self, prompt: str) -> None:
-        """この指示による編集をまとめて戻せるようにする。"""
+        """この指示による編集をまとめて戻せるようにする"""
         if self._checkpoint_open:
             return
         label = prompt.strip().splitlines()[0]
@@ -219,7 +219,7 @@ class ChatPanel(QWidget):
     # --- ワーカーの見張り ---
 
     def _poll(self) -> None:
-        # まず AI からの依頼を実行する。ここが UI スレッド。
+        # まず AI からの依頼を実行する ここが UI スレッド
         self._bridge.pump()
         self._check_approval()
 
@@ -247,7 +247,7 @@ class ChatPanel(QWidget):
     def _check_approval(self) -> None:
         showing = self._approval
         if showing is not None:
-            # 中断でブリッジ側が畳んだ確認は、画面からも下げる。
+            # 中断でブリッジ側が畳んだ確認は、画面からも下げる
             if showing.done.is_set():
                 self._approval = None
                 self._approval_box.setVisible(False)
@@ -285,7 +285,7 @@ class ChatPanel(QWidget):
         self._scroll_to_end()
 
     def _note(self, text: str) -> None:
-        """ツールの呼び出しなど、会話の本体ではないもの。"""
+        """ツールの呼び出しなど、会話の本体ではないもの"""
         self._view.append(
             f'<span style="color:{Colors.TEXT_MUTED.name()}">{html.escape(text)}</span>'
         )
@@ -298,10 +298,10 @@ class ChatPanel(QWidget):
 
 
 def _to_html(text: str) -> str:
-    """本文を表示用の HTML へ。
+    """本文を表示用の HTML へ
 
-    先に文字実体へ逃がしてから太字と等幅を当てる。順番を逆にすると、本文に
-    書かれた ``<b>`` がそのまま効いてしまう。
+    先に文字実体へ逃がしてから太字と等幅を当てる 順番を逆にすると、本文に
+    書かれた ``<b>`` がそのまま効いてしまう
     """
     escaped = html.escape(text)
     escaped = _BOLD.sub(r"<b>\1</b>", escaped)

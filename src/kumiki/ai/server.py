@@ -1,16 +1,16 @@
-"""編集操作を MCP のツールとして公開する。
+"""編集操作を MCP のツールとして公開する
 
-外部プロセスではなく**アプリ内の MCP サーバ**にしてある。編集中のプロジェクトは
+外部プロセスではなく**アプリ内の MCP サーバ**にしてある 編集中のプロジェクトは
 メモリ上にしかないので、プロセスをまたぐとファイル経由で受け渡すことになり、
-保存していない状態を AI が触れなくなる。
+保存していない状態を AI が触れなくなる
 
-:mod:`kumiki.ai.operations` に並べた操作を、ここで 1 つずつ MCP ツールへ包む。
-包む処理は全部同じなので、ツールを足すときに触るのは operations だけで済む。
+:mod:`kumiki.ai.operations` に並べた操作を、ここで 1 つずつ MCP ツールへ包む
+包む処理は全部同じなので、ツールを足すときに触るのは operations だけで済む
 
-**SDK の import は関数の中で行う。** AI 連携の実行環境は同梱しておらず、
-ソフト内の導入ボタンで後から入れる（計画書 F-9-9）。ここで表に import すると、
+**SDK の import は関数の中で行う** AI 連携の実行環境は同梱しておらず、
+ソフト内の導入ボタンで後から入れる（計画書 F-9-9） ここで表に import すると、
 未導入の環境では**このモジュールを読み込んだだけで落ち**、繋がっている
-チャットパネル経由で UI 全体が起動しなくなる。
+チャットパネル経由で UI 全体が起動しなくなる
 """
 
 from __future__ import annotations
@@ -30,18 +30,18 @@ from kumiki.ai.operations import OPERATIONS, ImageResult, Operation
 
 __all__ = ["SERVER_NAME", "build_server", "build_tools", "tool_name", "tool_names"]
 
-#: MCP サーバの名前。Claude 側でのツール名は ``mcp__kumiki__<ツール名>`` になる。
+#: MCP サーバの名前 Claude 側でのツール名は ``mcp__kumiki__<ツール名>`` になる
 SERVER_NAME = "kumiki"
 
 
 def tool_name(operation: Operation | str) -> str:
-    """Claude から見えるツール名。"""
+    """Claude から見えるツール名"""
     name = operation if isinstance(operation, str) else operation.name
     return f"mcp__{SERVER_NAME}__{name}"
 
 
 def tool_names(*, writes: bool | None = None) -> list[str]:
-    """ツール名の一覧。``writes`` を指定すると読み取り／変更で絞る。"""
+    """ツール名の一覧 ``writes`` を指定すると読み取り／変更で絞る"""
     return [
         tool_name(operation)
         for operation in OPERATIONS
@@ -50,37 +50,37 @@ def tool_names(*, writes: bool | None = None) -> list[str]:
 
 
 def build_tools(bridge: EditorBridge) -> list[SdkMcpTool[Any]]:
-    """ブリッジに繋がった MCP ツールを組み立てる。
+    """ブリッジに繋がった MCP ツールを組み立てる
 
-    サーバとは別に取り出せるようにしてある。``create_sdk_mcp_server`` が返す
-    設定からはツールを覗けないので、試験からはこちらを使う。
+    サーバとは別に取り出せるようにしてある ``create_sdk_mcp_server`` が返す
+    設定からはツールを覗けないので、試験からはこちらを使う
     """
     return [_wrap(operation, bridge) for operation in OPERATIONS]
 
 
 def build_server(bridge: EditorBridge) -> McpSdkServerConfig:
-    """ブリッジに繋がった MCP サーバを作る。"""
+    """ブリッジに繋がった MCP サーバを作る"""
     from claude_agent_sdk import create_sdk_mcp_server
 
     return create_sdk_mcp_server(name=SERVER_NAME, version="1.0.0", tools=build_tools(bridge))
 
 
 def _wrap(operation: Operation, bridge: EditorBridge) -> SdkMcpTool[Any]:
-    """1 つの操作を MCP ツールにする。"""
+    """1 つの操作を MCP ツールにする"""
     from claude_agent_sdk import SdkMcpTool
 
     async def handler(arguments: dict[str, Any]) -> dict[str, Any]:
         loop = asyncio.get_running_loop()
         try:
-            # ブリッジの中で UI スレッドの返事を待つ。ここで直接待つと、
-            # SDK のメッセージ受信まで止まって中断が効かなくなる。
+            # ブリッジの中で UI スレッドの返事を待つ ここで直接待つと、
+            # SDK のメッセージ受信まで止まって中断が効かなくなる
             result = await loop.run_in_executor(
                 None, lambda: bridge.invoke(operation, dict(arguments))
             )
         except ToolError as exc:
             return _error(str(exc))
         except (ValueError, KeyError) as exc:
-            # 編集コマンドが弾いた場合。理由はそのまま返す方が次の手を選びやすい。
+            # 編集コマンドが弾いた場合 理由はそのまま返す方が次の手を選びやすい
             return _error(str(exc))
         return _content(result)
 

@@ -1,7 +1,7 @@
-"""プロジェクトの 1 フレームを合成する。
+"""プロジェクトの 1 フレームを合成する
 
-プレビューも書き出しもここを通る。同じ経路を使うことで「プレビューでは出るのに
-書き出すと出ない」が構造的に起きない。
+プレビューも書き出しもここを通る 同じ経路を使うことで「プレビューでは出るのに
+書き出すと出ない」が構造的に起きない
 """
 
 from __future__ import annotations
@@ -36,17 +36,17 @@ from kumiki.engine.sources import render_source
 
 __all__ = ["FrameRenderer", "RenderQuality"]
 
-#: 同時に開いておくデコーダの上限。素材ごとにコンテナとスレッドを抱えるので、
-#: 際限なく開くとファイルハンドルとメモリを食い潰す。
+#: 同時に開いておくデコーダの上限 素材ごとにコンテナとスレッドを抱えるので、
+#: 際限なく開くとファイルハンドルとメモリを食い潰す
 MAX_OPEN_DECODERS = 8
 
 
 @dataclass(frozen=True, slots=True)
 class RenderQuality:
-    """プレビューの解像度を落として再生を軽くするための設定。
+    """プレビューの解像度を落として再生を軽くするための設定
 
-    ``divisor`` が 2 なら縦横半分。合成そのものが軽くなるので、重いタイムラインでも
-    実時間再生を維持できる。書き出しでは常に 1 を使う。
+    ``divisor`` が 2 なら縦横半分 合成そのものが軽くなるので、重いタイムラインでも
+    実時間再生を維持できる 書き出しでは常に 1 を使う
     """
 
     divisor: int = 1
@@ -63,14 +63,14 @@ FULL_QUALITY = RenderQuality(1)
 
 
 class FrameRenderer:
-    """タイムラインの指定フレームを 1 枚の画像に合成する。
+    """タイムラインの指定フレームを 1 枚の画像に合成する
 
-    GL コンテキストを持つので、生成したスレッドの上でだけ使うこと。再生用と
-    書き出し用で別インスタンスにする。
+    GL コンテキストを持つので、生成したスレッドの上でだけ使うこと 再生用と
+    書き出し用で別インスタンスにする
 
-    ``context`` を省略すると自前でオフスクリーンのコンテキストを作る。Qt の
+    ``context`` を省略すると自前でオフスクリーンのコンテキストを作る Qt の
     ウィジェットの中から使うときは、すでに current になっているので
-    :class:`~kumiki.engine.gpu.CurrentGLContext` を渡す。
+    :class:`~kumiki.engine.gpu.CurrentGLContext` を渡す
     """
 
     def __init__(
@@ -88,13 +88,13 @@ class FrameRenderer:
         width, height = quality.apply(*project.settings.resolution)
         with self._context:
             self._compositor = Compositor(width, height)
-            # エフェクト処理は合成と同じ全画面四角形を使い回す。
+            # エフェクト処理は合成と同じ全画面四角形を使い回す
             self._effects = EffectProcessor(width, height, self._compositor.quad)
-        #: 素材ごとのデコーダ。最近使ったものを残す。
+        #: 素材ごとのデコーダ 最近使ったものを残す
         self._decoders: OrderedDict[tuple[MediaId, int], VideoDecoder] = OrderedDict()
-        #: トラックごとの転送用テクスチャ。毎フレーム作り直すと確保と解放で時間を食う。
+        #: トラックごとの転送用テクスチャ 毎フレーム作り直すと確保と解放で時間を食う
         self._textures: dict[str, Texture] = {}
-        #: AviUtl スクリプトを走らせる係。使うまで作らない。
+        #: AviUtl スクリプトを走らせる係 使うまで作らない
         self._scripts: ScriptStage | None = None
         self._closed = False
 
@@ -107,10 +107,10 @@ class FrameRenderer:
         return self._compositor.width, self._compositor.height
 
     def set_project(self, project: Project) -> None:
-        """編集後のプロジェクトに差し替える。
+        """編集後のプロジェクトに差し替える
 
-        解像度が変わればフレームバッファも作り直す。参照されなくなった素材の
-        デコーダはここで閉じる。開いたままだとファイルを差し替えられない。
+        解像度が変わればフレームバッファも作り直す 参照されなくなった素材の
+        デコーダはここで閉じる 開いたままだとファイルを差し替えられない
         """
         previous = self._project
         self._project = project
@@ -133,14 +133,14 @@ class FrameRenderer:
 
     @property
     def compositor(self) -> Compositor:
-        """合成結果を直接画面へ出したいときの逃げ道。プレビューが使う。"""
+        """合成結果を直接画面へ出したいときの逃げ道 プレビューが使う"""
         return self._compositor
 
     def compose(self, frame: int) -> None:
-        """``frame`` を合成する。結果は CPU へ戻さず GPU 上に残る。
+        """``frame`` を合成する 結果は CPU へ戻さず GPU 上に残る
 
-        画面に出すだけなら往復が要らない。:meth:`render` はこれを呼んでから
-        読み出しているだけ。
+        画面に出すだけなら往復が要らない :meth:`render` はこれを呼んでから
+        読み出しているだけ
         """
         if self._closed:
             raise RuntimeError("閉じたレンダラは使えない")
@@ -156,10 +156,10 @@ class FrameRenderer:
             self._draw_clip(track, clip, frame, rate)
 
     def render(self, frame: int) -> np.ndarray:
-        """``frame`` の合成結果を sRGB の ``(高さ, 幅, 4)`` uint8 で返す。
+        """``frame`` の合成結果を sRGB の ``(高さ, 幅, 4)`` uint8 で返す
 
-        映像トラックを下から順に重ねる。タイムラインの下のトラックが奥、
-        上のトラックが手前という Premiere / AviUtl と同じ並び。
+        映像トラックを下から順に重ねる タイムラインの下のトラックが奥、
+        上のトラックが手前という Premiere / AviUtl と同じ並び
         """
         with self._context:
             self.compose(frame)
@@ -198,8 +198,8 @@ class FrameRenderer:
         texture.upload(image)
 
         if not self._effects.has_work(gpu_effects):
-            # エフェクトが無ければ中間バッファを通さない。全画面のパスが 1 回
-            # 増えるだけで、エフェクト無しのクリップでも再生の余裕が削られる。
+            # エフェクトが無ければ中間バッファを通さない 全画面のパスが 1 回
+            # 増えるだけで、エフェクト無しのクリップでも再生の余裕が削られる
             self._compositor.draw(texture, opacity=opacity, blend=clip.blend_mode)
             return
 
@@ -213,7 +213,7 @@ class FrameRenderer:
             fps=float(rate.fps),
             source_rect=placement.to_clip(self._compositor.width, self._compositor.height),
         )
-        # エフェクトを通した結果は画面いっぱいで GL の向き。収め直しも反転も要らない。
+        # エフェクトを通した結果は画面いっぱいで GL の向き 収め直しも反転も要らない
         self._compositor.draw_handle(
             result.color,
             Placement(0.0, 0.0, float(self._compositor.width), float(self._compositor.height)),
@@ -232,10 +232,10 @@ class FrameRenderer:
         rate: FrameRate,
         opacity: float,
     ) -> None:
-        """AviUtl スクリプトを積んだクリップを描く。
+        """AviUtl スクリプトを積んだクリップを描く
 
-        スクリプトは「何回・どこへ・どう変形して描くか」を返す。1 回とは限らない
-        （残像や複製を作るスクリプトがある）ので、返ってきた分だけ合成する。
+        スクリプトは「何回・どこへ・どう変形して描くか」を返す 1 回とは限らない
+        （残像や複製を作るスクリプトがある）ので、返ってきた分だけ合成する
         """
         stage = self._script_stage()
         if stage is None:
@@ -296,10 +296,10 @@ class FrameRenderer:
             )
 
     def _script_stage(self) -> ScriptStage | None:
-        """スクリプトを走らせる係。初めて必要になったときに作る。
+        """スクリプトを走らせる係 初めて必要になったときに作る
 
-        Lua ランタイムの用意は数ミリ秒かかる。スクリプトを使わない
-        プロジェクトでその代金を払わせない。
+        Lua ランタイムの用意は数ミリ秒かかる スクリプトを使わない
+        プロジェクトでその代金を払わせない
         """
         if self._scripts is None:
             self._scripts = ScriptStage(
@@ -310,13 +310,13 @@ class FrameRenderer:
         return self._scripts
 
     def _image_for(self, clip: Clip, frame: int, rate: FrameRate) -> np.ndarray | None:
-        """クリップの元絵。素材由来と生成オブジェクトの両方をここで扱う。"""
+        """クリップの元絵 素材由来と生成オブジェクトの両方をここで扱う"""
         if clip.media_id is None:
             return self._generate(clip, frame, rate)
         return self._decode(clip, frame, rate)
 
     def _generate(self, clip: Clip, frame: int, rate: FrameRate) -> np.ndarray | None:
-        """素材を持たないクリップ（テキスト・図形）の絵を作る。"""
+        """素材を持たないクリップ（テキスト・図形）の絵を作る"""
         del rate
         if clip.source is None:
             return None
@@ -340,7 +340,7 @@ class FrameRenderer:
         local_frame = frame - clip.timeline_start
         source_time = clip.source_in + local_frame * rate.frame_duration * clip.speed
         if media.is_still:
-            # 静止画は時間を持たない。常に先頭を返す。
+            # 静止画は時間を持たない 常に先頭を返す
             source_time = Fraction(0)
         return decoder.frame_at(source_time)
 
@@ -357,8 +357,8 @@ class FrameRenderer:
         try:
             decoder = VideoDecoder(media.path, stream_index)
         except ProbeError:
-            # オフライン素材や壊れたファイル。ここで落とすと、1 本壊れただけで
-            # プロジェクト全体が開けなくなる。そのクリップだけ映らない扱いにする。
+            # オフライン素材や壊れたファイル ここで落とすと、1 本壊れただけで
+            # プロジェクト全体が開けなくなる そのクリップだけ映らない扱いにする
             return None
 
         self._decoders[key] = decoder

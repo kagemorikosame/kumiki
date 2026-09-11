@@ -1,16 +1,16 @@
-"""AviUtl の ``obj`` API。
+"""AviUtl の ``obj`` API
 
 AviUtl のスクリプトは、1 つのオブジェクト（画像バッファ + 描画パラメータ）を
-書き換えることで効果を作る。ここではその「オブジェクト」を :class:`ObjectState`
-として持ち、Lua から触れる窓口を :class:`ObjApi` が提供する。
+書き換えることで効果を作る ここではその「オブジェクト」を :class:`ObjectState`
+として持ち、Lua から触れる窓口を :class:`ObjApi` が提供する
 
-**描画は 2 段になっている。** スクリプトが :meth:`ObjApi.draw` を呼ばなければ、
-実行後の状態で 1 回だけ描かれる（AviUtl と同じ）。呼べばその回数だけ描かれ、
-自動描画は行われない。移動やコピーを作るスクリプトはこの仕組みで動いている。
+**描画は 2 段になっている** スクリプトが :meth:`ObjApi.draw` を呼ばなければ、
+実行後の状態で 1 回だけ描かれる（AviUtl と同じ） 呼べばその回数だけ描かれ、
+自動描画は行われない 移動やコピーを作るスクリプトはこの仕組みで動いている
 
-画像は RGBA の uint8、ストレートアルファ。AviUtl は内部で BGRA だが、ここで
+画像は RGBA の uint8、ストレートアルファ AviUtl は内部で BGRA だが、ここで
 合わせると読み書きのたびに並べ替えが要るので、境界（``getpixel`` など）でだけ
-AviUtl の見え方に合わせる。
+AviUtl の見え方に合わせる
 """
 
 from __future__ import annotations
@@ -26,8 +26,8 @@ from kumiki.compat.aviutl.report import CompatibilityReport, global_report
 
 __all__ = ["DrawCall", "EffectRequest", "ObjApi", "ObjectState"]
 
-#: AviUtl のフィルタ名と、こちらのエフェクト種別の対応。
-#: 名前が同じでも中身は完全には一致しない。見た目の系統を合わせるための対応表。
+#: AviUtl のフィルタ名と、こちらのエフェクト種別の対応
+#: 名前が同じでも中身は完全には一致しない 見た目の系統を合わせるための対応表
 EFFECT_NAMES: dict[str, str] = {
     "ぼかし": "blur",
     "発光": "glow",
@@ -46,7 +46,7 @@ EFFECT_NAMES: dict[str, str] = {
     "クリッピング": "crop",
 }
 
-#: AviUtl の図形名と、こちらの図形の対応。
+#: AviUtl の図形名と、こちらの図形の対応
 FIGURE_NAMES: dict[str, str] = {
     "円": "ellipse",
     "四角形": "rect",
@@ -60,20 +60,20 @@ FIGURE_NAMES: dict[str, str] = {
 
 @dataclass(frozen=True, slots=True)
 class EffectRequest:
-    """``obj.effect`` で頼まれたフィルタ。"""
+    """``obj.effect`` で頼まれたフィルタ"""
 
     kind: str
     params: dict[str, float | str]
-    #: AviUtl での呼ばれ方。記録に残すため。
+    #: AviUtl での呼ばれ方 記録に残すため
     original: str = ""
 
 
 @dataclass(slots=True)
 class DrawCall:
-    """1 回分の描画。
+    """1 回分の描画
 
-    値の意味は AviUtl に合わせる。位置は画面中央からのずれ、``rz`` は度、
-    ``zoom`` は 1.0 が等倍、``aspect`` は正で横が縮む。
+    値の意味は AviUtl に合わせる 位置は画面中央からのずれ、``rz`` は度、
+    ``zoom`` は 1.0 が等倍、``aspect`` は正で横が縮む
     """
 
     image: np.ndarray
@@ -96,13 +96,13 @@ class DrawCall:
 
 @dataclass(slots=True)
 class ObjectState:
-    """スクリプトが触る 1 オブジェクト。"""
+    """スクリプトが触る 1 オブジェクト"""
 
     image: np.ndarray
-    #: 画面（プロジェクト）の大きさ。
+    #: 画面（プロジェクト）の大きさ
     screen_w: int = 1920
     screen_h: int = 1080
-    #: オブジェクトの中での位置。AviUtl と同じで 0 始まり。
+    #: オブジェクトの中での位置 AviUtl と同じで 0 始まり
     frame: int = 0
     totalframe: int = 1
     framerate: float = 30.0
@@ -122,26 +122,26 @@ class ObjectState:
     zoom: float = 1.0
     alpha: float = 1.0
     aspect: float = 0.0
-    #: 軸ごとの倍率。拡張描画のスクリプトが使う。1.0 が等倍。
+    #: 軸ごとの倍率 拡張描画のスクリプトが使う 1.0 が等倍
     sx: float = 1.0
     sy: float = 1.0
     sz: float = 1.0
 
-    #: ``obj.track0`` … の値。
+    #: ``obj.track0`` … の値
     track: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0])
     check0: bool = False
-    #: 名前付きパラメータ（``--track@`` や ``--dialog`` で作られたもの）。
+    #: 名前付きパラメータ（``--track@`` や ``--dialog`` で作られたもの）
     values: dict[str, Any] = field(default_factory=dict)
 
-    #: 明示的に呼ばれた描画。空なら実行後に 1 回だけ自動で描く。
+    #: 明示的に呼ばれた描画 空なら実行後に 1 回だけ自動で描く
     draws: list[DrawCall] = field(default_factory=list)
-    #: 積まれたフィルタ。描画の直前に適用する。
+    #: 積まれたフィルタ 描画の直前に適用する
     effects: list[EffectRequest] = field(default_factory=list)
-    #: ``obj.load("buffer")`` などで使う作業用バッファ。
+    #: ``obj.load("buffer")`` などで使う作業用バッファ
     buffers: dict[str, np.ndarray] = field(default_factory=dict)
-    #: ``obj.setfont`` で決めた書体。``obj.mes`` が使う。
+    #: ``obj.setfont`` で決めた書体 ``obj.mes`` が使う
     font: dict[str, Any] = field(default_factory=dict)
-    #: ``obj.setoption`` で設定した描画オプション。
+    #: ``obj.setoption`` で設定した描画オプション
     options: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -161,7 +161,7 @@ class ObjectState:
         return self.totalframe / self.framerate if self.framerate else 0.0
 
     def snapshot(self) -> DrawCall:
-        """いまの状態を 1 回分の描画にする。"""
+        """いまの状態を 1 回分の描画にする"""
         return DrawCall(
             image=self.image,
             x=self.ox,
@@ -182,11 +182,11 @@ class ObjectState:
         )
 
     def result(self) -> tuple[DrawCall, ...]:
-        """描画の一覧。明示的な描画が無ければ自動描画を 1 つ。"""
+        """描画の一覧 明示的な描画が無ければ自動描画を 1 つ"""
         return tuple(self.draws) if self.draws else (self.snapshot(),)
 
 
-#: 書き換えられる値。ここに無い名前への代入は無視して記録する。
+#: 書き換えられる値 ここに無い名前への代入は無視して記録する
 _WRITABLE = frozenset(
     {
         "ox",
@@ -201,14 +201,14 @@ _WRITABLE = frozenset(
         "zoom",
         "alpha",
         "aspect",
-        # 軸ごとの倍率。拡張描画のスクリプトがこれで縦横を別々に伸ばす。
+        # 軸ごとの倍率 拡張描画のスクリプトがこれで縦横を別々に伸ばす
         "sx",
         "sy",
         "sz",
     }
 )
 
-#: 読み出し専用の値。
+#: 読み出し専用の値
 _READABLE = frozenset(
     {
         "x",
@@ -230,16 +230,16 @@ _READABLE = frozenset(
     }
 )
 
-#: 番号として返すだけのもの。AviUtl では内部の識別子。
+#: 番号として返すだけのもの AviUtl では内部の識別子
 _IDENTIFIERS = {"id", "effect_id", "objectindex"}
 
 
 class ObjApi:
-    """Lua から見える ``obj``。
+    """Lua から見える ``obj``
 
     ここに無い名前が呼ばれたら、落とさずに :class:`CompatibilityReport` へ記録して
-    ``nil`` を返す。スクリプト 1 つが動かないことより、何が足りないのかが
-    分かることを優先する。
+    ``nil`` を返す スクリプト 1 つが動かないことより、何が足りないのかが
+    分かることを優先する
     """
 
     def __init__(
@@ -254,16 +254,16 @@ class ObjApi:
         self.state = state
         self._report = report if report is not None else global_report
         self._script = script
-        #: テキストや図形を絵にする関数。Qt に依存するので外から渡す。
+        #: テキストや図形を絵にする関数 Qt に依存するので外から渡す
         self._render_source = render_source
-        #: 共通処理のファイルを読む関数。ランタイムが渡す。
+        #: 共通処理のファイルを読む関数 ランタイムが渡す
         self._load_module = load_module
         self._random = random.Random(0)
 
     # --- 値の読み書き ---
 
     def get(self, name: str) -> Any:
-        """``obj.名前`` の読み出し。"""
+        """``obj.名前`` の読み出し"""
         state = self.state
         if name in _WRITABLE:
             return getattr(state, name)
@@ -272,7 +272,7 @@ class ObjApi:
         if name == "h":
             return state.height
         if name in ("x", "y", "z"):
-            # 表示基準座標。こちらでは中央を原点にしているので 0。
+            # 表示基準座標 こちらでは中央を原点にしているので 0
             return 0.0
         if name in _READABLE:
             return getattr(state, name)
@@ -294,12 +294,12 @@ class ObjApi:
         return None
 
     def set(self, name: str, value: Any) -> None:
-        """``obj.名前 = 値`` の代入。"""
+        """``obj.名前 = 値`` の代入"""
         if name in _WRITABLE:
             setattr(self.state, name, _as_float(value))
             return
         if name in _READABLE or name in ("w", "h"):
-            # AviUtl でも読み出し専用。黙って捨てず、記録に残す。
+            # AviUtl でも読み出し専用 黙って捨てず、記録に残す
             self._report.note_missing(f"obj.{name} への代入")
             return
         self.state.values[name] = value
@@ -317,7 +317,7 @@ class ObjApi:
         ry: float | None = None,
         rz: float | None = None,
     ) -> None:
-        """いまの画像を 1 回描く。引数を省くと現在の値を使う。"""
+        """いまの画像を 1 回描く 引数を省くと現在の値を使う"""
         state = self.state
         call = state.snapshot()
         if x is not None:
@@ -339,15 +339,15 @@ class ObjApi:
         state.draws.append(call)
 
     def lua_drawpoly(self, *args: Any) -> None:
-        """四隅を指定して描く。まだ効かせていない。
+        """四隅を指定して描く まだ効かせていない
 
-        任意の四角形へ貼るには射影変換が要る。合成側に入れるまでは記録だけ。
+        任意の四角形へ貼るには射影変換が要る 合成側に入れるまでは記録だけ
         """
         del args
         self._report.note_missing("obj.drawpoly")
 
     def lua_effect(self, *args: Any) -> None:
-        """フィルタを積む。``obj.effect("ぼかし", "範囲", 20)``。"""
+        """フィルタを積む ``obj.effect("ぼかし", "範囲", 20)``"""
         if not args:
             self._report.note_missing("obj.effect（引数なし）")
             return
@@ -369,7 +369,7 @@ class ObjApi:
     # --- 画像の用意 ---
 
     def lua_load(self, kind: str = "", *args: Any) -> None:
-        """画像バッファを差し替える。"""
+        """画像バッファを差し替える"""
         name = str(kind)
         if name == "figure":
             self._load_figure(args)
@@ -383,7 +383,7 @@ class ObjApi:
             self._report.note_missing(f'obj.load("{name}")')
 
     def _load_figure(self, args: tuple[Any, ...]) -> None:
-        """``obj.load("figure", 名前, 色, サイズ, 線幅)``。"""
+        """``obj.load("figure", 名前, 色, サイズ, 線幅)``"""
         if self._render_source is None:
             self._report.note_missing('obj.load("figure")')
             return
@@ -413,7 +413,7 @@ class ObjApi:
         )
 
     def _load_text(self, args: tuple[Any, ...]) -> None:
-        """``obj.load("text", 本文)``。書体は :meth:`lua_setfont` の指定に従う。"""
+        """``obj.load("text", 本文)`` 書体は :meth:`lua_setfont` の指定に従う"""
         self.lua_mes(str(args[0]) if args else "")
 
     def _load_buffer(self, args: tuple[Any, ...]) -> None:
@@ -425,10 +425,10 @@ class ObjApi:
         self.state.image = stored
 
     def lua_copybuffer(self, destination: str = "", source: str = "") -> None:
-        """バッファをコピーする。``obj.copybuffer("tmp", "obj")``。
+        """バッファをコピーする ``obj.copybuffer("tmp", "obj")``
 
-        名前の付け方は世代でぶれる（``obj`` ``object`` ``tmp`` ``tempbuffer``）。
-        同じものを指す綴りは同じ扱いにする。
+        名前の付け方は世代でぶれる（``obj`` ``object`` ``tmp`` ``tempbuffer``）
+        同じものを指す綴りは同じ扱いにする
         """
         state = self.state
         origin_name = _buffer_name(str(source))
@@ -444,7 +444,7 @@ class ObjApi:
             state.buffers[target_name] = origin.copy()
 
     def lua_mes(self, text: str = "") -> None:
-        """テキストを描く。``obj.mes`` と ``obj.load("text", …)`` の実体。"""
+        """テキストを描く ``obj.mes`` と ``obj.load("text", …)`` の実体"""
         if self._render_source is None:
             self._report.note_missing("obj.mes")
             return
@@ -463,11 +463,11 @@ class ObjApi:
         self.state.image = self._render_source("text", params, width, height)
 
     def lua_setfont(self, name: str = "", size: float = 48, *rest: Any) -> None:
-        """書体を決める。
+        """書体を決める
 
-        引数の数は世代で違う。AviUtl1 は ``(名前, サイズ, 装飾, 色, 影色)`` の
-        5 つだが、AviUtl2 の配布スクリプトは字間や行間まで渡してくる。
-        余分は受けて無視する。数が合わないというだけで落とすのは損が大きい。
+        引数の数は世代で違う AviUtl1 は ``(名前, サイズ, 装飾, 色, 影色)`` の
+        5 つだが、AviUtl2 の配布スクリプトは字間や行間まで渡してくる
+        余分は受けて無視する 数が合わないというだけで落とすのは損が大きい
         """
         style = int(_as_float(rest[0])) if len(rest) > 0 else 0
         color = rest[1] if len(rest) > 1 else 0xFFFFFF
@@ -483,7 +483,7 @@ class ObjApi:
     # --- 画素 ---
 
     def lua_getpixel(self, x: int = 0, y: int = 0, kind: str = "col") -> Any:
-        """1 画素を読む。``kind`` が ``"col"`` なら ``色, 不透明度``。"""
+        """1 画素を読む ``kind`` が ``"col"`` なら ``色, 不透明度``"""
         image = self.state.image
         column, row = int(_as_float(x)), int(_as_float(y))
         if not (0 <= row < image.shape[0] and 0 <= column < image.shape[1]):
@@ -517,10 +517,10 @@ class ObjApi:
             image[target] = image[origin]
 
     def lua_getpixeldata(self, *args: Any) -> Any:
-        """画像全体を読む。返すのは ``(データ, 幅, 高さ)``。
+        """画像全体を読む 返すのは ``(データ, 幅, 高さ)``
 
-        Lua 側で生のポインタとして扱う想定の API なので、そのままでは使えない。
-        幅と高さだけは意味があるので返し、データの扱いは記録に残す。
+        Lua 側で生のポインタとして扱う想定の API なので、そのままでは使えない
+        幅と高さだけは意味があるので返し、データの扱いは記録に残す
         """
         del args
         self._report.note_missing("obj.getpixeldata")
@@ -552,15 +552,15 @@ class ObjApi:
         return self.state.options.get(key)
 
     def lua_setanchor(self, *args: Any) -> None:
-        """アンカーの表示。画面上の操作なので、値だけ受けて記録する。"""
+        """アンカーの表示 画面上の操作なので、値だけ受けて記録する"""
         del args
         self._report.note_missing("obj.setanchor")
 
     def lua_getvalue(self, target: str = "", *args: Any) -> Any:
-        """設定値を読む。``obj.getvalue("track0")`` など。
+        """設定値を読む ``obj.getvalue("track0")`` など
 
-        AviUtl2 のスクリプトは ``obj.getvalue("track.名前")`` とも書く。
-        前置きを外して同じものを引く。
+        AviUtl2 のスクリプトは ``obj.getvalue("track.名前")`` とも書く
+        前置きを外して同じものを引く
         """
         del args
         name = str(target)
@@ -579,7 +579,7 @@ class ObjApi:
         return 0
 
     def lua_getinfo(self, name: str = "", *args: Any) -> Any:
-        """環境の情報。"""
+        """環境の情報"""
         del args
         key = str(name)
         state = self.state
@@ -602,10 +602,10 @@ class ObjApi:
     def lua_rand(
         self, minimum: int = 0, maximum: int = 1, seed: int | None = None, frame: int | None = None
     ) -> int:
-        """同じフレームなら同じ値になる乱数。
+        """同じフレームなら同じ値になる乱数
 
-        毎回ばらつくと、1 フレーム描き直すたびに絵が変わってしまう。種は
-        オブジェクトと時間から作る。
+        毎回ばらつくと、1 フレーム描き直すたびに絵が変わってしまう 種は
+        オブジェクトと時間から作る
         """
         low, high = int(_as_float(minimum)), int(_as_float(maximum))
         if low > high:
@@ -616,7 +616,7 @@ class ObjApi:
         return self._random.randint(low, high)
 
     def lua_interpolation(self, *args: Any) -> Any:
-        """連続した点の間を補間する。``obj.interpolation(t, x0,y0, x1,y1, …)``。"""
+        """連続した点の間を補間する ``obj.interpolation(t, x0,y0, x1,y1, …)``"""
         if len(args) < 3:
             return 0.0
         position = _as_float(args[0])
@@ -632,10 +632,10 @@ class ObjApi:
         self._report.note_missing("obj.computeshader")
 
     def lua_module(self, name: str = "", *args: Any) -> Any:
-        """``obj.module`` — 共通処理のファイルを読む。
+        """``obj.module`` — 共通処理のファイルを読む
 
-        配布スクリプトは処理を ``.mod2`` へ切り出していることが多い。読めないと
-        本体の 1 行目で落ちるので、ここが通ることの意味は大きい。
+        配布スクリプトは処理を ``.mod2`` へ切り出していることが多い 読めないと
+        本体の 1 行目で落ちるので、ここが通ることの意味は大きい
         """
         del args
         if self._load_module is None:
@@ -649,10 +649,10 @@ class ObjApi:
 
 
 def _buffer_name(name: str) -> str:
-    """バッファ名を揃える。
+    """バッファ名を揃える
 
-    AviUtl は同じものを ``obj`` とも ``object`` とも呼ぶ。綴りの違いだけで
-    「バッファが無い」と言われても直しようがない。
+    AviUtl は同じものを ``obj`` とも ``object`` とも呼ぶ 綴りの違いだけで
+    「バッファが無い」と言われても直しようがない
     """
     cleaned = name.strip().lower()
     if cleaned in ("", "obj", "object"):
@@ -681,7 +681,7 @@ def _as_param(value: Any) -> float | str:
 
 
 def _color_of(value: Any) -> tuple[float, float, float, float]:
-    """AviUtl の ``0xRRGGBB`` を 0..1 の組へ。"""
+    """AviUtl の ``0xRRGGBB`` を 0..1 の組へ"""
     number = int(_as_float(value))
     return (
         ((number >> 16) & 0xFF) / 255.0,
@@ -692,11 +692,11 @@ def _color_of(value: Any) -> tuple[float, float, float, float]:
 
 
 def _catmull_rom(position: float, points: list[float]) -> float:
-    """点の並びを滑らかに繋いだ曲線の値。
+    """点の並びを滑らかに繋いだ曲線の値
 
     AviUtl の ``obj.interpolation`` は座標の組を受け取るが、ここでは 1 次元の
-    値の並びとして扱う。移動の軌跡を作るのに使われるのが主で、その用途では
-    軸ごとに呼ばれる。
+    値の並びとして扱う 移動の軌跡を作るのに使われるのが主で、その用途では
+    軸ごとに呼ばれる
     """
     if not points:
         return 0.0
@@ -721,7 +721,7 @@ def _catmull_rom(position: float, points: list[float]) -> float:
 
 
 def rgb_to_number(red: float, green: float, blue: float) -> int:
-    """``RGB()`` の実体。"""
+    """``RGB()`` の実体"""
     return (
         (int(min(max(red, 0), 255)) << 16)
         | (int(min(max(green, 0), 255)) << 8)
@@ -730,7 +730,7 @@ def rgb_to_number(red: float, green: float, blue: float) -> int:
 
 
 def hsv_to_number(hue: float, saturation: float, value: float) -> int:
-    """``HSV()`` の実体。AviUtl と同じで H は 0..360、S と V は 0..255。"""
+    """``HSV()`` の実体 AviUtl と同じで H は 0..360、S と V は 0..255"""
     h = (float(hue) % 360.0) / 60.0
     s = min(max(float(saturation), 0.0), 255.0) / 255.0
     v = min(max(float(value), 0.0), 255.0)

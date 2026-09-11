@@ -1,7 +1,7 @@
-"""書き出しダイアログと、その進捗。
+"""書き出しダイアログと、その進捗
 
-書き出しは別スレッドで走らせる。メインスレッドで回すと、数分間 UI が固まって
-中止すらできなくなる。
+書き出しは別スレッドで走らせる メインスレッドで回すと、数分間 UI が固まって
+中止すらできなくなる
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ from kumiki.engine.encode import export_project as run_export
 
 __all__ = ["ExportDialog"]
 
-#: コーデック名と、画面に出す説明。
+#: コーデック名と、画面に出す説明
 CODEC_LABELS = {
     "h264_nvenc": "H.264 (NVIDIA GPU)",
     "hevc_nvenc": "H.265 (NVIDIA GPU)",
@@ -45,7 +45,7 @@ CODEC_LABELS = {
 
 
 class _ExportWorker(QObject):
-    """別スレッドで書き出しを回す。"""
+    """別スレッドで書き出しを回す"""
 
     progressed = Signal(float)
     finished = Signal(str)
@@ -77,7 +77,7 @@ class _ExportWorker(QObject):
 
 
 class ExportDialog(QDialog):
-    """書き出しの設定と実行。"""
+    """書き出しの設定と実行"""
 
     def __init__(self, project: Project, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -190,7 +190,7 @@ class ExportDialog(QDialog):
 
     def _on_finished(self, path: str) -> None:
         self._teardown()
-        QMessageBox.information(self, "書き出し", f"書き出しました。\n{path}")
+        QMessageBox.information(self, "書き出し", f"書き出しました\n{path}")
         self.accept()
 
     def _on_failed(self, message: str) -> None:
@@ -208,8 +208,8 @@ class ExportDialog(QDialog):
         self._buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("閉じる")
 
     def closeEvent(self, event: object) -> None:  # noqa: N802 - Qt の命名規約
-        # 書き出し中に閉じられたら、スレッドを畳んでから終わる。
-        # 放置すると Qt がスレッドの生存中に破棄されたと言って落ちる。
+        # 書き出し中に閉じられたら、スレッドを畳んでから終わる
+        # 放置すると Qt がスレッドの生存中に破棄されたと言って落ちる
         if self._worker is not None:
             self._worker.cancel()
             if self._thread is not None:

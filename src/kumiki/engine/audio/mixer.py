@@ -1,7 +1,7 @@
-"""タイムラインの音声をミックスする。
+"""タイムラインの音声をミックスする
 
-映像と違い、音声は「今のフレーム」だけでは足りない。再生は連続したサンプル列を
-要求するので、フレーム境界をまたぐ範囲をまとめて返せる形にしてある。
+映像と違い、音声は「今のフレーム」だけでは足りない 再生は連続したサンプル列を
+要求するので、フレーム境界をまたぐ範囲をまとめて返せる形にしてある
 """
 
 from __future__ import annotations
@@ -16,14 +16,14 @@ from kumiki.engine.decode import AudioDecoder, ProbeError
 
 __all__ = ["AudioMixer"]
 
-#: 同時に開いておくデコーダの上限。
+#: 同時に開いておくデコーダの上限
 MAX_OPEN_DECODERS = 8
 
 
 class AudioMixer:
-    """プロジェクトの音声を、指定したサンプル範囲について合成する。
+    """プロジェクトの音声を、指定したサンプル範囲について合成する
 
-    スレッドセーフではない。再生用と書き出し用で別インスタンスにすること。
+    スレッドセーフではない 再生用と書き出し用で別インスタンスにすること
     """
 
     def __init__(self, project: Project) -> None:
@@ -63,11 +63,11 @@ class AudioMixer:
         self._decoders.clear()
 
     def render(self, start_sample: int, count: int) -> np.ndarray:
-        """``[start_sample, start_sample + count)`` のミックス結果を返す。
+        """``[start_sample, start_sample + count)`` のミックス結果を返す
 
-        形は ``(count, チャンネル数)`` の float32。クリッピングはしない。
+        形は ``(count, チャンネル数)`` の float32 クリッピングはしない
         ここで頭打ちにすると、後段のフェードやラウドネス調整で潰れた音しか
-        扱えなくなる。出力段で 1 度だけ行う。
+        扱えなくなる 出力段で 1 度だけ行う
         """
         if self._closed:
             raise RuntimeError("閉じたミキサは使えない")
@@ -85,7 +85,7 @@ class AudioMixer:
         return out
 
     def render_frames(self, start_frame: int, frame_count: int) -> np.ndarray:
-        """フレーム範囲で指定してミックスする。書き出し側の入口。"""
+        """フレーム範囲で指定してミックスする 書き出し側の入口"""
         rate = self._project.rate
         start = _frame_to_sample(start_frame, rate, self.sample_rate)
         end = _frame_to_sample(start_frame + frame_count, rate, self.sample_rate)
@@ -117,7 +117,7 @@ class AudioMixer:
     def _read_clip(
         self, clip: Clip, offset_samples: int, count: int, rate: FrameRate
     ) -> np.ndarray | None:
-        """クリップ内の位置からサンプルを読む。速度変更があればここで反映する。"""
+        """クリップ内の位置からサンプルを読む 速度変更があればここで反映する"""
         if clip.media_id is None:
             return None
         media = self._project.find_media(clip.media_id)
@@ -133,8 +133,8 @@ class AudioMixer:
             start = int(source_offset) + offset_samples
             return decoder.read(start, count)
 
-        # 速度変更。テープを速く回すのと同じで音程も変わる。ピッチを保つ
-        # タイムストレッチは別物なので、後のフェーズで独立した機能として入れる。
+        # 速度変更 テープを速く回すのと同じで音程も変わる ピッチを保つ
+        # タイムストレッチは別物なので、後のフェーズで独立した機能として入れる
         speed = float(clip.speed)
         start = int(source_offset + offset_samples * speed)
         needed = int(np.ceil(count * speed)) + 2
@@ -159,7 +159,7 @@ class AudioMixer:
                 stream_index=stream_index if stream_index else None,
             )
         except ProbeError:
-            # オフライン素材。そのクリップだけ無音になり、再生自体は続く。
+            # オフライン素材 そのクリップだけ無音になり、再生自体は続く
             return None
 
         self._decoders[key] = decoder
@@ -170,10 +170,10 @@ class AudioMixer:
 
 
 def _frame_to_sample(frame: int, rate: FrameRate, sample_rate: int) -> int:
-    """フレーム番号を、そのフレームが始まるサンプル番号へ。
+    """フレーム番号を、そのフレームが始まるサンプル番号へ
 
     :mod:`kumiki.core.timebase` の変換をそのまま使うと ``Fraction`` の生成が
-    サンプルごとに走る。ここは再生のたびに通るので、整数演算で済ませる。
+    サンプルごとに走る ここは再生のたびに通るので、整数演算で済ませる
     """
     return frame * rate.den * sample_rate // rate.num
 
@@ -185,10 +185,10 @@ def _db_to_gain(db: float) -> float:
 
 
 def _apply_pan(samples: np.ndarray, pan: float) -> np.ndarray:
-    """定電力パンニング。
+    """定電力パンニング
 
-    左右の音量を単純な線形で振ると、中央で音圧が下がって聞こえる。
-    左右のゲインの二乗和が一定になるようにする。
+    左右の音量を単純な線形で振ると、中央で音圧が下がって聞こえる
+    左右のゲインの二乗和が一定になるようにする
     """
     if pan == 0.0 or samples.shape[1] != 2:
         return samples
@@ -198,10 +198,10 @@ def _apply_pan(samples: np.ndarray, pan: float) -> np.ndarray:
 
 
 def _resample_linear(source: np.ndarray, count: int, speed: float) -> np.ndarray:
-    """線形補間でサンプル数を変える。
+    """線形補間でサンプル数を変える
 
-    速度変更のプレビュー品質としては十分。書き出し品質を上げたくなったら、
-    ここを多相フィルタに差し替える。
+    速度変更のプレビュー品質としては十分 書き出し品質を上げたくなったら、
+    ここを多相フィルタに差し替える
     """
     if count <= 0:
         return np.zeros((0, source.shape[1]), dtype=np.float32)

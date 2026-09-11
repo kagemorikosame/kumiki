@@ -1,10 +1,10 @@
-"""タイムラインの描画。
+"""タイムラインの描画
 
-``QGraphicsView`` を使わず自前で描く。クリップが数千個になっても、見えている範囲
-だけを描けば済むからで、シーングラフに全部を載せると生成だけで時間を食う。
+``QGraphicsView`` を使わず自前で描く クリップが数千個になっても、見えている範囲
+だけを描けば済むからで、シーングラフに全部を載せると生成だけで時間を食う
 
-描画関数はウィジェットの状態を持たない。引数で受け取ったものだけを描くので、
-書き出しプレビューや単体テストからも同じ関数を呼べる。
+描画関数はウィジェットの状態を持たない 引数で受け取ったものだけを描くので、
+書き出しプレビューや単体テストからも同じ関数を呼べる
 """
 
 from __future__ import annotations
@@ -32,8 +32,8 @@ __all__ = [
     "to_qimage",
 ]
 
-#: 目盛りの間隔として使える値（フレーム数の基準となる秒数）。
-#: 1 目盛りが最低でもこのピクセル数を超えるものを選ぶ。
+#: 目盛りの間隔として使える値（フレーム数の基準となる秒数）
+#: 1 目盛りが最低でもこのピクセル数を超えるものを選ぶ
 _MIN_TICK_SPACING = 70
 _TICK_SECONDS = (
     Fraction(1, 30),
@@ -56,10 +56,10 @@ _TICK_SECONDS = (
 
 
 def to_qimage(array: np.ndarray) -> QImage:
-    """``(高さ, 幅, 4)`` の uint8 配列を :class:`QImage` にする。
+    """``(高さ, 幅, 4)`` の uint8 配列を :class:`QImage` にする
 
-    ``QImage`` は渡したバッファを参照するだけでコピーしない。元の配列が
-    先に解放されると描画時に落ちるので、必ずコピーを作って渡す。
+    ``QImage`` は渡したバッファを参照するだけでコピーしない 元の配列が
+    先に解放されると描画時に落ちるので、必ずコピーを作って渡す
     """
     data = np.ascontiguousarray(array, dtype=np.uint8)
     height, width = data.shape[:2]
@@ -68,7 +68,7 @@ def to_qimage(array: np.ndarray) -> QImage:
 
 
 def draw_ruler(painter: QPainter, layout: TimelineLayout, width: int, rate: FrameRate) -> None:
-    """時間目盛りを描く。"""
+    """時間目盛りを描く"""
     rect = QRect(0, 0, width, Metrics.RULER_HEIGHT)
     painter.fillRect(rect, Colors.TIMELINE_RULER)
     painter.setPen(QPen(Colors.BORDER, 1))
@@ -97,9 +97,9 @@ def draw_ruler(painter: QPainter, layout: TimelineLayout, width: int, rate: Fram
 
 
 def _tick_step(layout: TimelineLayout, rate: FrameRate) -> int:
-    """目盛りの間隔（フレーム数）。
+    """目盛りの間隔（フレーム数）
 
-    表示倍率に応じて、ラベルが重ならない中で最も細かい間隔を選ぶ。
+    表示倍率に応じて、ラベルが重ならない中で最も細かい間隔を選ぶ
     """
     for seconds in _TICK_SECONDS:
         frames = max(1, int(seconds * rate.fps))
@@ -109,7 +109,7 @@ def _tick_step(layout: TimelineLayout, rate: FrameRate) -> int:
 
 
 def draw_track_background(painter: QPainter, band: TrackBand, width: int) -> None:
-    """トラック 1 本分の下地と区切り線。"""
+    """トラック 1 本分の下地と区切り線"""
     painter.fillRect(
         QRect(Metrics.TRACK_HEADER_WIDTH, band.top, width, band.height),
         Colors.TIMELINE_BACKGROUND,
@@ -119,7 +119,7 @@ def draw_track_background(painter: QPainter, band: TrackBand, width: int) -> Non
 
 
 def draw_track_header(painter: QPainter, band: TrackBand) -> None:
-    """トラック名とミュート・ソロ・ロックの状態。"""
+    """トラック名とミュート・ソロ・ロックの状態"""
     rect = QRect(0, band.top, Metrics.TRACK_HEADER_WIDTH, band.height)
     painter.fillRect(rect, Colors.TRACK_HEADER)
     painter.setPen(QPen(Colors.BORDER, 1))
@@ -159,10 +159,10 @@ def draw_clip(
     selected: bool,
     clip_rect: QRect,
 ) -> None:
-    """クリップ 1 個を描く。
+    """クリップ 1 個を描く
 
-    ``clip_rect`` は画面に見えている部分に切り詰めた矩形。クリップ全体の矩形を
-    渡すと、長いクリップで画面外まで描こうとして無駄が出る。
+    ``clip_rect`` は画面に見えている部分に切り詰めた矩形 クリップ全体の矩形を
+    渡すと、長いクリップで画面外まで描こうとして無駄が出る
     """
     is_video = band.track.kind is TrackKind.VIDEO
     body = Colors.VIDEO_CLIP if is_video else Colors.AUDIO_CLIP
@@ -210,10 +210,10 @@ def _draw_clip_label(painter: QPainter, rect: QRect, clip: Clip, media: MediaIte
 
 
 def _clip_name(clip: Clip, media: MediaItem | None) -> str:
-    """クリップに出す名前。
+    """クリップに出す名前
 
     生成オブジェクトは素材を持たないので、素材名だけを見ると全部「素材なし」に
-    なってしまう。テキストは中身の先頭を添えると、並んだときに見分けが付く。
+    なってしまう テキストは中身の先頭を添えると、並んだときに見分けが付く
     """
     if media is not None:
         return media.name
@@ -236,10 +236,10 @@ def _draw_filmstrip(
     rate: FrameRate,
     filmstrip: Filmstrip,
 ) -> None:
-    """クリップの上にサムネイルを敷き詰める。
+    """クリップの上にサムネイルを敷き詰める
 
-    サムネイルは元の縦横比のまま並べる。引き伸ばすと、何が映っているのか
-    判断できなくなって用を成さない。
+    サムネイルは元の縦横比のまま並べる 引き伸ばすと、何が映っているのか
+    判断できなくなって用を成さない
     """
     if filmstrip.count == 0 or rect.height() <= 0:
         return
@@ -249,7 +249,7 @@ def _draw_filmstrip(
 
     x = rect.left()
     while x < rect.right():
-        # 秒の計算に float を混ぜないよう、まずフレーム番号（整数）へ落とす。
+        # 秒の計算に float を混ぜないよう、まずフレーム番号（整数）へ落とす
         frame = layout.frame_at(x)
         local_frame = frame - clip.timeline_start
         source_time = clip.source_in + local_frame * rate.frame_duration * clip.speed
@@ -268,16 +268,16 @@ def _draw_waveform(
     rate: FrameRate,
     waveform: Waveform,
 ) -> None:
-    """クリップの上に波形を描く。
+    """クリップの上に波形を描く
 
-    見えている範囲だけを、1 ピクセル 1 本の縦線として描く。素材全体の波形を
-    毎回描こうとすると、長尺素材で描画が止まる。
+    見えている範囲だけを、1 ピクセル 1 本の縦線として描く 素材全体の波形を
+    毎回描こうとすると、長尺素材で描画が止まる
     """
     columns = rect.width()
     if columns <= 0 or rect.height() <= 2:
         return
 
-    # 見えている左端・右端が、素材のどのサンプルにあたるかを求める。
+    # 見えている左端・右端が、素材のどのサンプルにあたるかを求める
     start_frame = layout.frame_at(rect.left()) - clip.timeline_start
     end_frame = layout.frame_at(rect.right()) - clip.timeline_start
     start_seconds = clip.source_in + start_frame * rate.frame_duration * clip.speed
@@ -289,8 +289,8 @@ def _draw_waveform(
         return
 
     envelope = waveform.envelope(start_sample, end_sample, columns)
-    # チャンネルをまとめて 1 本の波形にする。ステレオを上下に分けるのは
-    # トラックを高くしたときの表示として P2 で入れる。
+    # チャンネルをまとめて 1 本の波形にする ステレオを上下に分けるのは
+    # トラックを高くしたときの表示として P2 で入れる
     minimum = envelope[:, :, 0].min(axis=1)
     maximum = envelope[:, :, 1].max(axis=1)
 
@@ -305,7 +305,7 @@ def _draw_waveform(
 
 
 def draw_playhead(painter: QPainter, layout: TimelineLayout, frame: int, height: int) -> None:
-    """再生ヘッド。上の三角と縦線。"""
+    """再生ヘッド 上の三角と縦線"""
     x = layout.frame_to_x(frame)
     if x < Metrics.TRACK_HEADER_WIDTH:
         return
@@ -319,9 +319,9 @@ def draw_playhead(painter: QPainter, layout: TimelineLayout, frame: int, height:
 
 
 def clip_rect_for(clip: Clip, band: TrackBand, layout: TimelineLayout, width: int) -> QRect | None:
-    """クリップの矩形を、画面に見えている範囲へ切り詰めて返す。
+    """クリップの矩形を、画面に見えている範囲へ切り詰めて返す
 
-    見えていなければ ``None``。描画対象を絞るのに使う。
+    見えていなければ ``None`` 描画対象を絞るのに使う
     """
     left = layout.frame_to_x(clip.timeline_start)
     right = layout.frame_to_x(clip.timeline_end)
@@ -338,7 +338,7 @@ def clip_rect_for(clip: Clip, band: TrackBand, layout: TimelineLayout, width: in
 
 
 def _dimmed(color: QColor) -> QColor:
-    """無効なクリップ用に彩度と明度を落とす。"""
+    """無効なクリップ用に彩度と明度を落とす"""
     dimmed = QColor(color)
     dimmed.setAlpha(110)
     return dimmed
@@ -347,10 +347,10 @@ def _dimmed(color: QColor) -> QColor:
 def visible_clips(
     timeline: Timeline, layout: TimelineLayout, width: int
 ) -> list[tuple[TrackBand, Clip, QRect]]:
-    """見えているクリップと、その矩形の一覧。
+    """見えているクリップと、その矩形の一覧
 
-    描画と当たり判定の両方がこれを使う。別々に計算すると、見えているのに
-    掴めないクリップのようなずれが生まれる。
+    描画と当たり判定の両方がこれを使う 別々に計算すると、見えているのに
+    掴めないクリップのようなずれが生まれる
     """
     start_frame, end_frame = layout.visible_range(width)
     found: list[tuple[TrackBand, Clip, QRect]] = []

@@ -1,9 +1,9 @@
-# PR が出たら自動でレビュー依頼が飛ぶ先。
-# いまは単独開発なので全部。増えたら領域ごとに分ける。
+# PR が出たら自動でレビュー依頼が飛ぶ先
+# いまは単独開発なので全部 増えたら領域ごとに分ける
 
 * @kagemorikosame
 
-# ここを勝手に変えられると、検証も公開の条件も迂回できてしまう。
+# ここを勝手に変えられると、検証も公開の条件も迂回できてしまう
 /.github/        @kagemorikosame
 /.coderabbit.yaml @kagemorikosame
 /docs/development.md @kagemorikosame

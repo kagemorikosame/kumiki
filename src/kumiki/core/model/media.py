@@ -1,7 +1,7 @@
-"""メディアプールの素材。
+"""メディアプールの素材
 
-素材はタイムラインとは独立に存在する。同じ素材を何度タイムラインに置いても
-実体は 1 つで、字幕もサムネイルも波形もこちらに紐付く。
+素材はタイムラインとは独立に存在する 同じ素材を何度タイムラインに置いても
+実体は 1 つで、字幕もサムネイルも波形もこちらに紐付く
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ __all__ = ["AudioStreamInfo", "MediaItem", "VideoStreamInfo"]
 
 @dataclass(frozen=True, slots=True)
 class VideoStreamInfo:
-    """素材に含まれる映像ストリーム 1 本の情報。"""
+    """素材に含まれる映像ストリーム 1 本の情報"""
 
     index: int
     width: int
@@ -28,7 +28,7 @@ class VideoStreamInfo:
     time_base: Fraction
     codec: str
     pixel_format: str = ""
-    #: コンテナに記録された回転角（0 / 90 / 180 / 270）。スマホ撮影で頻出する。
+    #: コンテナに記録された回転角（0 / 90 / 180 / 270） スマホ撮影で頻出する
     rotation: int = 0
 
     def __post_init__(self) -> None:
@@ -39,7 +39,7 @@ class VideoStreamInfo:
 
     @property
     def display_size(self) -> tuple[int, int]:
-        """回転を適用した後の表示サイズ。"""
+        """回転を適用した後の表示サイズ"""
         if self.rotation in (90, 270):
             return self.height, self.width
         return self.width, self.height
@@ -47,10 +47,10 @@ class VideoStreamInfo:
 
 @dataclass(frozen=True, slots=True)
 class AudioStreamInfo:
-    """素材に含まれる音声ストリーム 1 本の情報。
+    """素材に含まれる音声ストリーム 1 本の情報
 
     多言語音声や 5.1ch の素材では複数本あり、読み込み時にそれぞれ別トラックへ
-    展開する。
+    展開する
     """
 
     index: int
@@ -69,16 +69,16 @@ class AudioStreamInfo:
 
 @dataclass(frozen=True, slots=True)
 class MediaItem:
-    """メディアプールに登録された 1 つの素材。"""
+    """メディアプールに登録された 1 つの素材"""
 
     path: Path
-    #: 素材全体の長さ（秒）。静止画では 0。
+    #: 素材全体の長さ（秒） 静止画では 0
     duration: Fraction = Fraction(0)
     video_streams: tuple[VideoStreamInfo, ...] = ()
     audio_streams: tuple[AudioStreamInfo, ...] = ()
-    #: 字幕起こしの結果。トラックではなくここに持たせるのが設計の要。
+    #: 字幕起こしの結果 トラックではなくここに持たせるのが設計の要
     transcript: Transcript | None = None
-    #: 空ならファイル名を表示名として使う。
+    #: 空ならファイル名を表示名として使う
     display_name: str = ""
     id: MediaId = field(default_factory=new_media_id)
 
@@ -100,11 +100,11 @@ class MediaItem:
 
     @property
     def is_still(self) -> bool:
-        """静止画のように、任意の長さで使える素材か。"""
+        """静止画のように、任意の長さで使える素材か"""
         return self.duration == 0 and not self.has_audio
 
     def with_transcript(self, transcript: Transcript | None) -> MediaItem:
-        """起こし結果を差し替えた新しい :class:`MediaItem` を返す。"""
+        """起こし結果を差し替えた新しい :class:`MediaItem` を返す"""
         return MediaItem(
             path=self.path,
             duration=self.duration,

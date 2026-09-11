@@ -1,7 +1,7 @@
-"""``.exo`` の中身をこちらのモデルへ写す。
+"""``.exo`` の中身をこちらのモデルへ写す
 
-値が写っているかだけでなく、**写せなかったものが記録に残るか**も見る。
-黙って捨てると「なんとなく違う絵」が出て、原因を追えない。
+値が写っているかだけでなく、**写せなかったものが記録に残るか**も見る
+黙って捨てると「なんとなく違う絵」が出て、原因を追えない
 """
 
 from __future__ import annotations
@@ -83,7 +83,7 @@ class TestDrawSettings:
         effects = mapped.clip.effects
         assert effects[0].kind == "transform"
         assert float(effects[0].params["pos_x"].at(0)) == 120.0  # type: ignore[union-attr]
-        # AviUtl の Y は下が正、こちらは上が正。符号が入れ替わる。
+        # AviUtl の Y は下が正、こちらは上が正 符号が入れ替わる
         assert float(effects[0].params["pos_y"].at(0)) == 40.0  # type: ignore[union-attr]
         assert float(effects[0].params["scale"].at(0)) == 150.0  # type: ignore[union-attr]
 
@@ -96,7 +96,7 @@ class TestDrawSettings:
         assert mapped.clip.blend_mode == "add"
 
     def test_an_unsupported_blend_falls_back_to_normal(self) -> None:
-        # 似た別のもので代用すると、直したつもりの無い違いが出る。
+        # 似た別のもので代用すると、直したつもりの無い違いが出る
         mapped = one(build("_name=図形", "_name=標準描画\nblend=5"))
         assert mapped.clip.blend_mode == "normal"
 
@@ -127,7 +127,7 @@ class TestFilters:
 
 class TestTiming:
     def test_frames_are_converted_to_zero_based(self) -> None:
-        # AviUtl は 1 始まりで終端を含む。1..60 は 0 から 60 フレーム。
+        # AviUtl は 1 始まりで終端を含む 1..60 は 0 から 60 フレーム
         mapped = one(build("_name=図形", start=1, end=60))
         assert (mapped.clip.timeline_start, mapped.clip.duration) == (0, 60)
 

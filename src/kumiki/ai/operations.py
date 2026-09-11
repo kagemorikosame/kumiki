@@ -1,12 +1,12 @@
-"""AI に見せる編集操作。
+"""AI に見せる編集操作
 
-読み取りと変更をはっきり分けてある（:attr:`Operation.writes`）。変更系だけに確認を
+読み取りと変更をはっきり分けてある（:attr:`Operation.writes`） 変更系だけに確認を
 挟めるようにするためで、この区別が無いと「全部確認する」か「何も確認しない」かの
-どちらかになる。
+どちらかになる
 
-ここは Qt も MCP も知らない。素の関数として書いてあるので、テストではホストを
-偽物に差し替えるだけで全部のツールを試せる。MCP のツールに変換するのは
-:mod:`kumiki.ai.server` の仕事。
+ここは Qt も MCP も知らない 素の関数として書いてあるので、テストではホストを
+偽物に差し替えるだけで全部のツールを試せる MCP のツールに変換するのは
+:mod:`kumiki.ai.server` の仕事
 """
 
 from __future__ import annotations
@@ -68,15 +68,15 @@ from kumiki.effects.spec import (
 
 __all__ = ["OPERATIONS", "ImageResult", "Operation", "find_operation"]
 
-#: プレビュー画像の既定の横幅。小さめにしてあるのは、AI が見るのは
-#: 「意図した絵になっているか」であって、画素を数えるわけではないため。
+#: プレビュー画像の既定の横幅 小さめにしてあるのは、AI が見るのは
+#: 「意図した絵になっているか」であって、画素を数えるわけではないため
 DEFAULT_PREVIEW_WIDTH = 640
 MAX_PREVIEW_WIDTH = 1280
 
 
 @dataclass(frozen=True, slots=True)
 class ImageResult:
-    """画像を返すツールの戻り値。"""
+    """画像を返すツールの戻り値"""
 
     png: bytes
     caption: str = ""
@@ -84,14 +84,14 @@ class ImageResult:
 
 @dataclass(frozen=True, slots=True)
 class Operation:
-    """AI に見せるツール 1 つ。"""
+    """AI に見せるツール 1 つ"""
 
     name: str
     description: str
-    #: MCP へ渡す JSON Schema。省略可能な引数を表せるよう、素の辞書で持つ。
+    #: MCP へ渡す JSON Schema 省略可能な引数を表せるよう、素の辞書で持つ
     schema: dict[str, Any]
     handler: Callable[[EditorHost, dict[str, Any]], object]
-    #: プロジェクトを変えるか。確認ダイアログの要否がこれで決まる。
+    #: プロジェクトを変えるか 確認ダイアログの要否がこれで決まる
     writes: bool = False
 
     def __call__(self, host: EditorHost, arguments: dict[str, Any]) -> object:
@@ -145,10 +145,10 @@ def _require_media(project: Project, media_id: str) -> MediaItem:
 
 
 def _target_clip(host: EditorHost, arguments: dict[str, Any]) -> tuple[Track, Clip]:
-    """引数のクリップ、無ければ選択中のクリップ。
+    """引数のクリップ、無ければ選択中のクリップ
 
-    「選んでいるやつに掛けて」という指示が通るようにする。毎回 ID を聞き返すのは
-    会話として重い。
+    「選んでいるやつに掛けて」という指示が通るようにする 毎回 ID を聞き返すのは
+    会話として重い
     """
     clip_id = str(arguments.get("clip_id") or "")
     if not clip_id:
@@ -279,7 +279,7 @@ def _list_effects(host: EditorHost, arguments: dict[str, Any]) -> object:
 
 
 def _describe_spec(spec: object) -> dict[str, Any]:
-    """パラメータ 1 つの説明。AI が値の範囲を外さないよう、上下限まで見せる。"""
+    """パラメータ 1 つの説明 AI が値の範囲を外さないよう、上下限まで見せる"""
     described: dict[str, Any] = {
         "name": getattr(spec, "name", ""),
         "label": getattr(spec, "label", ""),
@@ -322,10 +322,10 @@ def _get_subtitles(host: EditorHost, arguments: dict[str, Any]) -> object:
 
 
 def _preview_frame(host: EditorHost, arguments: dict[str, Any]) -> object:
-    """指定フレームを合成して画像で返す。
+    """指定フレームを合成して画像で返す
 
-    これが無いと、AI は自分の編集結果を確かめる手段が無く、当てずっぽうになる。
-    描く前に再生を止める。再生しながら別のフレームを描くと GL の資源を取り合う。
+    これが無いと、AI は自分の編集結果を確かめる手段が無く、当てずっぽうになる
+    描く前に再生を止める 再生しながら別のフレームを描くと GL の資源を取り合う
     """
     project = _project(host)
     frame = int(arguments.get("frame", host.playhead))
@@ -516,10 +516,10 @@ def _set_param(host: EditorHost, arguments: dict[str, Any]) -> object:
 
 
 def _spec_for(project: Project, path: ParamPath) -> ParameterSpec | None:
-    """そのパラメータの定義を引く。
+    """そのパラメータの定義を引く
 
-    UI と同じ定義を通して値を寄せるためにある。ここを通さないと、色に
-    ``"#FFFFFF"`` という文字列がそのまま入るような食い違いが起きる。
+    UI と同じ定義を通して値を寄せるためにある ここを通さないと、色に
+    ``"#FFFFFF"`` という文字列がそのまま入るような食い違いが起きる
     """
     located = project.timeline.locate_clip(path.clip_id)
     if located is None:
@@ -538,7 +538,7 @@ def _spec_for(project: Project, path: ParamPath) -> ParameterSpec | None:
 
 
 def _coerce_param(project: Project, path: ParamPath, value: object) -> ParamValue:
-    """AI が渡した値を、パラメータの型へ寄せる。"""
+    """AI が渡した値を、パラメータの型へ寄せる"""
     prepared: ParamInput
     if isinstance(value, str):
         parsed = _parse_color(value)
@@ -558,7 +558,7 @@ def _coerce_param(project: Project, path: ParamPath, value: object) -> ParamValu
             return int(spec.coerce(_as_check(value, prepared)))
         return spec.coerce(prepared)
 
-    # 定義が引けないもの（クリップ自身の不透明度など）は数値として扱う。
+    # 定義が引けないもの（クリップ自身の不透明度など）は数値として扱う
     if isinstance(prepared, float):
         return AnimatedValue(prepared)
     if isinstance(prepared, tuple):
@@ -567,15 +567,15 @@ def _coerce_param(project: Project, path: ParamPath, value: object) -> ParamValu
 
 
 def _as_check(original: object, prepared: ParamInput) -> ParamInput:
-    """チェック項目は、真偽値をそのまま渡した方が素直に決まる。"""
+    """チェック項目は、真偽値をそのまま渡した方が素直に決まる"""
     return original if isinstance(original, bool | str) else prepared
 
 
 def _parse_color(text: str) -> tuple[float, ...] | None:
-    """``#RRGGBB`` / ``#RRGGBBAA`` を 0..1 の組へ。色でなければ ``None``。
+    """``#RRGGBB`` / ``#RRGGBBAA`` を 0..1 の組へ 色でなければ ``None``
 
-    AI は色を 16 進で書いてくる。ここで受けないと、色のパラメータに文字列が
-    入って描画側で無視される（しかも見た目が変わらないので気付きにくい）。
+    AI は色を 16 進で書いてくる ここで受けないと、色のパラメータに文字列が
+    入って描画側で無視される（しかも見た目が変わらないので気付きにくい）
     """
     value = text.strip()
     if not value.startswith("#"):
@@ -650,7 +650,7 @@ def _jet_cut(host: EditorHost, arguments: dict[str, Any]) -> object:
     media = _require_media(project, str(arguments.get("media_id", "")))
     waveform = host.waveform(media)
     if waveform is None:
-        raise ToolError(f"{media.name} の波形解析がまだ終わっていません。少し待ってください")
+        raise ToolError(f"{media.name} の波形解析がまだ終わっていません 少し待ってください")
 
     options = SilenceOptions(
         threshold_db=float(arguments.get("threshold_db", -40.0)),
@@ -663,7 +663,7 @@ def _jet_cut(host: EditorHost, arguments: dict[str, Any]) -> object:
 
     ranges = plan_cuts(project, media.id, silences)
     if not ranges:
-        raise ToolError("切れる無音が見つかりません。threshold_db を上げてみてください")
+        raise ToolError("切れる無音が見つかりません threshold_db を上げてみてください")
 
     removed = sum(end - start for start, end in ranges)
     host.apply_commands([RippleCut(ranges)], f"無音カット: {len(ranges)} か所")
@@ -686,8 +686,8 @@ def _transcribe(host: EditorHost, arguments: dict[str, Any]) -> object:
     message = host.start_transcription(media.id, str(arguments.get("model", "large-v3")))
     return {
         "started": message,
-        "next": "しばらく待ってから transcription_status を見てください。"
-        "終わったら get_subtitles で結果を取れます。",
+        "next": "しばらく待ってから transcription_status を見てください"
+        "終わったら get_subtitles で結果を取れます",
     }
 
 
@@ -730,61 +730,61 @@ def _select(host: EditorHost, arguments: dict[str, Any]) -> object:
 OPERATIONS: tuple[Operation, ...] = (
     Operation(
         name="get_project",
-        description="プロジェクトの設定（解像度・fps・長さ）と再生ヘッドの位置を返す。",
+        description="プロジェクトの設定（解像度・fps・長さ）と再生ヘッドの位置を返す",
         schema=_schema({}),
         handler=_get_project,
     ),
     Operation(
         name="list_media",
-        description="メディアプールの素材を一覧する。media_id はここで得る。",
+        description="メディアプールの素材を一覧する media_id はここで得る",
         schema=_schema({}),
         handler=_list_media,
     ),
     Operation(
         name="list_tracks",
-        description="タイムラインのトラックを一覧する。",
+        description="タイムラインのトラックを一覧する",
         schema=_schema({}),
         handler=_list_tracks,
     ),
     Operation(
         name="list_clips",
-        description="クリップを一覧する。track_id を省くと全トラックが対象。",
+        description="クリップを一覧する track_id を省くと全トラックが対象",
         schema=_schema({"track_id": _string("絞り込むトラック")}),
         handler=_list_clips,
     ),
     Operation(
         name="get_selection",
-        description="選択中のクリップと再生ヘッドの位置。",
+        description="選択中のクリップと再生ヘッドの位置",
         schema=_schema({}),
         handler=_get_selection,
     ),
     Operation(
         name="list_effects",
-        description="使えるエフェクトと生成オブジェクト、そのパラメータ名と範囲。",
+        description="使えるエフェクトと生成オブジェクト、そのパラメータ名と範囲",
         schema=_schema({}),
         handler=_list_effects,
     ),
     Operation(
         name="get_subtitles",
-        description="タイムラインに出る字幕を、表示位置つきで一覧する。",
+        description="タイムラインに出る字幕を、表示位置つきで一覧する",
         schema=_schema({"media_id": _string("絞り込む素材")}),
         handler=_get_subtitles,
     ),
     Operation(
         name="get_history",
-        description="直近の操作履歴と、取り消せるかどうか。",
+        description="直近の操作履歴と、取り消せるかどうか",
         schema=_schema({}),
         handler=_get_history,
     ),
     Operation(
         name="preview_frame",
         description=(
-            "そのフレームを合成して画像で返す。編集した結果を自分の目で確かめるために使う。"
-            "再生中なら止めてから描く。"
+            "そのフレームを合成して画像で返す 編集した結果を自分の目で確かめるために使う"
+            "再生中なら止めてから描く"
         ),
         schema=_schema(
             {
-                "frame": _integer("見たいフレーム。省略すると再生ヘッド"),
+                "frame": _integer("見たいフレーム 省略すると再生ヘッド"),
                 "width": _integer("画像の横幅（160〜1280、既定 640）"),
             }
         ),
@@ -792,19 +792,19 @@ OPERATIONS: tuple[Operation, ...] = (
     ),
     Operation(
         name="seek",
-        description="再生ヘッドを動かす。",
+        description="再生ヘッドを動かす",
         schema=_schema({"frame": _integer("移動先のフレーム")}, ["frame"]),
         handler=_seek,
     ),
     Operation(
         name="select_clip",
-        description="クリップを選択する。clip_id を空にすると選択を解く。",
+        description="クリップを選択する clip_id を空にすると選択を解く",
         schema=_schema({"clip_id": _string("選ぶクリップ")}),
         handler=_select,
     ),
     Operation(
         name="import_media",
-        description="ファイルを読み込んでタイムラインの末尾へ置く。",
+        description="ファイルを読み込んでタイムラインの末尾へ置く",
         schema=_schema(
             {
                 "paths": {
@@ -820,11 +820,11 @@ OPERATIONS: tuple[Operation, ...] = (
     ),
     Operation(
         name="place_media",
-        description="読み込み済みの素材をタイムラインへ置く。",
+        description="読み込み済みの素材をタイムラインへ置く",
         schema=_schema(
             {
                 "media_id": _string("置く素材"),
-                "at_frame": _integer("置く位置。省略すると末尾"),
+                "at_frame": _integer("置く位置 省略すると末尾"),
             },
             ["media_id"],
         ),
@@ -833,22 +833,22 @@ OPERATIONS: tuple[Operation, ...] = (
     ),
     Operation(
         name="add_track",
-        description="トラックを足す。",
+        description="トラックを足す",
         schema=_schema({"kind": _string("video か audio"), "name": _string("表示名")}),
         handler=_add_track,
         writes=True,
     ),
     Operation(
         name="add_text",
-        description="テキストオブジェクトを置く。テロップや字幕の焼き込みに使う。",
+        description="テキストオブジェクトを置く テロップや字幕の焼き込みに使う",
         schema=_schema(
             {
-                "text": _string("本文。改行を含めてよい"),
-                "at_frame": _integer("置く位置。省略すると再生ヘッド"),
+                "text": _string("本文 改行を含めてよい"),
+                "at_frame": _integer("置く位置 省略すると再生ヘッド"),
                 "duration": _integer("長さ（フレーム、既定 150）"),
                 "size": _number("文字サイズ"),
                 "pos_x": _number("中央からの横位置"),
-                "pos_y": _number("中央からの縦位置。正が上"),
+                "pos_y": _number("中央からの縦位置 正が上"),
                 "border_width": _number("縁取りの太さ"),
             },
             ["text"],
@@ -858,16 +858,16 @@ OPERATIONS: tuple[Operation, ...] = (
     ),
     Operation(
         name="split_clip",
-        description="クリップを分割する。clip_id を省くと選択中のクリップ。",
+        description="クリップを分割する clip_id を省くと選択中のクリップ",
         schema=_schema(
-            {"clip_id": _string("対象"), "frame": _integer("分割位置。省略すると再生ヘッド")}
+            {"clip_id": _string("対象"), "frame": _integer("分割位置 省略すると再生ヘッド")}
         ),
         handler=_split_clip,
         writes=True,
     ),
     Operation(
         name="trim_clip",
-        description="クリップの端を動かす。head_delta は正で短く、tail_delta は正で長くなる。",
+        description="クリップの端を動かす head_delta は正で短く、tail_delta は正で長くなる",
         schema=_schema(
             {
                 "clip_id": _string("対象"),
@@ -880,7 +880,7 @@ OPERATIONS: tuple[Operation, ...] = (
     ),
     Operation(
         name="move_clip",
-        description="クリップを別の位置・別のトラックへ動かす。",
+        description="クリップを別の位置・別のトラックへ動かす",
         schema=_schema(
             {
                 "clip_id": _string("対象"),
@@ -894,14 +894,14 @@ OPERATIONS: tuple[Operation, ...] = (
     ),
     Operation(
         name="delete_clip",
-        description="クリップを消す。ripple を真にすると後ろを詰める。",
+        description="クリップを消す ripple を真にすると後ろを詰める",
         schema=_schema({"clip_id": _string("対象"), "ripple": _boolean("詰めるか")}),
         handler=_delete_clip,
         writes=True,
     ),
     Operation(
         name="set_clip_property",
-        description="クリップの blend_mode / speed / enabled / stream_index を変える。",
+        description="クリップの blend_mode / speed / enabled / stream_index を変える",
         schema=_schema(
             {
                 "clip_id": _string("対象"),
@@ -915,7 +915,7 @@ OPERATIONS: tuple[Operation, ...] = (
     ),
     Operation(
         name="add_effect",
-        description="クリップにエフェクトを積む。使える kind は list_effects で分かる。",
+        description="クリップにエフェクトを積む 使える kind は list_effects で分かる",
         schema=_schema(
             {
                 "clip_id": _string("対象"),
@@ -930,8 +930,8 @@ OPERATIONS: tuple[Operation, ...] = (
     Operation(
         name="set_param",
         description=(
-            "パラメータを変える。effect_id を渡せばそのエフェクト、"
-            "省略すればテキストや図形の中身（target=clip でクリップ自身）。"
+            "パラメータを変える effect_id を渡せばそのエフェクト、"
+            "省略すればテキストや図形の中身（target=clip でクリップ自身）"
         ),
         schema=_schema(
             {
@@ -948,14 +948,14 @@ OPERATIONS: tuple[Operation, ...] = (
     ),
     Operation(
         name="add_keyframe",
-        description="パラメータにキーフレームを打つ。値は数値のみ。",
+        description="パラメータにキーフレームを打つ 値は数値のみ",
         schema=_schema(
             {
                 "clip_id": _string("対象"),
                 "effect_id": _string("エフェクト"),
                 "target": _string("source か clip"),
                 "name": _string("パラメータ名"),
-                "frame": _integer("位置。省略すると再生ヘッド"),
+                "frame": _integer("位置 省略すると再生ヘッド"),
                 "value": _number("その位置での値"),
                 "interpolation": _string("linear / ease / hold / bezier"),
             },
@@ -966,7 +966,7 @@ OPERATIONS: tuple[Operation, ...] = (
     ),
     Operation(
         name="set_subtitle_text",
-        description="字幕 1 枚の本文を書き換える。素材に紐付くので全出現箇所に反映される。",
+        description="字幕 1 枚の本文を書き換える 素材に紐付くので全出現箇所に反映される",
         schema=_schema(
             {
                 "media_id": _string("素材"),
@@ -980,7 +980,7 @@ OPERATIONS: tuple[Operation, ...] = (
     ),
     Operation(
         name="clean_subtitles",
-        description="フィラー語を落とし、改行位置を整える。",
+        description="フィラー語を落とし、改行位置を整える",
         schema=_schema(
             {
                 "media_id": _string("素材"),
@@ -995,7 +995,7 @@ OPERATIONS: tuple[Operation, ...] = (
     ),
     Operation(
         name="jet_cut",
-        description="無音区間をタイムラインからまとめて削って詰める。",
+        description="無音区間をタイムラインからまとめて削って詰める",
         schema=_schema(
             {
                 "media_id": _string("素材"),
@@ -1011,20 +1011,20 @@ OPERATIONS: tuple[Operation, ...] = (
     ),
     Operation(
         name="transcribe",
-        description="素材の字幕起こしを始める。終わるまで数分かかる。",
+        description="素材の字幕起こしを始める 終わるまで数分かかる",
         schema=_schema({"media_id": _string("素材"), "model": _string("モデル名")}, ["media_id"]),
         handler=_transcribe,
         writes=True,
     ),
     Operation(
         name="transcription_status",
-        description="走っている字幕起こしの様子を見る。",
+        description="走っている字幕起こしの様子を見る",
         schema=_schema({}),
         handler=_transcription_status,
     ),
     Operation(
         name="undo",
-        description="直前の操作を取り消す。",
+        description="直前の操作を取り消す",
         schema=_schema({"steps": _integer("戻す段数（既定 1）")}),
         handler=_undo,
         writes=True,

@@ -1,8 +1,8 @@
-"""テンプレートの棚と、置く／着せるの 2 通り。
+"""テンプレートの棚と、置く／着せるの 2 通り
 
-配布されている字幕エイリアスは見本の文字入りで配られる。そのまま置くだけだと
+配布されている字幕エイリアスは見本の文字入りで配られる そのまま置くだけだと
 毎回打ち直すことになるので、**今の文字を残して見た目だけ入れ替える**道を
-用意してある。ここではその境目を検査する。
+用意してある ここではその境目を検査する
 """
 
 from __future__ import annotations
@@ -19,10 +19,10 @@ from kumiki.effects import registry
 
 
 def value_at(value: object, frame: int = 0) -> float:
-    """数値パラメータの、その時刻での値。
+    """数値パラメータの、その時刻での値
 
     :data:`~kumiki.core.model.ParamValue` は数値とは限らないので、
-    数値であることをここで 1 度だけ確かめる。
+    数値であることをここで 1 度だけ確かめる
     """
     assert isinstance(value, AnimatedValue)
     return value.at(frame)
@@ -101,7 +101,7 @@ class TestScanning:
         assert all(entry.name != "読まない" for entry in catalog.all())
 
     def test_the_folder_name_is_kept(self, shelf: tuple[TemplateCatalog, Path]) -> None:
-        # 配布物はフォルダで分かれている。そのまま見出しに使う。
+        # 配布物はフォルダで分かれている そのまま見出しに使う
         catalog, _ = shelf
         assert "字幕" in catalog.folders()
 
@@ -128,7 +128,7 @@ class TestPlacing:
         assert isinstance(commands[0], AddTrack)
 
     def test_it_lands_where_asked(self, shelf: tuple[TemplateCatalog, Path]) -> None:
-        # エイリアスは元の位置を持ったまま。そのまま置くと指定した場所へ来ない。
+        # エイリアスは元の位置を持ったまま そのまま置くと指定した場所へ来ない
         catalog, _ = shelf
         entry = catalog.find("強調")
         assert entry is not None
@@ -139,7 +139,7 @@ class TestPlacing:
     def test_an_alias_without_a_span_gets_the_default_length(
         self, shelf: tuple[TemplateCatalog, Path]
     ) -> None:
-        # 1 フレームのクリップを置かれても使えない。
+        # 1 フレームのクリップを置かれても使えない
         catalog, _ = shelf
         entry = catalog.find("長さなし")
         assert entry is not None
@@ -176,7 +176,7 @@ class TestRestyling:
         return list(restyle(entry.load(), self.existing()))
 
     def test_the_text_is_kept(self, shelf: tuple[TemplateCatalog, Path]) -> None:
-        # 見本の文字で上書きしたら、それは着せ替えではない。
+        # 見本の文字で上書きしたら、それは着せ替えではない
         source = next(c for c in self.commands(shelf) if isinstance(c, SetSource)).source
         assert source is not None
         assert source.params["text"] == "自分で打った字幕"
@@ -189,14 +189,14 @@ class TestRestyling:
         assert value_at(source.params["border_width"], 0) > 0
 
     def test_the_old_effects_are_cleared_first(self, shelf: tuple[TemplateCatalog, Path]) -> None:
-        # 残すと、前のデザインの縁とテンプレートの縁が二重に付く。
+        # 残すと、前のデザインの縁とテンプレートの縁が二重に付く
         commands = self.commands(shelf)
         assert any(isinstance(c, RemoveEffect) for c in commands)
         added = [c for c in commands if isinstance(c, AddEffect)]
         assert [c.effect.kind for c in added] == ["border"]
 
     def test_the_timing_is_untouched(self, shelf: tuple[TemplateCatalog, Path]) -> None:
-        # 位置と長さを変えるコマンドは 1 つも出ない。
+        # 位置と長さを変えるコマンドは 1 つも出ない
         assert all(not isinstance(c, AddClip) for c in self.commands(shelf))
 
     def test_a_non_text_clip_is_refused(self, shelf: tuple[TemplateCatalog, Path]) -> None:

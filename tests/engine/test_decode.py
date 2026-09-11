@@ -1,7 +1,7 @@
-"""実素材に対する解析とデコード。
+"""実素材に対する解析とデコード
 
 シークの正しさは「飛んだ結果が、先頭から順に読んだ結果と一致するか」でしか
-確かめられない。参照列との厳密比較で押さえる。
+確かめられない 参照列との厳密比較で押さえる
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ class TestProbe:
         assert item.duration == pytest.approx(2.0, abs=0.1)
 
     def test_fractional_frame_rate_is_preserved(self, sample_ntsc: SampleMedia) -> None:
-        # 29.97 が 2997/100 に化けると 1 時間で 3 フレーム以上ずれる。
+        # 29.97 が 2997/100 に化けると 1 時間で 3 フレーム以上ずれる
         item = probe_media(sample_ntsc.path)
         assert item.video_streams[0].frame_rate == FrameRate(30000, 1001)
 
@@ -51,12 +51,12 @@ class TestProbe:
         assert not item.has_audio
 
     def test_rotation_is_detected(self, media_dir: Path, sample_av: SampleMedia) -> None:
-        # スマホの縦撮り素材を想定。無視すると横倒しで表示される。
+        # スマホの縦撮り素材を想定 無視すると横倒しで表示される
         rotated = make_rotated(media_dir, "rot90.mp4", sample_av.path, 90)
         item = probe_media(rotated)
         stream = item.video_streams[0]
         assert stream.rotation == 270
-        # 回転を適用すると表示サイズは縦横が入れ替わる。
+        # 回転を適用すると表示サイズは縦横が入れ替わる
         assert stream.display_size == (240, 320)
 
     def test_missing_file(self, tmp_path: Path) -> None:
@@ -88,7 +88,7 @@ class TestVideoDecoder:
                 assert np.array_equal(frame, reference[index][1]), f"{index} フレーム目が不一致"
 
     def test_seek_backwards_lands_exactly(self, sample_long: SampleMedia) -> None:
-        # 前方へ飛んでから戻る。シークがキーフレームまで戻ってから前進デコードする経路。
+        # 前方へ飛んでから戻る シークがキーフレームまで戻ってから前進デコードする経路
         reference = decode_all_frames(sample_long.path)
         with VideoDecoder(sample_long.path) as decoder:
             for index in (100, 5, 77, 0, 43):
@@ -97,7 +97,7 @@ class TestVideoDecoder:
                 assert np.array_equal(frame, reference[index][1]), f"{index} フレーム目が不一致"
 
     def test_frame_is_held_until_the_next_one(self, sample_long: SampleMedia) -> None:
-        # フレームの表示は次のフレームが来るまで続く。その間はどの時刻でも同じ絵。
+        # フレームの表示は次のフレームが来るまで続く その間はどの時刻でも同じ絵
         with VideoDecoder(sample_long.path) as decoder:
             at_start = decoder.frame_at(Fraction(10, 30))
             midway = decoder.frame_at(Fraction(10, 30) + Fraction(1, 90))
@@ -122,14 +122,14 @@ class TestVideoDecoder:
         with VideoDecoder(rotated) as decoder:
             frame = decoder.frame_at(Fraction(0))
         assert frame is not None
-        # 320x240 が縦向きになる。回転を無視していれば (240, 320, 4) のまま。
+        # 320x240 が縦向きになる 回転を無視していれば (240, 320, 4) のまま
         assert frame.shape == (320, 240, 4)
 
     def test_media_without_video(self, media_dir: Path) -> None:
         audio_only = make_sample(
             media_dir, "audio_only.m4a", duration=1.0, audio=True, pattern="testsrc2"
         )
-        # 映像を含まないファイルを作るため、音声だけ抜き出したものを使う。
+        # 映像を含まないファイルを作るため、音声だけ抜き出したものを使う
         import subprocess
 
         stripped = media_dir / "stripped.m4a"
@@ -163,17 +163,17 @@ class TestAudioDecoder:
         assert samples.dtype == np.float32
 
     def test_resamples_to_the_requested_rate(self, sample_av: SampleMedia) -> None:
-        # 素材は 44100Hz。プロジェクトが 48000Hz ならここで揃える。
+        # 素材は 44100Hz プロジェクトが 48000Hz ならここで揃える
         with AudioDecoder(sample_av.path, sample_rate=48000) as decoder:
             assert decoder.info.sample_rate == 44100
             assert decoder.sample_rate == 48000
             one_second = decoder.read(0, 48000)
         assert one_second.shape == (48000, 2)
-        # lavfi の sine は振幅が小さいので、無音でないことだけを確かめる。
+        # lavfi の sine は振幅が小さいので、無音でないことだけを確かめる
         assert np.abs(one_second).max() > 0.01
 
     def test_reads_are_contiguous(self, sample_av: SampleMedia) -> None:
-        # 分けて読んでも、続けて読んだのと同じ波形になること。
+        # 分けて読んでも、続けて読んだのと同じ波形になること
         with AudioDecoder(sample_av.path, sample_rate=48000) as decoder:
             whole = decoder.read(0, 24000)
         with AudioDecoder(sample_av.path, sample_rate=48000) as decoder:
@@ -182,12 +182,12 @@ class TestAudioDecoder:
         assert np.allclose(whole, np.concatenate([first, second]), atol=1e-6)
 
     def test_seek_returns_the_same_audio(self, sample_av: SampleMedia) -> None:
-        # 頭から読んだ 1 秒地点と、飛んで読んだ 1 秒地点が同じ音であること。
+        # 頭から読んだ 1 秒地点と、飛んで読んだ 1 秒地点が同じ音であること
         #
-        # 完全一致はしない。シーク時にリサンプラを作り直すため、リサンプルの位相が
-        # 1 サンプル未満ずれる。44100Hz から 48000Hz への変換ではサンプル境界が
-        # 一致しないので、これは避けられない。可聴域の話ではないので、
-        # 波形として同じかを相対 RMS 誤差で見る。
+        # 完全一致はしない シーク時にリサンプラを作り直すため、リサンプルの位相が
+        # 1 サンプル未満ずれる 44100Hz から 48000Hz への変換ではサンプル境界が
+        # 一致しないので、これは避けられない 可聴域の話ではないので、
+        # 波形として同じかを相対 RMS 誤差で見る
         with AudioDecoder(sample_av.path, sample_rate=48000) as decoder:
             sequential = decoder.read(0, 72000)[48000:]
         with AudioDecoder(sample_av.path, sample_rate=48000) as decoder:
@@ -205,7 +205,7 @@ class TestAudioDecoder:
         assert np.abs(samples[1000:]).max() > 0.0
 
     def test_past_the_end_is_silent(self, sample_av: SampleMedia) -> None:
-        # 短い配列を返すと呼び出し側が毎回長さを揃える羽目になる。必ず要求長で返す。
+        # 短い配列を返すと呼び出し側が毎回長さを揃える羽目になる 必ず要求長で返す
         with AudioDecoder(sample_av.path, sample_rate=48000) as decoder:
             samples = decoder.read(48000 * 10, 4800)
         assert samples.shape == (4800, 2)

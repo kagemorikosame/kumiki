@@ -1,7 +1,7 @@
-"""制御文字からパラメータ定義へ。
+"""制御文字からパラメータ定義へ
 
 ここが通れば、AviUtl のスクリプトも自前のエフェクトとまったく同じ設定 UI に
-載る。P2 でパラメータ定義を AviUtl 互換の 1 形式に統一した狙いがこれ。
+載る P2 でパラメータ定義を AviUtl 互換の 1 形式に統一した狙いがこれ
 """
 
 from __future__ import annotations
@@ -76,7 +76,7 @@ class TestCheckAndColor:
 class TestDialog:
     def test_plain_numbers_become_sliders(self) -> None:
         # AviUtl のダイアログは入力欄だが、こちらではキーフレームを打てる方が
-        # 使い出がある。
+        # 使い出がある
         spec = parse_control("--dialog:回数,count=3;").parameters[0]
         assert isinstance(spec, TrackSpec)
         assert (spec.name, spec.default) == ("count", 3.0)
@@ -130,7 +130,7 @@ class TestOtherControls:
         assert spec.default == 42
 
     def test_unsupported_controls_are_recorded(self) -> None:
-        # 記録が残っていれば、次に何を実装すべきかをデータで決められる。
+        # 記録が残っていれば、次に何を実装すべきかをデータで決められる
         header = parse_control("--twopoint\n--speed:10,20")
         assert len(header.unknown) == 2
 

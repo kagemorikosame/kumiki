@@ -1,10 +1,10 @@
-"""波形とサムネイルをバックグラウンドで用意する。
+"""波形とサムネイルをバックグラウンドで用意する
 
-素材を読み込んだ直後に UI が固まるのが一番まずい。解析は必ず別スレッドで走らせ、
-できたものから順に通知する。
+素材を読み込んだ直後に UI が固まるのが一番まずい 解析は必ず別スレッドで走らせ、
+できたものから順に通知する
 
-キャッシュがあれば解析せずに即返す。プロジェクトを開き直すたびに数十秒待つのは
-実用に耐えない。
+キャッシュがあれば解析せずに即返す プロジェクトを開き直すたびに数十秒待つのは
+実用に耐えない
 """
 
 from __future__ import annotations
@@ -31,14 +31,14 @@ from .waveform_cache import load_waveform, save_waveform, waveform_key
 
 __all__ = ["MediaAnalyzer"]
 
-#: 同時に走らせる解析の数。増やしすぎるとディスクの取り合いで全体が遅くなる。
+#: 同時に走らせる解析の数 増やしすぎるとディスクの取り合いで全体が遅くなる
 MAX_WORKERS = 2
 
 
 class MediaAnalyzer:
-    """素材の波形とサムネイルを非同期に用意する。
+    """素材の波形とサムネイルを非同期に用意する
 
-    結果はメモリにも保持するので、2 度目以降はディスクも読まない。
+    結果はメモリにも保持するので、2 度目以降はディスクも読まない
     """
 
     def __init__(
@@ -58,16 +58,16 @@ class MediaAnalyzer:
         self._lock = threading.Lock()
         self._waveforms: dict[MediaId, Waveform] = {}
         self._filmstrips: dict[MediaId, Filmstrip] = {}
-        #: 実行中の解析。Future ではなく鍵の集合で持つ。Future を辞書に
-        #: 入れ直す形にすると、投入前に完了した場合に消し損ねる。
+        #: 実行中の解析 Future ではなく鍵の集合で持つ Future を辞書に
+        #: 入れ直す形にすると、投入前に完了した場合に消し損ねる
         self._running: set[tuple[str, MediaId]] = set()
         self._cancelled: set[tuple[str, MediaId]] = set()
         self._closed = False
 
     def waveform(self, media: MediaItem) -> Waveform | None:
-        """すでに用意できていれば返す。無ければ ``None``。
+        """すでに用意できていれば返す 無ければ ``None``
 
-        描画のたびに呼ばれるので、ここでは決してブロックしない。
+        描画のたびに呼ばれるので、ここでは決してブロックしない
         """
         with self._lock:
             return self._waveforms.get(media.id)
@@ -79,14 +79,14 @@ class MediaAnalyzer:
     def request(
         self, media: MediaItem, *, on_ready: Callable[[MediaId], None] | None = None
     ) -> None:
-        """素材の解析を予約する。すでにあるもの・処理中のものは無視する。"""
+        """素材の解析を予約する すでにあるもの・処理中のものは無視する"""
         if media.has_audio:
             self._submit("waveform", media, self._analyze_waveform, on_ready)
         if media.has_video:
             self._submit("filmstrip", media, self._analyze_filmstrip, on_ready)
 
     def forget(self, media_id: MediaId) -> None:
-        """素材を外したときに、結果と進行中の解析を捨てる。"""
+        """素材を外したときに、結果と進行中の解析を捨てる"""
         with self._lock:
             self._waveforms.pop(media_id, None)
             self._filmstrips.pop(media_id, None)
@@ -198,10 +198,10 @@ class MediaAnalyzer:
 
 
 def _interval_for(duration: Fraction) -> Fraction:
-    """素材の長さに応じたサムネイル間隔。
+    """素材の長さに応じたサムネイル間隔
 
-    短い素材は細かく、長い素材は粗く。一定にすると、1 時間の素材で
-    7200 枚を作ることになる。
+    短い素材は細かく、長い素材は粗く 一定にすると、1 時間の素材で
+    7200 枚を作ることになる
     """
     if duration <= 0:
         return DEFAULT_INTERVAL

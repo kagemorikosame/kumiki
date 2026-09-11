@@ -1,8 +1,8 @@
-"""タイムラインをファイルへ書き出す。
+"""タイムラインをファイルへ書き出す
 
 プレビューと同じ :class:`~kumiki.engine.render.FrameRenderer` と
-:class:`~kumiki.engine.audio.AudioMixer` を使う。別経路にすると
-「プレビューでは出るのに書き出すと出ない」が起きる。
+:class:`~kumiki.engine.audio.AudioMixer` を使う 別経路にすると
+「プレビューでは出るのに書き出すと出ない」が起きる
 """
 
 from __future__ import annotations
@@ -29,37 +29,37 @@ from kumiki.engine.render import FULL_QUALITY, FrameRenderer
 
 __all__ = ["ExportError", "ExportSettings", "available_video_codecs", "export_project"]
 
-#: 優先順に並べた映像コーデック。前にあるものから、使えるものを選ぶ。
-#: NVENC は CPU をほとんど使わないので、長尺でも編集を続けながら書き出せる。
+#: 優先順に並べた映像コーデック 前にあるものから、使えるものを選ぶ
+#: NVENC は CPU をほとんど使わないので、長尺でも編集を続けながら書き出せる
 VIDEO_CODEC_PREFERENCE = ("h264_nvenc", "h264_qsv", "libx264")
 
 _LAYOUTS = {1: "mono", 2: "stereo", 6: "5.1", 8: "7.1"}
 
 
 class ExportError(RuntimeError):
-    """書き出しを開始できない、または途中で失敗した。"""
+    """書き出しを開始できない、または途中で失敗した"""
 
 
 @dataclass(frozen=True, slots=True)
 class ExportSettings:
-    """書き出しの設定。"""
+    """書き出しの設定"""
 
     path: Path
-    #: ``None`` なら :func:`available_video_codecs` の先頭を使う。
+    #: ``None`` なら :func:`available_video_codecs` の先頭を使う
     video_codec: str | None = None
-    #: 映像のビットレート（bps）。``None`` ならコーデックの既定に任せる。
+    #: 映像のビットレート（bps） ``None`` ならコーデックの既定に任せる
     video_bitrate: int | None = 12_000_000
     audio_codec: str = "aac"
     audio_bitrate: int = 192_000
     pixel_format: str = "yuv420p"
-    #: 書き出すフレーム範囲。``None`` なら全体。
+    #: 書き出すフレーム範囲 ``None`` なら全体
     frame_range: tuple[int, int] | None = None
-    #: コーデックへ渡す追加オプション。プリセットや品質指定を通す口。
+    #: コーデックへ渡す追加オプション プリセットや品質指定を通す口
     options: dict[str, str] = field(default_factory=dict)
 
 
 def available_video_codecs() -> list[str]:
-    """この環境で使える映像コーデックを、優先順に返す。"""
+    """この環境で使える映像コーデックを、優先順に返す"""
     found = []
     for name in VIDEO_CODEC_PREFERENCE:
         try:
@@ -77,11 +77,11 @@ def export_project(
     progress: Callable[[float], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
 ) -> Path:
-    """プロジェクトを 1 本の動画ファイルへ書き出す。
+    """プロジェクトを 1 本の動画ファイルへ書き出す
 
     ``should_cancel`` が真を返したら、書きかけのファイルを消して
-    :class:`ExportError` を投げる。中途半端なファイルを残すと、書き出せたのか
-    どうかが分からなくなる。
+    :class:`ExportError` を投げる 中途半端なファイルを残すと、書き出せたのか
+    どうかが分からなくなる
     """
     start, end = settings.frame_range or (0, project.duration)
     total = end - start
@@ -100,7 +100,7 @@ def export_project(
     try:
         _encode(project, settings, codec, start, end, renderer, mixer, progress, should_cancel)
     except BaseException:
-        # 例外でもキャンセルでも、書きかけを残さない。
+        # 例外でもキャンセルでも、書きかけを残さない
         settings.path.unlink(missing_ok=True)
         raise
     finally:
@@ -132,7 +132,7 @@ def _encode(
         raise ExportError(f"出力ファイルを開けない: {settings.path} ({exc})") from exc
 
     with container:
-        # add_stream は種類の union を返す。以降は映像として扱うので、ここで型を確定させる。
+        # add_stream は種類の union を返す 以降は映像として扱うので、ここで型を確定させる
         video = cast(
             "av.video.stream.VideoStream",
             container.add_stream(codec, rate=Fraction(rate.num, rate.den)),
@@ -155,21 +155,21 @@ def _encode(
             audio.bit_rate = settings.audio_bitrate
             fifo = av.audio.fifo.AudioFifo()
 
-        # フレームの時刻の刻み。ストリームの time_base を毎回読み直してはいけない。
+        # フレームの時刻の刻み ストリームの time_base を毎回読み直してはいけない
         # 多重化が始まった時点でコンテナ側の値（MP4 なら 1/15360）に書き換わるので、
-        # 読み直すと 2 フレーム目以降の PTS がほぼ 0 に潰れる。
+        # 読み直すと 2 フレーム目以降の PTS がほぼ 0 に潰れる
         frame_time_base = Fraction(rate.den, rate.num)
 
         total = end - start
-        #: 音声の書き込み位置。出力レートでの通し番号で、そのまま PTS になる。
+        #: 音声の書き込み位置 出力レートでの通し番号で、そのまま PTS になる
         audio_cursor = 0
 
         for index, frame_number in enumerate(range(start, end)):
             if should_cancel is not None and should_cancel():
                 raise ExportError("書き出しを中止した")
 
-            # 音声を先に流す。AAC は先頭にプライミングを持つため最初のパケットの
-            # DTS が負になり、映像を先に入れると多重化の順序が逆転して弾かれる。
+            # 音声を先に流す AAC は先頭にプライミングを持つため最初のパケットの
+            # DTS が負になり、映像を先に入れると多重化の順序が逆転して弾かれる
             if audio is not None and fifo is not None:
                 audio_cursor = _write_audio(
                     container, audio, fifo, mixer, frame_number, audio_cursor
@@ -187,7 +187,7 @@ def _encode(
             if progress is not None:
                 progress((index + 1) / total)
 
-        # エンコーダに溜まっている分を吐き出す。これを忘れると末尾が欠ける。
+        # エンコーダに溜まっている分を吐き出す これを忘れると末尾が欠ける
         if audio is not None and fifo is not None:
             _flush_audio(container, audio, fifo)
         container.mux(video.encode(None))
@@ -201,17 +201,17 @@ def _write_audio(
     frame_number: int,
     cursor: int,
 ) -> int:
-    """1 フレーム分の音声を FIFO へ流し、エンコーダが要求する粒度で切り出す。
+    """1 フレーム分の音声を FIFO へ流し、エンコーダが要求する粒度で切り出す
 
-    AAC は 1024 サンプル単位でしか受け取らない。映像のフレーム境界とは
-    一致しないので、FIFO を挟んで詰め替える。戻り値は次の書き込み位置。
+    AAC は 1024 サンプル単位でしか受け取らない 映像のフレーム境界とは
+    一致しないので、FIFO を挟んで詰め替える 戻り値は次の書き込み位置
     """
     block = mixer.render_frames(frame_number, 1)
     if len(block) == 0:
         return cursor
 
     frame = _to_audio_frame(block, mixer.sample_rate, mixer.channels)
-    # PTS を付けないと、エンコーダが時刻を持たないパケットを出して多重化に失敗する。
+    # PTS を付けないと、エンコーダが時刻を持たないパケットを出して多重化に失敗する
     frame.time_base = Fraction(1, mixer.sample_rate)
     frame.pts = cursor
     fifo.write(frame)
@@ -239,10 +239,10 @@ def _flush_audio(
 def _to_audio_frame(
     samples: np.ndarray, sample_rate: int, channels: int
 ) -> av.audio.frame.AudioFrame:
-    """``(サンプル数, チャンネル数)`` の float32 を PyAV のフレームへ。
+    """``(サンプル数, チャンネル数)`` の float32 を PyAV のフレームへ
 
-    出力段でここだけクリッピングする。合成の途中で頭打ちにすると、後段の
-    調整で潰れた音しか扱えなくなる。
+    出力段でここだけクリッピングする 合成の途中で頭打ちにすると、後段の
+    調整で潰れた音しか扱えなくなる
     """
     clipped = np.clip(samples, -1.0, 1.0).astype(np.float32)
     planar = np.ascontiguousarray(clipped.T)

@@ -1,11 +1,11 @@
-"""OpenGL コンテキストの管理。
+"""OpenGL コンテキストの管理
 
-コンテキストは Qt に持たせる。``QOpenGLWidget`` と共有できるので、プレビュー用と
-書き出し用でテクスチャやシェーダを作り直さずに済む。GLFW などを別に持ち込むと、
-Qt のコンテキストと二重管理になり、共有もできなくなる。
+コンテキストは Qt に持たせる ``QOpenGLWidget`` と共有できるので、プレビュー用と
+書き出し用でテクスチャやシェーダを作り直さずに済む GLFW などを別に持ち込むと、
+Qt のコンテキストと二重管理になり、共有もできなくなる
 
-ヘッドレス（GUI を出さない書き出しやテスト）でも同じ経路を通る。``QOffscreenSurface``
-に描くだけで、実機の GPU がそのまま使える。
+ヘッドレス（GUI を出さない書き出しやテスト）でも同じ経路を通る ``QOffscreenSurface``
+に描くだけで、実機の GPU がそのまま使える
 """
 
 from __future__ import annotations
@@ -31,21 +31,21 @@ __all__ = [
     "preferred_surface_format",
 ]
 
-#: 要求する OpenGL のバージョン。フレームバッファの浮動小数点フォーマットと
-#: コンピュートシェーダ（将来のエフェクト用）が使える最低ラインとして 4.3 を選ぶ。
+#: 要求する OpenGL のバージョン フレームバッファの浮動小数点フォーマットと
+#: コンピュートシェーダ（将来のエフェクト用）が使える最低ラインとして 4.3 を選ぶ
 REQUIRED_GL_VERSION = (4, 3)
 
 
 class GLContextError(RuntimeError):
-    """OpenGL コンテキストを用意できない。"""
+    """OpenGL コンテキストを用意できない"""
 
 
 class GLScope(Protocol):
-    """GL を触る間だけコンテキストを current にする、という約束。
+    """GL を触る間だけコンテキストを current にする、という約束
 
-    実装は 2 つある。自前でコンテキストを持つ :class:`OffscreenGLContext` と、
-    Qt がすでに current にしている状況で使う :class:`CurrentGLContext`。
-    描画側はどちらを渡されても同じ書き方で済む。
+    実装は 2 つある 自前でコンテキストを持つ :class:`OffscreenGLContext` と、
+    Qt がすでに current にしている状況で使う :class:`CurrentGLContext`
+    描画側はどちらを渡されても同じ書き方で済む
     """
 
     def __enter__(self) -> object: ...
@@ -61,10 +61,10 @@ class GLScope(Protocol):
 
 
 def preferred_surface_format() -> QSurfaceFormat:
-    """アプリ全体で使うサーフェス形式。
+    """アプリ全体で使うサーフェス形式
 
-    ``QApplication`` を作る前に :meth:`QSurfaceFormat.setDefaultFormat` へ渡すこと。
-    後から設定してもウィジェットのコンテキストには反映されない。
+    ``QApplication`` を作る前に :meth:`QSurfaceFormat.setDefaultFormat` へ渡すこと
+    後から設定してもウィジェットのコンテキストには反映されない
     """
     fmt = QSurfaceFormat()
     fmt.setVersion(*REQUIRED_GL_VERSION)
@@ -76,10 +76,10 @@ def preferred_surface_format() -> QSurfaceFormat:
 
 
 def ensure_qt_application() -> QCoreApplication:
-    """Qt のアプリケーションオブジェクトを用意する。
+    """Qt のアプリケーションオブジェクトを用意する
 
     GL コンテキストは Qt のイベントループが無くても作れるが、``QGuiApplication``
-    の存在は要る。書き出しやテストから呼ばれたときのために、無ければここで作る。
+    の存在は要る 書き出しやテストから呼ばれたときのために、無ければここで作る
     """
     existing = QCoreApplication.instance()
     if existing is not None:
@@ -89,27 +89,27 @@ def ensure_qt_application() -> QCoreApplication:
 
 
 def _reported_gl_version() -> str:
-    """ドライバが名乗っている版。取れなければ「不明」。
+    """ドライバが名乗っている版 取れなければ「不明」
 
-    案内を親切にするためだけの問い合わせなので、**失敗しても止めない**。
+    案内を親切にするためだけの問い合わせなので、**失敗しても止めない**
     壊れたコンテキストでは ``glGetString`` 自体が ``invalid operation`` を
-    返すことがあり、そこで例外を出すと本来伝えたい内容が伝わらなくなる。
+    返すことがあり、そこで例外を出すと本来伝えたい内容が伝わらなくなる
     """
     try:
         from OpenGL.GL import GL_VERSION, glGetString
 
         raw = glGetString(GL_VERSION)
     except Exception:
-        # 版を取れないこと自体は異常ではない。案内の文面が「不明」になるだけ。
+        # 版を取れないこと自体は異常ではない 案内の文面が「不明」になるだけ
         return "不明"
     return raw.decode("ascii", "replace") if raw else "不明"
 
 
 class OffscreenGLContext:
-    """画面を持たない GL コンテキスト。
+    """画面を持たない GL コンテキスト
 
-    ``share`` に既存のコンテキストを渡すと、テクスチャやバッファを共有できる。
-    プレビューウィジェットが作ったテクスチャを書き出し側から読む、といった用途向け。
+    ``share`` に既存のコンテキストを渡すと、テクスチャやバッファを共有できる
+    プレビューウィジェットが作ったテクスチャを書き出し側から読む、といった用途向け
     """
 
     def __init__(self, share: QOpenGLContext | None = None) -> None:
@@ -129,23 +129,23 @@ class OffscreenGLContext:
         if not self._context.create():
             raise GLContextError(
                 f"OpenGL {REQUIRED_GL_VERSION[0]}.{REQUIRED_GL_VERSION[1]} "
-                "のコンテキストを作れない。GPU ドライバを確認すること"
+                "のコンテキストを作れない GPU ドライバを確認すること"
             )
 
         self._depth = 0
         self._require_usable_gl()
 
     def _require_usable_gl(self) -> None:
-        """要求した版の関数が本当に呼べるかを確かめる。
+        """要求した版の関数が本当に呼べるかを確かめる
 
-        **作れたことと使えることは別。** ドライバが無い環境（仮想機械や CI）でも
-        Qt は software / GDI の経路でコンテキストを作ってしまう。そこには
+        **作れたことと使えることは別** ドライバが無い環境（仮想機械や CI）でも
+        Qt は software / GDI の経路でコンテキストを作ってしまう そこには
         ``glCreateShader`` のようなシェーダの関数すら無く、呼んだ瞬間に PyOpenGL が
-        ``NullFunctionError`` を投げる。
+        ``NullFunctionError`` を投げる
 
         作った直後に確かめておけば、呼び出し側は :class:`GLContextError` 1 つを
-        見ればよくなる（テストは飛ばし、アプリは案内を出す）。描画の奥まで進んで
-        から中身の分からない例外で落ちるより、ここで止めたほうが原因に近い。
+        見ればよくなる（テストは飛ばし、アプリは案内を出す） 描画の奥まで進んで
+        から中身の分からない例外で落ちるより、ここで止めたほうが原因に近い
         """
         from OpenGL.GL import glCreateShader, glGenVertexArrays
 
@@ -172,8 +172,8 @@ class OffscreenGLContext:
             if missing:
                 raise GLContextError(
                     f"OpenGL {REQUIRED_GL_VERSION[0]}.{REQUIRED_GL_VERSION[1]} "
-                    f"の関数が見つからない（{'、'.join(missing)}）。"
-                    f"ドライバが返した版は {_reported_gl_version()}。"
+                    f"の関数が見つからない（{'、'.join(missing)}）"
+                    f"ドライバが返した版は {_reported_gl_version()}"
                     "GPU ドライバを確認すること"
                 )
 
@@ -193,8 +193,8 @@ class OffscreenGLContext:
         self._context.doneCurrent()
 
     def __enter__(self) -> OffscreenGLContext:
-        # 入れ子にできるようにしておく。合成の途中でテクスチャを作るような経路で、
-        # 内側が抜けた拍子にコンテキストが外れると診断の難しい失敗になる。
+        # 入れ子にできるようにしておく 合成の途中でテクスチャを作るような経路で、
+        # 内側が抜けた拍子にコンテキストが外れると診断の難しい失敗になる
         if self._depth == 0:
             self.make_current()
         self._depth += 1
@@ -211,7 +211,7 @@ class OffscreenGLContext:
             self.done_current()
 
     def release(self) -> None:
-        """コンテキストとサーフェスを破棄する。"""
+        """コンテキストとサーフェスを破棄する"""
         if self._depth:
             self.done_current()
             self._depth = 0
@@ -219,14 +219,14 @@ class OffscreenGLContext:
 
 
 class CurrentGLContext:
-    """すでに current になっているコンテキストを表す、何もしないスコープ。
+    """すでに current になっているコンテキストを表す、何もしないスコープ
 
     ``QOpenGLWidget`` の ``initializeGL`` / ``paintGL`` の中では Qt がすでに
-    コンテキストを current にしている。そこで :class:`OffscreenGLContext` を
-    使うと、別のコンテキストに切り替わって描画先を見失う。
+    コンテキストを current にしている そこで :class:`OffscreenGLContext` を
+    使うと、別のコンテキストに切り替わって描画先を見失う
 
     :class:`FrameRenderer` のような「スコープに入ってから GL を触る」書き方を
-    変えずに済ませるために、入口だけ用意して何もしない実装を置く。
+    変えずに済ませるために、入口だけ用意して何もしない実装を置く
     """
 
     def __enter__(self) -> CurrentGLContext:
@@ -241,4 +241,4 @@ class CurrentGLContext:
         return None
 
     def release(self) -> None:
-        """所有していないので何もしない。"""
+        """所有していないので何もしない"""

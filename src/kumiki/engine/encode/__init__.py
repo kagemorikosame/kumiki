@@ -1,4 +1,4 @@
-"""書き出し。"""
+"""書き出し"""
 
 from kumiki.engine.encode.exporter import (
     ExportError,

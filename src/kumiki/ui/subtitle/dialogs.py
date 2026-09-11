@@ -1,8 +1,8 @@
-"""整形とジェットカットの設定ダイアログ。
+"""整形とジェットカットの設定ダイアログ
 
-どちらも「実行する前に、何がどれだけ変わるかを見せる」ことを重視している。
+どちらも「実行する前に、何がどれだけ変わるかを見せる」ことを重視している
 起こし結果の一括整形も無音カットも、当たれば数十か所を一度に変える操作で、
-やってみて違ったから戻す、では確認の手間が大きい。
+やってみて違ったから戻す、では確認の手間が大きい
 """
 
 from __future__ import annotations
@@ -31,15 +31,15 @@ from kumiki.ui.theme import Colors
 
 __all__ = ["CleanupDialog", "Estimator", "JetCutDialog"]
 
-#: 削る量の見積もり。条件と「発話を守るか」を受け取り、(か所, 秒) を返す。
+#: 削る量の見積もり 条件と「発話を守るか」を受け取り、(か所, 秒) を返す
 type Estimator = Callable[[SilenceOptions, bool], tuple[int, float]]
 
 
 def _confirm_buttons(parent: QDialog, accept: str) -> QDialogButtonBox:
-    """OK / Cancel の文言を日本語にした確定ボタン。
+    """OK / Cancel の文言を日本語にした確定ボタン
 
     Qt の標準ボタンは環境の言語に従うので、そのままだと日本語の画面に英語が
-    混じる。押すと何が起きるかを名前にしておく。
+    混じる 押すと何が起きるかを名前にしておく
     """
     buttons = QDialogButtonBox(
         QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent
@@ -56,15 +56,15 @@ def _confirm_buttons(parent: QDialog, accept: str) -> QDialogButtonBox:
     return buttons
 
 
-#: 句読点の扱いの選択肢。
+#: 句読点の扱いの選択肢
 PUNCTUATION = (("keep", "そのまま"), ("space", "空白にする"), ("strip", "落とす"))
 
 
 class CleanupDialog(QDialog):
-    """フィラー語の除去と改行の設定。
+    """フィラー語の除去と改行の設定
 
-    条件を変えるたびに、結果の 1 例と変化する枚数をその場で出す。字幕は数十枚
-    あるので、全部を目で追ってから決めるわけにいかない。
+    条件を変えるたびに、結果の 1 例と変化する枚数をその場で出す 字幕は数十枚
+    あるので、全部を目で追ってから決めるわけにいかない
     """
 
     def __init__(self, transcript: Transcript, parent: QWidget | None = None) -> None:
@@ -156,17 +156,17 @@ class CleanupDialog(QDialog):
             ),
             None,
         )
-        lines = [f"{changed} 枚が変わり、{dropped} 枚が消えます。"]
+        lines = [f"{changed} 枚が変わり、{dropped} 枚が消えます"]
         if sample is not None:
             lines.append(f"例: 「{sample[0]}」 → 「{sample[1]}」")
         self._preview.setText("\n".join(lines))
 
 
 class JetCutDialog(QDialog):
-    """無音カットの設定。
+    """無音カットの設定
 
-    切る前に「何か所・合計何秒を削るか」を出す。無音カットは 1 回で数十か所を
-    変えるので、実行してから確認するには変化が大きすぎる。
+    切る前に「何か所・合計何秒を削るか」を出す 無音カットは 1 回で数十か所を
+    変えるので、実行してから確認するには変化が大きすぎる
     """
 
     def __init__(
@@ -238,18 +238,18 @@ class JetCutDialog(QDialog):
         )
 
     def _update_summary(self) -> None:
-        """削る量を出す。見積もりの手当てが無ければ何も出さない。"""
+        """削る量を出す 見積もりの手当てが無ければ何も出さない"""
         estimate = self._estimate
         if estimate is None:
             self._summary.setText("")
             return
         count, seconds = estimate(self.options(), self.keep_speech)
         if count == 0:
-            self._summary.setText("切る場所が見つかりません。しきい値を上げてみてください。")
+            self._summary.setText("切る場所が見つかりません しきい値を上げてみてください")
             return
-        self._summary.setText(f"{count} か所、合計 {seconds:.1f} 秒を削ります。")
+        self._summary.setText(f"{count} か所、合計 {seconds:.1f} 秒を削ります")
 
 
 def _to_fraction(value: float) -> Fraction:
-    """秒（float）を有理数へ。10ms 単位で十分。"""
+    """秒（float）を有理数へ 10ms 単位で十分"""
     return Fraction(round(value * 100), 100)

@@ -1,4 +1,4 @@
-"""メディアプール。読み込んだ素材の一覧。"""
+"""メディアプール 読み込んだ素材の一覧"""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from kumiki.core.timebase import FrameRate, format_timecode, seconds_to_frame
 
 __all__ = ["MediaPoolWidget"]
 
-#: 読み込みダイアログのフィルタ。
+#: 読み込みダイアログのフィルタ
 MEDIA_FILTER = (
     "メディア (*.mp4 *.mov *.mkv *.avi *.webm *.m4v *.wav *.mp3 *.aac *.flac *.m4a "
     "*.png *.jpg *.jpeg *.bmp *.webp);;すべてのファイル (*)"
@@ -28,11 +28,11 @@ MEDIA_FILTER = (
 
 
 class MediaPoolWidget(QWidget):
-    """素材の一覧と、読み込み・タイムラインへの配置。"""
+    """素材の一覧と、読み込み・タイムラインへの配置"""
 
-    #: 読み込みが要求された。引数はパスの一覧。
+    #: 読み込みが要求された 引数はパスの一覧
     import_requested = Signal(list)
-    #: 素材をタイムラインへ置くよう要求された。引数は素材 ID。
+    #: 素材をタイムラインへ置くよう要求された 引数は素材 ID
     insert_requested = Signal(str)
 
     def __init__(self, project: Project, parent: QWidget | None = None) -> None:
@@ -66,10 +66,10 @@ class MediaPoolWidget(QWidget):
         self.set_project(project)
 
     def set_project(self, project: Project) -> None:
-        """一覧を作り直す。
+        """一覧を作り直す
 
-        選択は素材 ID で復元する。行番号で覚えると、素材を消したときに
-        別のものが選ばれる。
+        選択は素材 ID で復元する 行番号で覚えると、素材を消したときに
+        別のものが選ばれる
         """
         selected = self.selected_media_id()
         self._project = project
@@ -120,7 +120,7 @@ class MediaPoolWidget(QWidget):
 
 
 def _describe(media: MediaItem, rate: FrameRate) -> str:
-    """一覧に出す 1 行。長さと中身の種類が一目で分かるようにする。"""
+    """一覧に出す 1 行 長さと中身の種類が一目で分かるようにする"""
     parts = [media.name]
     if media.is_still:
         parts.append("静止画")

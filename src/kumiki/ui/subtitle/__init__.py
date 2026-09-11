@@ -1,4 +1,4 @@
-"""字幕パネルとその周辺のダイアログ。"""
+"""字幕パネルとその周辺のダイアログ"""
 
 from kumiki.ui.subtitle.panel import SubtitlePanel
 

@@ -1,7 +1,7 @@
-"""スクリプトの走査と、エフェクトとしての登録。
+"""スクリプトの走査と、エフェクトとしての登録
 
 登録できていれば、設定 UI もプリセットもキーフレームも自前のエフェクトと
-同じ経路で動く。ここはその継ぎ目を見る。
+同じ経路で動く ここはその継ぎ目を見る
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ def script_dir(tmp_path: Path) -> Path:
     (root / "動き").mkdir(parents=True)
     (root / "動き" / "ゆれ.anm").write_text(ANM, encoding="utf-8")
     (root / "まとめ.anm").write_text(MULTI, encoding="utf-8")
-    # AviUtl1 世代は Shift_JIS。
+    # AviUtl1 世代は Shift_JIS
     (root / "旧世代.obj").write_text("--track0:大きさ,1,100,50\n", encoding="cp932")
     return root
 
@@ -69,7 +69,7 @@ class TestScanning:
         assert ScriptCatalog(roots=(tmp_path / "無い",)).scan() == ()
 
     def test_identifiers_are_stable(self, script_dir: Path) -> None:
-        # プロジェクトファイルに出るので、走査のたびに変わってはいけない。
+        # プロジェクトファイルに出るので、走査のたびに変わってはいけない
         first = {entry.identifier for entry in ScriptCatalog(roots=(script_dir,)).scan()}
         second = {entry.identifier for entry in ScriptCatalog(roots=(script_dir,)).scan()}
         assert first == second
@@ -105,8 +105,8 @@ class TestRegistration:
         assert (spec.minimum, spec.maximum, spec.default) == (0.0, 200.0, 20.0)
 
     def test_a_script_has_no_shader(self, script_dir: Path) -> None:
-        # GPU のエフェクト処理はシェーダの無い定義を飛ばす。Lua の分岐は
-        # 描画側が種別で行う。
+        # GPU のエフェクト処理はシェーダの無い定義を飛ばす Lua の分岐は
+        # 描画側が種別で行う
         catalog = ScriptCatalog(roots=(script_dir,))
         catalog.scan()
         catalog.register_all()

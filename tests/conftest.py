@@ -1,4 +1,4 @@
-"""テスト全体で使う素材とプロジェクトの組み立て。"""
+"""テスト全体で使う素材とプロジェクトの組み立て"""
 
 from __future__ import annotations
 
@@ -33,12 +33,12 @@ RATE_30 = FrameRate(30)
 
 @pytest.fixture(scope="session", autouse=True)
 def qt_application() -> Iterator[QApplication]:
-    """テスト全体で 1 つだけ QApplication を用意する。
+    """テスト全体で 1 つだけ QApplication を用意する
 
     ウィジェットには QApplication が要るが、GL のテストが先に走ると
     QGuiApplication だけが作られ、あとから QApplication を作れなくなる
-    （Qt の制約）。ここで最初に上位の QApplication を作っておけば、
-    どちらのテストも同じインスタンスを使える。
+    （Qt の制約） ここで最初に上位の QApplication を作っておけば、
+    どちらのテストも同じインスタンスを使える
     """
     existing = QApplication.instance()
     application = existing if isinstance(existing, QApplication) else QApplication([])
@@ -48,11 +48,11 @@ def qt_application() -> Iterator[QApplication]:
 
 @pytest.fixture(autouse=True, scope="module")
 def forget_scripts() -> Iterator[None]:
-    """テストが登録した AviUtl スクリプトを、モジュールごとに片付ける。
+    """テストが登録した AviUtl スクリプトを、モジュールごとに片付ける
 
-    スクリプトの定義はエフェクトの登録簿というアプリ全体の状態に入る。
+    スクリプトの定義はエフェクトの登録簿というアプリ全体の状態に入る
     残したままにすると、別のテストが「シェーダの無いエフェクト」を見つけて
-    落ちる。
+    落ちる
     """
     yield
     for definition in registry.all():
@@ -62,7 +62,7 @@ def forget_scripts() -> Iterator[None]:
 
 @pytest.fixture
 def video_media() -> MediaItem:
-    """10 秒の 1080p30 素材。映像 1 本と音声 1 本を持つ。"""
+    """10 秒の 1080p30 素材 映像 1 本と音声 1 本を持つ"""
     return MediaItem(
         path=Path("C:/素材/本編.mp4"),
         duration=Fraction(10),
@@ -91,7 +91,7 @@ def video_media() -> MediaItem:
 
 @pytest.fixture
 def audio_media() -> MediaItem:
-    """30 秒の BGM。"""
+    """30 秒の BGM"""
     return MediaItem(
         path=Path("C:/素材/bgm.wav"),
         duration=Fraction(30),
@@ -109,7 +109,7 @@ def audio_media() -> MediaItem:
 
 @pytest.fixture
 def transcript() -> Transcript:
-    """3 つの発話区間を持つ起こし結果。時刻はすべてソース秒。"""
+    """3 つの発話区間を持つ起こし結果 時刻はすべてソース秒"""
     return Transcript(
         segments=(
             TranscriptSegment(start=Fraction(1), end=Fraction(3), text="今日は"),
@@ -133,7 +133,7 @@ def audio_track() -> Track:
 
 @pytest.fixture
 def project(video_media: MediaItem, video_track: Track) -> Project:
-    """素材 1 つと空の映像トラック 1 本を持つプロジェクト。"""
+    """素材 1 つと空の映像トラック 1 本を持つプロジェクト"""
     base = Project.create(ProjectSettings(frame_rate=RATE_30), media=(video_media,))
     from dataclasses import replace
 
@@ -141,7 +141,7 @@ def project(video_media: MediaItem, video_track: Track) -> Project:
 
 
 def make_clip(start: int, duration: int, media: MediaItem, source_in: int = 0) -> Clip:
-    """テスト用のクリップを手短に作る。"""
+    """テスト用のクリップを手短に作る"""
     return Clip(
         timeline_start=start,
         duration=duration,
@@ -152,14 +152,14 @@ def make_clip(start: int, duration: int, media: MediaItem, source_in: int = 0) -
 
 @functools.cache
 def gpu_available() -> bool:
-    """OpenGL 4.3 が本当に使えるか。1 セッションで 1 度だけ確かめる。
+    """OpenGL 4.3 が本当に使えるか 1 セッションで 1 度だけ確かめる
 
-    GPU の無い環境（CI など）でも Qt はコンテキストを「作れて」しまう。
+    GPU の無い環境（CI など）でも Qt はコンテキストを「作れて」しまう
     :class:`OffscreenGLContext` は作った直後に関数が呼べるかまで確かめて
-    :class:`GLContextError` を出すので、それを見て判断する。
+    :class:`GLContextError` を出すので、それを見て判断する
 
     書き出しのように**内部で**コンテキストを作るテストは、自前の ``gl``
-    フィクスチャを持たない。そういうテストはこれで飛ばす。
+    フィクスチャを持たない そういうテストはこれで飛ばす
     """
     try:
         context = OffscreenGLContext()
@@ -171,9 +171,9 @@ def gpu_available() -> bool:
 
 @pytest.fixture
 def gpu() -> None:
-    """GPU が要るテストに付ける。無い環境では失敗ではなく飛ばす。
+    """GPU が要るテストに付ける 無い環境では失敗ではなく飛ばす
 
-    ``pytestmark = pytest.mark.usefixtures("gpu")`` でモジュールごと付けられる。
+    ``pytestmark = pytest.mark.usefixtures("gpu")`` でモジュールごと付けられる
     """
     if not gpu_available():
         pytest.skip("OpenGL 4.3 が使えない（GPU ドライバが無い環境）")
@@ -181,7 +181,7 @@ def gpu() -> None:
 
 @pytest.fixture(scope="session")
 def media_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """生成した素材を置く場所。セッション内で使い回す。"""
+    """生成した素材を置く場所 セッション内で使い回す"""
     if not ffmpeg_available():
         pytest.skip("ffmpeg が PATH に無いので実素材のテストを飛ばす")
     return tmp_path_factory.mktemp("media")
@@ -189,13 +189,13 @@ def media_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 @pytest.fixture(scope="session")
 def sample_av(media_dir: Path) -> SampleMedia:
-    """映像 + 音声、320x240 / 30fps / 2 秒。"""
+    """映像 + 音声、320x240 / 30fps / 2 秒"""
     return make_sample(media_dir, "av.mp4")
 
 
 @pytest.fixture(scope="session")
 def sample_long(media_dir: Path) -> SampleMedia:
-    """4 秒・GOP 12 の映像のみ素材。シークが GOP をまたぐ様子を見るため。"""
+    """4 秒・GOP 12 の映像のみ素材 シークが GOP をまたぐ様子を見るため"""
     return make_sample(
         media_dir,
         "long.mp4",
@@ -207,5 +207,5 @@ def sample_long(media_dir: Path) -> SampleMedia:
 
 @pytest.fixture(scope="session")
 def sample_ntsc(media_dir: Path) -> SampleMedia:
-    """29.97fps の素材。分数フレームレートの扱いを確かめるため。"""
+    """29.97fps の素材 分数フレームレートの扱いを確かめるため"""
     return make_sample(media_dir, "ntsc.mp4", fps="30000/1001", duration=2.0)

@@ -1,4 +1,4 @@
-"""素材を開いて :class:`~kumiki.core.model.MediaItem` を組み立てる。"""
+"""素材を開いて :class:`~kumiki.core.model.MediaItem` を組み立てる"""
 
 from __future__ import annotations
 
@@ -16,22 +16,22 @@ from kumiki.core.timebase import FrameRate
 
 __all__ = ["ProbeError", "probe_media"]
 
-#: 静止画として扱う拡張子。長さを持たず、タイムライン上で任意に伸ばせる。
+#: 静止画として扱う拡張子 長さを持たず、タイムライン上で任意に伸ばせる
 STILL_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff"})
 
-#: フレームレートが取れなかったときの既定値。静止画や壊れたヘッダで起きる。
+#: フレームレートが取れなかったときの既定値 静止画や壊れたヘッダで起きる
 FALLBACK_FRAME_RATE = FrameRate(30)
 
 
 class ProbeError(Exception):
-    """素材を開けない、または中身を解釈できない。"""
+    """素材を開けない、または中身を解釈できない"""
 
 
 def probe_media(path: Path) -> MediaItem:
-    """ファイルを解析して素材情報を返す。
+    """ファイルを解析して素材情報を返す
 
-    映像・音声の各ストリームを個別に記録する。多言語音声や 5.1ch の素材では
-    音声が複数本あり、読み込み時にそれぞれ別トラックへ展開できるようにするため。
+    映像・音声の各ストリームを個別に記録する 多言語音声や 5.1ch の素材では
+    音声が複数本あり、読み込み時にそれぞれ別トラックへ展開できるようにするため
     """
     path = Path(path)
     if not path.exists():
@@ -62,10 +62,10 @@ def probe_media(path: Path) -> MediaItem:
 
 
 def _container_duration(container: av.container.InputContainer) -> Fraction:
-    """素材全体の長さ（秒）。
+    """素材全体の長さ（秒）
 
-    コンテナの長さを優先する。ストリームごとの長さは映像と音声で食い違うことがあり、
-    どちらを採るかで末尾が欠けたり余ったりするため。
+    コンテナの長さを優先する ストリームごとの長さは映像と音声で食い違うことがあり、
+    どちらを採るかで末尾が欠けたり余ったりするため
     """
     if container.duration is not None:
         return Fraction(container.duration, av.time_base)
@@ -105,11 +105,11 @@ def _audio_info(stream: av.audio.stream.AudioStream) -> AudioStreamInfo:
 
 
 def _probe_rotation(path: Path) -> int:
-    """表示時に適用すべき時計回りの回転角を返す。
+    """表示時に適用すべき時計回りの回転角を返す
 
-    PyAV 18 は表示行列に setter しか公開していないので、ここだけ ffprobe に頼る。
-    スマホの縦撮り素材は回転情報を持つのが普通で、無視すると横倒しで表示される。
-    取得できない場合は 0 を返し、素材の読み込み自体は続行する。
+    PyAV 18 は表示行列に setter しか公開していないので、ここだけ ffprobe に頼る
+    スマホの縦撮り素材は回転情報を持つのが普通で、無視すると横倒しで表示される
+    取得できない場合は 0 を返し、素材の読み込み自体は続行する
     """
     ffprobe = shutil.which("ffprobe")
     if ffprobe is None:
@@ -143,7 +143,7 @@ def _probe_rotation(path: Path) -> int:
             value = side_data.get("rotation")
             if value is None:
                 continue
-            # ffprobe は反時計回りの角度を返す。表示時に必要なのは時計回りなので反転する。
+            # ffprobe は反時計回りの角度を返す 表示時に必要なのは時計回りなので反転する
             clockwise = round(-float(value)) % 360
             return clockwise if clockwise in (0, 90, 180, 270) else 0
     return 0

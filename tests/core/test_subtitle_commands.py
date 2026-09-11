@@ -1,4 +1,4 @@
-"""字幕の編集コマンドと焼き込み。"""
+"""字幕の編集コマンドと焼き込み"""
 
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ class TestSetSegmentText:
     def test_editing_changes_every_place_the_media_is_used(
         self, project: Project, video_media: MediaItem, transcript: Transcript
     ) -> None:
-        # 同じ素材を 2 回置く。字幕は素材に属するので、直すのは 1 回で済む。
+        # 同じ素材を 2 回置く 字幕は素材に属するので、直すのは 1 回で済む
         with_transcript = SetTranscript(video_media.id, transcript).apply(project)
         track = with_transcript.timeline.tracks[0].id
         placed = AddClip(track, make_clip(0, 300, video_media)).apply(with_transcript)
@@ -84,7 +84,7 @@ class TestRetimeSegment:
         assert item.transcript is not None
         first = item.transcript.segments[0]
 
-        # 1 枚目を最後尾へ動かす。順序の不変条件はコマンド側で整える。
+        # 1 枚目を最後尾へ動かす 順序の不変条件はコマンド側で整える
         moved = RetimeSegment(video_media.id, first.id, Fraction(9, 2), Fraction(11, 2)).apply(
             placed
         )
@@ -187,7 +187,7 @@ class TestBurnSubtitles:
             (120, 60),
             (210, 60),
         ]
-        # 本文が入り、テンプレートの他のパラメータは残る。
+        # 本文が入り、テンプレートの他のパラメータは残る
         first = track.clips[0].source
         assert first is not None
         assert first.params["text"] == "今日は"
@@ -199,7 +199,7 @@ class TestBurnSubtitles:
     def test_overlapping_subtitles_are_trimmed_to_fit_one_track(
         self, project: Project, video_media: MediaItem
     ) -> None:
-        # 同じ素材を重ねて置くと、字幕も重なる。1 本のトラックには重ねられない。
+        # 同じ素材を重ねて置くと、字幕も重なる 1 本のトラックには重ねられない
         overlapping = Transcript(
             (TranscriptSegment(start=Fraction(0), end=Fraction(4), text="重なる"),)
         )

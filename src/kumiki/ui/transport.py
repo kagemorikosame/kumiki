@@ -1,4 +1,4 @@
-"""再生コントロールとタイムコード表示。"""
+"""再生コントロールとタイムコード表示"""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from kumiki.ui.theme import Colors
 
 __all__ = ["TransportBar"]
 
-#: 再生品質の選択肢。分母が大きいほど軽くなる。
+#: 再生品質の選択肢 分母が大きいほど軽くなる
 QUALITY_CHOICES: tuple[tuple[str, int], ...] = (
     ("フル画質", 1),
     ("1/2 画質", 2),
@@ -21,7 +21,7 @@ QUALITY_CHOICES: tuple[tuple[str, int], ...] = (
 
 
 class TransportBar(QWidget):
-    """再生・停止・コマ送りと、現在位置の表示。"""
+    """再生・停止・コマ送りと、現在位置の表示"""
 
     play_toggled = Signal()
     step_requested = Signal(int)
@@ -104,7 +104,7 @@ def _tool_button(text: str, tooltip: str) -> QPushButton:
     button = QPushButton(text)
     button.setToolTip(tooltip)
     button.setFixedWidth(38)
-    # ボタンにフォーカスが入ると、Space が再生ではなくボタンの押下になる。
-    # 再生ソフトで一番使うキーなので、そこは奪わせない。
+    # ボタンにフォーカスが入ると、Space が再生ではなくボタンの押下になる
+    # 再生ソフトで一番使うキーなので、そこは奪わせない
     button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
     return button

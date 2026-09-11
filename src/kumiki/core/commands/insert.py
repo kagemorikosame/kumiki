@@ -1,11 +1,11 @@
-"""素材をタイムラインへ入れる、という一連の操作。
+"""素材をタイムラインへ入れる、という一連の操作
 
 「読み込んで置く」は 1 つのコマンドではなく、素材の登録・トラックの用意・
-映像と音声のクリップ配置・両者のリンク、の組み合わせになる。UI からも AI からも
-同じ手順を踏みたいので、ここに置いてコマンドの列として返す。
+映像と音声のクリップ配置・両者のリンク、の組み合わせになる UI からも AI からも
+同じ手順を踏みたいので、ここに置いてコマンドの列として返す
 
-コマンドを返すだけで実行はしない。呼び出し側がチェックポイントで括れば、
-まとめて 1 回の Undo で戻せる。
+コマンドを返すだけで実行はしない 呼び出し側がチェックポイントで括れば、
+まとめて 1 回の Undo で戻せる
 """
 
 from __future__ import annotations
@@ -27,21 +27,21 @@ from kumiki.core.timebase import Rounding, seconds_to_frame
 
 __all__ = ["DEFAULT_GENERATED_FRAMES", "DEFAULT_STILL_FRAMES", "insert_generated", "insert_media"]
 
-#: 静止画をタイムラインへ置くときの既定の長さ（フレーム）。
-#: 30fps で 5 秒。Premiere の既定と同じくらい。
+#: 静止画をタイムラインへ置くときの既定の長さ（フレーム）
+#: 30fps で 5 秒 Premiere の既定と同じくらい
 DEFAULT_STILL_FRAMES = 150
 
-#: テキストや図形を置くときの既定の長さ（フレーム）。30fps で 5 秒。
+#: テキストや図形を置くときの既定の長さ（フレーム） 30fps で 5 秒
 DEFAULT_GENERATED_FRAMES = 150
 
 
 def insert_media(
     project: Project, media: MediaItem, *, at_frame: int | None = None
 ) -> list[Command]:
-    """素材をメディアプールへ入れ、タイムラインの末尾（または指定位置）へ置く。
+    """素材をメディアプールへ入れ、タイムラインの末尾（または指定位置）へ置く
 
-    映像と音声を持つ素材は、別々のトラックへ展開して同じリンクグループに入れる。
-    片方を動かせばもう片方も追従し、分割も同時に行われる。
+    映像と音声を持つ素材は、別々のトラックへ展開して同じリンクグループに入れる
+    片方を動かせばもう片方も追従し、分割も同時に行われる
     """
     commands: list[Command] = []
     if project.find_media(media.id) is None:
@@ -52,8 +52,8 @@ def insert_media(
         return commands
 
     start = project.duration if at_frame is None else max(0, at_frame)
-    # 映像と音声の両方があるときだけリンクする。1 本しかないのにグループを
-    # 付けると、あとで別の素材と誤って連動する余地を残すことになる。
+    # 映像と音声の両方があるときだけリンクする 1 本しかないのにグループを
+    # 付けると、あとで別の素材と誤って連動する余地を残すことになる
     group = new_group_id() if media.has_video and media.has_audio else None
 
     if media.has_video or media.is_still:
@@ -90,20 +90,20 @@ def insert_media(
 
 
 def _timeline_duration(project: Project, media: MediaItem) -> int:
-    """素材をタイムラインへ置いたときの長さ（フレーム）。"""
+    """素材をタイムラインへ置いたときの長さ（フレーム）"""
     if media.is_still:
         return DEFAULT_STILL_FRAMES
     if media.duration <= 0:
         return 0
-    # 切り上げる。切り捨てると素材の末尾が 1 フレーム欠ける。
+    # 切り上げる 切り捨てると素材の末尾が 1 フレーム欠ける
     return max(1, seconds_to_frame(Fraction(media.duration), project.rate, Rounding.CEIL))
 
 
 def _find_or_create(project: Project, kind: TrackKind, commands: list[Command]) -> Track:
-    """その種類のトラックを探し、無ければ作るコマンドを積んで返す。
+    """その種類のトラックを探し、無ければ作るコマンドを積んで返す
 
-    すでに ``commands`` の中で作ったトラックも対象にする。映像と音声を続けて
-    置くときに、同じ種類のトラックを 2 本作ってしまわないように。
+    すでに ``commands`` の中で作ったトラックも対象にする 映像と音声を続けて
+    置くときに、同じ種類のトラックを 2 本作ってしまわないように
     """
     for command in commands:
         if isinstance(command, AddTrack) and command.track.kind is kind:
@@ -127,11 +127,11 @@ def insert_generated(
     at_frame: int | None = None,
     duration: int = DEFAULT_GENERATED_FRAMES,
 ) -> list[Command]:
-    """テキストや図形をタイムラインへ置く。
+    """テキストや図形をタイムラインへ置く
 
-    素材を持たないので、置く先は必ず映像トラック。既存のクリップと重ならない
-    よう、指定位置に空きが無ければ新しいトラックを作る。テロップは元の映像に
-    重ねたいのが普通で、既存クリップを避けて後ろへ並べるのは意図と違う。
+    素材を持たないので、置く先は必ず映像トラック 既存のクリップと重ならない
+    よう、指定位置に空きが無ければ新しいトラックを作る テロップは元の映像に
+    重ねたいのが普通で、既存クリップを避けて後ろへ並べるのは意図と違う
     """
     commands: list[Command] = []
     start = project.duration if at_frame is None else max(0, at_frame)
@@ -148,7 +148,7 @@ def insert_generated(
 def _free_video_track(
     project: Project, start: int, duration: int, commands: list[Command]
 ) -> Track:
-    """``[start, start + duration)`` が空いている映像トラックを探す。無ければ作る。"""
+    """``[start, start + duration)`` が空いている映像トラックを探す 無ければ作る"""
     for track in project.timeline.video_tracks():
         if track.locked:
             continue

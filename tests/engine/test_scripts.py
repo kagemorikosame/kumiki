@@ -1,8 +1,8 @@
-"""AviUtl スクリプトが実際に描画へ届くこと。
+"""AviUtl スクリプトが実際に描画へ届くこと
 
 スクリプトが書き換えた位置・回転・拡大が、GPU の合成結果にそのまま出るかを
-画素で見る。ここが通れば、配布されているアニメーション効果がそのまま動く土台が
-できている。
+画素で見る ここが通れば、配布されているアニメーション効果がそのまま動く土台が
+できている
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from kumiki.effects.definition import registry
 from kumiki.engine.gpu import GLContextError, OffscreenGLContext
 from kumiki.engine.render import FrameRenderer
 
-#: 位置と回転をスライダーで動かすだけのスクリプト。
+#: 位置と回転をスライダーで動かすだけのスクリプト
 MOVE = """--track0:X,-500,500,0,1
 --track1:回転,-360,360,0,1
 --track2:拡大,10,400,100,1
@@ -36,7 +36,7 @@ obj.rz = obj.track1
 obj.zoom = obj.track2 / 100
 """
 
-#: 残像。1 回の実行で何枚も描くスクリプトの代表。
+#: 残像 1 回の実行で何枚も描くスクリプトの代表
 TRAIL = """--track0:枚数,1,8,4,1
 for i = 0, obj.track0 - 1 do
   obj.draw(i * 30, 0, 0, 1, 1 - i * 0.2)
@@ -66,7 +66,7 @@ def catalog() -> ScriptCatalog:
 
 
 def build(identifier: str, **params: float) -> Project:
-    """40x40 の白い四角に、スクリプトを 1 本積んだプロジェクト。"""
+    """40x40 の白い四角に、スクリプトを 1 本積んだプロジェクト"""
     width, height = SCREEN
     project = Project.create(ProjectSettings(width=width, height=height, frame_rate=FrameRate(30)))
     track = Track(kind=TrackKind.VIDEO, name="V1")
@@ -74,7 +74,7 @@ def build(identifier: str, **params: float) -> Project:
 
     shape = GeneratedSource(kind="shape", params={"shape": "rect"})
     clip = Clip(timeline_start=0, duration=30, source=shape)
-    # 図形の既定は 400x400。画面より小さくして位置を見やすくする。
+    # 図形の既定は 400x400 画面より小さくして位置を見やすくする
     clip = Clip(
         timeline_start=0,
         duration=30,
@@ -91,7 +91,7 @@ def build(identifier: str, **params: float) -> Project:
 
 
 def bounds(image: np.ndarray) -> tuple[int, int, int, int]:
-    """明るい画素の外接矩形。``(左, 右, 上, 下)``。"""
+    """明るい画素の外接矩形 ``(左, 右, 上, 下)``"""
     bright = image[..., :3].max(axis=2) > 100
     ys, xs = np.nonzero(bright)
     assert len(xs), "何も描かれていない"
@@ -129,7 +129,7 @@ class TestTransform:
         left, right, top, bottom = bounds(
             render(build("aviutl:試験.anm:移動", track1=45), gl_context)
         )
-        # 40px の正方形を 45 度回すと、外接矩形は約 56px になる。
+        # 40px の正方形を 45 度回すと、外接矩形は約 56px になる
         assert right - left == pytest.approx(56, abs=3)
         assert bottom - top == pytest.approx(56, abs=3)
         assert (left + right) // 2 == pytest.approx(SCREEN[0] // 2, abs=2)
@@ -145,7 +145,7 @@ class TestTransform:
         self, gl_context: OffscreenGLContext, catalog: ScriptCatalog
     ) -> None:
         del catalog
-        # 回転を掛けた直後に、掛けていないものを描いても回らないこと。
+        # 回転を掛けた直後に、掛けていないものを描いても回らないこと
         render(build("aviutl:試験.anm:移動", track1=30), gl_context)
         left, right, top, bottom = bounds(render(build("aviutl:試験.anm:移動"), gl_context))
         assert right - left == pytest.approx(40, abs=2)
@@ -159,7 +159,7 @@ class TestMultipleDraws:
         del catalog
         image = render(build("aviutl:試験.anm:残像", track0=3), gl_context)
         left, right, _, _ = bounds(image)
-        # 0, 30, 60 の 3 枚。左端は中央 -20、右端は中央 +60+20。
+        # 0, 30, 60 の 3 枚 左端は中央 -20、右端は中央 +60+20
         assert left == pytest.approx(SCREEN[0] // 2 - 20, abs=2)
         assert right == pytest.approx(SCREEN[0] // 2 + 80, abs=3)
 
@@ -171,5 +171,5 @@ class TestMultipleDraws:
         middle = SCREEN[1] // 2
         first = int(image[middle, SCREEN[0] // 2, 0])
         third = int(image[middle, SCREEN[0] // 2 + 60, 0])
-        # 後ろの枚ほど薄くなる。
+        # 後ろの枚ほど薄くなる
         assert first > third > 0

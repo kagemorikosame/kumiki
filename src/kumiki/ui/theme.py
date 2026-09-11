@@ -1,7 +1,7 @@
-"""UI の色と寸法。
+"""UI の色と寸法
 
-編集ソフトは長時間見続けるものなので暗色を基調にする。明るい背景だと、映像の
-色を判断するときに目が順応してしまい、プレビューの見え方が変わる。
+編集ソフトは長時間見続けるものなので暗色を基調にする 明るい背景だと、映像の
+色を判断するときに目が順応してしまい、プレビューの見え方が変わる
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ __all__ = ["STYLE_SHEET", "Colors", "Metrics"]
 
 
 class Colors:
-    """配色。値はすべて sRGB。"""
+    """配色 値はすべて sRGB"""
 
     WINDOW = QColor("#1b1b1e")
     PANEL = QColor("#232327")
@@ -22,7 +22,7 @@ class Colors:
     TEXT_MUTED = QColor("#8b8b93")
     ACCENT = QColor("#7f8cf0")
 
-    #: プレビューの周囲。映像の明るさを判断しやすいよう、真っ黒より少し上げる。
+    #: プレビューの周囲 映像の明るさを判断しやすいよう、真っ黒より少し上げる
     VIEWER_BACKGROUND = QColor("#0f0f11")
 
     TIMELINE_BACKGROUND = QColor("#191a1d")
@@ -30,7 +30,7 @@ class Colors:
     TRACK_HEADER = QColor("#202024")
     TRACK_SEPARATOR = QColor("#2c2c33")
 
-    #: 再生ヘッド。素材の色と被らない色にする。
+    #: 再生ヘッド 素材の色と被らない色にする
     PLAYHEAD = QColor("#ff5c5c")
 
     VIDEO_CLIP = QColor("#33445f")
@@ -43,7 +43,7 @@ class Colors:
 
 
 class Metrics:
-    """寸法。"""
+    """寸法"""
 
     TRACK_HEADER_WIDTH = 132
     RULER_HEIGHT = 22
@@ -53,15 +53,15 @@ class Metrics:
     CLIP_LABEL_HEIGHT = 14
     CLIP_RADIUS = 3
 
-    #: クリップ端を掴んでトリムできる幅（ピクセル）。
+    #: クリップ端を掴んでトリムできる幅（ピクセル）
     TRIM_HANDLE_WIDTH = 6
 
-    #: スナップが効く距離（ピクセル）。
+    #: スナップが効く距離（ピクセル）
     SNAP_DISTANCE = 8
 
 
-#: アプリ全体のスタイル。ウィジェットごとに色を書くと、変えたいときに全部を
-#: 探し回ることになるので 1 箇所にまとめる。
+#: アプリ全体のスタイル ウィジェットごとに色を書くと、変えたいときに全部を
+#: 探し回ることになるので 1 箇所にまとめる
 STYLE_SHEET = f"""
 QWidget {{
     background-color: {Colors.WINDOW.name()};

@@ -1,7 +1,7 @@
-"""``.exo`` / ``.exa`` の読み込み。
+"""``.exo`` / ``.exa`` の読み込み
 
-文字コードの判別を厚めに見る。間違えると読めないのではなく、**文字化けしたまま
-読めてしまう**ので、あとから原因を追いにくい。
+文字コードの判別を厚めに見る 間違えると読めないのではなく、**文字化けしたまま
+読めてしまう**ので、あとから原因を追いにくい
 """
 
 from __future__ import annotations
@@ -60,8 +60,8 @@ class TestParsing:
 
     def test_object_bounds(self) -> None:
         obj = parse_exo(SAMPLE).objects[0]
-        # ファイルには 1 始まりで書かれている（start=1 end=60）。読んだ側では
-        # 0 始まりに揃えるので 0..59。終端を含むので長さは 60。
+        # ファイルには 1 始まりで書かれている（start=1 end=60） 読んだ側では
+        # 0 始まりに揃えるので 0..59 終端を含むので長さは 60
         assert (obj.start, obj.end, obj.duration) == (0, 59, 60)
         assert obj.layer == 1
 
@@ -120,7 +120,7 @@ class TestEncoding:
         assert encoding == "utf-8-sig"
 
     def test_shift_jis_falls_back(self) -> None:
-        # AviUtl1 世代のファイル。UTF-8 としては読めないバイト列。
+        # AviUtl1 世代のファイル UTF-8 としては読めないバイト列
         text, encoding = decode_bytes("テキスト".encode("cp932"))
         assert (text, encoding) == ("テキスト", "cp932")
 

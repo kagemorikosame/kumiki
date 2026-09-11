@@ -1,12 +1,12 @@
-"""エフェクトとパラメータの操作。
+"""エフェクトとパラメータの操作
 
-パラメータの指し方を :class:`ParamPath` に統一してある。クリップ自身の値も、
+パラメータの指し方を :class:`ParamPath` に統一してある クリップ自身の値も、
 エフェクトの値も、生成オブジェクトの値も同じ形で指せるので、設定 UI も
-キーフレーム編集も AI エージェントも 1 種類のコマンドで済む。
+キーフレーム編集も AI エージェントも 1 種類のコマンドで済む
 
 指す先ごとにコマンドを分けると、キーフレームの追加だけで 3 種類を書くことになり、
 どれか 1 つの実装が遅れて「エフェクトはアニメーションするがテキストはしない」
-といったちぐはぐが生まれる。
+といったちぐはぐが生まれる
 """
 
 from __future__ import annotations
@@ -49,24 +49,24 @@ __all__ = [
 
 
 class ParamTarget(Enum):
-    """パラメータがどこに属しているか。"""
+    """パラメータがどこに属しているか"""
 
-    #: クリップに積んだエフェクトの値。
+    #: クリップに積んだエフェクトの値
     EFFECT = "effect"
-    #: 生成オブジェクト（テキスト・図形）の値。
+    #: 生成オブジェクト（テキスト・図形）の値
     SOURCE = "source"
-    #: クリップ自身の値（不透明度など）。
+    #: クリップ自身の値（不透明度など）
     CLIP = "clip"
 
 
 @dataclass(frozen=True, slots=True)
 class ParamPath:
-    """1 つのパラメータの在りか。"""
+    """1 つのパラメータの在りか"""
 
     clip_id: ClipId
     target: ParamTarget
     name: str
-    #: ``target`` が :attr:`ParamTarget.EFFECT` のときだけ意味を持つ。
+    #: ``target`` が :attr:`ParamTarget.EFFECT` のときだけ意味を持つ
     effect_id: EffectId | None = None
 
     def __post_init__(self) -> None:
@@ -87,7 +87,7 @@ class ParamPath:
 
 
 def resolve_param(project: Project, path: ParamPath) -> ParamValue | None:
-    """今の値を読む。見つからなければ ``None``。"""
+    """今の値を読む 見つからなければ ``None``"""
     located = project.timeline.locate_clip(path.clip_id)
     if located is None:
         return None
@@ -104,11 +104,11 @@ def resolve_param(project: Project, path: ParamPath) -> ParamValue | None:
 
 @dataclass(frozen=True, slots=True)
 class SetParam(Command):
-    """パラメータの値を差し替える。
+    """パラメータの値を差し替える
 
-    キーフレームの付いた値に対して呼ぶと、アニメーションを捨てて静的な値になる。
+    キーフレームの付いた値に対して呼ぶと、アニメーションを捨てて静的な値になる
     スライダーを触ったときの挙動としてはそれが自然（キーフレームを残したまま
-    値だけ変えると、次のフレームで元へ戻って「効かない」ように見える）。
+    値だけ変えると、次のフレームで元へ戻って「効かない」ように見える）
     """
 
     path: ParamPath
@@ -124,7 +124,7 @@ class SetParam(Command):
 
 @dataclass(frozen=True, slots=True)
 class SetKeyframe(Command):
-    """指定フレームにキーフレームを置く。すでにあれば差し替える。"""
+    """指定フレームにキーフレームを置く すでにあれば差し替える"""
 
     path: ParamPath
     frame: int
@@ -155,10 +155,10 @@ class SetKeyframe(Command):
 
 @dataclass(frozen=True, slots=True)
 class RemoveKeyframe(Command):
-    """指定フレームのキーフレームを消す。
+    """指定フレームのキーフレームを消す
 
-    最後の 1 つを消したときは、その値を静的値として残す。0 に戻ると、
-    キーフレームを消した瞬間に絵が飛ぶ。
+    最後の 1 つを消したときは、その値を静的値として残す 0 に戻ると、
+    キーフレームを消した瞬間に絵が飛ぶ
     """
 
     path: ParamPath
@@ -181,10 +181,10 @@ class RemoveKeyframe(Command):
 
 @dataclass(frozen=True, slots=True)
 class MoveKeyframe(Command):
-    """キーフレームを別のフレームへ動かし、値も変える。
+    """キーフレームを別のフレームへ動かし、値も変える
 
-    グラフエディタで点をつまんで動かす操作。削除と設置の 2 手に分けると、
-    ドラッグ 1 回で履歴が 2 段積まれる。
+    グラフエディタで点をつまんで動かす操作 削除と設置の 2 手に分けると、
+    ドラッグ 1 回で履歴が 2 段積まれる
     """
 
     path: ParamPath
@@ -203,8 +203,8 @@ class MoveKeyframe(Command):
             if moving is None:
                 raise KeyError(f"キーフレームが見つからない: {self.from_frame}")
 
-            # 移動先に別の点があれば、それを置き換える。重なった 2 点は
-            # モデル側の検査で弾かれる。
+            # 移動先に別の点があれば、それを置き換える 重なった 2 点は
+            # モデル側の検査で弾かれる
             others = tuple(
                 k for k in animated.keyframes if k.frame not in (self.from_frame, self.to_frame)
             )
@@ -217,7 +217,7 @@ class MoveKeyframe(Command):
 
 @dataclass(frozen=True, slots=True)
 class ClearKeyframes(Command):
-    """アニメーションを解除し、その時点の値で固定する。"""
+    """アニメーションを解除し、その時点の値で固定する"""
 
     path: ParamPath
     frame: int = 0
@@ -236,7 +236,7 @@ class ClearKeyframes(Command):
 
 @dataclass(frozen=True, slots=True)
 class AddEffect(Command):
-    """クリップにエフェクトを積む。``index`` が ``None`` なら末尾。"""
+    """クリップにエフェクトを積む ``index`` が ``None`` なら末尾"""
 
     clip_id: ClipId
     effect: Effect
@@ -276,10 +276,10 @@ class RemoveEffect(Command):
 
 @dataclass(frozen=True, slots=True)
 class MoveEffect(Command):
-    """エフェクトの順番を変える。
+    """エフェクトの順番を変える
 
-    順番は結果に効く。ぼかしてから色を変えるのと、色を変えてからぼかすのは
-    別の絵になる。
+    順番は結果に効く ぼかしてから色を変えるのと、色を変えてからぼかすのは
+    別の絵になる
     """
 
     clip_id: ClipId
@@ -305,9 +305,9 @@ class MoveEffect(Command):
 
 @dataclass(frozen=True, slots=True)
 class SetEffectEnabled(Command):
-    """エフェクトの有効・無効を切り替える。
+    """エフェクトの有効・無効を切り替える
 
-    消さずに切れるようにしておくと、掛ける前と後を見比べられる。
+    消さずに切れるようにしておくと、掛ける前と後を見比べられる
     """
 
     clip_id: ClipId
@@ -331,7 +331,7 @@ class SetEffectEnabled(Command):
 
 @dataclass(frozen=True, slots=True)
 class SetSource(Command):
-    """生成オブジェクトを差し替える。テキストや図形を置くときに使う。"""
+    """生成オブジェクトを差し替える テキストや図形を置くときに使う"""
 
     clip_id: ClipId
     source: GeneratedSource | None
@@ -346,14 +346,14 @@ class SetSource(Command):
 
 @dataclass(frozen=True, slots=True)
 class SetClipProperty(Command):
-    """クリップ自身の設定を変える。合成方法や速度など。"""
+    """クリップ自身の設定を変える 合成方法や速度など"""
 
     clip_id: ClipId
     name: str
     value: object
 
-    #: 変更を許す項目。任意の属性を書き換えられると、位置や長さを
-    #: 検査なしで壊せてしまう。
+    #: 変更を許す項目 任意の属性を書き換えられると、位置や長さを
+    #: 検査なしで壊せてしまう
     ALLOWED = ("blend_mode", "speed", "enabled", "stream_index")
 
     @property
@@ -370,8 +370,8 @@ class SetClipProperty(Command):
 
 # --- 補助 -----------------------------------------------------------------
 
-#: 項目名が実行時に決まる差し替え。``dataclasses.replace`` に静的な型は付かないので、
-#: ここ 1 箇所で外す。呼び出し側は名前の妥当性を自分で確かめること。
+#: 項目名が実行時に決まる差し替え ``dataclasses.replace`` に静的な型は付かないので、
+#: ここ 1 箇所で外す 呼び出し側は名前の妥当性を自分で確かめること
 _replace_named = cast("Callable[..., Clip]", replace)
 
 
@@ -380,9 +380,9 @@ def _find_effect(clip: Clip, effect_id: EffectId | None) -> Effect | None:
 
 
 def _as_animated(value: ParamValue | None) -> AnimatedValue:
-    """数値パラメータをアニメーション値として扱う。
+    """数値パラメータをアニメーション値として扱う
 
-    静的な数値にキーフレームを打つ操作を、特別扱いせずに書けるようにする。
+    静的な数値にキーフレームを打つ操作を、特別扱いせずに書けるようにする
     """
     if isinstance(value, AnimatedValue):
         return value
@@ -394,7 +394,7 @@ def _as_animated(value: ParamValue | None) -> AnimatedValue:
 
 
 def _update_clip(project: Project, clip_id: ClipId, update: Callable[[Clip], Clip]) -> Project:
-    """クリップ 1 つを差し替える。"""
+    """クリップ 1 つを差し替える"""
     located = project.timeline.locate_clip(clip_id)
     if located is None:
         raise KeyError(f"クリップが見つからない: {clip_id}")
@@ -410,7 +410,7 @@ def _update_clip(project: Project, clip_id: ClipId, update: Callable[[Clip], Cli
 def _update_param(
     project: Project, path: ParamPath, update: Callable[[ParamValue | None], ParamValue]
 ) -> Project:
-    """パラメータ 1 つを差し替える。指す先ごとの違いをここに閉じ込める。"""
+    """パラメータ 1 つを差し替える 指す先ごとの違いをここに閉じ込める"""
 
     def change(clip: Clip) -> Clip:
         if path.target is ParamTarget.CLIP:

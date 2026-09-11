@@ -1,18 +1,18 @@
-"""アプリに同梱する素材。
+"""アプリに同梱する素材
 
 置いてあるもの:
 
 =================  ==========================================================
-``logo.svg``       ロゴの印だけ。README や紹介ページ用
-``icon.svg``       角丸の地に印を載せたもの。アプリのアイコンの原本
+``logo.svg``       ロゴの印だけ README や紹介ページ用
+``icon.svg``       角丸の地に印を載せたもの アプリのアイコンの原本
 ``kumiki.ico``     ``icon.svg`` から作った Windows 用（16〜256 の 7 サイズ）
 =================  ==========================================================
 
-``.ico`` と PNG は ``tools/build_icon.py`` が SVG から作る。**原本は SVG だけ**
-なので、形を直すときは SVG を触って作り直す。
+``.ico`` と PNG は ``tools/build_icon.py`` が SVG から作る **原本は SVG だけ**
+なので、形を直すときは SVG を触って作り直す
 
 パッケージの中に置いてあるのは、PyInstaller でまとめたときに一緒に付いてくる
-ようにするため。アプリのフォルダの外に置くと、配布物で見失う。
+ようにするため アプリのフォルダの外に置くと、配布物で見失う
 """
 
 from __future__ import annotations
@@ -24,13 +24,13 @@ __all__ = ["ICON_FILE", "LOGO_FILE", "path_to"]
 
 
 def path_to(name: str) -> Path:
-    """同梱素材の実際の場所。"""
+    """同梱素材の実際の場所"""
     with resources.as_file(resources.files(__name__) / name) as found:
         return Path(found)
 
 
-#: アプリのアイコン（Windows 用）。
+#: アプリのアイコン（Windows 用）
 ICON_FILE = "kumiki.ico"
 
-#: ロゴの印。
+#: ロゴの印
 LOGO_FILE = "logo.svg"

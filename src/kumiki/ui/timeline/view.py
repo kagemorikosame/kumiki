@@ -1,8 +1,8 @@
-"""タイムラインのウィジェット。
+"""タイムラインのウィジェット
 
-自分でプロジェクトを書き換えない。操作の結果はすべて :class:`Command` として
-:attr:`TimelineView.command_requested` から外へ出す。UI と AI が同じ入口を通る、
-という設計をここでも守るため。
+自分でプロジェクトを書き換えない 操作の結果はすべて :class:`Command` として
+:attr:`TimelineView.command_requested` から外へ出す UI と AI が同じ入口を通る、
+という設計をここでも守るため
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ from kumiki.ui.timeline.painter import (
 
 __all__ = ["TimelineView"]
 
-#: ホイール 1 段で拡大する倍率。
+#: ホイール 1 段で拡大する倍率
 ZOOM_STEP = 1.25
 
 
@@ -50,18 +50,18 @@ class DragKind(Enum):
 
 @dataclass(slots=True)
 class DragState:
-    """ドラッグ中の状態。
+    """ドラッグ中の状態
 
-    ドラッグ中はプロジェクトを書き換えず、確定した時点で 1 つのコマンドを出す。
-    途中経過をコマンドにすると、Undo 履歴が中間状態で埋まる。
+    ドラッグ中はプロジェクトを書き換えず、確定した時点で 1 つのコマンドを出す
+    途中経過をコマンドにすると、Undo 履歴が中間状態で埋まる
     """
 
     kind: DragKind = DragKind.NONE
     clip_id: ClipId | None = None
     origin_track: TrackId | None = None
-    #: 掴んだ位置と、クリップ先頭とのフレーム差。掴んだ場所を保ったまま動かすため。
+    #: 掴んだ位置と、クリップ先頭とのフレーム差 掴んだ場所を保ったまま動かすため
     grab_offset: int = 0
-    #: 現在のプレビュー位置。描画にだけ使う。
+    #: 現在のプレビュー位置 描画にだけ使う
     preview_start: int = 0
     preview_track: TrackId | None = None
     preview_head_delta: int = 0
@@ -70,16 +70,16 @@ class DragState:
 
 
 class TimelineView(QWidget):
-    """クリップを並べて見せ、編集操作を受け付ける。"""
+    """クリップを並べて見せ、編集操作を受け付ける"""
 
-    #: 再生ヘッドが動いた。引数はフレーム番号。
+    #: 再生ヘッドが動いた 引数はフレーム番号
     playhead_moved = Signal(int)
-    #: 選択が変わった。引数はクリップ ID、または空文字列。
+    #: 選択が変わった 引数はクリップ ID、または空文字列
     selection_changed = Signal(str)
-    #: 編集操作が発生した。引数はコマンドの一覧と、履歴に出す操作名。
+    #: 編集操作が発生した 引数はコマンドの一覧と、履歴に出す操作名
     #:
-    #: 常に一覧で渡す。1 回の操作が複数のコマンドになることがあり（分割など）、
-    #: それを 1 回の取り消しで戻せるようにするため。
+    #: 常に一覧で渡す 1 回の操作が複数のコマンドになることがあり（分割など）、
+    #: それを 1 回の取り消しで戻せるようにするため
     commands_requested = Signal(list, str)
 
     def __init__(
@@ -106,8 +106,8 @@ class TimelineView(QWidget):
 
     def set_project(self, project: Project) -> None:
         self._project = project
-        # 選択していたクリップが消えていれば選択を解く。存在しない ID を
-        # 持ち続けると、次の操作で「見つからない」例外になる。
+        # 選択していたクリップが消えていれば選択を解く 存在しない ID を
+        # 持ち続けると、次の操作で「見つからない」例外になる
         if self._selected is not None and project.timeline.locate_clip(self._selected) is None:
             self._selected = None
             self.selection_changed.emit("")
@@ -138,12 +138,12 @@ class TimelineView(QWidget):
         self.update()
 
     def zoom(self, factor: float) -> None:
-        """ウィジェットの中央を基準に拡大・縮小する。メニューやボタンから。"""
+        """ウィジェットの中央を基準に拡大・縮小する メニューやボタンから"""
         self._layout = self._layout.zoomed(factor, anchor_x=self.width() / 2.0)
         self.update()
 
     def zoom_to_fit(self) -> None:
-        """タイムライン全体が収まる倍率にする。"""
+        """タイムライン全体が収まる倍率にする"""
         duration = max(1, self._project.duration)
         usable = max(1, self.width() - Metrics.TRACK_HEADER_WIDTH)
         self._layout = TimelineLayout(pixels_per_frame=usable / duration * 0.98)
@@ -190,10 +190,10 @@ class TimelineView(QWidget):
         draw_playhead(painter, self._layout, self._playhead, self.height())
 
     def _draw_drag_preview(self, painter: QPainter) -> None:
-        """ドラッグ中の落下先を枠線で示す。
+        """ドラッグ中の落下先を枠線で示す
 
         実際のクリップを動かさずに枠だけ出すことで、途中経過が Undo 履歴に
-        残らず、かつ落ちる位置は分かる。
+        残らず、かつ落ちる位置は分かる
         """
         if self._drag.kind not in (DragKind.MOVE_CLIP, DragKind.TRIM_HEAD, DragKind.TRIM_TAIL):
             return
@@ -233,8 +233,8 @@ class TimelineView(QWidget):
 
         modifiers = event.modifiers()
         if modifiers & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier):
-            # マウス位置を基準に拡大する。中央基準だと、拡大するたびに
-            # 見ていた場所が画面外へ逃げる。
+            # マウス位置を基準に拡大する 中央基準だと、拡大するたびに
+            # 見ていた場所が画面外へ逃げる
             factor = ZOOM_STEP if delta > 0 else 1.0 / ZOOM_STEP
             self._layout = self._layout.zoomed(factor, anchor_x=event.position().x())
         elif modifiers & Qt.KeyboardModifier.ShiftModifier:
@@ -326,7 +326,7 @@ class TimelineView(QWidget):
         self.update()
 
     def _command_for(self, drag: DragState) -> Command | None:
-        """ドラッグの結果を 1 つのコマンドにまとめる。"""
+        """ドラッグの結果を 1 つのコマンドにまとめる"""
         if drag.clip_id is None:
             return None
         located = self._project.timeline.locate_clip(drag.clip_id)
@@ -381,14 +381,14 @@ class TimelineView(QWidget):
     # --- 操作 ---
 
     def split_at_playhead(self) -> None:
-        """再生ヘッドの位置で、そこにあるクリップをすべて分割する。
+        """再生ヘッドの位置で、そこにあるクリップをすべて分割する
 
-        選択の有無に関わらず全トラックを切る。Premiere の Ctrl+K や
-        AviUtl の分割と同じ感覚。
+        選択の有無に関わらず全トラックを切る Premiere の Ctrl+K や
+        AviUtl の分割と同じ感覚
 
         リンクされた映像・音声は 1 つのコマンドで一緒に割れるので、グループごとに
-        1 回だけ発行する。両方に出すと、2 回目は「すでに割れている」失敗になり、
-        意味のないエラーがステータスバーに出る。
+        1 回だけ発行する 両方に出すと、2 回目は「すでに割れている」失敗になり、
+        意味のないエラーがステータスバーに出る
         """
         frame = self._playhead
         targets: list[Clip] = []
@@ -420,8 +420,8 @@ class TimelineView(QWidget):
     # --- 補助 ---
 
     def _scrub(self, position: QPoint) -> None:
-        # スクラブ中は追従を切る。追従したままだと、掴んだ位置が画面中央へ
-        # 逃げ続けて操作にならない。
+        # スクラブ中は追従を切る 追従したままだと、掴んだ位置が画面中央へ
+        # 逃げ続けて操作にならない
         self._follow_playhead = False
         self.set_playhead(self._layout.frame_at(position.x()), follow=False)
         self._follow_playhead = True
@@ -434,7 +434,7 @@ class TimelineView(QWidget):
         return None
 
     def _edge_at(self, position: QPoint, clip: Clip) -> DragKind:
-        """クリップの端を掴んでいるならトリム、そうでなければ移動。"""
+        """クリップの端を掴んでいるならトリム、そうでなければ移動"""
         left = self._layout.frame_to_x(clip.timeline_start)
         right = self._layout.frame_to_x(clip.timeline_end)
         if abs(position.x() - left) <= Metrics.TRIM_HANDLE_WIDTH:

@@ -1,12 +1,12 @@
-"""起こしの実行ダイアログと、実行環境の導入。
+"""起こしの実行ダイアログと、実行環境の導入
 
-字幕起こしの依存は合計で 2 GB を超えるので、**初期状態では入っていない**。この
-ダイアログが未導入を検出したときは、起こしのボタンの代わりに「環境を導入」を出す。
-入れるものと実行するコマンドをそのまま画面に見せてから始める。何が入るのか
-分からないまま数分のダウンロードが走るのは、それ自体が不具合に見える。
+字幕起こしの依存は合計で 2 GB を超えるので、**初期状態では入っていない** この
+ダイアログが未導入を検出したときは、起こしのボタンの代わりに「環境を導入」を出す
+入れるものと実行するコマンドをそのまま画面に見せてから始める 何が入るのか
+分からないまま数分のダウンロードが走るのは、それ自体が不具合に見える
 
-導入も起こしもワーカースレッドで動く。ウィジェットに触るのはタイマーで拾った
-メインスレッド側だけにしてある。
+導入も起こしもワーカースレッドで動く ウィジェットに触るのはタイマーで拾った
+メインスレッド側だけにしてある
 """
 
 from __future__ import annotations
@@ -46,10 +46,10 @@ from kumiki.ui.theme import Colors
 
 __all__ = ["TranscribeDialog"]
 
-#: ワーカーからの知らせを拾う間隔（ミリ秒）。
+#: ワーカーからの知らせを拾う間隔（ミリ秒）
 POLL_MS = 100
 
-#: 選べる言語。自動判定は精度が落ちるので、既定は日本語にしておく。
+#: 選べる言語 自動判定は精度が落ちるので、既定は日本語にしておく
 LANGUAGES: tuple[tuple[str | None, str], ...] = (
     ("ja", "日本語"),
     ("en", "英語"),
@@ -58,11 +58,11 @@ LANGUAGES: tuple[tuple[str | None, str], ...] = (
 
 
 class TranscribeDialog(QDialog):
-    """1 つの素材を起こす。
+    """1 つの素材を起こす
 
-    結果は :attr:`transcript` に入る。呼び出し側がそれをコマンドにして履歴へ載せる。
+    結果は :attr:`transcript` に入る 呼び出し側がそれをコマンドにして履歴へ載せる
     ここでプロジェクトを書き換えないのは、UI と AI が同じ入口を通るという方針を
-    崩さないため。
+    崩さないため
     """
 
     def __init__(
@@ -77,7 +77,7 @@ class TranscribeDialog(QDialog):
         self._job: Job | None = None
         self.transcript: Transcript | None = None
 
-        #: 導入ワーカーからのログ。スレッドをまたぐのでキューで受ける。
+        #: 導入ワーカーからのログ スレッドをまたぐのでキューで受ける
         self._install_log: queue.Queue[str] = queue.Queue()
         self._install_done: threading.Event | None = None
         self._install_code = 0
@@ -137,7 +137,7 @@ class TranscribeDialog(QDialog):
         buttons.rejected.connect(self.reject)
         self._cancel_button = buttons.button(QDialogButtonBox.StandardButton.Cancel)
         if self._cancel_button is not None:
-            # 既定の文言は環境の言語に従うので、ここで日本語に固定する。
+            # 既定の文言は環境の言語に従うので、ここで日本語に固定する
             self._cancel_button.setText("閉じる")
 
         actions = QHBoxLayout()
@@ -156,12 +156,12 @@ class TranscribeDialog(QDialog):
     # --- 状態 ---
 
     def _refresh_availability(self) -> None:
-        """導入状況を見て、押せるボタンを決める。"""
+        """導入状況を見て、押せるボタンを決める"""
         status = runtime_status()
         self._run_button.setEnabled(status.installed)
         self._install_button.setEnabled(True)
-        # 未導入のときも触れるようにする。ここが「GPU 版を入れるか」の選択を
-        # 兼ねていて、切れば CUDA ランタイム（2 GB 弱）を落とさずに済む。
+        # 未導入のときも触れるようにする ここが「GPU 版を入れるか」の選択を
+        # 兼ねていて、切れば CUDA ランタイム（2 GB 弱）を落とさずに済む
         self._gpu.setEnabled(status.extra_installed or not status.installed)
 
         if status.installed:
@@ -175,7 +175,7 @@ class TranscribeDialog(QDialog):
         self._describe_install()
 
     def _describe_install(self) -> None:
-        """これから入るものを出す。何が落ちてくるのか分かってから始められるように。"""
+        """これから入るものを出す 何が落ちてくるのか分かってから始められるように"""
         status = runtime_status()
         if status.installed:
             return
@@ -184,7 +184,7 @@ class TranscribeDialog(QDialog):
         size = "2 GB" if cuda else "300 MB"
         self._status.setText(
             f"{status.summary()}\n入れるもの: {packages}\n"
-            f"初回は {size} ほどのダウンロードがあります。"
+            f"初回は {size} ほどのダウンロードがあります"
         )
 
     def _set_busy(self, busy: bool, *, message: str = "") -> None:
@@ -204,7 +204,7 @@ class TranscribeDialog(QDialog):
         command = install_command(cuda=self._gpu.isChecked())
         self._log.setVisible(True)
         self._log.clear()
-        self._set_busy(True, message="導入しています。数分かかります。")
+        self._set_busy(True, message="導入しています 数分かかります")
         self._progress.setRange(0, 0)  # 進み具合が分からないので流れる表示にする
 
         done = threading.Event()
@@ -216,7 +216,7 @@ class TranscribeDialog(QDialog):
             )
             self._install_code = code
             self._install_log.put(
-                "導入が完了しました。" if code == 0 else f"導入に失敗しました（コード {code}）。"
+                "導入が完了しました" if code == 0 else f"導入に失敗しました（コード {code}）"
             )
             done.set()
 
@@ -241,7 +241,7 @@ class TranscribeDialog(QDialog):
             return
 
         self._progress.setRange(0, 1000)
-        self._set_busy(True, message="起こしています。初回はモデルの取得に時間がかかります。")
+        self._set_busy(True, message="起こしています 初回はモデルの取得に時間がかかります")
         self._timer.start()
 
     # --- ワーカーの見張り ---
@@ -266,7 +266,7 @@ class TranscribeDialog(QDialog):
         self._set_busy(False)
         self._refresh_availability()
         if self._install_code == 0:
-            self._status.setText("導入が終わりました。そのまま起こせます。")
+            self._status.setText("導入が終わりました そのまま起こせます")
 
     def _drain_job(self) -> None:
         job = self._job
@@ -291,9 +291,9 @@ class TranscribeDialog(QDialog):
     # --- 終了 ---
 
     def reject(self) -> None:
-        """中断。走っているものがあれば止めてから閉じる。
+        """中断 走っているものがあれば止めてから閉じる
 
-        起こしは GPU を占有する。閉じたのに裏で回り続けると、次の操作が刺さる。
+        起こしは GPU を占有する 閉じたのに裏で回り続けると、次の操作が刺さる
         """
         if self._job is not None:
             self._job.cancel()

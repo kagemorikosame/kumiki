@@ -1,8 +1,8 @@
-"""パラメータ 1 つ分の入力欄。
+"""パラメータ 1 つ分の入力欄
 
 種類ごとにウィジェットを 1 つずつ用意し、:class:`~kumiki.effects.ParameterSpec`
-から自動で選ぶ。エフェクトを増やしても UI を書き足す必要は無く、AviUtl の
-スクリプトを読み込んだとき（P5）も同じ経路で設定欄が出る。
+から自動で選ぶ エフェクトを増やしても UI を書き足す必要は無く、AviUtl の
+スクリプトを読み込んだとき（P5）も同じ経路で設定欄が出る
 """
 
 from __future__ import annotations
@@ -40,20 +40,20 @@ from kumiki.ui.theme import Colors
 
 __all__ = ["ParameterEditor", "create_editor"]
 
-#: スライダーは整数しか扱えないので、この倍率で小数を載せる。
+#: スライダーは整数しか扱えないので、この倍率で小数を載せる
 _SLIDER_SCALE = 1000
 
 
 class ParameterEditor(QWidget):
-    """パラメータ入力欄の共通の親。
+    """パラメータ入力欄の共通の親
 
-    値が確定したら :attr:`value_changed` を出す。ドラッグ中の途中経過は
-    :attr:`value_previewed` で、こちらは履歴に残さない前提。
+    値が確定したら :attr:`value_changed` を出す ドラッグ中の途中経過は
+    :attr:`value_previewed` で、こちらは履歴に残さない前提
     """
 
-    #: 値が確定した。履歴に残る変更。
+    #: 値が確定した 履歴に残る変更
     value_changed = Signal(object)
-    #: ドラッグ中の途中経過。プレビューだけ更新する。
+    #: ドラッグ中の途中経過 プレビューだけ更新する
     value_previewed = Signal(object)
 
     def __init__(self, spec: ParameterSpec, parent: QWidget | None = None) -> None:
@@ -62,10 +62,10 @@ class ParameterEditor(QWidget):
         self._updating = False
 
     def set_value(self, value: ParamValue | None) -> None:
-        """外から値を入れ直す。信号は出さない。
+        """外から値を入れ直す 信号は出さない
 
         入れ直しで信号を出すと、プロジェクトの更新 → UI 更新 → 変更通知 →
-        プロジェクトの更新、と回り続ける。
+        プロジェクトの更新、と回り続ける
         """
         raise NotImplementedError
 
@@ -79,10 +79,10 @@ class ParameterEditor(QWidget):
 
 
 class TrackEditor(ParameterEditor):
-    """数値スライダーと数値欄の組。
+    """数値スライダーと数値欄の組
 
-    スライダーだけだと細かい値を入れられず、数値欄だけだと感覚的に動かせない。
-    両方を出して同期させる。
+    スライダーだけだと細かい値を入れられず、数値欄だけだと感覚的に動かせない
+    両方を出して同期させる
     """
 
     def __init__(self, spec: TrackSpec, parent: QWidget | None = None) -> None:
@@ -116,7 +116,7 @@ class TrackEditor(ParameterEditor):
         self._apply(animated.static if not animated.is_animated else animated.at(0))
 
     def set_animated_value(self, value: float) -> None:
-        """キーフレームで決まった現在値を表示に反映する。"""
+        """キーフレームで決まった現在値を表示に反映する"""
         self._apply(value)
 
     def _apply(self, number: float) -> None:
@@ -136,8 +136,8 @@ class TrackEditor(ParameterEditor):
             self._number.setValue(number)
         finally:
             self._updating = False
-        # ドラッグ中は履歴に残さない。1 回のドラッグで数十の取り消し段ができると
-        # 元の値まで戻すのに数十回押すことになる。
+        # ドラッグ中は履歴に残さない 1 回のドラッグで数十の取り消し段ができると
+        # 元の値まで戻すのに数十回押すことになる
         self._preview(AnimatedValue(static=number))
 
     def _on_release(self) -> None:
@@ -176,7 +176,7 @@ class CheckEditor(ParameterEditor):
 
 
 class ColorEditor(ParameterEditor):
-    """色見本のボタン。押すと色選択ダイアログが出る。"""
+    """色見本のボタン 押すと色選択ダイアログが出る"""
 
     def __init__(self, spec: ColorSpec, parent: QWidget | None = None) -> None:
         super().__init__(spec, parent)
@@ -195,7 +195,7 @@ class ColorEditor(ParameterEditor):
     def set_value(self, value: ParamValue | None) -> None:
         self._value = self._spec.coerce(value)
         red, green, blue, alpha = (round(c * 255) for c in self._value)
-        # 明るい色の上に黒、暗い色の上に白を置く。どちらか一方だと必ず読めなくなる。
+        # 明るい色の上に黒、暗い色の上に白を置く どちらか一方だと必ず読めなくなる
         luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue
         text = "#000000" if luminance > 140 else "#ffffff"
         self._button.setStyleSheet(
@@ -263,7 +263,7 @@ class TextEditor(ParameterEditor):
         if spec.multiline:
             self._area = QPlainTextEdit(self)
             self._area.setFixedHeight(72)
-            # 入力のたびに確定させる。テキストは打った結果をすぐ見たい。
+            # 入力のたびに確定させる テキストは打った結果をすぐ見たい
             self._area.textChanged.connect(lambda: self._emit(self._area.toPlainText()))
             layout.addWidget(self._area, 1)
         else:
@@ -368,7 +368,7 @@ class ValueEditor(ParameterEditor):
 
 
 def create_editor(spec: ParameterSpec, parent: QWidget | None = None) -> ParameterEditor:
-    """仕様に合う入力欄を作る。"""
+    """仕様に合う入力欄を作る"""
     if isinstance(spec, TrackSpec):
         return TrackEditor(spec, parent)
     if isinstance(spec, CheckSpec):

@@ -1,7 +1,7 @@
-"""AI チャットパネル。
+"""AI チャットパネル
 
-Claude そのものは呼ばない。パネルの仕事は「出来事を見せる」「確認を取る」
-「1 つの指示をまとめて 1 段の履歴にする」の 3 つなので、そこを見る。
+Claude そのものは呼ばない パネルの仕事は「出来事を見せる」「確認を取る」
+「1 つの指示をまとめて 1 段の履歴にする」の 3 つなので、そこを見る
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ class TestConversationView:
         assert "Claude" in _text(widget)
 
     def test_tool_calls_are_visible(self, panel: tuple[ChatPanel, FakeHost]) -> None:
-        # 何をされているか分からないまま編集が進むのが一番怖い。
+        # 何をされているか分からないまま編集が進むのが一番怖い
         widget, _ = panel
         widget._handle(
             AgentEvent(EventKind.TOOL_USE, tool="split_clip", detail="clip_id=abc, frame=30")
@@ -61,7 +61,7 @@ class TestConversationView:
         assert "見つかりません" in _text(widget)
 
     def test_successful_tool_results_stay_quiet(self, panel: tuple[ChatPanel, FakeHost]) -> None:
-        # 成功のたびに中身を出すと、会話が JSON で埋まる。
+        # 成功のたびに中身を出すと、会話が JSON で埋まる
         widget, _ = panel
         widget._handle(AgentEvent(EventKind.TOOL_RESULT, detail='{"ok": true}'))
         assert "ok" not in _text(widget)
@@ -88,7 +88,7 @@ class TestApproval:
     def test_a_request_is_shown_with_its_arguments(self, panel: tuple[ChatPanel, FakeHost]) -> None:
         widget, _ = panel
         self._pending(widget)
-        # パネル自体を画面に出していないので isVisible は使えない。表示の指示だけを見る。
+        # パネル自体を画面に出していないので isVisible は使えない 表示の指示だけを見る
         assert widget._approval_box.isHidden() is False
         assert "frame=30" in widget._approval_text.text()
 
@@ -143,7 +143,7 @@ class TestCheckpoint:
         clip = host.document.project.timeline.tracks[0].clips[0].id
 
         widget._open_checkpoint("冒頭を切って")
-        # AI が 3 回操作した、という想定。
+        # AI が 3 回操作した、という想定
         host.apply_commands([SplitClip(clip, 60)], "分割")
         host.apply_commands([SplitClip(clip, 30)], "分割")
         second = host.document.project.timeline.tracks[0].clips[-1].id
@@ -151,7 +151,7 @@ class TestCheckpoint:
         widget._close_checkpoint()
 
         assert len(host.document.project.timeline.tracks[0].clips) == 4
-        # 3 回の編集が 1 段。取り消し 1 回で最初の状態へ戻る。
+        # 3 回の編集が 1 段 取り消し 1 回で最初の状態へ戻る
         assert host.document.history_labels == ("AI: 冒頭を切って",)
         host.document.undo()
         assert len(host.document.project.timeline.tracks[0].clips) == 1
@@ -183,7 +183,7 @@ class TestCheckpoint:
     def test_closing_the_session_closes_an_open_checkpoint(
         self, panel: tuple[ChatPanel, FakeHost]
     ) -> None:
-        # 開いたまま終わると、以降の編集が全部その 1 段に飲み込まれる。
+        # 開いたまま終わると、以降の編集が全部その 1 段に飲み込まれる
         widget, host = panel
         widget._open_checkpoint("途中で閉じる")
         clip = host.document.project.timeline.tracks[0].clips[0].id
@@ -206,7 +206,7 @@ class TestFormatting:
     def test_bold_and_code_are_rendered(self) -> None:
         from kumiki.ui.chat.panel import _to_html
 
-        # Claude の返事は素の Markdown で来る。そのまま出すと ** が本文に混ざる。
+        # Claude の返事は素の Markdown で来る そのまま出すと ** が本文に混ざる
         rendered = _to_html("**強調** と `set_param`")
         assert "<b>強調</b>" in rendered
         assert "<code" in rendered and "set_param" in rendered

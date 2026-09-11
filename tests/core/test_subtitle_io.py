@@ -1,7 +1,7 @@
-"""字幕ファイルの書き出し。
+"""字幕ファイルの書き出し
 
-出すのは投影後の時刻。素材が持っている生の時刻をそのまま出すと、編集前の動画に
-しか合わない字幕になる。
+出すのは投影後の時刻 素材が持っている生の時刻をそのまま出すと、編集前の動画に
+しか合わない字幕になる
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ class TestSrt:
         assert "3\n00:00:07,000 --> 00:00:09,000\n作ります\n" in srt
 
     def test_the_cut_moves_the_times(self, placed: Project) -> None:
-        # 冒頭 1 秒を切ると、字幕もその分だけ前へ来る。書き出しに追従処理は要らない。
+        # 冒頭 1 秒を切ると、字幕もその分だけ前へ来る 書き出しに追従処理は要らない
         cut = RippleCut(((0, 30),)).apply(placed)
         srt = to_srt(project_timeline(cut), cut.rate)
         assert srt.startswith("1\n00:00:00,000 --> 00:00:02,000\n今日は\n")
@@ -79,7 +79,7 @@ class TestText:
 
 class TestTimestamps:
     def test_fractional_frame_rates_use_real_time(self, placed: Project) -> None:
-        # 29.97fps では、フレーム番号をそのまま秒にするとずれる。ミリ秒で出す。
+        # 29.97fps では、フレーム番号をそのまま秒にするとずれる ミリ秒で出す
         from dataclasses import replace
 
         ntsc_rate = FrameRate(30000, 1001)
@@ -89,8 +89,8 @@ class TestTimestamps:
             timeline=replace(placed.timeline, rate=ntsc_rate),
         )
         srt = to_srt(project_timeline(ntsc), ntsc.rate)
-        # 素材の 1 秒は 29 フレーム目（切り捨て）。その実時間は 29 x 1001/30000 で
-        # 0.968 秒。フレーム番号を 30 で割った 0.967 秒でも、1.000 秒でもない。
+        # 素材の 1 秒は 29 フレーム目（切り捨て） その実時間は 29 x 1001/30000 で
+        # 0.968 秒 フレーム番号を 30 で割った 0.967 秒でも、1.000 秒でもない
         assert "00:00:00,968 --> " in srt
 
 
@@ -112,6 +112,6 @@ class TestSaveSubtitles:
         assert written.read_text(encoding="utf-8").startswith("1\n")
 
     def test_written_without_a_byte_order_mark(self, placed: Project, tmp_path: Path) -> None:
-        # BOM 付きだと、古い再生機で 1 枚目の番号が読めず字幕全体が出ないことがある。
+        # BOM 付きだと、古い再生機で 1 枚目の番号が読めず字幕全体が出ないことがある
         raw = save_subtitles(placed, tmp_path / "a.srt").read_bytes()
         assert not raw.startswith(b"\xef\xbb\xbf")

@@ -1,4 +1,4 @@
-"""プロジェクトファイルの読み書き。"""
+"""プロジェクトファイルの読み書き"""
 
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ from tests.conftest import make_clip
 def rich_project(
     project: Project, video_media: MediaItem, audio_media: MediaItem, transcript: Transcript
 ) -> Project:
-    """ひととおりの要素が入ったプロジェクト。往復テストの対象。"""
+    """ひととおりの要素が入ったプロジェクト 往復テストの対象"""
     result = AddMedia(audio_media).apply(project)
     result = SetTranscript(
         video_media.id,
@@ -121,7 +121,7 @@ class TestRoundTrip:
         assert load_project(path) == rich_project
 
     def test_repeated_save_load_is_stable(self, rich_project: Project, tmp_path: Path) -> None:
-        # 分数を浮動小数で書き出していると、往復のたびに値が動く。
+        # 分数を浮動小数で書き出していると、往復のたびに値が動く
         path = tmp_path / "p.kmk"
         current = rich_project
         for _ in range(5):
@@ -140,7 +140,7 @@ class TestRoundTrip:
         assert data["timeline"]["rate"] == "30000/1001"
 
     def test_japanese_is_not_escaped(self, rich_project: Project, tmp_path: Path) -> None:
-        # 手で読める・手で直せることが JSON にした理由なので、ここは崩さない。
+        # 手で読める・手で直せることが JSON にした理由なので、ここは崩さない
         path = tmp_path / "p.kmk"
         save_project(rich_project, path)
         assert "配信回_07" in path.read_text(encoding="utf-8")
@@ -222,7 +222,7 @@ class TestValidation:
 
 class TestCompactness:
     def test_static_values_do_not_write_keyframes(self, tmp_path: Path) -> None:
-        # プロジェクトファイルの大半は静的な値。ここが冗長だとファイルが膨れる。
+        # プロジェクトファイルの大半は静的な値 ここが冗長だとファイルが膨れる
         project = Project.create()
         clip = Clip(timeline_start=0, duration=10, opacity=AnimatedValue(0.5))
         track = Track(kind=TrackKind.VIDEO, clips=(clip,))

@@ -1,11 +1,11 @@
-"""P1 の完了条件。
+"""P1 の完了条件
 
-実素材で「読込 → カット → 並べ替え → 保存・読み直し → 書き出し」が一本通ること。
-UI を組み立てて、実際に使う経路をそのまま辿る。
+実素材で「読込 → カット → 並べ替え → 保存・読み直し → 書き出し」が一本通ること
+UI を組み立てて、実際に使う経路をそのまま辿る
 
-ウィンドウは表示しない。表示すると GL の初期化が走ってプレビューまで動くが、
+ウィンドウは表示しない 表示すると GL の初期化が走ってプレビューまで動くが、
 テストのたびに画面が点滅するのは邪魔なので、合成そのものは
-``tests/engine/test_render.py`` に任せる。
+``tests/engine/test_render.py`` に任せる
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ class TestEditingFlow:
     def test_import_is_a_single_undo_step(
         self, window: MainWindow, two_clips: tuple[SampleMedia, SampleMedia]
     ) -> None:
-        # 2 本読み込んで 2 回取り消す、という操作は誰も望まない。
+        # 2 本読み込んで 2 回取り消す、という操作は誰も望まない
         window.import_media([two_clips[0].path, two_clips[1].path])
         assert len(window._document.history_labels) == 1
 
@@ -97,7 +97,7 @@ class TestEditingFlow:
         window._timeline.delete_selected(ripple=True)
 
         project = window._document.project
-        # 映像と音声がリンクしているので、両方が同時に消えて詰まる。
+        # 映像と音声がリンクしているので、両方が同時に消えて詰まる
         assert _clip_counts(project) == [2, 2]
         assert project.duration == before - 45
 
@@ -115,7 +115,7 @@ class TestEditingFlow:
         window._timeline.select(head.id)
         window._timeline.delete_selected(ripple=True)
 
-        # 分割は映像・音声をまとめて 1 手。取り消しも 1 回で済む。
+        # 分割は映像・音声をまとめて 1 手 取り消しも 1 回で済む
         window.undo()  # 削除
         window.undo()  # 分割
         assert window._document.project == original
@@ -130,7 +130,7 @@ class TestEditingFlow:
     def test_selection_is_cleared_when_the_clip_disappears(
         self, window: MainWindow, two_clips: tuple[SampleMedia, SampleMedia]
     ) -> None:
-        # 存在しない ID を持ち続けると、次の操作で「見つからない」例外になる。
+        # 存在しない ID を持ち続けると、次の操作で「見つからない」例外になる
         window.import_media([two_clips[0].path])
         clip = next(iter(window._document.project.timeline.video_tracks())).clips[0]
         window._timeline.select(clip.id)

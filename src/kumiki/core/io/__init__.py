@@ -1,4 +1,4 @@
-"""プロジェクトファイル (.kmk) とプリセットの入出力。"""
+"""プロジェクトファイル (.kmk) とプリセットの入出力"""
 
 from kumiki.core.io.presets import Preset, PresetStore, default_preset_root
 from kumiki.core.io.serialize import (

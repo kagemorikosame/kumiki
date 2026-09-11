@@ -1,7 +1,7 @@
-"""起こしの実行環境の検出と導入。
+"""起こしの実行環境の検出と導入
 
 実際に 2 GB を落とすわけにはいかないので、コマンドの組み立てと、子プロセスの
-出力を 1 行ずつ拾えることを確かめる。
+出力を 1 行ずつ拾えることを確かめる
 """
 
 from __future__ import annotations
@@ -48,10 +48,10 @@ class TestRuntimeStatus:
     def test_summary_distinguishes_the_three_states(self) -> None:
         assert "未導入" in _status(installed=False, cuda=False).summary()
         assert "CUDA" in _status(installed=True, cuda=False).summary()
-        assert _status(installed=True, cuda=True).summary() == "導入済み。"
+        assert _status(installed=True, cuda=True).summary() == "導入済み"
 
     def test_real_lookup_does_not_raise(self) -> None:
-        # 入っていない環境で落ちないことが要点。既定では未導入で配布する。
+        # 入っていない環境で落ちないことが要点 既定では未導入で配布する
         assert isinstance(runtime_status().installed, bool)
 
 
@@ -72,7 +72,7 @@ class TestInstallCommand:
     def test_frozen_builds_install_into_their_own_folder(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        # 固めた実行ファイルには書き込めないので、専用フォルダへ入れる。
+        # 固めた実行ファイルには書き込めないので、専用フォルダへ入れる
         monkeypatch.setattr(runtime_module, "runtime_target_dir", lambda: tmp_path / "runtime")
         command = install_command(cuda=False)
         assert "--target" in command
@@ -87,7 +87,7 @@ class TestInstallRuntime:
             on_output=lines.append,
         )
         assert code == 0
-        # 1 行目は実行するコマンドそのもの。何が走るのか見せてから始める。
+        # 1 行目は実行するコマンドそのもの 何が走るのか見せてから始める
         assert lines[0].startswith("> ")
         assert lines[1:] == ["1 行目", "2 行目"]
 

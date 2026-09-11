@@ -1,11 +1,11 @@
-"""未導入の機能を、その場で用意するための部品。
+"""未導入の機能を、その場で用意するための部品
 
-字幕起こしと AI 連携で同じものを使う。導入の見せ方は機能が変わっても同じ
+字幕起こしと AI 連携で同じものを使う 導入の見せ方は機能が変わっても同じ
 （何が入るかを出す → 実行する → ログを流す → 状態を出し直す）なので、
-1 か所にまとめてある。
+1 か所にまとめてある
 
-導入は子プロセスなので、ログはキューで受けてタイマーで拾う。ワーカースレッドから
-ウィジェットを触ると Qt が落ちる。
+導入は子プロセスなので、ログはキューで受けてタイマーで拾う ワーカースレッドから
+ウィジェットを触ると Qt が落ちる
 """
 
 from __future__ import annotations
@@ -30,16 +30,16 @@ from kumiki.ui.theme import Colors
 
 __all__ = ["SetupSection"]
 
-#: 導入ログを拾う間隔（ミリ秒）。
+#: 導入ログを拾う間隔（ミリ秒）
 POLL_MS = 120
 
 
 class SetupSection(QWidget):
-    """機能の導入状況を出し、その場で入れられるようにする。"""
+    """機能の導入状況を出し、その場で入れられるようにする"""
 
-    #: 導入が終わった。引数は成功したか。
+    #: 導入が終わった 引数は成功したか
     finished = Signal(bool)
-    #: 状態を見直した。引数は「いま使えるか」。
+    #: 状態を見直した 引数は「いま使えるか」
     changed = Signal(bool)
 
     def __init__(self, pack: FeaturePack, parent: QWidget | None = None) -> None:
@@ -98,7 +98,7 @@ class SetupSection(QWidget):
 
     @property
     def extra(self) -> bool:
-        """追加分（CUDA など）を入れる／使う選択。"""
+        """追加分（CUDA など）を入れる／使う選択"""
         return self._extra.isChecked()
 
     @property
@@ -106,7 +106,7 @@ class SetupSection(QWidget):
         return self._done is not None
 
     def refresh(self) -> None:
-        """導入状況を見直して表示を作り直す。"""
+        """導入状況を見直して表示を作り直す"""
         status = self.status
         self._button.setText("環境を更新" if status.installed else "環境を導入")
         self._extra.setEnabled(not status.extra_installed and not self.busy)
@@ -117,12 +117,12 @@ class SetupSection(QWidget):
             lines.append(f"入れるもの: {packages}")
             size = status.download_mb(extra=self.extra)
             if size:
-                lines.append(f"ダウンロードは {_readable(size)} ほどです。")
+                lines.append(f"ダウンロードは {_readable(size)} ほどです")
         self._status.setText("\n".join(lines))
         self.changed.emit(status.ready)
 
     def command_text(self) -> str:
-        """これから実行するコマンド。画面に見せるため。"""
+        """これから実行するコマンド 画面に見せるため"""
         return " ".join(install_command(self._pack, extra=self.extra))
 
     # --- 導入 ---
@@ -136,7 +136,7 @@ class SetupSection(QWidget):
         self._progress.setVisible(True)
         self._button.setEnabled(False)
         self._extra.setEnabled(False)
-        self._status.setText("導入しています。数分かかることがあります。")
+        self._status.setText("導入しています 数分かかることがあります")
 
         done = threading.Event()
         self._done = done
@@ -147,7 +147,7 @@ class SetupSection(QWidget):
             )
             self._code = code
             self._log_queue.put(
-                "導入が完了しました。" if code == 0 else f"導入に失敗しました（コード {code}）。"
+                "導入が完了しました" if code == 0 else f"導入に失敗しました（コード {code}）"
             )
             done.set()
 
