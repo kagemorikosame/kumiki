@@ -162,6 +162,29 @@ class TestBackup:
         kept = sorted(backup_folder(target, tmp_path / "state").iterdir())
         assert [path.read_text("utf-8") for path in kept] == ["0", "1", "2"]
 
+    def test_a_name_already_taken_is_never_overwritten(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 別の窓が同じ瞬間に同じ名前を押さえた形 上書きすると、その窓の控えが消える
+        class Stopped(datetime):
+            @classmethod
+            def now(cls, tz: tzinfo | None = None) -> Stopped:
+                del tz
+                return cls(2026, 9, 12, 12, 0, 0)
+
+        monkeypatch.setattr(recovery, "datetime", Stopped)
+        target = tmp_path / "本編.kmk"
+        target.write_text("こちら", "utf-8")
+        folder = backup_folder(target, tmp_path / "state")
+        folder.mkdir(parents=True)
+        taken = folder / "20260912-120000-000000-000.kmk"
+        taken.write_text("別の窓", "utf-8")
+
+        copied = backup_before_save(target, tmp_path / "state")
+        assert copied is not None and copied != taken
+        assert taken.read_text("utf-8") == "別の窓"
+        assert copied.read_text("utf-8") == "こちら"
+
     def test_same_name_in_another_folder_is_kept_apart(self, tmp_path: Path) -> None:
         # 「本編.kmk」はどこにでもある 名前だけで分けると別の作品の控えが混ざる
         state = tmp_path / "state"

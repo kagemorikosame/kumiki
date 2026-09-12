@@ -46,6 +46,10 @@ BUDGET_MS = 1000 / 60
 
 def build_project(clips: int, tracks: int, length: int) -> Project:
     """クリップを隙間なく並べたプロジェクト 映像と音声を半分ずつ"""
+    # 0 は割り算で落ち、負はクリップを 1 本も作らないまま「測れた」と言ってしまう
+    for name, value in (("clips", clips), ("tracks", tracks), ("length", length)):
+        if value <= 0:
+            raise ValueError(f"{name} は 1 以上にしてください: {value}")
     # 余りも配る 切り捨てると、表示した本数より少ない数で測ったことになる
     per_track, remainder = divmod(clips, tracks)
     built: list[Track] = []
