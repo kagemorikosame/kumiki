@@ -3,6 +3,11 @@
 #
 # 使い方: PR で「/agentic_review」と書くと見る
 
+[config]
+# 返事の言語 下の指示文で「日本語で」と頼むだけでは、指摘の本文が英語のまま
+# 返ってきた（PR #14） 設定の項目で決める
+response_language = "ja-JP"
+
 [review_agent]
 issues_user_guidelines = """
 レビューは日本語で書いてください
