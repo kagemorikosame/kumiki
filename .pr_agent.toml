@@ -9,8 +9,11 @@
 response_language = "ja-JP"
 
 [review_agent]
+# 指示文の先頭の英語の 1 行は、文章は日本語という約束の例外として残す 日本語だけで
+# 頼むと、Qodo の指摘が英語に戻った（PR #14 で 1 度消して確かめた）
 issues_user_guidelines = """
 【出力の言語】指摘の見出し・説明・根拠・修正の提案など、書くものはすべて日本語にしてください 英語で書かないでください
+All review output (titles, descriptions, evidence, recommended fixes) must be written in Japanese
 
 - コメントは日本語で「なぜそう書いたか」を説明するもの 何をしているかを言い換えただけのコメントは指摘する
 - TODO / FIXME / XXX をコードに残さない
@@ -27,6 +30,7 @@ issues_user_guidelines = """
 """
 compliance_user_guidelines = """
 【出力の言語】ルール違反の指摘もすべて日本語で書いてください 英語で書かないでください
+All compliance findings must be written in Japanese
 
 - 文章の約束で禁じているのは句点（まる）だけ 読点（「、」）は使ってよい 読点を半角空白へ置き換えるよう求めない
 - 画面の画素（Qt の座標）は下が正でよい Y の上が正の約束は、映像の中の位置についてのもの

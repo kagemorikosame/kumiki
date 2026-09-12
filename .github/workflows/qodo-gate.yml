@@ -9,7 +9,8 @@ name: Qodo のレビュー
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    # edited は向き先（base）を変えたとき 変えたあとは Qodo が見直すまで待ちに戻す
+    types: [opened, synchronize, reopened, edited]
   # Qodo は再レビューのたびにコメントを書き足したり書き換えたりする
   issue_comment:
     types: [created, edited]
