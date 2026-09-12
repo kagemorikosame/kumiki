@@ -47,6 +47,7 @@ class TestClipsInRange:
         assert list(clips_in_range(track, start, end)) == expected
 
     def test_an_empty_track_is_fine(self) -> None:
+        # 壊れると、空のトラックで範囲外を読みにいき、描画ごと例外で止まる
         assert list(clips_in_range(Track(TrackKind.AUDIO), 0, 100)) == []
 
 

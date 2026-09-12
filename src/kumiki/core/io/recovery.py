@@ -242,7 +242,13 @@ def backup_before_save(
         return None
     folder = backup_folder(target, root)
     folder.mkdir(parents=True, exist_ok=True)
-    copied = folder / f"{datetime.now():%Y%m%d-%H%M%S-%f}{SUFFIX}"
+    # 時刻が同じなら連番を足す Windows の Python 3.12 は時刻の刻みが約 15ms と粗く、
+    # 続けて保存すると同じ名前になって前の控えを上書きしていた（CI で 3.12 だけ落ちた）
+    # 連番は時刻の後ろに付けるので、名前で並べれば古い順のまま
+    stamp = f"{datetime.now():%Y%m%d-%H%M%S-%f}"
+    number = 0
+    while (copied := folder / f"{stamp}-{number:03d}{SUFFIX}").exists():
+        number += 1
     shutil.copy2(target, copied)
 
     generations = sorted(folder.glob(f"*{SUFFIX}"))

@@ -292,7 +292,9 @@ def draw_dense_clips(
 
     header = Metrics.TRACK_HEADER_WIDTH
     scroll, scale = layout.scroll_frame, layout.pixels_per_frame
-    runs: list[list[int]] = []  # [左, 右, 有効なら 1]
+    # 帯はあとから右へ伸ばすので、組ではなく書き換えられる list で持つ
+    # 組にすると、クリップ 1 本ごとに帯を作り直すことになる
+    runs: list[list[int]] = []
     edges: list[int] = []
     marked: tuple[int, int] | None = None
     for clip in clips:

@@ -46,13 +46,14 @@ BUDGET_MS = 1000 / 60
 
 def build_project(clips: int, tracks: int, length: int) -> Project:
     """クリップを隙間なく並べたプロジェクト 映像と音声を半分ずつ"""
-    per_track = max(1, clips // tracks)
+    # 余りも配る 切り捨てると、表示した本数より少ない数で測ったことになる
+    per_track, remainder = divmod(clips, tracks)
     built: list[Track] = []
     for index in range(tracks):
         kind = TrackKind.VIDEO if index % 2 == 0 else TrackKind.AUDIO
         row = tuple(
             Clip(timeline_start=n * length, duration=length, source=TEXT.create())
-            for n in range(per_track)
+            for n in range(per_track + (1 if index < remainder else 0))
         )
         built.append(Track(kind, f"{'V' if kind is TrackKind.VIDEO else 'A'}{index + 1}", row))
     base = Project.create()
