@@ -55,7 +55,13 @@ jobs:
         # 何を確かめたのか分からない 件数を実行の要約に残す
         if: always()
         shell: pwsh
+        # 落ちたテストの名前も残す 最後の 1 行だけだと「1 failed」しか分からず、
+        # たまにだけ落ちるテストをどれか特定できなかった（PR #12）
         run: |
-          $summary = python -m pytest -o addopts="" -q --no-header -p no:cacheprovider | Select-Object -Last 1
+          $output = python -m pytest -o addopts="" -q --no-header -p no:cacheprovider -rf
+          $failed = $output | Select-String -Pattern '^FAILED'
+          $summary = $output | Select-Object -Last 1
           "### Python ${{ matrix.python }}: $summary" >> $env:GITHUB_STEP_SUMMARY
+          foreach ($line in $failed) { "- $line" >> $env:GITHUB_STEP_SUMMARY }
+          $failed
           $summary

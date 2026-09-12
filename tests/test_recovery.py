@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, tzinfo
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ from kumiki.core.io import (
     discard,
     find_orphans,
     load_project,
+    recovery,
 )
 from kumiki.core.model import Project
 
@@ -138,6 +140,50 @@ class TestBackup:
             backup_before_save(target, tmp_path / "state", keep=2)
         kept = sorted(backup_folder(target, tmp_path / "state").iterdir())
         assert [path.read_text("utf-8") for path in kept] == ["2", "3"]
+
+    def test_saves_within_the_same_instant_keep_every_copy(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Windows の Python 3.12 は時刻の刻みが約 15ms 続けて保存すると同じ時刻になり、
+        # 名前が重なって前の控えを上書きしていた（CI で 3.12 だけ、たまに落ちた）
+        frozen = datetime(2026, 9, 12, 12, 0, 0)
+
+        class Stopped(datetime):
+            @classmethod
+            def now(cls, tz: tzinfo | None = None) -> Stopped:
+                del tz
+                return cls.fromtimestamp(frozen.timestamp())
+
+        monkeypatch.setattr(recovery, "datetime", Stopped)
+        target = tmp_path / "本編.kmk"
+        for index in range(3):
+            target.write_text(str(index), "utf-8")
+            backup_before_save(target, tmp_path / "state")
+        kept = sorted(backup_folder(target, tmp_path / "state").iterdir())
+        assert [path.read_text("utf-8") for path in kept] == ["0", "1", "2"]
+
+    def test_a_name_already_taken_is_never_overwritten(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 別の窓が同じ瞬間に同じ名前を押さえた形 上書きすると、その窓の控えが消える
+        class Stopped(datetime):
+            @classmethod
+            def now(cls, tz: tzinfo | None = None) -> Stopped:
+                del tz
+                return cls(2026, 9, 12, 12, 0, 0)
+
+        monkeypatch.setattr(recovery, "datetime", Stopped)
+        target = tmp_path / "本編.kmk"
+        target.write_text("こちら", "utf-8")
+        folder = backup_folder(target, tmp_path / "state")
+        folder.mkdir(parents=True)
+        taken = folder / "20260912-120000-000000-000.kmk"
+        taken.write_text("別の窓", "utf-8")
+
+        copied = backup_before_save(target, tmp_path / "state")
+        assert copied is not None and copied != taken
+        assert taken.read_text("utf-8") == "別の窓"
+        assert copied.read_text("utf-8") == "こちら"
 
     def test_same_name_in_another_folder_is_kept_apart(self, tmp_path: Path) -> None:
         # 「本編.kmk」はどこにでもある 名前だけで分けると別の作品の控えが混ざる

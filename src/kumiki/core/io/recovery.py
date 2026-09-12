@@ -242,8 +242,22 @@ def backup_before_save(
         return None
     folder = backup_folder(target, root)
     folder.mkdir(parents=True, exist_ok=True)
-    copied = folder / f"{datetime.now():%Y%m%d-%H%M%S-%f}{SUFFIX}"
-    shutil.copy2(target, copied)
+    # 時刻が同じなら連番を足す Windows の Python 3.12 は時刻の刻みが約 15ms と粗く、
+    # 続けて保存すると同じ名前になって前の控えを上書きしていた（CI で 3.12 だけ落ちた）
+    # 連番は時刻の後ろに付けるので、名前で並べれば古い順のまま
+    # 名前は排他作成（"x"）で先に押さえる 「空いているか見てから書く」の 2 段だと、
+    # 同じプロジェクトを 2 つの窓で開いて同時に保存したとき、同じ名前を選んで上書きしうる
+    stamp = f"{datetime.now():%Y%m%d-%H%M%S-%f}"
+    number = 0
+    while True:
+        copied = folder / f"{stamp}-{number:03d}{SUFFIX}"
+        try:
+            with copied.open("xb"):
+                break
+        except FileExistsError:
+            number += 1
+    shutil.copyfile(target, copied)
+    shutil.copystat(target, copied)
 
     generations = sorted(folder.glob(f"*{SUFFIX}"))
     for old in generations[: max(0, len(generations) - keep)]:

@@ -676,10 +676,16 @@ class MainWindow(QMainWindow):
     # --- ファイル ---
 
     def new_project(self) -> None:
+        """解像度とフレームレートを尋ねてから作る フレームレートはあとで変えられない"""
+        from kumiki.ui.project_settings_dialog import ProjectSettingsDialog
+
         if not self._confirm_discard():
             return
+        dialog = ProjectSettingsDialog(ProjectSettings(), self, new=True)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
         self._playback.stop()
-        self._document.reset(Project.create(ProjectSettings()))
+        self._document.reset(Project.create(dialog.settings()))
         self._path = None
         self._mark_saved()
         self._on_project_changed()
