@@ -20,10 +20,11 @@ from PySide6.QtWidgets import QApplication, QDialogButtonBox
 from kumiki.core.commands import AddClip, Command, RenameProject, SetTrackState
 from kumiki.core.io import RecoverySession, backup_folder, find_orphans
 from kumiki.core.model import Clip, Project, ProjectSettings, Track, TrackKind
+from kumiki.core.timebase import FrameRate
 from kumiki.effects.sources import TEXT
 from kumiki.engine.cache import MediaAnalyzer
 from kumiki.ui.main_window import MainWindow
-from kumiki.ui.project_settings_dialog import ProjectSettingsDialog
+from kumiki.ui.project_settings_dialog import FRAME_RATE_PRESETS, ProjectSettingsDialog
 from kumiki.ui.timeline import TimelineView
 from kumiki.ui.timeline.painter import track_button_rects
 from kumiki.ui.workspace import ShortcutStore, Workspace, find_conflicts
@@ -230,6 +231,31 @@ class TestSettingsDialog:
         dialog._swap()
         assert dialog.resolution() == (1080, 1920)
         assert "縦" in dialog._preset.currentText()
+
+    def test_a_new_project_can_choose_its_frame_rate(self, qt_application: QApplication) -> None:
+        # 選べないと、60fps のゲーム実況も 30fps で作るしかなく、動きがカクつく
+        del qt_application
+        dialog = ProjectSettingsDialog(ProjectSettings(), new=True)
+        assert dialog._rate is not None
+        dialog._rate.setCurrentIndex(
+            next(i for i, (_, r) in enumerate(FRAME_RATE_PRESETS) if r == FrameRate(60))
+        )
+        assert dialog.settings().frame_rate == FrameRate(60)
+
+    def test_ntsc_rates_stay_exact(self, qt_application: QApplication) -> None:
+        # 29.97 を小数で持つと、1 時間で 3 フレーム以上ずれる
+        del qt_application
+        rates = [rate for _, rate in FRAME_RATE_PRESETS]
+        assert FrameRate(30000, 1001) in rates
+
+    def test_an_existing_project_cannot_change_its_frame_rate(
+        self, qt_application: QApplication
+    ) -> None:
+        # 変えられると、フレーム番号で持っている全クリップの時刻がずれる
+        del qt_application
+        dialog = ProjectSettingsDialog(ProjectSettings(frame_rate=FrameRate(24)))
+        assert dialog._rate is None
+        assert dialog.settings().frame_rate == FrameRate(24)
 
     def test_odd_numbers_cannot_be_confirmed(self, qt_application: QApplication) -> None:
         del qt_application

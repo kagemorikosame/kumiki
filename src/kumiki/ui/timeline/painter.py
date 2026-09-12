@@ -9,13 +9,15 @@
 
 from __future__ import annotations
 
+import bisect
+from collections.abc import Sequence
 from fractions import Fraction
 
 import numpy as np
 from PySide6.QtCore import QPointF, QRect, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QImage, QPainter, QPen
 
-from kumiki.core.model import Clip, MediaItem, Timeline, TrackKind
+from kumiki.core.model import Clip, ClipId, MediaItem, Timeline, Track, TrackKind
 from kumiki.core.timebase import FrameRate, format_timecode
 from kumiki.effects.sources import source_registry
 from kumiki.engine.audio import Waveform
@@ -24,8 +26,11 @@ from kumiki.ui.theme import Colors, Metrics
 from kumiki.ui.timeline.layout import TimelineLayout, TrackBand
 
 __all__ = [
+    "DETAIL_MIN_WIDTH",
     "TRACK_BUTTONS",
+    "clips_in_range",
     "draw_clip",
+    "draw_dense_clips",
     "draw_playhead",
     "draw_ruler",
     "draw_track_background",
@@ -241,6 +246,80 @@ def draw_clip(
     painter.restore()
 
 
+#: これより細いクリップは名前もサムネイルも描かない 字が 1 文字も入らない幅
+DETAIL_MIN_WIDTH = 24
+
+
+#: これより細いクリップには境目の線も引かない 線だけが縞模様になって読めない
+_EDGE_MIN_WIDTH = 3
+
+
+def clips_in_range(track: Track, start: int, end: int) -> Sequence[Clip]:
+    """``start`` から ``end`` までに掛かるクリップ
+
+    クリップは開始順に並び、重ならない（:class:`Track` の約束） 終わりも同じ順に
+    並ぶので、両端を二分探索で探せる 全部を舐めると、拡大して 10 本しか
+    見えていないときも 1 万本ぶん回ることになる
+    """
+    clips = track.clips
+    first = bisect.bisect_right(clips, start, key=lambda clip: clip.timeline_end)
+    last = bisect.bisect_right(clips, end, lo=first, key=lambda clip: clip.timeline_start)
+    return clips[first:last]
+
+
+def draw_dense_clips(
+    painter: QPainter,
+    band: TrackBand,
+    clips: Sequence[Clip],
+    layout: TimelineLayout,
+    width: int,
+    selected: ClipId | None,
+) -> None:
+    """名前も入らない細いクリップを、色の帯としてまとめて塗る
+
+    全体を表示すると数千本が数画素ずつになる 1 本ずつ名前・枠・切り抜きを描くと
+    3000 本で 58ms（60fps の予算の 3 倍半）かかった さらに 1 万本では、描く前の
+    矩形作りだけで予算を超えた ここは整数の計算だけで済ませ、隙間なく続く
+    クリップを 1 本の帯にまとめてから塗る
+    """
+    top, height = band.top + 1, band.height - 3
+    if height <= 0 or not clips:
+        return
+    video = band.track.kind is TrackKind.VIDEO
+    body = Colors.VIDEO_CLIP if video else Colors.AUDIO_CLIP
+    dimmed = _dimmed(body)
+    border = Colors.VIDEO_CLIP_BORDER if video else Colors.AUDIO_CLIP_BORDER
+
+    header = Metrics.TRACK_HEADER_WIDTH
+    scroll, scale = layout.scroll_frame, layout.pixels_per_frame
+    runs: list[list[int]] = []  # [左, 右, 有効なら 1]
+    edges: list[int] = []
+    marked: tuple[int, int] | None = None
+    for clip in clips:
+        left = max(header, int(header + (clip.timeline_start - scroll) * scale))
+        right = max(left + 1, min(width, int(header + (clip.timeline_end - scroll) * scale)))
+        enabled = 1 if clip.enabled else 0
+        if runs and runs[-1][2] == enabled and left <= runs[-1][1]:
+            runs[-1][1] = max(runs[-1][1], right)
+        else:
+            runs.append([left, right, enabled])
+        if right - left >= _EDGE_MIN_WIDTH:
+            edges.append(left)
+        if clip.id == selected:
+            marked = (left, right)
+
+    # 塗りを全部済ませてから線を引く 交互にすると、あとの帯が前の線を塗りつぶす
+    for left, right, enabled in runs:
+        painter.fillRect(left, top, right - left, height, body if enabled else dimmed)
+    for left in edges:
+        painter.fillRect(left, top, 1, height, border)
+    if marked is not None:
+        left, right = marked
+        painter.setPen(QPen(Colors.SELECTION, 2))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(left, top, max(2, right - left), height - 1)
+
+
 def _draw_clip_label(painter: QPainter, rect: QRect, clip: Clip, media: MediaItem | None) -> None:
     label_rect = QRect(rect.left(), rect.top(), rect.width(), Metrics.CLIP_LABEL_HEIGHT)
     painter.fillRect(label_rect, QColor(0, 0, 0, 90))
@@ -407,9 +486,7 @@ def visible_clips(
     for band in layout.bands(timeline):
         if band.bottom <= Metrics.RULER_HEIGHT:
             continue
-        for clip in band.track.clips:
-            if clip.timeline_end < start_frame or clip.timeline_start > end_frame:
-                continue
+        for clip in clips_in_range(band.track, start_frame, end_frame):
             rect = clip_rect_for(clip, band, layout, width)
             if rect is not None:
                 found.append((band, clip, rect))

@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum, auto
 
-from PySide6.QtCore import QPoint, Qt, Signal
+from PySide6.QtCore import QPoint, QRect, Qt, Signal
 from PySide6.QtGui import (
     QKeyEvent,
     QMouseEvent,
@@ -31,16 +31,19 @@ from kumiki.core.commands import (
 from kumiki.core.model import Clip, ClipId, GroupId, Project, TrackId, TrackKind
 from kumiki.engine.cache import MediaAnalyzer
 from kumiki.ui.theme import Colors, Metrics
-from kumiki.ui.timeline.layout import TimelineLayout
-from kumiki.ui.timeline.painter import draw_clip as paint_clip
+from kumiki.ui.timeline.layout import TimelineLayout, TrackBand
 from kumiki.ui.timeline.painter import (
+    DETAIL_MIN_WIDTH,
+    clip_rect_for,
+    clips_in_range,
+    draw_dense_clips,
     draw_playhead,
     draw_ruler,
     draw_track_background,
     draw_track_header,
     track_button_rects,
-    visible_clips,
 )
+from kumiki.ui.timeline.painter import draw_clip as paint_clip
 
 __all__ = ["TimelineView"]
 
@@ -177,20 +180,22 @@ class TimelineView(QWidget):
                 continue
             draw_track_background(painter, band, width)
 
-        for band, clip, rect in visible_clips(timeline, self._layout, width):
-            media = self._project.find_media(clip.media_id) if clip.media_id is not None else None
-            paint_clip(
-                painter,
-                clip,
-                band,
-                self._layout,
-                self._project.rate,
-                media=media,
-                filmstrip=self._analyzer.filmstrip(media) if media is not None else None,
-                waveform=self._analyzer.waveform(media) if media is not None else None,
-                selected=clip.id == self._selected,
-                clip_rect=rect,
-            )
+        start_frame, end_frame = self._layout.visible_range(width)
+        scale = self._layout.pixels_per_frame
+        for band in self._layout.bands(timeline):
+            if band.bottom <= Metrics.RULER_HEIGHT or band.top >= self.height():
+                continue
+            # 名前が入らない幅のクリップは、まとめて色の帯にする 1 本ずつ描くと
+            # 全体表示で数千本を描くことになり、60fps の予算に収まらない
+            dense: list[Clip] = []
+            for clip in clips_in_range(band.track, start_frame, end_frame):
+                if clip.duration * scale < DETAIL_MIN_WIDTH:
+                    dense.append(clip)
+                    continue
+                rect = clip_rect_for(clip, band, self._layout, width)
+                if rect is not None:
+                    self._paint_detailed(painter, band, clip, rect)
+            draw_dense_clips(painter, band, dense, self._layout, width, self._selected)
 
         self._draw_drag_preview(painter)
 
@@ -206,6 +211,21 @@ class TimelineView(QWidget):
 
         draw_ruler(painter, self._layout, width, self._project.rate)
         draw_playhead(painter, self._layout, self._playhead, self.height())
+
+    def _paint_detailed(self, painter: QPainter, band: TrackBand, clip: Clip, rect: QRect) -> None:
+        media = self._project.find_media(clip.media_id) if clip.media_id is not None else None
+        paint_clip(
+            painter,
+            clip,
+            band,
+            self._layout,
+            self._project.rate,
+            media=media,
+            filmstrip=self._analyzer.filmstrip(media) if media is not None else None,
+            waveform=self._analyzer.waveform(media) if media is not None else None,
+            selected=clip.id == self._selected,
+            clip_rect=rect,
+        )
 
     def _draw_drag_preview(self, painter: QPainter) -> None:
         """ドラッグ中の落下先を枠線で示す
@@ -496,8 +516,31 @@ class TimelineView(QWidget):
         return True
 
     def _clip_at(self, position: QPoint) -> tuple[TrackId, Clip] | None:
-        for band, clip, rect in visible_clips(self._project.timeline, self._layout, self.width()):
-            if rect.contains(position):
+        """マウスの下のクリップ マウスが動くたびに呼ばれる
+
+        トラックを縦位置で決めてから、そのトラックの中を二分探索で探す 見えている
+        クリップを全部舐めると、全体表示の 1 万本でマウスを動かすだけで重くなる
+
+        探す範囲は前後 1 画素ぶんのフレーム 全体表示では 1 画素が数十フレームに
+        あたるので、フレームの前後 1 つだけを見ると画素の中のクリップを取りこぼす
+        1 画素に満たないクリップは矩形が丸めで隣の画素へずれるので、矩形で当たらな
+        ければ、その画素の真ん中のフレームを含むクリップを選ぶ
+        """
+        if position.x() < Metrics.TRACK_HEADER_WIDTH:
+            return None
+        band = self._layout.band_at(self._project.timeline, position.y())
+        if band is None or not (band.top < position.y() < band.bottom - 2):
+            return None
+        first = self._layout.frame_at(position.x() - 1)
+        last = self._layout.frame_at(position.x() + 1)
+        candidates = clips_in_range(band.track, first, last)
+        for clip in candidates:
+            rect = clip_rect_for(clip, band, self._layout, self.width())
+            if rect is not None and rect.contains(position):
+                return band.track.id, clip
+        middle = int(self._layout.x_to_frame(position.x() + 0.5))
+        for clip in candidates:
+            if clip.contains(middle):
                 return band.track.id, clip
         return None
 

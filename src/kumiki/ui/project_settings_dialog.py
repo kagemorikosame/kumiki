@@ -1,6 +1,8 @@
-"""プロジェクト設定（解像度）"""
+"""プロジェクト設定（解像度） 新規作成のときはフレームレートも"""
 
 from __future__ import annotations
+
+from dataclasses import replace
 
 from PySide6.QtWidgets import (
     QComboBox,
@@ -17,8 +19,22 @@ from PySide6.QtWidgets import (
 
 from kumiki.core.commands.edit import MAX_RESOLUTION, MIN_RESOLUTION
 from kumiki.core.model import ProjectSettings
+from kumiki.core.timebase import FrameRate
 
-__all__ = ["RESOLUTION_PRESETS", "ProjectSettingsDialog"]
+__all__ = ["FRAME_RATE_PRESETS", "RESOLUTION_PRESETS", "ProjectSettingsDialog"]
+
+#: 選べるフレームレート 分数のものは分数のまま持つ 29.97 を小数で持つと、
+#: 1 時間で 3 フレーム以上ずれる（:meth:`FrameRate.from_decimal` を参照）
+FRAME_RATE_PRESETS: tuple[tuple[str, FrameRate], ...] = (
+    ("23.976 fps（映画の NTSC 版）", FrameRate(24000, 1001)),
+    ("24 fps（映画）", FrameRate(24)),
+    ("25 fps（PAL）", FrameRate(25)),
+    ("29.97 fps（テレビ・NTSC）", FrameRate(30000, 1001)),
+    ("30 fps（配信・ゆっくり実況）", FrameRate(30)),
+    ("50 fps", FrameRate(50)),
+    ("59.94 fps", FrameRate(60000, 1001)),
+    ("60 fps（ゲーム実況）", FrameRate(60)),
+)
 
 #: よく使う解像度 表示名は用途で書く 数字だけだと縦か横かを取り違える
 RESOLUTION_PRESETS: tuple[tuple[str, int, int], ...] = (
@@ -33,16 +49,20 @@ _CUSTOM = "指定する"
 
 
 class ProjectSettingsDialog(QDialog):
-    """解像度を選ぶ フレームレートは見せるだけで変えさせない
+    """解像度を選ぶ フレームレートは ``new`` のとき（新規作成）だけ選ばせる
 
     タイムラインの位置はフレーム番号で持っている あとからフレームレートを変えると、
     すべてのクリップとキーフレームを換算し直すことになり、端数の丸めで 1 フレームの
     隙間や重なりが出る いまは作るときにだけ決める
     """
 
-    def __init__(self, settings: ProjectSettings, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, settings: ProjectSettings, parent: QWidget | None = None, *, new: bool = False
+    ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("プロジェクト設定")
+        self.setWindowTitle("新規プロジェクト" if new else "プロジェクト設定")
+        self._base = settings
+        self._rate: QComboBox | None = None
 
         self._preset = QComboBox(self)
         for label, _, _ in RESOLUTION_PRESETS:
@@ -60,9 +80,18 @@ class ProjectSettingsDialog(QDialog):
         size_row.addWidget(self._height)
         size_row.addWidget(swap)
 
-        fps = settings.frame_rate
-        rate = QLabel(f"{float(fps.fps):g} fps（作成後は変えられません）", self)
-        rate.setEnabled(False)
+        rate: QWidget
+        if new:
+            self._rate = QComboBox(self)
+            for label, _ in FRAME_RATE_PRESETS:
+                self._rate.addItem(label)
+            rates = [preset for _, preset in FRAME_RATE_PRESETS]
+            if settings.frame_rate in rates:
+                self._rate.setCurrentIndex(rates.index(settings.frame_rate))
+            rate = self._rate
+        else:
+            rate = QLabel(f"{settings.frame_rate} fps（作成後は変えられません）", self)
+            rate.setEnabled(False)
 
         self._warning = QLabel(self)
         self._warning.setStyleSheet("color: #e07a5f;")
@@ -90,6 +119,16 @@ class ProjectSettingsDialog(QDialog):
 
     def resolution(self) -> tuple[int, int]:
         return self._width.value(), self._height.value()
+
+    def settings(self) -> ProjectSettings:
+        """選んだ内容を反映した設定 音声の設定などは渡されたものを引き継ぐ"""
+        width, height = self.resolution()
+        rate = (
+            FRAME_RATE_PRESETS[self._rate.currentIndex()][1]
+            if self._rate is not None
+            else self._base.frame_rate
+        )
+        return replace(self._base, width=width, height=height, frame_rate=rate)
 
     def _spin(self, value: int) -> QSpinBox:
         spin = QSpinBox(self)
