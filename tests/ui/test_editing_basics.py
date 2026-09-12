@@ -184,3 +184,22 @@ class TestWindow:
         finally:
             first.close()
         assert not is_held(project_lock_path(path))
+
+    def test_a_window_opened_anyway_picks_up_the_lock_later(
+        self, qt_application: QApplication, tmp_path: Path
+    ) -> None:
+        # 「それでも開く」で錠を持たない窓が、先の窓が閉じても錠を拾わないと、
+        # まだ開いているのに 3 つ目の窓が警告なしで開けてしまう
+        del qt_application
+        path = tmp_path / "本編.kmk"
+        first = MainWindow(_project(), path=path, confirm_unsaved=False)
+        second = MainWindow(_project(), path=path, confirm_unsaved=False)
+        try:
+            assert second._project_lock is None
+            first.close()
+            second.autosave()
+            assert second._project_lock is not None
+            assert is_held(project_lock_path(path))
+        finally:
+            second.close()
+        assert not is_held(project_lock_path(path))

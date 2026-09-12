@@ -869,6 +869,17 @@ class MainWindow(QMainWindow):
         self._project_lock = lock
         return True
 
+    def retake_lock(self) -> None:
+        """錠を持たずに開いている窓が、空いた錠を拾う 自動退避のたびに呼ばれる
+
+        「それでも開く」を選んだ窓は錠を持たない そのまま先の窓が閉じると錠が
+        消え、この窓がまだ開いているのに、次に開いた窓が警告なしで錠を取れて
+        しまう 空いたらすぐ拾っておけば、次の窓にはこちらが見える
+        """
+        if self._path is None or self._project_lock is not None:
+            return
+        self._project_lock = try_hold(project_lock_path(self._path))
+
     def _release_lock(self) -> None:
         if self._project_lock is not None:
             self._project_lock.release()
@@ -905,6 +916,7 @@ class MainWindow(QMainWindow):
         前回から変わっていなければ書かない 放置しているあいだ 30 秒ごとに
         同じ中身を書き直すのは、ディスクを傷めるだけで何も守らない
         """
+        self.retake_lock()
         project = self._document.project
         if project is self._autosaved:
             return

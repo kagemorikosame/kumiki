@@ -139,17 +139,21 @@ class MediaPoolWidget(QWidget):
     def build_menu(self, media_id: MediaId) -> QMenu:
         """素材 1 つに対する右クリックメニュー 表示と中身を分けてあるのはテストのため"""
         menu = QMenu(self)
+        # triggered は押されたかどうか（bool）を渡してくる PySide6 は受け取れない
+        # 引数を捨てて呼ぶが、タイムライン側と同じく明示的に受けて捨てる形にそろえる
         place = menu.addAction("タイムラインへ置く")
-        place.triggered.connect(lambda: self.insert_requested.emit(str(media_id)))
+        place.triggered.connect(lambda _checked=False: self.insert_requested.emit(str(media_id)))
         transcribe = menu.addAction("字幕を起こす…")
-        transcribe.triggered.connect(lambda: self.transcribe_requested.emit(str(media_id)))
+        transcribe.triggered.connect(
+            lambda _checked=False: self.transcribe_requested.emit(str(media_id))
+        )
         media = self._project.find_media(media_id)
         transcribe.setEnabled(media is not None and media.has_audio)
         reveal = menu.addAction("ファイルの場所を開く")
-        reveal.triggered.connect(lambda: self._reveal(media_id))
+        reveal.triggered.connect(lambda _checked=False: self._reveal(media_id))
         menu.addSeparator()
         remove = menu.addAction("プールから外す")
-        remove.triggered.connect(lambda: self.remove_requested.emit(str(media_id)))
+        remove.triggered.connect(lambda _checked=False: self.remove_requested.emit(str(media_id)))
         return menu
 
     def _reveal(self, media_id: MediaId) -> None:
