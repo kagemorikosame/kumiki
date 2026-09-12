@@ -23,9 +23,8 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import IO
 
-from kumiki.core.io.locks import is_held
+from kumiki.core.io.locks import HeldLock, is_held, try_hold
 from kumiki.core.io.serialize import SUFFIX, save_project
 from kumiki.core.model import Project
 
@@ -38,7 +37,7 @@ __all__ = [
     "default_state_root",
     "discard",
     "find_orphans",
-    "project_lock_path",
+    "project_presence_dir",
 ]
 
 #: 1 つのプロジェクトについて残すバックアップの数
@@ -89,11 +88,11 @@ class RecoverySession:
         self._folder = (root if root is not None else default_state_root()) / "recovery"
         self._folder.mkdir(parents=True, exist_ok=True)
         self.session = uuid.uuid4().hex
-        self._lock: IO[str] | None = self._lock_path(self._folder, self.session).open(
-            "w", encoding="utf-8"
-        )
-        self._lock.write(str(os.getpid()))
-        self._lock.flush()
+        # 名前は起動ごとに違うので、取れないのは何かが壊れているときだけ
+        lock = try_hold(self._lock_path(self._folder, self.session))
+        if lock is None:
+            raise RuntimeError(f"退避の錠を作れない: {self._folder}")
+        self._lock: HeldLock | None = lock
 
     @property
     def path(self) -> Path:
@@ -118,9 +117,8 @@ class RecoverySession:
         """正常に終わる 退避も錠も残さない"""
         self.clear()
         if self._lock is not None:
-            self._lock.close()
+            self._lock.release()
             self._lock = None
-        self._lock_path(self._folder, self.session).unlink(missing_ok=True)
 
     @staticmethod
     def _lock_path(folder: Path, session: str) -> Path:
@@ -192,14 +190,18 @@ def _is_alive(folder: Path, session: str) -> bool:
     return is_held(folder / f"{session}.lock")
 
 
-def project_lock_path(target: Path, root: Path | None = None) -> Path:
-    """そのプロジェクトを開いている窓が持つ錠の場所
+def project_presence_dir(target: Path, root: Path | None = None) -> Path:
+    """そのプロジェクトを開いている窓が、1 枚ずつ錠を置く場所
+
+    錠を 1 つだけ取り合う形にすると、「それでも開く」を選んだ窓が錠を持てず、
+    先の窓が閉じたあとに 3 つ目の窓が警告なしで開けてしまう（PR #13） 窓ごとに
+    置けば、まだ開いている窓は必ず数に入る
 
     プロジェクトの隣には置かない 同期フォルダに置いている人のところで、錠まで
     同期されて別の機械の窓と取り合いになる
     """
     base = (root if root is not None else default_state_root()) / "open"
-    return base / f"{_path_digest(target)}.lock"
+    return base / _path_digest(target)
 
 
 def _path_digest(target: Path) -> str:

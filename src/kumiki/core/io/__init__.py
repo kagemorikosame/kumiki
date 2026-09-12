@@ -1,6 +1,6 @@
 """プロジェクトファイル (.kmk) とプリセットの入出力"""
 
-from kumiki.core.io.locks import HeldLock, is_held, try_hold
+from kumiki.core.io.locks import HeldLock, hold_new, is_held, others_holding, try_hold
 from kumiki.core.io.presets import Preset, PresetStore, default_preset_root
 from kumiki.core.io.recovery import (
     RecoveryEntry,
@@ -10,7 +10,7 @@ from kumiki.core.io.recovery import (
     default_state_root,
     discard,
     find_orphans,
-    project_lock_path,
+    project_presence_dir,
 )
 from kumiki.core.io.serialize import (
     FORMAT_NAME,
@@ -49,10 +49,12 @@ __all__ = [
     "default_state_root",
     "discard",
     "find_orphans",
+    "hold_new",
     "is_held",
     "load_project",
+    "others_holding",
     "project_from_dict",
-    "project_lock_path",
+    "project_presence_dir",
     "project_to_dict",
     "save_project",
     "save_subtitles",

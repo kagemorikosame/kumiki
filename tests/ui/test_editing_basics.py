@@ -16,7 +16,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from kumiki.core.commands import AddClip, Command, SetTrackHeights
-from kumiki.core.io import is_held, project_lock_path
+from kumiki.core.io import others_holding, project_presence_dir
 from kumiki.core.model import Clip, MediaItem, Project, Track, TrackKind
 from kumiki.effects.sources import TEXT
 from kumiki.engine.cache import MediaAnalyzer
@@ -173,33 +173,33 @@ class TestWindow:
     ) -> None:
         del qt_application
         path = tmp_path / "本編.kmk"
+        folder = project_presence_dir(path)
         first = MainWindow(_project(), path=path, confirm_unsaved=False)
         try:
-            assert is_held(project_lock_path(path))
+            assert others_holding(folder)
             second = MainWindow(_project(), path=path, confirm_unsaved=False)
-            # 尋ねない設定なので開けはするが、錠は取れない（先の窓が持っている）
-            assert second._project_lock is None
+            # 尋ねない設定なので開けるが、先の窓がいることは見えている
+            assert second._project_lock is not None
+            assert others_holding(folder, second._project_lock.path)
             second.close()
-            assert is_held(project_lock_path(path))
+            assert others_holding(folder)
         finally:
             first.close()
-        assert not is_held(project_lock_path(path))
+        assert not others_holding(folder)
 
-    def test_a_window_opened_anyway_picks_up_the_lock_later(
+    def test_a_window_opened_anyway_is_still_seen_after_the_first_closes(
         self, qt_application: QApplication, tmp_path: Path
     ) -> None:
-        # 「それでも開く」で錠を持たない窓が、先の窓が閉じても錠を拾わないと、
-        # まだ開いているのに 3 つ目の窓が警告なしで開けてしまう
+        # 「それでも開く」の窓が数に入らないと、先の窓が閉じたあと、まだ開いて
+        # いるのに 3 つ目の窓が警告なしで開けてしまう 待ち時間なしで見えること
         del qt_application
         path = tmp_path / "本編.kmk"
+        folder = project_presence_dir(path)
         first = MainWindow(_project(), path=path, confirm_unsaved=False)
         second = MainWindow(_project(), path=path, confirm_unsaved=False)
         try:
-            assert second._project_lock is None
             first.close()
-            second.autosave()
-            assert second._project_lock is not None
-            assert is_held(project_lock_path(path))
+            assert others_holding(folder)
         finally:
             second.close()
-        assert not is_held(project_lock_path(path))
+        assert not others_holding(folder)

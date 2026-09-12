@@ -10,7 +10,14 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
-from kumiki.core.io import HeldLock, is_held, project_lock_path, try_hold
+from kumiki.core.io import (
+    HeldLock,
+    hold_new,
+    is_held,
+    others_holding,
+    project_presence_dir,
+    try_hold,
+)
 
 
 class TestLock:
@@ -54,6 +61,20 @@ class TestLock:
             for lock in held:
                 lock.release()
 
+    def test_a_lock_with_nothing_written_yet_is_still_held(self, tmp_path: Path) -> None:
+        # 作った直後の空の錠を「中身が読めない = 持ち主がいない」と取ると、作った
+        # ばかりの錠を消して、2 つ目の窓も錠を取れてしまう（中身は見ないこと）
+        path = tmp_path / "a.lock"
+        lock = try_hold(path)
+        assert lock is not None
+        try:
+            assert path.read_text(encoding="utf-8") == ""
+            assert is_held(path)
+            assert try_hold(path) is None
+            assert path.exists()
+        finally:
+            lock.release()
+
     def test_a_dead_owner_can_be_replaced(self, tmp_path: Path) -> None:
         # 落ちた窓の錠が残っていても、次に開いた窓は錠を取れる
         (tmp_path / "a.lock").write_text("終了済み", encoding="utf-8")
@@ -67,15 +88,37 @@ class TestLock:
         assert not is_held(tmp_path / "a.lock")
 
 
-class TestProjectLockPath:
-    def test_the_same_file_gets_the_same_lock(self, tmp_path: Path) -> None:
-        # 書き方の違い（.. を挟むなど）で別の錠になると、2 つの窓に気付けない
-        direct = project_lock_path(tmp_path / "本編.kmk", tmp_path / "state")
-        roundabout = project_lock_path(tmp_path / "x" / ".." / "本編.kmk", tmp_path / "state")
+class TestPresence:
+    def test_each_window_is_counted(self, tmp_path: Path) -> None:
+        # 1 つの錠を取り合う形だと、「それでも開く」の窓が数に入らず、先の窓が
+        # 閉じたあとに 3 つ目の窓が警告なしで開ける（PR #13） 窓ごとに数える
+        folder = tmp_path / "open"
+        first, second = hold_new(folder), hold_new(folder)
+        try:
+            assert others_holding(folder, second.path)
+            first.release()
+            assert not others_holding(folder, second.path)
+            assert others_holding(folder)
+        finally:
+            second.release()
+        assert not others_holding(folder)
+
+    def test_a_crashed_window_is_not_counted(self, tmp_path: Path) -> None:
+        folder = tmp_path / "open"
+        folder.mkdir()
+        (folder / "dead.lock").write_text("", encoding="utf-8")
+        assert not others_holding(folder)
+
+
+class TestProjectPresenceDir:
+    def test_the_same_file_gets_the_same_place(self, tmp_path: Path) -> None:
+        # 書き方の違い（.. を挟むなど）で別の場所になると、2 つの窓に気付けない
+        direct = project_presence_dir(tmp_path / "本編.kmk", tmp_path / "state")
+        roundabout = project_presence_dir(tmp_path / "x" / ".." / "本編.kmk", tmp_path / "state")
         assert direct == roundabout
 
-    def test_other_files_get_other_locks(self, tmp_path: Path) -> None:
+    def test_other_files_get_other_places(self, tmp_path: Path) -> None:
         state = tmp_path / "state"
-        assert project_lock_path(tmp_path / "a" / "本編.kmk", state) != project_lock_path(
+        assert project_presence_dir(tmp_path / "a" / "本編.kmk", state) != project_presence_dir(
             tmp_path / "b" / "本編.kmk", state
         )

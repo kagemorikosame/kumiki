@@ -55,10 +55,11 @@ from kumiki.core.io import (
     backup_folder,
     discard,
     find_orphans,
+    hold_new,
     load_project,
-    project_lock_path,
+    others_holding,
+    project_presence_dir,
     save_project,
-    try_hold,
 )
 from kumiki.core.model import (
     ClipId,
@@ -656,8 +657,15 @@ class MainWindow(QMainWindow):
         self._subtitles.transcribe()
 
     def _remove_media(self, media_id: str) -> None:
-        """プールから外す タイムラインで使っていれば、理由がステータスバーに出て止まる"""
-        self.execute(RemoveMedia(MediaId(media_id)))
+        """プールから外す タイムラインで使っていれば、理由がステータスバーに出て止まる
+
+        外せたときだけ解析の結果（波形・サムネイル・走っている解析）も捨てる 残すと、
+        もう使わない素材の波形をメモリに抱え続ける 外せなかったときは使い続けるので残す
+        """
+        target = MediaId(media_id)
+        self.execute(RemoveMedia(target))
+        if self._document.project.find_media(target) is None:
+            self._analyzer.forget(target)
 
     def _insert_media_by_id(self, media_id: str) -> None:
         project = self._document.project
@@ -850,11 +858,10 @@ class MainWindow(QMainWindow):
         止めはしない 読み返すだけのこともあるので、知らせたうえで本人に選ばせる
         知らせずに開けると、両方で保存したとき後から保存した方が黙って勝つ
         """
-        target = project_lock_path(path)
-        if self._project_lock is not None and self._project_lock.path == target:
+        folder = project_presence_dir(path)
+        if self._project_lock is not None and self._project_lock.path.parent == folder:
             return True
-        lock = try_hold(target)
-        if lock is None and self._confirm_unsaved:
+        if others_holding(folder) and self._confirm_unsaved:
             answer = QMessageBox.warning(
                 self,
                 "別の窓で開いています",
@@ -865,20 +872,11 @@ class MainWindow(QMainWindow):
             )
             if answer != QMessageBox.StandardButton.Open:
                 return False
+        # 「それでも開く」でも自分の錠は置く 置かないと、先の窓が閉じたあとに
+        # 開いた窓からこの窓が見えない
         self._release_lock()
-        self._project_lock = lock
+        self._project_lock = hold_new(folder)
         return True
-
-    def retake_lock(self) -> None:
-        """錠を持たずに開いている窓が、空いた錠を拾う 自動退避のたびに呼ばれる
-
-        「それでも開く」を選んだ窓は錠を持たない そのまま先の窓が閉じると錠が
-        消え、この窓がまだ開いているのに、次に開いた窓が警告なしで錠を取れて
-        しまう 空いたらすぐ拾っておけば、次の窓にはこちらが見える
-        """
-        if self._path is None or self._project_lock is not None:
-            return
-        self._project_lock = try_hold(project_lock_path(self._path))
 
     def _release_lock(self) -> None:
         if self._project_lock is not None:
@@ -916,7 +914,6 @@ class MainWindow(QMainWindow):
         前回から変わっていなければ書かない 放置しているあいだ 30 秒ごとに
         同じ中身を書き直すのは、ディスクを傷めるだけで何も守らない
         """
-        self.retake_lock()
         project = self._document.project
         if project is self._autosaved:
             return

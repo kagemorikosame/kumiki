@@ -3,19 +3,24 @@
 自動退避（:mod:`kumiki.core.io.recovery`）と、プロジェクトを 2 つの窓で開いたことの
 検出が同じ仕組みを使う
 
-生きているかどうかは、開いたままにしているファイルを消せるかで見分ける Windows では
-開いているファイルを消せないので、「消せたら持ち主はもういない」と判断できる
-プロセス番号で見る方法は Windows では使わない 番号は使い回されるうえ、Windows の
-``os.kill`` は存在の確認ではなく強制終了になる
+生きているかどうかは、持ち主が開いたままにしているファイルで見分ける 中身
+（プロセス番号）は読まない 番号は使い回されるうえ、書き終わる前の空の中身を読むと
+「持ち主は終わっている」と取り違えて、作ったばかりの錠を消してしまう（PR #13）
+
+- Windows: 開いているファイルは消せない 「消せたら持ち主はもういない」
+- それ以外: カーネルのファイルロック（``flock``）を掛けたまま持つ 掛けられたら
+  持ち主はもういない プロセスが終わるとロックは自然に外れる
 """
 
 from __future__ import annotations
 
 import os
+import sys
+import uuid
 from pathlib import Path
 from typing import IO
 
-__all__ = ["HeldLock", "is_held", "try_hold"]
+__all__ = ["HeldLock", "hold_new", "is_held", "others_holding", "try_hold"]
 
 
 class HeldLock:
@@ -24,8 +29,6 @@ class HeldLock:
     def __init__(self, path: Path, handle: IO[str]) -> None:
         self.path = path
         self._handle: IO[str] | None = handle
-        handle.write(str(os.getpid()))
-        handle.flush()
 
     def release(self) -> None:
         if self._handle is not None:
@@ -38,7 +41,57 @@ def is_held(path: Path) -> bool:
     """誰かが持っているか 持ち主が終わっていれば錠を片付けて偽を返す"""
     if not path.exists():
         return False
-    if os.name == "nt":
+    return _held(path)
+
+
+def try_hold(path: Path) -> HeldLock | None:
+    """空いていれば押さえる 誰かが持っていれば ``None``
+
+    1 回の操作で押さえる 「空いているか見てから作る」の 2 段だと、2 つの窓を同時に
+    開いたときに両方が錠を取れてしまう 既にあった錠の持ち主が終わっていれば、
+    :func:`is_held` が片付けるので 1 度だけ取り直す
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    for _ in range(2):
+        handle = _create(path)
+        if handle is not None:
+            return HeldLock(path, handle)
+        if is_held(path):
+            return None
+    return None
+
+
+def hold_new(folder: Path) -> HeldLock:
+    """``folder`` の中に、自分だけの錠を 1 つ作る 名前が重ならないので必ず取れる
+
+    同じものを使っている相手を全員数えたいときに使う（:func:`others_holding`）
+    """
+    while True:
+        lock = try_hold(folder / f"{uuid.uuid4().hex}.lock")
+        if lock is not None:
+            return lock
+
+
+def others_holding(folder: Path, mine: Path | None = None) -> bool:
+    """``folder`` の中に、自分（``mine``）以外の生きた錠があるか
+
+    終わった持ち主の錠は :func:`is_held` がついでに片付ける
+    """
+    if not folder.is_dir():
+        return False
+    return any(path != mine and is_held(path) for path in folder.glob("*.lock"))
+
+
+if sys.platform == "win32":
+
+    def _create(path: Path) -> IO[str] | None:
+        try:
+            return path.open("x", encoding="utf-8")
+        except FileExistsError:
+            return None
+
+    def _held(path: Path) -> bool:
+        """消せたら持ち主はもういない（開いているファイルは消せない）"""
         try:
             path.unlink()
         except PermissionError:
@@ -46,31 +99,40 @@ def is_held(path: Path) -> bool:
         except FileNotFoundError:
             return False
         return False
-    # Windows 以外では開いていても消せてしまう 番号の使い回しは承知のうえで
-    # プロセスの有無で見る（この製品の対象は Windows で、ここは開発用の逃げ道）
-    try:
-        os.kill(int(path.read_text(encoding="utf-8")), 0)
-    except (ProcessLookupError, ValueError, OSError):
+
+else:
+    import fcntl
+
+    def _create(path: Path) -> IO[str] | None:
+        """ロックを掛けてから所定の名前に置く
+
+        作ってからロックを掛けると、その間に見に来た相手が「ロックが無い = 持ち主が
+        いない」と判断して消してしまう 仮の名前で作ってロックを掛け、``link`` で
+        置く ``link`` は既にあれば失敗するので、置くのも 1 回の操作で済む
+        """
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}")
+        handle = temporary.open("w", encoding="utf-8")
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            os.link(temporary, path)
+        except FileExistsError:
+            handle.close()
+            return None
+        finally:
+            temporary.unlink(missing_ok=True)
+        return handle
+
+    def _held(path: Path) -> bool:
+        """ロックを掛けられたら持ち主はもういない（プロセスが終わると外れる）"""
+        try:
+            handle = path.open("r", encoding="utf-8")
+        except FileNotFoundError:
+            return False
+        with handle:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return True
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         path.unlink(missing_ok=True)
         return False
-    return True
-
-
-def try_hold(path: Path) -> HeldLock | None:
-    """空いていれば押さえる 誰かが持っていれば ``None``
-
-    排他作成（``"x"``）で 1 回で押さえる 「空いているか見てから作る」の 2 段だと、
-    2 つの窓を同時に開いたときに両方が錠を取れてしまい、知らせる仕組みが働かない
-    既にあった錠の持ち主が終わっていれば、:func:`is_held` が片付けるので 1 度だけ
-    取り直す
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    for _ in range(2):
-        try:
-            handle = path.open("x", encoding="utf-8")
-        except FileExistsError:
-            if is_held(path):
-                return None
-            continue
-        return HeldLock(path, handle)
-    return None

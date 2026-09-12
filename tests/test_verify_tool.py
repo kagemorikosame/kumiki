@@ -50,7 +50,9 @@ def test_the_counts_and_the_failed_names_are_kept(verify: ModuleType) -> None:
         "1 xfailed, 1 xpassed in 0.30s",
     ],
 )
-def test_runs_without_passes_are_still_counted(verify: ModuleType, counts: str) -> None:
+def test_a_finished_run_without_passes_is_not_reported_as_stopped(
+    verify: ModuleType, counts: str
+) -> None:
     # 通ったものが無い回を「途中で止まった」と書くと、集め損ねた（1 error）のか
     # 本当に止まったのかを CI の要約から見分けられない
     (line,) = verify.summarize(f"=== {counts} ===", "3.12")
