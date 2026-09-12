@@ -206,6 +206,21 @@ PR には必ず含める:
 約束（コメントの書き方・コア層の依存・テストの書き方）は、どの役にも同じものを渡す
 `.coderabbit.yaml` を直したら、`.pr_agent.toml` もそろえる
 
+#### Qodo のレビューはマージの必須条件
+
+Qodo はコメントを書くだけで GitHub のチェックを出さないので、
+`.github/workflows/qodo-gate.yml` が Qodo のコメントを読み、代わりに `Qodo review` という
+status を出す（判定は `tools/qodo_gate.py`） main の保護でこれを必須にしてある
+**PR の先頭のコミットまで Qodo が見るまで、マージできない** 修正を push したら
+`/agentic_review` で頼み直す
+
+Qodo が止まった、無料枠が切れたなどで返事が来ないときは、マージが止まったままになる
+その場合だけ、理由を書いて手で通す（管理者の操作 何を確かめたかを PR に残す）
+
+```
+gh api repos/kagemorikosame/kumiki/statuses/<先頭のコミットの SHA> -f state=success -f context="Qodo review" -f description="手で通した: <理由>"
+```
+
 Gemini Code Assist（GitHub の PR レビュー）は使わない GitHub 向けの無料 consumer version は
 2026-07-17 に提供を終え、GitHub のレビュー機能で残っているのは Google Cloud の有料契約が要る
 enterprise 版だけのため
