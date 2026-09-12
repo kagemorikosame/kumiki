@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from PySide6.QtGui import QColor
 
-from kumiki.core.commands.edit import MAX_TRACK_HEIGHT, MIN_TRACK_HEIGHT
+from kumiki.core.commands.edit import DEFAULT_TRACK_HEIGHT, MAX_TRACK_HEIGHT, MIN_TRACK_HEIGHT
 
 __all__ = ["STYLE_SHEET", "Colors", "Metrics"]
 
@@ -55,7 +55,7 @@ class Metrics:
 
     TRACK_HEADER_WIDTH = 132
     RULER_HEIGHT = 22
-    DEFAULT_TRACK_HEIGHT = 62
+    DEFAULT_TRACK_HEIGHT = DEFAULT_TRACK_HEIGHT
     #: トラックの高さの範囲は、変えるコマンドと同じ値を使う 別々に持つと、
     #: 描画では収まっているのに保存すると高さが変わる、が起きる
     MIN_TRACK_HEIGHT = MIN_TRACK_HEIGHT

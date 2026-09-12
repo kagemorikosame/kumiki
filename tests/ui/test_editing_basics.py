@@ -62,6 +62,7 @@ def _labels(view: TimelineView, position: QPoint) -> dict[str, bool]:
 
 class TestContextMenu:
     def test_a_clip_offers_the_editing_actions(self, view: TimelineView) -> None:
+        # 壊れると、右クリックしても編集の操作が出ず、メニューを探しに行くことになる
         labels = _labels(view, _clip_point(view))
         for expected in ("コピー", "切り取り", "削除", "削除して詰める", "再生ヘッドで分割"):
             assert expected in labels
@@ -72,6 +73,7 @@ class TestContextMenu:
         assert view.selected_clip == view.project.timeline.tracks[0].clips[0].id
 
     def test_paste_is_greyed_out_until_something_is_copied(self, view: TimelineView) -> None:
+        # 押せるのに何も起きない項目は、壊れているように見える
         empty = QPoint(800, _clip_point(view).y())
         assert _labels(view, empty)["貼り付け（再生ヘッドの位置）"] is False
         view.select(view.project.timeline.tracks[0].clips[0].id)
@@ -79,12 +81,14 @@ class TestContextMenu:
         assert _labels(view, empty)["貼り付け（再生ヘッドの位置）"] is True
 
     def test_the_track_toggles_are_there(self, view: TimelineView) -> None:
+        # 壊れると、右クリックからトラックをミュートできない
         labels = _labels(view, _clip_point(view))
         assert {"V1 をミュート", "V1 をソロ", "V1 をロック"} <= labels.keys()
 
 
 class TestCopyPaste:
     def test_paste_goes_to_the_playhead(self, view: TimelineView) -> None:
+        # 壊れると、クリップが再生ヘッドとは違う時刻に置かれる
         received = _received(view)
         view.select(view.project.timeline.tracks[0].clips[0].id)
         view.copy_selected()
@@ -94,6 +98,7 @@ class TestCopyPaste:
         assert [c.clip.timeline_start for c in commands if isinstance(c, AddClip)] == [90]
 
     def test_nothing_copied_says_so(self, view: TimelineView) -> None:
+        # 黙って何も起きないと、貼り付けが壊れているのか区別がつかない
         messages: list[str] = []
         view.status_message.connect(messages.append)
         assert not view.paste_at_playhead()
@@ -120,6 +125,7 @@ class TestTrackHeight:
         assert view._resize_band_at(QPoint(Metrics.TRACK_HEADER_WIDTH + 50, band.bottom)) is None
 
     def test_all_tracks_move_together(self, view: TimelineView) -> None:
+        # 1 本ずつのコマンドになると、まとめて変えたのに取り消しをトラックの数だけ押す
         received = _received(view)
         view.adjust_track_heights(12)
         (commands,) = received
@@ -152,6 +158,7 @@ def window(qt_application: QApplication) -> Iterator[MainWindow]:
 
 class TestWindow:
     def test_ctrl_v_pastes_as_one_undo_step(self, window: MainWindow) -> None:
+        # 壊れると、貼り付けを 1 回の取り消しで戻せない
         timeline = window._timeline
         timeline.select(window.document.project.timeline.tracks[0].clips[0].id)
         timeline.copy_selected()

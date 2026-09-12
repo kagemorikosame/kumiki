@@ -135,6 +135,7 @@ class TestSetResolution:
 
 class TestSetTrackHeights:
     def test_the_height_changes(self, two_tracks: Project) -> None:
+        # 壊れると、境目をドラッグしてもメニューで変えても、高さが画面に残らない
         track = two_tracks.timeline.tracks[0]
         changed = SetTrackHeights(((track.id, 120),)).apply(two_tracks)
         assert changed.timeline.tracks[0].height == 120

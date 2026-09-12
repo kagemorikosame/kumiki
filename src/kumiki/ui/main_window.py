@@ -133,8 +133,12 @@ class MainWindow(QMainWindow):
         self._recovery = RecoverySession()
         #: 開いているプロジェクトの錠 同じファイルを別の窓で開いたことに気付くため
         self._project_lock: HeldLock | None = None
-        if path is not None:
-            self._claim(path)
+        if path is not None and not self._claim(path):
+            # 別の窓で開いていて、開くのをやめると選ばれた 中身だけ見せて保存先を
+            # 持たないと、錠を持たないまま同じファイルへ保存できてしまう 空で始める
+            self._path = None
+            self._document.reset(Project.create())
+            self._saved = self._autosaved = self._document.project
         #: 操作の名前 → （QAction、既定のキー） ショートカットの設定が使う
         self._actions: dict[str, tuple[QAction, str]] = {}
         self._analyzer = MediaAnalyzer(
@@ -830,11 +834,13 @@ class MainWindow(QMainWindow):
         self._path = Path(name)
         saved = self.save_project()
         if not saved:
-            self._path = previous
-            if previous is not None:
-                self._claim(previous)
-            else:
+            # 元の名前へ戻すのは、元の錠を取り直せたときだけ 取れないまま戻すと、
+            # 錠は新しい名前、保存先は元の名前、と食い違う
+            if previous is None:
                 self._release_lock()
+                self._path = None
+            elif self._claim(previous):
+                self._path = previous
         self._update_title()
         return saved
 

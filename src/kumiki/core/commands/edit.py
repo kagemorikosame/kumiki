@@ -190,6 +190,13 @@ class RemoveClip(Command):
         _, clip = located
 
         targets = _linked_group(project, clip)
+        # 消す前に組の全員のトラックを見る 移動とトリムはロックを見ていたのに、
+        # 削除だけ素通しで、ロックしたトラックのクリップも消えていた
+        # 片方だけ消すと映像と音声の組が壊れるので、1 本でもロックなら丸ごと止める
+        for track_id, _ in targets:
+            locked = _require_track(project, track_id)
+            if locked.locked:
+                raise ValueError(f"トラック {locked.name!r} はロックされている")
         timeline = project.timeline
         for track_id, target in targets:
             track = _require_track(project, track_id)

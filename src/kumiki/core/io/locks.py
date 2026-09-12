@@ -21,12 +21,11 @@ __all__ = ["HeldLock", "is_held", "try_hold"]
 class HeldLock:
     """開いたままにしている錠 :meth:`release` を呼ぶか、プロセスが終わるまで効く"""
 
-    def __init__(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
+    def __init__(self, path: Path, handle: IO[str]) -> None:
         self.path = path
-        self._handle: IO[str] | None = path.open("w", encoding="utf-8")
-        self._handle.write(str(os.getpid()))
-        self._handle.flush()
+        self._handle: IO[str] | None = handle
+        handle.write(str(os.getpid()))
+        handle.flush()
 
     def release(self) -> None:
         if self._handle is not None:
@@ -52,12 +51,26 @@ def is_held(path: Path) -> bool:
     try:
         os.kill(int(path.read_text(encoding="utf-8")), 0)
     except (ProcessLookupError, ValueError, OSError):
+        path.unlink(missing_ok=True)
         return False
     return True
 
 
 def try_hold(path: Path) -> HeldLock | None:
-    """空いていれば押さえる 誰かが持っていれば ``None``"""
-    if is_held(path):
-        return None
-    return HeldLock(path)
+    """空いていれば押さえる 誰かが持っていれば ``None``
+
+    排他作成（``"x"``）で 1 回で押さえる 「空いているか見てから作る」の 2 段だと、
+    2 つの窓を同時に開いたときに両方が錠を取れてしまい、知らせる仕組みが働かない
+    既にあった錠の持ち主が終わっていれば、:func:`is_held` が片付けるので 1 度だけ
+    取り直す
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    for _ in range(2):
+        try:
+            handle = path.open("x", encoding="utf-8")
+        except FileExistsError:
+            if is_held(path):
+                return None
+            continue
+        return HeldLock(path, handle)
+    return None

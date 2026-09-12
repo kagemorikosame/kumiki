@@ -50,11 +50,13 @@ class TestCopy:
         assert len(content.clips) == 2
 
     def test_an_unknown_clip_is_ignored(self, linked: Project) -> None:
+        # 消えたクリップを選んだまま Ctrl+C を押しても、例外で止まらないこと
         assert copy_clips(linked, [Clip(timeline_start=0, duration=1).id]).clips == ()
 
 
 class TestPaste:
     def test_it_lands_at_the_playhead(self, linked: Project) -> None:
+        # 壊れると、貼ったクリップが再生ヘッドとは違う時刻に置かれる
         content = copy_clips(linked, [linked.timeline.tracks[0].clips[0].id])
         starts = {
             command.clip.timeline_start for command in added(paste_commands(linked, content, 300))
@@ -72,6 +74,7 @@ class TestPaste:
         assert original.link_group not in groups
 
     def test_two_pastes_are_two_separate_pairs(self, linked: Project) -> None:
+        # 壊れると、2 回貼ったもの同士が同じ組になり、片方を動かすともう片方も動く
         content = copy_clips(linked, [linked.timeline.tracks[0].clips[0].id])
         first = apply(linked, paste_commands(linked, content, 300))
         second = paste_commands(first, content, 600)
@@ -105,6 +108,7 @@ class TestPaste:
             paste_commands(linked.with_media(()), content, 300)
 
     def test_a_generated_clip_needs_no_source(self) -> None:
+        # 壊れると、テロップ（素材を持たないクリップ）だけコピーできない
         base = Project.create()
         text = Clip(timeline_start=0, duration=30, source=GeneratedSource(kind="text"))
         track = Track(TrackKind.VIDEO, "V1")
@@ -114,6 +118,7 @@ class TestPaste:
         assert len(pasted.timeline.tracks[0].clips) == 2
 
     def test_a_paste_is_one_undo_step(self, linked: Project) -> None:
+        # 壊れると、映像と音声を貼っただけで取り消しを何度も押すことになる
         document = Document(linked)
         content = copy_clips(linked, [linked.timeline.tracks[0].clips[0].id])
         with document.checkpoint("貼り付け"):
@@ -121,6 +126,19 @@ class TestPaste:
                 document.execute(command)
         document.undo()
         assert document.project is linked
+
+
+class TestLockedRemoval:
+    def test_a_locked_track_is_not_cut(self, linked: Project) -> None:
+        # 移動とトリムはロックを見ていたのに、削除と切り取りだけ素通しだった
+        # 右クリックに削除を並べたので、ロックしたつもりのクリップが消えやすくなっていた
+        audio_track = linked.timeline.tracks[1]
+        locked = linked.with_timeline(
+            linked.timeline.replace_track(replace(audio_track, locked=True))
+        )
+        content = copy_clips(locked, [locked.timeline.tracks[0].clips[0].id])
+        with pytest.raises(ValueError, match="ロック"):
+            apply(locked, cut_commands(locked, content))
 
 
 class TestCut:

@@ -40,6 +40,23 @@ def test_the_counts_and_the_failed_names_are_kept(verify: ModuleType) -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    "counts",
+    [
+        "3 skipped in 0.10s",
+        "1 error in 0.50s",
+        "no tests ran in 0.01s",
+        "2 deselected in 0.02s",
+        "1 xfailed, 1 xpassed in 0.30s",
+    ],
+)
+def test_runs_without_passes_are_still_counted(verify: ModuleType, counts: str) -> None:
+    # 通ったものが無い回を「途中で止まった」と書くと、集め損ねた（1 error）のか
+    # 本当に止まったのかを CI の要約から見分けられない
+    (line,) = verify.summarize(f"=== {counts} ===", "3.12")
+    assert line == f"### Python 3.12: {counts}"
+
+
 def test_a_run_that_stopped_early_says_so(verify: ModuleType) -> None:
     # 集計の行が無いのに「通った」と読める要約を書くと、止まった CI を見落とす
     (line,) = verify.summarize("ImportError while loading conftest", "3.14")

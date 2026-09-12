@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -82,11 +83,20 @@ def _run_tests(root: Path, arguments: list[str]) -> int:
     return completed.returncode
 
 
+#: pytest の集計の行 通ったものが無くても（飛ばしただけ、集め損ねただけ、1 本も
+#: 無い）集計の行は出る passed と failed だけを探すと、それを「途中で止まった」と
+#: 取り違える
+_COUNTS = re.compile(
+    r"\b\d+ (passed|failed|errors?|skipped|deselected|xfailed|xpassed|warnings?)\b"
+    r"|no tests ran"
+)
+
+
 def summarize(output: str, version: str) -> list[str]:
     """pytest の出力から、要約に書く行を作る 集計の行と、落ちたテストの名前"""
     lines = [line for line in output.splitlines() if line.strip()]
     counts = next(
-        (line for line in reversed(lines) if " passed" in line or " failed" in line),
+        (line for line in reversed(lines) if _COUNTS.search(line)),
         "集計の行が見つからない（pytest が途中で止まった）",
     )
     failed = [f"- {line}" for line in lines if line.startswith(("FAILED", "ERROR"))]
