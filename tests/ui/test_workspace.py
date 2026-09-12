@@ -158,8 +158,6 @@ class TestRestoring:
         lock.abandon()
         crashed._lock = None
 
-        (crashed.path.parent / f"{crashed.session}.lock").write_text("終了済み", "utf-8")
-
         (entry,) = find_orphans()
         assert window.restore_recovery(entry)
 

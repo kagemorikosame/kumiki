@@ -104,6 +104,8 @@ class TestPresence:
         assert not others_holding(folder)
 
     def test_a_crashed_window_is_not_counted(self, tmp_path: Path) -> None:
+        # 落ちた窓の錠を数えると、開き直すたびに「別の窓で開いています」が出る
+        # 本当に 2 つ開いたときの警告まで読み飛ばされるようになる
         folder = tmp_path / "open"
         folder.mkdir()
         (folder / "dead.lock").write_text("", encoding="utf-8")
@@ -118,6 +120,7 @@ class TestProjectPresenceDir:
         assert direct == roundabout
 
     def test_other_files_get_other_places(self, tmp_path: Path) -> None:
+        # 名前だけで分けると、別のフォルダの「本編.kmk」を開いただけで警告が出る
         state = tmp_path / "state"
         assert project_presence_dir(tmp_path / "a" / "本編.kmk", state) != project_presence_dir(
             tmp_path / "b" / "本編.kmk", state

@@ -26,14 +26,14 @@ from kumiki.core.model import Project
 def crash(session: RecoverySession) -> None:
     """落ちたことにする 退避は消さずに錠だけ手放す（プロセスが消えたときと同じ）
 
-    錠には自分のプロセス番号が入っている Windows 以外ではその番号で生死を見るので、
-    番号として読めない値に書き換えないと、このテストのプロセスが生きている扱いになる
+    錠のファイルは残したまま、開いていた手元（Windows では開いたファイル、それ以外では
+    ``flock``）だけを閉じる 生死は中身ではなくこの手元で見るので、錠のファイルが
+    残っていても「持ち主はもういない」と判定される 落ちたあとの状態そのものになる
     """
     lock = session._lock
     assert lock is not None
     lock.abandon()
     session._lock = None
-    (session.path.parent / f"{session.session}.lock").write_text("終了済み", encoding="utf-8")
 
 
 class TestRecovery:

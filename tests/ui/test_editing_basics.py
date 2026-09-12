@@ -178,7 +178,8 @@ class TestWindow:
         try:
             assert others_holding(folder)
             second = MainWindow(_project(), path=path, confirm_unsaved=False)
-            # 尋ねない設定なので開けるが、先の窓がいることは見えている
+            # 尋ねない設定なので開けるが、先の窓がいることは見えている 見えないと、
+            # 2 つの窓が警告なしで同じ作品を開き、あとから保存した方の内容だけが残る
             assert second._project_lock is not None
             assert others_holding(folder, second._project_lock.path)
             second.close()
