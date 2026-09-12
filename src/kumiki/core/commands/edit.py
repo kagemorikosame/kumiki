@@ -37,6 +37,7 @@ __all__ = [
     "RenameProject",
     "RippleCut",
     "SetResolution",
+    "SetTrackHeights",
     "SetTrackState",
     "SetTranscript",
     "SplitClip",
@@ -392,6 +393,38 @@ class SetTrackState(Command):
             locked=track.locked if self.locked is None else self.locked,
         )
         return project.with_timeline(project.timeline.replace_track(updated))
+
+
+#: トラックの高さ（画素） 下はトラック名とボタンが 1 行で収まる高さ、上は
+#: 1 本で画面を占領しない程度 既定は :class:`Track` の既定と同じ
+MIN_TRACK_HEIGHT = 28
+MAX_TRACK_HEIGHT = 240
+DEFAULT_TRACK_HEIGHT = 60
+
+
+@dataclass(frozen=True, slots=True)
+class SetTrackHeights(Command):
+    """トラックの高さを変える 範囲の外は端へ寄せる
+
+    1 本でも全部でも同じコマンドで扱う 全トラックをまとめて変えたときに、
+    トラックの数だけ取り消し段ができると戻すのが大変になる
+    """
+
+    heights: tuple[tuple[TrackId, int], ...]
+
+    @property
+    def label(self) -> str:
+        return "トラックの高さを変更"
+
+    def apply(self, project: Project) -> Project:
+        timeline = project.timeline
+        for track_id, height in self.heights:
+            track = _require_track(project, track_id)
+            clamped = min(max(height, MIN_TRACK_HEIGHT), MAX_TRACK_HEIGHT)
+            if clamped != track.height:
+                timeline = timeline.replace_track(replace(track, height=clamped))
+                project = project.with_timeline(timeline)
+        return project
 
 
 #: 解像度として受け付ける範囲（画素）

@@ -7,27 +7,35 @@
 
 from __future__ import annotations
 
+import functools
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum, auto
 
 from PySide6.QtCore import QPoint, QRect, Qt, Signal
 from PySide6.QtGui import (
+    QAction,
+    QContextMenuEvent,
     QKeyEvent,
     QMouseEvent,
     QPainter,
     QPen,
     QWheelEvent,
 )
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QMenu, QWidget
 
+from kumiki.core.clipboard import ClipboardContent, copy_clips, cut_commands, paste_commands
 from kumiki.core.commands import (
+    AddClip,
     Command,
     MoveClip,
     RemoveClip,
+    SetTrackHeights,
     SetTrackState,
     SplitClip,
     TrimClip,
 )
+from kumiki.core.commands.edit import DEFAULT_TRACK_HEIGHT
 from kumiki.core.model import Clip, ClipId, GroupId, Project, TrackId, TrackKind
 from kumiki.engine.cache import MediaAnalyzer
 from kumiki.ui.theme import Colors, Metrics
@@ -50,6 +58,15 @@ __all__ = ["TimelineView"]
 #: ホイール 1 段で拡大する倍率
 ZOOM_STEP = 1.25
 
+#: ヘッダの上で Ctrl+ホイール 1 段ぶん、全トラックの高さを変える量（画素）
+HEIGHT_STEP = 12
+
+#: トラックの下の境目を掴める幅（上下それぞれ、画素）
+RESIZE_GRAB = 3
+
+#: 右クリックメニューに出すトラックの切り替え
+_TRACK_TOGGLES = (("muted", "ミュート"), ("solo", "ソロ"), ("locked", "ロック"))
+
 
 class DragKind(Enum):
     NONE = auto()
@@ -57,6 +74,7 @@ class DragKind(Enum):
     MOVE_CLIP = auto()
     TRIM_HEAD = auto()
     TRIM_TAIL = auto()
+    RESIZE_TRACK = auto()
 
 
 @dataclass(slots=True)
@@ -78,6 +96,10 @@ class DragState:
     preview_head_delta: int = 0
     preview_tail_delta: int = 0
     moved: bool = False
+    #: 高さを変えているトラックと、掴んだときの縦位置・高さ
+    resize_track: TrackId | None = None
+    grab_y: int = 0
+    origin_height: int = 0
 
 
 class TimelineView(QWidget):
@@ -92,6 +114,8 @@ class TimelineView(QWidget):
     #: 常に一覧で渡す 1 回の操作が複数のコマンドになることがあり（分割など）、
     #: それを 1 回の取り消しで戻せるようにするため
     commands_requested = Signal(list, str)
+    #: ステータスバーへ出す短い知らせ
+    status_message = Signal(str)
 
     def __init__(
         self, project: Project, analyzer: MediaAnalyzer, parent: QWidget | None = None
@@ -104,6 +128,10 @@ class TimelineView(QWidget):
         self._selected: ClipId | None = None
         self._drag = DragState()
         self._follow_playhead = True
+        self._clipboard: ClipboardContent | None = None
+        #: 高さのドラッグ中だけ持つ、掴む前のプロジェクト 途中の高さは描画のため
+        #: だけに当て、離したときにこれへ戻してからコマンドを出す
+        self._resize_base: Project | None = None
 
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -270,6 +298,13 @@ class TimelineView(QWidget):
             return
 
         modifiers = event.modifiers()
+        over_header = event.position().x() < Metrics.TRACK_HEADER_WIDTH
+        if modifiers & Qt.KeyboardModifier.ControlModifier and over_header:
+            # ヘッダの上では全トラックの高さを変える タイムラインの上の Ctrl+ホイールは
+            # 横の拡大なので、どちらを変えたいかをマウスの位置で分ける
+            self.adjust_track_heights(HEIGHT_STEP if delta > 0 else -HEIGHT_STEP)
+            event.accept()
+            return
         if modifiers & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier):
             # マウス位置を基準に拡大する 中央基準だと、拡大するたびに
             # 見ていた場所が画面外へ逃げる
@@ -289,6 +324,17 @@ class TimelineView(QWidget):
         if event.button() != Qt.MouseButton.LeftButton:
             return
         position = event.position().toPoint()
+
+        resizing = self._resize_band_at(position)
+        if resizing is not None:
+            self._resize_base = self._project
+            self._drag = DragState(
+                kind=DragKind.RESIZE_TRACK,
+                resize_track=resizing.track.id,
+                grab_y=position.y(),
+                origin_height=resizing.track.height,
+            )
+            return
 
         if self._toggle_track_button(position):
             return
@@ -332,6 +378,10 @@ class TimelineView(QWidget):
             self._scrub(position)
             return
 
+        if self._drag.kind is DragKind.RESIZE_TRACK:
+            self._preview_height(position.y())
+            return
+
         self._drag.moved = True
         frame = self._layout.frame_at(position.x())
 
@@ -357,6 +407,9 @@ class TimelineView(QWidget):
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt の命名規約
         del event
         drag, self._drag = self._drag, DragState()
+        if drag.kind is DragKind.RESIZE_TRACK:
+            self._finish_resize(drag)
+            return
         if drag.kind in (DragKind.NONE, DragKind.PLAYHEAD) or not drag.moved:
             self.update()
             return
@@ -395,6 +448,73 @@ class TimelineView(QWidget):
         if drag.kind is DragKind.TRIM_TAIL and drag.preview_tail_delta:
             return TrimClip(drag.clip_id, tail_delta=drag.preview_tail_delta)
         return None
+
+    def _preview_height(self, y: int) -> None:
+        """ドラッグ中の高さを描画にだけ当てる 履歴には載せない"""
+        base, track_id = self._resize_base, self._drag.resize_track
+        if base is None or track_id is None:
+            return
+        height = self._drag.origin_height + (y - self._drag.grab_y)
+        self._drag.moved = True
+        self._project = SetTrackHeights(((track_id, height),)).apply(base)
+        self.update()
+
+    def _finish_resize(self, drag: DragState) -> None:
+        base, self._resize_base = self._resize_base, None
+        if base is None or drag.resize_track is None:
+            return
+        preview, self._project = self._project, base
+        track = preview.timeline.find_track(drag.resize_track)
+        if drag.moved and track is not None and track.height != drag.origin_height:
+            command = SetTrackHeights(((drag.resize_track, track.height),))
+            self._request([command], command.label)
+        self.update()
+
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:  # noqa: N802 - Qt の命名規約
+        self.build_context_menu(event.pos()).exec(event.globalPos())
+
+    def build_context_menu(self, position: QPoint) -> QMenu:
+        """右クリックメニュー 表示と中身を分けてあるのはテストのため
+
+        クリップの上ならそのクリップを選び直してから出す 選んでいた別のクリップが
+        対象になると、見ていないものを消すことになる
+        """
+        menu = QMenu(self)
+        hit = self._clip_at(position)
+        if hit is not None:
+            self.select(hit[1].id)
+            _action(menu, "再生ヘッドで分割", self.split_at_playhead)
+            menu.addSeparator()
+            _action(menu, "コピー", self.copy_selected)
+            _action(menu, "切り取り", self.cut_selected)
+        paste = _action(menu, "貼り付け（再生ヘッドの位置）", self.paste_at_playhead)
+        paste.setEnabled(self._clipboard is not None)
+        if hit is not None:
+            menu.addSeparator()
+            _action(menu, "削除", self.delete_selected)
+            _action(menu, "削除して詰める", lambda: self.delete_selected(ripple=True))
+
+        band = (
+            self._layout.band_at(self._project.timeline, position.y())
+            if position.y() >= Metrics.RULER_HEIGHT
+            else None
+        )
+        if band is not None:
+            menu.addSeparator()
+            track = band.track
+            name = track.name or "トラック"
+            for attribute, label in _TRACK_TOGGLES:
+                toggle = _action(
+                    menu, f"{name} を{label}", functools.partial(self._flip, track.id, attribute)
+                )
+                toggle.setCheckable(True)
+                toggle.setChecked(bool(getattr(track, attribute)))
+            _action(menu, f"{name} の高さを戻す", functools.partial(self._reset_height, track.id))
+        return menu
+
+    def _reset_height(self, track_id: TrackId) -> None:
+        command = SetTrackHeights(((track_id, DEFAULT_TRACK_HEIGHT),))
+        self._request([command], command.label)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802 - Qt の命名規約
         key = event.key()
@@ -471,6 +591,65 @@ class TimelineView(QWidget):
             return
         command = RemoveClip(self._selected, ripple=ripple)
         self._request([command], command.label)
+
+    @property
+    def has_clipboard(self) -> bool:
+        return self._clipboard is not None
+
+    def copy_selected(self) -> bool:
+        """選んでいるクリップをコピーする リンクした相手も一緒に入る"""
+        if self._selected is None:
+            return False
+        content = copy_clips(self._project, [self._selected])
+        if not content.clips:
+            return False
+        self._clipboard = content
+        self.status_message.emit(f"{len(content.clips)} 本をコピーした")
+        return True
+
+    def cut_selected(self) -> bool:
+        """コピーしてから消す 隙間は詰めない（詰めたければ「削除して詰める」）"""
+        if not self.copy_selected() or self._clipboard is None:
+            return False
+        self._request(cut_commands(self._project, self._clipboard), "切り取り")
+        return True
+
+    def paste_at_playhead(self) -> bool:
+        """再生ヘッドの位置へ貼り付けて、貼ったクリップを選ぶ"""
+        if self._clipboard is None:
+            self.status_message.emit("コピーしたクリップがありません")
+            return False
+        try:
+            commands = paste_commands(self._project, self._clipboard, self._playhead)
+        except ValueError as exc:
+            self.status_message.emit(str(exc))
+            return False
+        self._request(commands, "貼り付け")
+        # 実行は受け取った側で済んでいる 貼ったものを選んでおくと、そのまま
+        # 動かしたり設定を変えたりできる
+        first = next((c.clip.id for c in commands if isinstance(c, AddClip)), None)
+        if first is not None and self._project.timeline.locate_clip(first) is not None:
+            self.select(first)
+        return True
+
+    def adjust_track_heights(self, delta: int) -> None:
+        """全トラックの高さを ``delta`` 画素ずつ変える"""
+        tracks = self._project.timeline.tracks
+        if tracks:
+            command = SetTrackHeights(tuple((t.id, t.height + delta) for t in tracks))
+            self._request([command], command.label)
+
+    def reset_track_heights(self) -> None:
+        tracks = self._project.timeline.tracks
+        if tracks:
+            command = SetTrackHeights(tuple((t.id, DEFAULT_TRACK_HEIGHT) for t in tracks))
+            self._request([command], command.label)
+
+    def _flip(self, track_id: TrackId, attribute: str) -> None:
+        track = self._project.timeline.find_track(track_id)
+        if track is not None:
+            command = SetTrackState(track_id, **{attribute: not getattr(track, attribute)})
+            self._request([command], command.label)
 
     def _request(self, commands: list[Command], label: str) -> None:
         if commands:
@@ -554,7 +733,23 @@ class TimelineView(QWidget):
             return DragKind.TRIM_TAIL
         return DragKind.MOVE_CLIP
 
+    def _resize_band_at(self, position: QPoint) -> TrackBand | None:
+        """ヘッダの中で、トラックの下の境目の上にいればそのトラック
+
+        ヘッダの中に限る タイムラインの側まで広げると、クリップの下端を掴んだ
+        つもりが高さの変更になる
+        """
+        if position.x() >= Metrics.TRACK_HEADER_WIDTH or position.y() < Metrics.RULER_HEIGHT:
+            return None
+        for band in self._layout.bands(self._project.timeline):
+            if abs(position.y() - band.bottom) <= RESIZE_GRAB:
+                return band
+        return None
+
     def _update_cursor(self, position: QPoint) -> None:
+        if self._resize_band_at(position) is not None:
+            self.setCursor(Qt.CursorShape.SizeVerCursor)
+            return
         hit = self._clip_at(position)
         if hit is None:
             self.setCursor(Qt.CursorShape.ArrowCursor)
@@ -565,3 +760,10 @@ class TimelineView(QWidget):
             if edge in (DragKind.TRIM_HEAD, DragKind.TRIM_TAIL)
             else Qt.CursorShape.OpenHandCursor
         )
+
+
+def _action(menu: QMenu, text: str, slot: Callable[[], object]) -> QAction:
+    """メニューに項目を足す ``triggered`` の引数（押されたかどうか）は捨てる"""
+    action = menu.addAction(text)
+    action.triggered.connect(lambda _checked=False: slot())
+    return action

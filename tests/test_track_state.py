@@ -10,7 +10,7 @@ from dataclasses import replace
 
 import pytest
 
-from kumiki.core.commands import Document, SetResolution, SetTrackState
+from kumiki.core.commands import Document, SetResolution, SetTrackHeights, SetTrackState
 from kumiki.core.io import project_from_dict, project_to_dict
 from kumiki.core.model import Project, Timeline, Track, TrackKind
 from kumiki.core.timebase import FrameRate
@@ -131,3 +131,31 @@ class TestSetResolution:
         # 壊れると、開き直すたびに解像度が 1920x1080 へ戻る
         changed = SetResolution(1080, 1080).apply(Project.create())
         assert project_from_dict(project_to_dict(changed)).settings.resolution == (1080, 1080)
+
+
+class TestSetTrackHeights:
+    def test_the_height_changes(self, two_tracks: Project) -> None:
+        track = two_tracks.timeline.tracks[0]
+        changed = SetTrackHeights(((track.id, 120),)).apply(two_tracks)
+        assert changed.timeline.tracks[0].height == 120
+
+    @pytest.mark.parametrize(("asked", "expected"), [(1, 28), (9999, 240)])
+    def test_it_stays_within_range(self, two_tracks: Project, asked: int, expected: int) -> None:
+        # 0 にすると押せない行が、巨大にすると画面を占領する 1 本ができる
+        track = two_tracks.timeline.tracks[0]
+        changed = SetTrackHeights(((track.id, asked),)).apply(two_tracks)
+        assert changed.timeline.tracks[0].height == expected
+
+    def test_many_tracks_are_one_undo_step(self, two_tracks: Project) -> None:
+        # 全トラックをまとめて変えて、トラックの数だけ取り消すのは手間
+        document = Document(two_tracks)
+        heights = tuple((track.id, 100) for track in two_tracks.timeline.tracks)
+        document.execute(SetTrackHeights(heights))
+        document.undo()
+        assert document.project is two_tracks
+
+    def test_it_survives_saving(self, two_tracks: Project) -> None:
+        # 壊れると、開き直すたびに高さが既定へ戻る
+        track = two_tracks.timeline.tracks[0]
+        changed = SetTrackHeights(((track.id, 150),)).apply(two_tracks)
+        assert project_from_dict(project_to_dict(changed)).timeline.tracks[0].height == 150

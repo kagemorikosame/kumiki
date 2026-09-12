@@ -39,6 +39,7 @@ from kumiki.core.commands import (
     Command,
     Document,
     ParamPath,
+    RemoveMedia,
     SetResolution,
     insert_generated,
     insert_media,
@@ -46,6 +47,7 @@ from kumiki.core.commands import (
 from kumiki.core.io import (
     LEGACY_SUFFIXES,
     SUFFIX,
+    HeldLock,
     ProjectFileError,
     RecoveryEntry,
     RecoverySession,
@@ -54,7 +56,9 @@ from kumiki.core.io import (
     discard,
     find_orphans,
     load_project,
+    project_lock_path,
     save_project,
+    try_hold,
 )
 from kumiki.core.model import (
     ClipId,
@@ -79,6 +83,7 @@ from kumiki.ui.preview import PreviewWidget
 from kumiki.ui.subtitle import SubtitlePanel
 from kumiki.ui.theme import Colors
 from kumiki.ui.timeline import TimelineView
+from kumiki.ui.timeline.view import HEIGHT_STEP
 from kumiki.ui.transport import TransportBar
 from kumiki.ui.workspace import LAYOUT_VERSION, ShortcutStore, Workspace
 
@@ -126,6 +131,10 @@ class MainWindow(QMainWindow):
         self._autosaved: Project | None = self._document.project
         self._confirm_unsaved = confirm_unsaved
         self._recovery = RecoverySession()
+        #: 開いているプロジェクトの錠 同じファイルを別の窓で開いたことに気付くため
+        self._project_lock: HeldLock | None = None
+        if path is not None:
+            self._claim(path)
         #: 操作の名前 → （QAction、既定のキー） ショートカットの設定が使う
         self._actions: dict[str, tuple[QAction, str]] = {}
         self._analyzer = MediaAnalyzer(
@@ -285,6 +294,17 @@ class MainWindow(QMainWindow):
             lambda: self._timeline.delete_selected(ripple=True),
         )
         edit_menu.addSeparator()
+        # 字幕パネルの表の中で文字を編集しているあいだは、Qt が入力欄のほうへ
+        # Ctrl+C を渡す（入力欄が標準のキーを先に取る） 文字のコピーと取り合わない
+        self._add(edit_menu, "コピー", QKeySequence.StandardKey.Copy, self._timeline.copy_selected)
+        self._add(edit_menu, "切り取り", QKeySequence.StandardKey.Cut, self._timeline.cut_selected)
+        self._add(
+            edit_menu,
+            "貼り付け（再生ヘッドの位置）",
+            QKeySequence.StandardKey.Paste,
+            self._timeline.paste_at_playhead,
+        )
+        edit_menu.addSeparator()
         # ヘッダのボタンと同じ切り替えをメニューにも置く キーボードだけで操作する人の
         # 入口で、ショートカットの設定にも載る
         for text, key, attribute in (
@@ -354,6 +374,22 @@ class MainWindow(QMainWindow):
             lambda: self._graph_dock.setVisible(not self._graph_dock.isVisible()),
         )
         view_menu.addSeparator()
+        self._add(
+            view_menu,
+            "トラックを高く",
+            QKeySequence("Ctrl+Shift+Up"),
+            lambda: self._timeline.adjust_track_heights(HEIGHT_STEP),
+        )
+        self._add(
+            view_menu,
+            "トラックを低く",
+            QKeySequence("Ctrl+Shift+Down"),
+            lambda: self._timeline.adjust_track_heights(-HEIGHT_STEP),
+        )
+        self._add(
+            view_menu, "トラックの高さを戻す", QKeySequence(), self._timeline.reset_track_heights
+        )
+        view_menu.addSeparator()
         self._add(view_menu, "画面配置を初期に戻す", QKeySequence(), self.reset_layout)
         self._add(view_menu, "ショートカットの設定…", QKeySequence(), self.customize_shortcuts)
 
@@ -419,6 +455,11 @@ class MainWindow(QMainWindow):
 
         self._media_pool.import_requested.connect(self.import_media)
         self._media_pool.insert_requested.connect(self._insert_media_by_id)
+        self._media_pool.transcribe_requested.connect(self._transcribe_media)
+        self._media_pool.remove_requested.connect(self._remove_media)
+        self._timeline.status_message.connect(
+            lambda message: self.statusBar().showMessage(message, 4000)
+        )
 
         self._timeline.selection_changed.connect(self._on_selection_changed)
         self._inspector.commands_requested.connect(self.execute_all)
@@ -604,6 +645,16 @@ class MainWindow(QMainWindow):
             self._subtitles.select_media(selected)
         self._subtitles.transcribe()
 
+    def _transcribe_media(self, media_id: str) -> None:
+        """メディアプールの右クリックから起こす その素材を字幕パネルで選んでから始める"""
+        self.show_subtitles()
+        self._subtitles.select_media(MediaId(media_id))
+        self._subtitles.transcribe()
+
+    def _remove_media(self, media_id: str) -> None:
+        """プールから外す タイムラインで使っていれば、理由がステータスバーに出て止まる"""
+        self.execute(RemoveMedia(MediaId(media_id)))
+
     def _insert_media_by_id(self, media_id: str) -> None:
         project = self._document.project
         media = project.find_media(MediaId(media_id))
@@ -687,6 +738,7 @@ class MainWindow(QMainWindow):
         self._playback.stop()
         self._document.reset(Project.create(dialog.settings()))
         self._path = None
+        self._release_lock()
         self._mark_saved()
         self._on_project_changed()
         self._seek(0)
@@ -728,6 +780,8 @@ class MainWindow(QMainWindow):
             project = load_project(Path(name))
         except ProjectFileError as exc:
             QMessageBox.warning(self, "開けない", str(exc))
+            return
+        if not self._claim(Path(name)):
             return
 
         self._playback.stop()
@@ -771,12 +825,48 @@ class MainWindow(QMainWindow):
         # 保存できたときだけ新しい名前に切り替える 先に切り替えると、失敗しても
         # タイトル・次の保存先・退避のメモが、書けなかった場所を指したままになる
         previous = self._path
+        if not self._claim(Path(name)):
+            return False
         self._path = Path(name)
         saved = self.save_project()
         if not saved:
             self._path = previous
+            if previous is not None:
+                self._claim(previous)
+            else:
+                self._release_lock()
         self._update_title()
         return saved
+
+    def _claim(self, path: Path) -> bool:
+        """このファイルを開いている窓はここ、と錠で示す 別の窓が開いていれば尋ねる
+
+        止めはしない 読み返すだけのこともあるので、知らせたうえで本人に選ばせる
+        知らせずに開けると、両方で保存したとき後から保存した方が黙って勝つ
+        """
+        target = project_lock_path(path)
+        if self._project_lock is not None and self._project_lock.path == target:
+            return True
+        lock = try_hold(target)
+        if lock is None and self._confirm_unsaved:
+            answer = QMessageBox.warning(
+                self,
+                "別の窓で開いています",
+                f"{path.name} は別の Kumiki の窓で開かれています\n"
+                "両方で保存すると、あとから保存した方の内容だけが残ります",
+                QMessageBox.StandardButton.Open | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if answer != QMessageBox.StandardButton.Open:
+                return False
+        self._release_lock()
+        self._project_lock = lock
+        return True
+
+    def _release_lock(self) -> None:
+        if self._project_lock is not None:
+            self._project_lock.release()
+            self._project_lock = None
 
     def open_backup_folder(self) -> None:
         """控えは %LOCALAPPDATA% の奥にあり、場所を知らないと辿り着けない"""
@@ -851,6 +941,8 @@ class MainWindow(QMainWindow):
         # load_project は「無題」をファイル名で置き換える 退避のファイル名は
         # 意味の無い英数字なので、退避したときの名前へ戻す
         project = project.renamed(entry.name)
+        if entry.source is not None and not self._claim(entry.source):
+            return False
 
         self._playback.stop()
         self._document.reset(project)
@@ -1110,6 +1202,7 @@ class MainWindow(QMainWindow):
         # ここまで来たら変更は保存したか、捨てると決めたもの 退避は要らない
         self._autosave_timer.stop()
         self._recovery.close()
+        self._release_lock()
 
         # 解放の順番が大事 GL 資源はコンテキストが生きているうちに、
         # 再生スレッドはウィジェットが消える前に畳む

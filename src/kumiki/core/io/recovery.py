@@ -25,6 +25,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import IO
 
+from kumiki.core.io.locks import is_held
 from kumiki.core.io.serialize import SUFFIX, save_project
 from kumiki.core.model import Project
 
@@ -37,6 +38,7 @@ __all__ = [
     "default_state_root",
     "discard",
     "find_orphans",
+    "project_lock_path",
 ]
 
 #: 1 つのプロジェクトについて残すバックアップの数
@@ -187,24 +189,23 @@ def discard(entry: RecoveryEntry) -> None:
 
 
 def _is_alive(folder: Path, session: str) -> bool:
-    lock = folder / f"{session}.lock"
-    if not lock.exists():
-        return False
-    if os.name == "nt":
-        try:
-            lock.unlink()
-        except PermissionError:
-            return True
-        except FileNotFoundError:
-            return False
-        return False
-    # Windows 以外では開いていても消せてしまう 番号の使い回しは承知のうえで
-    # プロセスの有無で見る（この製品の対象は Windows で、ここは開発用の逃げ道）
-    try:
-        os.kill(int(lock.read_text(encoding="utf-8")), 0)
-    except (ProcessLookupError, ValueError, OSError):
-        return False
-    return True
+    return is_held(folder / f"{session}.lock")
+
+
+def project_lock_path(target: Path, root: Path | None = None) -> Path:
+    """そのプロジェクトを開いている窓が持つ錠の場所
+
+    プロジェクトの隣には置かない 同期フォルダに置いている人のところで、錠まで
+    同期されて別の機械の窓と取り合いになる
+    """
+    base = (root if root is not None else default_state_root()) / "open"
+    return base / f"{_path_digest(target)}.lock"
+
+
+def _path_digest(target: Path) -> str:
+    """場所の要約 大文字小文字や ``..`` の違いで別物にならないよう正規化してから取る"""
+    resolved = os.path.normcase(str(Path(target).resolve()))
+    return hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:10]
 
 
 def _write_atomic(path: Path, text: str) -> None:
@@ -223,8 +224,7 @@ def backup_folder(target: Path, root: Path | None = None) -> Path:
     （「本編.kmk」はどこにでもある）が 1 つの棚に混ざる 場所の要約を添える
     """
     base = (root if root is not None else default_state_root()) / "backups"
-    resolved = os.path.normcase(str(Path(target).resolve()))
-    digest = hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:10]
+    digest = _path_digest(target)
     stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", Path(target).stem)[:40] or "project"
     return base / f"{stem}-{digest}"
 
