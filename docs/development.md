@@ -192,7 +192,7 @@ PR には必ず含める:
 
 ### AI のレビューを受ける
 
-レビュー役は 5 つ どれも無料枠（Copilot は Pro の月の回数）で動かしているので、
+レビュー役は 4 つ どれも無料枠（Copilot は Pro の月の回数）で動かしているので、
 回数が切れる役が必ず出る **PR を出したら全員に頼み、指摘を突き合わせる** 枠が
 切れた役は飛ばしてよい
 
@@ -200,12 +200,14 @@ PR には必ず含める:
 |---|---|---|
 | [CodeRabbit](https://coderabbit.ai/) | PR で `@coderabbitai review`（公開リポジトリでは自動で走らない） | `.coderabbit.yaml` |
 | GitHub Copilot | `gh pr edit <番号> --add-reviewer @copilot`（自動にはしない 月の回数を守るため） | なし |
-| Gemini Code Assist | PR を出すと自動 追加は `/gemini review` | `.gemini/config.yaml`、`.gemini/styleguide.md` |
 | Sourcery | `@sourcery-ai review` | Web の画面（Review Settings） 言語は日本語、`tests/fixtures/**` を外す |
 | Qodo | `/agentic_review` | `.pr_agent.toml` |
 
 約束（コメントの書き方・コア層の依存・テストの書き方）は、どの役にも同じものを渡す
-`.coderabbit.yaml` を直したら、`.gemini/styleguide.md` と `.pr_agent.toml` もそろえる
+`.coderabbit.yaml` を直したら、`.pr_agent.toml` もそろえる
+
+Gemini Code Assist は使わない 無料の個人向けは 2026-07-17 に提供を終え、残っているのは
+Google Cloud の有料契約が要る版だけのため
 
 - **指摘は読んで判断する** 機械的に全部直すのでも、全部無視するのでもない
 - 直さないときは、その理由を PR のコメントに残す

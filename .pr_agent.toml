@@ -1,5 +1,5 @@
 # Qodo のレビューの設定
-# 開発ルールの大本は docs/development.md 約束の中身は .gemini/styleguide.md と同じ
+# 開発ルールの大本は docs/development.md 約束の中身は .coderabbit.yaml と同じ
 #
 # 使い方: PR で「/agentic_review」と書くと見る
 
