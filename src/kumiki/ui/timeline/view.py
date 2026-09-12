@@ -614,7 +614,11 @@ class TimelineView(QWidget):
         if drag.kind is DragKind.MOVE_CLIP and drag.group:
             delta = drag.preview_start - clip.timeline_start
             movable = self._movable_selection()
-            return MoveClips(movable, delta) if delta and movable else None
+            # 掴んだクリップ自身が動かせない（ロックしている）なら何もしない 動かすと、
+            # 掴んだものはその場に残り、選んだほかのクリップだけが動く
+            if not delta or drag.clip_id not in movable:
+                return None
+            return MoveClips(movable, delta)
 
         if drag.kind is DragKind.MOVE_CLIP:
             unchanged = (

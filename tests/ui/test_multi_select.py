@@ -203,6 +203,20 @@ class TestActingOnMany:
         assert set(command.clip_ids) == {a, b}
         assert c not in command.clip_ids
 
+    def test_grabbing_a_locked_clip_moves_nothing(self, view: TimelineView) -> None:
+        # 動かすと、掴んだクリップはその場に残り、選んだほかのクリップだけが動く
+        project = view.project
+        v2 = project.timeline.tracks[1]
+        view.set_project(
+            project.with_timeline(project.timeline.replace_track(replace(v2, locked=True)))
+        )
+        view.select_all()
+        received = _received(view)
+        QTest.mousePress(view, _LEFT, pos=_point(view, 1, 10))
+        QTest.mouseMove(view, _point(view, 1, 100))
+        QTest.mouseRelease(view, _LEFT, pos=_point(view, 1, 100))
+        assert received == []
+
     def test_a_clip_with_a_locked_partner_stays_out(
         self, view: TimelineView, video_media: MediaItem
     ) -> None:

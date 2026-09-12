@@ -206,8 +206,9 @@ PR には必ず含める:
 約束（コメントの書き方・コア層の依存・テストの書き方）は、どの役にも同じものを渡す
 `.coderabbit.yaml` を直したら、`.pr_agent.toml` もそろえる
 
-Gemini Code Assist は使わない 無料の個人向けは 2026-07-17 に提供を終え、残っているのは
-Google Cloud の有料契約が要る版だけのため
+Gemini Code Assist（GitHub の PR レビュー）は使わない GitHub 向けの無料 consumer version は
+2026-07-17 に提供を終え、GitHub のレビュー機能で残っているのは Google Cloud の有料契約が要る
+enterprise 版だけのため
 
 - **指摘は読んで判断する** 機械的に全部直すのでも、全部無視するのでもない
 - 直さないときは、その理由を PR のコメントに残す
