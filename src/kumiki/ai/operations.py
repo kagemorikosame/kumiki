@@ -201,7 +201,10 @@ def _clip_id_list(host: EditorHost, arguments: dict[str, Any]) -> tuple[ClipId, 
     project = _project(host)
     for clip_id in raw:
         _require_clip(project, str(clip_id))
-    return tuple(dict.fromkeys(ClipId(str(clip_id)) for clip_id in raw))
+    # 最後に現れた位置を残す（画面の set_selection と同じ） 最後の 1 本が主になる
+    # 約束なので、先に現れた位置を残すと [A, B, A] の主が B に化ける
+    ids = [ClipId(str(clip_id)) for clip_id in raw]
+    return tuple(reversed(dict.fromkeys(reversed(ids))))
 
 
 def _clip_ids_schema() -> dict[str, Any]:

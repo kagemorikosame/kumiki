@@ -45,6 +45,15 @@ class TestSelection:
         assert result["clip_ids"] == [str(c) for c in two]
         assert result["clip_id"] == str(two[1])
 
+    def test_the_last_repeat_decides_the_primary(
+        self, host: FakeHost, two: tuple[ClipId, ClipId]
+    ) -> None:
+        # 先に現れた位置を残すと、[A, B, A] の主が B に化け、設定パネルに別の
+        # クリップが出る
+        a, b = (str(c) for c in two)
+        run(host, "select_clips", clip_ids=[a, b, a])
+        assert run(host, "get_selection")["clip_id"] == a
+
     def test_an_unknown_id_is_refused(self, host: FakeHost) -> None:
         with pytest.raises(ToolError, match="list_clips"):
             run(host, "select_clips", clip_ids=["無い"])

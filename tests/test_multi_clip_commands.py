@@ -141,6 +141,15 @@ class TestMerge:
         self._heights(document, 100)
         assert document.history_labels == ("高さ", "高さ")
 
+    def test_an_unchanged_continuation_also_breaks_the_run(self) -> None:
+        # 続きとして頼まれても、何も変わらなければ区切りになる 区切らないと、
+        # その次の変更が、しばらく前の段へまとまる
+        document = Document(_project())
+        self._heights(document, 80)
+        self._heights(document, 80)
+        self._heights(document, 100)
+        assert document.history_labels == ("高さ", "高さ")
+
     def test_nothing_merges_into_a_step_uncovered_by_undo(self) -> None:
         # 取り消したあとの一番上は古い操作 そこへまとめると、関係ない操作と一緒に戻る
         document = Document(_project())

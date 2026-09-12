@@ -387,8 +387,14 @@ class TimelineView(QWidget):
         movable: list[ClipId] = []
         for clip_id in self._selection:
             located = timeline.locate_clip(clip_id)
-            if located is not None and not located[0].locked:
-                movable.append(clip_id)
+            if located is None or located[0].locked:
+                continue
+            # リンクした相手がロックしたトラックにいても外す :class:`MoveClips` は
+            # そういう組を断るので、残すと枠では動いて見えたのに離すと何も動かない
+            link = located[1].link_group
+            if link is not None and any(t.locked for t, _ in timeline.linked_clips(link)):
+                continue
+            movable.append(clip_id)
         return tuple(movable)
 
     def _moving_members(self) -> list[tuple[TrackId, Clip]]:
@@ -866,12 +872,15 @@ class TimelineView(QWidget):
     # --- 補助 ---
 
     def _toggle(self, clip_id: ClipId) -> None:
-        """Ctrl+クリック 選んでいれば外し、いなければ足す"""
+        """Ctrl+クリック 選んでいれば外し、いなければ足す
+
+        起点は :meth:`set_selection` が残った最後の 1 本へ移す 外したクリップを
+        起点にすると、次の Shift+クリックが選んでいないクリップから範囲を取る
+        """
         if clip_id in self._selection:
             self.set_selection(c for c in self._selection if c != clip_id)
         else:
             self.set_selection((*self._selection, clip_id))
-        self._anchor = clip_id
 
     def _select_range(self, anchor: ClipId, target: ClipId) -> None:
         """Shift+クリック 起点と今のクリップを両隅にした範囲をまとめて選ぶ

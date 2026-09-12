@@ -15,8 +15,14 @@ from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from kumiki.core.commands import Command, MoveClips, RemoveClips, SetTrackHeights
-from kumiki.core.model import Clip, ClipId, Project, Track, TrackKind
+from kumiki.core.commands import (
+    Command,
+    MoveClips,
+    RemoveClips,
+    SetTrackHeights,
+    insert_media,
+)
+from kumiki.core.model import Clip, ClipId, MediaItem, Project, Track, TrackKind
 from kumiki.effects.sources import TEXT
 from kumiki.engine.cache import MediaAnalyzer
 from kumiki.ui.main_window import MainWindow
@@ -196,6 +202,36 @@ class TestActingOnMany:
         assert isinstance(command, MoveClips)
         assert set(command.clip_ids) == {a, b}
         assert c not in command.clip_ids
+
+    def test_a_clip_with_a_locked_partner_stays_out(
+        self, view: TimelineView, video_media: MediaItem
+    ) -> None:
+        # 相手がロックした組を残すと、枠では動いて見えたのに、離すと全体が断られる
+        base = view.project.with_media((video_media,))
+        for command in insert_media(base, video_media, at_frame=100):
+            base = command.apply(base)
+        audio = base.timeline.tracks[2]
+        base = base.with_timeline(base.timeline.replace_track(replace(audio, locked=True)))
+        view.set_project(base)
+        a, b, _ = _ids(view)
+        linked = next(
+            c.id
+            for t in base.timeline.tracks
+            if t.kind is TrackKind.VIDEO
+            for c in t.clips
+            if c.link_group is not None
+        )
+        view.set_selection((linked, b, a))
+        assert set(view._movable_selection()) == {a, b}
+
+    def test_removing_with_ctrl_leaves_the_anchor_on_what_remains(self, view: TimelineView) -> None:
+        # 外したクリップが起点に残ると、次の Shift+クリックが選んでいないクリップから
+        # 範囲を取る
+        a, b, c = _ids(view)
+        view.set_selection((a, c))
+        QTest.mouseClick(view, _LEFT, _CTRL, _point(view, 1, 10))
+        QTest.mouseClick(view, _LEFT, _SHIFT, _point(view, 0, 50))
+        assert set(view.selected_clips) == {a, b}
 
     def test_the_anchor_follows_any_selection(self, view: TimelineView) -> None:
         # AI が選んだあとの Shift+クリックが古い起点から範囲を取ると、見ていない
