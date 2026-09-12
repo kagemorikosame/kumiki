@@ -22,7 +22,7 @@ import av.video.frame
 import av.video.stream
 import numpy as np
 
-from kumiki.core.model import Project
+from kumiki.core.model import Project, TrackKind
 from kumiki.engine.audio import AudioMixer
 from kumiki.engine.gpu import OffscreenGLContext
 from kumiki.engine.render import FULL_QUALITY, FrameRenderer
@@ -124,7 +124,7 @@ def _encode(
 ) -> None:
     rate = project.rate
     width, height = project.settings.resolution
-    has_audio = any(track.clips for track in project.timeline.audio_tracks() if not track.muted)
+    has_audio = any(track.clips for track in project.timeline.active_tracks(TrackKind.AUDIO))
 
     try:
         container = av.open(str(settings.path), mode="w")

@@ -170,6 +170,6 @@ for name, ok, detail in results:
 
 print()
 if failed:
-    print(f"{failed} 件が未達です。")
+    print(f"{failed} 件が未達です")
     sys.exit(1)
-print("すべて通過。実装に進めます。")
+print("すべて通過 実装に進めます")

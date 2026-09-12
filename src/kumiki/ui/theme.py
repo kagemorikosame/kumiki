@@ -41,6 +41,12 @@ class Colors:
     CLIP_LABEL = QColor("#e8eefc")
     SELECTION = QColor("#ffffff")
 
+    #: トラックヘッダの切り替えボタン（押している間の色）
+    #: 3 つとも違う色にする 同じ色だと、どれが効いているかを文字で読むことになる
+    TRACK_MUTE = QColor("#c9563f")
+    TRACK_SOLO = QColor("#d8b23a")
+    TRACK_LOCK = QColor("#6c7a91")
+
 
 class Metrics:
     """寸法"""

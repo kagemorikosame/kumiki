@@ -28,7 +28,8 @@ from tests.media_fixtures import SampleMedia, make_sample
 def window(qt_application: QApplication) -> Iterator[MainWindow]:
     del qt_application
     created = MainWindow(
-        Project.create(ProjectSettings(width=320, height=240, frame_rate=FrameRate(30)))
+        Project.create(ProjectSettings(width=320, height=240, frame_rate=FrameRate(30))),
+        confirm_unsaved=False,
     )
     yield created
     created.close()

@@ -7,6 +7,8 @@ UI のどこから来た操作も、必ず :meth:`MainWindow.execute` を通っ�
 
 from __future__ import annotations
 
+import contextlib
+import functools
 from collections.abc import Callable
 from pathlib import Path
 
@@ -37,6 +39,7 @@ from kumiki.core.commands import (
     Command,
     Document,
     ParamPath,
+    SetResolution,
     insert_generated,
     insert_media,
 )
@@ -44,6 +47,12 @@ from kumiki.core.io import (
     LEGACY_SUFFIXES,
     SUFFIX,
     ProjectFileError,
+    RecoveryEntry,
+    RecoverySession,
+    backup_before_save,
+    backup_folder,
+    discard,
+    find_orphans,
     load_project,
     save_project,
 )
@@ -71,6 +80,7 @@ from kumiki.ui.subtitle import SubtitlePanel
 from kumiki.ui.theme import Colors
 from kumiki.ui.timeline import TimelineView
 from kumiki.ui.transport import TransportBar
+from kumiki.ui.workspace import LAYOUT_VERSION, ShortcutStore, Workspace
 
 __all__ = ["MainWindow"]
 
@@ -78,6 +88,13 @@ __all__ = ["MainWindow"]
 #: 解析はワーカースレッドで終わるので、その通知を待って毎回描き直すのではなく、
 #: まとめて一定間隔で描き直す 素材を 100 本入れたときに描画で埋もれないように
 ANALYSIS_REFRESH_MS = 250
+
+#: 保存していない変更を退避する間隔（ミリ秒）
+#: 落ちたときに失うのは最大でこの長さの作業 短くするほど書き込みが増えるが、
+#: 1 回は数百 KB の JSON なので 30 秒なら気にならない
+AUTOSAVE_MS = 30_000
+
+_PORTABLE = QKeySequence.SequenceFormat.PortableText
 
 #: AviUtl のオブジェクトファイル
 EXO_FILTER = "AviUtl オブジェクト (*.exo *.exa *.exo2 *.exa2);;すべてのファイル (*)"
@@ -88,13 +105,29 @@ class MainWindow(QMainWindow):
 
     project_changed = Signal(object)
 
-    def __init__(self, project: Project | None = None) -> None:
+    def __init__(
+        self,
+        project: Project | None = None,
+        *,
+        path: Path | None = None,
+        confirm_unsaved: bool = True,
+    ) -> None:
+        """``confirm_unsaved`` を偽にすると、閉じるときに保存を尋ねない テスト用"""
         super().__init__()
         self.setWindowTitle("Kumiki")
         self.resize(1440, 900)
 
         self._document = Document(project if project is not None else Project.create())
-        self._path: Path | None = None
+        self._path: Path | None = path
+        #: 最後に保存した（または開いた）時点のプロジェクト 同じオブジェクトなら
+        #: 変更なし モデルは frozen なので、取り消して保存した状態へ戻れば
+        #: 「変更なし」に戻る 数を数える方式だとここがずれる
+        self._saved: Project | None = self._document.project
+        self._autosaved: Project | None = self._document.project
+        self._confirm_unsaved = confirm_unsaved
+        self._recovery = RecoverySession()
+        #: 操作の名前 → （QAction、既定のキー） ショートカットの設定が使う
+        self._actions: dict[str, tuple[QAction, str]] = {}
         self._analyzer = MediaAnalyzer(
             sample_rate=self._document.project.settings.sample_rate,
             channels=self._document.project.settings.channels,
@@ -111,6 +144,18 @@ class MainWindow(QMainWindow):
         self._refresh_timer.setInterval(ANALYSIS_REFRESH_MS)
         self._refresh_timer.timeout.connect(self._flush_analysis)
         self._refresh_timer.start()
+
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setInterval(AUTOSAVE_MS)
+        self._autosave_timer.timeout.connect(self.autosave)
+        self._autosave_timer.start()
+
+        # 既定の並びを覚えてから、前回の並びを当てる 逆にすると「初期に戻す」が
+        # 前回の並びに戻るだけになる
+        self._default_layout = self.saveState(LAYOUT_VERSION)
+        self._workspace = Workspace()
+        self._workspace.restore(self)
+        self._apply_shortcuts(ShortcutStore().load())
 
         self._update_title()
 
@@ -138,14 +183,14 @@ class MainWindow(QMainWindow):
         viewer.setStyleSheet(f"background-color: {Colors.VIEWER_BACKGROUND.name()};")
         self.setCentralWidget(viewer)
 
-        pool_dock = QDockWidget("メディア", self)
+        pool_dock = self._dock("メディア", "media")
         pool_dock.setWidget(self._media_pool)
         pool_dock.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
         )
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, pool_dock)
 
-        inspector_dock = QDockWidget("オブジェクト設定", self)
+        inspector_dock = self._dock("オブジェクト設定", "inspector")
         inspector_dock.setWidget(self._inspector)
         inspector_dock.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
@@ -153,7 +198,7 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, inspector_dock)
         self.resizeDocks([inspector_dock], [320], Qt.Orientation.Horizontal)
 
-        graph_dock = QDockWidget("グラフエディタ", self)
+        graph_dock = self._dock("グラフエディタ", "graph")
         graph_dock.setWidget(self._graph)
         graph_dock.setAllowedAreas(
             Qt.DockWidgetArea.RightDockWidgetArea | Qt.DockWidgetArea.BottomDockWidgetArea
@@ -164,7 +209,7 @@ class MainWindow(QMainWindow):
         graph_dock.hide()
         self._graph_dock = graph_dock
 
-        subtitle_dock = QDockWidget("字幕", self)
+        subtitle_dock = self._dock("字幕", "subtitles")
         subtitle_dock.setWidget(self._subtitles)
         subtitle_dock.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
@@ -176,7 +221,7 @@ class MainWindow(QMainWindow):
         pool_dock.raise_()
         self._subtitle_dock = subtitle_dock
 
-        chat_dock = QDockWidget("AI アシスタント", self)
+        chat_dock = self._dock("AI アシスタント", "chat")
         chat_dock.setWidget(self._chat)
         chat_dock.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
@@ -186,7 +231,7 @@ class MainWindow(QMainWindow):
         inspector_dock.raise_()
         self._chat_dock = chat_dock
 
-        timeline_dock = QDockWidget("タイムライン", self)
+        timeline_dock = self._dock("タイムライン", "timeline")
         timeline_dock.setWidget(self._timeline)
         timeline_dock.setAllowedAreas(Qt.DockWidgetArea.BottomDockWidgetArea)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, timeline_dock)
@@ -194,12 +239,27 @@ class MainWindow(QMainWindow):
 
         self.statusBar().showMessage("素材を読み込んでください")
 
+    def _dock(self, title: str, name: str) -> QDockWidget:
+        """パネルを 1 つ作る
+
+        ``objectName`` が無いと、Qt は画面配置を保存も復元もしない（黙って飛ばす）
+        表示名は訳や言い回しで変わりうるので、名前は別に固定の英字で付ける
+        """
+        dock = QDockWidget(title, self)
+        dock.setObjectName(name)
+        return dock
+
     def _build_menus(self) -> None:
         file_menu = self._menu("ファイル")
         self._add(file_menu, "新規", QKeySequence.StandardKey.New, self.new_project)
         self._add(file_menu, "開く…", QKeySequence.StandardKey.Open, self.open_project)
         self._add(file_menu, "保存", QKeySequence.StandardKey.Save, self.save_project)
         self._add(file_menu, "名前を付けて保存…", QKeySequence("Ctrl+Shift+S"), self.save_as)
+        self._add(
+            file_menu, "バックアップのフォルダを開く", QKeySequence(), self.open_backup_folder
+        )
+        file_menu.addSeparator()
+        self._add(file_menu, "プロジェクト設定…", QKeySequence("Ctrl+Shift+P"), self.edit_settings)
         file_menu.addSeparator()
         self._add(file_menu, "素材を読み込む…", QKeySequence("Ctrl+I"), self._import_dialog)
         self._add(file_menu, "書き出し…", QKeySequence("Ctrl+E"), self.export)
@@ -224,6 +284,20 @@ class MainWindow(QMainWindow):
             QKeySequence("Shift+Del"),
             lambda: self._timeline.delete_selected(ripple=True),
         )
+        edit_menu.addSeparator()
+        # ヘッダのボタンと同じ切り替えをメニューにも置く キーボードだけで操作する人の
+        # 入口で、ショートカットの設定にも載る
+        for text, key, attribute in (
+            ("トラックをミュート", "Shift+M", "muted"),
+            ("トラックをソロ", "Shift+S", "solo"),
+            ("トラックをロック", "Shift+L", "locked"),
+        ):
+            self._add(
+                edit_menu,
+                text,
+                QKeySequence(key),
+                functools.partial(self._toggle_track, attribute),
+            )
 
         object_menu = self._menu("オブジェクト")
         self._add(object_menu, "テキストを追加", QKeySequence("Ctrl+T"), self.add_text)
@@ -279,6 +353,9 @@ class MainWindow(QMainWindow):
             QKeySequence("Ctrl+G"),
             lambda: self._graph_dock.setVisible(not self._graph_dock.isVisible()),
         )
+        view_menu.addSeparator()
+        self._add(view_menu, "画面配置を初期に戻す", QKeySequence(), self.reset_layout)
+        self._add(view_menu, "ショートカットの設定…", QKeySequence(), self.customize_shortcuts)
 
         playback_menu = self._menu("再生")
         self._add(playback_menu, "再生 / 停止", QKeySequence("Space"), self._playback.toggle)
@@ -296,7 +373,38 @@ class MainWindow(QMainWindow):
         action.setShortcut(shortcut)
         action.triggered.connect(slot)
         menu.addAction(action)
+        # 名前は作った時点の表示で決める 「元に戻す: 分割」のように表示が
+        # あとから変わる項目があり、そちらで引くと保存した割り当てが外れる
+        self._actions[f"{menu.title()}/{text}"] = (action, action.shortcut().toString(_PORTABLE))
         return action
+
+    def _apply_shortcuts(self, bindings: dict[str, str]) -> None:
+        """割り当てを当てる 知らない名前は飛ばす（版が変わって消えた項目など）"""
+        for name, key in bindings.items():
+            entry = self._actions.get(name)
+            if entry is not None:
+                entry[0].setShortcut(QKeySequence(key, _PORTABLE))
+
+    def customize_shortcuts(self) -> None:
+        from kumiki.ui.shortcut_dialog import ShortcutDialog, ShortcutRow
+
+        rows = [
+            ShortcutRow(name, action.shortcut().toString(_PORTABLE), default)
+            for name, (action, default) in self._actions.items()
+        ]
+        dialog = ShortcutDialog(rows, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        bindings = dialog.bindings()
+        self._apply_shortcuts(bindings)
+        overrides = {name: key for name, key in bindings.items() if key != self._actions[name][1]}
+        try:
+            ShortcutStore().save(overrides)
+        except OSError as exc:
+            self.statusBar().showMessage(f"ショートカットを保存できなかった: {exc}", 5000)
+
+    def reset_layout(self) -> None:
+        self.restoreState(self._default_layout, LAYOUT_VERSION)
 
     def _menu(self, title: str) -> QMenu:
         """メニューを 1 つ作る ``addMenu`` は None を返しうるので、ここで確定させる"""
@@ -398,9 +506,21 @@ class MainWindow(QMainWindow):
         redo_label = self._document.redo_label
         self._redo_action.setText(f"やり直す: {redo_label}" if redo_label else "やり直す")
 
+    @property
+    def is_modified(self) -> bool:
+        """同一性で比べる 中身の等しさで比べると、履歴 1 段ごとにツリー全体を
+        比較することになり、大きなプロジェクトでタイトルの更新が重くなる
+        """
+        return self._document.project is not self._saved
+
+    def _toggle_track(self, attribute: str) -> None:
+        if not self._timeline.toggle_selected_track(attribute):
+            self.statusBar().showMessage("先にクリップを選んでください（そのトラックが対象）", 4000)
+
     def _update_title(self) -> None:
         name = self._path.name if self._path is not None else self._document.project.name
-        self.setWindowTitle(f"{name} — Kumiki")
+        mark = " *" if self.is_modified else ""
+        self.setWindowTitle(f"{name}{mark} — Kumiki")
 
     # --- 素材 ---
 
@@ -556,13 +676,41 @@ class MainWindow(QMainWindow):
     # --- ファイル ---
 
     def new_project(self) -> None:
+        if not self._confirm_discard():
+            return
         self._playback.stop()
         self._document.reset(Project.create(ProjectSettings()))
         self._path = None
+        self._mark_saved()
         self._on_project_changed()
         self._seek(0)
 
+    def _mark_saved(self) -> None:
+        """いまの状態を「保存済み」とする 守るものが無くなるので退避も消す"""
+        self._saved = self._document.project
+        self._autosaved = self._saved
+        self._recovery.clear()
+
+    def _confirm_discard(self) -> bool:
+        """変更を捨ててよいか 保存を選べば保存してから真を返す"""
+        if not self._confirm_unsaved or not self.is_modified:
+            return True
+        answer = QMessageBox.question(
+            self,
+            "保存していない変更",
+            "変更を保存しますか",
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Save,
+        )
+        if answer == QMessageBox.StandardButton.Save:
+            return self.save_project()
+        return answer == QMessageBox.StandardButton.Discard
+
     def open_project(self) -> None:
+        if not self._confirm_discard():
+            return
         # 改名前（NovaEdit）に保存したものも開けるようにしておく
         patterns = " ".join(f"*{s}" for s in (SUFFIX, *LEGACY_SUFFIXES))
         name, _ = QFileDialog.getOpenFileName(
@@ -579,28 +727,139 @@ class MainWindow(QMainWindow):
         self._playback.stop()
         self._document.reset(project)
         self._path = Path(name)
+        self._mark_saved()
         self._on_project_changed()
         self._seek(0)
         for media in project.media:
             self._analyzer.request(media, on_ready=self._on_analysis_ready)
 
-    def save_project(self) -> None:
+    def save_project(self) -> bool:
+        """保存する 保存できたら真 名前がまだ無ければ尋ねる"""
         if self._path is None:
-            self.save_as()
-            return
-        save_project(self._document.project, self._path)
-        self.statusBar().showMessage(f"保存した: {self._path}", 3000)
+            return self.save_as()
+        project = self._document.project
+        note = ""
+        try:
+            backup_before_save(self._path)
+        except OSError as exc:
+            # 控えが取れなくても保存は止めない 止めると、控えのために
+            # いまの作業のほうを失う
+            note = f"（バックアップは作れなかった: {exc}）"
+        try:
+            save_project(project, self._path)
+        except OSError as exc:
+            QMessageBox.warning(self, "保存できない", f"{self._path}\n{exc}")
+            return False
+        self._mark_saved()
+        self._update_title()
+        self.statusBar().showMessage(f"保存した: {self._path}{note}", 5000 if note else 3000)
+        return True
 
-    def save_as(self) -> None:
+    def save_as(self) -> bool:
         suggested = self._path or Path(f"{self._document.project.name}{SUFFIX}")
         name, _ = QFileDialog.getSaveFileName(
             self, "名前を付けて保存", str(suggested), f"Kumiki プロジェクト (*{SUFFIX})"
         )
         if not name:
-            return
+            return False
+        # 保存できたときだけ新しい名前に切り替える 先に切り替えると、失敗しても
+        # タイトル・次の保存先・退避のメモが、書けなかった場所を指したままになる
+        previous = self._path
         self._path = Path(name)
-        self.save_project()
+        saved = self.save_project()
+        if not saved:
+            self._path = previous
         self._update_title()
+        return saved
+
+    def open_backup_folder(self) -> None:
+        """控えは %LOCALAPPDATA% の奥にあり、場所を知らないと辿り着けない"""
+        if self._path is None:
+            self.statusBar().showMessage("まだ保存していないので、バックアップはありません", 5000)
+            return
+        folder = backup_folder(self._path)
+        if not folder.is_dir():
+            self.statusBar().showMessage("バックアップは上書き保存したときに作られます", 5000)
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+
+    def edit_settings(self) -> None:
+        """プロジェクト設定を開く いまは解像度だけ変えられる"""
+        from kumiki.ui.project_settings_dialog import ProjectSettingsDialog
+
+        settings = self._document.project.settings
+        dialog = ProjectSettingsDialog(settings, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        width, height = dialog.resolution()
+        if (width, height) != settings.resolution:
+            self.execute(SetResolution(width, height))
+
+    # --- 退避と復元 ---
+
+    def autosave(self) -> None:
+        """保存していない変更を退避する タイマーから呼ばれる
+
+        前回から変わっていなければ書かない 放置しているあいだ 30 秒ごとに
+        同じ中身を書き直すのは、ディスクを傷めるだけで何も守らない
+        """
+        project = self._document.project
+        if project is self._autosaved:
+            return
+        try:
+            if self.is_modified:
+                self._recovery.save(project, self._path)
+            else:
+                self._recovery.clear()
+        except OSError as exc:
+            self.statusBar().showMessage(f"自動退避に失敗した: {exc}", 5000)
+            return
+        self._autosaved = project
+
+    def offer_recovery(self) -> None:
+        """前回落ちた作業が残っていれば、復元するか尋ねる 起動の直後に呼ぶ"""
+        from kumiki.ui.recovery_dialog import RecoveryDialog
+
+        while entries := find_orphans():
+            dialog = RecoveryDialog(entries, self)
+            if dialog.exec() != QDialog.DialogCode.Accepted or dialog.choice is None:
+                return
+            action, entry = dialog.choice
+            if action == "discard":
+                discard(entry)
+                continue
+            self.restore_recovery(entry)
+            return
+
+    def restore_recovery(self, entry: RecoveryEntry) -> bool:
+        """退避を開く 保存はしないので、開いた直後は「変更あり」になる
+
+        元の退避は、この起動の退避へ書き写してから捨てる 先に捨てると、
+        書き写す前に落ちたときに何も残らない
+        """
+        try:
+            project = load_project(entry.path)
+        except ProjectFileError as exc:
+            QMessageBox.warning(self, "復元できない", str(exc))
+            return False
+        # load_project は「無題」をファイル名で置き換える 退避のファイル名は
+        # 意味の無い英数字なので、退避したときの名前へ戻す
+        project = project.renamed(entry.name)
+
+        self._playback.stop()
+        self._document.reset(project)
+        self._path = entry.source
+        self._saved = None
+        self._on_project_changed()
+        self._seek(0)
+        for media in project.media:
+            self._analyzer.request(media, on_ready=self._on_analysis_ready)
+
+        self.autosave()
+        if self._autosaved is project:
+            discard(entry)
+        self.statusBar().showMessage("前回の作業を復元した まだ保存していません", 6000)
+        return True
 
     def export(self) -> None:
         self._playback.stop()
@@ -836,6 +1095,16 @@ class MainWindow(QMainWindow):
     # --- 終了 ---
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt の命名規約
+        if not self._confirm_discard():
+            event.ignore()
+            return
+        # 並びを保存できなくても終了は止めない 次の起動が既定の並びになるだけ
+        with contextlib.suppress(OSError):
+            self._workspace.save(self)
+        # ここまで来たら変更は保存したか、捨てると決めたもの 退避は要らない
+        self._autosave_timer.stop()
+        self._recovery.close()
+
         # 解放の順番が大事 GL 資源はコンテキストが生きているうちに、
         # 再生スレッドはウィジェットが消える前に畳む
         self._refresh_timer.stop()
