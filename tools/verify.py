@@ -77,9 +77,14 @@ def _run_tests(root: Path, arguments: list[str]) -> int:
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         version = f"{sys.version_info.major}.{sys.version_info.minor}"
-        with Path(summary).open("a", encoding="utf-8") as handle:
-            for line in summarize(completed.stdout, version):
-                handle.write(line + "\n")
+        # 要約は見やすくするためのおまけ 書けなくても検証の結果（終了コード）は
+        # 変えない ここで例外になると、pytest の結果そのものが見えなくなる
+        try:
+            with Path(summary).open("a", encoding="utf-8") as handle:
+                for line in summarize(completed.stdout, version):
+                    handle.write(line + "\n")
+        except OSError as exc:
+            print(f"CI の要約に書けなかった: {exc}", file=sys.stderr)
     return completed.returncode
 
 

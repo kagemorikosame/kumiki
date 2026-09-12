@@ -36,6 +36,16 @@ class HeldLock:
             self._handle = None
         self.path.unlink(missing_ok=True)
 
+    def abandon(self) -> None:
+        """錠のファイルを片付けずに手放す プロセスが落ちたときと同じ状態になる
+
+        落ちたあとに残った錠を正しく扱えるかを確かめるための入口 テストが
+        中身の持ち方（``_handle``）に触らずに済むように置いてある
+        """
+        if self._handle is not None:
+            self._handle.close()
+            self._handle = None
+
 
 def is_held(path: Path) -> bool:
     """誰かが持っているか 持ち主が終わっていれば錠を片付けて偽を返す"""

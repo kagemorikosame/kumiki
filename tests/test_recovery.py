@@ -30,9 +30,8 @@ def crash(session: RecoverySession) -> None:
     番号として読めない値に書き換えないと、このテストのプロセスが生きている扱いになる
     """
     lock = session._lock
-    assert lock is not None and lock._handle is not None
-    lock._handle.close()
-    lock._handle = None
+    assert lock is not None
+    lock.abandon()
     session._lock = None
     (session.path.parent / f"{session.session}.lock").write_text("終了済み", encoding="utf-8")
 

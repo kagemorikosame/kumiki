@@ -154,9 +154,8 @@ class TestRestoring:
         crashed.save(_with_tracks().renamed("落ちた作業"), source)
         # 落ちたことにする 錠は片付けずに手放す（プロセスが消えたときと同じ）
         lock = crashed._lock
-        assert lock is not None and lock._handle is not None
-        lock._handle.close()
-        lock._handle = None
+        assert lock is not None
+        lock.abandon()
         crashed._lock = None
 
         (crashed.path.parent / f"{crashed.session}.lock").write_text("終了済み", "utf-8")
