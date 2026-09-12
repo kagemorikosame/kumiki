@@ -104,7 +104,9 @@ class RecoverySession:
         meta = {
             "source": str(source) if source is not None else None,
             "name": project.name,
-            "saved_at": datetime.now().isoformat(timespec="seconds"),
+            # 秒で丸めると、同じ秒に落ちた 2 つの窓の退避で新旧の順が決まらない
+            # 前の版が書いた秒単位のメモも fromisoformat でそのまま読める
+            "saved_at": datetime.now().isoformat(timespec="microseconds"),
         }
         _write_atomic(self._meta_path(self._folder, self.session), json.dumps(meta))
 

@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import bisect
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from fractions import Fraction
 
 import numpy as np
@@ -273,7 +273,7 @@ def draw_dense_clips(
     clips: Sequence[Clip],
     layout: TimelineLayout,
     width: int,
-    selected: ClipId | None,
+    selected: Collection[ClipId],
 ) -> None:
     """名前も入らない細いクリップを、色の帯としてまとめて塗る
 
@@ -296,7 +296,7 @@ def draw_dense_clips(
     # 組にすると、クリップ 1 本ごとに帯を作り直すことになる
     runs: list[list[int]] = []
     edges: list[int] = []
-    marked: tuple[int, int] | None = None
+    marked: list[tuple[int, int]] = []
     for clip in clips:
         left = max(header, int(header + (clip.timeline_start - scroll) * scale))
         right = max(left + 1, min(width, int(header + (clip.timeline_end - scroll) * scale)))
@@ -307,19 +307,19 @@ def draw_dense_clips(
             runs.append([left, right, enabled])
         if right - left >= _EDGE_MIN_WIDTH:
             edges.append(left)
-        if clip.id == selected:
-            marked = (left, right)
+        if clip.id in selected:
+            marked.append((left, right))
 
     # 塗りを全部済ませてから線を引く 交互にすると、あとの帯が前の線を塗りつぶす
     for left, right, enabled in runs:
         painter.fillRect(left, top, right - left, height, body if enabled else dimmed)
     for left in edges:
         painter.fillRect(left, top, 1, height, border)
-    if marked is not None:
-        left, right = marked
+    if marked:
         painter.setPen(QPen(Colors.SELECTION, 2))
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRect(left, top, max(2, right - left), height - 1)
+        for left, right in marked:
+            painter.drawRect(left, top, max(2, right - left), height - 1)
 
 
 def _draw_clip_label(painter: QPainter, rect: QRect, clip: Clip, media: MediaItem | None) -> None:

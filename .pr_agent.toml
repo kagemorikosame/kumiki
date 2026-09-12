@@ -1,0 +1,18 @@
+# Qodo のレビューの設定
+# 開発ルールの大本は docs/development.md 約束の中身は .gemini/styleguide.md と同じ
+#
+# 使い方: PR で「/agentic_review」と書くと見る
+
+[review_agent]
+issues_user_guidelines = """
+レビューは日本語で書いてください
+- コメントは日本語で「なぜそう書いたか」を説明するもの 何をしているかを言い換えただけのコメントは指摘する
+- TODO / FIXME / XXX をコードに残さない
+- 文章に句点（まる）を使わない方針 機械で検査しているので個別の指摘は不要 「句点が無いので文として不完全」という指摘もしない
+- src/kumiki/core/ は GUI に依存しない ここで PySide6 を import していたら指摘する
+- モデル（Project / Timeline / Clip）の変更は必ず Command 経由 直接書き換えていたら指摘する
+- 座標の Y は上が正
+- 型は mypy strict で通る type: ignore に理由が無ければ指摘する
+- テスト名とコメントに「壊れたときに何が起きるか」が書かれているか見る
+- tests/fixtures/ の中は他人が作った配布物なので見ない
+"""

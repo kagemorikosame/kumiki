@@ -37,7 +37,7 @@ class FakeHost:
     def __init__(self, project: Project) -> None:
         self._document = Document(project)
         self.frame = 0
-        self.selected: ClipId | None = None
+        self.selection: tuple[ClipId, ...] = ()
         self.stopped = 0
         self.rendered: list[tuple[int, int]] = []
         self.analyzed: list[MediaId] = []
@@ -59,10 +59,17 @@ class FakeHost:
 
     @property
     def selected_clip(self) -> ClipId | None:
-        return self.selected
+        return self.selection[-1] if self.selection else None
 
     def select_clip(self, clip_id: ClipId | None) -> None:
-        self.selected = clip_id
+        self.selection = (clip_id,) if clip_id is not None else ()
+
+    @property
+    def selected_clips(self) -> tuple[ClipId, ...]:
+        return self.selection
+
+    def select_clips(self, clip_ids: list[ClipId]) -> None:
+        self.selection = tuple(clip_ids)
 
     def apply_commands(self, commands: list[Command], label: str) -> None:
         if not commands:

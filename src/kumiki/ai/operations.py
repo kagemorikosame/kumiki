@@ -18,20 +18,25 @@ from pathlib import Path
 from typing import Any
 
 from kumiki.ai.host import EditorHost, ToolError
+from kumiki.core.clipboard import copy_clips, paste_commands
 from kumiki.core.commands import (
+    AddClip,
     AddEffect,
     AddTrack,
     Command,
     MoveClip,
+    MoveClips,
     ParamPath,
     ParamTarget,
     RemoveClip,
+    RemoveClips,
     RippleCut,
     SetClipProperty,
     SetKeyframe,
     SetParam,
     SetResolution,
     SetSegmentText,
+    SetTrackHeights,
     SetTrackState,
     SetTranscript,
     SplitClip,
@@ -161,6 +166,34 @@ def _target_clip(host: EditorHost, arguments: dict[str, Any]) -> tuple[Track, Cl
     return _require_clip(_project(host), clip_id)
 
 
+def _target_clips(host: EditorHost, arguments: dict[str, Any]) -> tuple[ClipId, ...]:
+    """引数の ``clip_ids``、無ければ選んでいるクリップすべて
+
+    画面で何本か選んでから「これをまとめて 2 秒後ろへ」と頼めるようにする
+    見つからない ID が 1 つでもあれば止める 一部だけ動かすと、どれが動いたのかを
+    AI も人も追えなくなる
+    """
+    raw = arguments.get("clip_ids") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    if not raw:
+        if not host.selected_clips:
+            raise ToolError("clip_ids を指定してください（選択中のクリップもありません）")
+        return host.selected_clips
+    project = _project(host)
+    for clip_id in raw:
+        _require_clip(project, str(clip_id))
+    return tuple(ClipId(str(clip_id)) for clip_id in raw)
+
+
+def _clip_ids_schema() -> dict[str, Any]:
+    return {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "対象のクリップ 省略すると選択中のクリップすべて",
+    }
+
+
 # --- 読み取り ---
 
 
@@ -208,6 +241,7 @@ def _list_tracks(host: EditorHost, arguments: dict[str, Any]) -> object:
             "kind": track.kind.value,
             "name": track.name,
             "clip_count": len(track.clips),
+            "height": track.height,
             "locked": track.locked,
             "muted": track.muted,
             "solo": track.solo,
@@ -252,6 +286,7 @@ def _get_selection(host: EditorHost, arguments: dict[str, Any]) -> object:
     selected = host.selected_clip
     return {
         "clip_id": str(selected) if selected is not None else None,
+        "clip_ids": [str(clip_id) for clip_id in host.selected_clips],
         "playhead": host.playhead,
         "playhead_timecode": format_timecode(host.playhead, project.rate),
     }
@@ -490,6 +525,64 @@ def _delete_clip(host: EditorHost, arguments: dict[str, Any]) -> object:
     ripple = bool(arguments.get("ripple", False))
     host.apply_commands([RemoveClip(clip.id, ripple=ripple)], "クリップを削除")
     return {"deleted": str(clip.id), "ripple": ripple}
+
+
+def _move_clips(host: EditorHost, arguments: dict[str, Any]) -> object:
+    clip_ids = _target_clips(host, arguments)
+    delta = int(arguments.get("delta", 0))
+    if delta == 0:
+        raise ToolError("delta に動かすフレーム数を指定してください（負で前へ）")
+    command = MoveClips(clip_ids, delta)
+    host.apply_commands([command], command.label)
+    return {"moved": [str(clip_id) for clip_id in clip_ids], "delta": delta}
+
+
+def _delete_clips(host: EditorHost, arguments: dict[str, Any]) -> object:
+    clip_ids = _target_clips(host, arguments)
+    ripple = bool(arguments.get("ripple", False))
+    command = RemoveClips(clip_ids, ripple=ripple)
+    host.apply_commands([command], command.label)
+    return {"deleted": [str(clip_id) for clip_id in clip_ids], "ripple": ripple}
+
+
+def _duplicate_clips(host: EditorHost, arguments: dict[str, Any]) -> object:
+    """コピーして貼り付ける 画面のコピー・貼り付けと同じ決まりで置く
+
+    AI には「クリップボードに入れておく」段を見せない 2 回に分けると、間に人が
+    別のものをコピーしたとき、AI の知らない中身が貼られる
+    """
+    clip_ids = _target_clips(host, arguments)
+    project = _project(host)
+    content = copy_clips(project, clip_ids)
+    at_frame = int(arguments.get("at_frame", host.playhead))
+    try:
+        commands = paste_commands(project, content, at_frame)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
+    host.apply_commands(commands, f"複製: {len(content.clips)} 本")
+    pasted = [c.clip.id for c in commands if isinstance(c, AddClip)]
+    host.select_clips(pasted)
+    return {"pasted": [str(clip_id) for clip_id in pasted], "at_frame": max(0, at_frame)}
+
+
+def _set_track_height(host: EditorHost, arguments: dict[str, Any]) -> object:
+    tracks = _project(host).timeline.tracks
+    track_id = str(arguments.get("track_id") or "")
+    if track_id:
+        chosen = [t for t in tracks if str(t.id) == track_id]
+        if not chosen:
+            raise ToolError(
+                f"トラックが見つかりません: {track_id}（list_tracks で確かめてください）"
+            )
+    else:
+        chosen = list(tracks)
+    height = int(arguments.get("height", 0))
+    command = SetTrackHeights(tuple((t.id, height) for t in chosen))
+    host.apply_commands([command], command.label)
+    # 範囲の外は端へ寄せられる 実際になった高さを返さないと、AI は頼んだ値に
+    # なったと思い込む
+    after = {t.id: t.height for t in _project(host).timeline.tracks}
+    return {"heights": {str(t.id): after.get(t.id) for t in chosen}}
 
 
 def _set_clip_property(host: EditorHost, arguments: dict[str, Any]) -> object:
@@ -748,6 +841,17 @@ def _seek(host: EditorHost, arguments: dict[str, Any]) -> object:
     return {"playhead": frame}
 
 
+def _select_clips(host: EditorHost, arguments: dict[str, Any]) -> object:
+    raw = arguments.get("clip_ids") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    project = _project(host)
+    for clip_id in raw:
+        _require_clip(project, str(clip_id))
+    host.select_clips([ClipId(str(clip_id)) for clip_id in raw])
+    return {"selected": [str(clip_id) for clip_id in host.selected_clips]}
+
+
 def _select(host: EditorHost, arguments: dict[str, Any]) -> object:
     clip_id = str(arguments.get("clip_id") or "")
     if clip_id:
@@ -832,6 +936,14 @@ OPERATIONS: tuple[Operation, ...] = (
         description="クリップを選択する clip_id を空にすると選択を解く",
         schema=_schema({"clip_id": _string("選ぶクリップ")}),
         handler=_select,
+    ),
+    Operation(
+        name="select_clips",
+        description="何本かのクリップをまとめて選ぶ 空にすると選択を解く 最後の 1 本が主になる",
+        schema=_schema(
+            {"clip_ids": {"type": "array", "items": {"type": "string"}, "description": "選ぶ"}}
+        ),
+        handler=_select_clips,
     ),
     Operation(
         name="import_media",
@@ -959,6 +1071,55 @@ OPERATIONS: tuple[Operation, ...] = (
         description="クリップを消す ripple を真にすると後ろを詰める",
         schema=_schema({"clip_id": _string("対象"), "ripple": _boolean("詰めるか")}),
         handler=_delete_clip,
+        writes=True,
+    ),
+    Operation(
+        name="move_clips",
+        description=(
+            "何本かのクリップをまとめて前後へずらす トラックは変えない"
+            "リンクした映像と音声も一緒に動く 1 本でも動かせなければ何も動かない"
+        ),
+        schema=_schema(
+            {"clip_ids": _clip_ids_schema(), "delta": _integer("ずらすフレーム数 負で前へ")},
+            ["delta"],
+        ),
+        handler=_move_clips,
+        writes=True,
+    ),
+    Operation(
+        name="delete_clips",
+        description="何本かのクリップをまとめて消す ripple を真にすると消したぶんを詰める",
+        schema=_schema({"clip_ids": _clip_ids_schema(), "ripple": _boolean("詰めるか")}),
+        handler=_delete_clips,
+        writes=True,
+    ),
+    Operation(
+        name="duplicate_clips",
+        description=(
+            "クリップをコピーして貼り付ける（画面のコピー・貼り付けと同じ） 並びの間隔は保つ"
+            "元のトラックが塞がっていれば同じ種類の別のトラック、無ければ新しく作る"
+            "貼ったクリップが選ばれた状態になる"
+        ),
+        schema=_schema(
+            {
+                "clip_ids": _clip_ids_schema(),
+                "at_frame": _integer("貼る先頭の位置 省略すると再生ヘッド"),
+            }
+        ),
+        handler=_duplicate_clips,
+        writes=True,
+    ),
+    Operation(
+        name="set_track_height",
+        description=(
+            "タイムラインでのトラックの高さ（画素）を変える 28〜240 の外は端へ寄せる"
+            "track_id を省くと全トラック 既定は 60"
+        ),
+        schema=_schema(
+            {"track_id": _string("対象のトラック"), "height": _integer("高さ（画素）")},
+            ["height"],
+        ),
+        handler=_set_track_height,
         writes=True,
     ),
     Operation(

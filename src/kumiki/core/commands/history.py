@@ -46,6 +46,11 @@ class Document:
         self._checkpoint_depth = 0
         self._checkpoint_label = ""
         self._checkpoint_before: Project | None = None
+        self._checkpoint_merge = False
+        #: 最後に積んだ段 続けて行う操作（ホイールで高さを変えるなど）は、この段が
+        #: まだ一番上に残っているときだけ同じ段へまとめる 取り消したあとの段へ
+        #: まとめると、関係の無い古い操作と一緒に戻ってしまう
+        self._merge_anchor: HistoryEntry | None = None
 
     @property
     def project(self) -> Project:
@@ -79,28 +84,44 @@ class Document:
         return updated
 
     @contextmanager
-    def checkpoint(self, label: str) -> Iterator[None]:
+    def checkpoint(self, label: str, *, merge: bool = False) -> Iterator[None]:
         """複数のコマンドを 1 回の Undo でまとめて戻せるようにする
 
         AI エージェントが 1 つの指示で何十回も編集を行うため、これがないと
         取り消しに同じ回数の操作が必要になる 入れ子にした場合は一番外側だけが
         履歴に載る
+
+        途中のコマンドが失敗したら、この ``with`` に入る前の状態へ戻す 複数の
+        クリップをまとめて動かして 3 本目で失敗したとき、2 本だけ動いた中途半端な
+        状態が 1 段として残ると、何が起きたのか分からなくなる
+
+        ``merge`` については :meth:`begin_checkpoint` を参照
         """
-        self.begin_checkpoint(label)
+        start = self._project
+        self.begin_checkpoint(label, merge=merge)
         try:
             yield
+        except BaseException:
+            if self._project is not start:
+                self._set_project(start)
+            raise
         finally:
             self.end_checkpoint()
 
-    def begin_checkpoint(self, label: str) -> None:
+    def begin_checkpoint(self, label: str, *, merge: bool = False) -> None:
         """チェックポイントを開く :meth:`end_checkpoint` と必ず対にする
 
         ``with`` で囲めない場合のための入口 AI エージェントの 1 往復は、開始と
         終了が別のスレッドから・別の時点で来るので、文の構造には収まらない
+
+        ``merge`` が真で、直前に積んだ同じ名前の段がまだ一番上にあれば、新しい段を
+        積まずにそこへまとめる ホイールを回し続けたぶんが 1 段ずつ積まれると、
+        戻すのに同じ回数だけ取り消すことになる
         """
         if self._checkpoint_depth == 0:
             self._checkpoint_label = label
             self._checkpoint_before = self._project
+            self._checkpoint_merge = merge
         self._checkpoint_depth += 1
 
     def end_checkpoint(self) -> None:
@@ -115,9 +136,18 @@ class Document:
         self._checkpoint_before = None
         # 何も変わらなかったチェックポイントは履歴に残さない
         # 「取り消しても何も起きない」段が挟まると操作感が悪い
-        if before is not None and before is not self._project:
+        if before is None or before is self._project:
+            return
+        top = self._undo[-1] if self._undo else None
+        continued = (
+            self._checkpoint_merge
+            and top is not None
+            and top is self._merge_anchor
+            and top.label == self._checkpoint_label
+        )
+        if not continued:
             self._push_undo(HistoryEntry(self._checkpoint_label, before))
-            self._redo.clear()
+        self._redo.clear()
 
     @property
     def in_checkpoint(self) -> bool:
@@ -145,6 +175,7 @@ class Document:
             return self._project
         entry = self._undo.pop()
         self._redo.append(HistoryEntry(entry.label, self._project))
+        self._merge_anchor = None
         self._set_project(entry.before)
         return self._project
 
@@ -154,6 +185,7 @@ class Document:
             return self._project
         entry = self._redo.pop()
         self._undo.append(HistoryEntry(entry.label, self._project))
+        self._merge_anchor = None
         self._set_project(entry.before)
         return self._project
 
@@ -168,10 +200,12 @@ class Document:
             raise RuntimeError("チェックポイントの途中でプロジェクトを差し替えられない")
         self._undo.clear()
         self._redo.clear()
+        self._merge_anchor = None
         self._set_project(project)
 
     def _push_undo(self, entry: HistoryEntry) -> None:
         self._undo.append(entry)
+        self._merge_anchor = entry
         if len(self._undo) > self._history_limit:
             del self._undo[: len(self._undo) - self._history_limit]
 

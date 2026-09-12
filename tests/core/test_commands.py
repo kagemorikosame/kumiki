@@ -408,11 +408,22 @@ class TestDocument:
             document.execute(RenameProject("途中"))
             document.execute(AddMedia(video_media))
 
-        # 成功した分は残り、まとめて 1 回で取り消せる
-        assert document.project.name == "途中"
-        assert document.history_labels == ("途中で失敗",)
-        document.undo()
-        assert document.project.name == project.name
+        # 途中まで成功した分も戻る 何本かをまとめて動かして 1 本だけ失敗したとき、
+        # 残りだけ動いた状態が 1 段として残ると、何が起きたのか分からない
+        assert document.project is project
+        assert not document.can_undo
+
+    def test_a_failing_inner_checkpoint_keeps_the_outer_work(self, project: Project) -> None:
+        # AI の 1 往復は外側のチェックポイント その中の 1 つのツールが失敗しても、
+        # それまでのツールの結果まで消すと、AI が報告した内容と画面が食い違う
+        document = Document(project)
+        with document.checkpoint("AI"):
+            document.execute(RenameProject("一つ目"))
+            with pytest.raises(KeyError), document.checkpoint("二つ目"):
+                document.execute(RenameProject("二つ目"))
+                raise KeyError("失敗")
+        assert document.project.name == "一つ目"
+        assert document.history_labels == ("AI",)
 
     def test_subscribe_and_unsubscribe(self, project: Project) -> None:
         document = Document(project)

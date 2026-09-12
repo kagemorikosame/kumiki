@@ -190,14 +190,27 @@ PR には必ず含める:
 - 途中で見つけた不具合と、その直し方
 - 実物で確かめた場合はその結果（「配布物 36 本すべて通した」など）
 
-### CodeRabbit のレビューを受ける
+### AI のレビューを受ける
 
-PR を出すと [CodeRabbit](https://coderabbit.ai/) が自動でレビューする
-設定は `.coderabbit.yaml`
+レビュー役は 5 つ どれも無料枠（Copilot は Pro の月の回数）で動かしているので、
+回数が切れる役が必ず出る **PR を出したら全員に頼み、指摘を突き合わせる** 枠が
+切れた役は飛ばしてよい
+
+| レビュー役 | 頼み方 | 設定 |
+|---|---|---|
+| [CodeRabbit](https://coderabbit.ai/) | PR で `@coderabbitai review`（公開リポジトリでは自動で走らない） | `.coderabbit.yaml` |
+| GitHub Copilot | `gh pr edit <番号> --add-reviewer @copilot`（自動にはしない 月の回数を守るため） | なし |
+| Gemini Code Assist | PR を出すと自動 追加は `/gemini review` | `.gemini/config.yaml`、`.gemini/styleguide.md` |
+| Sourcery | `@sourcery-ai review` | Web の画面（Review Settings） 言語は日本語、`tests/fixtures/**` を外す |
+| Qodo | `/agentic_review` | `.pr_agent.toml` |
+
+約束（コメントの書き方・コア層の依存・テストの書き方）は、どの役にも同じものを渡す
+`.coderabbit.yaml` を直したら、`.gemini/styleguide.md` と `.pr_agent.toml` もそろえる
 
 - **指摘は読んで判断する** 機械的に全部直すのでも、全部無視するのでもない
 - 直さないときは、その理由を PR のコメントに残す
-- 追加で見てほしいときは PR で `@coderabbitai review` と書く
+- **同じ指摘が何役からも来る** 直すのは 1 回で、どのスレッドにも同じコミットを示して返す
+- 役どうしで言うことが食い違ったら、どちらを採ったかと理由を PR に残す
 
 ### コミットメッセージ
 

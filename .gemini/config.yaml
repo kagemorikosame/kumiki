@@ -1,0 +1,29 @@
+# Gemini Code Assist の設定 レビューの約束は styleguide.md に書く
+# 開発ルールの大本は docs/development.md
+#
+# 使い方:
+#   - PR を出すと自動で見る
+#   - 追加で見てほしいとき → PR で「/gemini review」
+
+# 冗談や詩は要らない 指摘が埋もれる
+have_fun: false
+
+code_review:
+  disable: false
+  # 細かい好みの指摘まで出ると、ほかのレビュー役（CodeRabbit ほか 4 つ）と
+  # 重なって本題が埋もれる 中くらい以上に絞る
+  comment_severity_threshold: MEDIUM
+  max_review_comments: -1
+  pull_request_opened:
+    help: false
+    # 要約は CodeRabbit が書くので重ねない
+    summary: false
+    code_review: true
+    include_drafts: false
+
+# 他人が作った配布物 こちらの書き方の基準では見ない
+ignore_patterns:
+  - "tests/fixtures/**"
+  - "**/*.png"
+  - "**/*.ico"
+  - "**/*.svg"
