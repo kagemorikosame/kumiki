@@ -9,9 +9,14 @@ Qodo は PR にコメントを書くだけで、GitHub のチェック（check r
 済んだとみなすのは次のどちらか
 
 - Qodo のコメントに、PR の先頭のコミットの SHA が書かれている（Qodo は再レビューの
-  たびに「updated up to the latest commit <URL>」というコメントを書く）
-- 「Code Review by Qodo」のコメントが、先頭のコミットより後に書かれている（最初の
-  レビューには SHA が書かれない）
+  たびに「updated up to the latest commit <URL>」というコメントを書き、指摘の根拠にも
+  見たコミットの SHA 入りのリンクを貼る）
+- 「Code Review by Qodo」のコメントが、先頭のコミットが GitHub に届いたあとに
+  作られている（最初のレビューで指摘が無いと、SHA がどこにも書かれないことがある）
+
+届いた時刻は、GitHub がそのコミットに check suite を作った時刻で見る コミットに
+書かれた日時（committer date）は、手元で好きに作れる値なので使わない 使うと、
+古い日時のコミットを後から push したとき、前のレビューで通ってしまう
 
 Qodo が止まったり無料枠が切れたりしたときの逃げ道は docs/development.md に書く
 """
@@ -29,8 +34,10 @@ from typing import Any
 
 CONTEXT = "Qodo review"
 
-#: Qodo のボットの名前 GitHub App のボットは ``<slug>[bot]`` になる
-QODO_LOGIN_PREFIX = "qodo-code-review"
+#: Qodo のボットの名前 完全に一致するものだけを見る 前方一致にすると、
+#: ``qodo-code-review-x`` のような一般のアカウントが SHA を書くだけで通せてしまう
+#: ``[bot]`` の付く名前は GitHub App にしか付かないので、人には名乗れない
+QODO_LOGIN = "qodo-code-review[bot]"
 
 #: 最初のレビューの見出し 再レビューではこのコメント自体が書き換わる
 REVIEW_TITLE = "Code Review by Qodo"
@@ -43,20 +50,34 @@ class Comment:
     created_at: datetime
 
 
-def is_reviewed(head_sha: str, head_time: datetime, comments: list[Comment]) -> bool:
+def is_reviewed(head_sha: str, pushed_at: datetime | None, comments: list[Comment]) -> bool:
     """Qodo が ``head_sha`` まで見たか
+
+    ``pushed_at`` は先頭のコミットが GitHub に届いた時刻 分からなければ ``None`` で、
+    そのときは SHA が書かれているかだけで決める
 
     書き換えの時刻（updated_at）は見ない Qodo は指摘を「解決済み」にするときにも
     同じコメントを書き換えるので、古いコミットのレビューのまま新しく見える
     """
     for comment in comments:
-        if not comment.login.startswith(QODO_LOGIN_PREFIX):
+        if comment.login != QODO_LOGIN:
             continue
         if head_sha in comment.body:
             return True
-        if REVIEW_TITLE in comment.body and comment.created_at >= head_time:
+        first_review = REVIEW_TITLE in comment.body
+        if first_review and pushed_at is not None and comment.created_at >= pushed_at:
             return True
     return False
+
+
+def _pushed_at(repo: str, sha: str, token: str) -> datetime | None:
+    """GitHub がそのコミットを受け取った時刻 check suite が作られた時刻で見る
+
+    check suite は push を受けた GitHub が作るので、手元では作れない
+    """
+    suites = _api(f"repos/{repo}/commits/{sha}/check-suites", token).get("check_suites", [])
+    times = [_parse_time(suite["created_at"]) for suite in suites]
+    return min(times) if times else None
 
 
 def _parse_time(text: str) -> datetime:
@@ -99,8 +120,7 @@ def main() -> int:
 
     pull = _api(f"repos/{repo}/pulls/{number}", token)
     head_sha = pull["head"]["sha"]
-    commit = _api(f"repos/{repo}/commits/{head_sha}", token)
-    head_time = _parse_time(commit["commit"]["committer"]["date"])
+    pushed_at = _pushed_at(repo, head_sha, token)
 
     comments: list[Comment] = []
     page = 1
@@ -114,7 +134,7 @@ def main() -> int:
             break
         page += 1
 
-    reviewed = is_reviewed(head_sha, head_time, comments)
+    reviewed = is_reviewed(head_sha, pushed_at, comments)
     _api(
         f"repos/{repo}/statuses/{head_sha}",
         token,

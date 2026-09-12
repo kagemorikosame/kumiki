@@ -19,6 +19,7 @@ HEAD = "7162367c3b0e4b1f9f2a6c1d0e9b8a7f6e5d4c3b"
 PUSHED = datetime(2026, 9, 12, 17, 0, tzinfo=UTC)
 BEFORE = datetime(2026, 9, 12, 16, 0, tzinfo=UTC)
 AFTER = datetime(2026, 9, 12, 17, 5, tzinfo=UTC)
+QODO = "qodo-code-review[bot]"
 
 
 @pytest.fixture(scope="module")
@@ -32,7 +33,7 @@ def gate() -> ModuleType:
 
 
 def _qodo(gate: ModuleType, body: str, when: datetime) -> object:
-    return gate.Comment("qodo-code-review[bot]", body, when)
+    return gate.Comment(QODO, body, when)
 
 
 def test_an_update_naming_the_head_counts(gate: ModuleType) -> None:
@@ -43,8 +44,19 @@ def test_an_update_naming_the_head_counts(gate: ModuleType) -> None:
 
 
 def test_the_first_review_after_the_push_counts(gate: ModuleType) -> None:
-    # 最初のレビューには SHA が書かれない 時刻で見ないと、1 回目は必ず止まる
+    # 指摘の無い最初のレビューには SHA が書かれない 時刻で見ないと、1 回目は必ず止まる
     assert gate.is_reviewed(HEAD, PUSHED, [_qodo(gate, "Code Review by Qodo\n...", AFTER)])
+
+
+def test_a_review_before_the_push_does_not_count(gate: ModuleType) -> None:
+    # 古い日時のコミットを後から push したとき、前のレビューで通ると、Qodo が
+    # 見ていない修正がマージされる 比べるのは GitHub が受け取った時刻
+    assert not gate.is_reviewed(HEAD, PUSHED, [_qodo(gate, "Code Review by Qodo", BEFORE)])
+
+
+def test_without_a_push_time_only_the_sha_decides(gate: ModuleType) -> None:
+    # 受け取った時刻が引けないときに時刻で通すと、何と比べたのか分からないまま通る
+    assert not gate.is_reviewed(HEAD, None, [_qodo(gate, "Code Review by Qodo", AFTER)])
 
 
 def test_a_review_of_an_older_commit_does_not_count(gate: ModuleType) -> None:
@@ -53,10 +65,11 @@ def test_a_review_of_an_older_commit_does_not_count(gate: ModuleType) -> None:
     assert not gate.is_reviewed(HEAD, PUSHED, [_qodo(gate, old, BEFORE)])
 
 
-def test_someone_else_quoting_the_sha_does_not_count(gate: ModuleType) -> None:
-    # 人やほかの AI が SHA を書いただけで通ると、Qodo が黙っていてもマージできる
-    person = gate.Comment("kagemorikosame", f"{HEAD} で直しました", AFTER)
-    assert not gate.is_reviewed(HEAD, PUSHED, [person])
+@pytest.mark.parametrize("login", ["kagemorikosame", "qodo-code-review-x", "qodo-code-review"])
+def test_only_the_real_bot_counts(gate: ModuleType, login: str) -> None:
+    # 似た名前の一般アカウントが SHA を書くだけで通ると、Qodo が黙っていてもマージできる
+    impostor = gate.Comment(login, f"{HEAD} まで見ました", AFTER)
+    assert not gate.is_reviewed(HEAD, PUSHED, [impostor])
 
 
 def test_other_qodo_comments_after_the_push_do_not_count(gate: ModuleType) -> None:

@@ -19,6 +19,8 @@ permissions:
   statuses: write
   pull-requests: read
   contents: read
+  # 先頭のコミットを GitHub が受け取った時刻を、check suite の作られた時刻で見る
+  checks: read
 
 concurrency:
   group: qodo-gate-${{ github.event.pull_request.number || github.event.issue.number }}
@@ -26,7 +28,8 @@ concurrency:
 
 jobs:
   gate:
-    # Issue のコメントでは走らせない PR のコメントか、PR そのものの動きだけ
+    # issue_comment は Issue へのコメントでも届く Issue には status を書く先のコミットが
+    # 無いので、走らせても PR 番号が引けずに何もせず終わるだけで、実行の枠を無駄に使う
     if: github.event_name == 'pull_request' || github.event.issue.pull_request
     runs-on: ubuntu-latest
     steps:
