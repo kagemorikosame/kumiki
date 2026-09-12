@@ -152,12 +152,11 @@ class TestRestoring:
         source = tmp_path / "本編.kmk"
         crashed = RecoverySession()
         crashed.save(_with_tracks().renamed("落ちた作業"), source)
+        # 落ちたことにする 錠は片付けずに手放す（プロセスが消えたときと同じ）
         lock = crashed._lock
         assert lock is not None
-        lock.close()
+        lock.abandon()
         crashed._lock = None
-
-        (crashed.path.parent / f"{crashed.session}.lock").write_text("終了済み", "utf-8")
 
         (entry,) = find_orphans()
         assert window.restore_recovery(entry)

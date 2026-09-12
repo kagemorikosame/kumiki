@@ -14,7 +14,7 @@ from fractions import Fraction
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, Qt, Signal
-from PySide6.QtGui import QResizeEvent
+from PySide6.QtGui import QGuiApplication, QResizeEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -320,12 +320,24 @@ class SubtitlePanel(QWidget):
         segment_id = self._rows[row][0]
 
         menu = QMenu(self)
+        jump = menu.addAction("ここへ移動")
+        copy = menu.addAction("文字をコピー")
+        menu.addSeparator()
         split = menu.addAction("再生ヘッドで分割")
         merge = menu.addAction("次と結合")
         remove = menu.addAction("削除")
         chosen = menu.exec(self._table.viewport().mapToGlobal(position))
 
-        if chosen is remove:
+        if chosen is jump:
+            start = self._rows[row][1]
+            if start >= 0:
+                self.seek_requested.emit(start)
+        elif chosen is copy:
+            item = self._table.item(row, 1)
+            clipboard = QGuiApplication.clipboard()
+            if item is not None and clipboard is not None:
+                clipboard.setText(item.text())
+        elif chosen is remove:
             self.commands_requested.emit([RemoveSegment(self._media_id, segment_id)], "字幕を削除")
         elif chosen is merge:
             self.commands_requested.emit([MergeWithNext(self._media_id, segment_id)], "字幕を結合")

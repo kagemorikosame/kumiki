@@ -47,21 +47,8 @@ jobs:
       - name: 検証
         # GPU が無いので OpenGL のテストは自分で飛ぶ ruff・mypy と、
         # GL を使わないテストはすべて走る
+        # 件数と落ちたテストの名前は verify.py が実行の要約（GITHUB_STEP_SUMMARY）に
+        # 書く GPU の無い CI では GL のテストが大量に飛ぶので、「通った」だけでは
+        # 何を確かめたのか分からない 以前は件数のためだけに pytest をもう 1 度回して
+        # いて、時間が倍かかり、たまにだけ落ちるテストを踏む回数も倍になっていた
         run: python tools/verify.py
-
-      - name: 何件通って何件飛んだかを残す
-        # verify.py の中の pytest は -q が二重に掛かり、集計行を出さない
-        # GPU の無い CI では GL のテストが大量に飛ぶので、「通った」だけでは
-        # 何を確かめたのか分からない 件数を実行の要約に残す
-        if: always()
-        shell: pwsh
-        # 落ちたテストの名前も残す 最後の 1 行だけだと「1 failed」しか分からず、
-        # たまにだけ落ちるテストをどれか特定できなかった（PR #12）
-        run: |
-          $output = python -m pytest -o addopts="" -q --no-header -p no:cacheprovider -rf
-          $failed = $output | Select-String -Pattern '^FAILED'
-          $summary = $output | Select-Object -Last 1
-          "### Python ${{ matrix.python }}: $summary" >> $env:GITHUB_STEP_SUMMARY
-          foreach ($line in $failed) { "- $line" >> $env:GITHUB_STEP_SUMMARY }
-          $failed
-          $summary

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QPoint, Qt, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -34,6 +36,10 @@ class MediaPoolWidget(QWidget):
     import_requested = Signal(list)
     #: 素材をタイムラインへ置くよう要求された 引数は素材 ID
     insert_requested = Signal(str)
+    #: 字幕を起こすよう要求された 引数は素材 ID
+    transcribe_requested = Signal(str)
+    #: メディアプールから外すよう要求された 引数は素材 ID
+    remove_requested = Signal(str)
 
     def __init__(self, project: Project, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -41,6 +47,8 @@ class MediaPoolWidget(QWidget):
 
         self._list = QListWidget(self)
         self._list.itemDoubleClicked.connect(self._on_double_click)
+        self._list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._list.customContextMenuRequested.connect(self._show_menu)
 
         import_button = QPushButton("読み込み…", self)
         import_button.clicked.connect(self._choose_files)
@@ -117,6 +125,41 @@ class MediaPoolWidget(QWidget):
 
     def _on_double_click(self, item: QListWidgetItem) -> None:
         self.insert_requested.emit(str(item.data(Qt.ItemDataRole.UserRole)))
+
+    def _show_menu(self, position: QPoint) -> None:
+        item = self._list.itemAt(position)
+        if item is None:
+            return
+        # 右クリックした行を選び直す 選んでいた別の行が対象になると、
+        # 「消したつもりのない素材が消えた」になる
+        self._list.setCurrentItem(item)
+        menu = self.build_menu(MediaId(str(item.data(Qt.ItemDataRole.UserRole))))
+        menu.exec(self._list.viewport().mapToGlobal(position))
+
+    def build_menu(self, media_id: MediaId) -> QMenu:
+        """素材 1 つに対する右クリックメニュー 表示と中身を分けてあるのはテストのため"""
+        menu = QMenu(self)
+        # triggered は押されたかどうか（bool）を渡してくる PySide6 は受け取れない
+        # 引数を捨てて呼ぶが、タイムライン側と同じく明示的に受けて捨てる形にそろえる
+        place = menu.addAction("タイムラインへ置く")
+        place.triggered.connect(lambda _checked=False: self.insert_requested.emit(str(media_id)))
+        transcribe = menu.addAction("字幕を起こす…")
+        transcribe.triggered.connect(
+            lambda _checked=False: self.transcribe_requested.emit(str(media_id))
+        )
+        media = self._project.find_media(media_id)
+        transcribe.setEnabled(media is not None and media.has_audio)
+        reveal = menu.addAction("ファイルの場所を開く")
+        reveal.triggered.connect(lambda _checked=False: self._reveal(media_id))
+        menu.addSeparator()
+        remove = menu.addAction("プールから外す")
+        remove.triggered.connect(lambda _checked=False: self.remove_requested.emit(str(media_id)))
+        return menu
+
+    def _reveal(self, media_id: MediaId) -> None:
+        media = self._project.find_media(media_id)
+        if media is not None:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(media.path.parent)))
 
 
 def _describe(media: MediaItem, rate: FrameRate) -> str:

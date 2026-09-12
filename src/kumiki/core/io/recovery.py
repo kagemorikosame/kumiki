@@ -23,8 +23,8 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import IO
 
+from kumiki.core.io.locks import HeldLock, is_held, try_hold
 from kumiki.core.io.serialize import SUFFIX, save_project
 from kumiki.core.model import Project
 
@@ -37,6 +37,7 @@ __all__ = [
     "default_state_root",
     "discard",
     "find_orphans",
+    "project_presence_dir",
 ]
 
 #: 1 つのプロジェクトについて残すバックアップの数
@@ -87,11 +88,11 @@ class RecoverySession:
         self._folder = (root if root is not None else default_state_root()) / "recovery"
         self._folder.mkdir(parents=True, exist_ok=True)
         self.session = uuid.uuid4().hex
-        self._lock: IO[str] | None = self._lock_path(self._folder, self.session).open(
-            "w", encoding="utf-8"
-        )
-        self._lock.write(str(os.getpid()))
-        self._lock.flush()
+        # 名前は起動ごとに違うので、取れないのは何かが壊れているときだけ
+        lock = try_hold(self._lock_path(self._folder, self.session))
+        if lock is None:
+            raise RuntimeError(f"退避の錠を作れない: {self._folder}")
+        self._lock: HeldLock | None = lock
 
     @property
     def path(self) -> Path:
@@ -116,9 +117,8 @@ class RecoverySession:
         """正常に終わる 退避も錠も残さない"""
         self.clear()
         if self._lock is not None:
-            self._lock.close()
+            self._lock.release()
             self._lock = None
-        self._lock_path(self._folder, self.session).unlink(missing_ok=True)
 
     @staticmethod
     def _lock_path(folder: Path, session: str) -> Path:
@@ -187,24 +187,27 @@ def discard(entry: RecoveryEntry) -> None:
 
 
 def _is_alive(folder: Path, session: str) -> bool:
-    lock = folder / f"{session}.lock"
-    if not lock.exists():
-        return False
-    if os.name == "nt":
-        try:
-            lock.unlink()
-        except PermissionError:
-            return True
-        except FileNotFoundError:
-            return False
-        return False
-    # Windows 以外では開いていても消せてしまう 番号の使い回しは承知のうえで
-    # プロセスの有無で見る（この製品の対象は Windows で、ここは開発用の逃げ道）
-    try:
-        os.kill(int(lock.read_text(encoding="utf-8")), 0)
-    except (ProcessLookupError, ValueError, OSError):
-        return False
-    return True
+    return is_held(folder / f"{session}.lock")
+
+
+def project_presence_dir(target: Path, root: Path | None = None) -> Path:
+    """そのプロジェクトを開いている窓が、1 枚ずつ錠を置く場所
+
+    錠を 1 つだけ取り合う形にすると、「それでも開く」を選んだ窓が錠を持てず、
+    先の窓が閉じたあとに 3 つ目の窓が警告なしで開けてしまう（PR #13） 窓ごとに
+    置けば、まだ開いている窓は必ず数に入る
+
+    プロジェクトの隣には置かない 同期フォルダに置いている人のところで、錠まで
+    同期されて別の機械の窓と取り合いになる
+    """
+    base = (root if root is not None else default_state_root()) / "open"
+    return base / _path_digest(target)
+
+
+def _path_digest(target: Path) -> str:
+    """場所の要約 大文字小文字や ``..`` の違いで別物にならないよう正規化してから取る"""
+    resolved = os.path.normcase(str(Path(target).resolve()))
+    return hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:10]
 
 
 def _write_atomic(path: Path, text: str) -> None:
@@ -223,8 +226,7 @@ def backup_folder(target: Path, root: Path | None = None) -> Path:
     （「本編.kmk」はどこにでもある）が 1 つの棚に混ざる 場所の要約を添える
     """
     base = (root if root is not None else default_state_root()) / "backups"
-    resolved = os.path.normcase(str(Path(target).resolve()))
-    digest = hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:10]
+    digest = _path_digest(target)
     stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", Path(target).stem)[:40] or "project"
     return base / f"{stem}-{digest}"
 
