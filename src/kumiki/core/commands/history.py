@@ -137,6 +137,11 @@ class Document:
         # 何も変わらなかったチェックポイントは履歴に残さない
         # 「取り消しても何も起きない」段が挟まると操作感が悪い
         if before is None or before is self._project:
+            # 何も変わらなかった操作でも、続けて行う操作の区切りにはなる ここで
+            # 区切らないと、上限に張り付いて変わらなかったホイールのあとの操作が、
+            # 前の続けた操作の段へまとまってしまう
+            if not self._checkpoint_merge:
+                self._merge_anchor = None
             return
         top = self._undo[-1] if self._undo else None
         continued = (

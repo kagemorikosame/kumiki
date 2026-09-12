@@ -173,17 +173,35 @@ def _target_clips(host: EditorHost, arguments: dict[str, Any]) -> tuple[ClipId, 
     見つからない ID が 1 つでもあれば止める 一部だけ動かすと、どれが動いたのかを
     AI も人も追えなくなる
     """
-    raw = arguments.get("clip_ids") or []
-    if isinstance(raw, str):
-        raw = [raw]
-    if not raw:
+    if arguments.get("clip_ids") is None:
         if not host.selected_clips:
             raise ToolError("clip_ids を指定してください（選択中のクリップもありません）")
         return host.selected_clips
+    # 空の一覧は「選択を使う」ではない 省略と同じに扱うと、何も指していない
+    # つもりの呼び出しが、選んでいる全部を消したり動かしたりする
+    clip_ids = _clip_id_list(host, arguments)
+    if not clip_ids:
+        raise ToolError("clip_ids が空です 選択中のクリップを対象にするなら省いてください")
+    return clip_ids
+
+
+def _clip_id_list(host: EditorHost, arguments: dict[str, Any]) -> tuple[ClipId, ...]:
+    """``clip_ids`` を読んで確かめる 重なった ID は 1 つにする
+
+    重なったまま渡すと「3 本を移動」のような本数が実際と食い違う 型が違えば
+    ToolError にする 素の TypeError で落ちると、AI は何を直せばよいか分からない
+    """
+    raw = arguments.get("clip_ids")
+    if raw is None:
+        return ()
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        raise ToolError("clip_ids はクリップ ID の配列で渡してください")
     project = _project(host)
     for clip_id in raw:
         _require_clip(project, str(clip_id))
-    return tuple(ClipId(str(clip_id)) for clip_id in raw)
+    return tuple(dict.fromkeys(ClipId(str(clip_id)) for clip_id in raw))
 
 
 def _clip_ids_schema() -> dict[str, Any]:
@@ -842,13 +860,7 @@ def _seek(host: EditorHost, arguments: dict[str, Any]) -> object:
 
 
 def _select_clips(host: EditorHost, arguments: dict[str, Any]) -> object:
-    raw = arguments.get("clip_ids") or []
-    if isinstance(raw, str):
-        raw = [raw]
-    project = _project(host)
-    for clip_id in raw:
-        _require_clip(project, str(clip_id))
-    host.select_clips([ClipId(str(clip_id)) for clip_id in raw])
+    host.select_clips(list(_clip_id_list(host, arguments)))
     return {"selected": [str(clip_id) for clip_id in host.selected_clips]}
 
 

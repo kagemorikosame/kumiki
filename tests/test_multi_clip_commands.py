@@ -68,6 +68,17 @@ class TestMoveClips:
         with pytest.raises(ValueError, match="先頭"):
             MoveClips((clip.id,), -10).apply(_project(clip))
 
+    def test_a_locked_partner_stops_everything(self, video_media: MediaItem) -> None:
+        # 相手を残して動くと、選んだクリップの映像と音声が黙ってずれる
+        base = Project.create(ProjectSettings(frame_rate=FrameRate(30)))
+        for command in insert_media(base, video_media, at_frame=0):
+            base = command.apply(base)
+        audio = base.timeline.tracks[1]
+        base = base.with_timeline(base.timeline.replace_track(replace(audio, locked=True)))
+        video = base.timeline.tracks[0].clips[0]
+        with pytest.raises(ValueError, match="相手"):
+            MoveClips((video.id,), 15).apply(base)
+
     def test_a_collision_with_an_unselected_clip_fails(self) -> None:
         # 選んでいないクリップに重なるなら、黙って上書きせずに断る
         moving, staying = _text(0), _text(40)
@@ -120,6 +131,16 @@ class TestMerge:
         document.undo()
         assert document.project.timeline.tracks[0].height == 60
 
+    def test_an_unchanged_operation_still_breaks_the_run(self) -> None:
+        # 変わらなかった操作のあとで続きを頼まれても、前の段へまとめない まとめると、
+        # 1 回の取り消しで、しばらく前に変えた高さまで戻る
+        document = Document(_project())
+        self._heights(document, 80)
+        with document.checkpoint("高さ"):
+            document.execute(SetTrackHeights(((document.project.timeline.tracks[0].id, 80),)))
+        self._heights(document, 100)
+        assert document.history_labels == ("高さ", "高さ")
+
     def test_nothing_merges_into_a_step_uncovered_by_undo(self) -> None:
         # 取り消したあとの一番上は古い操作 そこへまとめると、関係ない操作と一緒に戻る
         document = Document(_project())
@@ -132,6 +153,7 @@ class TestMerge:
         assert document.history_labels == ("高さ", "高さ")
 
     def test_a_different_operation_is_its_own_step(self) -> None:
+        # 壊れると、名前の変更まで高さの段にまとまり、戻すと両方いっぺんに消える
         document = Document(_project())
         self._heights(document, 80)
         with document.checkpoint("名前", merge=True):

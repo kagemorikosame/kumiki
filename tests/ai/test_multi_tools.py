@@ -64,6 +64,26 @@ class TestMoving:
             run(host, "move_clips", clip_ids=[str(two[0]), "無い"], delta=30)
         assert _starts(host) == [0, 0]
 
+    def test_an_empty_list_is_not_the_selection(
+        self, host: FakeHost, two: tuple[ClipId, ClipId]
+    ) -> None:
+        # 空の一覧を「選択を使う」と取ると、何も指していないつもりの呼び出しで、
+        # 選んでいる全部が消える
+        host.select_clips(list(two))
+        with pytest.raises(ToolError, match="空"):
+            run(host, "delete_clips", clip_ids=[])
+        assert _starts(host) == [0, 0]
+
+    def test_a_wrong_type_is_a_tool_error(self, host: FakeHost) -> None:
+        # 素の TypeError で落ちると、AI には何を直せばよいかが伝わらない
+        with pytest.raises(ToolError, match="配列"):
+            run(host, "move_clips", clip_ids=3, delta=10)
+
+    def test_repeated_ids_count_once(self, host: FakeHost, two: tuple[ClipId, ClipId]) -> None:
+        # 重なったまま渡すと、履歴の「2 本を移動」が実際の本数と食い違う
+        run(host, "move_clips", clip_ids=[str(two[1]), str(two[1])], delta=10)
+        assert host.document.history_labels[-1] == "1 本を移動"
+
     def test_zero_is_refused(self, host: FakeHost, two: tuple[ClipId, ClipId]) -> None:
         with pytest.raises(ToolError, match="delta"):
             run(host, "move_clips", clip_ids=[str(two[0])], delta=0)
@@ -71,6 +91,7 @@ class TestMoving:
 
 class TestDeletingAndDuplicating:
     def test_delete_clips(self, host: FakeHost, two: tuple[ClipId, ClipId]) -> None:
+        # 壊れて一部が残ると、AI の「消しました」とタイムラインの中身が食い違う
         run(host, "delete_clips", clip_ids=[str(c) for c in two])
         assert all(not t.clips for t in host.document.project.timeline.tracks)
 

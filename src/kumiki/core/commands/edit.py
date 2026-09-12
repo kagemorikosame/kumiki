@@ -281,9 +281,10 @@ class MoveClips(Command):
     場所へ入り、まだ動いていない相手と重なって失敗する（全体としては重ならない
     動かし方でも） 全員をいったん外してから置き直す
 
-    リンクした相手も同じだけ動く ロックしたトラックのクリップを選んでいたら
-    止める 相手がロックしたトラックにいるときは、:class:`MoveClip` と同じく相手は
-    残す
+    リンクした相手も同じだけ動く 動く全員（選んだものと相手）のうち 1 本でも
+    ロックしたトラックにいれば、何も動かさない :class:`MoveClip` は相手を残して
+    動くが、まとめて動かすときに同じことをすると、選んだ中のどれかの映像と音声が
+    黙ってずれる 何本も動かすと、どれがずれたのかを見つけにくい
     """
 
     clip_ids: tuple[ClipId, ...]
@@ -304,8 +305,11 @@ class MoveClips(Command):
             if track.locked:
                 raise ValueError(f"トラック {track.name!r} はロックされている")
             for track_id, member in _linked_group(project, clip):
-                if _require_track(project, track_id).locked:
-                    continue
+                partner_track = _require_track(project, track_id)
+                if partner_track.locked:
+                    raise ValueError(
+                        f"リンクした相手のトラック {partner_track.name!r} がロックされている"
+                    )
                 targets.setdefault(member.id, (track_id, member))
         if self.delta == 0 or not targets:
             return project

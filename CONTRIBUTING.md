@@ -91,15 +91,18 @@ GPU が無い環境では OpenGL のテストが自動で飛びます ffmpeg が
 - `tools/verify.py` の結果（テスト件数）
 - 途中で見つけた別の不具合
 
-### CodeRabbit のレビュー
+### AI のレビュー
 
-PR を出すと [CodeRabbit](https://coderabbit.ai/) が自動でレビューします
-設定は [`.coderabbit.yaml`](.coderabbit.yaml) で、このプロジェクトの約束
-（コメントの書き方、コア層の依存、未対応の記録の仕方など）も見るようにしてあります
+PR には 5 つの AI（CodeRabbit・Copilot・Gemini・Sourcery・Qodo）がレビューを付けます
+**自動で走るのは Gemini だけ**です CodeRabbit はこの公開リポジトリでは自動で走らないので、
+PR に `@coderabbitai review` と書いてください ほかの頼み方は
+[docs/development.md](docs/development.md) の「AI のレビューを受ける」にあります
+どの役にも、このプロジェクトの約束（コメントの書き方、コア層の依存、未対応の記録の仕方など）を
+見るように設定してあります
 
 - 指摘は**読んで判断**してください 全部直すのでも、全部無視するのでもありません
 - 直さないときは、その理由をコメントに残してください
-- 追加で見てほしいときは `@coderabbitai review` と書いてください
+- 同じ指摘が何役からも来たら、直すのは 1 回で構いません
 - 指摘に納得できないときは、そのコメントに返信すると会話できます
 
 ---

@@ -39,7 +39,7 @@ from kumiki.core.commands import (
     SplitClip,
     TrimClip,
 )
-from kumiki.core.commands.edit import DEFAULT_TRACK_HEIGHT
+from kumiki.core.commands.edit import DEFAULT_TRACK_HEIGHT, MAX_TRACK_HEIGHT, MIN_TRACK_HEIGHT
 from kumiki.core.model import Clip, ClipId, GroupId, Project, TrackId, TrackKind
 from kumiki.engine.cache import MediaAnalyzer
 from kumiki.ui.theme import Colors, Metrics
@@ -156,7 +156,9 @@ class TimelineView(QWidget):
         #: 選んでいるクリップ 最後の 1 本が「主」で、設定パネルと AI の既定の
         #: 対象になる 何本選んでも、設定パネルに出せるのは 1 本だけのため
         self._selection: tuple[ClipId, ...] = ()
-        #: Shift+クリックで範囲を決めるときの起点 最後に単独で選んだクリップ
+        #: Shift+クリックで範囲を決めるときの起点 最後に選んだクリップ（選び方は
+        #: 問わない AI が選んだものも含む） Shift での範囲選択そのものは起点を
+        #: 動かさない 動かすと、Shift を押したまま範囲を広げ直せない
         self._anchor: ClipId | None = None
         self._last_height_change = -HEIGHT_MERGE_SECONDS
         self._drag = DragState()
@@ -225,6 +227,7 @@ class TimelineView(QWidget):
             return
         previous = self.selected_clip
         self._selection = ordered
+        self._anchor = self.selected_clip
         if self.selected_clip != previous:
             self.selection_changed.emit(self.selected_clip or "")
         self.update()
@@ -373,14 +376,29 @@ class TimelineView(QWidget):
         painter.setBrush(fill)
         painter.drawRect(QRect(origin, current).normalized())
 
-    def _moving_members(self) -> list[tuple[TrackId, Clip]]:
-        """まとめて動かすときに動くクリップ 選んだものとリンクした相手
+    def _movable_selection(self) -> tuple[ClipId, ...]:
+        """選んだうち、ロックしていないトラックのもの
 
-        :class:`MoveClips` と同じ決まりで集める ロックしたトラックの相手は残る
+        Ctrl+A はロックしたトラックのクリップも選ぶ（見るだけなら困らない） それを
+        そのまま :class:`MoveClips` へ渡すと、ほかのクリップまで動かせなくなる
+        動かすときは、ロックしたトラックのものを最初から外す
+        """
+        timeline = self._project.timeline
+        movable: list[ClipId] = []
+        for clip_id in self._selection:
+            located = timeline.locate_clip(clip_id)
+            if located is not None and not located[0].locked:
+                movable.append(clip_id)
+        return tuple(movable)
+
+    def _moving_members(self) -> list[tuple[TrackId, Clip]]:
+        """まとめて動かすときに動くクリップ 動かせる選択とリンクした相手
+
+        :class:`MoveClips` と同じ決まりで集める
         """
         timeline = self._project.timeline
         found: dict[ClipId, tuple[TrackId, Clip]] = {}
-        for clip_id in self._selection:
+        for clip_id in self._movable_selection():
             located = timeline.locate_clip(clip_id)
             if located is None:
                 continue
@@ -391,9 +409,23 @@ class TimelineView(QWidget):
                 else [(track, clip)]
             )
             for member_track, member in members:
-                if not member_track.locked:
-                    found.setdefault(member.id, (member_track.id, member))
+                found.setdefault(member.id, (member_track.id, member))
         return list(found.values())
+
+    def _group_floor(self) -> int:
+        """まとめて動かすとき、掴んだクリップを置ける最も前の位置
+
+        掴んだ 1 本だけで 0 に止めると、それより前にいるほかのクリップが先頭より前へ
+        出る 枠では動かせたように見えるのに、離すと断られる
+        """
+        if self._drag.clip_id is None:
+            return 0
+        located = self._project.timeline.locate_clip(self._drag.clip_id)
+        members = self._moving_members()
+        if located is None or not members:
+            return 0
+        earliest = min(member.timeline_start for _, member in members)
+        return located[1].timeline_start - earliest
 
     # --- 入力 ---
 
@@ -470,12 +502,15 @@ class TimelineView(QWidget):
 
         track_id, clip = hit
         if adding:
+            # 足したクリップはそのまま掴んで動かせる 外したクリップは掴まない
+            # （選んでいないものを動かすことになる）
             self._toggle(clip.id)
-            return
-        if ranged and self._anchor is not None:
+            if clip.id not in self._selection:
+                return
+        elif ranged and self._anchor is not None:
             self._select_range(self._anchor, clip.id)
             return
-        if clip.id in self._selection:
+        elif clip.id in self._selection:
             # 選んだ何本かのうちの 1 本を掴んだ 選び直すと、まとめて動かせない
             self.set_selection((*self._selection, clip.id))
             self._anchor = clip.id
@@ -519,7 +554,8 @@ class TimelineView(QWidget):
         frame = self._layout.frame_at(position.x())
 
         if self._drag.kind is DragKind.MOVE_CLIP:
-            self._drag.preview_start = max(0, frame - self._drag.grab_offset)
+            floor = self._group_floor() if self._drag.group else 0
+            self._drag.preview_start = max(floor, frame - self._drag.grab_offset)
             band = self._layout.band_at(self._project.timeline, position.y())
             if not self._drag.group and band is not None and not band.track.locked:
                 self._drag.preview_track = band.track.id
@@ -571,7 +607,8 @@ class TimelineView(QWidget):
 
         if drag.kind is DragKind.MOVE_CLIP and drag.group:
             delta = drag.preview_start - clip.timeline_start
-            return MoveClips(self._selection, delta) if delta else None
+            movable = self._movable_selection()
+            return MoveClips(movable, delta) if delta and movable else None
 
         if drag.kind is DragKind.MOVE_CLIP:
             unchanged = (
@@ -797,7 +834,11 @@ class TimelineView(QWidget):
         まとめてもらう ホイールを 10 段回して、戻すのに 10 回取り消すのは重い
         """
         tracks = self._project.timeline.tracks
-        if not tracks:
+        wanted = [min(max(t.height + delta, MIN_TRACK_HEIGHT), MAX_TRACK_HEIGHT) for t in tracks]
+        if wanted == [t.height for t in tracks]:
+            # 上限や下限に張り付いて変わらないときは、何もしなかったことにする
+            # 続けた操作の時刻を進めると、しばらくあとに反対へ回したぶんが
+            # 前の続けた操作の段へまとまってしまう
             return
         now = time.monotonic()
         continued = now - self._last_height_change < HEIGHT_MERGE_SECONDS
@@ -859,6 +900,7 @@ class TimelineView(QWidget):
             if clip.overlaps(start, end)
         ]
         self.set_selection((*chosen, target))
+        self._anchor = anchor
 
     def _update_marquee(self, position: QPoint) -> None:
         origin = self._drag.marquee_from
@@ -874,7 +916,12 @@ class TimelineView(QWidget):
         self.update()
 
     def _clips_in_rect(self, rect: QRect) -> list[ClipId]:
-        """枠に少しでも掛かったクリップ 全部を収めなくても選べる方が囲みやすい"""
+        """枠に少しでも掛かったクリップ 全部を収めなくても選べる方が囲みやすい
+
+        ここの上下は画面の画素（下が正、Qt の座標） 枠もトラックの帯も同じ画面の
+        座標で持っているので、そのまま比べてよい 映像の中の位置（上が正）とは
+        別のもので、混ぜて計算しない
+        """
         first = self._layout.frame_at(max(rect.left(), Metrics.TRACK_HEADER_WIDTH))
         last = self._layout.frame_at(rect.right())
         return [

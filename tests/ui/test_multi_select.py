@@ -119,6 +119,7 @@ class TestChoosing:
         assert view.playhead == 80
 
     def test_escape_clears_the_selection(self, view: TimelineView) -> None:
+        # 壊れると選択を解く手段がクリックしか無く、次の操作が前の選択へ掛かる
         view.select_all()
         QTest.keyClick(view, Qt.Key.Key_Escape)
         assert view.selected_clips == ()
@@ -153,6 +154,57 @@ class TestActingOnMany:
         QTest.mouseRelease(view, _LEFT, pos=_point(view, 0, 10))
         assert set(view.selected_clips) == {a, b}
         assert view.selected_clip == a
+
+    def test_ctrl_click_can_grab_what_it_just_added(self, view: TimelineView) -> None:
+        # Ctrl を押したまま足したクリップを掴めないと、足すたびに手を離して掴み直す
+        a, _, c = _ids(view)
+        view.select(a)
+        received = _received(view)
+        QTest.mousePress(view, _LEFT, _CTRL, _point(view, 1, 10))
+        QTest.mouseMove(view, _point(view, 1, 100))
+        QTest.mouseRelease(view, _LEFT, _CTRL, _point(view, 1, 100))
+        ((command,),) = received
+        assert isinstance(command, MoveClips)
+        assert set(command.clip_ids) == {a, c}
+
+    def test_a_group_stops_at_the_start_together(self, view: TimelineView) -> None:
+        # 掴んだ 1 本だけで 0 に止めると、前にいる別のクリップが先頭より前へ出て、
+        # 離したときに断られる（枠では動けたように見えたのに）
+        _, b, c = _ids(view)
+        view.set_selection((c, b))
+        received = _received(view)
+        QTest.mousePress(view, _LEFT, pos=_point(view, 0, 50))
+        QTest.mouseMove(view, _point(view, 0, 0))
+        QTest.mouseRelease(view, _LEFT, pos=_point(view, 0, 0))
+        # c は 0 から始まっているので、どこへ引いても前へは動けない
+        assert received == []
+
+    def test_locked_clips_stay_out_of_a_group_move(self, view: TimelineView) -> None:
+        # Ctrl+A はロックしたトラックも選ぶ そのまま渡すと、ほかも一緒に動かせなくなる
+        project = view.project
+        v2 = project.timeline.tracks[1]
+        view.set_project(
+            project.with_timeline(project.timeline.replace_track(replace(v2, locked=True)))
+        )
+        a, b, c = _ids(view)
+        view.select_all()
+        received = _received(view)
+        QTest.mousePress(view, _LEFT, pos=_point(view, 0, 10))
+        QTest.mouseMove(view, _point(view, 0, 100))
+        QTest.mouseRelease(view, _LEFT, pos=_point(view, 0, 100))
+        ((command,),) = received
+        assert isinstance(command, MoveClips)
+        assert set(command.clip_ids) == {a, b}
+        assert c not in command.clip_ids
+
+    def test_the_anchor_follows_any_selection(self, view: TimelineView) -> None:
+        # AI が選んだあとの Shift+クリックが古い起点から範囲を取ると、見ていない
+        # クリップまで選ばれる
+        a, b, c = _ids(view)
+        view.select(c)
+        view.set_selection((a,))
+        QTest.mouseClick(view, _LEFT, _SHIFT, _point(view, 0, 50))
+        assert set(view.selected_clips) == {a, b}
 
     def test_delete_is_one_command(self, view: TimelineView) -> None:
         # 1 本ずつのコマンドになると、取り消しを本数ぶん押すことになる
@@ -196,6 +248,7 @@ class TestHeightMerging:
         assert isinstance(continued[0][0], SetTrackHeights)
 
     def test_the_window_undoes_them_at_once(self, window: MainWindow) -> None:
+        # 壊れると、高さを変えた回数だけ取り消しを押すことになる
         timeline = window._timeline
         for _ in range(3):
             timeline.adjust_track_heights(12)
