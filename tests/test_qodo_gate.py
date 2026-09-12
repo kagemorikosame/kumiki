@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import importlib.util
 import sys
-from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
 
@@ -16,9 +15,6 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 HEAD = "7162367c3b0e4b1f9f2a6c1d0e9b8a7f6e5d4c3b"
-PUSHED = datetime(2026, 9, 12, 17, 0, tzinfo=UTC)
-BEFORE = datetime(2026, 9, 12, 16, 0, tzinfo=UTC)
-AFTER = datetime(2026, 9, 12, 17, 5, tzinfo=UTC)
 QODO = "qodo-code-review[bot]"
 
 
@@ -32,49 +28,36 @@ def gate() -> ModuleType:
     return module
 
 
-def _qodo(gate: ModuleType, body: str, when: datetime) -> object:
-    return gate.Comment(QODO, body, when)
-
-
 def test_an_update_naming_the_head_counts(gate: ModuleType) -> None:
     # 再レビューは「最新のコミットまで更新した」コメントで分かる 読めないと、
     # 修正のあとはいつまでもマージできない
     note = f"[Code review](x) by qodo was updated up to the latest commit https://github.com/o/r/commit/{HEAD}"
-    assert gate.is_reviewed(HEAD, PUSHED, [_qodo(gate, note, BEFORE)])
+    assert gate.is_reviewed(HEAD, [gate.Comment(QODO, note)])
 
 
-def test_the_first_review_after_the_push_counts(gate: ModuleType) -> None:
-    # 指摘の無い最初のレビューには SHA が書かれない 時刻で見ないと、1 回目は必ず止まる
-    assert gate.is_reviewed(HEAD, PUSHED, [_qodo(gate, "Code Review by Qodo\n...", AFTER)])
+def test_evidence_links_to_the_head_count(gate: ModuleType) -> None:
+    # 最初のレビューは、指摘の根拠のリンクに見たコミットの SHA が入る 読めないと、
+    # 1 回目のレビューのあとも必ず止まる
+    review = f"Code Review by Qodo\n[tools/x.py](https://github.com/o/r/blob/{HEAD}/tools/x.py)"
+    assert gate.is_reviewed(HEAD, [gate.Comment(QODO, review)])
 
 
-def test_a_review_before_the_push_does_not_count(gate: ModuleType) -> None:
-    # 古い日時のコミットを後から push したとき、前のレビューで通ると、Qodo が
-    # 見ていない修正がマージされる 比べるのは GitHub が受け取った時刻
-    assert not gate.is_reviewed(HEAD, PUSHED, [_qodo(gate, "Code Review by Qodo", BEFORE)])
-
-
-def test_without_a_push_time_only_the_sha_decides(gate: ModuleType) -> None:
-    # 受け取った時刻が引けないときに時刻で通すと、何と比べたのか分からないまま通る
-    assert not gate.is_reviewed(HEAD, None, [_qodo(gate, "Code Review by Qodo", AFTER)])
-
-
-def test_a_review_of_an_older_commit_does_not_count(gate: ModuleType) -> None:
-    # 古いコミットのレビューで通すと、Qodo が見ていない修正がマージされる
+def test_a_review_without_the_head_does_not_count(gate: ModuleType) -> None:
+    # 時刻や見出しで通すと、別のブランチで先に push されたコミットや、古い日時の
+    # コミットが、Qodo が見ていないまま通る
     old = "Code Review by Qodo\n... updated up to the latest commit https://x/commit/0123abc"
-    assert not gate.is_reviewed(HEAD, PUSHED, [_qodo(gate, old, BEFORE)])
+    assert not gate.is_reviewed(HEAD, [gate.Comment(QODO, old)])
+
+
+def test_a_short_sha_does_not_count(gate: ModuleType) -> None:
+    # 短い形で探すと、別のコミットの SHA の一部に当たりうる
+    assert not gate.is_reviewed(HEAD, [gate.Comment(QODO, f"{HEAD[:7]} まで見ました")])
 
 
 @pytest.mark.parametrize("login", ["kagemorikosame", "qodo-code-review-x", "qodo-code-review"])
 def test_only_the_real_bot_counts(gate: ModuleType, login: str) -> None:
     # 似た名前の一般アカウントが SHA を書くだけで通ると、Qodo が黙っていてもマージできる
-    impostor = gate.Comment(login, f"{HEAD} まで見ました", AFTER)
-    assert not gate.is_reviewed(HEAD, PUSHED, [impostor])
-
-
-def test_other_qodo_comments_after_the_push_do_not_count(gate: ModuleType) -> None:
-    # 要約や会話の返事はレビューではない それで通すと、見ていないコミットが通る
-    assert not gate.is_reviewed(HEAD, PUSHED, [_qodo(gate, "PR Summary by Qodo", AFTER)])
+    assert not gate.is_reviewed(HEAD, [gate.Comment(login, f"{HEAD} まで見ました")])
 
 
 @pytest.mark.parametrize(

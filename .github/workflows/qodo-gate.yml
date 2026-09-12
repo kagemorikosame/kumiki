@@ -19,8 +19,6 @@ permissions:
   statuses: write
   pull-requests: read
   contents: read
-  # 先頭のコミットを GitHub が受け取った時刻を、check suite の作られた時刻で見る
-  checks: read
 
 concurrency:
   group: qodo-gate-${{ github.event.pull_request.number || github.event.issue.number }}
