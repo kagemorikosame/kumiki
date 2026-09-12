@@ -54,6 +54,17 @@ class TestSelection:
         run(host, "select_clips", clip_ids=[a, b, a])
         assert run(host, "get_selection")["clip_id"] == a
 
+    def test_leaving_out_the_ids_does_not_clear(
+        self, host: FakeHost, two: tuple[ClipId, ClipId]
+    ) -> None:
+        # 空の引数で呼ばれただけで選択が消えると、人が選んでいたものを失う
+        host.select_clips(list(two))
+        with pytest.raises(ToolError, match="空の配列"):
+            run(host, "select_clips")
+        assert host.selected_clips == two
+        run(host, "select_clips", clip_ids=[])
+        assert not host.selected_clips
+
     def test_an_unknown_id_is_refused(self, host: FakeHost) -> None:
         with pytest.raises(ToolError, match="list_clips"):
             run(host, "select_clips", clip_ids=["無い"])

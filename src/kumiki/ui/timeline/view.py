@@ -842,9 +842,10 @@ class TimelineView(QWidget):
         tracks = self._project.timeline.tracks
         wanted = [min(max(t.height + delta, MIN_TRACK_HEIGHT), MAX_TRACK_HEIGHT) for t in tracks]
         if wanted == [t.height for t in tracks]:
-            # 上限や下限に張り付いて変わらないときは、何もしなかったことにする
-            # 続けた操作の時刻を進めると、しばらくあとに反対へ回したぶんが
-            # 前の続けた操作の段へまとまってしまう
+            # 上限や下限に張り付いて変わらないときは、続けた操作をそこで区切る
+            # 区切らないと、張り付いたまま回したあとすぐ反対へ回したぶんが、
+            # 張り付く前の段へまとまり、1 回の取り消しでそこまで戻る
+            self._last_height_change = -HEIGHT_MERGE_SECONDS
             return
         now = time.monotonic()
         continued = now - self._last_height_change < HEIGHT_MERGE_SECONDS

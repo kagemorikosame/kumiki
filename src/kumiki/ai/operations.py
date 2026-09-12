@@ -863,6 +863,10 @@ def _seek(host: EditorHost, arguments: dict[str, Any]) -> object:
 
 
 def _select_clips(host: EditorHost, arguments: dict[str, Any]) -> object:
+    # 省いたら断る 空の引数で呼ばれただけで選択が消えると、人が選んでいたものを
+    # 失う 解きたいときは空の配列を明示してもらう
+    if arguments.get("clip_ids") is None:
+        raise ToolError("clip_ids を指定してください（選択を解くなら空の配列）")
     host.select_clips(list(_clip_id_list(host, arguments)))
     return {"selected": [str(clip_id) for clip_id in host.selected_clips]}
 
@@ -954,9 +958,10 @@ OPERATIONS: tuple[Operation, ...] = (
     ),
     Operation(
         name="select_clips",
-        description="何本かのクリップをまとめて選ぶ 空にすると選択を解く 最後の 1 本が主になる",
+        description="何本かのクリップをまとめて選ぶ 空の配列で選択を解く 最後の 1 本が主になる",
         schema=_schema(
-            {"clip_ids": {"type": "array", "items": {"type": "string"}, "description": "選ぶ"}}
+            {"clip_ids": {"type": "array", "items": {"type": "string"}, "description": "選ぶ"}},
+            ["clip_ids"],
         ),
         handler=_select_clips,
     ),
@@ -1091,7 +1096,7 @@ OPERATIONS: tuple[Operation, ...] = (
     Operation(
         name="move_clips",
         description=(
-            "何本かのクリップをまとめて前後へずらす トラックは変えない"
+            "何本かのクリップをまとめて前後へずらす トラックは変えない "
             "リンクした映像と音声も一緒に動く 1 本でも動かせなければ何も動かない"
         ),
         schema=_schema(
@@ -1111,8 +1116,8 @@ OPERATIONS: tuple[Operation, ...] = (
     Operation(
         name="duplicate_clips",
         description=(
-            "クリップをコピーして貼り付ける（画面のコピー・貼り付けと同じ） 並びの間隔は保つ"
-            "元のトラックが塞がっていれば同じ種類の別のトラック、無ければ新しく作る"
+            "クリップをコピーして貼り付ける（画面のコピー・貼り付けと同じ） 並びの間隔は保つ "
+            "元のトラックが塞がっていれば同じ種類の別のトラック、無ければ新しく作る "
             "貼ったクリップが選ばれた状態になる"
         ),
         schema=_schema(
@@ -1127,7 +1132,7 @@ OPERATIONS: tuple[Operation, ...] = (
     Operation(
         name="set_track_height",
         description=(
-            "タイムラインでのトラックの高さ（画素）を変える 28〜240 の外は端へ寄せる"
+            "タイムラインでのトラックの高さ（画素）を変える 28〜240 の外は端へ寄せる "
             "track_id を省くと全トラック 既定は 60"
         ),
         schema=_schema(

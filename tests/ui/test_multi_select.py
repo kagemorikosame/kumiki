@@ -283,6 +283,24 @@ class TestHeightMerging:
         assert len(continued) == 1
         assert isinstance(continued[0][0], SetTrackHeights)
 
+    def test_hitting_the_limit_ends_the_run(self, view: TimelineView) -> None:
+        # 上限に張り付いたあとすぐ反対へ回したぶんが前の段へまとまると、1 回の
+        # 取り消しで張り付く前まで戻る
+        def at(height: int) -> Project:
+            timeline = view.project.timeline
+            for track in timeline.tracks:
+                timeline = timeline.replace_track(replace(track, height=height))
+            return view.project.with_timeline(timeline)
+
+        view.set_project(at(228))
+        received = _received(view)
+        view.adjust_track_heights(12)
+        # ビューは自分では書き換えない 窓が実行したあとの形を渡し直す
+        view.set_project(at(240))
+        view.adjust_track_heights(12)
+        view.adjust_track_heights(-12)
+        assert len(received) == 2
+
     def test_the_window_undoes_them_at_once(self, window: MainWindow) -> None:
         # 壊れると、高さを変えた回数だけ取り消しを押すことになる
         timeline = window._timeline
