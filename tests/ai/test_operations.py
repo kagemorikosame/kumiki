@@ -121,7 +121,7 @@ class TestPreviewFrame:
 
 class TestEditing:
     def test_split_uses_the_playhead_and_the_selection(self, host: FakeHost) -> None:
-        host.selected = _clip_id(host.document.project)
+        host.select_clip(_clip_id(host.document.project))
         host.frame = 100
         run(host, "split_clip")
         assert len(host.document.project.timeline.tracks[0].clips) == 2

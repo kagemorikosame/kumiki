@@ -50,6 +50,15 @@ class EditorHost(Protocol):
 
     def select_clip(self, clip_id: ClipId | None) -> None: ...
 
+    @property
+    def selected_clips(self) -> tuple[ClipId, ...]:
+        """選んでいるクリップすべて 最後が :attr:`selected_clip`"""
+        ...
+
+    def select_clips(self, clip_ids: list[ClipId]) -> None:
+        """選択を丸ごと入れ替える 空なら選択を解く"""
+        ...
+
     def apply_commands(self, commands: list[Command], label: str) -> None:
         """コマンドをまとめて実行する 失敗したら :class:`ToolError` を投げること
 

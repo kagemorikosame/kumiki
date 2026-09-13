@@ -190,14 +190,50 @@ PR には必ず含める:
 - 途中で見つけた不具合と、その直し方
 - 実物で確かめた場合はその結果（「配布物 36 本すべて通した」など）
 
-### CodeRabbit のレビューを受ける
+### AI のレビューを受ける
 
-PR を出すと [CodeRabbit](https://coderabbit.ai/) が自動でレビューする
-設定は `.coderabbit.yaml`
+レビュー役は 4 つ どれも無料枠（Copilot は Pro の月の回数）で動かしているので、
+回数が切れる役が必ず出る **PR を出したら全員に頼み、指摘を突き合わせる** 枠が
+切れた役は飛ばしてよい
+
+| レビュー役 | 頼み方 | 設定 |
+|---|---|---|
+| [CodeRabbit](https://coderabbit.ai/) | PR で `@coderabbitai review`（公開リポジトリでは自動で走らない） | `.coderabbit.yaml` |
+| GitHub Copilot | `gh pr edit <番号> --add-reviewer @copilot`（自動にはしない 月の回数を守るため） | なし |
+| Sourcery | `@sourcery-ai review` | Web の画面（Review Settings） 言語は日本語、`tests/fixtures/**` を外す |
+| Qodo | `/agentic_review` | `.pr_agent.toml` |
+
+約束（コメントの書き方・コア層の依存・テストの書き方）は、どの役にも同じものを渡す
+`.coderabbit.yaml` を直したら、`.pr_agent.toml` もそろえる
+
+#### Qodo のレビューはマージの必須条件
+
+Qodo はコメントを書くだけで GitHub のチェックを出さないので、
+`.github/workflows/qodo-gate.yml` が Qodo のコメントを読み、代わりに `Qodo review` という
+status を出す（判定は `tools/qodo_gate.py`） main の保護でこれを必須にしてある
+**PR の先頭のコミットまで Qodo が見るまで、マージできない** 修正を push したら
+`/agentic_review` で頼み直す 見たかどうかは、Qodo のコメントにそのコミットの SHA が
+書かれているかだけで決める（時刻では決めない 手元で作れるうえ、別のブランチの push で
+ずれるので、見ていないコミットを通す穴になる） 指摘が 1 件も無いと SHA が書かれない
+ことがあるので、そのときも `/agentic_review` で頼み直す
+PR の向き先（base）を変えたときは、変えたあとに書かれた Qodo のコメントだけを数える
+（SHA は同じまま、比べる相手が変わって別の差分になるため） 変えたら頼み直す
+
+Qodo が止まった、無料枠が切れたなどで返事が来ないときは、マージが止まったままになる
+その場合だけ、理由を書いて手で通す（管理者の操作 何を確かめたかを PR に残す）
+
+```
+gh api repos/kagemorikosame/kumiki/statuses/<先頭のコミットの SHA> -f state=success -f context="Qodo review" -f description="手で通した: <理由>"
+```
+
+Gemini Code Assist（GitHub の PR レビュー）は使わない GitHub 向けの無料 consumer version は
+2026-07-17 に提供を終え、GitHub のレビュー機能で残っているのは Google Cloud の有料契約が要る
+enterprise 版だけのため
 
 - **指摘は読んで判断する** 機械的に全部直すのでも、全部無視するのでもない
 - 直さないときは、その理由を PR のコメントに残す
-- 追加で見てほしいときは PR で `@coderabbitai review` と書く
+- **同じ指摘が何役からも来る** 直すのは 1 回で、どのスレッドにも同じコミットを示して返す
+- 役どうしで言うことが食い違ったら、どちらを採ったかと理由を PR に残す
 
 ### コミットメッセージ
 

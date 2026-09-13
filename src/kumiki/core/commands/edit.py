@@ -31,7 +31,9 @@ __all__ = [
     "AddMedia",
     "AddTrack",
     "MoveClip",
+    "MoveClips",
     "RemoveClip",
+    "RemoveClips",
     "RemoveMedia",
     "RemoveTrack",
     "RenameProject",
@@ -269,6 +271,93 @@ class MoveClip(Command):
             others = tuple(c for c in track.clips if c.id != partner.id)
             timeline = timeline.replace_track(track.with_clips((*others, partner.moved_to(start))))
         return project.with_timeline(timeline)
+
+
+@dataclass(frozen=True, slots=True)
+class MoveClips(Command):
+    """選んだクリップをまとめて ``delta`` フレームずらす トラックは変えない
+
+    :class:`MoveClip` を並べると、動かす途中で前のクリップが後ろのクリップの元の
+    場所へ入り、まだ動いていない相手と重なって失敗する（全体としては重ならない
+    動かし方でも） 全員をいったん外してから置き直す
+
+    リンクした相手も同じだけ動く 動く全員（選んだものと相手）のうち 1 本でも
+    ロックしたトラックにいれば、何も動かさない :class:`MoveClip` は相手を残して
+    動くが、まとめて動かすときに同じことをすると、選んだ中のどれかの映像と音声が
+    黙ってずれる 何本も動かすと、どれがずれたのかを見つけにくい
+    """
+
+    clip_ids: tuple[ClipId, ...]
+    delta: int
+
+    @property
+    def label(self) -> str:
+        return f"{len(self.clip_ids)} 本を移動"
+
+    def apply(self, project: Project) -> Project:
+        timeline = project.timeline
+        targets: dict[ClipId, tuple[TrackId, Clip]] = {}
+        for clip_id in self.clip_ids:
+            located = timeline.locate_clip(clip_id)
+            if located is None:
+                raise KeyError(f"クリップが見つからない: {clip_id}")
+            track, clip = located
+            if track.locked:
+                raise ValueError(f"トラック {track.name!r} はロックされている")
+            for track_id, member in _linked_group(project, clip):
+                partner_track = _require_track(project, track_id)
+                if partner_track.locked:
+                    raise ValueError(
+                        f"リンクした相手のトラック {partner_track.name!r} がロックされている"
+                    )
+                targets.setdefault(member.id, (track_id, member))
+        if self.delta == 0 or not targets:
+            return project
+        if any(clip.timeline_start + self.delta < 0 for _, clip in targets.values()):
+            raise ValueError("タイムラインの先頭より前へは動かせない")
+
+        by_track: dict[TrackId, list[Clip]] = {}
+        for track_id, clip in targets.values():
+            by_track.setdefault(track_id, []).append(clip)
+        for track_id, moving in by_track.items():
+            track = _require_track(project, track_id)
+            leaving = {clip.id for clip in moving}
+            staying = tuple(c for c in track.clips if c.id not in leaving)
+            moved = tuple(c.moved_to(c.timeline_start + self.delta) for c in moving)
+            timeline = timeline.replace_track(track.with_clips((*staying, *moved)))
+        return project.with_timeline(timeline)
+
+
+@dataclass(frozen=True, slots=True)
+class RemoveClips(Command):
+    """選んだクリップをまとめて消す ``ripple`` なら消したぶんを詰める
+
+    後ろのクリップから順に消す 前から消して詰めると、後ろのクリップの位置が
+    ずれ、詰める量の計算がずれる リンクした組は 1 回で両方消えるので、2 本目に
+    来たら飛ばす
+    """
+
+    clip_ids: tuple[ClipId, ...]
+    ripple: bool = False
+
+    @property
+    def label(self) -> str:
+        suffix = "（詰める）" if self.ripple else ""
+        return f"{len(self.clip_ids)} 本を削除{suffix}"
+
+    def apply(self, project: Project) -> Project:
+        located = [project.timeline.locate_clip(clip_id) for clip_id in self.clip_ids]
+        if any(entry is None for entry in located):
+            raise KeyError("消すクリップの一部が見つからない")
+        ordered = sorted(
+            (entry[1] for entry in located if entry is not None),
+            key=lambda clip: clip.timeline_start,
+            reverse=True,
+        )
+        for clip in ordered:
+            if project.timeline.locate_clip(clip.id) is not None:
+                project = RemoveClip(clip.id, ripple=self.ripple).apply(project)
+        return project
 
 
 @dataclass(frozen=True, slots=True)

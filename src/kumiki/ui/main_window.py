@@ -309,6 +309,9 @@ class MainWindow(QMainWindow):
             QKeySequence.StandardKey.Paste,
             self._timeline.paste_at_playhead,
         )
+        self._add(
+            edit_menu, "すべて選択", QKeySequence.StandardKey.SelectAll, self._timeline.select_all
+        )
         edit_menu.addSeparator()
         # ヘッダのボタンと同じ切り替えをメニューにも置く キーボードだけで操作する人の
         # 入口で、ショートカットの設定にも載る
@@ -456,6 +459,9 @@ class MainWindow(QMainWindow):
 
     def _connect(self) -> None:
         self._timeline.commands_requested.connect(self.execute_all)
+        self._timeline.commands_continued.connect(
+            lambda commands, label: self.execute_all(commands, label, merge=True)
+        )
         self._timeline.playhead_moved.connect(self._on_playhead_moved)
 
         self._media_pool.import_requested.connect(self.import_media)
@@ -509,12 +515,15 @@ class MainWindow(QMainWindow):
             return
         self._on_project_changed()
 
-    def execute_all(self, commands: list[Command], label: str) -> None:
-        """複数のコマンドを 1 回の Undo で戻せるようにまとめて実行する"""
+    def execute_all(self, commands: list[Command], label: str, *, merge: bool = False) -> None:
+        """複数のコマンドを 1 回の Undo で戻せるようにまとめて実行する
+
+        ``merge`` が真なら、直前の同じ操作の段へまとめる（:meth:`Document.checkpoint`）
+        """
         if not commands:
             return
         try:
-            with self._document.checkpoint(label):
+            with self._document.checkpoint(label, merge=merge):
                 for command in commands:
                     self._document.execute(command)
         except (ValueError, KeyError) as exc:
@@ -1129,6 +1138,13 @@ class MainWindow(QMainWindow):
 
     def select_clip(self, clip_id: ClipId | None) -> None:
         self._timeline.select(clip_id)
+
+    @property
+    def selected_clips(self) -> tuple[ClipId, ...]:
+        return self._timeline.selected_clips
+
+    def select_clips(self, clip_ids: list[ClipId]) -> None:
+        self._timeline.set_selection(clip_ids)
 
     def apply_commands(self, commands: list[Command], label: str) -> None:
         """AI からのコマンドを実行する
