@@ -48,4 +48,12 @@ jobs:
       - name: Qodo が最新のコミットまで見たか
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python tools/qodo_gate.py
+        # main にまだ判定の道具が無い（この仕組みを入れる PR 自身）ときは、失敗にせず
+        # 何もしない status を出さないので、必須にしたあとは「待ち」のまま止まる
+        # 失敗にすると、この仕組みを入れる PR が毎回赤く見えるだけで何も守らない
+        run: |
+          if [ -f tools/qodo_gate.py ]; then
+            python tools/qodo_gate.py
+          else
+            echo "main に tools/qodo_gate.py が無いので判定しない（status も出さない）"
+          fi
