@@ -23,7 +23,7 @@ from kumiki.effects.spec import (
     TrackSpec,
 )
 
-__all__ = ["SHAPE", "TEXT", "SourceDefinition", "source_registry"]
+__all__ = ["FRAMEBUFFER", "SHAPE", "TEXT", "SourceDefinition", "source_registry"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +127,12 @@ SHAPE = SourceDefinition(
 )
 
 
+#: それまでに重ねた画面を、そのまま素材として使う（YMM4 の ``FrameBufferItem``）
+#: 下にある絵へぼかしや色調補正を掛けた帯を作るのに使われる 絵は CPU では作らず、
+#: レンダラが GPU の中で写し取る（:mod:`kumiki.engine.render.renderer`）
+FRAMEBUFFER = SourceDefinition(kind="framebuffer", label="フレームバッファ")
+
+
 class SourceRegistry:
     """生成オブジェクトの一覧"""
 
@@ -143,4 +149,4 @@ class SourceRegistry:
         return kind in self._definitions
 
 
-source_registry = SourceRegistry((TEXT, SHAPE))
+source_registry = SourceRegistry((TEXT, SHAPE, FRAMEBUFFER))

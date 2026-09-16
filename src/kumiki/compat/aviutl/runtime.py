@@ -20,6 +20,7 @@ from typing import Any
 import numpy as np
 
 from kumiki.compat.aviutl.control import ScriptHeader
+from kumiki.compat.aviutl.embedded import EMIT, build_source, has_embedded, literal_text
 from kumiki.compat.aviutl.encoding import read_text
 from kumiki.compat.aviutl.objapi import (
     DrawCall,
@@ -55,6 +56,23 @@ end
 MODULE_SUFFIXES = (".lua", ".mod", ".mod2")
 
 #: 命令数に上限を掛けて呼ぶための包み 無限ループを書いたスクリプトは実在する
+#: 書き出しの手前で Lua の中のまま長さを数える Python へ渡してから数えると、
+#: Lua に許した大きさの文字列を Python 側にも丸ごと写してから断ることになる
+#: 上限はバイト数（UTF-8 の 1 文字は最大 4 バイト） 文字数は Python 側でも数える
+_LIMIT_EMIT = """
+function(sink, limit)
+    local written = 0
+    return function(value)
+        local text = tostring(value)
+        written = written + #text
+        if written > limit then
+            error("書き出す文字が多すぎます")
+        end
+        sink(text)
+    end
+end
+"""
+
 _GUARD = """
 function(fn, limit)
   local co = coroutine.create(fn)
@@ -66,6 +84,51 @@ function(fn, limit)
   return nil, false
 end
 """
+
+
+#: Lua が使ってよいメモリ（バイト） 命令数の上限だけでは、``string.rep`` の 1 回で
+#: 巨大な文字列を作られるのを止められない 配布ファイルを開いただけで落ちないように
+#: 絵の画素は Python 側に持つので、スクリプトそのものはこれで十分足りる
+LUA_MEMORY_LIMIT = 256 * 1024 * 1024
+
+#: テキストの埋め込み Lua が書き出せる文字数 書き出しは Python 側に溜まるので、Lua の
+#: メモリ上限が効かない 字幕や説明文でこれを超える文字を 1 つのテキストに出すことは無い
+EMBEDDED_TEXT_LIMIT = 100_000
+
+
+def _attribute_filter(obj: Any, name: Any, is_setting: bool) -> Any:
+    """Lua から Python の値の属性を引くときの門番 ``_`` で始まる名前は通さない
+
+    ``register_builtins`` を切っても、Lua へ渡した関数の ``__globals__`` から
+    ``__builtins__`` の ``__import__`` まで辿れる スクリプトが使う API に ``_`` で
+    始まる名前は無いので、まとめて塞いでも困らない
+    """
+    del obj, is_setting
+    if not isinstance(name, str) or name.startswith("_"):
+        raise AttributeError(f"Lua からは参照できない名前です: {name}")
+    return name
+
+
+def _new_runtime(module: Any) -> Any:
+    """メモリ上限つきでランタイムを作る
+
+    ``register_builtins`` も切る 既定のままだと、``os`` や ``io`` を消しても
+    ``python.builtins.__import__`` から Python の何でも呼べてしまい、配布ファイルを
+    開いただけで手元のファイルを読み書きされうる
+
+    上限を付けられない版（LuaJIT）は使わない 埋め込み Lua はプロジェクトの文字から
+    走るので、上限の無いランタイムでは 1 回の ``string.rep`` でソフトごと落とせる
+    """
+    try:
+        return module.LuaRuntime(
+            unpack_returned_tuples=True,
+            register_eval=False,
+            register_builtins=False,
+            attribute_filter=_attribute_filter,
+            max_memory=LUA_MEMORY_LIMIT,
+        )
+    except (TypeError, ValueError, RuntimeError) as exc:
+        raise LuaError(f"メモリの上限を付けられない Lua です: {exc}") from exc
 
 
 class LuaError(RuntimeError):
@@ -132,13 +195,16 @@ class LuaScriptRuntime:
         self._report = report if report is not None else global_report
         self._render_source = render_source
         self._instruction_limit = instruction_limit
-        self._lua = module.LuaRuntime(unpack_returned_tuples=True, register_eval=False)
-        self._lock = threading.Lock()
+        self._lua = _new_runtime(module)
+        # 入れ子で取れる錠にする テキストの展開は、大域変数の差し替えと実行を
+        # 1 つの錠の中で行い、その中から run を呼ぶ
+        self._lock = threading.RLock()
         self._install_globals()
         # どちらも 1 度だけ組み立てる フレームごとに作り直すと、
         # コンパイルの時間がそのまま描画の遅れになる
         self._bind_obj = self._lua.eval(_BIND_OBJ)
         self._guard = self._lua.eval(_GUARD)
+        self._limit_emit = self._lua.eval(_LIMIT_EMIT)
         #: 前回置いた大域変数 次の実行で消すために覚えておく
         self._injected: set[str] = set()
         #: いま走らせているスクリプトのフォルダ モジュールの探索に使う
@@ -215,6 +281,40 @@ class LuaScriptRuntime:
                     draws=(state.snapshot(),), failed=True, message=str(exc), state=state
                 )
         return ScriptResult(draws=state.result(), state=state)
+
+    def expand_text(self, text: str, state: ObjectState, *, script: str = "テキスト") -> str:
+        """テキスト欄に埋め込んだ Lua（``<?…?>``）を走らせ、画面に出す文字を返す
+
+        ``obj`` はスクリプトと同じように使える（``obj.time`` で数え上げるなど）
+        失敗したら Lua の部分を除いた文字を返す 理由は記録に残る
+        """
+        if not has_embedded(text):
+            return text
+        output: list[str] = []
+        # 差し替えから戻すまでを錠の中で行う 外で差し替えると、その間に別のスレッドの
+        # 描画が走ったとき、書き出しが別のテキストへ混ざる
+        with self._lock:
+            globals_table = self._lua.globals()
+            written = 0
+
+            def emit(value: Any) -> None:
+                nonlocal written
+                piece = str(value)
+                written += len(piece)
+                if written > EMBEDDED_TEXT_LIMIT:
+                    raise LuaError(f"書き出す文字が多すぎます（{EMBEDDED_TEXT_LIMIT} 文字まで）")
+                output.append(piece)
+
+            globals_table[EMIT] = self._limit_emit(emit, EMBEDDED_TEXT_LIMIT * 4)
+            try:
+                result = self.run(build_source(text), state, script=script)
+            finally:
+                # 残すと、次に走るスクリプトの ``mes`` がテキストの書き出しを呼ぶ
+                globals_table[EMIT] = None
+                globals_table["mes"] = None
+        if result.failed:
+            return literal_text(text)
+        return "".join(output)
 
     def _prepare(self, api: ObjApi, header: ScriptHeader | None, state: ObjectState) -> None:
         """``obj`` を繋ぎ、名前付きの値を大域変数へ置き、``--param`` を流し込む"""

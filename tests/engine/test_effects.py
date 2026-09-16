@@ -134,9 +134,12 @@ class TestRegistry:
     def test_every_effect_has_a_shader_and_parameters(self) -> None:
         # AviUtl スクリプトは Lua で動くのでシェーダを持たない ここでは
         # 自前の（GPU で動く）エフェクトだけを見る
+        # 色の反転は、そもそも調整する値を持たない（反転するかしないかだけ）
+        parameterless = {"invert"}
         for definition in builtin_effects():
             assert definition.fragment_shader, f"{definition.kind}: シェーダが無い"
-            assert definition.parameters, f"{definition.kind}: パラメータが無い"
+            if definition.kind not in parameterless:
+                assert definition.parameters, f"{definition.kind}: パラメータが無い"
 
     def test_defaults_round_trip_through_normalize(self) -> None:
         for definition in registry.all():

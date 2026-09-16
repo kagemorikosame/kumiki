@@ -17,6 +17,7 @@ from PySide6.QtWidgets import QApplication
 
 from kumiki.core.commands import (
     Command,
+    GroupClips,
     MoveClips,
     RemoveClips,
     SetTrackHeights,
@@ -94,6 +95,22 @@ class TestChoosing:
         QTest.mouseClick(view, _LEFT, _SHIFT, _point(view, 0, 50))
         assert set(view.selected_clips) == {a, b, c}
         assert view.selected_clip == b
+
+    def test_shift_range_takes_whole_groups(self, view: TimelineView) -> None:
+        # 範囲に仲間の一部だけが入ったまま動かすと、束が裂ける
+        a, b, c = _ids(view)
+        view.set_project(GroupClips((b, c)).apply(view.project))
+        QTest.mouseClick(view, _LEFT, pos=_point(view, 0, 10))
+        QTest.mouseClick(view, _LEFT, _SHIFT, _point(view, 0, 50))
+        assert set(view.selected_clips) == {a, b, c}
+
+    def test_ctrl_adds_a_group_in_timeline_order(self, view: TimelineView) -> None:
+        # 集合から並べると、選んだ順（selected_clips）が実行のたびに変わる
+        a, b, c = _ids(view)
+        view.set_project(GroupClips((a, c)).apply(view.project))
+        QTest.mouseClick(view, _LEFT, pos=_point(view, 0, 50))
+        QTest.mouseClick(view, _LEFT, _CTRL, _point(view, 0, 10))
+        assert list(view.selected_clips) == [b, c, a]
 
     def test_shift_range_follows_the_order_on_screen(self, view: TimelineView) -> None:
         # 映像は下から積むので、画面では V2・V1・A1 の順 モデルの並びで範囲を取ると、

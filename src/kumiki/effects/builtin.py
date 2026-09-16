@@ -28,8 +28,101 @@ uniform vec2 u_size;           // 入力の大きさ（ピクセル）
 uniform int u_pass;            // 複数パスのときの通し番号
 uniform float u_time;          // クリップ先頭からの経過秒
 uniform float u_frame;         // クリップ先頭からの経過フレーム
+uniform float u_fps;           // 1 秒あたりのフレーム数
+uniform float u_duration;      // クリップの長さ（秒） 退場の動きは終わりから逆算する
+uniform vec4 u_object;         // 絵が置かれた範囲（画素、左・下・右・上 Y は上が正）
 
 const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);  // Rec.709
+const float PI = 3.14159265358979;
+// 画面からカメラまでの距離 kumiki.engine.gpu.projection.CAMERA_DISTANCE と同じ値
+const float CAMERA = 1024.0;
+
+vec2 object_center() { return (u_object.xy + u_object.zw) * 0.5; }
+vec2 object_size() { return max(abs(u_object.zw - u_object.xy), vec2(1.0)); }
+
+// 画素の位置で読む 外は透明 端を引き伸ばして読むと、動かした絵の外側に
+// 縁の色が帯になって伸びる
+vec4 sample_pixel(vec2 pixel) {
+    vec2 uv = pixel / u_size;
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return vec4(0.0);
+    return texture(u_texture, uv);
+}
+
+// ストレートアルファどうしの重ね（上が手前）
+vec4 over(vec4 above, vec4 below) {
+    float alpha = above.a + below.a * (1.0 - above.a);
+    vec3 rgb = above.rgb * above.a + below.rgb * below.a * (1.0 - above.a);
+    return alpha > 0.0001 ? vec4(rgb / alpha, alpha) : vec4(0.0);
+}
+
+// イージング 種類は 0 直線 1 Sine 2 Quad 3 Cubic 4 Quart 5 Quint 6 Expo 7 Circ
+// 8 Back 9 Elastic 10 Bounce、向きは 0 In 1 Out 2 InOut
+float bounce_out(float t) {
+    if (t < 1.0 / 2.75) return 7.5625 * t * t;
+    if (t < 2.0 / 2.75) { t -= 1.5 / 2.75; return 7.5625 * t * t + 0.75; }
+    if (t < 2.5 / 2.75) { t -= 2.25 / 2.75; return 7.5625 * t * t + 0.9375; }
+    t -= 2.625 / 2.75;
+    return 7.5625 * t * t + 0.984375;
+}
+
+float ease_in(float t, int kind) {
+    if (kind == 1) return 1.0 - cos(t * PI * 0.5);
+    if (kind == 2) return t * t;
+    if (kind == 3) return t * t * t;
+    if (kind == 4) return t * t * t * t;
+    if (kind == 5) return t * t * t * t * t;
+    if (kind == 6) return t <= 0.0 ? 0.0 : pow(2.0, 10.0 * (t - 1.0));
+    if (kind == 7) return 1.0 - sqrt(max(1.0 - t * t, 0.0));
+    if (kind == 8) return t * t * (2.70158 * t - 1.70158);
+    if (kind == 9) {
+        if (t <= 0.0 || t >= 1.0) return t;
+        return -pow(2.0, 10.0 * (t - 1.0)) * sin((t - 1.075) * 2.0 * PI / 0.3);
+    }
+    if (kind == 10) return 1.0 - bounce_out(1.0 - t);
+    return t;
+}
+
+float ease(float t, int kind, int mode) {
+    t = clamp(t, 0.0, 1.0);
+    if (mode == 0) return ease_in(t, kind);
+    if (mode == 1) return 1.0 - ease_in(1.0 - t, kind);
+    return t < 0.5 ? ease_in(t * 2.0, kind) * 0.5 : 1.0 - ease_in(2.0 - t * 2.0, kind) * 0.5;
+}
+
+// 行で書いた 3x3 行列 GLSL の mat3 は列で並べるので、転置して渡す
+mat3 rows3(vec3 a, vec3 b, vec3 c) { return transpose(mat3(a, b, c)); }
+
+// X → Y → Z の順に回す行列 角度は度 向きは kumiki.engine.gpu.projection.rotate と同じ
+// （画面の Y 下向き、奥が正で考える）
+mat3 rotation3(vec3 degrees) {
+    vec3 r = radians(degrees);
+    mat3 rx = rows3(vec3(1.0, 0.0, 0.0), vec3(0.0, cos(r.x), sin(r.x)),
+                    vec3(0.0, -sin(r.x), cos(r.x)));
+    mat3 ry = rows3(vec3(cos(r.y), 0.0, -sin(r.y)), vec3(0.0, 1.0, 0.0),
+                    vec3(sin(r.y), 0.0, cos(r.y)));
+    mat3 rz = rows3(vec3(cos(r.z), -sin(r.z), 0.0), vec3(sin(r.z), cos(r.z), 0.0),
+                    vec3(0.0, 0.0, 1.0));
+    return rz * ry * rx;
+}
+
+// 傾けた板の逆算 画面の点（支点からの画素、Y 上向き）が、回す前の板のどこに
+// あたるかを返す カメラから画面の点へ伸ばした線と、回した板の面との交点を
+// 回す前へ戻す 板が真横を向いて交わらなければ、遠くの点（透明）を返す
+vec2 untilt(vec2 point, vec3 degrees) {
+    mat3 rotation = rotation3(degrees);
+    vec3 normal = rotation * vec3(0.0, 0.0, 1.0);
+    vec3 direction = vec3(point.x, -point.y, CAMERA);
+    float facing = dot(normal, direction);
+    if (abs(facing) < 1e-5) return vec2(1e6);
+    float distance = CAMERA * normal.z / facing;
+    if (distance <= 0.0) return vec2(1e6);
+    vec3 hit = vec3(0.0, 0.0, -CAMERA) + direction * distance;
+    vec3 local = transpose(rotation) * hit;
+    return vec2(local.x, -local.y);
+}
+
+// 奥行き z（画素、奥が正）へ置いたときの拡大率
+float depth_scale(float z) { return CAMERA / max(CAMERA + z, 1.0); }
 
 vec4 premul(vec4 c) { return vec4(c.rgb * c.a, c.a); }
 vec4 unpremul(vec4 c) { return c.a > 0.0001 ? vec4(c.rgb / c.a, c.a) : vec4(0.0); }
@@ -202,8 +295,13 @@ uniform float pos_y;
 uniform float scale;
 uniform float scale_y;
 uniform float rotation;
+uniform float rotation_x;
+uniform float rotation_y;
 uniform float anchor_x;
 uniform float anchor_y;
+uniform int pivot_h;
+uniform int pivot_v;
+uniform bool move_to_pivot;
 
 void main() {
     // 出力の座標から入力の座標を逆算する 前方に写すと隙間が空く
@@ -212,9 +310,29 @@ void main() {
     // ここでは符号をそろえるだけでよい 反転させると、同じ「Y」の表示なのに
     // テキストや影と上下が逆に動くことになる
     vec2 pixel = v_uv * u_size;
-    vec2 anchor = u_size * 0.5 + vec2(anchor_x, anchor_y);
+    // 支点の基準 既定は画面の中央 絵の端（YMM4 の中心点）を選ぶと、絵が
+    // 置かれた範囲の端になる 画面の中央を既定に残すのは、今までのプロジェクトの
+    // 見た目を変えないため
+    vec2 base = u_size * 0.5;
+    if (pivot_h == 1) base.x = u_object.x;
+    if (pivot_h == 2) base.x = u_object.z;
+    if (pivot_v == 1) base.y = u_object.w;
+    if (pivot_v == 2) base.y = u_object.y;
+    if (pivot_h == 3) base.x = object_center().x;
+    if (pivot_v == 3) base.y = object_center().y;
+    vec2 anchor = base + vec2(anchor_x, anchor_y);
+    if (move_to_pivot) {
+        // 選んだ中心が、絵の元の中心の位置へ来るように絵ごと動かす（YMM4 の中心点で
+        // 「位置を保つ」を切ったとき） 右下を選べば、絵は左上へずれる
+        pixel += anchor - object_center();
+    }
 
     pixel -= anchor + vec2(pos_x, pos_y);
+
+    if (rotation_x != 0.0 || rotation_y != 0.0) {
+        // 板を傾ける 平面の回転と拡大より先に戻す（掛ける順の逆）
+        pixel = untilt(pixel, vec3(rotation_x, rotation_y, 0.0));
+    }
 
     float angle = radians(-rotation);
     float c = cos(angle);
@@ -577,8 +695,33 @@ def register_builtin_effects() -> None:
                 TrackSpec("scale", "拡大率", 1, 800, 100, unit="%"),
                 TrackSpec("scale_y", "縦の拡大率", 1, 800, 100, unit="%"),
                 TrackSpec("rotation", "回転", -3600, 3600, 0, unit="度"),
+                TrackSpec("rotation_x", "X 軸回転", -3600, 3600, 0, unit="度"),
+                TrackSpec("rotation_y", "Y 軸回転", -3600, 3600, 0, unit="度"),
                 TrackSpec("anchor_x", "中心 X", -4000, 4000, 0, step=1, unit="px"),
                 TrackSpec("anchor_y", "中心 Y", -4000, 4000, 0, step=1, unit="px"),
+                SelectSpec(
+                    "pivot_h",
+                    "中心の横",
+                    (
+                        ("screen", "画面の中央"),
+                        ("left", "絵の左端"),
+                        ("right", "絵の右端"),
+                        ("center", "絵の中央"),
+                    ),
+                    "screen",
+                ),
+                SelectSpec(
+                    "pivot_v",
+                    "中心の縦",
+                    (
+                        ("screen", "画面の中央"),
+                        ("top", "絵の上端"),
+                        ("bottom", "絵の下端"),
+                        ("middle", "絵の中央"),
+                    ),
+                    "screen",
+                ),
+                CheckSpec("move_to_pivot", "中心を絵の中央の位置へ寄せる", False),
             ),
             fragment_shader=_TRANSFORM,
         )

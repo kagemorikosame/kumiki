@@ -135,3 +135,56 @@ def test_effect_only_templates_are_not_placed(loaded: Loaded) -> None:
         if objects and all(item.clip.source is None and not item.media_path for item in objects)
     ]
     assert place(effects_only[0], Project.create()) == []
+
+
+def test_no_video_effect_or_item_is_left_unmapped(catalog: TemplateCatalog) -> None:
+    """実物に出てくる映像エフェクトとアイテムを、1 つも取りこぼさないこと
+
+    フェーズ 4 で 33 種の映像エフェクトと ``FrameBufferItem`` を埋めた ここで
+    記録が出たら、配布物に新しい種類が増えたか、写し方を壊した
+    """
+    report = CompatibilityReport()
+    for entry in catalog.all():
+        entry.load(report=report)
+    leftovers = [
+        line
+        for line in report.lines()
+        if "YMM4 の映像エフェクト" in line or "YMM4 のアイテム" in line
+    ]
+    assert leftovers == []
+
+
+def test_every_template_renders(loaded: Loaded) -> None:
+    """全テンプレートを置いて、途中のフレームを描いてみる
+
+    写し方が合っていても、値の組み合わせでシェーダが落ちたり、例外で描画が
+    止まったりすれば配布物は開けない 小さな画面で 1 枚ずつ描く
+    """
+    from kumiki.core.model import ProjectSettings
+    from kumiki.core.timebase import FrameRate
+    from kumiki.engine.gpu import GLContextError, OffscreenGLContext
+    from kumiki.engine.render import FrameRenderer
+
+    try:
+        context = OffscreenGLContext()
+    except GLContextError as exc:
+        pytest.skip(f"OpenGL コンテキストを作れない: {exc}")
+    settings = ProjectSettings(width=320, height=180, frame_rate=FrameRate(30))
+    drawn = 0
+    try:
+        for _, objects in loaded:
+            project = Project.create(settings)
+            for command in place(objects, project):
+                project = command.apply(project)
+            if project.duration == 0:
+                continue
+            renderer = FrameRenderer(project, context=context)
+            try:
+                image = renderer.render(project.duration // 2)
+            finally:
+                renderer.close()
+            assert image.shape == (180, 320, 4)
+            drawn += 1
+    finally:
+        context.release()
+    assert drawn > 0

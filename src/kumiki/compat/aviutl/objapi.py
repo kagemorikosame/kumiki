@@ -92,6 +92,11 @@ class DrawCall:
     cy: float = 0.0
     cz: float = 0.0
     effects: tuple[EffectRequest, ...] = ()
+    #: ``obj.drawpoly`` の四隅（画面中央からの ``x, y, z``、左上・右上・右下・左下）
+    #: これがあるときは位置・回転・拡大を使わず、この四角形へ貼る
+    quad: tuple[tuple[float, float, float], ...] | None = None
+    #: 四隅に対応する絵の中の位置（画素） ``None`` なら絵全体
+    uv: tuple[tuple[float, float], ...] | None = None
 
 
 @dataclass(slots=True)
@@ -143,6 +148,9 @@ class ObjectState:
     font: dict[str, Any] = field(default_factory=dict)
     #: ``obj.setoption`` で設定した描画オプション
     options: dict[str, Any] = field(default_factory=dict)
+    #: :attr:`image` を描画の記録やバッファと共有している 画素を書き換える前に
+    #: 複製する 描くたびに複製すると、何十回も描くスクリプトで画像の数だけ写す
+    image_shared: bool = False
 
     @property
     def width(self) -> int:
@@ -162,6 +170,7 @@ class ObjectState:
 
     def snapshot(self) -> DrawCall:
         """いまの状態を 1 回分の描画にする"""
+        self.image_shared = True
         return DrawCall(
             image=self.image,
             x=self.ox,
@@ -180,6 +189,16 @@ class ObjectState:
             cz=self.cz,
             effects=tuple(self.effects),
         )
+
+    def writable_image(self) -> np.ndarray:
+        """画素を書き換えてよい画像 共有していれば先に複製する
+
+        共有したまま書くと、記録済みの描画まで最後の状態で描かれる
+        """
+        if self.image_shared:
+            self.image = self.image.copy()
+            self.image_shared = False
+        return self.image
 
     def result(self) -> tuple[DrawCall, ...]:
         """描画の一覧 明示的な描画が無ければ自動描画を 1 つ"""
@@ -339,12 +358,44 @@ class ObjApi:
         state.draws.append(call)
 
     def lua_drawpoly(self, *args: Any) -> None:
-        """四隅を指定して描く まだ効かせていない
+        """四隅を指定して描く
 
-        任意の四角形へ貼るには射影変換が要る 合成側に入れるまでは記録だけ
+        ``obj.drawpoly(x0,y0,z0, x1,y1,z1, x2,y2,z2, x3,y3,z3 [,u0,v0, …, u3,v3] [,alpha])``
+        四隅は左上・右上・右下・左下の順で、オブジェクトの位置（``ox`` ``oy`` ``oz``）
+        からの相対 ``u`` ``v`` は絵の中の画素で、省くと絵全体を貼る
+
+        位置以外の描画パラメータ（回転・拡大）は掛けない 四隅そのものが形を
+        決めるので、掛けると二重に変形する
         """
-        del args
-        self._report.note_missing("obj.drawpoly")
+        values = [_as_float(value) for value in args]
+        if len(values) < 12:
+            self._report.note_missing("obj.drawpoly（四隅が足りない）")
+            return
+
+        state = self.state
+        quad = tuple(
+            (values[i] + state.ox, values[i + 1] + state.oy, values[i + 2] + state.oz)
+            for i in range(0, 12, 3)
+        )
+        uv: tuple[tuple[float, float], ...] | None = None
+        alpha = 1.0
+        rest = values[12:]
+        if len(rest) not in (0, 1, 8, 9):
+            # 途中で切れた UV を透明度として読むと、絵が薄くなったり消えたりする
+            self._report.note_missing("obj.drawpoly（UV か透明度の引数の数が合わない）")
+            # 先頭の UV の値を透明度として読むと、0 のとき板ごと消える
+            rest = [] if len(rest) < 8 else rest[:9]
+        if len(rest) >= 8:
+            uv = tuple((rest[i], rest[i + 1]) for i in range(0, 8, 2))
+            rest = rest[8:]
+        if rest:
+            alpha = rest[0]
+
+        call = state.snapshot()
+        call.quad = quad
+        call.uv = uv
+        call.alpha = state.alpha * alpha
+        state.draws.append(call)
 
     def lua_effect(self, *args: Any) -> None:
         """フィルタを積む ``obj.effect("ぼかし", "範囲", 20)``"""
@@ -423,6 +474,7 @@ class ObjApi:
             self._report.note_missing(f'obj.load("buffer", "{name}")')
             return
         self.state.image = stored
+        self.state.image_shared = True
 
     def lua_copybuffer(self, destination: str = "", source: str = "") -> None:
         """バッファをコピーする ``obj.copybuffer("tmp", "obj")``
@@ -494,7 +546,7 @@ class ObjApi:
         return ((red << 16) | (green << 8) | blue, alpha / 255.0)
 
     def lua_putpixel(self, x: int = 0, y: int = 0, *values: Any) -> None:
-        image = self.state.image
+        image = self.state.writable_image()
         column, row = int(_as_float(x)), int(_as_float(y))
         if not (0 <= row < image.shape[0] and 0 <= column < image.shape[1]):
             return
@@ -510,7 +562,7 @@ class ObjApi:
         image[row, column] = [*channels, max(0, min(255, alpha))]
 
     def lua_copypixel(self, dx: int, dy: int, sx: int, sy: int) -> None:
-        image = self.state.image
+        image = self.state.writable_image()
         target = (int(_as_float(dy)), int(_as_float(dx)))
         origin = (int(_as_float(sy)), int(_as_float(sx)))
         if _inside(image, target) and _inside(image, origin):

@@ -22,8 +22,10 @@ from kumiki.core.clipboard import copy_clips, paste_commands
 from kumiki.core.commands import (
     AddClip,
     AddEffect,
+    AddScene,
     AddTrack,
     Command,
+    GroupClips,
     MoveClip,
     MoveClips,
     ParamPath,
@@ -41,8 +43,11 @@ from kumiki.core.commands import (
     SetTranscript,
     SplitClip,
     TrimClip,
+    UngroupClips,
     insert_generated,
     insert_media,
+    insert_scene,
+    new_scene,
 )
 from kumiki.core.jetcut import plan_cuts
 from kumiki.core.model import (
@@ -55,6 +60,7 @@ from kumiki.core.model import (
     MediaItem,
     ParamValue,
     Project,
+    SceneId,
     SegmentId,
     Track,
     TrackId,
@@ -134,7 +140,7 @@ def _boolean(description: str) -> dict[str, Any]:
 
 
 def _project(host: EditorHost) -> Project:
-    return host.document.project
+    return host.project
 
 
 def _require_clip(project: Project, clip_id: str) -> tuple[Track, Clip]:
@@ -183,6 +189,23 @@ def _target_clips(host: EditorHost, arguments: dict[str, Any]) -> tuple[ClipId, 
     if not clip_ids:
         raise ToolError("clip_ids が空です 選択中のクリップを対象にするなら省いてください")
     return clip_ids
+
+
+def _with_groups(host: EditorHost, clip_ids: tuple[ClipId, ...]) -> tuple[ClipId, ...]:
+    """グループに入ったクリップは仲間も足す 画面で 1 本つかむと束ごと動くのと揃える
+
+    AI が 1 本だけ指したときに束が裂けると、人が画面で直す手間が増える
+    """
+    timeline = _project(host).timeline
+    expanded: dict[ClipId, None] = {}
+    for clip_id in clip_ids:
+        located = timeline.locate_clip(clip_id)
+        if located is None or located[1].group_id is None:
+            expanded[clip_id] = None
+            continue
+        for _, member in timeline.grouped_clips(located[1].group_id):
+            expanded[member.id] = None
+    return tuple(expanded)
 
 
 def _clip_id_list(host: EditorHost, arguments: dict[str, Any]) -> tuple[ClipId, ...]:
@@ -234,6 +257,8 @@ def _get_project(host: EditorHost, arguments: dict[str, Any]) -> object:
         "track_count": len(project.timeline.tracks),
         "playhead": host.playhead,
         "can_undo": host.document.can_undo,
+        "active_scene": str(host.active_scene) if host.active_scene is not None else None,
+        "scene_count": len(project.scenes),
     }
 
 
@@ -292,6 +317,8 @@ def _list_clips(host: EditorHost, arguments: dict[str, Any]) -> object:
                     "speed": round(float(clip.speed), 4),
                     "media": media.name if media is not None else None,
                     "source": clip.source.kind if clip.source is not None else None,
+                    "scene_id": str(clip.scene_id) if clip.scene_id is not None else None,
+                    "group_id": str(clip.group_id) if clip.group_id is not None else None,
                     "effects": [
                         {"effect_id": str(e.id), "kind": e.kind, "enabled": e.enabled}
                         for e in clip.effects
@@ -532,9 +559,21 @@ def _trim_clip(host: EditorHost, arguments: dict[str, Any]) -> object:
 
 
 def _move_clip(host: EditorHost, arguments: dict[str, Any]) -> object:
-    _, clip = _target_clip(host, arguments)
+    track, clip = _target_clip(host, arguments)
     start = int(arguments.get("timeline_start", clip.timeline_start))
     track_id = str(arguments.get("track_id") or "")
+    members = _with_groups(host, (clip.id,))
+    if len(members) > 1:
+        # 1 本だけ動かすと束が裂ける 時刻だけなら仲間ごと同じだけずらせるが、
+        # トラックを移すと仲間の行き先が決まらないので断る 今のトラックの指定は移動ではない
+        if track_id and track_id != str(track.id):
+            raise ToolError(
+                "グループに入ったクリップはトラックを移せません"
+                "（ungroup_clips で解くか、時刻だけ move_clips で動かしてください）"
+            )
+        command = MoveClips(members, start - clip.timeline_start)
+        host.apply_commands([command], command.label)
+        return {"timeline_start": start, "moved": [str(clip_id) for clip_id in members]}
     host.apply_commands(
         [MoveClip(clip.id, start, TrackId(track_id) if track_id else None)], "クリップを移動"
     )
@@ -544,12 +583,18 @@ def _move_clip(host: EditorHost, arguments: dict[str, Any]) -> object:
 def _delete_clip(host: EditorHost, arguments: dict[str, Any]) -> object:
     _, clip = _target_clip(host, arguments)
     ripple = bool(arguments.get("ripple", False))
+    members = _with_groups(host, (clip.id,))
+    if len(members) > 1:
+        # 1 本だけ消すと、画面で消したときと違って仲間が残る
+        command = RemoveClips(members, ripple=ripple)
+        host.apply_commands([command], command.label)
+        return {"deleted": [str(clip_id) for clip_id in members], "ripple": ripple}
     host.apply_commands([RemoveClip(clip.id, ripple=ripple)], "クリップを削除")
     return {"deleted": str(clip.id), "ripple": ripple}
 
 
 def _move_clips(host: EditorHost, arguments: dict[str, Any]) -> object:
-    clip_ids = _target_clips(host, arguments)
+    clip_ids = _with_groups(host, _target_clips(host, arguments))
     delta = int(arguments.get("delta", 0))
     if delta == 0:
         raise ToolError("delta に動かすフレーム数を指定してください（負で前へ）")
@@ -559,7 +604,7 @@ def _move_clips(host: EditorHost, arguments: dict[str, Any]) -> object:
 
 
 def _delete_clips(host: EditorHost, arguments: dict[str, Any]) -> object:
-    clip_ids = _target_clips(host, arguments)
+    clip_ids = _with_groups(host, _target_clips(host, arguments))
     ripple = bool(arguments.get("ripple", False))
     command = RemoveClips(clip_ids, ripple=ripple)
     host.apply_commands([command], command.label)
@@ -572,7 +617,7 @@ def _duplicate_clips(host: EditorHost, arguments: dict[str, Any]) -> object:
     AI には「クリップボードに入れておく」段を見せない 2 回に分けると、間に人が
     別のものをコピーしたとき、AI の知らない中身が貼られる
     """
-    clip_ids = _target_clips(host, arguments)
+    clip_ids = _with_groups(host, _target_clips(host, arguments))
     project = _project(host)
     content = copy_clips(project, clip_ids)
     at_frame = int(arguments.get("at_frame", host.playhead))
@@ -862,6 +907,82 @@ def _seek(host: EditorHost, arguments: dict[str, Any]) -> object:
     return {"playhead": frame}
 
 
+def _list_scenes(host: EditorHost, arguments: dict[str, Any]) -> object:
+    del arguments
+    project = _project(host)
+    return {
+        "active_scene": str(host.active_scene) if host.active_scene is not None else None,
+        "scenes": [
+            {
+                "scene_id": str(scene.id),
+                "name": scene.name,
+                "duration_frames": scene.timeline.duration,
+                "track_count": len(scene.timeline.tracks),
+            }
+            for scene in project.scenes
+        ],
+    }
+
+
+def _add_scene(host: EditorHost, arguments: dict[str, Any]) -> object:
+    name = str(arguments.get("name") or "").strip()
+    if not name:
+        raise ToolError("name にシーンの名前を指定してください")
+    scene = new_scene(_project(host), name)
+    # シーンの追加はどのタイムラインを開いていても同じ プロジェクトそのものへ足す
+    host.apply_commands([AddScene(scene)], f"シーンを追加: {name}")
+    if bool(arguments.get("open", True)):
+        host.set_active_scene(scene.id)
+    return {"scene_id": str(scene.id), "name": name, "opened": host.active_scene == scene.id}
+
+
+def _set_active_scene(host: EditorHost, arguments: dict[str, Any]) -> object:
+    raw = str(arguments.get("scene_id") or "")
+    if not raw:
+        host.set_active_scene(None)
+        return {"active_scene": None}
+    if _project(host).find_scene(SceneId(raw)) is None:
+        raise ToolError(f"シーンが見つかりません: {raw}（list_scenes で一覧を取れます）")
+    host.set_active_scene(SceneId(raw))
+    return {"active_scene": raw}
+
+
+def _place_scene(host: EditorHost, arguments: dict[str, Any]) -> object:
+    raw = str(arguments.get("scene_id") or "")
+    project = _project(host)
+    scene = project.find_scene(SceneId(raw)) if raw else None
+    if scene is None:
+        raise ToolError(f"シーンが見つかりません: {raw}（list_scenes で一覧を取れます）")
+    at_frame = int(arguments.get("at_frame", host.playhead))
+    duration = arguments.get("duration")
+    length = int(duration) if duration is not None else None
+    if length is not None and length < 1:
+        # 0 を既定の長さと読み替えると、AI が頼んだ長さと違うまま黙って置かれる
+        raise ToolError("duration は 1 フレーム以上にしてください（省くとシーンの長さ）")
+    commands = insert_scene(project, scene.id, at_frame=at_frame, duration=length)
+    host.apply_commands(commands, f"シーンを置く: {scene.name}")
+    placed = next((c.clip for c in commands if isinstance(c, AddClip)), None)
+    return {
+        "placed": scene.name,
+        "at_frame": max(0, at_frame),
+        "duration": placed.duration if placed is not None else length,
+    }
+
+
+def _group_clips(host: EditorHost, arguments: dict[str, Any]) -> object:
+    clip_ids = _target_clips(host, arguments)
+    command = GroupClips(clip_ids)
+    host.apply_commands([command], command.label)
+    return {"grouped": [str(clip_id) for clip_id in clip_ids]}
+
+
+def _ungroup_clips(host: EditorHost, arguments: dict[str, Any]) -> object:
+    clip_ids = _target_clips(host, arguments)
+    command = UngroupClips(clip_ids)
+    host.apply_commands([command], command.label)
+    return {"ungrouped": [str(clip_id) for clip_id in clip_ids]}
+
+
 def _select_clips(host: EditorHost, arguments: dict[str, Any]) -> object:
     # 省いたら断る 空の引数で呼ばれただけで選択が消えると、人が選んでいたものを
     # 失う 解きたいときは空の配列を明示してもらう
@@ -955,6 +1076,21 @@ OPERATIONS: tuple[Operation, ...] = (
         description="クリップを選択する clip_id を空にすると選択を解く",
         schema=_schema({"clip_id": _string("選ぶクリップ")}),
         handler=_select,
+    ),
+    Operation(
+        name="list_scenes",
+        description="シーン（入れ子のタイムライン）の一覧と、いま開いているシーン",
+        schema=_schema({}),
+        handler=_list_scenes,
+    ),
+    Operation(
+        name="set_active_scene",
+        description=(
+            "編集するシーンを切り替える scene_id を空にするとメイン "
+            "以後の読み取りと編集は、そのシーンのタイムラインが相手になる"
+        ),
+        schema=_schema({"scene_id": _string("開くシーン 空ならメイン")}),
+        handler=_set_active_scene,
     ),
     Operation(
         name="select_clips",
@@ -1091,6 +1227,47 @@ OPERATIONS: tuple[Operation, ...] = (
         description="クリップを消す ripple を真にすると後ろを詰める",
         schema=_schema({"clip_id": _string("対象"), "ripple": _boolean("詰めるか")}),
         handler=_delete_clip,
+        writes=True,
+    ),
+    Operation(
+        name="add_scene",
+        description="空のシーンを作る 既定でそのまま開く（open を偽にすると開かない）",
+        schema=_schema(
+            {"name": _string("シーンの名前"), "open": _boolean("作ったシーンを開くか")},
+            ["name"],
+        ),
+        handler=_add_scene,
+        writes=True,
+    ),
+    Operation(
+        name="place_scene",
+        description=(
+            "シーンを、いま開いているタイムラインへ 1 本のクリップとして置く "
+            "自分自身や、自分を含むシーンは置けない"
+        ),
+        schema=_schema(
+            {
+                "scene_id": _string("置くシーン"),
+                "at_frame": _integer("置く位置 省略すると再生ヘッド"),
+                "duration": _integer("長さ（フレーム） 省略するとシーンの長さ"),
+            },
+            ["scene_id"],
+        ),
+        handler=_place_scene,
+        writes=True,
+    ),
+    Operation(
+        name="group_clips",
+        description="2 本以上のクリップを 1 つのグループに束ねる 束ねたものは一緒に選ばれて動く",
+        schema=_schema({"clip_ids": _clip_ids_schema()}),
+        handler=_group_clips,
+        writes=True,
+    ),
+    Operation(
+        name="ungroup_clips",
+        description="クリップが入っているグループを、仲間ごと解く",
+        schema=_schema({"clip_ids": _clip_ids_schema()}),
+        handler=_ungroup_clips,
         writes=True,
     ),
     Operation(

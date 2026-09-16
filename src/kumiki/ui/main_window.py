@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import functools
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import QBuffer, QIODevice, Qt, QTimer, QUrl, Signal
@@ -25,6 +26,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDockWidget,
     QFileDialog,
+    QInputDialog,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -36,13 +38,19 @@ from kumiki.ai.host import ToolError
 from kumiki.compat.aviutl.exo import ExoFile
 from kumiki.core.commands import (
     AddMedia,
+    AddScene,
     Command,
     Document,
+    InScene,
     ParamPath,
     RemoveMedia,
+    RemoveScene,
+    RenameScene,
     SetResolution,
     insert_generated,
     insert_media,
+    insert_scene,
+    new_scene,
 )
 from kumiki.core.io import (
     LEGACY_SUFFIXES,
@@ -68,6 +76,7 @@ from kumiki.core.model import (
     MediaItem,
     Project,
     ProjectSettings,
+    SceneId,
 )
 from kumiki.effects.sources import SHAPE, TEXT
 from kumiki.engine.audio.waveform import Waveform
@@ -81,6 +90,7 @@ from kumiki.ui.inspector import InspectorPanel
 from kumiki.ui.media_pool import MediaPoolWidget
 from kumiki.ui.playback import PlaybackController
 from kumiki.ui.preview import PreviewWidget
+from kumiki.ui.scene_bar import SceneBar
 from kumiki.ui.subtitle import SubtitlePanel
 from kumiki.ui.theme import Colors
 from kumiki.ui.timeline import TimelineView
@@ -149,6 +159,9 @@ class MainWindow(QMainWindow):
         self._analysis_dirty = False
         #: AI が結果を確認するための描画係 初めて求められたときに作る
         self._ai_renderer: FrameRenderer | None = None
+        #: 編集しているシーン ``None`` ならメイン モデルではなく画面の状態なので
+        #: 窓が持つ（保存しない 開き直したらメインから始まる）
+        self._active_scene: SceneId | None = None
 
         self._build_widgets()
         self._build_menus()
@@ -246,7 +259,14 @@ class MainWindow(QMainWindow):
         self._chat_dock = chat_dock
 
         timeline_dock = self._dock("タイムライン", "timeline")
-        timeline_dock.setWidget(self._timeline)
+        self._scene_bar = SceneBar()
+        timeline_panel = QWidget()
+        timeline_layout = QVBoxLayout(timeline_panel)
+        timeline_layout.setContentsMargins(0, 0, 0, 0)
+        timeline_layout.setSpacing(0)
+        timeline_layout.addWidget(self._scene_bar)
+        timeline_layout.addWidget(self._timeline, 1)
+        timeline_dock.setWidget(timeline_panel)
         timeline_dock.setAllowedAreas(Qt.DockWidgetArea.BottomDockWidgetArea)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, timeline_dock)
         self.resizeDocks([timeline_dock], [320], Qt.Orientation.Vertical)
@@ -313,6 +333,17 @@ class MainWindow(QMainWindow):
             edit_menu, "すべて選択", QKeySequence.StandardKey.SelectAll, self._timeline.select_all
         )
         edit_menu.addSeparator()
+        # Ctrl+G はグラフエディタが先に使っている 今ある割り当ては変えない
+        self._add(
+            edit_menu, "グループ化", QKeySequence("Ctrl+Alt+G"), self._timeline.group_selected
+        )
+        self._add(
+            edit_menu,
+            "グループ解除",
+            QKeySequence("Ctrl+Alt+Shift+G"),
+            self._timeline.ungroup_selected,
+        )
+        edit_menu.addSeparator()
         # ヘッダのボタンと同じ切り替えをメニューにも置く キーボードだけで操作する人の
         # 入口で、ショートカットの設定にも載る
         for text, key, attribute in (
@@ -330,6 +361,17 @@ class MainWindow(QMainWindow):
         object_menu = self._menu("オブジェクト")
         self._add(object_menu, "テキストを追加", QKeySequence("Ctrl+T"), self.add_text)
         self._add(object_menu, "図形を追加", QKeySequence("Ctrl+Shift+T"), self.add_shape)
+
+        scene_menu = self._menu("シーン")
+        self._add(scene_menu, "新しいシーン…", QKeySequence("Ctrl+Alt+N"), self._ask_new_scene)
+        self._add(scene_menu, "シーンを置く…", QKeySequence("Ctrl+Alt+P"), self._ask_place_scene)
+        scene_menu.addSeparator()
+        self._add(scene_menu, "シーンの名前を変更…", QKeySequence(), self._ask_rename_scene)
+        self._add(scene_menu, "シーンを削除", QKeySequence(), self.remove_active_scene)
+        scene_menu.addSeparator()
+        self._add(
+            scene_menu, "メインに戻る", QKeySequence("Ctrl+Alt+M"), lambda: self.open_scene(None)
+        )
 
         subtitle_menu = self._menu("字幕")
         self._add(subtitle_menu, "字幕パネル", QKeySequence("Ctrl+Shift+U"), self.show_subtitles)
@@ -473,6 +515,16 @@ class MainWindow(QMainWindow):
         )
 
         self._timeline.selection_changed.connect(self._on_selection_changed)
+        self._timeline.scene_open_requested.connect(
+            lambda scene_id: self.open_scene(SceneId(scene_id))
+        )
+        self._scene_bar.scene_selected.connect(
+            lambda scene_id: self.open_scene(SceneId(scene_id) if scene_id else None)
+        )
+        self._scene_bar.add_requested.connect(self._ask_new_scene)
+        self._scene_bar.rename_requested.connect(self._ask_rename_scene)
+        self._scene_bar.remove_requested.connect(self.remove_active_scene)
+        self._scene_bar.place_requested.connect(self._ask_place_scene)
         self._inspector.commands_requested.connect(self.execute_all)
         self._inspector.preview_requested.connect(self._preview_command)
         self._inspector.curve_selected.connect(self._show_curve)
@@ -509,7 +561,7 @@ class MainWindow(QMainWindow):
         いかないことが普通にあり、そのたびにダイアログが出ると邪魔になる
         """
         try:
-            self._document.execute(command)
+            self._document.execute(self._in_active_scene(command))
         except (ValueError, KeyError) as exc:
             self.statusBar().showMessage(str(exc), 4000)
             return
@@ -525,10 +577,127 @@ class MainWindow(QMainWindow):
         try:
             with self._document.checkpoint(label, merge=merge):
                 for command in commands:
-                    self._document.execute(command)
+                    self._document.execute(self._in_active_scene(command))
         except (ValueError, KeyError) as exc:
             self.statusBar().showMessage(str(exc), 4000)
         self._on_project_changed()
+
+    def _in_active_scene(self, command: Command) -> Command:
+        """開いているシーンの中で実行するよう包む メインなら包まない
+
+        画面のパネルも AI も、見ているタイムライン（:attr:`view_project`）を相手に
+        コマンドを作る 包み忘れると、シーンを開いて足したクリップがメインに入る
+        """
+        if self._active_scene is None or isinstance(command, InScene):
+            return command
+        return InScene(self._active_scene, command)
+
+    @property
+    def view_project(self) -> Project:
+        """いま編集しているタイムラインを ``timeline`` に差し込んだプロジェクト
+
+        タイムライン・プレビュー・設定パネルはこれを見る 保存と書き出しは
+        いつもメイン（:attr:`document` のプロジェクト）
+        """
+        project = self._document.project
+        if self._active_scene is None:
+            return project
+        scene = project.find_scene(self._active_scene)
+        return project if scene is None else replace(project, timeline=scene.timeline)
+
+    @property
+    def active_scene(self) -> SceneId | None:
+        return self._active_scene
+
+    def open_scene(self, scene_id: SceneId | None) -> None:
+        """編集するシーンを切り替える ``None`` ならメイン"""
+        if scene_id is not None and self._document.project.find_scene(scene_id) is None:
+            self.statusBar().showMessage("そのシーンは見つかりません", 4000)
+            return
+        if scene_id == self._active_scene:
+            return
+        self._playback.stop()
+        self._active_scene = scene_id
+        # 選んでいたクリップは別のタイムラインのもの 残すと、開いた先で
+        # 「見つからない」になる
+        self._timeline.select(None)
+        self._on_project_changed()
+        self._seek(0)
+
+    def create_scene(self, name: str) -> SceneId | None:
+        """空のシーンを作って開く"""
+        name = name.strip()
+        if not name:
+            return None
+        scene = new_scene(self._document.project, name)
+        try:
+            self._document.execute(AddScene(scene))
+        except (ValueError, KeyError) as exc:
+            self.statusBar().showMessage(str(exc), 4000)
+            return None
+        self._on_project_changed()
+        self.open_scene(scene.id)
+        return scene.id
+
+    def rename_active_scene(self, name: str) -> None:
+        if self._active_scene is not None:
+            self.execute(RenameScene(self._active_scene, name))
+
+    def remove_active_scene(self) -> None:
+        """開いているシーンを消してメインへ戻る どこかに置かれていれば断られる"""
+        target = self._active_scene
+        if target is None:
+            self.statusBar().showMessage("メインは消せません", 4000)
+            return
+        try:
+            self._document.execute(RemoveScene(target))
+        except (ValueError, KeyError) as exc:
+            self.statusBar().showMessage(str(exc), 5000)
+            return
+        self._active_scene = None
+        self._on_project_changed()
+
+    def place_scene(self, scene_id: SceneId) -> None:
+        """シーンを、いま編集しているタイムラインの再生ヘッドの位置へ置く"""
+        try:
+            commands = insert_scene(self.view_project, scene_id, at_frame=self._timeline.playhead)
+        except KeyError as exc:
+            self.statusBar().showMessage(str(exc), 4000)
+            return
+        scene = self._document.project.require_scene(scene_id)
+        self.execute_all(commands, f"シーンを置く: {scene.name}")
+
+    def _ask_new_scene(self) -> None:
+        count = len(self._document.project.scenes) + 1
+        name, accepted = QInputDialog.getText(
+            self, "新しいシーン", "シーンの名前", text=f"シーン {count}"
+        )
+        if accepted:
+            self.create_scene(name)
+
+    def _ask_rename_scene(self) -> None:
+        if self._active_scene is None:
+            self.statusBar().showMessage("メインの名前は変えられません", 4000)
+            return
+        scene = self._document.project.require_scene(self._active_scene)
+        name, accepted = QInputDialog.getText(self, "シーンの名前", "新しい名前", text=scene.name)
+        if accepted:
+            self.rename_active_scene(name)
+
+    def _ask_place_scene(self) -> None:
+        # 開いているシーン自身は置けない（入れ子が自分へ戻る） 選択肢から外す
+        choices = [s for s in self._document.project.scenes if s.id != self._active_scene]
+        if not choices:
+            self.statusBar().showMessage(
+                "置けるシーンがありません（先にシーンを作ってください）", 5000
+            )
+            return
+        # 同じ名前のシーンがあると、名前から引き直したときに先頭のものを選んでしまう
+        # 番号を付けて、選んだ行の位置でシーンを決める
+        names = [f"{index}. {scene.name}" for index, scene in enumerate(choices, start=1)]
+        name, accepted = QInputDialog.getItem(self, "シーンを置く", "置くシーン", names, 0, False)
+        if accepted and name in names:
+            self.place_scene(choices[names.index(name)].id)
 
     def undo(self) -> None:
         self._document.undo()
@@ -539,9 +708,14 @@ class MainWindow(QMainWindow):
         self._on_project_changed()
 
     def _on_project_changed(self) -> None:
-        project = self._document.project
+        root = self._document.project
+        if self._active_scene is not None and root.find_scene(self._active_scene) is None:
+            # 取り消しでシーンが消えたら、メインへ戻る
+            self._active_scene = None
+        project = self.view_project
+        self._scene_bar.set_project(root, self._active_scene)
         self._timeline.set_project(project)
-        self._media_pool.set_project(project)
+        self._media_pool.set_project(root)
         self._inspector.set_project(project)
         self._graph.set_project(project)
         self._subtitles.set_project(project)
@@ -594,7 +768,7 @@ class MainWindow(QMainWindow):
         """
         commands: list[Command] = []
         failures: list[str] = []
-        project = self._document.project
+        project = self.view_project
 
         for path in paths:
             try:
@@ -623,9 +797,7 @@ class MainWindow(QMainWindow):
         self._insert_generated(SHAPE.create(), "図形を追加")
 
     def _insert_generated(self, source: GeneratedSource, label: str) -> None:
-        commands = insert_generated(
-            self._document.project, source, at_frame=self._timeline.playhead
-        )
+        commands = insert_generated(self.view_project, source, at_frame=self._timeline.playhead)
         self.execute_all(commands, label)
         # 置いたものをすぐ選ぶ 設定パネルが開いていないと、
         # 追加したのに何も起きていないように見える
@@ -636,7 +808,7 @@ class MainWindow(QMainWindow):
     def _last_added_clip(self) -> ClipId | None:
         """再生ヘッドの位置にある、生成オブジェクトのクリップ"""
         frame = self._timeline.playhead
-        for track in reversed(list(self._document.project.timeline.video_tracks())):
+        for track in reversed(list(self.view_project.timeline.video_tracks())):
             clip = track.clip_at(frame)
             if clip is not None and clip.source is not None:
                 return clip.id
@@ -677,7 +849,7 @@ class MainWindow(QMainWindow):
             self._analyzer.forget(target)
 
     def _insert_media_by_id(self, media_id: str) -> None:
-        project = self._document.project
+        project = self.view_project
         media = project.find_media(MediaId(media_id))
         if media is None:
             return
@@ -701,7 +873,7 @@ class MainWindow(QMainWindow):
     # --- 再生とシーク ---
 
     def _seek(self, frame: int) -> None:
-        frame = max(0, min(frame, self._document.project.duration))
+        frame = max(0, min(frame, self.view_project.duration))
         self._timeline.set_playhead(frame)
         self._show_frame(frame)
         self._playback.set_frame(frame)
@@ -731,7 +903,7 @@ class MainWindow(QMainWindow):
         作らないための逃げ道で、指を離した時点で本来のコマンドが飛んでくる
         """
         try:
-            preview = command.apply(self._document.project)
+            preview = command.apply(self.view_project)
         except (ValueError, KeyError):
             return
         self._preview.set_project(preview)
@@ -1012,7 +1184,7 @@ class MainWindow(QMainWindow):
             return
 
         media, missing = self._resolve_exo_media(exo, source)
-        commands = map_exo(exo, self._document.project, media=media)
+        commands = map_exo(exo, self.view_project, media=media)
         if not commands:
             self.statusBar().showMessage("読み込めるオブジェクトがありませんでした", 5000)
             return
@@ -1067,9 +1239,7 @@ class MainWindow(QMainWindow):
         if action == "restyle":
             clip_id = self.selected_clip
             located = (
-                self._document.project.timeline.locate_clip(clip_id)
-                if clip_id is not None
-                else None
+                self.view_project.timeline.locate_clip(clip_id) if clip_id is not None else None
             )
             if located is None:
                 self.statusBar().showMessage("先にテキストのクリップを選んでください", 5000)
@@ -1082,7 +1252,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("テンプレートを適用した（文字と長さはそのまま）", 5000)
             return
 
-        commands = place(objects, self._document.project, at_frame=self._timeline.playhead)
+        commands = place(objects, self.view_project, at_frame=self._timeline.playhead)
         if not commands:
             self.statusBar().showMessage("置けるオブジェクトがありませんでした", 5000)
             return
@@ -1158,11 +1328,19 @@ class MainWindow(QMainWindow):
         try:
             with self._document.checkpoint(label):
                 for command in commands:
-                    self._document.execute(command)
+                    self._document.execute(self._in_active_scene(command))
         except (ValueError, KeyError) as exc:
             raise ToolError(str(exc)) from exc
         finally:
             self._on_project_changed()
+
+    @property
+    def project(self) -> Project:
+        """AI が読むプロジェクト 画面と同じく、開いているシーンを見る"""
+        return self.view_project
+
+    def set_active_scene(self, scene_id: SceneId | None) -> None:
+        self.open_scene(scene_id)
 
     def stop_playback(self) -> None:
         self._playback.stop()
@@ -1172,8 +1350,12 @@ class MainWindow(QMainWindow):
 
         プレビューのウィジェットとは別のコンテキストで描く 再生用の資源を
         取り合わないようにするためで、代わりに 1 つ余分にコンテキストを持つ
+
+        AI が編集の結果を目で確かめるためのもので、書き出しではない 開いているシーンを
+        描く AI の読み取り（``list_clips`` など）もそのシーンが相手なので、メインを描くと
+        AI が見ているクリップと絵が食い違う
         """
-        project = self._document.project
+        project = self.view_project
         full_width = project.settings.width
         divisor = max(1, round(full_width / max(width, 1)))
 

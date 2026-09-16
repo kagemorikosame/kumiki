@@ -17,7 +17,7 @@ from kumiki.compat.aviutl import PREFIX
 from kumiki.compat.aviutl.catalog import ScriptCatalog, script_catalog
 from kumiki.compat.aviutl.control import lua_value
 from kumiki.compat.aviutl.objapi import DrawCall, EffectRequest, ObjectState
-from kumiki.compat.aviutl.runtime import LuaScriptRuntime
+from kumiki.compat.aviutl.runtime import LuaScriptRuntime, blank_image
 from kumiki.core.model import AnimatedValue, Clip, Effect, GeneratedSource, ParamValue
 from kumiki.effects.definition import registry
 from kumiki.engine.sources import render_source
@@ -98,6 +98,18 @@ class ScriptStage:
             )
 
         return state.result()
+
+    def expand_text(self, text: str, *, frame: int, fps: float, duration: int) -> str:
+        """テキスト欄に埋め込んだ Lua を、そのフレームの文字にする"""
+        state = ObjectState(
+            image=blank_image(1, 1),
+            screen_w=self._screen[0],
+            screen_h=self._screen[1],
+            frame=frame,
+            totalframe=max(1, duration),
+            framerate=fps,
+        )
+        return self._runtime.expand_text(text, state)
 
     def _render_source(
         self, kind: str, params: dict[str, object], width: int, height: int

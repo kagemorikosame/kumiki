@@ -106,10 +106,84 @@ class TestDrawing:
         result = runtime.run("obj.ox = 12 obj.rz = 30 obj.draw()", state())
         assert (result.draws[0].x, result.draws[0].rz) == (12.0, 30.0)
 
-    def test_drawpoly_is_recorded_as_missing(self) -> None:
+    def test_drawpoly_becomes_a_draw_on_a_quad(self) -> None:
+        # 記録だけで描かないと、立体的に動く配布スクリプトが何も映さない
         report = CompatibilityReport()
         runtime = LuaScriptRuntime(report=report, instruction_limit=100_000)
-        runtime.run("obj.drawpoly(0,0,0, 1,0,0, 1,1,0, 0,1,0)", state())
+        result = runtime.run(
+            "obj.ox = 5 obj.drawpoly(-10,-10,0, 10,-10,0, 10,10,20, -10,10,20,"
+            " 0,0, 4,0, 4,4, 0,4, 0.5)",
+            state(),
+        )
+        (call,) = result.draws
+        assert call.quad == (
+            (-5.0, -10.0, 0.0),
+            (15.0, -10.0, 0.0),
+            (15.0, 10.0, 20.0),
+            (-5.0, 10.0, 20.0),
+        )
+        assert call.uv == ((0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0))
+        assert call.alpha == 0.5
+        assert not any("drawpoly" in line for line in report.lines())
+
+    def test_each_draw_keeps_the_picture_of_its_time(self, runtime: LuaScriptRuntime) -> None:
+        # 同じ配列を共有すると、後の putpixel が前に描いた分まで書き換える
+        result = runtime.run(
+            "obj.drawpoly(0,0,0, 1,0,0, 1,1,0, 0,1,0) obj.putpixel(0, 0, 0xff0000, 1) obj.draw()",
+            state(),
+        )
+        first, second = result.draws
+        assert tuple(second.image[0, 0]) == (255, 0, 0, 255)
+        assert tuple(first.image[0, 0]) != (255, 0, 0, 255)
+
+    def test_drawpoly_with_a_broken_uv_is_recorded(self) -> None:
+        # 途中で切れた UV の先頭を透明度として黙って読むと、絵が薄くなった理由が追えない
+        report = CompatibilityReport()
+        runtime = LuaScriptRuntime(report=report, instruction_limit=100_000)
+        result = runtime.run("obj.drawpoly(0,0,0, 1,0,0, 1,1,0, 0,1,0, 0,0, 4,0)", state())
+        assert result.draws[0].uv is None
+        # 先頭の UV の 0 を透明度と読むと、板ごと消える
+        assert result.draws[0].alpha == 1.0
+        assert any("drawpoly" in line for line in report.lines())
+
+    def test_python_is_out_of_reach(self) -> None:
+        # python.builtins が見えると、配布ファイルの Lua から手元のファイルを読み書きできる
+        report = CompatibilityReport()
+        runtime = LuaScriptRuntime(report=report, instruction_limit=100_000)
+        reachable = "obj.ox = (python ~= nil and python.builtins ~= nil) and 1 or 0"
+        result = runtime.run(reachable, state())
+        assert result.state is not None
+        assert result.state.ox == 0.0
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            'python.eval("1")',
+            "local g = RGB.__globals__",
+            "local g = debug_print.__globals__",
+        ],
+    )
+    def test_python_internals_cannot_be_walked(self, code: str) -> None:
+        # 渡した関数の __globals__ を辿れると、__import__ から手元のファイル操作や
+        # プロセスの起動まで届く python.eval が戻っても同じ
+        runtime = LuaScriptRuntime(report=CompatibilityReport(), instruction_limit=100_000)
+        assert runtime.run(code, state()).failed
+
+    def test_a_script_cannot_eat_all_the_memory(self) -> None:
+        # 配布ファイルを開いただけで、巨大な文字列を作られてソフトごと落ちないこと
+        runtime = LuaScriptRuntime(report=CompatibilityReport(), instruction_limit=100_000)
+        result = runtime.run('local s = string.rep("a", 1024 * 1024 * 1024)', state())
+        assert result.failed
+        assert "memory" in (result.message or "")
+        # 断ったあとも同じランタイムで描ける
+        assert runtime.run("obj.draw()", state()).draws
+
+    def test_drawpoly_with_too_few_points_is_recorded(self) -> None:
+        # 四隅が揃わないまま描くと、潰れた面が画面に広がる
+        report = CompatibilityReport()
+        runtime = LuaScriptRuntime(report=report, instruction_limit=100_000)
+        result = runtime.run("obj.drawpoly(0,0,0, 1,0,0)", state())
+        assert all(call.quad is None for call in result.draws)
         assert any("drawpoly" in line for line in report.lines())
 
 

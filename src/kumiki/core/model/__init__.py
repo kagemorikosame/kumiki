@@ -20,17 +20,19 @@ from kumiki.core.model.ids import (
     EffectId,
     GroupId,
     MediaId,
+    SceneId,
     SegmentId,
     TrackId,
     new_clip_id,
     new_effect_id,
     new_group_id,
     new_media_id,
+    new_scene_id,
     new_segment_id,
     new_track_id,
 )
 from kumiki.core.model.media import AudioStreamInfo, MediaItem, VideoStreamInfo
-from kumiki.core.model.project import Project, ProjectSettings
+from kumiki.core.model.project import Project, ProjectSettings, Scene
 from kumiki.core.model.timeline import (
     Clip,
     GeneratedSource,
@@ -58,6 +60,8 @@ __all__ = [
     "ParamValue",
     "Project",
     "ProjectSettings",
+    "Scene",
+    "SceneId",
     "SegmentId",
     "Timeline",
     "Track",
@@ -71,6 +75,7 @@ __all__ = [
     "new_effect_id",
     "new_group_id",
     "new_media_id",
+    "new_scene_id",
     "new_segment_id",
     "new_track_id",
 ]

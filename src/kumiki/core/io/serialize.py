@@ -34,6 +34,8 @@ from kumiki.core.model import (
     ParamValue,
     Project,
     ProjectSettings,
+    Scene,
+    SceneId,
     SegmentId,
     Timeline,
     Track,
@@ -62,7 +64,10 @@ __all__ = [
 ]
 
 FORMAT_NAME = "kumiki-project"
-FORMAT_VERSION = 1
+#: 2 でシーン（``scenes`` と ``Clip.scene_id``）とグループ（``Clip.group_id``）を足した
+#: 1 の本体は 2 を開くと「更新してください」と言う（シーンを黙って捨てて開くと、
+#: 置いたシーンが何も映らない穴になり、保存し直すとシーンごと消える）
+FORMAT_VERSION = 2
 
 #: プロジェクトファイルの拡張子
 SUFFIX = ".kmk"
@@ -419,6 +424,8 @@ def _clip_to_json(clip: Clip) -> dict[str, Any]:
         "opacity": _param_to_json(clip.opacity),
         "blend_mode": clip.blend_mode,
         "link_group": clip.link_group,
+        "scene_id": clip.scene_id,
+        "group_id": clip.group_id,
         "enabled": clip.enabled,
         "effects": [effect_to_json(e) for e in clip.effects],
     }
@@ -432,6 +439,12 @@ def _clip_from_json(raw: object) -> Clip:
     link_group = data.get("link_group")
     if link_group is not None and not isinstance(link_group, str):
         raise ProjectFileError(f"link_group が文字列ではない: {link_group!r}")
+    scene_id = data.get("scene_id")
+    if scene_id is not None and not isinstance(scene_id, str):
+        raise ProjectFileError(f"scene_id が文字列ではない: {scene_id!r}")
+    group_id = data.get("group_id")
+    if group_id is not None and not isinstance(group_id, str):
+        raise ProjectFileError(f"group_id が文字列ではない: {group_id!r}")
 
     opacity = _param_from_json(data.get("opacity", {"static": 1.0}))
     if not isinstance(opacity, AnimatedValue):
@@ -450,6 +463,8 @@ def _clip_from_json(raw: object) -> Clip:
         opacity=opacity,
         blend_mode=_get_str(data, "blend_mode", "normal"),
         link_group=GroupId(link_group) if link_group is not None else None,
+        scene_id=SceneId(scene_id) if scene_id is not None else None,
+        group_id=GroupId(group_id) if group_id is not None else None,
         enabled=_get_bool(data, "enabled", True),
         id=ClipId(_get_str(data, "id")),
     )
@@ -550,6 +565,10 @@ def project_to_dict(project: Project) -> dict[str, Any]:
         },
         "media": [_media_to_json(m) for m in project.media],
         "timeline": _timeline_to_json(project.timeline),
+        "scenes": [
+            {"id": scene.id, "name": scene.name, "timeline": _timeline_to_json(scene.timeline)}
+            for scene in project.scenes
+        ],
     }
 
 
@@ -587,11 +606,28 @@ def project_from_dict(data: object) -> Project:
             f"{timeline.rate} と {settings.frame_rate}"
         )
 
-    return Project(
-        settings=settings,
-        timeline=timeline,
-        media=tuple(_media_from_json(m) for m in _get_list(root, "media")),
-        name=_get_str(root, "name", "無題"),
+    try:
+        # シーンの中のクリップも、長さ 0 などで ValueError を投げる try の外に置くと、
+        # 開く側が ProjectFileError しか受けないので、壊れたファイルで落ちる
+        scenes = tuple(_scene_from_json(raw) for raw in _get_list(root, "scenes"))
+        return Project(
+            settings=settings,
+            timeline=timeline,
+            media=tuple(_media_from_json(m) for m in _get_list(root, "media")),
+            name=_get_str(root, "name", "無題"),
+            scenes=scenes,
+        )
+    except ValueError as exc:
+        # シーンの入れ子が自分へ戻っている、など 壊れたファイルとして伝える
+        raise ProjectFileError(str(exc)) from exc
+
+
+def _scene_from_json(raw: object) -> Scene:
+    data = _require(raw, "scene")
+    return Scene(
+        name=_get_str(data, "name", "シーン"),
+        timeline=_timeline_from_json(data.get("timeline", {"rate": "30/1"})),
+        id=SceneId(_get_str(data, "id")),
     )
 
 

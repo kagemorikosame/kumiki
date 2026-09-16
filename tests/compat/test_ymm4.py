@@ -393,6 +393,44 @@ class TestVideoEffects:
         assert value_at(params["contrast"]) == pytest.approx(30.0)
         assert value_at(params["saturation"]) == pytest.approx(0.0)
 
+    def test_random_move_flips_y(self) -> None:
+        # YMM4 は下が正 そのまま渡すと上下の揺れの向きが逆になる
+        effect = {
+            "$type": "YukkuriMovieMaker.Project.Effects.RandomMoveEffect, YukkuriMovieMaker",
+            "X": still(10.0),
+            "Y": still(20.0),
+            "IsEnabled": True,
+        }
+        result = map_video_effects([effect], CompatibilityReport(), length=30)
+        assert value_at(result.effects[0].params["range_y"]) == -20.0
+
+    def test_a_pivot_that_cannot_be_passed_on_is_recorded(self) -> None:
+        # 中央で回ってしまう分を記録しないと、見た目の違いが互換の記録から漏れる
+        report = CompatibilityReport()
+        centre = {
+            "$type": "YukkuriMovieMaker.Project.Effects.CenterPointEffect, YukkuriMovieMaker",
+            "Horizontal": "Left",
+            "IsEnabled": True,
+        }
+        spin = {
+            "$type": "YukkuriMovieMaker.Project.Effects.RepeatRotateEffect, YukkuriMovieMaker",
+            "IsEnabled": True,
+        }
+        map_video_effects([centre, spin], report, length=30)
+        assert any("CenterPointEffect" in line for line in report.lines())
+
+    def test_a_count_that_is_not_a_number_is_recorded(self) -> None:
+        # int(NaN) の例外で、同じアイテムの後ろのエフェクトまで読めなくなる
+        report = CompatibilityReport()
+        duplicate = {
+            "$type": "YukkuriMovieMaker.Project.Effects.CircularDuplicatorEffect, A",
+            "Count": still(float("nan")),
+            "IsEnabled": True,
+        }
+        result = map_video_effects([duplicate], report, length=30)
+        assert result.effects[0].params["count"] == 8
+        assert any("Count" in line for line in report.lines())
+
     def test_an_unknown_effect_is_recorded_not_dropped(self) -> None:
         report = CompatibilityReport()
         map_video_effects(

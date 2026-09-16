@@ -64,6 +64,14 @@ _BLEND_MODES: dict[str, str] = {
     "乗算": "multiply",
     "Screen": "screen",
     "スクリーン": "screen",
+    "Overlay": "overlay",
+    "オーバーレイ": "overlay",
+    "Lighten": "lighten",
+    "比較(明)": "lighten",
+    "Darken": "darken",
+    "比較(暗)": "darken",
+    "Subtract": "subtract",
+    "減算": "subtract",
 }
 
 #: ``BasePoint`` の横と縦 ``CenterCenter`` ``LeftTop`` のように 2 つ並ぶ
@@ -319,6 +327,10 @@ def _content(
         return _text(item), "", "text"
     if name in ("ShapeItem", "EffectItem", "Shape"):
         return _shape(item, log), "", "shape"
+
+    if name == "FrameBufferItem":
+        # それまでに重ねた画面を素材にする 中身の設定は持たない
+        return GeneratedSource(kind="framebuffer"), "", "framebuffer"
 
     media = _MEDIA_ITEMS.get(name)
     if media is not None:

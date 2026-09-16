@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from kumiki.compat.aviutl.encoding import encode_utf16_hex
 from kumiki.compat.aviutl.exo import parse_exo
 from kumiki.compat.aviutl.mapping import MappedObject, map_exo, map_object
@@ -95,9 +97,30 @@ class TestDrawSettings:
         mapped = one(build("_name=図形", "_name=標準描画\nblend=1"))
         assert mapped.clip.blend_mode == "add"
 
-    def test_an_unsupported_blend_falls_back_to_normal(self) -> None:
+    @pytest.mark.parametrize(("number", "mode"), [(5, "overlay"), (6, "lighten"), (7, "darken")])
+    def test_the_newer_blend_numbers_are_translated(self, number: int, mode: str) -> None:
+        # 通常へ落とすと、配布物の光や影の重ね方が消える
+        mapped = one(build("_name=図形", f"_name=標準描画\nblend={number}"))
+        assert mapped.clip.blend_mode == mode
+
+    def test_a_blend_that_is_not_a_number_is_recorded(self) -> None:
+        # 0 と読むと「通常」に見えて、読めなかったことが記録から漏れる
+        report = CompatibilityReport()
+        text = build("_name=図形", "_name=標準描画\nblend=foo")
+        mapped = map_object(parse_exo(text).objects[0], RATE, report=report)
+        assert mapped is not None
+        assert mapped.clip.blend_mode == "normal"
+        assert any("foo" in line for line in report.lines())
+
+    @pytest.mark.parametrize(("raw", "mode"), [("1.0", "add"), ("1e0", "add"), ("1.5", "normal")])
+    def test_a_whole_number_may_be_written_as_a_decimal(self, raw: str, mode: str) -> None:
+        # 1.0 を読めないと加算が通常になる 1.5 を 1 と読むと、読めなかったことが隠れる
+        mapped = one(build("_name=図形", f"_name=標準描画\nblend={raw}"))
+        assert mapped.clip.blend_mode == mode
+
+    def test_a_number_outside_the_table_falls_back_to_normal(self) -> None:
         # 似た別のもので代用すると、直したつもりの無い違いが出る
-        mapped = one(build("_name=図形", "_name=標準描画\nblend=5"))
+        mapped = one(build("_name=図形", "_name=標準描画\nblend=9"))
         assert mapped.clip.blend_mode == "normal"
 
 
