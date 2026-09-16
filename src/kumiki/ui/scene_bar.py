@@ -83,7 +83,8 @@ class SceneBar(QWidget):
         editing_scene = active is not None
         self._rename_button.setEnabled(editing_scene)
         self._remove_button.setEnabled(editing_scene)
-        self._place_button.setEnabled(bool(project.scenes))
+        # 開いているシーン自身は置けない 置ける候補が無いのに押せると、押してから断られる
+        self._place_button.setEnabled(any(scene.id != active for scene in project.scenes))
 
     def _on_index_changed(self, index: int) -> None:
         if self._updating or index < 0:

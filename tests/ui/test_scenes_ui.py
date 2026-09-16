@@ -92,6 +92,27 @@ class TestGroups:
         QTest.mouseClick(view, Qt.MouseButton.LeftButton, pos=point)
         assert set(view.selected_clips) == {clips[0].id, clips[1].id}
 
+    def test_right_click_selects_the_whole_group(self, window: MainWindow) -> None:
+        # 1 本だけ選び直すと、右クリックの削除や切り取りで束が裂ける
+        clips = window.document.project.timeline.tracks[0].clips
+        window.execute(GroupClips((clips[0].id, clips[1].id)))
+        view = window._timeline
+        view.resize(900, 300)
+        band = view._layout.bands(view.project.timeline)[0]
+        point = QPoint(int(view._layout.frame_to_x(50)), band.top + band.height // 2)
+        view.build_context_menu(point)
+        assert set(view.selected_clips) == {clips[0].id, clips[1].id}
+        assert view.selected_clip == clips[1].id
+
+    def test_the_place_button_needs_another_scene(self, window: MainWindow) -> None:
+        # 開いているシーン自身しか無いのに押せると、押してから断られて壊れて見える
+        scene_id = window.create_scene("ひとつだけ")
+        assert scene_id is not None
+        window.open_scene(scene_id)
+        assert not window._scene_bar._place_button.isEnabled()
+        window.open_scene(None)
+        assert window._scene_bar._place_button.isEnabled()
+
     def test_group_and_ungroup_from_the_selection(self, window: MainWindow) -> None:
         view = window._timeline
         view.select_all()

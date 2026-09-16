@@ -380,6 +380,10 @@ class ObjApi:
         uv: tuple[tuple[float, float], ...] | None = None
         alpha = 1.0
         rest = values[12:]
+        if len(rest) not in (0, 1, 8, 9):
+            # 途中で切れた UV を透明度として読むと、絵が薄くなったり消えたりする
+            self._report.note_missing("obj.drawpoly（UV か透明度の引数の数が合わない）")
+            rest = rest[:1] if len(rest) < 8 else rest[:9]
         if len(rest) >= 8:
             uv = tuple((rest[i], rest[i + 1]) for i in range(0, 8, 2))
             rest = rest[8:]

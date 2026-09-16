@@ -937,14 +937,18 @@ def _place_scene(host: EditorHost, arguments: dict[str, Any]) -> object:
         raise ToolError(f"シーンが見つかりません: {raw}（list_scenes で一覧を取れます）")
     at_frame = int(arguments.get("at_frame", host.playhead))
     duration = arguments.get("duration")
-    commands = insert_scene(
-        project,
-        scene.id,
-        at_frame=at_frame,
-        duration=int(duration) if duration is not None else None,
-    )
+    length = int(duration) if duration is not None else None
+    if length is not None and length < 1:
+        # 0 を既定の長さと読み替えると、AI が頼んだ長さと違うまま黙って置かれる
+        raise ToolError("duration は 1 フレーム以上にしてください（省くとシーンの長さ）")
+    commands = insert_scene(project, scene.id, at_frame=at_frame, duration=length)
     host.apply_commands(commands, f"シーンを置く: {scene.name}")
-    return {"placed": scene.name, "at_frame": max(0, at_frame)}
+    placed = next((c.clip for c in commands if isinstance(c, AddClip)), None)
+    return {
+        "placed": scene.name,
+        "at_frame": max(0, at_frame),
+        "duration": placed.duration if placed is not None else length,
+    }
 
 
 def _group_clips(host: EditorHost, arguments: dict[str, Any]) -> object:

@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 from kumiki.core.commands.base import Command
 from kumiki.core.model import ClipId, GroupId, Project, new_group_id
@@ -38,12 +38,12 @@ def _set_group(project: Project, clip_ids: tuple[ClipId, ...], group: GroupId | 
 class GroupClips(Command):
     """2 本以上のクリップを 1 つに束ねる すでに別の束ねにいたものも、新しい束ねへ移る
 
-    ``group_id`` を省くと新しく作る 取り消してもう一度実行したときに同じ ID に
-    なるよう、コマンドを作る時点で決めてしまってもよい
+    ``group_id`` を省くと、コマンドを作る時点で新しく決める ``apply`` のたびに
+    作ると、同じコマンドを当て直したときに ID と、ID から決まる色が変わる
     """
 
     clip_ids: tuple[ClipId, ...]
-    group_id: GroupId | None = None
+    group_id: GroupId = field(default_factory=new_group_id)
 
     @property
     def label(self) -> str:
@@ -53,7 +53,7 @@ class GroupClips(Command):
         if len(set(self.clip_ids)) < 2:
             # 1 本だけの束ねは、選択を広げる意味が無いのに解除の手間だけが残る
             raise ValueError("グループ化には 2 本以上のクリップが要る")
-        return _set_group(project, self.clip_ids, self.group_id or new_group_id())
+        return _set_group(project, self.clip_ids, self.group_id)
 
 
 @dataclass(frozen=True, slots=True)

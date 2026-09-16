@@ -39,6 +39,12 @@ class TestScenes:
         placed = [clip for clip in run(host, "list_clips") if clip["scene_id"]]
         assert [(clip["start"], clip["duration"]) for clip in placed] == [(400, 60)]
 
+    def test_a_zero_length_is_refused(self, host: FakeHost) -> None:
+        # 0 を既定の長さと読み替えると、AI が頼んだ長さと違うまま黙って置かれる
+        created = run(host, "add_scene", name="挿入", open=False)
+        with pytest.raises(ToolError, match="duration"):
+            run(host, "place_scene", scene_id=created["scene_id"], duration=0)
+
     def test_a_scene_cannot_be_placed_inside_itself(self, host: FakeHost) -> None:
         # 置けてしまうと、描くときに無限に潜って固まる
         created = run(host, "add_scene", name="自分")

@@ -126,6 +126,8 @@ class TestScenes:
     def test_media_used_in_another_scene_cannot_be_removed(
         self, with_scene: tuple[Project, SceneId], video_media: MediaItem
     ) -> None:
+        # ほかのシーンの参照を見落とすと、そのシーンに素材の無いクリップが残り、
+        # 開いたときに原因の分からない再生エラーになる
         project, scene_id = with_scene
         project = AddMedia(video_media).apply(project)
         project = InScene(scene_id, AddTrack(Track(TrackKind.VIDEO, "V1"))).apply(project)
@@ -138,12 +140,14 @@ class TestScenes:
     def test_unused_media_can_still_be_removed_inside(
         self, with_scene: tuple[Project, SceneId], video_media: MediaItem
     ) -> None:
+        # 確かめを広げすぎて使っていない素材まで消せなくなると、メディアプールを片付けられない
         project, scene_id = with_scene
         project = AddMedia(video_media).apply(project)
         removed = InScene(scene_id, RemoveMedia(video_media.id)).apply(project)
         assert removed.media == ()
 
-    def test_rename(self, with_scene: tuple[Project, SceneId]) -> None:
+    def test_rename_trims_surrounding_spaces(self, with_scene: tuple[Project, SceneId]) -> None:
+        # 空白が残ると、シーンバーの表示とファイルの中身に見えない空白が入る
         project, scene_id = with_scene
         project = RenameScene(scene_id, "  導入  ").apply(project)
         assert project.require_scene(scene_id).name == "導入"
@@ -172,6 +176,14 @@ class TestGroups:
         assert clips[0].group_id is not None and clips[0].group_id == clips[1].group_id
         freed = UngroupClips((a.id,)).apply(grouped)
         assert all(clip.group_id is None for clip in freed.timeline.tracks[0].clips)
+
+    def test_the_group_id_is_fixed_when_the_command_is_made(self) -> None:
+        # 当て直すたびに ID が変わると、ID から決まるグループの色まで変わる
+        project, a, b = self._two()
+        command = GroupClips((a.id, b.id))
+        first = command.apply(project).timeline.tracks[0].clips[0].group_id
+        again = command.apply(project).timeline.tracks[0].clips[0].group_id
+        assert first == again == command.group_id
 
     def test_a_single_clip_is_not_a_group(self) -> None:
         # 1 本だけの束ねは選択を広げないのに、解除の手間だけが残る
@@ -245,4 +257,20 @@ class TestSaving:
             }
         ]
         with pytest.raises(ProjectFileError, match="無いシーン"):
+            project_from_dict(data)
+
+    def test_a_broken_clip_inside_a_scene_is_a_file_error(
+        self, with_scene: tuple[Project, SceneId]
+    ) -> None:
+        # 開く側は ProjectFileError しか受けない 素の ValueError が漏れると起動ごと落ちる
+        project, _ = with_scene
+        data = project_to_dict(project)
+        data["scenes"][0]["timeline"]["tracks"] = [
+            {
+                "id": "t1",
+                "kind": "video",
+                "clips": [{"id": "c1", "timeline_start": 0, "duration": 0}],
+            }
+        ]
+        with pytest.raises(ProjectFileError):
             project_from_dict(data)

@@ -69,6 +69,22 @@ end
 """
 
 
+#: Lua が使ってよいメモリ（バイト） 命令数の上限だけでは、``string.rep`` の 1 回で
+#: 巨大な文字列を作られるのを止められない 配布ファイルを開いただけで落ちないように
+#: 絵の画素は Python 側に持つので、スクリプトそのものはこれで十分足りる
+LUA_MEMORY_LIMIT = 256 * 1024 * 1024
+
+
+def _new_runtime(module: Any) -> Any:
+    """メモリ上限つきでランタイムを作る 上限を付けられない版（LuaJIT）では付けずに作る"""
+    try:
+        return module.LuaRuntime(
+            unpack_returned_tuples=True, register_eval=False, max_memory=LUA_MEMORY_LIMIT
+        )
+    except (TypeError, ValueError, RuntimeError):
+        return module.LuaRuntime(unpack_returned_tuples=True, register_eval=False)
+
+
 class LuaError(RuntimeError):
     """スクリプトの読み込みか実行に失敗した"""
 
@@ -133,7 +149,7 @@ class LuaScriptRuntime:
         self._report = report if report is not None else global_report
         self._render_source = render_source
         self._instruction_limit = instruction_limit
-        self._lua = module.LuaRuntime(unpack_returned_tuples=True, register_eval=False)
+        self._lua = _new_runtime(module)
         self._lock = threading.Lock()
         self._install_globals()
         # どちらも 1 度だけ組み立てる フレームごとに作り直すと、

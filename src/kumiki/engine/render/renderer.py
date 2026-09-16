@@ -16,7 +16,7 @@ from OpenGL import GL
 from kumiki.compat.aviutl.embedded import has_embedded
 from kumiki.compat.aviutl.report import global_report
 from kumiki.core.model import Clip, Effect, MediaId, Project, Timeline, Track, TrackKind
-from kumiki.core.timebase import FrameRate
+from kumiki.core.timebase import FrameRate, seconds_to_frame
 from kumiki.engine.decode import ProbeError, VideoDecoder
 from kumiki.engine.gpu import (
     Compositor,
@@ -312,8 +312,9 @@ class FrameRenderer:
         if scene is None or depth >= MAX_SCENE_DEPTH:
             return
         local_frame = frame - clip.timeline_start
-        start = int(clip.source_in * rate.fps)
-        scene_frame = start + int(local_frame * clip.speed)
+        # 別々に切り捨てると端数が 2 回落ち、1 フレーム前の絵になることがある
+        elapsed = Fraction(local_frame) * rate.frame_duration * Fraction(clip.speed)
+        scene_frame = seconds_to_frame(Fraction(clip.source_in) + elapsed, rate)
 
         width, height = self._compositor.width, self._compositor.height
         nested = self._nested.get(depth + 1)

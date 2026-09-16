@@ -606,8 +606,10 @@ def project_from_dict(data: object) -> Project:
             f"{timeline.rate} と {settings.frame_rate}"
         )
 
-    scenes = tuple(_scene_from_json(raw) for raw in _get_list(root, "scenes"))
     try:
+        # シーンの中のクリップも、長さ 0 などで ValueError を投げる try の外に置くと、
+        # 開く側が ProjectFileError しか受けないので、壊れたファイルで落ちる
+        scenes = tuple(_scene_from_json(raw) for raw in _get_list(root, "scenes"))
         return Project(
             settings=settings,
             timeline=timeline,

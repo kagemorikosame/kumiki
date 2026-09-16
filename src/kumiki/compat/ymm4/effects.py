@@ -89,8 +89,12 @@ class _Reader:
             "easing_mode": self.choice("EasingMode", _EASING_MODES, "in"),
         }
 
-    def unused(self, *keys: str) -> None:
-        """写せない設定が既定から動いていれば記録する 動いていなければ見た目は変わらない"""
+    def unused(self, *keys: str, default: float = 0.0) -> None:
+        """写せない設定が既定から動いていれば記録する 動いていなければ見た目は変わらない
+
+        既定はキーごとに違いうるので呼ぶ側が渡す 100 を一律に既定と見なすと、
+        既定が 0 の設定に 100 が入っていても記録から漏れる
+        """
         for key in keys:
             value = self.entry.get(key)
             if value is None:
@@ -98,17 +102,38 @@ class _Reader:
             if isinstance(value, dict):
                 values = value.get("Values")
                 moved = isinstance(values, list) and any(
-                    isinstance(item, dict) and number(item.get("Value")) != 0.0 for item in values
+                    isinstance(item, dict) and number(item.get("Value"), default) != default
+                    for item in values
                 )
+            elif isinstance(value, bool):
+                moved = value != bool(default)
             else:
-                moved = bool(value) and value not in (0, 0.0, 100, 100.0)
+                moved = number(value, default) != default
             if moved:
                 self.report.note_missing(f"YMM4 の {self.name} の {key}（写せない設定）")
+
+    def still(self, key: str, default: float = 0.0) -> float:
+        """動かせない設定を 1 つの数で読む 動いていれば記録して、先頭の値を使う"""
+        value = self.track(key, default)
+        if value.is_animated:
+            self.report.note_missing(f"YMM4 の {self.name} の {key}（動きは写せない）")
+            return value.keyframes[0].value
+        return value.static
+
+
+#: いま写している最中の記録 写し方ごとに記録を引き回さずに済むよう、
+#: :func:`map_effect` が呼んでいる間だけ置く
+_active_report: CompatibilityReport | None = None
 
 
 def _create(kind: str, **params: Any) -> Effect | None:
     definition = registry.get(kind)
-    return None if definition is None else definition.create(**params)
+    if definition is None:
+        # 写し方はあるのに移す先が登録されていない 黙って消すと対応済みに見える
+        if _active_report is not None:
+            _active_report.note_missing(f"YMM4 の映像エフェクトの移す先: {kind}")
+        return None
+    return definition.create(**params)
 
 
 def _noise_displacement(r: _Reader) -> Effect | None:
@@ -126,7 +151,7 @@ def _noise_displacement(r: _Reader) -> Effect | None:
         strength=inner.track("Strength", 100.0),
         threshold=inner.track("Threshold"),
         levels=inner.track("Levels", 256.0),
-        octaves=int(inner.track("Octaves", 5.0).static),
+        octaves=int(inner.still("Octaves", 5.0)),
         offset_x=inner.track("X"),
         offset_y=inner.track("Y", flip=True),
         offset_z=inner.track("Z"),
@@ -317,7 +342,7 @@ def _repeat_rotate(r: _Reader) -> Effect | None:
 def _circular_duplicator(r: _Reader) -> Effect | None:
     return _create(
         "circular_duplicate",
-        count=int(r.track("Count", 8.0).static),
+        count=int(r.still("Count", 8.0)),
         radius=r.track("Radius", 100.0),
         circumference=r.track("CircumferenceRate", 100.0),
         synced=r.flag("IsSyncedAngle", True),
@@ -443,7 +468,7 @@ def _edge_detection(r: _Reader) -> Effect | None:
     return _create(
         "edge_detect",
         strength=r.track("Strength", 50.0),
-        radius=max(1.0, r.track("BlurRadius").static),
+        radius=max(1.0, r.still("BlurRadius")),
         mode=r.choice("Mode", {"Sobel": "sobel", "Prewitt": "prewitt"}, "sobel"),
         overlay=r.flag("IsOverlayEdges"),
     )
@@ -500,10 +525,15 @@ def map_effect(
     keyframes: Any = None,
 ) -> Effect | None:
     """1 つ写す 知らない名前や、写せない形なら ``None``（形の問題は記録に残る）"""
+    global _active_report
     mapper = _MAPPERS.get(name)
     if mapper is None:
         return None
-    return mapper(_Reader(entry, length, keyframes, report, name))
+    _active_report = report
+    try:
+        return mapper(_Reader(entry, length, keyframes, report, name))
+    finally:
+        _active_report = None
 
 
 class CenterPoint:

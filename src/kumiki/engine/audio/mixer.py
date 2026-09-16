@@ -111,8 +111,10 @@ class AudioMixer:
         *,
         scenes_only: bool = False,
     ) -> None:
-        gain = _db_to_gain(track.volume_db)
-        pan = np.clip(track.pan, -1.0, 1.0)
+        # 映像トラックの音量と定位は使わない決まり（画面にも出ていない） 置いたシーンの
+        # 音だけを混ぜるときに掛けると、見えない値で音が変わる
+        gain = 1.0 if scenes_only else _db_to_gain(track.volume_db)
+        pan = 0.0 if scenes_only else np.clip(track.pan, -1.0, 1.0)
 
         for clip in track.clips:
             if not clip.enabled:

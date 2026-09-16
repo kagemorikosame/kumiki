@@ -109,8 +109,14 @@ class TestShaderBlends:
 
     def test_every_mode_has_a_way_to_draw(self, gl_context: OffscreenGLContext) -> None:
         # 一覧にあるのに描き方が無いと、選んでも通常と同じに見える
+        # 比較(明)(暗) はどちらが上かで通常と重なるので、上下を入れ替えた組も見る
+        pairs = ((100, 150), (150, 100))
+        normal = [_mix(gl_context, below, above, BlendMode.NORMAL) for below, above in pairs]
         for mode in BlendMode.ALL:
-            _mix(gl_context, 100, 150, mode)
+            if mode == BlendMode.NORMAL:
+                continue
+            mixed = [_mix(gl_context, below, above, mode) for below, above in pairs]
+            assert mixed != normal, f"{mode} が通常と同じ"
 
 
 class TestProjection:

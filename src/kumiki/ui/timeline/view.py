@@ -687,7 +687,8 @@ class TimelineView(QWidget):
             # 選んでいる何本かの上なら、その何本かが対象 選んでいない所なら、
             # そのクリップだけを選び直す
             if hit[1].id not in self._selection:
-                self.select(hit[1].id)
+                # 左クリックと同じくグループは仲間ごと 1 本だけだと、削除や切り取りで束が裂ける
+                self.set_selection((*self._group_of(hit[1].id), hit[1].id))
             if len(self._selection) > 1:
                 count = f"（{len(self._selection)} 本）"
             _action(menu, "再生ヘッドで分割", self.split_at_playhead)

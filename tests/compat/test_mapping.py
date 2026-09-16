@@ -103,6 +103,15 @@ class TestDrawSettings:
         mapped = one(build("_name=図形", f"_name=標準描画\nblend={number}"))
         assert mapped.clip.blend_mode == mode
 
+    def test_a_blend_that_is_not_a_number_is_recorded(self) -> None:
+        # 0 と読むと「通常」に見えて、読めなかったことが記録から漏れる
+        report = CompatibilityReport()
+        text = build("_name=図形", "_name=標準描画\nblend=foo")
+        mapped = map_object(parse_exo(text).objects[0], RATE, report=report)
+        assert mapped is not None
+        assert mapped.clip.blend_mode == "normal"
+        assert any("foo" in line for line in report.lines())
+
     def test_a_number_outside_the_table_falls_back_to_normal(self) -> None:
         # 似た別のもので代用すると、直したつもりの無い違いが出る
         mapped = one(build("_name=図形", "_name=標準描画\nblend=9"))

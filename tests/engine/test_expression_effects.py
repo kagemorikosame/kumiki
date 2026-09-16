@@ -174,6 +174,7 @@ class TestPixels:
     def test_invert_turns_black_to_white(
         self, gl_context: OffscreenGLContext, processor: EffectProcessor
     ) -> None:
+        # 反転しないと、ネガのような演出の配布テンプレートが元の色のまま出る
         dark = _run(gl_context, processor, _make("invert"), image=_square(value=0))
         assert dark[32, 32, 0] == pytest.approx(1.0, abs=0.01)
 
@@ -216,6 +217,7 @@ class TestPixels:
     def test_circular_duplicate_makes_copies(
         self, gl_context: OffscreenGLContext, processor: EffectProcessor
     ) -> None:
+        # 複製が 1 つに重なると、円形に並べる演出が 1 つの絵にしか見えない
         small = _square(inner=6)
         effect = _make("circular_duplicate", count=4, radius=20, synced=False)
         result = _run(gl_context, processor, effect, image=small)
@@ -229,6 +231,13 @@ class TestPixels:
         assert _alpha_sum(result) == pytest.approx(32 * 32, rel=0.05)
         assert result[32, 32, 3] > 0.9
 
+    def test_skewing_both_ways_keeps_the_picture(
+        self, gl_context: OffscreenGLContext, processor: EffectProcessor
+    ) -> None:
+        # 行列式の符号を取り違えると、縦横とも 45 度で割る数が 0 になり絵が消える
+        effect = _make("skew", angle_x=45, angle_y=45)
+        assert _alpha_sum(_run(gl_context, processor, effect)) > 100
+
     def test_a_collapsed_mesh_draws_nothing_broken(
         self, gl_context: OffscreenGLContext, processor: EffectProcessor
     ) -> None:
@@ -240,6 +249,7 @@ class TestPixels:
     def test_long_shadow_extends_behind(
         self, gl_context: OffscreenGLContext, processor: EffectProcessor
     ) -> None:
+        # 影が後ろへ伸びないか本体を塗り潰すと、長い影の字幕が読めなくなる
         effect = _make("long_shadow", angle=0, length_=12, color1=(0.0, 0.0, 0.0, 1.0))
         result = _run(gl_context, processor, effect)
         assert result[32, 52, 3] > 0.9
@@ -248,6 +258,7 @@ class TestPixels:
     def test_repeat_opacity_swings(
         self, gl_context: OffscreenGLContext, processor: EffectProcessor
     ) -> None:
+        # 揺れないと、点滅させる配布テンプレートが表示されたまま止まる
         effect = _make("repeat_opacity", opacity=0, interval=1.0)
         start = _run(gl_context, processor, effect, frame=0)
         middle = _run(gl_context, processor, effect, frame=15)

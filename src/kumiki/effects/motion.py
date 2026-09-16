@@ -367,7 +367,9 @@ void main() {
     vec2 point = v_uv * u_size - pivot;
     float tx = tan(radians(clamp(angle_x, -89.0, 89.0)));
     float ty = tan(radians(clamp(angle_y, -89.0, 89.0)));
-    float determinant = 1.0 - tx * ty;
+    // 逆算に使う行列 [[1, tx], [-ty, 1]] の行列式は 1 + tx*ty 符号を取り違えると、
+    // 倍率が狂い、両方 45 度で 0 になって絵が消える
+    float determinant = 1.0 + tx * ty;
     if (abs(determinant) < 1e-4) { frag_color = vec4(0.0); return; }
     vec2 source = vec2(point.x + tx * point.y, point.y - ty * point.x) / determinant;
     frag_color = sample_pixel(pivot + source);

@@ -501,9 +501,14 @@ def _blend_of(entry: ExoEntry, log: CompatibilityReport) -> str:
         # 記録に残らない 未知の名前はそのまま渡して記録させる
         mode = _BLEND_NAMES.get(named.strip(), named.strip())
     else:
-        index = entry.integer("blend")
+        raw = entry.params.get("blend", "0").strip()
+        try:
+            index = int(raw)
+        except ValueError:
+            # 数でない値を 0 と読むと「通常」に見えて、記録に残らない
+            index = -1
         # 表に無い番号（輝度・色差など）も記録に残るよう、番号のまま渡す
-        mode = _BLEND_MODES[index] if 0 <= index < len(_BLEND_MODES) else f"番号 {index}"
+        mode = _BLEND_MODES[index] if 0 <= index < len(_BLEND_MODES) else f"番号 {raw}"
 
     # こちらに無い合成方法は通常扱いにする 似た別のもので代用すると、
     # 直したつもりの無い違いが出る
