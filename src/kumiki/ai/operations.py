@@ -562,6 +562,18 @@ def _move_clip(host: EditorHost, arguments: dict[str, Any]) -> object:
     _, clip = _target_clip(host, arguments)
     start = int(arguments.get("timeline_start", clip.timeline_start))
     track_id = str(arguments.get("track_id") or "")
+    members = _with_groups(host, (clip.id,))
+    if len(members) > 1:
+        # 1 本だけ動かすと束が裂ける 時刻だけなら仲間ごと同じだけずらせるが、
+        # トラックを移すと仲間の行き先が決まらないので断る
+        if track_id:
+            raise ToolError(
+                "グループに入ったクリップはトラックを移せません"
+                "（ungroup_clips で解くか、時刻だけ move_clips で動かしてください）"
+            )
+        command = MoveClips(members, start - clip.timeline_start)
+        host.apply_commands([command], command.label)
+        return {"timeline_start": start, "moved": [str(clip_id) for clip_id in members]}
     host.apply_commands(
         [MoveClip(clip.id, start, TrackId(track_id) if track_id else None)], "クリップを移動"
     )
