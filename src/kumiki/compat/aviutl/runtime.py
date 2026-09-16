@@ -56,6 +56,23 @@ end
 MODULE_SUFFIXES = (".lua", ".mod", ".mod2")
 
 #: 命令数に上限を掛けて呼ぶための包み 無限ループを書いたスクリプトは実在する
+#: 書き出しの手前で Lua の中のまま長さを数える Python へ渡してから数えると、
+#: Lua に許した大きさの文字列を Python 側にも丸ごと写してから断ることになる
+#: 上限はバイト数（UTF-8 の 1 文字は最大 4 バイト） 文字数は Python 側でも数える
+_LIMIT_EMIT = """
+function(sink, limit)
+    local written = 0
+    return function(value)
+        local text = tostring(value)
+        written = written + #text
+        if written > limit then
+            error("書き出す文字が多すぎます")
+        end
+        sink(text)
+    end
+end
+"""
+
 _GUARD = """
 function(fn, limit)
   local co = coroutine.create(fn)
@@ -187,6 +204,7 @@ class LuaScriptRuntime:
         # コンパイルの時間がそのまま描画の遅れになる
         self._bind_obj = self._lua.eval(_BIND_OBJ)
         self._guard = self._lua.eval(_GUARD)
+        self._limit_emit = self._lua.eval(_LIMIT_EMIT)
         #: 前回置いた大域変数 次の実行で消すために覚えておく
         self._injected: set[str] = set()
         #: いま走らせているスクリプトのフォルダ モジュールの探索に使う
@@ -287,7 +305,7 @@ class LuaScriptRuntime:
                     raise LuaError(f"書き出す文字が多すぎます（{EMBEDDED_TEXT_LIMIT} 文字まで）")
                 output.append(piece)
 
-            globals_table[EMIT] = emit
+            globals_table[EMIT] = self._limit_emit(emit, EMBEDDED_TEXT_LIMIT * 4)
             try:
                 result = self.run(build_source(text), state, script=script)
             finally:

@@ -50,6 +50,12 @@ class TestExpansion:
         assert runtime.expand_text(text, _state()) == "前後"
         assert report.lines()
 
+    def test_one_huge_output_is_refused_inside_lua(self) -> None:
+        # Python へ渡してから数えると、巨大な文字列を Python 側にも写してから断ることになる
+        runtime = LuaScriptRuntime(instruction_limit=200_000, report=CompatibilityReport())
+        text = "前<?mes(string.rep('a', 1000000))?>後"
+        assert runtime.expand_text(text, _state()) == "前後"
+
     def test_mes_writes_in_place(self, runtime: LuaScriptRuntime) -> None:
         assert runtime.expand_text("残り<?mes(10 - 4)?>秒", _state()) == "残り6秒"
 
