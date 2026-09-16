@@ -144,6 +144,9 @@ class Program:
         """``vec2`` の配列を渡す ``name`` は配列の名前（``u_uv`` など）"""
         location = self.location(name)
         if location < 0:
+            # 実装によっては配列の名前だけでは位置が引けず、先頭の要素名が要る
+            location = self.location(f"{name}[0]")
+        if location < 0:
             return
         flat = np.asarray(values, dtype=np.float32).reshape(-1)
         GL.glUniform2fv(location, len(values), flat)

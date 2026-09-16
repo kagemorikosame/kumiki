@@ -142,7 +142,18 @@ class TestDrawing:
         runtime = LuaScriptRuntime(report=report, instruction_limit=100_000)
         result = runtime.run("obj.drawpoly(0,0,0, 1,0,0, 1,1,0, 0,1,0, 0,0, 4,0)", state())
         assert result.draws[0].uv is None
+        # 先頭の UV の 0 を透明度と読むと、板ごと消える
+        assert result.draws[0].alpha == 1.0
         assert any("drawpoly" in line for line in report.lines())
+
+    def test_python_is_out_of_reach(self) -> None:
+        # python.builtins が見えると、配布ファイルの Lua から手元のファイルを読み書きできる
+        report = CompatibilityReport()
+        runtime = LuaScriptRuntime(report=report, instruction_limit=100_000)
+        reachable = "obj.ox = (python ~= nil and python.builtins ~= nil) and 1 or 0"
+        result = runtime.run(reachable, state())
+        assert result.state is not None
+        assert result.state.ox == 0.0
 
     def test_a_script_cannot_eat_all_the_memory(self) -> None:
         # 配布ファイルを開いただけで、巨大な文字列を作られてソフトごと落ちないこと

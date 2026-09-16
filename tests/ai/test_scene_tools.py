@@ -91,6 +91,18 @@ class TestGroups:
         assert {clip["start"] for clip in run(host, "list_clips")} == {45}
         with pytest.raises(ToolError, match="グループ"):
             run(host, "move_clip", clip_id=clips[0], track_id="どこか")
+        # 今のトラックを指すのは移動ではないので、断ると AI が同じ指定で止まる
+        here = run(host, "list_clips")[0]["track_id"]
+        run(host, "move_clip", clip_id=clips[0], timeline_start=60, track_id=here)
+        assert {clip["start"] for clip in run(host, "list_clips")} == {60}
+
+    def test_delete_clip_on_one_member_deletes_the_group(self, host: FakeHost) -> None:
+        # 画面で消すと仲間ごと消える AI だけ 1 本残ると、何が残ったのか分かりにくい
+        run(host, "add_text", text="上", at_frame=0)
+        clips = [clip["clip_id"] for clip in run(host, "list_clips")]
+        run(host, "group_clips", clip_ids=clips)
+        run(host, "delete_clip", clip_id=clips[0])
+        assert run(host, "list_clips") == []
 
     def test_a_single_clip_is_refused(self, host: FakeHost) -> None:
         clip = run(host, "list_clips")[0]["clip_id"]

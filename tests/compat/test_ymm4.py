@@ -419,6 +419,18 @@ class TestVideoEffects:
         map_video_effects([centre, spin], report, length=30)
         assert any("CenterPointEffect" in line for line in report.lines())
 
+    def test_a_count_that_is_not_a_number_is_recorded(self) -> None:
+        # int(NaN) の例外で、同じアイテムの後ろのエフェクトまで読めなくなる
+        report = CompatibilityReport()
+        duplicate = {
+            "$type": "YukkuriMovieMaker.Project.Effects.CircularDuplicatorEffect, A",
+            "Count": still(float("nan")),
+            "IsEnabled": True,
+        }
+        result = map_video_effects([duplicate], report, length=30)
+        assert result.effects[0].params["count"] == 8
+        assert any("Count" in line for line in report.lines())
+
     def test_an_unknown_effect_is_recorded_not_dropped(self) -> None:
         report = CompatibilityReport()
         map_video_effects(

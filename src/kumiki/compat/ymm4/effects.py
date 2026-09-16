@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from typing import Any
 
@@ -112,6 +113,18 @@ class _Reader:
             if moved:
                 self.report.note_missing(f"YMM4 の {self.name} の {key}（写せない設定）")
 
+    def count(self, key: str, default: int, *, animated: bool = True) -> int:
+        """個数を読む NaN や無限大は記録して既定へ戻す
+
+        ``int()`` へそのまま渡すと例外になり、同じアイテムの後ろのエフェクトまで
+        読めなくなる
+        """
+        value = self.still(key, float(default)) if animated else self.plain(key, float(default))
+        if not math.isfinite(value):
+            self.report.note_missing(f"YMM4 の {self.name} の {key}（数でない値: {value}）")
+            return default
+        return int(value)
+
     def still(self, key: str, default: float = 0.0) -> float:
         """動かせない設定を 1 つの数で読む 動いていれば記録して、先頭の値を使う"""
         value = self.track(key, default)
@@ -151,7 +164,7 @@ def _noise_displacement(r: _Reader) -> Effect | None:
         strength=inner.track("Strength", 100.0),
         threshold=inner.track("Threshold"),
         levels=inner.track("Levels", 256.0),
-        octaves=int(inner.still("Octaves", 5.0)),
+        octaves=inner.count("Octaves", 5),
         offset_x=inner.track("X"),
         offset_y=inner.track("Y", flip=True),
         offset_z=inner.track("Z"),
@@ -342,7 +355,7 @@ def _repeat_rotate(r: _Reader) -> Effect | None:
 def _circular_duplicator(r: _Reader) -> Effect | None:
     return _create(
         "circular_duplicate",
-        count=int(r.still("Count", 8.0)),
+        count=r.count("Count", 8),
         radius=r.track("Radius", 100.0),
         circumference=r.track("CircumferenceRate", 100.0),
         synced=r.flag("IsSyncedAngle", True),
@@ -350,8 +363,8 @@ def _circular_duplicator(r: _Reader) -> Effect | None:
 
 
 def _mesh_deformation(r: _Reader) -> Effect | None:
-    columns = int(r.plain("HorizontalCount", 2.0))
-    rows = int(r.plain("VerticalCount", 2.0))
+    columns = r.count("HorizontalCount", 2, animated=False)
+    rows = r.count("VerticalCount", 2, animated=False)
     points = r.entry.get("Points")
     if columns != 2 or rows != 2 or not isinstance(points, list) or len(points) != 4:
         # 四隅より細かい格子は、こちらの四隅の変形では表せない

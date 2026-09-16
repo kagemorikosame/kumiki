@@ -112,6 +112,12 @@ class TestDrawSettings:
         assert mapped.clip.blend_mode == "normal"
         assert any("foo" in line for line in report.lines())
 
+    @pytest.mark.parametrize(("raw", "mode"), [("1.0", "add"), ("1e0", "add"), ("1.5", "normal")])
+    def test_a_whole_number_may_be_written_as_a_decimal(self, raw: str, mode: str) -> None:
+        # 1.0 を読めないと加算が通常になる 1.5 を 1 と読むと、読めなかったことが隠れる
+        mapped = one(build("_name=図形", f"_name=標準描画\nblend={raw}"))
+        assert mapped.clip.blend_mode == mode
+
     def test_a_number_outside_the_table_falls_back_to_normal(self) -> None:
         # 似た別のもので代用すると、直したつもりの無い違いが出る
         mapped = one(build("_name=図形", "_name=標準描画\nblend=9"))

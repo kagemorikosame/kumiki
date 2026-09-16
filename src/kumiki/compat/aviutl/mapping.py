@@ -10,6 +10,7 @@ AviUtl のオブジェクトは「中身 1 つ + フィルタの列」ででき�
 
 from __future__ import annotations
 
+import math
 from fractions import Fraction
 
 from kumiki.compat.aviutl.encoding import decode_utf16_hex
@@ -494,6 +495,20 @@ _SUPPORTED_BLENDS = frozenset(
 )
 
 
+def _whole_number(raw: str) -> int:
+    """整数を表す文字（``1`` ``1.0`` ``1e0``）なら番号 それ以外は -1
+
+    数でない値や ``1.5`` を 0 や 1 と読むと、対応済みの合成に見えて記録から漏れる
+    """
+    try:
+        value = float(raw)
+    except ValueError:
+        return -1
+    if not math.isfinite(value) or not value.is_integer():
+        return -1
+    return int(value)
+
+
 def _blend_of(entry: ExoEntry, log: CompatibilityReport) -> str:
     named = entry.params.get("合成モード")
     if named is not None:
@@ -502,11 +517,7 @@ def _blend_of(entry: ExoEntry, log: CompatibilityReport) -> str:
         mode = _BLEND_NAMES.get(named.strip(), named.strip())
     else:
         raw = entry.params.get("blend", "0").strip()
-        try:
-            index = int(raw)
-        except ValueError:
-            # 数でない値を 0 と読むと「通常」に見えて、記録に残らない
-            index = -1
+        index = _whole_number(raw)
         # 表に無い番号（輝度・色差など）も記録に残るよう、番号のまま渡す
         mode = _BLEND_MODES[index] if 0 <= index < len(_BLEND_MODES) else f"番号 {raw}"
 

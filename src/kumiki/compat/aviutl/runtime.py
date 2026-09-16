@@ -76,13 +76,24 @@ LUA_MEMORY_LIMIT = 256 * 1024 * 1024
 
 
 def _new_runtime(module: Any) -> Any:
-    """メモリ上限つきでランタイムを作る 上限を付けられない版（LuaJIT）では付けずに作る"""
+    """メモリ上限つきでランタイムを作る
+
+    ``register_builtins`` も切る 既定のままだと、``os`` や ``io`` を消しても
+    ``python.builtins.__import__`` から Python の何でも呼べてしまい、配布ファイルを
+    開いただけで手元のファイルを読み書きされうる
+
+    上限を付けられない版（LuaJIT）は使わない 埋め込み Lua はプロジェクトの文字から
+    走るので、上限の無いランタイムでは 1 回の ``string.rep`` でソフトごと落とせる
+    """
     try:
         return module.LuaRuntime(
-            unpack_returned_tuples=True, register_eval=False, max_memory=LUA_MEMORY_LIMIT
+            unpack_returned_tuples=True,
+            register_eval=False,
+            register_builtins=False,
+            max_memory=LUA_MEMORY_LIMIT,
         )
-    except (TypeError, ValueError, RuntimeError):
-        return module.LuaRuntime(unpack_returned_tuples=True, register_eval=False)
+    except (TypeError, ValueError, RuntimeError) as exc:
+        raise LuaError(f"メモリの上限を付けられない Lua です: {exc}") from exc
 
 
 class LuaError(RuntimeError):
