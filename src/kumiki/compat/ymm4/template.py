@@ -328,6 +328,10 @@ def _content(
     if name in ("ShapeItem", "EffectItem", "Shape"):
         return _shape(item, log), "", "shape"
 
+    if name == "FrameBufferItem":
+        # それまでに重ねた画面を素材にする 中身の設定は持たない
+        return GeneratedSource(kind="framebuffer"), "", "framebuffer"
+
     media = _MEDIA_ITEMS.get(name)
     if media is not None:
         return None, str(item.get("FilePath") or item.get("File") or ""), media

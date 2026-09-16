@@ -65,6 +65,8 @@ class EffectProcessor:
         self._blit = Program(VERTEX_SHADER, _BLIT_FRAGMENT)
         self._programs: dict[str, _Compiled | None] = {}
         self._front = 0
+        self._object: tuple[float, float, float, float] = (0.0, 0.0, float(width), float(height))
+        self._duration = 0
 
     @property
     def width(self) -> int:
@@ -88,21 +90,44 @@ class EffectProcessor:
 
     def apply(
         self,
-        source: Texture,
+        source: Texture | Framebuffer,
         effects: tuple[Effect, ...],
         *,
         frame: int,
         fps: float,
         source_rect: tuple[float, ...] = FULL_RECT,
         flip_source: bool = True,
+        duration: int = 0,
+        bounds: tuple[float, float, float, float] | None = None,
     ) -> Framebuffer:
         """``source`` にエフェクトを掛けた結果のバッファを返す
 
         ``source_rect`` は、入力をバッファのどこに置くかをクリップ空間で指定する
         素材とプロジェクトの解像度が違うときに、ここで収める
+
+        ``duration`` はクリップの長さ（フレーム） 登場と退場の動き（YMM4 の
+        ``InOut*``）は終わりから逆算するので、長さを知らないと退場が始まらない
+
+        ``bounds`` は絵の中身が実際にある範囲（画素、左・上・右・下、左上が原点）
+        省くと ``source_rect`` 全体 テキストや図形は画面と同じ大きさの絵で届くので、
+        全体を基準にすると角丸が画面の角に付き、中心基準の動きが画面の中央で回る
         """
         self._front = 0
         self._draw_source(source, source_rect, flip_source)
+        width, height = float(self.width), float(self.height)
+        #: 絵が置かれた範囲（画素、GL の向き） 角丸や中心基準の動きが使う
+        if bounds is not None:
+            left_px, top_px, right_px, bottom_px = bounds
+            self._object = (left_px, height - bottom_px, right_px, height - top_px)
+        else:
+            left, bottom, right, top = (float(v) for v in source_rect[:4])
+            self._object = (
+                (left + 1.0) * 0.5 * width,
+                (bottom + 1.0) * 0.5 * height,
+                (right + 1.0) * 0.5 * width,
+                (top + 1.0) * 0.5 * height,
+            )
+        self._duration = max(duration, 0)
 
         for effect in effects:
             if not effect.enabled:
@@ -125,15 +150,18 @@ class EffectProcessor:
 
     # --- 内部 ---
 
-    def _draw_source(self, source: Texture, rect: tuple[float, ...], flip: bool) -> None:
-        """素材を先頭のバッファへ置く"""
+    def _draw_source(
+        self, source: Texture | Framebuffer, rect: tuple[float, ...], flip: bool
+    ) -> None:
+        """素材を先頭のバッファへ置く フレームバッファなら、その色のテクスチャを読む"""
         target = self._buffers[self._front]
         target.bind(clear=(0.0, 0.0, 0.0, 0.0))
         GL.glDisable(GL.GL_BLEND)
         self._blit.use()
         self._blit.set_vec4("u_rect", rect)
         self._blit.set_bool("u_flip", flip)
-        self._blit.bind_texture("u_texture", source.handle)
+        handle = source.color if isinstance(source, Framebuffer) else source.handle
+        self._blit.bind_texture("u_texture", handle)
         self._quad.draw()
 
     def _apply_one(self, compiled: _Compiled, effect: Effect, *, frame: int, fps: float) -> None:
@@ -157,6 +185,9 @@ class EffectProcessor:
             program.set_int("u_pass", index)
             program.set_float("u_frame", float(frame))
             program.set_float("u_time", float(frame) / fps if fps else 0.0)
+            program.set_float("u_fps", fps)
+            program.set_float("u_duration", float(self._duration) / fps if fps else 0.0)
+            program.set_vec4("u_object", self._object)
             program.bind_texture("u_texture", source_buffer.color, unit=0)
             program.bind_texture("u_source", self._source.color, unit=1)
             self._set_parameters(program, definition, effect, frame)

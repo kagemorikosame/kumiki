@@ -19,11 +19,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from kumiki.compat.aviutl.report import CompatibilityReport
 from kumiki.compat.decoration import decoration_params, find_decoration
+from kumiki.compat.ymm4.effects import CenterPoint, center_point, map_effect, mapped_names
 from kumiki.compat.ymm4.values import (
     animated,
     brush_colour,
@@ -142,6 +143,7 @@ def map_video_effects(
         return result
 
     borders: list[tuple[float, tuple[float, float, float, float]]] = []
+    pivot: CenterPoint | None = None
     for entry in effects:
         if not isinstance(entry, dict):
             continue
@@ -149,6 +151,12 @@ def map_video_effects(
             continue
 
         name = type_name(entry)
+        if name == "CenterPointEffect":
+            # 後ろに続く回転と拡大の支点になる 位置を保たないなら絵もずらす
+            pivot, shift = center_point(entry, report, length=length, keyframes=keyframes)
+            if shift is not None:
+                result.effects.append(shift)
+            continue
         if name == "OutlineEffect":
             borders.append(
                 (
@@ -160,12 +168,31 @@ def map_video_effects(
 
         built = _video_effect(name, entry, length, keyframes)
         if built is None:
-            report.note_missing(f"YMM4 の映像エフェクト: {name or '種類不明'}")
+            built = map_effect(name, entry, report, length=length, keyframes=keyframes)
+        if built is None:
+            # 写し方を持っている種類で None なら、形の問題としてすでに記録してある
+            if name not in mapped_names():
+                report.note_missing(f"YMM4 の映像エフェクト: {name or '種類不明'}")
             continue
+        if pivot is not None and built.kind == "transform":
+            built = _with_pivot(built, pivot)
         result.effects.append(built)
 
     _place_borders(borders, result)
     return result
+
+
+def _with_pivot(effect: Effect, pivot: CenterPoint) -> Effect:
+    """変形の支点を、前にあった中心点に合わせる"""
+    definition = registry.get(effect.kind)
+    if definition is None:  # pragma: no cover - 変形は標準エフェクト
+        return effect
+    params = dict(effect.params)
+    for name, value in pivot.params().items():
+        spec = definition.spec(name)
+        if spec is not None:
+            params[name] = spec.coerce(value)
+    return replace(effect, params=params)
 
 
 def _video_effect(name: str, entry: dict[str, Any], length: int, keyframes: Any) -> Effect | None:
@@ -249,8 +276,8 @@ def _video_effect(name: str, entry: dict[str, Any], length: int, keyframes: Any)
         definition = registry.get("transform")
         if definition is None:  # pragma: no cover - 標準エフェクトは必ずある
             return None
-        # 平面の回転は Z 軸 X / Y 軸は板を傾ける立体的な変形で、写せない
-        return definition.create(rotation=value("Z"))
+        # Z は平面の回転、X と Y は板を傾ける立体の回転
+        return definition.create(rotation=value("Z"), rotation_x=value("X"), rotation_y=value("Y"))
     if kind == "crop":
         definition = registry.get("crop")
         if definition is None:  # pragma: no cover - 標準エフェクトは必ずある

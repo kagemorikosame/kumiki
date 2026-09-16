@@ -11,8 +11,10 @@ from dataclasses import dataclass
 from fractions import Fraction
 
 import numpy as np
+from OpenGL import GL
 
 from kumiki.compat.aviutl.embedded import has_embedded
+from kumiki.compat.aviutl.report import global_report
 from kumiki.core.model import Clip, Effect, MediaId, Project, Track, TrackKind
 from kumiki.core.timebase import FrameRate
 from kumiki.engine.decode import ProbeError, VideoDecoder
@@ -20,6 +22,7 @@ from kumiki.engine.gpu import (
     Compositor,
     Corners,
     EffectProcessor,
+    Framebuffer,
     GLScope,
     OffscreenGLContext,
     Placement,
@@ -38,6 +41,43 @@ from kumiki.engine.render.scripts import (
 from kumiki.engine.sources import render_source
 
 __all__ = ["FrameRenderer", "RenderQuality"]
+
+
+def _content_box(image: np.ndarray) -> tuple[int, int, int, int] | None:
+    """絵の中で色が付いている範囲（画素、左・上・右・下） 何も無ければ ``None``
+
+    テキストや図形は画面と同じ大きさの絵で届く 角丸や中心基準の動きは、この範囲を
+    絵の大きさとして扱わないと、画面の角や画面の中央を基準にしてしまう
+    """
+    alpha = image[..., 3]
+    columns = np.flatnonzero(alpha.any(axis=0))
+    rows = np.flatnonzero(alpha.any(axis=1))
+    if columns.size == 0 or rows.size == 0:
+        return None
+    return int(columns[0]), int(rows[0]), int(columns[-1]) + 1, int(rows[-1]) + 1
+
+
+def _placed_bounds(
+    box: tuple[int, int, int, int] | None,
+    image: np.ndarray | None,
+    placement: Placement,
+    image_width: int = 0,
+    image_height: int = 0,
+) -> tuple[float, float, float, float] | None:
+    """絵の中の範囲を、置いた先（画面の画素）の範囲へ写す"""
+    if box is None:
+        return None
+    if image is not None:
+        image_height, image_width = int(image.shape[0]), int(image.shape[1])
+    scale_x = placement.width / max(image_width, 1)
+    scale_y = placement.height / max(image_height, 1)
+    left, top, right, bottom = box
+    return (
+        placement.left + left * scale_x,
+        placement.top + top * scale_y,
+        placement.left + right * scale_x,
+        placement.top + bottom * scale_y,
+    )
 
 
 def _as_corners(points: tuple[tuple[float, float], ...] | None) -> Corners | None:
@@ -107,6 +147,8 @@ class FrameRenderer:
         self._textures: dict[str, Texture] = {}
         #: AviUtl スクリプトを走らせる係 使うまで作らない
         self._scripts: ScriptStage | None = None
+        #: フレームバッファのクリップが画面を写し取る先 使うまで作らない
+        self._grab: Framebuffer | None = None
         self._closed = False
 
     @property
@@ -186,11 +228,16 @@ class FrameRenderer:
                 texture.release()
             self._textures.clear()
             self._effects.release()
+            if self._grab is not None:
+                self._grab.release()
             self._compositor.release()
         if self._owns_context:
             self._context.release()
 
     def _draw_clip(self, track: Track, clip: Clip, frame: int, rate: FrameRate) -> None:
+        if clip.source is not None and clip.source.kind == "framebuffer":
+            self._draw_framebuffer(clip, frame, rate)
+            return
         image = self._image_for(clip, frame, rate)
         if image is None:
             return
@@ -221,6 +268,8 @@ class FrameRenderer:
             frame=local_frame,
             fps=float(rate.fps),
             source_rect=placement.to_clip(self._compositor.width, self._compositor.height),
+            duration=clip.duration,
+            bounds=_placed_bounds(_content_box(image), image, placement),
         )
         # エフェクトを通した結果は画面いっぱいで GL の向き 収め直しも反転も要らない
         self._compositor.draw_handle(
@@ -230,6 +279,49 @@ class FrameRenderer:
             flip=False,
             blend=clip.blend_mode,
         )
+
+    def _draw_framebuffer(self, clip: Clip, frame: int, rate: FrameRate) -> None:
+        """それまでに重ねた画面を写し取り、エフェクトを掛けて重ねる
+
+        キャンバスは描いている最中なので、そのまま読みながら同じキャンバスへ描くことは
+        できない いったん別のバッファへ写す キャンバスは事前乗算アルファで溜まって
+        いるが、背景は不透明で塗ってあるので、エフェクトが受け取るストレートアルファと
+        同じ値になる
+
+        AviUtl スクリプトは掛けない スクリプトは CPU の画像を書き換える作りで、画面を
+        毎フレーム CPU へ読み戻すと再生が追いつかない（積まれていれば記録に残す）
+        """
+        local_frame = frame - clip.timeline_start
+        gpu_effects, scripts = split_effects(clip.effects)
+        if scripts:
+            global_report.note_missing("フレームバッファに積んだ AviUtl スクリプト")
+        width, height = self._compositor.width, self._compositor.height
+        with self._context:
+            if self._grab is None:
+                self._grab = Framebuffer(width, height)
+            self._grab.resize(width, height)
+            GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, self._compositor.canvas.handle)
+            GL.glBindFramebuffer(GL.GL_DRAW_FRAMEBUFFER, self._grab.handle)
+            GL.glBlitFramebuffer(
+                0, 0, width, height, 0, 0, width, height, GL.GL_COLOR_BUFFER_BIT, GL.GL_NEAREST
+            )
+            source: Framebuffer = self._grab
+            if self._effects.has_work(gpu_effects):
+                source = self._effects.apply(
+                    self._grab,
+                    gpu_effects,
+                    frame=local_frame,
+                    fps=float(rate.fps),
+                    flip_source=False,
+                    duration=clip.duration,
+                )
+            self._compositor.draw_handle(
+                source.color,
+                Placement(0.0, 0.0, float(width), float(height)),
+                opacity=clip.opacity.at(local_frame),
+                flip=False,
+                blend=clip.blend_mode,
+            )
 
     def _draw_scripted(
         self,
@@ -282,6 +374,8 @@ class FrameRenderer:
                     rate,
                     alpha,
                     clip.blend_mode,
+                    clip.duration,
+                    _content_box(call.image) if combined else None,
                 )
                 continue
 
@@ -302,7 +396,16 @@ class FrameRenderer:
             if not transform.is_flat:
                 corners = transform.corners(texture.width, texture.height, width, height)
                 self._draw_on_quad(
-                    texture, corners, None, combined, local_frame, rate, alpha, clip.blend_mode
+                    texture,
+                    corners,
+                    None,
+                    combined,
+                    local_frame,
+                    rate,
+                    alpha,
+                    clip.blend_mode,
+                    clip.duration,
+                    _content_box(call.image) if combined else None,
                 )
                 continue
 
@@ -325,6 +428,8 @@ class FrameRenderer:
                 frame=local_frame,
                 fps=float(rate.fps),
                 source_rect=placement.to_clip(self._compositor.width, self._compositor.height),
+                duration=clip.duration,
+                bounds=_placed_bounds(_content_box(call.image), call.image, placement),
             )
             self._compositor.draw_handle(
                 result.color,
@@ -345,6 +450,8 @@ class FrameRenderer:
         rate: FrameRate,
         opacity: float,
         blend: str,
+        duration: int = 0,
+        box: tuple[int, int, int, int] | None = None,
     ) -> None:
         """絵を四角形へ貼る エフェクトがあれば、先に平らなまま掛けてから貼る
 
@@ -378,6 +485,8 @@ class FrameRenderer:
             frame=local_frame,
             fps=float(rate.fps),
             source_rect=centred.to_clip(width, height),
+            duration=duration,
+            bounds=_placed_bounds(box, None, centred, texture.width, texture.height),
         )
         anchor = centred
         if uv is not None:
