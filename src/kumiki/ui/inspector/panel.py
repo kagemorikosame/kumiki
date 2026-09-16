@@ -53,6 +53,10 @@ BLEND_LABELS = {
     BlendMode.ADD: "加算",
     BlendMode.MULTIPLY: "乗算",
     BlendMode.SCREEN: "スクリーン",
+    BlendMode.SUBTRACT: "減算",
+    BlendMode.OVERLAY: "オーバーレイ",
+    BlendMode.LIGHTEN: "比較（明）",
+    BlendMode.DARKEN: "比較（暗）",
 }
 
 

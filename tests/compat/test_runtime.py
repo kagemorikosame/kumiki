@@ -106,10 +106,32 @@ class TestDrawing:
         result = runtime.run("obj.ox = 12 obj.rz = 30 obj.draw()", state())
         assert (result.draws[0].x, result.draws[0].rz) == (12.0, 30.0)
 
-    def test_drawpoly_is_recorded_as_missing(self) -> None:
+    def test_drawpoly_becomes_a_draw_on_a_quad(self) -> None:
+        # 記録だけで描かないと、立体的に動く配布スクリプトが何も映さない
         report = CompatibilityReport()
         runtime = LuaScriptRuntime(report=report, instruction_limit=100_000)
-        runtime.run("obj.drawpoly(0,0,0, 1,0,0, 1,1,0, 0,1,0)", state())
+        result = runtime.run(
+            "obj.ox = 5 obj.drawpoly(-10,-10,0, 10,-10,0, 10,10,20, -10,10,20,"
+            " 0,0, 4,0, 4,4, 0,4, 0.5)",
+            state(),
+        )
+        (call,) = result.draws
+        assert call.quad == (
+            (-5.0, -10.0, 0.0),
+            (15.0, -10.0, 0.0),
+            (15.0, 10.0, 20.0),
+            (-5.0, 10.0, 20.0),
+        )
+        assert call.uv == ((0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0))
+        assert call.alpha == 0.5
+        assert not any("drawpoly" in line for line in report.lines())
+
+    def test_drawpoly_with_too_few_points_is_recorded(self) -> None:
+        # 四隅が揃わないまま描くと、潰れた面が画面に広がる
+        report = CompatibilityReport()
+        runtime = LuaScriptRuntime(report=report, instruction_limit=100_000)
+        result = runtime.run("obj.drawpoly(0,0,0, 1,0,0)", state())
+        assert all(call.quad is None for call in result.draws)
         assert any("drawpoly" in line for line in report.lines())
 
 

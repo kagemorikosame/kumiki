@@ -43,6 +43,22 @@ for i = 0, obj.track0 - 1 do
 end
 """
 
+#: 板を傾ける X 軸・Y 軸の回転と奥行き
+TILT = """--track0:X回転,-360,360,0,1
+--track1:Y回転,-360,360,0,1
+--track2:奥行き,-2000,2000,0,1
+obj.rx = obj.track0
+obj.ry = obj.track1
+obj.oz = obj.track2
+"""
+
+#: 四隅を決めて貼る 上が狭い台形
+#: 図形の絵は画面と同じ大きさで、真ん中に四角がある その四角だけを切り出して貼る
+POLY = """local l = (obj.w - 40) / 2
+local t = (obj.h - 40) / 2
+obj.drawpoly(-10,-20,0, 10,-20,0, 40,20,0, -40,20,0, l,t, l+40,t, l+40,t+40, l,t+40)
+"""
+
 SCREEN = (320, 240)
 
 
@@ -61,12 +77,14 @@ def catalog() -> ScriptCatalog:
     created = ScriptCatalog(roots=())
     created.add_text("aviutl:試験.anm:移動", MOVE)
     created.add_text("aviutl:試験.anm:残像", TRAIL)
+    created.add_text("aviutl:試験.anm:傾き", TILT)
+    created.add_text("aviutl:試験.anm:四隅", POLY)
     set_script_catalog(created)
     return created
 
 
-def build(identifier: str, **params: float) -> Project:
-    """40x40 の白い四角に、スクリプトを 1 本積んだプロジェクト"""
+def build(identifier: str, size: float = 40.0, **params: float) -> Project:
+    """``size`` 四方（既定 40）の白い四角に、スクリプトを 1 本積んだプロジェクト"""
     width, height = SCREEN
     project = Project.create(ProjectSettings(width=width, height=height, frame_rate=FrameRate(30)))
     track = Track(kind=TrackKind.VIDEO, name="V1")
@@ -80,7 +98,7 @@ def build(identifier: str, **params: float) -> Project:
         duration=30,
         source=GeneratedSource(
             kind="shape",
-            params={"shape": "rect", "width": 40.0, "height": 40.0},  # type: ignore[dict-item]
+            params={"shape": "rect", "width": size, "height": size},  # type: ignore[dict-item]
         ),
     )
     project = AddClip(track.id, clip).apply(project)
@@ -150,6 +168,51 @@ class TestTransform:
         left, right, top, bottom = bounds(render(build("aviutl:試験.anm:移動"), gl_context))
         assert right - left == pytest.approx(40, abs=2)
         assert bottom - top == pytest.approx(40, abs=2)
+
+
+class TestDepth:
+    def test_turning_about_y_narrows_the_board(
+        self, gl_context: OffscreenGLContext, catalog: ScriptCatalog
+    ) -> None:
+        # 以前は rx / ry を読み捨てていて、板を回すスクリプトが平らなまま動かなかった
+        del catalog
+        left, right, top, bottom = bounds(
+            render(build("aviutl:試験.anm:傾き", track1=60), gl_context)
+        )
+        assert right - left == pytest.approx(20, abs=4)
+        assert bottom - top >= 38
+
+    def test_a_tilted_board_is_a_trapezoid(
+        self, gl_context: OffscreenGLContext, catalog: ScriptCatalog
+    ) -> None:
+        # 遠近が無いと、X 軸で倒しても上下の幅が同じ長方形のまま縮むだけになる
+        del catalog
+        image = render(build("aviutl:試験.anm:傾き", size=160.0, track0=60), gl_context)
+        _, _, top, bottom = bounds(image)
+        bright = image[..., :3].max(axis=2) > 100
+        top_width = int(bright[top + 1].sum())
+        bottom_width = int(bright[bottom - 1].sum())
+        assert top_width < bottom_width
+
+    def test_depth_shrinks_the_object(
+        self, gl_context: OffscreenGLContext, catalog: ScriptCatalog
+    ) -> None:
+        # 奥へ置いても大きさが変わらないと、奥行きの演出が消える
+        del catalog
+        left, right, _, _ = bounds(render(build("aviutl:試験.anm:傾き", track2=1024), gl_context))
+        assert right - left == pytest.approx(20, abs=3)
+
+    def test_drawpoly_reaches_the_screen(
+        self, gl_context: OffscreenGLContext, catalog: ScriptCatalog
+    ) -> None:
+        # 四隅どおりの台形が描かれること（上 20px、下 80px）
+        del catalog
+        image = render(build("aviutl:試験.anm:四隅"), gl_context)
+        left, right, top, bottom = bounds(image)
+        assert right - left == pytest.approx(80, abs=3)
+        assert bottom - top == pytest.approx(40, abs=3)
+        bright = image[..., :3].max(axis=2) > 100
+        assert int(bright[top + 1].sum()) < int(bright[bottom - 1].sum())
 
 
 class TestMultipleDraws:

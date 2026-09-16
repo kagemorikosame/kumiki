@@ -64,6 +64,14 @@ _BLEND_MODES: dict[str, str] = {
     "乗算": "multiply",
     "Screen": "screen",
     "スクリーン": "screen",
+    "Overlay": "overlay",
+    "オーバーレイ": "overlay",
+    "Lighten": "lighten",
+    "比較(明)": "lighten",
+    "Darken": "darken",
+    "比較(暗)": "darken",
+    "Subtract": "subtract",
+    "減算": "subtract",
 }
 
 #: ``BasePoint`` の横と縦 ``CenterCenter`` ``LeftTop`` のように 2 つ並ぶ

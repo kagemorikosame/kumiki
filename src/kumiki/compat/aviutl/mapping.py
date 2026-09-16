@@ -38,7 +38,16 @@ __all__ = ["MappedObject", "map_exo", "map_object", "media_paths"]
 _FIGURES = ("ellipse", "rect", "triangle", "pentagon", "hexagon", "star", "background")
 
 #: 合成方法の番号
-_BLEND_MODES = ("normal", "add", "subtract", "multiply", "screen", "overlay", "lighten")
+_BLEND_MODES = (
+    "normal",
+    "add",
+    "subtract",
+    "multiply",
+    "screen",
+    "overlay",
+    "lighten",
+    "darken",
+)
 
 #: 中身として扱う要素の名前 これ以外はフィルタ
 _CONTENT_NAMES = frozenset(
@@ -288,10 +297,8 @@ def _text(entry: ExoEntry, log: CompatibilityReport) -> GeneratedSource:
         params["font"] = font
 
     params.update(_decoration_of(entry, size, log))
-    if "<?" in str(params["text"]):
-        # テキスト欄に Lua を埋め込む書き方（``<?...?>``） 文字として出すと
-        # 意味が違うので、そのまま出さずに何が来たかだけ残す
-        log.note_missing("テキスト欄に埋め込まれた Lua（<?...?>）")
+    # テキスト欄に埋め込んだ Lua（``<?...?>``）は本文のまま持つ 時刻で結果が
+    # 変わるので、読み込む時点ではなく描くたびに走らせる（engine.render.scripts）
     return GeneratedSource(kind="text", params=params)
 
 
@@ -481,17 +488,22 @@ _BLEND_NAMES: dict[str, str] = {
     "比較(暗)": "darken",
 }
 
-#: こちらの合成器が持っている方法
-_SUPPORTED_BLENDS = frozenset({"normal", "add", "multiply", "screen"})
+#: こちらの合成器が持っている方法 AviUtl の合成モードはすべて揃った
+_SUPPORTED_BLENDS = frozenset(
+    {"normal", "add", "subtract", "multiply", "screen", "overlay", "lighten", "darken"}
+)
 
 
 def _blend_of(entry: ExoEntry, log: CompatibilityReport) -> str:
     named = entry.params.get("合成モード")
     if named is not None:
-        mode = _BLEND_NAMES.get(named.strip(), "normal")
+        # 知らない名前を既定で「通常」にすると、下の判定で対応済みに見えて
+        # 記録に残らない 未知の名前はそのまま渡して記録させる
+        mode = _BLEND_NAMES.get(named.strip(), named.strip())
     else:
         index = entry.integer("blend")
-        mode = _BLEND_MODES[index] if 0 <= index < len(_BLEND_MODES) else "normal"
+        # 表に無い番号（輝度・色差など）も記録に残るよう、番号のまま渡す
+        mode = _BLEND_MODES[index] if 0 <= index < len(_BLEND_MODES) else f"番号 {index}"
 
     # こちらに無い合成方法は通常扱いにする 似た別のもので代用すると、
     # 直したつもりの無い違いが出る

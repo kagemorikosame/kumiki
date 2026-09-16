@@ -12,11 +12,13 @@ from fractions import Fraction
 
 import numpy as np
 
+from kumiki.compat.aviutl.embedded import has_embedded
 from kumiki.core.model import Clip, Effect, MediaId, Project, Track, TrackKind
 from kumiki.core.timebase import FrameRate
 from kumiki.engine.decode import ProbeError, VideoDecoder
 from kumiki.engine.gpu import (
     Compositor,
+    Corners,
     EffectProcessor,
     GLScope,
     OffscreenGLContext,
@@ -25,6 +27,7 @@ from kumiki.engine.gpu import (
     Transform,
     fit_placement,
 )
+from kumiki.engine.gpu.projection import project
 from kumiki.engine.render.scripts import (
     ScriptStage,
     requested_effects,
@@ -35,6 +38,14 @@ from kumiki.engine.render.scripts import (
 from kumiki.engine.sources import render_source
 
 __all__ = ["FrameRenderer", "RenderQuality"]
+
+
+def _as_corners(points: tuple[tuple[float, float], ...] | None) -> Corners | None:
+    """4 点の組を四隅の型へ 数が合わなければ ``None``"""
+    if points is None or len(points) != 4:
+        return None
+    return (points[0], points[1], points[2], points[3])
+
 
 #: 同時に開いておくデコーダの上限 素材ごとにコンテナとスレッドを抱えるので、
 #: 際限なく開くとファイルハンドルとメモリを食い潰す
@@ -247,9 +258,33 @@ class FrameRenderer:
             fps=float(rate.fps),
         )
         texture = self._texture_for(track.id)
+        width, height = self._compositor.width, self._compositor.height
 
         for call in calls:
             texture.upload(call.image)
+            combined = gpu_effects + requested_effects(call)
+            alpha = opacity * call.alpha
+
+            if call.quad is not None:
+                # obj.drawpoly 四隅を画面へ写してから貼る
+                points = [project(point, width, height) for point in call.quad]
+                uv = None
+                if call.uv is not None:
+                    uv = tuple(
+                        (u / max(texture.width, 1), v / max(texture.height, 1)) for u, v in call.uv
+                    )
+                self._draw_on_quad(
+                    texture,
+                    (points[0], points[1], points[2], points[3]),
+                    _as_corners(uv),
+                    combined,
+                    local_frame,
+                    rate,
+                    alpha,
+                    clip.blend_mode,
+                )
+                continue
+
             transform = Transform(
                 x=call.x,
                 y=call.y,
@@ -260,12 +295,19 @@ class FrameRenderer:
                 pivot_y=call.cy,
                 scale_x=call.sx,
                 scale_y=call.sy,
+                z=call.z,
+                rotation_x=call.rx,
+                rotation_y=call.ry,
             )
-            placement = transform.placement(
-                texture.width, texture.height, self._compositor.width, self._compositor.height
-            )
-            matrix = transform.matrix(self._compositor.width, self._compositor.height)
-            combined = gpu_effects + requested_effects(call)
+            if not transform.is_flat:
+                corners = transform.corners(texture.width, texture.height, width, height)
+                self._draw_on_quad(
+                    texture, corners, None, combined, local_frame, rate, alpha, clip.blend_mode
+                )
+                continue
+
+            placement = transform.placement(texture.width, texture.height, width, height)
+            matrix = transform.matrix(width, height)
 
             if not self._effects.has_work(combined):
                 self._compositor.draw(
@@ -293,6 +335,72 @@ class FrameRenderer:
                 matrix=matrix,
             )
 
+    def _draw_on_quad(
+        self,
+        texture: Texture,
+        corners: Corners,
+        uv: Corners | None,
+        effects: tuple[Effect, ...],
+        local_frame: int,
+        rate: FrameRate,
+        opacity: float,
+        blend: str,
+    ) -> None:
+        """絵を四角形へ貼る エフェクトがあれば、先に平らなまま掛けてから貼る
+
+        エフェクトは画面と同じ大きさのバッファで動く 傾けてから掛けると、
+        ぼかしや縁取りの幅まで遠近で歪む 平らな板に掛けてから板ごと傾けるのが
+        AviUtl の見え方と同じ
+        """
+        width, height = self._compositor.width, self._compositor.height
+        own = Placement(0.0, 0.0, float(texture.width), float(texture.height))
+        if not self._effects.has_work(effects):
+            self._compositor.draw_mapped(
+                texture.handle,
+                source=own,
+                anchor=own,
+                corners=corners,
+                opacity=opacity,
+                blend=blend,
+                uv=uv,
+            )
+            return
+
+        centred = Placement(
+            (width - texture.width) / 2.0,
+            (height - texture.height) / 2.0,
+            float(texture.width),
+            float(texture.height),
+        )
+        result = self._effects.apply(
+            texture,
+            effects,
+            frame=local_frame,
+            fps=float(rate.fps),
+            source_rect=centred.to_clip(width, height),
+        )
+        anchor = centred
+        if uv is not None:
+            # 絵の一部だけを貼るときは、その部分の矩形を四隅へ写す 軸に沿った
+            # 切り出し（配布スクリプトの使い方はほぼこれ）なら正確に合う
+            us = [point[0] for point in uv]
+            vs = [point[1] for point in uv]
+            anchor = Placement(
+                centred.left + min(us) * texture.width,
+                centred.top + min(vs) * texture.height,
+                max((max(us) - min(us)) * texture.width, 1.0),
+                max((max(vs) - min(vs)) * texture.height, 1.0),
+            )
+        self._compositor.draw_mapped(
+            result.color,
+            source=Placement(0.0, 0.0, float(width), float(height)),
+            anchor=anchor,
+            corners=corners,
+            opacity=opacity,
+            flip=False,
+            blend=blend,
+        )
+
     def _script_stage(self) -> ScriptStage | None:
         """スクリプトを走らせる係 初めて必要になったときに作る
 
@@ -315,14 +423,25 @@ class FrameRenderer:
 
     def _generate(self, clip: Clip, frame: int, rate: FrameRate) -> np.ndarray | None:
         """素材を持たないクリップ（テキスト・図形）の絵を作る"""
-        del rate
-        if clip.source is None:
+        source = clip.source
+        if source is None:
             return None
+        local_frame = frame - clip.timeline_start
+        text = source.params.get("text") if source.kind == "text" else None
+        if isinstance(text, str) and has_embedded(text):
+            # 埋め込んだ Lua は描くたびに走らせる 時刻で数え上げる字幕のように、
+            # フレームごとに文字が変わるため
+            stage = self._script_stage()
+            if stage is not None:
+                expanded = stage.expand_text(
+                    text, frame=local_frame, fps=float(rate.fps), duration=clip.duration
+                )
+                source = source.with_param("text", expanded)
         return render_source(
-            clip.source,
+            source,
             self._compositor.width,
             self._compositor.height,
-            frame=frame - clip.timeline_start,
+            frame=local_frame,
         )
 
     def _decode(self, clip: Clip, frame: int, rate: FrameRate) -> np.ndarray | None:

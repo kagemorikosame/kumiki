@@ -14,7 +14,15 @@ from collections.abc import Sequence
 import numpy as np
 from OpenGL import GL
 
-__all__ = ["IDENTITY", "VERTEX_SHADER", "Framebuffer", "Program", "ScreenQuad", "Texture"]
+__all__ = [
+    "IDENTITY",
+    "MAPPED_VERTEX_SHADER",
+    "VERTEX_SHADER",
+    "Framebuffer",
+    "Program",
+    "ScreenQuad",
+    "Texture",
+]
 
 #: 単位行列 変換を使わない描画のための既定値
 IDENTITY: tuple[float, ...] = (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
@@ -37,6 +45,38 @@ void main() {
     vec3 transformed = u_transform * vec3(position, 1.0);
     gl_Position = vec4(transformed.xy / transformed.z, 0.0, 1.0);
     v_uv = vec2(unit.x, u_flip ? 1.0 - unit.y : unit.y);
+}
+"""
+
+#: 任意の四角形へ貼る頂点シェーダ 射影変換（ホモグラフィ）を頂点で掛け、
+#: 同次座標の w をそのまま GL に渡す w を割ってから渡すと、テクスチャ座標が
+#: 画面上で直線的に補間され、傾けた板の模様が遠近に合わずに歪む
+#:
+#: ``u_rect`` は元の絵が占める矩形（画素、左・下・右・上 上下は画像の向き）、
+#: ``u_homography`` はその画素座標からクリップ空間（同次）への 3x3 行列
+#: ``u_use_uv`` が真なら、四隅のテクスチャ座標 ``u_uv``（左上・右上・右下・左下、
+#: 画像の上が 0）で絵の一部だけを貼る ``obj.drawpoly`` の切り出しに使う
+MAPPED_VERTEX_SHADER = """
+#version 430 core
+layout(location = 0) in vec2 a_position;
+out vec2 v_uv;
+uniform vec4 u_rect;
+uniform mat3 u_homography;
+uniform bool u_flip;
+uniform bool u_use_uv;
+uniform vec2 u_uv[4];
+void main() {
+    vec2 unit = a_position * 0.5 + 0.5;
+    vec2 position = mix(u_rect.xy, u_rect.zw, unit);
+    vec3 projected = u_homography * vec3(position, 1.0);
+    gl_Position = vec4(projected.xy, 0.0, projected.z);
+    if (u_use_uv) {
+        vec2 top = mix(u_uv[0], u_uv[1], unit.x);
+        vec2 bottom = mix(u_uv[3], u_uv[2], unit.x);
+        v_uv = mix(bottom, top, unit.y);
+    } else {
+        v_uv = vec2(unit.x, u_flip ? 1.0 - unit.y : unit.y);
+    }
 }
 """
 
@@ -99,6 +139,14 @@ class Program:
 
     def set_vec4(self, name: str, values: Sequence[float]) -> None:
         GL.glUniform4f(self.location(name), *(float(v) for v in values[:4]))
+
+    def set_vec2_array(self, name: str, values: Sequence[tuple[float, float]]) -> None:
+        """``vec2`` の配列を渡す ``name`` は配列の名前（``u_uv`` など）"""
+        location = self.location(name)
+        if location < 0:
+            return
+        flat = np.asarray(values, dtype=np.float32).reshape(-1)
+        GL.glUniform2fv(location, len(values), flat)
 
     def set_mat3(self, name: str, values: Sequence[float]) -> None:
         """3x3 行列を渡す 並びは行優先で 9 個"""

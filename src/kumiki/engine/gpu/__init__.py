@@ -3,6 +3,7 @@
 from kumiki.engine.gpu.compositor import (
     BlendMode,
     Compositor,
+    Corners,
     Placement,
     Transform,
     fit_placement,
@@ -33,6 +34,7 @@ __all__ = [
     "VERTEX_SHADER",
     "BlendMode",
     "Compositor",
+    "Corners",
     "CurrentGLContext",
     "EffectProcessor",
     "Framebuffer",

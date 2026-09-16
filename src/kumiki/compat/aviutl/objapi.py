@@ -92,6 +92,11 @@ class DrawCall:
     cy: float = 0.0
     cz: float = 0.0
     effects: tuple[EffectRequest, ...] = ()
+    #: ``obj.drawpoly`` の四隅（画面中央からの ``x, y, z``、左上・右上・右下・左下）
+    #: これがあるときは位置・回転・拡大を使わず、この四角形へ貼る
+    quad: tuple[tuple[float, float, float], ...] | None = None
+    #: 四隅に対応する絵の中の位置（画素） ``None`` なら絵全体
+    uv: tuple[tuple[float, float], ...] | None = None
 
 
 @dataclass(slots=True)
@@ -339,12 +344,39 @@ class ObjApi:
         state.draws.append(call)
 
     def lua_drawpoly(self, *args: Any) -> None:
-        """四隅を指定して描く まだ効かせていない
+        """四隅を指定して描く
 
-        任意の四角形へ貼るには射影変換が要る 合成側に入れるまでは記録だけ
+        ``obj.drawpoly(x0,y0,z0, x1,y1,z1, x2,y2,z2, x3,y3,z3 [,u0,v0, …, u3,v3] [,alpha])``
+        四隅は左上・右上・右下・左下の順で、オブジェクトの位置（``ox`` ``oy`` ``oz``）
+        からの相対 ``u`` ``v`` は絵の中の画素で、省くと絵全体を貼る
+
+        位置以外の描画パラメータ（回転・拡大）は掛けない 四隅そのものが形を
+        決めるので、掛けると二重に変形する
         """
-        del args
-        self._report.note_missing("obj.drawpoly")
+        values = [_as_float(value) for value in args]
+        if len(values) < 12:
+            self._report.note_missing("obj.drawpoly（四隅が足りない）")
+            return
+
+        state = self.state
+        quad = tuple(
+            (values[i] + state.ox, values[i + 1] + state.oy, values[i + 2] + state.oz)
+            for i in range(0, 12, 3)
+        )
+        uv: tuple[tuple[float, float], ...] | None = None
+        alpha = 1.0
+        rest = values[12:]
+        if len(rest) >= 8:
+            uv = tuple((rest[i], rest[i + 1]) for i in range(0, 8, 2))
+            rest = rest[8:]
+        if rest:
+            alpha = rest[0]
+
+        call = state.snapshot()
+        call.quad = quad
+        call.uv = uv
+        call.alpha = state.alpha * alpha
+        state.draws.append(call)
 
     def lua_effect(self, *args: Any) -> None:
         """フィルタを積む ``obj.effect("ぼかし", "範囲", 20)``"""

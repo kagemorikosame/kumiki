@@ -20,6 +20,7 @@ from typing import Any
 import numpy as np
 
 from kumiki.compat.aviutl.control import ScriptHeader
+from kumiki.compat.aviutl.embedded import EMIT, build_source, has_embedded, literal_text
 from kumiki.compat.aviutl.encoding import read_text
 from kumiki.compat.aviutl.objapi import (
     DrawCall,
@@ -215,6 +216,27 @@ class LuaScriptRuntime:
                     draws=(state.snapshot(),), failed=True, message=str(exc), state=state
                 )
         return ScriptResult(draws=state.result(), state=state)
+
+    def expand_text(self, text: str, state: ObjectState, *, script: str = "テキスト") -> str:
+        """テキスト欄に埋め込んだ Lua（``<?…?>``）を走らせ、画面に出す文字を返す
+
+        ``obj`` はスクリプトと同じように使える（``obj.time`` で数え上げるなど）
+        失敗したら Lua の部分を除いた文字を返す 理由は記録に残る
+        """
+        if not has_embedded(text):
+            return text
+        output: list[str] = []
+        globals_table = self._lua.globals()
+        globals_table[EMIT] = lambda value: output.append(str(value))
+        try:
+            result = self.run(build_source(text), state, script=script)
+        finally:
+            # 残すと、次に走るスクリプトの ``mes`` がテキストの書き出しを呼ぶ
+            globals_table[EMIT] = None
+            globals_table["mes"] = None
+        if result.failed:
+            return literal_text(text)
+        return "".join(output)
 
     def _prepare(self, api: ObjApi, header: ScriptHeader | None, state: ObjectState) -> None:
         """``obj`` を繋ぎ、名前付きの値を大域変数へ置き、``--param`` を流し込む"""

@@ -19,16 +19,19 @@ from OpenGL import GL
 from kumiki.engine.gpu.glutil import (
     FULL_RECT,
     IDENTITY,
+    MAPPED_VERTEX_SHADER,
     VERTEX_SHADER,
     Framebuffer,
     Program,
     ScreenQuad,
     Texture,
 )
+from kumiki.engine.gpu.projection import Corners, homography, project, rotate, to_clip
 
 __all__ = [
     "BlendMode",
     "Compositor",
+    "Corners",
     "Placement",
     "Texture",
     "Transform",
@@ -68,6 +71,49 @@ void main() {
 """
 
 
+#: 下の絵を読んで混ぜる合成 ``glBlendFunc`` の係数では式が書けないもの
+#: 描く直前に下の絵を別のバッファへ写し、シェーダの中で混ぜる
+#:
+#: 下の絵（キャンバス）は事前乗算アルファで溜まっている（``SRC_ALPHA`` と
+#: ``ONE_MINUS_SRC_ALPHA`` で重ねてきた結果） 混ぜる式は W3C の合成の定義どおり
+_BLEND_FRAGMENT_SHADER = """
+#version 430 core
+in vec2 v_uv;
+out vec4 frag_color;
+uniform sampler2D u_texture;
+uniform sampler2D u_backdrop;
+uniform vec2 u_canvas;
+uniform float u_opacity;
+uniform int u_mode;
+
+vec3 blend(vec3 below, vec3 above) {
+    if (u_mode == 0) {
+        // オーバーレイ 下が暗いところは乗算、明るいところはスクリーン
+        return mix(2.0 * below * above,
+                   1.0 - 2.0 * (1.0 - below) * (1.0 - above),
+                   step(0.5, below));
+    }
+    if (u_mode == 1) return max(below, above);
+    if (u_mode == 2) return min(below, above);
+    return max(below - above, 0.0);
+}
+
+void main() {
+    vec4 source = texture(u_texture, v_uv);
+    float above_alpha = clamp(source.a * u_opacity, 0.0, 1.0);
+    vec4 backdrop = texture(u_backdrop, gl_FragCoord.xy / u_canvas);
+    float below_alpha = backdrop.a;
+    vec3 below = below_alpha > 0.0001 ? backdrop.rgb / below_alpha : vec3(0.0);
+
+    vec3 mixed = blend(below, source.rgb);
+    vec3 color = above_alpha * (1.0 - below_alpha) * source.rgb
+               + above_alpha * below_alpha * mixed
+               + (1.0 - above_alpha) * backdrop.rgb;
+    frag_color = vec4(color, above_alpha + below_alpha * (1.0 - above_alpha));
+}
+"""
+
+
 class BlendMode:
     """トラックを重ねるときの合成方法
 
@@ -79,8 +125,22 @@ class BlendMode:
     ADD = "add"
     MULTIPLY = "multiply"
     SCREEN = "screen"
+    OVERLAY = "overlay"
+    #: AviUtl の「比較(明)」「比較(暗)」
+    LIGHTEN = "lighten"
+    DARKEN = "darken"
+    SUBTRACT = "subtract"
 
-    ALL = (NORMAL, ADD, MULTIPLY, SCREEN)
+    ALL = (NORMAL, ADD, SUBTRACT, MULTIPLY, SCREEN, OVERLAY, LIGHTEN, DARKEN)
+
+
+#: シェーダで混ぜる合成と、シェーダに渡す番号
+_SHADER_BLENDS: dict[str, int] = {
+    BlendMode.OVERLAY: 0,
+    BlendMode.LIGHTEN: 1,
+    BlendMode.DARKEN: 2,
+    BlendMode.SUBTRACT: 3,
+}
 
 
 #: 合成方法ごとの ``glBlendFuncSeparate`` の設定
@@ -137,6 +197,40 @@ class Transform:
     #: 軸ごとの追加の倍率 ``zoom`` とは別に掛かる
     scale_x: float = 1.0
     scale_y: float = 1.0
+    #: 奥行き（画素、奥が正）と、X 軸・Y 軸の回転（度） どれかが 0 でなければ
+    #: :meth:`corners` の四角形で描く 平らなままなら今までの矩形と行列で描く
+    z: float = 0.0
+    rotation_x: float = 0.0
+    rotation_y: float = 0.0
+
+    @property
+    def is_flat(self) -> bool:
+        """奥行きも傾きも無い 画面に平行な板のまま"""
+        return not (self.z or self.rotation_x or self.rotation_y)
+
+    def corners(
+        self, source_width: int, source_height: int, target_width: int, target_height: int
+    ) -> Corners:
+        """四隅が画面のどこへ来るか 左上・右上・右下・左下の順（画素）
+
+        中心と回転の支点を 3 次元で回してから、カメラから見た位置へ写す
+        平らな板でも使えるが、そのときは :meth:`placement` と :meth:`matrix` の
+        方が軽い
+        """
+        scale_x, scale_y = self.scale()
+        half_width = source_width * scale_x / 2.0
+        half_height = source_height * scale_y / 2.0
+        points = []
+        for sign_x, sign_y in ((-1, -1), (1, -1), (1, 1), (-1, 1)):
+            local = (
+                sign_x * half_width - self.pivot_x,
+                sign_y * half_height - self.pivot_y,
+                0.0,
+            )
+            x, y, z = rotate(local, self.rotation_x, self.rotation_y, self.rotation)
+            placed = (x + self.pivot_x + self.x, y + self.pivot_y + self.y, z + self.z)
+            points.append(project(placed, target_width, target_height))
+        return (points[0], points[1], points[2], points[3])
 
     def scale(self) -> tuple[float, float]:
         """縦横それぞれの倍率 ``aspect`` と軸ごとの倍率を反映する"""
@@ -194,6 +288,12 @@ class Transform:
         )
 
 
+def _rect_corners(rect: Placement) -> Corners:
+    """矩形の四隅 左上・右上・右下・左下"""
+    right, bottom = rect.left + rect.width, rect.top + rect.height
+    return ((rect.left, rect.top), (right, rect.top), (right, bottom), (rect.left, bottom))
+
+
 def fit_placement(
     source_width: int, source_height: int, target_width: int, target_height: int
 ) -> Placement:
@@ -228,9 +328,16 @@ class Compositor:
             raise ValueError(f"解像度が不正: {width}x{height}")
 
         self._program = Program(VERTEX_SHADER, _FRAGMENT_SHADER)
+        self._blend_program = Program(VERTEX_SHADER, _BLEND_FRAGMENT_SHADER)
+        # 四角形へ貼る描画 平らな矩形とは頂点の計算だけが違う
+        self._mapped_program = Program(MAPPED_VERTEX_SHADER, _FRAGMENT_SHADER)
+        self._mapped_blend_program = Program(MAPPED_VERTEX_SHADER, _BLEND_FRAGMENT_SHADER)
         self._resolve_program = Program(VERTEX_SHADER, _RESOLVE_FRAGMENT_SHADER)
         self._quad = ScreenQuad()
         self._canvas = Framebuffer(width, height)
+        # シェーダで混ぜる合成のとき、下の絵を写しておく先 描いている最中の
+        # キャンバスを自分で読むことはできない（読みながら書くと結果が定まらない）
+        self._backdrop = Framebuffer(width, height)
         # 読み出し用 リニアの合成結果を sRGB へ符号化して受け取る
         self._resolved = Framebuffer(width, height, internal_format=GL.GL_RGBA8)
 
@@ -251,7 +358,18 @@ class Compositor:
         if width <= 0 or height <= 0:
             raise ValueError(f"解像度が不正: {width}x{height}")
         self._canvas.resize(width, height)
+        self._backdrop.resize(width, height)
         self._resolved.resize(width, height)
+
+    @property
+    def canvas(self) -> Framebuffer:
+        """合成途中の絵（リニア、事前乗算アルファ）
+
+        YMM4 の ``FrameBufferItem`` のように、それまでに重ねた絵を素材として
+        使うときに読む 読んだものを同じキャンバスへ描くときは、先に別の
+        バッファへ写すこと
+        """
+        return self._canvas
 
     def begin(self, background: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0)) -> None:
         """合成を始める 背景色はリニア値で指定する"""
@@ -298,21 +416,101 @@ class Compositor:
 
         ``matrix`` を渡すと、矩形に加えてその変換が掛かる（回転など）
         """
-        self._canvas.bind()
-        GL.glEnable(GL.GL_BLEND)
-        self._set_blend(blend)
-
-        self._program.use()
-        self._program.set_vec4("u_rect", placement.to_clip(self.width, self.height))
-        self._program.set_bool("u_flip", flip)
-        self._program.set_float("u_opacity", float(np.clip(opacity, 0.0, 1.0)))
-        self._program.set_mat3("u_transform", matrix if matrix is not None else IDENTITY)
-        self._program.bind_texture("u_texture", handle)
+        program = self._begin_draw(blend, self._program, self._blend_program)
+        program.set_vec4("u_rect", placement.to_clip(self.width, self.height))
+        program.set_bool("u_flip", flip)
+        program.set_float("u_opacity", float(np.clip(opacity, 0.0, 1.0)))
+        program.set_mat3("u_transform", matrix if matrix is not None else IDENTITY)
+        program.bind_texture("u_texture", handle)
         self._quad.draw()
         if matrix is not None:
             # 次の描画へ持ち越さない 持ち越すと、回転を掛けた次のクリップまで
             # 一緒に回る
-            self._program.set_mat3("u_transform", IDENTITY)
+            program.set_mat3("u_transform", IDENTITY)
+
+    def draw_mapped(
+        self,
+        handle: int,
+        *,
+        source: Placement,
+        anchor: Placement,
+        corners: Corners,
+        opacity: float = 1.0,
+        flip: bool = True,
+        blend: str = BlendMode.NORMAL,
+        uv: Corners | None = None,
+    ) -> bool:
+        """絵を任意の四角形へ貼る 描けなければ偽
+
+        ``source`` はテクスチャが占める矩形、``anchor`` はそのうち ``corners`` へ
+        写す矩形（どちらも同じ画素の座標） 素材をそのまま貼るなら 2 つは同じで、
+        エフェクトを通した画面いっぱいの結果を貼るなら ``source`` は画面全体、
+        ``anchor`` はその中で絵が置かれた矩形になる 射影変換は矩形の外まで
+        同じ式で伸びるので、画面全体を送っても絵の部分が正しく四隅に来る
+
+        ``uv`` は絵のどこを貼るか（左上・右上・右下・左下、0..1、画像の上が 0）
+        """
+        rows = homography(_rect_corners(anchor), corners)
+        if rows is None:
+            return False
+        matrix = to_clip(self.width, self.height) @ rows
+        # 四角形の四隅がカメラの後ろへ回ると、w の符号が混ざって面が裏返しに
+        # 広がる 板が真横を向いた瞬間の前後にあたり、描かないのが正しい
+        for x, y in _rect_corners(source):
+            if float(matrix[2, 0] * x + matrix[2, 1] * y + matrix[2, 2]) <= 0.0:
+                return False
+
+        program = self._begin_draw(blend, self._mapped_program, self._mapped_blend_program)
+        program.set_vec4(
+            "u_rect",
+            (source.left, source.top + source.height, source.left + source.width, source.top),
+        )
+        program.set_mat3("u_homography", tuple(float(v) for v in matrix.reshape(-1)))
+        program.set_bool("u_flip", flip)
+        program.set_bool("u_use_uv", uv is not None)
+        if uv is not None:
+            program.set_vec2_array("u_uv", uv)
+        program.set_float("u_opacity", float(np.clip(opacity, 0.0, 1.0)))
+        program.bind_texture("u_texture", handle)
+        self._quad.draw()
+        return True
+
+    def _begin_draw(self, blend: str, plain: Program, shaded: Program) -> Program:
+        """描く準備をして、使うシェーダを返す
+
+        係数で書ける合成は GL の合成に任せる シェーダで混ぜる合成は、下の絵を
+        写してから GL の合成を切って描く（混ぜた結果をそのまま書き込むため）
+        """
+        mode = _SHADER_BLENDS.get(blend)
+        if mode is None:
+            self._canvas.bind()
+            GL.glEnable(GL.GL_BLEND)
+            self._set_blend(blend)
+            plain.use()
+            return plain
+
+        GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, self._canvas.handle)
+        GL.glBindFramebuffer(GL.GL_DRAW_FRAMEBUFFER, self._backdrop.handle)
+        GL.glBlitFramebuffer(
+            0,
+            0,
+            self.width,
+            self.height,
+            0,
+            0,
+            self.width,
+            self.height,
+            GL.GL_COLOR_BUFFER_BIT,
+            GL.GL_NEAREST,
+        )
+        self._canvas.bind()
+        GL.glDisable(GL.GL_BLEND)
+        shaded.use()
+        shaded.set_int("u_mode", mode)
+        shaded.set_vec2("u_canvas", (float(self.width), float(self.height)))
+        shaded.bind_texture("u_backdrop", self._backdrop.color, unit=1)
+        GL.glActiveTexture(GL.GL_TEXTURE0)
+        return shaded
 
     def read(self) -> np.ndarray:
         """合成結果を sRGB 符号化した ``(高さ, 幅, 4)`` の uint8 配列で返す"""
@@ -365,10 +563,17 @@ class Compositor:
 
     def release(self) -> None:
         self._canvas.release()
+        self._backdrop.release()
         self._resolved.release()
         self._quad.release()
-        self._program.release()
-        self._resolve_program.release()
+        for program in (
+            self._program,
+            self._blend_program,
+            self._mapped_program,
+            self._mapped_blend_program,
+            self._resolve_program,
+        ):
+            program.release()
 
     def _set_blend(self, mode: str) -> None:
         source, destination = _BLEND_FUNCS.get(mode, _BLEND_FUNCS[BlendMode.NORMAL])

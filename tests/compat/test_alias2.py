@@ -190,13 +190,32 @@ class TestDrawSettings:
         # AviUtl1 は番号、AviUtl2 は表示名
         assert mapped(SUBTITLE).clip.blend_mode == "add"  # type: ignore[attr-defined]
 
-    def test_an_unsupported_blend_falls_back_and_is_recorded(self) -> None:
+    @pytest.mark.parametrize(
+        ("name", "mode"),
+        [
+            ("オーバーレイ", "overlay"),
+            ("比較(明)", "lighten"),
+            ("比較(暗)", "darken"),
+            ("減算", "subtract"),
+        ],
+    )
+    def test_every_aviutl_blend_is_carried_over(self, name: str, mode: str) -> None:
+        # 合成器に揃ったので、通常へ落とさずにそのまま写す 落とすと配布物の光や影が消える
         report = CompatibilityReport()
-        obj = parse_exo(SUBTITLE.replace("合成モード=加算", "合成モード=オーバーレイ")).objects[0]
+        obj = parse_exo(SUBTITLE.replace("合成モード=加算", f"合成モード={name}")).objects[0]
+        item = map_object(obj, RATE, report=report)
+        assert item is not None
+        assert item.clip.blend_mode == mode
+        assert not any(name in line for line in report.lines())
+
+    def test_an_unknown_blend_falls_back_and_is_recorded(self) -> None:
+        # 知らない名前を黙って通常にすると、何が足りないのか分からない
+        report = CompatibilityReport()
+        obj = parse_exo(SUBTITLE.replace("合成モード=加算", "合成モード=差の絶対値")).objects[0]
         item = map_object(obj, RATE, report=report)
         assert item is not None
         assert item.clip.blend_mode == "normal"
-        assert any("オーバーレイ" in line for line in report.lines())
+        assert any("差の絶対値" in line for line in report.lines())
 
     def test_opacity_comes_from_the_transparency(self) -> None:
         assert mapped(SUBTITLE).clip.opacity.at(0) == pytest.approx(0.75)  # type: ignore[attr-defined]
@@ -287,8 +306,9 @@ class TestScriptFilter:
 
 
 class TestEmbeddedLua:
-    def test_text_containing_a_lua_block_is_flagged(self) -> None:
-        # ``<?...?>`` は文字ではなく処理 そのまま画面に出すと別のものになる
+    def test_text_containing_a_lua_block_is_kept_for_rendering(self) -> None:
+        # 読み込む時点で走らせたり消したりすると、時刻で変わる字幕が止まる
+        # 本文のまま残し、未対応としても記録しない（描くときに走る）
         report = CompatibilityReport()
         text = (
             "[Object]"
@@ -300,5 +320,7 @@ class TestEmbeddedLua:
             + "テキスト=<?obj.mes('x')?>"
             + chr(10)
         )
-        map_object(parse_exo(text).objects[0], RATE, report=report)
-        assert any("<?...?>" in line for line in report.lines())
+        mapped = map_object(parse_exo(text).objects[0], RATE, report=report)
+        assert not any("<?" in line for line in report.lines())
+        assert mapped is not None and mapped.clip.source is not None
+        assert mapped.clip.source.params["text"] == "<?obj.mes('x')?>"
