@@ -692,7 +692,9 @@ class MainWindow(QMainWindow):
                 "置けるシーンがありません（先にシーンを作ってください）", 5000
             )
             return
-        names = [scene.name for scene in choices]
+        # 同じ名前のシーンがあると、名前から引き直したときに先頭のものを選んでしまう
+        # 番号を付けて、選んだ行の位置でシーンを決める
+        names = [f"{index}. {scene.name}" for index, scene in enumerate(choices, start=1)]
         name, accepted = QInputDialog.getItem(self, "シーンを置く", "置くシーン", names, 0, False)
         if accepted and name in names:
             self.place_scene(choices[names.index(name)].id)

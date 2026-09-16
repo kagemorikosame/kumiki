@@ -438,6 +438,8 @@ vec2 inverse_bilinear(vec2 p, vec2 a, vec2 b, vec2 c, vec2 d) {
     float k0 = cross2(h, e);
     float v;
     if (abs(k2) < 1e-4) {
+        // 潰れた四角形では割る数が 0 になる 範囲外を返して描かない
+        if (abs(k1) < 1e-6) return vec2(-1.0);
         v = -k0 / k1;
     } else {
         float w = k1 * k1 - 4.0 * k0 * k2;
@@ -446,9 +448,14 @@ vec2 inverse_bilinear(vec2 p, vec2 a, vec2 b, vec2 c, vec2 d) {
         v = (-k1 - w) / (2.0 * k2);
         if (v < 0.0 || v > 1.0) v = (-k1 + w) / (2.0 * k2);
     }
-    float u = (h.x - f.x * v) / (e.x + g.x * v);
-    if (abs(e.x + g.x * v) < 1e-4) u = (h.y - f.y * v) / (e.y + g.y * v);
-    return vec2(u, v);
+    float across_x = e.x + g.x * v;
+    float across_y = e.y + g.y * v;
+    if (abs(across_x) >= abs(across_y)) {
+        if (abs(across_x) < 1e-6) return vec2(-1.0);
+        return vec2((h.x - f.x * v) / across_x, v);
+    }
+    if (abs(across_y) < 1e-6) return vec2(-1.0);
+    return vec2((h.y - f.y * v) / across_y, v);
 }
 
 void main() {
@@ -458,7 +465,12 @@ void main() {
     vec2 bottom_right = vec2(u_object.z, u_object.y) + vec2(point2_x, point2_y);
     vec2 bottom_left = vec2(u_object.x, u_object.y) + vec2(point3_x, point3_y);
     vec2 uv = inverse_bilinear(v_uv * u_size, bottom_left, bottom_right, top_right, top_left);
-    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) { frag_color = vec4(0.0); return; }
+    // NaN は比較がすべて偽になり範囲の判定をすり抜けるので、先に弾く
+    bool broken = any(isnan(uv)) || any(isinf(uv));
+    if (broken || uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+        frag_color = vec4(0.0);
+        return;
+    }
     frag_color = sample_pixel(u_object.xy + uv * object_size());
 }
 """

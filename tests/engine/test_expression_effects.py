@@ -229,6 +229,14 @@ class TestPixels:
         assert _alpha_sum(result) == pytest.approx(32 * 32, rel=0.05)
         assert result[32, 32, 3] > 0.9
 
+    def test_a_collapsed_mesh_draws_nothing_broken(
+        self, gl_context: OffscreenGLContext, processor: EffectProcessor
+    ) -> None:
+        # 四隅を 1 本の線へ潰すと割る数が 0 になる NaN を描くと、重ねた先の色まで壊れる
+        effect = _make("mesh_deform", point1_x=-32, point2_x=-32)
+        result = _run(gl_context, processor, effect)
+        assert np.all(np.isfinite(result))
+
     def test_long_shadow_extends_behind(
         self, gl_context: OffscreenGLContext, processor: EffectProcessor
     ) -> None:
