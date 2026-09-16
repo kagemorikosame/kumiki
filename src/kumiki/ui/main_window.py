@@ -1350,6 +1350,10 @@ class MainWindow(QMainWindow):
 
         プレビューのウィジェットとは別のコンテキストで描く 再生用の資源を
         取り合わないようにするためで、代わりに 1 つ余分にコンテキストを持つ
+
+        AI が編集の結果を目で確かめるためのもので、書き出しではない 開いているシーンを
+        描く AI の読み取り（``list_clips`` など）もそのシーンが相手なので、メインを描くと
+        AI が見ているクリップと絵が食い違う
         """
         project = self.view_project
         full_width = project.settings.width
