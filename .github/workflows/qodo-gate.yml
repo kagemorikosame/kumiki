@@ -21,14 +21,13 @@ permissions:
   pull-requests: read
   contents: read
 
-# 同じ PR の実行は起点をまたいで 1 本ずつ流す 並んで走ると、先に古いコメントを
-# 読んだ実行が、あとの実行の結果を古い判定で上書きしうる
-# 走っている実行は取り消さない 取り消すと、判定は通っているのに PR のチェック一覧に
-# 取り消し（赤）が残る 待っている実行は新しいものに置き換わるが、後から走る方が
-# 新しい状態を読むので判定は変わらない
+# 同じ PR の実行は起点をまたいで 1 つのグループにし、新しい実行が来たら古い実行を
+# 取り消す 並んで走ると、先に古い状態（向き先を変える前など）を読んだ実行が、あとの
+# 実行の結果を古い判定で上書きしうる 取り消された実行は PR のチェック一覧に赤く残るが、
+# 判定（Qodo review の status）は最後の実行が書くので守りは崩れない
 concurrency:
   group: qodo-gate-${{ github.event.pull_request.number || github.event.issue.number }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   gate:

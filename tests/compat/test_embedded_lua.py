@@ -41,6 +41,15 @@ class TestSplitting:
 
 
 class TestExpansion:
+    def test_too_much_output_falls_back_to_the_text(self) -> None:
+        # 書き出しは Lua のメモリ上限の外に溜まる 止めないと、配布ファイルの 1 行で
+        # ソフトごとメモリを使い切れる
+        report = CompatibilityReport()
+        runtime = LuaScriptRuntime(instruction_limit=200_000, report=report)
+        text = "前<?for i = 1, 100 do mes(string.rep('a', 10000)) end?>後"
+        assert runtime.expand_text(text, _state()) == "前後"
+        assert report.lines()
+
     def test_mes_writes_in_place(self, runtime: LuaScriptRuntime) -> None:
         assert runtime.expand_text("残り<?mes(10 - 4)?>秒", _state()) == "残り6秒"
 

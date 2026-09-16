@@ -74,6 +74,10 @@ end
 #: 絵の画素は Python 側に持つので、スクリプトそのものはこれで十分足りる
 LUA_MEMORY_LIMIT = 256 * 1024 * 1024
 
+#: テキストの埋め込み Lua が書き出せる文字数 書き出しは Python 側に溜まるので、Lua の
+#: メモリ上限が効かない 字幕や説明文でこれを超える文字を 1 つのテキストに出すことは無い
+EMBEDDED_TEXT_LIMIT = 100_000
+
 
 def _attribute_filter(obj: Any, name: Any, is_setting: bool) -> Any:
     """Lua から Python の値の属性を引くときの門番 ``_`` で始まる名前は通さない
@@ -273,7 +277,17 @@ class LuaScriptRuntime:
         # 描画が走ったとき、書き出しが別のテキストへ混ざる
         with self._lock:
             globals_table = self._lua.globals()
-            globals_table[EMIT] = lambda value: output.append(str(value))
+            written = 0
+
+            def emit(value: Any) -> None:
+                nonlocal written
+                piece = str(value)
+                written += len(piece)
+                if written > EMBEDDED_TEXT_LIMIT:
+                    raise LuaError(f"書き出す文字が多すぎます（{EMBEDDED_TEXT_LIMIT} 文字まで）")
+                output.append(piece)
+
+            globals_table[EMIT] = emit
             try:
                 result = self.run(build_source(text), state, script=script)
             finally:
