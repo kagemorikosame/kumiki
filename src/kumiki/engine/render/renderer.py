@@ -15,7 +15,7 @@ from OpenGL import GL
 
 from kumiki.compat.aviutl.embedded import has_embedded
 from kumiki.compat.aviutl.report import global_report
-from kumiki.core.model import Clip, Effect, MediaId, Project, Track, TrackKind
+from kumiki.core.model import Clip, Effect, MediaId, Project, Timeline, Track, TrackKind
 from kumiki.core.timebase import FrameRate
 from kumiki.engine.decode import ProbeError, VideoDecoder
 from kumiki.engine.gpu import (
@@ -87,6 +87,11 @@ def _as_corners(points: tuple[tuple[float, float], ...] | None) -> Corners | Non
     return (points[0], points[1], points[2], points[3])
 
 
+#: シーンの入れ子の深さの上限 循環はコマンドとファイルの読み込みで止めてあるが、
+#: 深く積んだだけでも描画の手間が掛け算で増える 画面の外から来た壊れた
+#: プロジェクトで固まらないための最後の歯止め
+MAX_SCENE_DEPTH = 8
+
 #: 同時に開いておくデコーダの上限 素材ごとにコンテナとスレッドを抱えるので、
 #: 際限なく開くとファイルハンドルとメモリを食い潰す
 MAX_OPEN_DECODERS = 8
@@ -149,6 +154,8 @@ class FrameRenderer:
         self._scripts: ScriptStage | None = None
         #: フレームバッファのクリップが画面を写し取る先 使うまで作らない
         self._grab: Framebuffer | None = None
+        #: 入れ子のシーンを描く合成先 深さごとに 1 つ 使うまで作らない
+        self._nested: dict[int, Compositor] = {}
         self._closed = False
 
     @property
@@ -198,13 +205,17 @@ class FrameRenderer:
         if self._closed:
             raise RuntimeError("閉じたレンダラは使えない")
 
-        rate = self._project.rate
         self._compositor.begin()
-        for track in self._project.timeline.active_tracks(TrackKind.VIDEO):
+        self._compose_timeline(self._project.timeline, frame, depth=0)
+
+    def _compose_timeline(self, timeline: Timeline, frame: int, *, depth: int) -> None:
+        """1 本のタイムラインを、いまの合成先へ重ねる シーンの入れ子でも同じ道を通る"""
+        rate = self._project.rate
+        for track in timeline.active_tracks(TrackKind.VIDEO):
             clip = track.clip_at(frame)
             if clip is None or not clip.enabled:
                 continue
-            self._draw_clip(track, clip, frame, rate)
+            self._draw_clip(track, clip, frame, rate, depth)
 
     def render(self, frame: int) -> np.ndarray:
         """``frame`` の合成結果を sRGB の ``(高さ, 幅, 4)`` uint8 で返す
@@ -230,11 +241,19 @@ class FrameRenderer:
             self._effects.release()
             if self._grab is not None:
                 self._grab.release()
+            for nested in self._nested.values():
+                nested.release()
+            self._nested.clear()
             self._compositor.release()
         if self._owns_context:
             self._context.release()
 
-    def _draw_clip(self, track: Track, clip: Clip, frame: int, rate: FrameRate) -> None:
+    def _draw_clip(
+        self, track: Track, clip: Clip, frame: int, rate: FrameRate, depth: int = 0
+    ) -> None:
+        if clip.scene_id is not None:
+            self._draw_scene(clip, frame, rate, depth)
+            return
         if clip.source is not None and clip.source.kind == "framebuffer":
             self._draw_framebuffer(clip, frame, rate)
             return
@@ -279,6 +298,63 @@ class FrameRenderer:
             flip=False,
             blend=clip.blend_mode,
         )
+
+    def _draw_scene(self, clip: Clip, frame: int, rate: FrameRate, depth: int) -> None:
+        """入れ子のシーンを別の合成先に描き、1 本のクリップとして重ねる
+
+        シーンの中の時刻は、クリップの ``source_in``（秒）と速度で決まる 素材の
+        クリップと同じ決まりなので、分割やトリムをしても中身がずれない
+
+        シーンのキャンバスは透明から始める 黒で始めると、シーンを重ねた場所の
+        下の絵が隠れる
+        """
+        scene = self._project.find_scene(clip.scene_id) if clip.scene_id else None
+        if scene is None or depth >= MAX_SCENE_DEPTH:
+            return
+        local_frame = frame - clip.timeline_start
+        start = int(clip.source_in * rate.fps)
+        scene_frame = start + int(local_frame * clip.speed)
+
+        width, height = self._compositor.width, self._compositor.height
+        nested = self._nested.get(depth + 1)
+        if nested is None:
+            nested = Compositor(width, height)
+            self._nested[depth + 1] = nested
+        nested.resize(width, height)
+
+        outer = self._compositor
+        self._compositor = nested
+        try:
+            nested.begin((0.0, 0.0, 0.0, 0.0))
+            self._compose_timeline(scene.timeline, scene_frame, depth=depth + 1)
+        finally:
+            self._compositor = outer
+
+        gpu_effects, scripts = split_effects(clip.effects)
+        if scripts:
+            global_report.note_missing("シーンのクリップに積んだ AviUtl スクリプト")
+        full = Placement(0.0, 0.0, float(width), float(height))
+        opacity = clip.opacity.at(local_frame)
+        if not self._effects.has_work(gpu_effects):
+            outer.draw_handle(
+                nested.canvas.color,
+                full,
+                opacity=opacity,
+                flip=False,
+                blend=clip.blend_mode,
+                premultiplied=True,
+            )
+            return
+        result = self._effects.apply(
+            nested.canvas,
+            gpu_effects,
+            frame=local_frame,
+            fps=float(rate.fps),
+            flip_source=False,
+            duration=clip.duration,
+            premultiplied=True,
+        )
+        outer.draw_handle(result.color, full, opacity=opacity, flip=False, blend=clip.blend_mode)
 
     def _draw_framebuffer(self, clip: Clip, frame: int, rate: FrameRate) -> None:
         """それまでに重ねた画面を写し取り、エフェクトを掛けて重ねる

@@ -108,6 +108,9 @@ def paste_commands(project: Project, content: ClipboardContent, at_frame: int) -
         return []
     offset = max(0, at_frame) - content.origin
     groups: dict[GroupId, GroupId] = {}
+    #: 束ね（グループ）も新しく付け替える 元のままだと、貼ったものを選ぶと元の
+    #: クリップまで一緒に選ばれて動く
+    bundles: dict[GroupId, GroupId] = {}
     taken: dict[TrackId, list[tuple[int, int]]] = {}
     commands: list[Command] = []
 
@@ -124,7 +127,12 @@ def paste_commands(project: Project, content: ClipboardContent, at_frame: int) -
             if clip.link_group is not None
             else None
         )
-        pasted = replace(clip, id=new_clip_id(), timeline_start=start, link_group=group)
+        bundle = (
+            bundles.setdefault(clip.group_id, new_group_id()) if clip.group_id is not None else None
+        )
+        pasted = replace(
+            clip, id=new_clip_id(), timeline_start=start, link_group=group, group_id=bundle
+        )
         commands.append(AddClip(track.id, pasted))
     return commands
 

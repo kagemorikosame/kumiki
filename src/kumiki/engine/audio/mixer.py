@@ -10,7 +10,7 @@ from collections import OrderedDict
 
 import numpy as np
 
-from kumiki.core.model import Clip, MediaId, Project, Track, TrackKind
+from kumiki.core.model import Clip, MediaId, Project, Timeline, Track, TrackKind
 from kumiki.core.timebase import FrameRate
 from kumiki.engine.decode import AudioDecoder, ProbeError
 
@@ -18,6 +18,9 @@ __all__ = ["AudioMixer"]
 
 #: 同時に開いておくデコーダの上限
 MAX_OPEN_DECODERS = 8
+
+#: シーンの入れ子の深さの上限（映像のレンダラと同じ値）
+MAX_SCENE_DEPTH = 8
 
 
 class AudioMixer:
@@ -74,10 +77,20 @@ class AudioMixer:
         if count <= 0:
             return np.zeros((0, self.channels), dtype=np.float32)
 
+        return self._render_timeline(self._project.timeline, start_sample, count, depth=0)
+
+    def _render_timeline(
+        self, timeline: Timeline, start_sample: int, count: int, *, depth: int
+    ) -> np.ndarray:
+        """1 本のタイムラインの音 入れ子のシーンも同じ道を通る"""
         out = np.zeros((count, self.channels), dtype=np.float32)
         rate = self._project.rate
-        for track in self._project.timeline.active_tracks(TrackKind.AUDIO):
-            self._mix_track(out, track, start_sample, count, rate)
+        for track in timeline.active_tracks(TrackKind.AUDIO):
+            self._mix_track(out, track, start_sample, count, rate, depth)
+        # シーンを置いたクリップは映像トラックにいる 音も一緒に鳴らさないと、
+        # シーンの中の BGM やナレーションが消える
+        for track in timeline.active_tracks(TrackKind.VIDEO):
+            self._mix_track(out, track, start_sample, count, rate, depth, scenes_only=True)
         return out
 
     def render_frames(self, start_frame: int, frame_count: int) -> np.ndarray:
@@ -88,13 +101,23 @@ class AudioMixer:
         return self.render(start, end - start)
 
     def _mix_track(
-        self, out: np.ndarray, track: Track, start_sample: int, count: int, rate: FrameRate
+        self,
+        out: np.ndarray,
+        track: Track,
+        start_sample: int,
+        count: int,
+        rate: FrameRate,
+        depth: int = 0,
+        *,
+        scenes_only: bool = False,
     ) -> None:
         gain = _db_to_gain(track.volume_db)
         pan = np.clip(track.pan, -1.0, 1.0)
 
         for clip in track.clips:
             if not clip.enabled:
+                continue
+            if scenes_only and clip.scene_id is None:
                 continue
             clip_start = _frame_to_sample(clip.timeline_start, rate, self.sample_rate)
             clip_end = _frame_to_sample(clip.timeline_end, rate, self.sample_rate)
@@ -103,7 +126,7 @@ class AudioMixer:
             if begin >= end:
                 continue
 
-            samples = self._read_clip(clip, begin - clip_start, end - begin, rate)
+            samples = self._read_clip(clip, begin - clip_start, end - begin, rate, depth)
             if samples is None:
                 continue
 
@@ -111,9 +134,11 @@ class AudioMixer:
             out[offset : offset + len(samples)] += _apply_pan(samples * gain, float(pan))
 
     def _read_clip(
-        self, clip: Clip, offset_samples: int, count: int, rate: FrameRate
+        self, clip: Clip, offset_samples: int, count: int, rate: FrameRate, depth: int = 0
     ) -> np.ndarray | None:
         """クリップ内の位置からサンプルを読む 速度変更があればここで反映する"""
+        if clip.scene_id is not None:
+            return self._read_scene(clip, offset_samples, count, depth)
         if clip.media_id is None:
             return None
         media = self._project.find_media(clip.media_id)
@@ -135,6 +160,24 @@ class AudioMixer:
         start = int(source_offset + offset_samples * speed)
         needed = int(np.ceil(count * speed)) + 2
         source = decoder.read(start, needed)
+        return _resample_linear(source, count, speed)
+
+    def _read_scene(
+        self, clip: Clip, offset_samples: int, count: int, depth: int
+    ) -> np.ndarray | None:
+        """入れ子のシーンの音 時刻の決まりは映像と同じ（``source_in`` と速度）"""
+        scene = self._project.find_scene(clip.scene_id) if clip.scene_id else None
+        if scene is None or depth >= MAX_SCENE_DEPTH:
+            return None
+        source_offset = int(clip.source_in * self.sample_rate)
+        if clip.speed == 1:
+            return self._render_timeline(
+                scene.timeline, source_offset + offset_samples, count, depth=depth + 1
+            )
+        speed = float(clip.speed)
+        start = int(source_offset + offset_samples * speed)
+        needed = int(np.ceil(count * speed)) + 2
+        source = self._render_timeline(scene.timeline, start, needed, depth=depth + 1)
         return _resample_linear(source, count, speed)
 
     def _decoder_for(self, media_id: MediaId, stream_index: int) -> AudioDecoder | None:

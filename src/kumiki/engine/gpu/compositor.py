@@ -45,9 +45,12 @@ in vec2 v_uv;
 out vec4 frag_color;
 uniform sampler2D u_texture;
 uniform float u_opacity;
+// 事前乗算アルファで溜まった絵（入れ子のシーンのキャンバス）を渡すとき
+uniform bool u_premultiplied;
 void main() {
     // sRGB テクスチャなので、この時点で値はリニア
     vec4 color = texture(u_texture, v_uv);
+    if (u_premultiplied && color.a > 0.0001) color.rgb /= color.a;
     frag_color = vec4(color.rgb, color.a * u_opacity);
 }
 """
@@ -85,6 +88,7 @@ uniform sampler2D u_backdrop;
 uniform vec2 u_canvas;
 uniform float u_opacity;
 uniform int u_mode;
+uniform bool u_premultiplied;
 
 vec3 blend(vec3 below, vec3 above) {
     if (u_mode == 0) {
@@ -100,6 +104,7 @@ vec3 blend(vec3 below, vec3 above) {
 
 void main() {
     vec4 source = texture(u_texture, v_uv);
+    if (u_premultiplied && source.a > 0.0001) source.rgb /= source.a;
     float above_alpha = clamp(source.a * u_opacity, 0.0, 1.0);
     vec4 backdrop = texture(u_backdrop, gl_FragCoord.xy / u_canvas);
     float below_alpha = backdrop.a;
@@ -408,6 +413,7 @@ class Compositor:
         flip: bool = True,
         blend: str = BlendMode.NORMAL,
         matrix: tuple[float, ...] | None = None,
+        premultiplied: bool = False,
     ) -> None:
         """GL のテクスチャ番号を直接指定して重ねる
 
@@ -415,8 +421,11 @@ class Compositor:
         包まれていない それを合成するための入口
 
         ``matrix`` を渡すと、矩形に加えてその変換が掛かる（回転など）
+        ``premultiplied`` は、渡す絵が事前乗算アルファで溜まっているとき（入れ子の
+        シーンのキャンバス） そのまま重ねると、半透明の縁が 2 回薄まって黒ずむ
         """
         program = self._begin_draw(blend, self._program, self._blend_program)
+        program.set_bool("u_premultiplied", premultiplied)
         program.set_vec4("u_rect", placement.to_clip(self.width, self.height))
         program.set_bool("u_flip", flip)
         program.set_float("u_opacity", float(np.clip(opacity, 0.0, 1.0)))
@@ -461,6 +470,7 @@ class Compositor:
                 return False
 
         program = self._begin_draw(blend, self._mapped_program, self._mapped_blend_program)
+        program.set_bool("u_premultiplied", False)
         program.set_vec4(
             "u_rect",
             (source.left, source.top + source.height, source.left + source.width, source.top),

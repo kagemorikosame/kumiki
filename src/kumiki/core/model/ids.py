@@ -14,12 +14,14 @@ __all__ = [
     "EffectId",
     "GroupId",
     "MediaId",
+    "SceneId",
     "SegmentId",
     "TrackId",
     "new_clip_id",
     "new_effect_id",
     "new_group_id",
     "new_media_id",
+    "new_scene_id",
     "new_segment_id",
     "new_track_id",
 ]
@@ -30,6 +32,7 @@ ClipId = NewType("ClipId", str)
 EffectId = NewType("EffectId", str)
 GroupId = NewType("GroupId", str)
 SegmentId = NewType("SegmentId", str)
+SceneId = NewType("SceneId", str)
 
 
 def _generate() -> str:
@@ -59,3 +62,7 @@ def new_group_id() -> GroupId:
 
 def new_segment_id() -> SegmentId:
     return SegmentId(_generate())
+
+
+def new_scene_id() -> SceneId:
+    return SceneId(_generate())

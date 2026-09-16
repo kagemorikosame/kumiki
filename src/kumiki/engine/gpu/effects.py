@@ -99,6 +99,7 @@ class EffectProcessor:
         flip_source: bool = True,
         duration: int = 0,
         bounds: tuple[float, float, float, float] | None = None,
+        premultiplied: bool = False,
     ) -> Framebuffer:
         """``source`` にエフェクトを掛けた結果のバッファを返す
 
@@ -113,7 +114,7 @@ class EffectProcessor:
         全体を基準にすると角丸が画面の角に付き、中心基準の動きが画面の中央で回る
         """
         self._front = 0
-        self._draw_source(source, source_rect, flip_source)
+        self._draw_source(source, source_rect, flip_source, premultiplied)
         width, height = float(self.width), float(self.height)
         #: 絵が置かれた範囲（画素、GL の向き） 角丸や中心基準の動きが使う
         if bounds is not None:
@@ -151,7 +152,11 @@ class EffectProcessor:
     # --- 内部 ---
 
     def _draw_source(
-        self, source: Texture | Framebuffer, rect: tuple[float, ...], flip: bool
+        self,
+        source: Texture | Framebuffer,
+        rect: tuple[float, ...],
+        flip: bool,
+        premultiplied: bool = False,
     ) -> None:
         """素材を先頭のバッファへ置く フレームバッファなら、その色のテクスチャを読む"""
         target = self._buffers[self._front]
@@ -160,6 +165,8 @@ class EffectProcessor:
         self._blit.use()
         self._blit.set_vec4("u_rect", rect)
         self._blit.set_bool("u_flip", flip)
+        # エフェクトはストレートアルファで受け取る 事前乗算で溜まった絵は戻してから置く
+        self._blit.set_bool("u_premultiplied", premultiplied)
         handle = source.color if isinstance(source, Framebuffer) else source.handle
         self._blit.bind_texture("u_texture", handle)
         self._quad.draw()
@@ -228,6 +235,7 @@ class EffectProcessor:
         target.bind(clear=(0.0, 0.0, 0.0, 0.0))
         GL.glDisable(GL.GL_BLEND)
         self._blit.use()
+        self._blit.set_bool("u_premultiplied", False)
         self._blit.set_vec4("u_rect", FULL_RECT)
         self._blit.set_bool("u_flip", False)
         self._blit.bind_texture("u_texture", source.color)
@@ -262,7 +270,10 @@ _BLIT_FRAGMENT = """
 in vec2 v_uv;
 out vec4 frag_color;
 uniform sampler2D u_texture;
+uniform bool u_premultiplied;
 void main() {
-    frag_color = texture(u_texture, v_uv);
+    vec4 color = texture(u_texture, v_uv);
+    if (u_premultiplied && color.a > 0.0001) color.rgb /= color.a;
+    frag_color = color;
 }
 """

@@ -41,12 +41,22 @@ from kumiki.core.commands.effects import (
     SetSource,
     resolve_param,
 )
+from kumiki.core.commands.group import GroupClips, UngroupClips
 from kumiki.core.commands.history import Document, HistoryEntry
 from kumiki.core.commands.insert import (
     DEFAULT_GENERATED_FRAMES,
     DEFAULT_STILL_FRAMES,
     insert_generated,
     insert_media,
+)
+from kumiki.core.commands.scene import (
+    DEFAULT_SCENE_FRAMES,
+    AddScene,
+    InScene,
+    RemoveScene,
+    RenameScene,
+    insert_scene,
+    new_scene,
 )
 from kumiki.core.commands.subtitle import (
     AddSegment,
@@ -60,16 +70,20 @@ from kumiki.core.commands.subtitle import (
 
 __all__ = [
     "DEFAULT_GENERATED_FRAMES",
+    "DEFAULT_SCENE_FRAMES",
     "DEFAULT_STILL_FRAMES",
     "AddClip",
     "AddEffect",
     "AddMedia",
+    "AddScene",
     "AddSegment",
     "AddTrack",
     "ClearKeyframes",
     "Command",
     "Document",
+    "GroupClips",
     "HistoryEntry",
+    "InScene",
     "MergeWithNext",
     "MoveClip",
     "MoveClips",
@@ -82,9 +96,11 @@ __all__ = [
     "RemoveEffect",
     "RemoveKeyframe",
     "RemoveMedia",
+    "RemoveScene",
     "RemoveSegment",
     "RemoveTrack",
     "RenameProject",
+    "RenameScene",
     "RetimeSegment",
     "RippleCut",
     "SetClipProperty",
@@ -100,8 +116,11 @@ __all__ = [
     "SplitClip",
     "SplitSegment",
     "TrimClip",
+    "UngroupClips",
     "burn_subtitles",
     "insert_generated",
     "insert_media",
+    "insert_scene",
+    "new_scene",
     "resolve_param",
 ]

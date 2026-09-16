@@ -18,6 +18,7 @@ from kumiki.core.model.ids import (
     ClipId,
     GroupId,
     MediaId,
+    SceneId,
     TrackId,
     new_clip_id,
     new_track_id,
@@ -54,6 +55,8 @@ class Clip:
 
     ``media_id`` が ``None`` のクリップは、素材を持たない生成オブジェクト
     （テキスト、図形など） その場合の見た目は :attr:`effects` が決める
+    ``scene_id`` を持つクリップは、別のシーン（タイムライン）を 1 本の絵と音として
+    入れ子に置いたもの（AviUtl のシーンオブジェクト）
     """
 
     #: タイムライン上の開始位置（フレーム）
@@ -77,6 +80,12 @@ class Clip:
     blend_mode: str = "normal"
     #: 映像と音声を連動させるためのグループ 同じ値を持つクリップは一緒に動く
     link_group: GroupId | None = None
+    #: 入れ子にしたシーン 素材（``media_id``）とは同時に持てない
+    scene_id: SceneId | None = None
+    #: 束ねたグループ 同じ値を持つクリップは、クリック 1 回でまとめて選ばれる
+    #: ``link_group`` とは別物 リンクは映像と音声の同期、グループは編集の手間を
+    #: 省くための束ねで、解除しても同期は崩れない
+    group_id: GroupId | None = None
     enabled: bool = True
     id: ClipId = field(default_factory=new_clip_id)
 
@@ -87,6 +96,9 @@ class Clip:
             raise ValueError(f"素材内の開始位置が負: {self.source_in}")
         if self.speed <= 0:
             raise ValueError(f"再生速度は正でなければならない: {self.speed}")
+        if self.scene_id is not None and (self.media_id is not None or self.source is not None):
+            # 両方を持つと、どちらを描くのかが決まらない
+            raise ValueError("シーンを置いたクリップは素材や生成オブジェクトを持てない")
 
     @property
     def timeline_end(self) -> int:
@@ -255,3 +267,19 @@ class Timeline:
             for clip in track.clips:
                 if clip.link_group == group:
                     yield track, clip
+
+    def grouped_clips(self, group: GroupId) -> Iterator[tuple[Track, Clip]]:
+        """同じグループ（束ね）に属するクリップをすべて返す"""
+        for track in self.tracks:
+            for clip in track.clips:
+                if clip.group_id == group:
+                    yield track, clip
+
+    def scene_references(self) -> set[SceneId]:
+        """このタイムラインに置かれているシーン"""
+        return {
+            clip.scene_id
+            for track in self.tracks
+            for clip in track.clips
+            if clip.scene_id is not None
+        }

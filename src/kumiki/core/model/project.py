@@ -5,12 +5,25 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from fractions import Fraction
 
-from kumiki.core.model.ids import MediaId
+from kumiki.core.model.ids import MediaId, SceneId, new_scene_id
 from kumiki.core.model.media import MediaItem
 from kumiki.core.model.timeline import Timeline
 from kumiki.core.timebase import FrameRate
 
-__all__ = ["Project", "ProjectSettings"]
+__all__ = ["Project", "ProjectSettings", "Scene"]
+
+
+@dataclass(frozen=True, slots=True)
+class Scene:
+    """メインとは別のタイムライン（AviUtl のシーン）
+
+    ほかのタイムラインへ 1 本のクリップとして置ける（:attr:`Clip.scene_id`）
+    オープニングのように何度も使う部分を 1 か所で直せる
+    """
+
+    name: str
+    timeline: Timeline
+    id: SceneId = field(default_factory=new_scene_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +72,8 @@ class Project:
     #: メディアプール 表示順を保つため辞書ではなくタプル
     media: tuple[MediaItem, ...] = ()
     name: str = "無題"
+    #: メイン（:attr:`timeline`）とは別のシーン 表示順を保つためタプル
+    scenes: tuple[Scene, ...] = ()
 
     def __post_init__(self) -> None:
         if self.timeline.rate != self.settings.frame_rate:
@@ -69,6 +84,16 @@ class Project:
         ids = [m.id for m in self.media]
         if len(set(ids)) != len(ids):
             raise ValueError("素材 ID が重複している")
+        scene_ids = [s.id for s in self.scenes]
+        if len(set(scene_ids)) != len(scene_ids):
+            raise ValueError("シーン ID が重複している")
+        for scene in self.scenes:
+            if scene.timeline.rate != self.settings.frame_rate:
+                # シーンだけ別のフレームレートにすると、置いたときの時刻の換算が要る
+                raise ValueError(f"シーン {scene.name!r} のフレームレートがプロジェクトと違う")
+        cycle = self.scene_cycle()
+        if cycle is not None:
+            raise ValueError(f"シーンが自分自身を入れ子にしている: {cycle}")
 
     @classmethod
     def create(
@@ -128,3 +153,56 @@ class Project:
 
     def renamed(self, name: str) -> Project:
         return replace(self, name=name)
+
+    def find_scene(self, scene_id: SceneId) -> Scene | None:
+        for scene in self.scenes:
+            if scene.id == scene_id:
+                return scene
+        return None
+
+    def require_scene(self, scene_id: SceneId) -> Scene:
+        scene = self.find_scene(scene_id)
+        if scene is None:
+            raise KeyError(f"シーンが見つからない: {scene_id}")
+        return scene
+
+    def replace_scene(self, scene: Scene) -> Project:
+        """同じ ID のシーンを差し替えた新しい :class:`Project` を返す"""
+        for index, existing in enumerate(self.scenes):
+            if existing.id == scene.id:
+                scenes = (*self.scenes[:index], scene, *self.scenes[index + 1 :])
+                return replace(self, scenes=scenes)
+        raise KeyError(f"シーンが見つからない: {scene.id}")
+
+    def with_scenes(self, scenes: tuple[Scene, ...]) -> Project:
+        return replace(self, scenes=scenes)
+
+    def scene_cycle(self) -> str | None:
+        """入れ子が自分へ戻るシーンの名前 無ければ ``None``
+
+        描くときに無限に潜り続けるので、作らせない（コマンドはこれで止まる）
+        """
+        edges = {scene.id: scene.timeline.scene_references() for scene in self.scenes}
+        names = {scene.id: scene.name for scene in self.scenes}
+        visiting: set[SceneId] = set()
+        done: set[SceneId] = set()
+
+        def visit(scene_id: SceneId) -> SceneId | None:
+            if scene_id in done:
+                return None
+            if scene_id in visiting:
+                return scene_id
+            visiting.add(scene_id)
+            for target in edges.get(scene_id, set()):
+                found = visit(target)
+                if found is not None:
+                    return found
+            visiting.discard(scene_id)
+            done.add(scene_id)
+            return None
+
+        for scene_id in edges:
+            found = visit(scene_id)
+            if found is not None:
+                return names.get(found, str(found))
+        return None
