@@ -75,6 +75,19 @@ end
 LUA_MEMORY_LIMIT = 256 * 1024 * 1024
 
 
+def _attribute_filter(obj: Any, name: Any, is_setting: bool) -> Any:
+    """Lua から Python の値の属性を引くときの門番 ``_`` で始まる名前は通さない
+
+    ``register_builtins`` を切っても、Lua へ渡した関数の ``__globals__`` から
+    ``__builtins__`` の ``__import__`` まで辿れる スクリプトが使う API に ``_`` で
+    始まる名前は無いので、まとめて塞いでも困らない
+    """
+    del obj, is_setting
+    if not isinstance(name, str) or name.startswith("_"):
+        raise AttributeError(f"Lua からは参照できない名前です: {name}")
+    return name
+
+
 def _new_runtime(module: Any) -> Any:
     """メモリ上限つきでランタイムを作る
 
@@ -90,6 +103,7 @@ def _new_runtime(module: Any) -> Any:
             unpack_returned_tuples=True,
             register_eval=False,
             register_builtins=False,
+            attribute_filter=_attribute_filter,
             max_memory=LUA_MEMORY_LIMIT,
         )
     except (TypeError, ValueError, RuntimeError) as exc:
@@ -161,7 +175,9 @@ class LuaScriptRuntime:
         self._render_source = render_source
         self._instruction_limit = instruction_limit
         self._lua = _new_runtime(module)
-        self._lock = threading.Lock()
+        # 入れ子で取れる錠にする テキストの展開は、大域変数の差し替えと実行を
+        # 1 つの錠の中で行い、その中から run を呼ぶ
+        self._lock = threading.RLock()
         self._install_globals()
         # どちらも 1 度だけ組み立てる フレームごとに作り直すと、
         # コンパイルの時間がそのまま描画の遅れになる
@@ -253,14 +269,17 @@ class LuaScriptRuntime:
         if not has_embedded(text):
             return text
         output: list[str] = []
-        globals_table = self._lua.globals()
-        globals_table[EMIT] = lambda value: output.append(str(value))
-        try:
-            result = self.run(build_source(text), state, script=script)
-        finally:
-            # 残すと、次に走るスクリプトの ``mes`` がテキストの書き出しを呼ぶ
-            globals_table[EMIT] = None
-            globals_table["mes"] = None
+        # 差し替えから戻すまでを錠の中で行う 外で差し替えると、その間に別のスレッドの
+        # 描画が走ったとき、書き出しが別のテキストへ混ざる
+        with self._lock:
+            globals_table = self._lua.globals()
+            globals_table[EMIT] = lambda value: output.append(str(value))
+            try:
+                result = self.run(build_source(text), state, script=script)
+            finally:
+                # 残すと、次に走るスクリプトの ``mes`` がテキストの書き出しを呼ぶ
+                globals_table[EMIT] = None
+                globals_table["mes"] = None
         if result.failed:
             return literal_text(text)
         return "".join(output)

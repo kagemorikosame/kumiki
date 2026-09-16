@@ -96,7 +96,7 @@ class TestGroups:
         run(host, "move_clip", clip_id=clips[0], timeline_start=60, track_id=here)
         assert {clip["start"] for clip in run(host, "list_clips")} == {60}
 
-    def test_delete_clip_on_one_member_deletes_the_group(self, host: FakeHost) -> None:
+    def test_delete_clip_on_one_member_leaves_no_orphans(self, host: FakeHost) -> None:
         # 画面で消すと仲間ごと消える AI だけ 1 本残ると、何が残ったのか分かりにくい
         run(host, "add_text", text="上", at_frame=0)
         clips = [clip["clip_id"] for clip in run(host, "list_clips")]

@@ -155,6 +155,20 @@ class TestDrawing:
         assert result.state is not None
         assert result.state.ox == 0.0
 
+    @pytest.mark.parametrize(
+        "code",
+        [
+            'python.eval("1")',
+            "local g = RGB.__globals__",
+            "local g = debug_print.__globals__",
+        ],
+    )
+    def test_python_internals_cannot_be_walked(self, code: str) -> None:
+        # 渡した関数の __globals__ を辿れると、__import__ から手元のファイル操作や
+        # プロセスの起動まで届く python.eval が戻っても同じ
+        runtime = LuaScriptRuntime(report=CompatibilityReport(), instruction_limit=100_000)
+        assert runtime.run(code, state()).failed
+
     def test_a_script_cannot_eat_all_the_memory(self) -> None:
         # 配布ファイルを開いただけで、巨大な文字列を作られてソフトごと落ちないこと
         runtime = LuaScriptRuntime(report=CompatibilityReport(), instruction_limit=100_000)
