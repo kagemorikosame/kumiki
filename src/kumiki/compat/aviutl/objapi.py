@@ -148,6 +148,9 @@ class ObjectState:
     font: dict[str, Any] = field(default_factory=dict)
     #: ``obj.setoption`` で設定した描画オプション
     options: dict[str, Any] = field(default_factory=dict)
+    #: :attr:`image` を描画の記録やバッファと共有している 画素を書き換える前に
+    #: 複製する 描くたびに複製すると、何十回も描くスクリプトで画像の数だけ写す
+    image_shared: bool = False
 
     @property
     def width(self) -> int:
@@ -167,6 +170,7 @@ class ObjectState:
 
     def snapshot(self) -> DrawCall:
         """いまの状態を 1 回分の描画にする"""
+        self.image_shared = True
         return DrawCall(
             image=self.image,
             x=self.ox,
@@ -185,6 +189,16 @@ class ObjectState:
             cz=self.cz,
             effects=tuple(self.effects),
         )
+
+    def writable_image(self) -> np.ndarray:
+        """画素を書き換えてよい画像 共有していれば先に複製する
+
+        共有したまま書くと、記録済みの描画まで最後の状態で描かれる
+        """
+        if self.image_shared:
+            self.image = self.image.copy()
+            self.image_shared = False
+        return self.image
 
     def result(self) -> tuple[DrawCall, ...]:
         """描画の一覧 明示的な描画が無ければ自動描画を 1 つ"""
@@ -455,6 +469,7 @@ class ObjApi:
             self._report.note_missing(f'obj.load("buffer", "{name}")')
             return
         self.state.image = stored
+        self.state.image_shared = True
 
     def lua_copybuffer(self, destination: str = "", source: str = "") -> None:
         """バッファをコピーする ``obj.copybuffer("tmp", "obj")``
@@ -526,7 +541,7 @@ class ObjApi:
         return ((red << 16) | (green << 8) | blue, alpha / 255.0)
 
     def lua_putpixel(self, x: int = 0, y: int = 0, *values: Any) -> None:
-        image = self.state.image
+        image = self.state.writable_image()
         column, row = int(_as_float(x)), int(_as_float(y))
         if not (0 <= row < image.shape[0] and 0 <= column < image.shape[1]):
             return
@@ -542,7 +557,7 @@ class ObjApi:
         image[row, column] = [*channels, max(0, min(255, alpha))]
 
     def lua_copypixel(self, dx: int, dy: int, sx: int, sy: int) -> None:
-        image = self.state.image
+        image = self.state.writable_image()
         target = (int(_as_float(dy)), int(_as_float(dx)))
         origin = (int(_as_float(sy)), int(_as_float(sx)))
         if _inside(image, target) and _inside(image, origin):

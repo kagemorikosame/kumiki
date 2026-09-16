@@ -79,9 +79,13 @@ class RemoveMedia(Command):
 
     def apply(self, project: Project) -> Project:
         item = project.require_media(self.media_id)
+        # シーンの中で実行されても、メインとほかのシーンの参照まで数える
+        # 開いているタイムラインだけを見ると、別の場所のクリップが消えた素材を指す
+        timelines = [project.timeline, *(scene.timeline for scene in project.scenes)]
         in_use = [
             clip.id
-            for track in project.timeline.tracks
+            for timeline in timelines
+            for track in timeline.tracks
             for clip in track.clips
             if clip.media_id == self.media_id
         ]

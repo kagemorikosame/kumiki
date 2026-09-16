@@ -67,6 +67,15 @@ class TestGroups:
         run(host, "ungroup_clips", clip_ids=[clips[0]])
         assert {clip["group_id"] for clip in run(host, "list_clips")} == {None}
 
+    def test_moving_one_member_moves_the_group(self, host: FakeHost) -> None:
+        # 画面では 1 本つかむと束ごと動く AI だけ 1 本を抜き出せると、束が裂ける
+        run(host, "add_text", text="上", at_frame=0)
+        clips = [clip["clip_id"] for clip in run(host, "list_clips")]
+        run(host, "group_clips", clip_ids=clips)
+        moved = run(host, "move_clips", clip_ids=[clips[0]], delta=30)
+        assert set(moved["moved"]) == set(clips)
+        assert {clip["start"] for clip in run(host, "list_clips")} == {30}
+
     def test_a_single_clip_is_refused(self, host: FakeHost) -> None:
         clip = run(host, "list_clips")[0]["clip_id"]
         with pytest.raises(ToolError, match="2 本"):

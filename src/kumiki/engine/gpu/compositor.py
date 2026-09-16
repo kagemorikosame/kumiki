@@ -215,8 +215,10 @@ class Transform:
 
     def corners(
         self, source_width: int, source_height: int, target_width: int, target_height: int
-    ) -> Corners:
+    ) -> Corners | None:
         """四隅が画面のどこへ来るか 左上・右上・右下・左下の順（画素）
+
+        どれかの隅がカメラを越えたら ``None``（描かない）
 
         中心と回転の支点を 3 次元で回してから、カメラから見た位置へ写す
         平らな板でも使えるが、そのときは :meth:`placement` と :meth:`matrix` の
@@ -234,7 +236,10 @@ class Transform:
             )
             x, y, z = rotate(local, self.rotation_x, self.rotation_y, self.rotation)
             placed = (x + self.pivot_x + self.x, y + self.pivot_y + self.y, z + self.z)
-            points.append(project(placed, target_width, target_height))
+            point = project(placed, target_width, target_height)
+            if point is None:
+                return None
+            points.append(point)
         return (points[0], points[1], points[2], points[3])
 
     def scale(self) -> tuple[float, float]:

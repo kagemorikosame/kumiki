@@ -15,22 +15,25 @@ import pytest
 from kumiki.core.clipboard import copy_clips, paste_commands
 from kumiki.core.commands import (
     AddClip,
+    AddMedia,
     AddScene,
     AddTrack,
     Command,
     Document,
     GroupClips,
     InScene,
+    RemoveMedia,
     RemoveScene,
     RenameProject,
     RenameScene,
     UngroupClips,
+    insert_media,
     insert_scene,
     new_scene,
 )
 from kumiki.core.io import load_project, save_project
 from kumiki.core.io.serialize import ProjectFileError, project_from_dict, project_to_dict
-from kumiki.core.model import Clip, Project, SceneId, Track, TrackKind
+from kumiki.core.model import Clip, MediaItem, Project, SceneId, Track, TrackKind
 from kumiki.effects.sources import TEXT
 
 
@@ -108,6 +111,37 @@ class TestScenes:
         project = _apply(project, insert_scene(project, scene_id, at_frame=0))
         with pytest.raises(ValueError, match="メイン"):
             RemoveScene(scene_id).apply(project)
+
+    def test_media_used_elsewhere_cannot_be_removed_inside(
+        self, with_scene: tuple[Project, SceneId], video_media: MediaItem
+    ) -> None:
+        # シーンの中からはメインのクリップが見えない 見ずに消すと、メインの
+        # クリップが無い素材を指したまま残る
+        project, scene_id = with_scene
+        project = AddMedia(video_media).apply(project)
+        project = _apply(project, insert_media(project, video_media, at_frame=0))
+        with pytest.raises(ValueError, match="使われている"):
+            InScene(scene_id, RemoveMedia(video_media.id)).apply(project)
+
+    def test_media_used_in_another_scene_cannot_be_removed(
+        self, with_scene: tuple[Project, SceneId], video_media: MediaItem
+    ) -> None:
+        project, scene_id = with_scene
+        project = AddMedia(video_media).apply(project)
+        project = InScene(scene_id, AddTrack(Track(TrackKind.VIDEO, "V1"))).apply(project)
+        inner = replace(project, timeline=project.require_scene(scene_id).timeline)
+        for command in insert_media(inner, video_media, at_frame=0):
+            project = InScene(scene_id, command).apply(project)
+        with pytest.raises(ValueError, match="使われている"):
+            RemoveMedia(video_media.id).apply(project)
+
+    def test_unused_media_can_still_be_removed_inside(
+        self, with_scene: tuple[Project, SceneId], video_media: MediaItem
+    ) -> None:
+        project, scene_id = with_scene
+        project = AddMedia(video_media).apply(project)
+        removed = InScene(scene_id, RemoveMedia(video_media.id)).apply(project)
+        assert removed.media == ()
 
     def test_rename(self, with_scene: tuple[Project, SceneId]) -> None:
         project, scene_id = with_scene
@@ -195,4 +229,20 @@ class TestSaving:
             }
         ]
         with pytest.raises(ProjectFileError, match="入れ子"):
+            project_from_dict(data)
+
+    def test_a_clip_pointing_to_a_missing_scene_is_refused(
+        self, with_scene: tuple[Project, SceneId]
+    ) -> None:
+        # 開けてしまうと、そのクリップは絵も音も出さずに黙って残り、原因が追えない
+        project, _ = with_scene
+        data = project_to_dict(project)
+        data["timeline"]["tracks"] = [
+            {
+                "id": "t1",
+                "kind": "video",
+                "clips": [{"id": "c1", "timeline_start": 0, "duration": 10, "scene_id": "無い"}],
+            }
+        ]
+        with pytest.raises(ProjectFileError, match="無いシーン"):
             project_from_dict(data)

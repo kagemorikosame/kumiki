@@ -55,8 +55,8 @@ BLEND_LABELS = {
     BlendMode.SCREEN: "スクリーン",
     BlendMode.SUBTRACT: "減算",
     BlendMode.OVERLAY: "オーバーレイ",
-    BlendMode.LIGHTEN: "比較（明）",
-    BlendMode.DARKEN: "比較（暗）",
+    BlendMode.LIGHTEN: "比較(明)",
+    BlendMode.DARKEN: "比較(暗)",
 }
 
 

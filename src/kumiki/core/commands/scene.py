@@ -13,7 +13,7 @@ from dataclasses import dataclass, replace
 from kumiki.core.commands.base import Command
 from kumiki.core.commands.edit import AddClip
 from kumiki.core.commands.insert import _free_video_track
-from kumiki.core.model import Clip, Project, Scene, SceneId, Timeline
+from kumiki.core.model import Clip, MediaId, Project, Scene, SceneId, Timeline
 
 __all__ = [
     "DEFAULT_SCENE_FRAMES",
@@ -120,7 +120,22 @@ class InScene(Command):
             replace(current, timeline=result.timeline) if s.id == self.scene_id else s
             for s in result.scenes
         )
-        return replace(result, timeline=project.timeline, scenes=scenes)
+        merged = replace(result, timeline=project.timeline, scenes=scenes)
+        # 中のコマンドは開いているシーンしか見ていない 素材を外すコマンドなら、
+        # メインやほかのシーンのクリップが消えた素材を指していないかをここで確かめる
+        known = {item.id for item in merged.media}
+        lost = {item.id for item in project.media} - known
+        if lost and any(_uses_media(timeline, lost) for timeline in _timelines(merged)):
+            raise ValueError("ほかのタイムラインで使われている素材は削除できない")
+        return merged
+
+
+def _timelines(project: Project) -> list[Timeline]:
+    return [project.timeline, *(scene.timeline for scene in project.scenes)]
+
+
+def _uses_media(timeline: Timeline, media_ids: set[MediaId]) -> bool:
+    return any(clip.media_id in media_ids for track in timeline.tracks for clip in track.clips)
 
 
 def insert_scene(

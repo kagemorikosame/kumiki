@@ -937,11 +937,13 @@ class TimelineView(QWidget):
         起点は :meth:`set_selection` が残った最後の 1 本へ移す 外したクリップを
         起点にすると、次の Shift+クリックが選んでいないクリップから範囲を取る
         """
-        members = set(self._group_of(clip_id))
+        # 足す順はタイムラインの並びを保つ 集合から並べると選んだ順が毎回変わる
+        members = self._group_of(clip_id)
         if clip_id in self._selection:
-            self.set_selection(c for c in self._selection if c not in members)
+            removed = set(members)
+            self.set_selection(c for c in self._selection if c not in removed)
         else:
-            self.set_selection((*self._selection, *members - {clip_id}, clip_id))
+            self.set_selection((*self._selection, *(c for c in members if c != clip_id), clip_id))
 
     def _select_range(self, anchor: ClipId, target: ClipId) -> None:
         """Shift+クリック 起点と今のクリップを両隅にした範囲をまとめて選ぶ
@@ -963,13 +965,15 @@ class TimelineView(QWidget):
         top, bottom = sorted((order.index(first[0].id), order.index(last[0].id)))
         start = min(first[1].timeline_start, last[1].timeline_start)
         end = max(first[1].timeline_end, last[1].timeline_end)
+        # グループは仲間ごと入れる 一部だけ選ぶと、そのまま動かしたときに束が裂ける
         chosen = [
-            clip.id
+            member
             for track in shown[top : bottom + 1]
             for clip in track.clips
             if clip.overlaps(start, end)
+            for member in self._group_of(clip.id)
         ]
-        self.set_selection((*chosen, target))
+        self.set_selection((*chosen, *self._group_of(target), target))
         self._anchor = anchor
 
     def _update_marquee(self, position: QPoint) -> None:

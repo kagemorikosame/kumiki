@@ -126,6 +126,16 @@ class TestDrawing:
         assert call.alpha == 0.5
         assert not any("drawpoly" in line for line in report.lines())
 
+    def test_each_draw_keeps_the_picture_of_its_time(self, runtime: LuaScriptRuntime) -> None:
+        # 同じ配列を共有すると、後の putpixel が前に描いた分まで書き換える
+        result = runtime.run(
+            "obj.drawpoly(0,0,0, 1,0,0, 1,1,0, 0,1,0) obj.putpixel(0, 0, 0xff0000, 1) obj.draw()",
+            state(),
+        )
+        first, second = result.draws
+        assert tuple(second.image[0, 0]) == (255, 0, 0, 255)
+        assert tuple(first.image[0, 0]) != (255, 0, 0, 255)
+
     def test_drawpoly_with_too_few_points_is_recorded(self) -> None:
         # 四隅が揃わないまま描くと、潰れた面が画面に広がる
         report = CompatibilityReport()

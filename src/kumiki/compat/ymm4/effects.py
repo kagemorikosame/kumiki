@@ -143,7 +143,7 @@ def _random_move(r: _Reader) -> Effect | None:
     return _create(
         "random_move",
         range_x=r.track("X"),
-        range_y=r.track("Y"),
+        range_y=r.track("Y", flip=True),
         range_z=r.track("Z"),
         interval=r.track("Span"),
     )

@@ -31,8 +31,8 @@ CAMERA_DISTANCE = 1024.0
 #: 四隅 左上・右上・右下・左下の順
 Corners = tuple[tuple[float, float], tuple[float, float], tuple[float, float], tuple[float, float]]
 
-#: カメラの目の前すれすれまで来た点は、これより手前へは出さない
-#: 距離が 0 に近づくと拡大率が発散し、四隅の 1 つだけが画面の外の遠くへ飛ぶ
+#: カメラからこれより近い点は写せないものとして扱う 距離が 0 に近づくと拡大率が
+#: 発散し、四隅の 1 つだけが画面の外の遠くへ飛んで、板が画面を覆う
 _NEAREST = 1.0
 
 
@@ -57,10 +57,18 @@ def rotate(
     return x, y, z
 
 
-def project(point: tuple[float, float, float], width: float, height: float) -> tuple[float, float]:
-    """画面中央を原点とした 3 次元の点を、画面の画素へ写す"""
+def project(
+    point: tuple[float, float, float], width: float, height: float
+) -> tuple[float, float] | None:
+    """画面中央を原点とした 3 次元の点を、画面の画素へ写す
+
+    カメラの位置か、その後ろへ回った点は ``None`` 丸めて写すと、カメラを越えた
+    板が巨大な四角形になって画面を覆う
+    """
     x, y, z = point
-    depth = max(CAMERA_DISTANCE + z, _NEAREST)
+    depth = CAMERA_DISTANCE + z
+    if depth < _NEAREST:
+        return None
     scale = CAMERA_DISTANCE / depth
     return width / 2.0 + x * scale, height / 2.0 + y * scale
 
@@ -80,7 +88,13 @@ def homography(source: Corners, target: Corners) -> np.ndarray | None:
     matrix = np.array(rows, dtype=np.float64)
     if abs(np.linalg.det(matrix)) < 1e-9:
         return None
-    solved = np.linalg.solve(matrix, np.array(values, dtype=np.float64))
+    try:
+        solved = np.linalg.solve(matrix, np.array(values, dtype=np.float64))
+    except np.linalg.LinAlgError:
+        # 行列式の判定をすり抜けるほど潰れかけた四隅 描画を止めずに描かない側へ倒す
+        return None
+    if not np.all(np.isfinite(solved)):
+        return None
     return np.append(solved, 1.0).reshape(3, 3)
 
 

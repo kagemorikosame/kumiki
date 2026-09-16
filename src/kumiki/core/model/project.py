@@ -91,6 +91,12 @@ class Project:
             if scene.timeline.rate != self.settings.frame_rate:
                 # シーンだけ別のフレームレートにすると、置いたときの時刻の換算が要る
                 raise ValueError(f"シーン {scene.name!r} のフレームレートがプロジェクトと違う")
+        known = set(scene_ids)
+        for timeline in (self.timeline, *(scene.timeline for scene in self.scenes)):
+            unknown = timeline.scene_references() - known
+            if unknown:
+                # 開けてしまうと、そのクリップは絵も音も出さずに黙って残る
+                raise ValueError(f"無いシーンを指すクリップがある: {sorted(unknown)}")
         cycle = self.scene_cycle()
         if cycle is not None:
             raise ValueError(f"シーンが自分自身を入れ子にしている: {cycle}")

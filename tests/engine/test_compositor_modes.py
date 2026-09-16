@@ -21,7 +21,13 @@ from kumiki.engine.gpu import (
     Texture,
     Transform,
 )
-from kumiki.engine.gpu.projection import CAMERA_DISTANCE, homography, project, rotate
+from kumiki.engine.gpu.projection import (
+    CAMERA_DISTANCE,
+    Corners,
+    homography,
+    project,
+    rotate,
+)
 
 
 @pytest.fixture(scope="module")
@@ -32,6 +38,12 @@ def gl_context() -> Iterator[OffscreenGLContext]:
         pytest.skip(f"OpenGL コンテキストを作れない: {exc}")
     yield context
     context.release()
+
+
+def _corners(transform: Transform, *sizes: int) -> Corners:
+    corners = transform.corners(sizes[0], sizes[1], sizes[2], sizes[3])
+    assert corners is not None
+    return corners
 
 
 def _solid(width: int, height: int, value: int) -> np.ndarray:
@@ -104,25 +116,25 @@ class TestShaderBlends:
 class TestProjection:
     def test_nothing_moves_when_flat(self) -> None:
         # 平らな板の四隅が動くと、今までの見た目が変わる
-        corners = Transform().corners(100, 50, 400, 200)
+        corners = _corners(Transform(), 100, 50, 400, 200)
         assert corners == ((150.0, 75.0), (250.0, 75.0), (250.0, 125.0), (150.0, 125.0))
 
     def test_going_deeper_makes_it_smaller(self) -> None:
         # 奥へ置いたものが小さくならないと、奥行きのあるスクリプトが平らに見える
-        near = Transform().corners(100, 100, 400, 400)
-        far = Transform(z=CAMERA_DISTANCE).corners(100, 100, 400, 400)
+        near = _corners(Transform(), 100, 100, 400, 400)
+        far = _corners(Transform(z=CAMERA_DISTANCE), 100, 100, 400, 400)
         assert far[1][0] - far[0][0] == pytest.approx((near[1][0] - near[0][0]) / 2)
 
     def test_tilting_backwards_narrows_the_top(self) -> None:
         # X 軸の正で上端が奥へ倒れる 逆だと、起き上がる動きが倒れる動きになる
-        corners = Transform(rotation_x=45).corners(200, 200, 800, 800)
+        corners = _corners(Transform(rotation_x=45), 200, 200, 800, 800)
         top = corners[1][0] - corners[0][0]
         bottom = corners[2][0] - corners[3][0]
         assert top < bottom
 
     def test_quarter_turn_about_y_is_edge_on(self) -> None:
         # 真横を向いた板は幅が無い このとき射影変換は解けず、描かない
-        corners = Transform(rotation_y=90).corners(200, 200, 800, 800)
+        corners = _corners(Transform(rotation_y=90), 200, 200, 800, 800)
         assert corners[0][0] == pytest.approx(corners[1][0])
         source = ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0))
         assert homography(source, corners) is None
@@ -135,10 +147,24 @@ class TestProjection:
         _, _, z = rotate((1.0, 0.0, 0.0), 0, 90, 0)
         assert z == pytest.approx(1.0)
 
-    def test_the_camera_never_divides_by_zero(self) -> None:
-        # カメラより手前の点で割り算が発散すると、画面が 1 つの色で塗り潰される
-        x, _ = project((10.0, 0.0, -CAMERA_DISTANCE * 2), 100, 100)
-        assert np.isfinite(x)
+    def test_points_behind_the_camera_are_not_projected(self) -> None:
+        # カメラを越えた点を丸めて写すと、板が巨大な四角形になって画面を覆う
+        assert project((10.0, 0.0, -CAMERA_DISTANCE * 2), 100, 100) is None
+        assert project((10.0, 0.0, -CAMERA_DISTANCE), 100, 100) is None
+        near = project((10.0, 0.0, -CAMERA_DISTANCE + 2), 100, 100)
+        assert near is not None
+        assert np.isfinite(near[0])
+
+    def test_a_board_crossing_the_camera_is_not_drawn(self) -> None:
+        # 1 つの隅でもカメラを越えたら、残りの隅だけで形を作らない
+        assert Transform(z=-CAMERA_DISTANCE).corners(100, 100, 400, 400) is None
+        crossing = Transform(z=-CAMERA_DISTANCE + 10, rotation_x=80)
+        assert crossing.corners(400, 400, 400, 400) is None
+
+    def test_an_unsolvable_homography_is_none(self) -> None:
+        # 解けない四隅で例外を投げると、描画が止まって画面が固まる
+        flat = ((0.0, 0.0), (0.0, 0.0), (0.0, 0.0), (0.0, 0.0))
+        assert homography(flat, flat) is None
 
 
 class TestMappedDraw:

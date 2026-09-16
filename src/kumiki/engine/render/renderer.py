@@ -361,8 +361,8 @@ class FrameRenderer:
 
         キャンバスは描いている最中なので、そのまま読みながら同じキャンバスへ描くことは
         できない いったん別のバッファへ写す キャンバスは事前乗算アルファで溜まって
-        いるが、背景は不透明で塗ってあるので、エフェクトが受け取るストレートアルファと
-        同じ値になる
+        いるので、そう伝えて渡す メインは不透明な背景なので伝えなくても値は同じだが、
+        透明から始まるシーンの中では半透明の縁が暗くなる
 
         AviUtl スクリプトは掛けない スクリプトは CPU の画像を書き換える作りで、画面を
         毎フレーム CPU へ読み戻すと再生が追いつかない（積まれていれば記録に残す）
@@ -390,6 +390,7 @@ class FrameRenderer:
                     fps=float(rate.fps),
                     flip_source=False,
                     duration=clip.duration,
+                    premultiplied=True,
                 )
             self._compositor.draw_handle(
                 source.color,
@@ -397,6 +398,8 @@ class FrameRenderer:
                 opacity=clip.opacity.at(local_frame),
                 flip=False,
                 blend=clip.blend_mode,
+                # エフェクトを通した結果はストレートアルファ 写しただけなら事前乗算のまま
+                premultiplied=source is self._grab,
             )
 
     def _draw_scripted(
@@ -434,8 +437,11 @@ class FrameRenderer:
             alpha = opacity * call.alpha
 
             if call.quad is not None:
-                # obj.drawpoly 四隅を画面へ写してから貼る
-                points = [project(point, width, height) for point in call.quad]
+                projected = [project(point, width, height) for point in call.quad]
+                points = [point for point in projected if point is not None]
+                if len(points) != 4:
+                    # カメラを越えた隅がある 写せる隅だけで描くと形の違う板になる
+                    continue
                 uv = None
                 if call.uv is not None:
                     uv = tuple(
@@ -471,6 +477,8 @@ class FrameRenderer:
             )
             if not transform.is_flat:
                 corners = transform.corners(texture.width, texture.height, width, height)
+                if corners is None:
+                    continue
                 self._draw_on_quad(
                     texture,
                     corners,
@@ -564,22 +572,31 @@ class FrameRenderer:
             duration=duration,
             bounds=_placed_bounds(box, None, centred, texture.width, texture.height),
         )
-        anchor = centred
         if uv is not None:
-            # 絵の一部だけを貼るときは、その部分の矩形を四隅へ写す 軸に沿った
-            # 切り出し（配布スクリプトの使い方はほぼこれ）なら正確に合う
-            us = [point[0] for point in uv]
-            vs = [point[1] for point in uv]
-            anchor = Placement(
-                centred.left + min(us) * texture.width,
-                centred.top + min(vs) * texture.height,
-                max((max(us) - min(us)) * texture.width, 1.0),
-                max((max(vs) - min(vs)) * texture.height, 1.0),
+            # 絵の一部だけを貼るときは、切り出す四隅を結果のバッファの中の位置へ
+            # 読み替えて貼る 外接矩形にまとめると、斜めに切り出した形が崩れる
+            # 結果のバッファは GL の向き（下が 0）なので、縦は裏返す
+            placed = tuple(
+                (
+                    (centred.left + u * texture.width) / width,
+                    1.0 - (centred.top + v * texture.height) / height,
+                )
+                for u, v in uv
             )
+            self._compositor.draw_mapped(
+                result.color,
+                source=own,
+                anchor=own,
+                corners=corners,
+                opacity=opacity,
+                blend=blend,
+                uv=_as_corners(placed),
+            )
+            return
         self._compositor.draw_mapped(
             result.color,
             source=Placement(0.0, 0.0, float(width), float(height)),
-            anchor=anchor,
+            anchor=centred,
             corners=corners,
             opacity=opacity,
             flip=False,

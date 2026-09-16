@@ -191,6 +191,23 @@ def _target_clips(host: EditorHost, arguments: dict[str, Any]) -> tuple[ClipId, 
     return clip_ids
 
 
+def _with_groups(host: EditorHost, clip_ids: tuple[ClipId, ...]) -> tuple[ClipId, ...]:
+    """グループに入ったクリップは仲間も足す 画面で 1 本つかむと束ごと動くのと揃える
+
+    AI が 1 本だけ指したときに束が裂けると、人が画面で直す手間が増える
+    """
+    timeline = _project(host).timeline
+    expanded: dict[ClipId, None] = {}
+    for clip_id in clip_ids:
+        located = timeline.locate_clip(clip_id)
+        if located is None or located[1].group_id is None:
+            expanded[clip_id] = None
+            continue
+        for _, member in timeline.grouped_clips(located[1].group_id):
+            expanded[member.id] = None
+    return tuple(expanded)
+
+
 def _clip_id_list(host: EditorHost, arguments: dict[str, Any]) -> tuple[ClipId, ...]:
     """``clip_ids`` を読んで確かめる 重なった ID は 1 つにする
 
@@ -559,7 +576,7 @@ def _delete_clip(host: EditorHost, arguments: dict[str, Any]) -> object:
 
 
 def _move_clips(host: EditorHost, arguments: dict[str, Any]) -> object:
-    clip_ids = _target_clips(host, arguments)
+    clip_ids = _with_groups(host, _target_clips(host, arguments))
     delta = int(arguments.get("delta", 0))
     if delta == 0:
         raise ToolError("delta に動かすフレーム数を指定してください（負で前へ）")
@@ -569,7 +586,7 @@ def _move_clips(host: EditorHost, arguments: dict[str, Any]) -> object:
 
 
 def _delete_clips(host: EditorHost, arguments: dict[str, Any]) -> object:
-    clip_ids = _target_clips(host, arguments)
+    clip_ids = _with_groups(host, _target_clips(host, arguments))
     ripple = bool(arguments.get("ripple", False))
     command = RemoveClips(clip_ids, ripple=ripple)
     host.apply_commands([command], command.label)
@@ -582,7 +599,7 @@ def _duplicate_clips(host: EditorHost, arguments: dict[str, Any]) -> object:
     AI には「クリップボードに入れておく」段を見せない 2 回に分けると、間に人が
     別のものをコピーしたとき、AI の知らない中身が貼られる
     """
-    clip_ids = _target_clips(host, arguments)
+    clip_ids = _with_groups(host, _target_clips(host, arguments))
     project = _project(host)
     content = copy_clips(project, clip_ids)
     at_frame = int(arguments.get("at_frame", host.playhead))
