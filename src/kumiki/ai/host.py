@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Protocol
 
 from kumiki.core.commands import Command, Document
-from kumiki.core.model import ClipId, MediaId, MediaItem
+from kumiki.core.model import ClipId, MediaId, MediaItem, Project, SceneId
 from kumiki.engine.audio.waveform import Waveform
 
 __all__ = ["EditorHost", "ToolError"]
@@ -41,6 +41,24 @@ class EditorHost(Protocol):
         ...
 
     @property
+    def project(self) -> Project:
+        """いま編集しているタイムラインを ``timeline`` に差し込んだプロジェクト
+
+        シーンを開いていれば、そのシーンのタイムラインが入っている 読み取りは
+        すべてこれを見る（画面と同じものを AI も見るため）
+        """
+        ...
+
+    @property
+    def active_scene(self) -> SceneId | None:
+        """開いているシーン メインなら ``None``"""
+        ...
+
+    def set_active_scene(self, scene_id: SceneId | None) -> None:
+        """編集するシーンを切り替える 以後のコマンドはそのシーンの中で実行される"""
+        ...
+
+    @property
     def playhead(self) -> int: ...
 
     def seek(self, frame: int) -> None: ...
@@ -61,6 +79,8 @@ class EditorHost(Protocol):
 
     def apply_commands(self, commands: list[Command], label: str) -> None:
         """コマンドをまとめて実行する 失敗したら :class:`ToolError` を投げること
+
+        シーンを開いていれば、そのシーンの中で実行すること（``InScene`` で包む）
 
         まとめるのは、1 つの指示による編集を 1 回の Undo で戻せるようにするため
         """

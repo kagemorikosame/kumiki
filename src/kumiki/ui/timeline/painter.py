@@ -213,6 +213,7 @@ def draw_clip(
     waveform: Waveform | None,
     selected: bool,
     clip_rect: QRect,
+    scene_name: str | None = None,
 ) -> None:
     """クリップ 1 個を描く
 
@@ -239,7 +240,15 @@ def draw_clip(
         elif not is_video and waveform is not None:
             _draw_waveform(painter, content, clip, layout, rate, waveform)
 
-    _draw_clip_label(painter, clip_rect, clip, media)
+    _draw_clip_label(painter, clip_rect, clip, media, scene_name)
+    if clip.group_id is not None:
+        # 束ねたクリップの下端に、グループごとの色の線を引く 同じ色の線どうしが
+        # 同じグループ 選ばなくても、どれとどれが一緒に動くのかが分かる
+        hue = int(clip.group_id[:6], 16) % 360 if _is_hex(clip.group_id[:6]) else 200
+        painter.fillRect(
+            QRect(clip_rect.left(), clip_rect.bottom() - 3, clip_rect.width(), 3),
+            QColor.fromHsv(hue, 170, 235),
+        )
 
     painter.setPen(QPen(Colors.SELECTION if selected else border, 2 if selected else 1))
     painter.drawRect(clip_rect.adjusted(0, 0, -1, -1))
@@ -322,11 +331,21 @@ def draw_dense_clips(
             painter.drawRect(left, top, max(2, right - left), height - 1)
 
 
-def _draw_clip_label(painter: QPainter, rect: QRect, clip: Clip, media: MediaItem | None) -> None:
+def _is_hex(text: str) -> bool:
+    return bool(text) and all(character in "0123456789abcdefABCDEF" for character in text)
+
+
+def _draw_clip_label(
+    painter: QPainter,
+    rect: QRect,
+    clip: Clip,
+    media: MediaItem | None,
+    scene_name: str | None = None,
+) -> None:
     label_rect = QRect(rect.left(), rect.top(), rect.width(), Metrics.CLIP_LABEL_HEIGHT)
     painter.fillRect(label_rect, QColor(0, 0, 0, 90))
 
-    name = _clip_name(clip, media)
+    name = f"シーン: {scene_name}" if clip.scene_id is not None else _clip_name(clip, media)
     if clip.speed != 1:
         name = f"{name}  ×{float(clip.speed):g}"
     painter.setPen(QPen(Colors.CLIP_LABEL, 1))

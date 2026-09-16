@@ -13,13 +13,14 @@ from pathlib import Path
 import pytest
 
 from kumiki.ai.host import ToolError
-from kumiki.core.commands import AddClip, Command, Document
+from kumiki.core.commands import AddClip, Command, Document, InScene
 from kumiki.core.model import (
     ClipId,
     MediaId,
     MediaItem,
     Project,
     ProjectSettings,
+    SceneId,
     Track,
     TrackKind,
     Transcript,
@@ -38,6 +39,7 @@ class FakeHost:
         self._document = Document(project)
         self.frame = 0
         self.selection: tuple[ClipId, ...] = ()
+        self.scene: SceneId | None = None
         self.stopped = 0
         self.rendered: list[tuple[int, int]] = []
         self.analyzed: list[MediaId] = []
@@ -49,6 +51,19 @@ class FakeHost:
     @property
     def document(self) -> Document:
         return self._document
+
+    @property
+    def project(self) -> Project:
+        project = self._document.project
+        scene = project.find_scene(self.scene) if self.scene is not None else None
+        return project if scene is None else replace(project, timeline=scene.timeline)
+
+    @property
+    def active_scene(self) -> SceneId | None:
+        return self.scene
+
+    def set_active_scene(self, scene_id: SceneId | None) -> None:
+        self.scene = scene_id
 
     @property
     def playhead(self) -> int:
@@ -77,6 +92,8 @@ class FakeHost:
         try:
             with self._document.checkpoint(label):
                 for command in commands:
+                    if self.scene is not None and not isinstance(command, InScene):
+                        command = InScene(self.scene, command)
                     self._document.execute(command)
         except (ValueError, KeyError) as exc:
             raise ToolError(str(exc)) from exc

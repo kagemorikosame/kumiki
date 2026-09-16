@@ -30,6 +30,7 @@ from kumiki.core.clipboard import ClipboardContent, copy_clips, cut_commands, pa
 from kumiki.core.commands import (
     AddClip,
     Command,
+    GroupClips,
     MoveClip,
     MoveClips,
     RemoveClip,
@@ -38,6 +39,7 @@ from kumiki.core.commands import (
     SetTrackState,
     SplitClip,
     TrimClip,
+    UngroupClips,
 )
 from kumiki.core.commands.edit import DEFAULT_TRACK_HEIGHT, MAX_TRACK_HEIGHT, MIN_TRACK_HEIGHT
 from kumiki.core.model import Clip, ClipId, GroupId, Project, TrackId, TrackKind
@@ -141,6 +143,9 @@ class TimelineView(QWidget):
     #: :attr:`commands_requested` と同じだが、直前の同じ操作の続き 取り消しの段を
     #: 増やさずに直前の段へまとめてもらう（ホイールで高さを変え続けるときなど）
     commands_continued = Signal(list, str)
+    #: シーンを置いたクリップをダブルクリックした 引数はシーンの ID
+    #: 中を開くのは窓の仕事（どのシーンを編集中かは窓が持つ）
+    scene_open_requested = Signal(str)
     #: ビューは窓を知らない（テストで単体で作れるように） 知らせは信号で外へ出し、
     #: ステータスバーに出すのは窓の仕事にする
     status_message = Signal(str)
@@ -302,6 +307,7 @@ class TimelineView(QWidget):
         self, painter: QPainter, band: TrackBand, clip: Clip, rect: QRect, selected: bool
     ) -> None:
         media = self._project.find_media(clip.media_id) if clip.media_id is not None else None
+        scene = self._project.find_scene(clip.scene_id) if clip.scene_id is not None else None
         paint_clip(
             painter,
             clip,
@@ -313,6 +319,9 @@ class TimelineView(QWidget):
             waveform=self._analyzer.waveform(media) if media is not None else None,
             selected=selected,
             clip_rect=rect,
+            scene_name=scene.name
+            if scene is not None
+            else ("（消えたシーン）" if clip.scene_id else None),
         )
 
     def _draw_drag_preview(self, painter: QPainter) -> None:
@@ -509,7 +518,7 @@ class TimelineView(QWidget):
         track_id, clip = hit
         if adding:
             # 足したクリップはそのまま掴んで動かせる 外したクリップは掴まない
-            # （選んでいないものを動かすことになる）
+            # （選んでいないものを動かすことになる） グループはまとめて足し引きする
             self._toggle(clip.id)
             if clip.id not in self._selection:
                 return
@@ -521,7 +530,9 @@ class TimelineView(QWidget):
             self.set_selection((*self._selection, clip.id))
             self._anchor = clip.id
         else:
-            self.select(clip.id)
+            # グループに入っていれば、仲間ごと選ぶ 掴んだ 1 本が主
+            self.set_selection((*self._group_of(clip.id), clip.id))
+            self._anchor = clip.id
 
         edge = self._edge_at(position, clip)
         frame = self._layout.frame_at(position.x())
@@ -689,6 +700,18 @@ class TimelineView(QWidget):
             menu.addSeparator()
             _action(menu, f"削除{count}", self.delete_selected)
             _action(menu, f"削除して詰める{count}", lambda: self.delete_selected(ripple=True))
+            menu.addSeparator()
+            group = _action(menu, "グループ化", self.group_selected)
+            group.setEnabled(len(self._selection) > 1)
+            ungroup = _action(menu, "グループ解除", self.ungroup_selected)
+            ungroup.setEnabled(self._selection_has_group())
+            if hit[1].scene_id is not None:
+                scene_id = hit[1].scene_id
+                _action(
+                    menu,
+                    "シーンを開く",
+                    functools.partial(self.scene_open_requested.emit, str(scene_id)),
+                )
 
         band = (
             self._layout.band_at(self._project.timeline, position.y())
@@ -707,6 +730,38 @@ class TimelineView(QWidget):
                 toggle.setChecked(bool(getattr(track, attribute)))
             _action(menu, f"{name} の高さを戻す", functools.partial(self._reset_height, track.id))
         return menu
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt の命名規約
+        hit = self._clip_at(event.position().toPoint())
+        if hit is not None and hit[1].scene_id is not None:
+            self.scene_open_requested.emit(str(hit[1].scene_id))
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def group_selected(self) -> bool:
+        """選んでいるクリップを束ねる 2 本以上要る"""
+        if len(self._selection) < 2:
+            self.status_message.emit("グループ化するには 2 本以上選んでください")
+            return False
+        command = GroupClips(self._selection)
+        self._request([command], command.label)
+        return True
+
+    def ungroup_selected(self) -> bool:
+        if not self._selection_has_group():
+            self.status_message.emit("グループに入っているクリップを選んでください")
+            return False
+        command = UngroupClips(self._selection)
+        self._request([command], command.label)
+        return True
+
+    def _selection_has_group(self) -> bool:
+        timeline = self._project.timeline
+        for clip_id in self._selection:
+            located = timeline.locate_clip(clip_id)
+            if located is not None and located[1].group_id is not None:
+                return True
+        return False
 
     def _reset_height(self, track_id: TrackId) -> None:
         command = SetTrackHeights(((track_id, DEFAULT_TRACK_HEIGHT),))
@@ -882,10 +937,11 @@ class TimelineView(QWidget):
         起点は :meth:`set_selection` が残った最後の 1 本へ移す 外したクリップを
         起点にすると、次の Shift+クリックが選んでいないクリップから範囲を取る
         """
+        members = set(self._group_of(clip_id))
         if clip_id in self._selection:
-            self.set_selection(c for c in self._selection if c != clip_id)
+            self.set_selection(c for c in self._selection if c not in members)
         else:
-            self.set_selection((*self._selection, clip_id))
+            self.set_selection((*self._selection, *members - {clip_id}, clip_id))
 
     def _select_range(self, anchor: ClipId, target: ClipId) -> None:
         """Shift+クリック 起点と今のクリップを両隅にした範囲をまとめて選ぶ
@@ -926,8 +982,19 @@ class TimelineView(QWidget):
             self._drag.moved = True
         self._drag.marquee_to = position
         rect = QRect(origin, position).normalized()
-        self.set_selection((*self._drag.marquee_base, *self._clips_in_rect(rect)))
+        caught = [
+            member for clip_id in self._clips_in_rect(rect) for member in self._group_of(clip_id)
+        ]
+        self.set_selection((*self._drag.marquee_base, *caught))
         self.update()
+
+    def _group_of(self, clip_id: ClipId) -> tuple[ClipId, ...]:
+        """グループの仲間（自分を含む） グループに入っていなければ自分だけ"""
+        timeline = self._project.timeline
+        located = timeline.locate_clip(clip_id)
+        if located is None or located[1].group_id is None:
+            return (clip_id,)
+        return tuple(clip.id for _, clip in timeline.grouped_clips(located[1].group_id))
 
     def _clips_in_rect(self, rect: QRect) -> list[ClipId]:
         """枠に少しでも掛かったクリップ 全部を収めなくても選べる方が囲みやすい
