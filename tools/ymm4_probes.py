@@ -10,7 +10,8 @@
 使い方::
 
     .venv\\Scripts\\python.exe tools\\ymm4_probes.py .work\\probes\\probes.ymmt
-    .venv\\Scripts\\python.exe tools\\ymm4_compare.py --work .work\\probe build .work\\probes\\probes.ymmt
+    .venv\\Scripts\\python.exe tools\\ymm4_compare.py --work .work\\probe \
+        build .work\\probes\\probes.ymmt
 """
 
 from __future__ import annotations
@@ -133,17 +134,17 @@ def build(
     ]
 
     # --- グラデーション（エフェクト） ---
-    gradient = dict(
-        GradientType="Linear",
-        ExtendMode="Clamp",
-        Blend="Normal",
-        X=0,
-        Y=0,
-        Rotation=0,
-        Size=400,
-        Opacity=100,
-        Stops=two_stops,
-    )
+    gradient = {
+        "GradientType": "Linear",
+        "ExtendMode": "Clamp",
+        "Blend": "Normal",
+        "X": 0,
+        "Y": 0,
+        "Rotation": 0,
+        "Size": 400,
+        "Opacity": 100,
+        "Stops": two_stops,
+    }
     for name, change in {
         "linear": {},
         "rot45": {"Rotation": 45},
@@ -162,10 +163,15 @@ def build(
         with_effect(f"gradient_{name}", effect("GradientEffect", **{**gradient, **change}))
 
     # --- 前景の塗りつぶし（ブラシ） ---
-    fill = dict(Opacity=100, BlendMode="Normal", IsBrushOnly=False)
-    linear = dict(
-        Stops=two_stops, CoordinateMode="Pixel", Size=600, Offset=0, Angle=0, ExtendMode="Clamp"
-    )
+    fill = {"Opacity": 100, "BlendMode": "Normal", "IsBrushOnly": False}
+    linear = {
+        "Stops": two_stops,
+        "CoordinateMode": "Pixel",
+        "Size": 600,
+        "Offset": 0,
+        "Angle": 0,
+        "ExtendMode": "Clamp",
+    }
     for name, change in {
         "linear": {},
         "linear_angle45": {"Angle": 45},
@@ -182,20 +188,20 @@ def build(
                 Brush=brush("LinearGradientBrushPlugin", **{**linear, **change}),
             ),
         )
-    radial = dict(
-        Stops=two_stops,
-        CenterX=0,
-        CenterY=0,
-        OriginX=0,
-        OriginY=0,
-        RadiusX=300,
-        RadiusY=300,
-        Zoom=100,
-        Angle=0,
-        Aspect=0,
-        ExtendMode="Clamp",
-        IsInverted=False,
-    )
+    radial = {
+        "Stops": two_stops,
+        "CenterX": 0,
+        "CenterY": 0,
+        "OriginX": 0,
+        "OriginY": 0,
+        "RadiusX": 300,
+        "RadiusY": 300,
+        "Zoom": 100,
+        "Angle": 0,
+        "Aspect": 0,
+        "ExtendMode": "Clamp",
+        "IsInverted": False,
+    }
     for name, change in {
         "radial": {},
         "radial_center": {"CenterX": 200, "CenterY": 100},
@@ -212,9 +218,15 @@ def build(
                 Brush=brush("RadiulGradientBrushPlugin", **{**radial, **change}),
             ),
         )
-    stripe = dict(
-        Color1="#FFFF0000", Width1=40, Color2="#FF0000FF", Width2=80, Offset=0, Zoom=100, Angle=0
-    )
+    stripe = {
+        "Color1": "#FFFF0000",
+        "Width1": 40,
+        "Color2": "#FF0000FF",
+        "Width2": 80,
+        "Offset": 0,
+        "Zoom": 100,
+        "Angle": 0,
+    }
     for name, change in {
         "stripe": {},
         "stripe_angle45": {"Angle": 45},
@@ -229,18 +241,18 @@ def build(
                 Brush=brush("StripeBrushPlugin", **{**stripe, **change}),
             ),
         )
-    dot = dict(
-        Foreground="#FFFF0000",
-        Background="#FF0000FF",
-        Radius=10,
-        Span=40,
-        Zoom=100,
-        X=0,
-        Y=0,
-        Angle=0,
-        Aspect=0,
-        IsInverted=False,
-    )
+    dot = {
+        "Foreground": "#FFFF0000",
+        "Background": "#FF0000FF",
+        "Radius": 10,
+        "Span": 40,
+        "Zoom": 100,
+        "X": 0,
+        "Y": 0,
+        "Angle": 0,
+        "Aspect": 0,
+        "IsInverted": False,
+    }
     for name, change in {
         "dot": {},
         "dot_angle45": {"Angle": 45},
@@ -254,19 +266,19 @@ def build(
                 "FillForegroundEffect", **fill, Brush=brush("DotBrushPlugin", **{**dot, **change})
             ),
         )
-    grid = dict(
-        StrokeColor="#FFFF0000",
-        BackgroundColor="#FF0000FF",
-        Thickness=4,
-        Width=40,
-        Height=60,
-        Zoom=100,
-        X=0,
-        Y=0,
-        Angle=0,
-        Aspect=0,
-        IsInverted=False,
-    )
+    grid = {
+        "StrokeColor": "#FFFF0000",
+        "BackgroundColor": "#FF0000FF",
+        "Thickness": 4,
+        "Width": 40,
+        "Height": 60,
+        "Zoom": 100,
+        "X": 0,
+        "Y": 0,
+        "Angle": 0,
+        "Aspect": 0,
+        "IsInverted": False,
+    }
     for name, change in {"grid": {}, "grid_angle30": {"Angle": 30}}.items():
         with_effect(
             f"fill_{name}",
