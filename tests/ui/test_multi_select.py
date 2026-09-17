@@ -20,7 +20,9 @@ from kumiki.core.commands import (
     GroupClips,
     MoveClips,
     RemoveClips,
+    SetClipProperty,
     SetTrackHeights,
+    TrimClips,
     insert_media,
 )
 from kumiki.core.model import Clip, ClipId, MediaItem, Project, Track, TrackKind
@@ -348,3 +350,51 @@ def window(qt_application: QApplication) -> Iterator[MainWindow]:
     created = MainWindow(_project(), confirm_unsaved=False)
     yield created
     created.close()
+
+
+class TestTogether:
+    """何本か選んだときのトリム・トラック跨ぎ・設定パネル"""
+
+    def test_trimming_the_edge_trims_them_all(self, view: TimelineView) -> None:
+        a, b, _ = _ids(view)
+        QTest.mouseClick(view, _LEFT, pos=_point(view, 0, 10))
+        QTest.mouseClick(view, _LEFT, _CTRL, _point(view, 0, 50))
+        received = _received(view)
+        # 2 本目の末尾（内側 1 フレーム）を掴んで 10 フレーム縮める
+        QTest.mousePress(view, _LEFT, pos=_point(view, 0, 69))
+        QTest.mouseMove(view, _point(view, 0, 60))
+        QTest.mouseRelease(view, _LEFT, pos=_point(view, 0, 60))
+        (commands,) = received
+        (command,) = commands
+        assert isinstance(command, TrimClips)
+        assert set(command.clip_ids) == {a, b}
+        assert command.tail_delta == -10
+
+    def test_a_group_can_change_track(self, view: TimelineView) -> None:
+        a, b, _ = _ids(view)
+        QTest.mouseClick(view, _LEFT, pos=_point(view, 0, 10))
+        QTest.mouseClick(view, _LEFT, _CTRL, _point(view, 0, 50))
+        received = _received(view)
+        QTest.mousePress(view, _LEFT, pos=_point(view, 0, 10))
+        QTest.mouseMove(view, _point(view, 1, 10))
+        QTest.mouseRelease(view, _LEFT, pos=_point(view, 1, 10))
+        (commands,) = received
+        (command,) = commands
+        assert isinstance(command, MoveClips)
+        assert set(command.clip_ids) == {a, b}
+        assert command.track_delta == 1
+
+    def test_the_inspector_sets_every_selected_clip(self, window: MainWindow) -> None:
+        timeline = window._timeline
+        a, b, _ = (
+            timeline.project.timeline.tracks[0].clips[0].id,
+            timeline.project.timeline.tracks[0].clips[1].id,
+            timeline.project.timeline.tracks[1].clips[0].id,
+        )
+        timeline.set_selection((a, b))
+        received: list[list[Command]] = []
+        window._inspector.commands_requested.connect(lambda cs, _l: received.append(cs))
+        # 設定パネルは主のクリップ（最後に選んだ b）の設定を出す 触ると a にも当たる
+        window._inspector._emit(SetClipProperty(b, "blend_mode", "add"))
+        (commands,) = received
+        assert [c.clip_id for c in commands if isinstance(c, SetClipProperty)] == [b, a]

@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
@@ -30,6 +32,7 @@ from kumiki.core.commands import (
     Command,
     MoveEffect,
     ParamPath,
+    ParamTarget,
     RemoveEffect,
     RemoveKeyframe,
     SetClipProperty,
@@ -38,7 +41,15 @@ from kumiki.core.commands import (
     SetParam,
 )
 from kumiki.core.io import Preset, PresetStore
-from kumiki.core.model import AnimatedValue, Clip, ClipId, Effect, ParamValue, Project
+from kumiki.core.model import (
+    AnimatedValue,
+    Clip,
+    ClipId,
+    Effect,
+    EffectId,
+    ParamValue,
+    Project,
+)
 from kumiki.effects import ParameterSpec, TrackSpec, registry
 from kumiki.effects.blending import BLEND_MODES
 from kumiki.effects.sources import source_registry
@@ -62,6 +73,46 @@ BLEND_LABELS = {
 }
 
 
+def _same_effect(primary: Clip, other: Clip, effect_id: EffectId) -> Effect | None:
+    """主のクリップのエフェクトに当たる、相手側のエフェクト 同じ種類の同じ順番で探す"""
+    found = next((e for e in primary.effects if e.id == effect_id), None)
+    if found is None:
+        return None
+    index = [e.kind for e in primary.effects if e.kind == found.kind].index(found.kind)
+    same = [e for e in other.effects if e.kind == found.kind]
+    return same[index] if index < len(same) else None
+
+
+def _moved_path(path: ParamPath, primary: Clip, other: Clip) -> ParamPath | None:
+    if path.target is ParamTarget.CLIP:
+        return replace(path, clip_id=other.id)
+    if path.target is ParamTarget.SOURCE:
+        if primary.source is None or other.source is None:
+            return None
+        if primary.source.kind != other.source.kind:
+            return None
+        if path.name not in other.source.params:
+            return None
+        return replace(path, clip_id=other.id)
+    if path.effect_id is None:
+        return None
+    twin = _same_effect(primary, other, path.effect_id)
+    if twin is None or path.name not in twin.params:
+        return None
+    return replace(path, clip_id=other.id, effect_id=twin.id)
+
+
+def _for_clip(command: Command, primary: Clip, other: Clip) -> Command | None:
+    """主のクリップ向けのコマンドを、ほかのクリップ向けに作り直す 当てられなければ ``None``"""
+    if isinstance(command, SetClipProperty):
+        return replace(command, clip_id=other.id)
+    if isinstance(command, SetParam | SetKeyframe | RemoveKeyframe | ClearKeyframes):
+        path = _moved_path(command.path, primary, other)
+        return None if path is None else replace(command, path=path)
+    # エフェクトの追加や並べ替えは、主のクリップだけに当てる（増やすと元へ戻しにくい）
+    return None
+
+
 class InspectorPanel(QWidget):
     """選択中のクリップの設定"""
 
@@ -76,6 +127,7 @@ class InspectorPanel(QWidget):
         super().__init__(parent)
         self._project: Project | None = None
         self._clip_id: ClipId | None = None
+        self._selection: tuple[ClipId, ...] = ()
         self._presets = PresetStore()
         self._frame = 0
         #: パラメータごとの入力欄 プロジェクトが変わったときに値を入れ直す
@@ -123,9 +175,18 @@ class InspectorPanel(QWidget):
         self._rebuild()
 
     def set_clip(self, clip_id: ClipId | None) -> None:
-        if clip_id == self._clip_id:
+        self.set_selection((clip_id,) if clip_id is not None else ())
+
+    def set_selection(self, clip_ids: tuple[ClipId, ...]) -> None:
+        """選んでいるクリップ 先頭が主のクリップで、設定パネルはそれを出す
+
+        何本も選んでいれば、触った設定を選んだ全部へ当てる（同じ設定を持つものだけ）
+        """
+        primary = clip_ids[0] if clip_ids else None
+        if primary == self._clip_id and tuple(clip_ids) == self._selection:
             return
-        self._clip_id = clip_id
+        self._selection = tuple(clip_ids)
+        self._clip_id = primary
         self._rebuild()
 
     def set_frame(self, frame: int) -> None:
@@ -395,7 +456,33 @@ class InspectorPanel(QWidget):
         self._presets.save(Preset(name=name.strip(), effects=clip.effects))
 
     def _emit(self, command: Command, label: str | None = None) -> None:
-        self.commands_requested.emit([command], label or command.label)
+        commands = [command, *self._also_for_others(command)]
+        text = label or command.label
+        if len(commands) > 1:
+            text = f"{text}（{len(commands)} 本）"
+        self.commands_requested.emit(commands, text)
+
+    def _also_for_others(self, command: Command) -> list[Command]:
+        """同じ設定を、選んでいるほかのクリップにも当てるコマンド
+
+        エフェクトのパラメータは「同じ種類の何番目か」で相手を探す 相手が持って
+        いなければ飛ばす（無いものを作ると、選んだだけで中身が増える）
+        """
+        others = [clip_id for clip_id in self._selection if clip_id != self._clip_id]
+        if not others or self._project is None:
+            return []
+        primary = self._clip()
+        if primary is None:
+            return []
+        extra: list[Command] = []
+        for clip_id in others:
+            located = self._project.timeline.locate_clip(clip_id)
+            if located is None:
+                continue
+            copied = _for_clip(command, primary, located[1])
+            if copied is not None:
+                extra.append(copied)
+        return extra
 
     def _refresh_animated(self) -> None:
         """キーフレームで決まる値を、今のフレームの値に更新する"""

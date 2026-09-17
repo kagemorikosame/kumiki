@@ -196,6 +196,9 @@ class MainWindow(QMainWindow):
         self._timeline = TimelineView(project, self._analyzer, self)
         self._media_pool = MediaPoolWidget(project, self)
         self._inspector = InspectorPanel(self)
+        # 設定パネルは選んだクリップを引くためにプロジェクトを持つ 起動直後にも渡す
+        # （渡さないと、最初の編集まで何本も選んだときのまとめ当てが効かない）
+        self._inspector.set_project(self.view_project)
         self._graph = GraphEditor(self)
         self._subtitles = SubtitlePanel(project, self._analyzer, self)
         self._chat = ChatPanel(self, self)
@@ -892,7 +895,10 @@ class MainWindow(QMainWindow):
 
     def _on_selection_changed(self, clip_id: str) -> None:
         selected = ClipId(clip_id) if clip_id else None
-        self._inspector.set_clip(selected)
+        # 何本も選んでいれば、設定パネルは主の 1 本を出しつつ、触った設定を全部へ当てる
+        chosen = self._timeline.selected_clips
+        ordered = (selected, *(c for c in chosen if c != selected)) if selected else ()
+        self._inspector.set_selection(tuple(c for c in ordered if c is not None))
         if selected is None:
             self._graph.set_path(None)
 
