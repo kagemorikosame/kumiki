@@ -33,6 +33,7 @@ from typing import Any
 
 from kumiki.compat.aviutl.report import CompatibilityReport, global_report
 from kumiki.compat.mapped import MappedObject
+from kumiki.compat.ymm4.brushes import brush_effect, is_solid
 from kumiki.compat.ymm4.decorations import map_decorations, map_video_effects, with_pivot
 from kumiki.compat.ymm4.effects import CenterPoint
 from kumiki.compat.ymm4.values import animated, brush_colour, colour, number, type_name
@@ -308,6 +309,17 @@ def _map_item(item: dict[str, Any], log: CompatibilityReport) -> MappedObject | 
         return None
 
     effects: list[Effect] = []
+    if source is not None and source.kind == "shape":
+        # 図形のブラシが単色でなければ、白で描いた形を模様で塗る
+        parameter = item.get("ShapeParameter")
+        brush = parameter.get("Brush") if isinstance(parameter, dict) else None
+        if not is_solid(brush):
+            painted = brush_effect(
+                brush, log, length=length, keyframes=keyframes, pattern_only=True
+            )
+            if painted is not None:
+                source = source.with_param("color", (1.0, 1.0, 1.0, 1.0))
+                effects.append(painted)
     video = map_video_effects(item.get("VideoEffects"), log, length=length, keyframes=keyframes)
     if source is not None and source.kind == "text":
         decorations = map_decorations(
@@ -448,10 +460,8 @@ def _shape(item: dict[str, Any], log: CompatibilityReport) -> GeneratedSource:
     # 色はブラシ（``Brush.Parameter.Color``）に入っている 古い形だけが直に ``Color`` を持つ
     # ブラシを見ないと、配布物の図形がすべて白で出る
     fallback = colour(parameter.get("Color"), (1.0, 1.0, 1.0, 1.0))
-    brush = parameter.get("Brush")
-    colour_value = brush_colour(brush, fallback)
-    if isinstance(brush, dict) and "SolidColorBrush" not in str(brush.get("Type") or "SolidColor"):
-        log.note_missing(f"YMM4 の図形のブラシ: {str(brush.get('Type')).partition(',')[0]}")
+    # 単色以外のブラシは、アイテムを写すとき（_map_item）に模様で塗るエフェクトを足す
+    colour_value = brush_colour(parameter.get("Brush"), fallback)
 
     length = max(1, int(number(item.get("Length"), 1.0)))
     keyframes = item.get("KeyFrames")

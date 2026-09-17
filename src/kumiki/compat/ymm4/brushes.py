@@ -1,0 +1,327 @@
+"""YMM4 のブラシと、ブラシで塗るエフェクトを :mod:`kumiki.effects.paint` へ写す
+
+ブラシは図形の色（``ShapeParameter.Brush``）と「前景を塗りつぶし」（``FillForegroundEffect``）
+で使われる 単色だけでなく、線形・円形のグラデーション、ストライプ、水玉、格子がある
+「グラデーション」エフェクト（``GradientEffect``）も同じ塗りで受ける
+
+値の意味は YMM4 本体に描かせた試験テンプレート（``tools/ymm4_probes.py``）で確かめた
+
+- 線形のブラシは角度 0 で左から右 グラデーションエフェクトは角度 0 で上から下
+  （同じ「角度」でも 90 度ずれている）
+- 位置（X / Y、中心）は下が正 模様の座標も下を正で持つので、そのまま渡す
+- 合成モードは sRGB のまま計算する（:mod:`kumiki.effects.paint` が合わせてある）
+"""
+
+from __future__ import annotations
+
+import colorsys
+from collections.abc import Callable
+from dataclasses import replace
+from typing import Any
+
+from kumiki.compat.aviutl.report import CompatibilityReport
+from kumiki.compat.ymm4.values import animated, colour, number
+from kumiki.core.model import AnimatedValue, Effect, ParamValue
+from kumiki.effects.definition import registry
+from kumiki.effects.paint import MAX_STOPS
+
+__all__ = ["BLEND_NAMES", "brush_effect", "fill_foreground", "gradient_effect", "is_solid"]
+
+#: YMM4 の合成モードの名前と、塗りのエフェクトの合成 実物の名前だけを並べる
+#: （``Lighten`` ``Darken`` のような名前は YMM4 が読み込みで断る）
+BLEND_NAMES: dict[str, str] = {
+    "Normal": "normal",
+    "Add": "add",
+    "LinearDodge": "add",
+    "Subtract": "subtract",
+    "Multiply": "multiply",
+    "Screen": "screen",
+    "Overlay": "overlay",
+    "SoftLight": "soft_light",
+    "HardLight": "hard_light",
+    "ColorDodge": "color_dodge",
+    "ColorBurn": "color_burn",
+    "Lighter": "lighten",
+    "Darker": "darken",
+    "LighterColor": "lighter_color",
+    "DarkerColor": "darker_color",
+    "Difference": "difference",
+    "Exclusion": "exclusion",
+    "LinearBurn": "linear_burn",
+    "LinearLight": "linear_light",
+    "VividLight": "vivid_light",
+    "PinLight": "pin_light",
+    "HardMix": "hard_mix",
+    "Division": "division",
+    "Hue": "hue",
+    "Saturation": "saturation",
+    "Color": "color",
+    "Luminosity": "luminosity",
+}
+
+_EXTEND = {"Clamp": "clamp", "Wrap": "wrap", "Mirror": "mirror"}
+
+
+class _Values:
+    """1 つの辞書から数を読む アニメーションはアイテムの長さで読む"""
+
+    def __init__(self, entry: dict[str, Any], length: int, keyframes: Any) -> None:
+        self.entry = entry
+        self.length = length
+        self.keyframes = keyframes
+
+    def track(self, key: str, default: float = 0.0, *, scale: float = 1.0) -> AnimatedValue:
+        return animated(
+            self.entry.get(key), default, length=self.length, keyframes=self.keyframes, scale=scale
+        )
+
+
+def _mapped(value: AnimatedValue, change: Callable[[float], float]) -> AnimatedValue:
+    return AnimatedValue(
+        change(value.static),
+        tuple(replace(frame, value=change(frame.value)) for frame in value.keyframes),
+    )
+
+
+def is_solid(brush: Any) -> bool:
+    """単色のブラシか ブラシが無い（古い形）ときも単色として扱う"""
+    if not isinstance(brush, dict):
+        return True
+    return "SolidColorBrush" in str(brush.get("Type") or "SolidColorBrush")
+
+
+def _plugin(brush: dict[str, Any]) -> str:
+    return str(brush.get("Type") or "").partition(",")[0].rpartition(".")[2]
+
+
+def _stops(raw: Any, report: CompatibilityReport, owner: str) -> dict[str, ParamValue]:
+    """色の並びを、位置の順に並べて上限までに収める
+
+    配布物の中には位置の順に並んでいないものがある（エディタで点を動かした順）
+    上限を超えた分は、両端を残して間を等間隔に間引く
+    """
+    entries = raw if isinstance(raw, list) else []
+    stops = [
+        (
+            min(max(number(stop.get("Offset"), 0.0), 0.0), 1.0),
+            colour(stop.get("Color"), (1.0, 1.0, 1.0, 1.0)),
+        )
+        for stop in entries
+        if isinstance(stop, dict)
+    ]
+    stops.sort(key=lambda stop: stop[0])
+    if not stops:
+        stops = [(0.0, (1.0, 1.0, 1.0, 1.0)), (1.0, (0.0, 0.0, 0.0, 1.0))]
+    if len(stops) > MAX_STOPS:
+        report.note_missing(
+            f"YMM4 の {owner} の色の数（{len(stops)} 色を {MAX_STOPS} 色に間引いた）"
+        )
+        step = (len(stops) - 1) / (MAX_STOPS - 1)
+        stops = [stops[round(index * step)] for index in range(MAX_STOPS)]
+    params: dict[str, ParamValue] = {"stops": len(stops)}
+    for index, (offset, rgba) in enumerate(stops):
+        params[f"color{index}"] = rgba
+        params[f"offset{index}"] = AnimatedValue(offset)
+    return params
+
+
+def _two_colours(first: Any, second: Any) -> dict[str, ParamValue]:
+    return {
+        "stops": 2,
+        "color0": colour(first, (1.0, 1.0, 1.0, 1.0)),
+        "offset0": AnimatedValue(0.0),
+        "color1": colour(second, (0.0, 0.0, 0.0, 1.0)),
+        "offset1": AnimatedValue(1.0),
+    }
+
+
+def _rainbow() -> dict[str, ParamValue]:
+    """色相を一周する虹色 配布物の虹色ブラシは彩度と明るさがどれも 100"""
+    params: dict[str, ParamValue] = {"stops": MAX_STOPS}
+    for index in range(MAX_STOPS):
+        hue = index / (MAX_STOPS - 1)
+        red, green, blue = colorsys.hsv_to_rgb(hue % 1.0, 1.0, 1.0)
+        params[f"color{index}"] = (red, green, blue, 1.0)
+        params[f"offset{index}"] = AnimatedValue(hue)
+    return params
+
+
+def _pattern_params(
+    brush: Any, length: int, keyframes: Any, report: CompatibilityReport
+) -> dict[str, ParamValue] | None:
+    """ブラシを模様の設定へ 写せない種類なら ``None``（記録に残す）"""
+    if not isinstance(brush, dict):
+        return None
+    parameter = brush.get("Parameter")
+    parameter = parameter if isinstance(parameter, dict) else {}
+    values = _Values(parameter, length, keyframes)
+    plugin = _plugin(brush)
+
+    if "SolidColorBrush" in plugin or not plugin:
+        return {
+            "pattern": "solid",
+            "stops": 1,
+            "color0": colour(parameter.get("Color"), (1.0, 1.0, 1.0, 1.0)),
+        }
+    if plugin.startswith("LinearGradientBrush"):
+        return {
+            "pattern": "linear",
+            **_stops(parameter.get("Stops"), report, "線形グラデーションのブラシ"),
+            "size": values.track("Size", 400.0),
+            "offset": values.track("Offset"),
+            "angle": values.track("Angle"),
+            "extend": _EXTEND.get(str(parameter.get("ExtendMode") or ""), "clamp"),
+            "relative": str(parameter.get("CoordinateMode") or "") == "Relative",
+        }
+    if plugin.startswith("RadiulGradientBrush") or plugin.startswith("RadialGradientBrush"):
+        # 焦点（Origin）は中心からのずれとして足す 試験では中心を動かしたときと同じ絵だった
+        center_x = number(parameter.get("CenterX"), 0.0) + number(parameter.get("OriginX"), 0.0)
+        center_y = number(parameter.get("CenterY"), 0.0) + number(parameter.get("OriginY"), 0.0)
+        return {
+            "pattern": "radial",
+            **_stops(parameter.get("Stops"), report, "円形グラデーションのブラシ"),
+            "center_x": AnimatedValue(center_x),
+            "center_y": AnimatedValue(center_y),
+            "radius_x": values.track("RadiusX", 300.0),
+            "radius_y": values.track("RadiusY", 300.0),
+            "zoom": values.track("Zoom", 100.0),
+            "angle": values.track("Angle"),
+            "aspect": values.track("Aspect"),
+            "extend": _EXTEND.get(str(parameter.get("ExtendMode") or ""), "clamp"),
+        }
+    if plugin.startswith("StripeBrush"):
+        return {
+            "pattern": "stripe",
+            **_two_colours(parameter.get("Color1"), parameter.get("Color2")),
+            "width_a": values.track("Width1", 40.0),
+            "width_b": values.track("Width2", 40.0),
+            "offset": values.track("Offset"),
+            "zoom": values.track("Zoom", 100.0),
+            "angle": values.track("Angle"),
+        }
+    if plugin.startswith("DotBrush"):
+        return {
+            "pattern": "dot",
+            **_two_colours(parameter.get("Foreground"), parameter.get("Background")),
+            "dot_radius": values.track("Radius", 10.0),
+            "span": values.track("Span", 40.0),
+            "zoom": values.track("Zoom", 100.0),
+            "center_x": values.track("X"),
+            "center_y": values.track("Y"),
+            "angle": values.track("Angle"),
+            "aspect": values.track("Aspect"),
+            "inverted": parameter.get("IsInverted") is True,
+        }
+    if plugin.startswith("GridLineBrush"):
+        return {
+            "pattern": "grid",
+            **_two_colours(parameter.get("StrokeColor"), parameter.get("BackgroundColor")),
+            "thickness": values.track("Thickness", 2.0),
+            "cell_width": values.track("Width", 40.0),
+            "cell_height": values.track("Height", 40.0),
+            "zoom": values.track("Zoom", 100.0),
+            "center_x": values.track("X"),
+            "center_y": values.track("Y"),
+            "angle": values.track("Angle"),
+            "inverted": parameter.get("IsInverted") is True,
+        }
+    if plugin.startswith("RainbowLinearGradientBrush"):
+        if str(parameter.get("CoordinateMode") or "") == "Relative":
+            report.note_missing("YMM4 の虹色ブラシの幅（割合の指定は絵の幅で近づけた）")
+        return {
+            "pattern": "linear",
+            **_rainbow(),
+            "size": values.track("Width", 200.0),
+            "offset": values.track("Offset"),
+            "angle": values.track("Angle"),
+            "extend": _EXTEND.get(str(parameter.get("ExtendMode") or ""), "wrap"),
+            "relative": str(parameter.get("CoordinateMode") or "") == "Relative",
+        }
+    report.note_missing(f"YMM4 のブラシ: {plugin}")
+    if "NoiseBrush" in plugin:
+        # ノイズの模様は写せない 2 色の中間で塗り、色味だけを近づける
+        first = colour(parameter.get("Color1"), (1.0, 1.0, 1.0, 1.0))
+        second = colour(parameter.get("Color2"), first)
+        middle = tuple((a + b) / 2.0 for a, b in zip(first, second, strict=True))
+        return {"pattern": "solid", "stops": 1, "color0": middle}
+    return None
+
+
+def _create(params: dict[str, ParamValue]) -> Effect | None:
+    definition = registry.get("brush_fill")
+    return None if definition is None else definition.create(**params)
+
+
+def brush_effect(
+    brush: Any,
+    report: CompatibilityReport,
+    *,
+    length: int = 1,
+    keyframes: Any = None,
+    blend: str = "normal",
+    opacity: AnimatedValue | None = None,
+    pattern_only: bool = False,
+) -> Effect | None:
+    """ブラシで塗るエフェクト 写せないブラシなら ``None``"""
+    params = _pattern_params(brush, length, keyframes, report)
+    if params is None:
+        return None
+    params.update(
+        {"blend": blend, "pattern_only": pattern_only, "opacity": opacity or AnimatedValue(100.0)}
+    )
+    return _create(params)
+
+
+def _blend(name: Any, report: CompatibilityReport, owner: str) -> str:
+    raw = str(name or "Normal")
+    found = BLEND_NAMES.get(raw)
+    if found is None:
+        report.note_missing(f"YMM4 の {owner} の合成モード: {raw}")
+        return "normal"
+    return found
+
+
+def fill_foreground(
+    entry: dict[str, Any], report: CompatibilityReport, *, length: int = 1, keyframes: Any = None
+) -> Effect | None:
+    """「前景を塗りつぶし」 ブラシの模様を、合成モードと不透明度で重ねる"""
+    values = _Values(entry, length, keyframes)
+    return brush_effect(
+        entry.get("Brush"),
+        report,
+        length=length,
+        keyframes=keyframes,
+        blend=_blend(entry.get("BlendMode"), report, "前景を塗りつぶし"),
+        opacity=values.track("Opacity", 100.0),
+        # ブラシだけで塗る（元の絵の色を捨てて形だけを使う）
+        pattern_only=entry.get("IsBrushOnly") is True,
+    )
+
+
+def gradient_effect(
+    entry: dict[str, Any], report: CompatibilityReport, *, length: int = 1, keyframes: Any = None
+) -> Effect | None:
+    """「グラデーション」エフェクト 角度 0 で上から下、中心は絵の中心、X / Y は下が正"""
+    values = _Values(entry, length, keyframes)
+    kind = str(entry.get("GradientType") or "Linear")
+    size = values.track("Size", 400.0)
+    params: dict[str, ParamValue] = {
+        **_stops(entry.get("Stops"), report, "グラデーション"),
+        "center_x": values.track("X"),
+        "center_y": values.track("Y"),
+        "extend": _EXTEND.get(str(entry.get("ExtendMode") or ""), "clamp"),
+        "blend": _blend(entry.get("Blend"), report, "グラデーション"),
+        "opacity": values.track("Opacity", 100.0),
+    }
+    if kind == "Round":
+        # 中心から Size の半分で端の色に届く
+        half = _mapped(size, lambda value: value * 0.5)
+        params.update({"pattern": "radial", "radius_x": half, "radius_y": half})
+    else:
+        if kind not in ("Linear", "Convex"):
+            report.note_missing(f"YMM4 のグラデーションの種類: {kind}")
+        # グラデーションエフェクトの角度 0 は上から下 模様の角度 0 は左から右
+        angle = _mapped(values.track("Rotation"), lambda value: value + 90.0)
+        pattern = "convex" if kind == "Convex" else "linear"
+        params.update({"pattern": pattern, "size": size, "angle": angle})
+    return _create(params)

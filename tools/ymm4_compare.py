@@ -297,7 +297,9 @@ def command_compare(arguments: argparse.Namespace) -> int:
 
     cases = manifest["cases"]
     if arguments.only:
-        cases = [case for case in cases if arguments.only in case["name"]]
+        # カンマで区切って何語でも 名前にどれかを含むものを比べる
+        words = [word for word in arguments.only.split(",") if word]
+        cases = [case for case in cases if any(word in case["name"] for word in words)]
     wanted: dict[int, dict[str, Any]] = {}
     for raw in cases:
         case = Case(**{**raw, "items": raw["items"]})

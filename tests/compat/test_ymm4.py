@@ -368,15 +368,18 @@ class TestVideoEffects:
         assert value_at(result.effects[0].params["rotation"]) == 60.0
 
     def test_the_fill_effect_takes_its_colour_from_the_brush(self) -> None:
+        # ブラシの模様・合成モード・濃さを 1 つの塗りに写す（色だけの塗りでは合成が消える）
         effect = {
             "$type": "YukkuriMovieMaker.Project.Effects.FillForegroundEffect, YukkuriMovieMaker",
             "Opacity": still(50.0),
+            "BlendMode": "Multiply",
             "Brush": BRUSH,
             "IsEnabled": True,
         }
         result = map_video_effects([effect], CompatibilityReport(), length=300)
-        assert result.effects[0].kind == "fill"
-        assert value_at(result.effects[0].params["amount"]) == 50.0
+        assert result.effects[0].kind == "brush_fill"
+        assert result.effects[0].params["blend"] == "multiply"
+        assert value_at(result.effects[0].params["opacity"]) == 50.0
 
     def test_the_colour_correction_is_re_centred(self) -> None:
         # YMM4 は 100 が「変化なし」 こちらは 0 が変化なし
@@ -504,7 +507,8 @@ class TestOtherItems:
         assert map_template([{"$type": "N.TachieItem, A"}], report=report) == []
         assert any("TachieItem" in line for line in report.lines())
 
-    def test_an_effect_item_becomes_a_shape(self) -> None:
+    def test_an_effect_item_works_on_what_is_below(self) -> None:
+        # 図形として読むと、範囲の背景が画面を塗りつぶす（YMM4 の絵で確かめた）
         item = {
             "$type": "YukkuriMovieMaker.Project.Items.EffectItem, YukkuriMovieMaker",
             "ShapeType2": "YukkuriMovieMaker.Shape.BackgroundShapePlugin, YukkuriMovieMaker",
@@ -517,8 +521,7 @@ class TestOtherItems:
         }
         source = map_template([item], report=CompatibilityReport())[0].clip.source
         assert source is not None
-        assert source.params["shape"] == "background"
-        assert source.params["color"] == pytest.approx((0.0, 1.0, 0.0, 1.0))
+        assert source.kind == "framebuffer"
 
 
 class TestDecorationsList:

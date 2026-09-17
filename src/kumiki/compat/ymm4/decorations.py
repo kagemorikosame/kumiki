@@ -24,6 +24,7 @@ from typing import Any
 
 from kumiki.compat.aviutl.report import CompatibilityReport
 from kumiki.compat.decoration import decoration_params, find_decoration
+from kumiki.compat.ymm4.brushes import fill_foreground, gradient_effect
 from kumiki.compat.ymm4.effects import CenterPoint, center_point, map_effect, mapped_names
 from kumiki.compat.ymm4.values import (
     animated,
@@ -126,7 +127,6 @@ _VIDEO_EFFECTS: dict[str, str] = {
     "ZoomEffect": "zoom",
     "RotateEffect": "rotate",
     "DrawPositionEffect": "position",
-    "FillForegroundEffect": "fill",
     "OpacityEffect": "opacity",
     "LuminanceKeyEffect": "luminance_key",
 }
@@ -169,6 +169,16 @@ def map_video_effects(
             )
             continue
 
+        if name == "FillForegroundEffect":
+            result.effects.append(
+                _or_skip(fill_foreground(entry, report, length=length, keyframes=keyframes))
+            )
+            continue
+        if name == "GradientEffect":
+            result.effects.append(
+                _or_skip(gradient_effect(entry, report, length=length, keyframes=keyframes))
+            )
+            continue
         built = _video_effect(name, entry, length, keyframes)
         if built is None:
             built = map_effect(name, entry, report, length=length, keyframes=keyframes)
@@ -201,6 +211,15 @@ _PIVOTED_KINDS = frozenset(
         "spiral",
     }
 )
+
+
+def _or_skip(effect: Effect | None) -> Effect:
+    """写せなかったブラシは素通しのエフェクトにする（記録は写す側が残してある）"""
+    if effect is not None:
+        return effect
+    definition = registry.get("opacity")
+    assert definition is not None  # 標準エフェクトは必ずある
+    return definition.create(amount=100.0)
 
 
 def with_pivot(effect: Effect, pivot: CenterPoint) -> Effect:
