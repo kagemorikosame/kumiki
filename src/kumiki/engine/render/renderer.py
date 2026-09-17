@@ -95,6 +95,23 @@ def _placed_bounds(
     )
 
 
+def _object_sized(image: np.ndarray) -> tuple[np.ndarray, tuple[float, float]]:
+    """色の付いた所だけを切り出した絵と、画面の中心からのずれ（画素、Y は下が正）
+
+    AviUtl のスクリプトは ``obj.w`` ``obj.h`` をオブジェクト自身の大きさとして読む
+    画面と同じ大きさの絵を渡すと、画面の幅で位置を計算してしまう
+    """
+    box = _content_box(image)
+    if box is None:
+        return image, (0.0, 0.0)
+    left, top, right, bottom = box
+    height, width = int(image.shape[0]), int(image.shape[1])
+    if (left, top, right, bottom) == (0, 0, width, height):
+        return image, (0.0, 0.0)
+    offset = ((left + right) / 2.0 - width / 2.0, (top + bottom) / 2.0 - height / 2.0)
+    return image[top:bottom, left:right], offset
+
+
 def _as_corners(points: tuple[tuple[float, float], ...] | None) -> Corners | None:
     """4 点の組を四隅の型へ 数が合わなければ ``None``"""
     if points is None or len(points) != 4:
@@ -520,7 +537,19 @@ class FrameRenderer:
 
         if scripts:
             # スクリプトは渡した絵を書き換えることがある 覚えておいた絵は渡さない
-            self._draw_scripted(track, clip, image.copy(), gpu_effects, local_frame, rate, opacity)
+            # 生成オブジェクトは画面と同じ大きさで作るので、AviUtl と同じ「自分の大きさ」
+            # （obj.w / obj.h）になるよう、色の付いた所だけを切り出して渡す
+            cropped, offset = _object_sized(image) if clip.media_id is None else (image, (0.0, 0.0))
+            self._draw_scripted(
+                track,
+                clip,
+                cropped.copy(),
+                gpu_effects,
+                local_frame,
+                rate,
+                opacity,
+                offset=offset,
+            )
             return
 
         texture = self._texture_for(track.id)
@@ -800,6 +829,7 @@ class FrameRenderer:
         local_frame: int,
         rate: FrameRate,
         opacity: float,
+        offset: tuple[float, float] = (0.0, 0.0),
     ) -> None:
         """AviUtl スクリプトを積んだクリップを描く
 
@@ -826,7 +856,8 @@ class FrameRenderer:
             alpha = opacity * call.alpha
 
             if call.quad is not None:
-                projected = [project(point, width, height) for point in call.quad]
+                shifted = tuple((x + offset[0], y + offset[1], z) for x, y, z in call.quad)
+                projected = [project(point, width, height) for point in shifted]
                 points = [point for point in projected if point is not None]
                 if len(points) != 4:
                     # カメラを越えた隅がある 写せる隅だけで描くと形の違う板になる
@@ -851,8 +882,8 @@ class FrameRenderer:
                 continue
 
             transform = Transform(
-                x=call.x,
-                y=call.y,
+                x=call.x + offset[0],
+                y=call.y + offset[1],
                 zoom=call.zoom,
                 rotation=call.rz,
                 aspect=call.aspect,

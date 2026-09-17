@@ -43,6 +43,10 @@ for i = 0, obj.track0 - 1 do
 end
 """
 
+#: 自分の大きさで動く AviUtl の obj.w は「オブジェクト自身の幅」
+OWN_SIZE = """obj.ox = obj.w
+"""
+
 #: 板を傾ける X 軸・Y 軸の回転と奥行き
 TILT = """--track0:X回転,-360,360,0,1
 --track1:Y回転,-360,360,0,1
@@ -78,6 +82,7 @@ def catalog() -> ScriptCatalog:
     created.add_text("aviutl:試験.anm:移動", MOVE)
     created.add_text("aviutl:試験.anm:残像", TRAIL)
     created.add_text("aviutl:試験.anm:傾き", TILT)
+    created.add_text("aviutl:試験.anm:自分の幅", OWN_SIZE)
     created.add_text("aviutl:試験.anm:四隅", POLY)
     set_script_catalog(created)
     return created
@@ -168,6 +173,18 @@ class TestTransform:
         left, right, top, bottom = bounds(render(build("aviutl:試験.anm:移動"), gl_context))
         assert right - left == pytest.approx(40, abs=2)
         assert bottom - top == pytest.approx(40, abs=2)
+
+
+class TestObjectSize:
+    def test_obj_w_is_the_object_not_the_screen(
+        self, gl_context: OffscreenGLContext, catalog: ScriptCatalog
+    ) -> None:
+        # 画面と同じ大きさの絵を渡すと obj.w が画面の幅になり、配布スクリプトの
+        # 位置の計算が画面の幅ぶん飛ぶ
+        del catalog
+        left, right, _, _ = bounds(render(build("aviutl:試験.anm:自分の幅", size=40), gl_context))
+        assert (left + right) // 2 == pytest.approx(SCREEN[0] // 2 + 40, abs=2)
+        assert right - left == pytest.approx(40, abs=2)
 
 
 class TestDepth:

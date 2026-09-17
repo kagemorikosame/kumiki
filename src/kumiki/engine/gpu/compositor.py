@@ -115,22 +115,10 @@ vec3 srgb_decode(vec3 c) {
 """
     + BLEND_FUNCTIONS
     + """
+// 混ぜる式は符号化した値（sRGB）で計算する AviUtl も YMM4 もそうしている
 vec3 blend(vec3 below, vec3 above) {
-    if (u_mode >= 100) {
-        // YMM4 から来た合成 Direct2D と同じく sRGB のまま混ぜる
-        vec3 mixed = blend_colors(u_mode - 100, srgb_encode(below), srgb_encode(above));
-        return srgb_decode(mixed);
-    }
-    if (u_mode == 0) {
-        // オーバーレイ 下が暗いところは乗算、明るいところはスクリーン
-        return mix(2.0 * below * above,
-                   1.0 - 2.0 * (1.0 - below) * (1.0 - above),
-                   step(0.5, below));
-    }
-    if (u_mode == 1) return max(below, above);
-    if (u_mode == 2) return min(below, above);
-    if (u_mode == 4) return below * above;
-    return max(below - above, 0.0);
+    vec3 mixed = blend_colors(u_mode - 100, srgb_encode(below), srgb_encode(above));
+    return srgb_decode(mixed);
 }
 
 void main() {
@@ -228,15 +216,10 @@ class BlendMode:
 
 #: シェーダで混ぜる合成と、シェーダに渡す番号
 _SHADER_BLENDS: dict[str, int] = {
-    BlendMode.OVERLAY: 0,
-    BlendMode.LIGHTEN: 1,
-    BlendMode.DARKEN: 2,
-    BlendMode.SUBTRACT: 3,
-    # 乗算もシェーダで混ぜる 係数の乗算は下の不透明度を見ないので、下に何も無い所
-    # （透明）で絵ごと消える YMM4 は透明な所では上の絵をそのまま出す
-    BlendMode.MULTIPLY: 4,
-    # 100 から先は共通の式の番号 既存の 5 つはリニアで混ぜてきたので、絵を変えないよう残す
-    **{mode: 100 + blend_index(mode) for mode in BlendMode.EXTENDED},
+    # 通常以外はシェーダの中で混ぜる 係数（glBlendFunc）ではリニアの値で混ざるが、
+    # AviUtl も YMM4（Direct2D）も符号化した値（sRGB）のまま混ぜる
+    # 乗算を係数で書くと、下に何も無い所（透明）で絵ごと消えるという違いもある
+    **{mode: 100 + blend_index(mode) for mode in BlendMode.ALL if mode != BlendMode.NORMAL},
     BlendMode.SRGB_MIX: 300,
 }
 
@@ -245,9 +228,6 @@ _SHADER_BLENDS: dict[str, int] = {
 #: どれもストレートアルファ（非乗算済み）前提
 _BLEND_FUNCS: dict[str, tuple[int, int]] = {
     BlendMode.NORMAL: (GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA),
-    BlendMode.ADD: (GL.GL_SRC_ALPHA, GL.GL_ONE),
-    BlendMode.MULTIPLY: (GL.GL_DST_COLOR, GL.GL_ONE_MINUS_SRC_ALPHA),
-    BlendMode.SCREEN: (GL.GL_ONE_MINUS_DST_COLOR, GL.GL_ONE),
 }
 
 

@@ -95,17 +95,22 @@ class TestShaderBlends:
     def test_subtract_never_goes_negative(self, gl_context: OffscreenGLContext) -> None:
         # 負の値が残ると、次に加算したときに下の絵が暗く沈む
         assert _mix(gl_context, 60, 200, BlendMode.SUBTRACT) == 0
-        expected = _encoded(_linear(200) - _linear(60))
-        assert abs(_mix(gl_context, 200, 60, BlendMode.SUBTRACT) - expected) <= 1
+        # 混ぜる式は符号化した値のまま計算する（AviUtl と YMM4 に合わせた）
+        assert abs(_mix(gl_context, 200, 60, BlendMode.SUBTRACT) - (200 - 60)) <= 1
+
+    def test_the_modes_mix_in_srgb(self, gl_context: OffscreenGLContext) -> None:
+        # リニアで混ぜると、乗算やスクリーンの中間が配布物と違う明るさになる
+        assert abs(_mix(gl_context, 200, 100, BlendMode.MULTIPLY) - round(200 * 100 / 255)) <= 2
+        screen = 255 - (255 - 200) * (255 - 100) / 255
+        assert abs(_mix(gl_context, 200, 100, BlendMode.SCREEN) - round(screen)) <= 2
+        assert abs(_mix(gl_context, 200, 100, BlendMode.ADD) - 255) <= 1
 
     def test_overlay_follows_the_backdrop(self, gl_context: OffscreenGLContext) -> None:
         # 暗い下地では乗算、明るい下地ではスクリーンになる 反対にすると
         # コントラストを強めるはずが弱める
-        dark, light = _linear(40), _linear(230)
-        above = _linear(180)
-        assert abs(_mix(gl_context, 40, 180, BlendMode.OVERLAY) - _encoded(2 * dark * above)) <= 1
-        screen = 1 - 2 * (1 - light) * (1 - above)
-        assert abs(_mix(gl_context, 230, 180, BlendMode.OVERLAY) - _encoded(screen)) <= 1
+        assert abs(_mix(gl_context, 40, 180, BlendMode.OVERLAY) - round(2 * 40 * 180 / 255)) <= 2
+        screen = 255 - 2 * (255 - 230) * (255 - 180) / 255
+        assert abs(_mix(gl_context, 230, 180, BlendMode.OVERLAY) - round(screen)) <= 2
 
     def test_every_mode_has_a_way_to_draw(self, gl_context: OffscreenGLContext) -> None:
         # 一覧にあるのに描き方が無いと、選んでも通常と同じに見える
