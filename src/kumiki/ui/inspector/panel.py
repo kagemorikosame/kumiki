@@ -78,7 +78,8 @@ def _same_effect(primary: Clip, other: Clip, effect_id: EffectId) -> Effect | No
     found = next((e for e in primary.effects if e.id == effect_id), None)
     if found is None:
         return None
-    index = [e.kind for e in primary.effects if e.kind == found.kind].index(found.kind)
+    # 同じ種類が何個目かを数える 種類の一覧から探すと、2 個目以降でも 0 番目が出る
+    index = sum(1 for e in primary.effects[: primary.effects.index(found)] if e.kind == found.kind)
     same = [e for e in other.effects if e.kind == found.kind]
     return same[index] if index < len(same) else None
 

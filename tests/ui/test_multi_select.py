@@ -16,16 +16,28 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from kumiki.core.commands import (
+    AddEffect,
     Command,
+    ParamPath,
     GroupClips,
     MoveClips,
     RemoveClips,
     SetClipProperty,
+    SetParam,
     SetTrackHeights,
     TrimClips,
     insert_media,
 )
-from kumiki.core.model import Clip, ClipId, MediaItem, Project, Track, TrackKind
+from kumiki.core.model import (
+    AnimatedValue,
+    Clip,
+    ClipId,
+    MediaItem,
+    Project,
+    Track,
+    TrackKind,
+)
+from kumiki.effects import registry
 from kumiki.effects.sources import TEXT
 from kumiki.engine.cache import MediaAnalyzer
 from kumiki.ui.main_window import MainWindow
@@ -398,3 +410,31 @@ class TestTogether:
         window._inspector._emit(SetClipProperty(b, "blend_mode", "add"))
         (commands,) = received
         assert [c.clip_id for c in commands if isinstance(c, SetClipProperty)] == [b, a]
+
+    def test_the_second_effect_of_a_kind_maps_to_the_second(self, window: MainWindow) -> None:
+        # 同じ種類を 2 つ積んだクリップで、2 つ目を触ったのに 1 つ目へ当たってはいけない
+        timeline = window._timeline
+        clips = timeline.project.timeline.tracks[0].clips
+        a, b = clips[0].id, clips[1].id
+        blur = registry.get("blur")
+        assert blur is not None
+        first, second = blur.create(radius=4.0), blur.create(radius=8.0)
+        window.execute_all(
+            [
+                AddEffect(a, first),
+                AddEffect(a, second),
+                AddEffect(b, blur.create(radius=1.0)),
+                AddEffect(b, blur.create(radius=2.0)),
+            ],
+            "準備",
+        )
+        timeline.set_selection((b, a))
+        received: list[list[Command]] = []
+        window._inspector.commands_requested.connect(lambda cs, _l: received.append(cs))
+        path = ParamPath.of_effect(a, second.id, "radius")
+        window._inspector._emit(SetParam(path, AnimatedValue(16.0)))
+        (commands,) = received
+        targets = [c.path.effect_id for c in commands if isinstance(c, SetParam)]
+        other = window.view_project.timeline.locate_clip(b)
+        assert other is not None
+        assert targets == [second.id, other[1].effects[1].id]
