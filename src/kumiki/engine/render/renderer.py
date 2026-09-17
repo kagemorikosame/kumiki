@@ -38,7 +38,7 @@ from kumiki.engine.render.scripts import (
     script_effects,
     split_effects,
 )
-from kumiki.engine.sources import render_source
+from kumiki.engine.sources import render_source, source_canvas
 
 __all__ = ["FrameRenderer", "RenderQuality"]
 
@@ -272,6 +272,14 @@ class FrameRenderer:
         texture = self._texture_for(track.id)
         texture.upload(image)
 
+        screen_width, screen_height = self._compositor.width, self._compositor.height
+        if clip.media_id is None and (
+            texture.width > screen_width or texture.height > screen_height
+        ):
+            # 画面より大きく作った生成オブジェクト 縮めて収めず、画面の中心に等倍で置く
+            self._draw_oversized(texture, image, clip, gpu_effects, local_frame, rate, opacity)
+            return
+
         if not self._effects.has_work(gpu_effects):
             # エフェクトが無ければ中間バッファを通さない 全画面のパスが 1 回
             # 増えるだけで、エフェクト無しのクリップでも再生の余裕が削られる
@@ -298,6 +306,51 @@ class FrameRenderer:
             flip=False,
             blend=clip.blend_mode,
         )
+
+    def _draw_oversized(
+        self,
+        texture: Texture,
+        image: np.ndarray,
+        clip: Clip,
+        gpu_effects: tuple[Effect, ...],
+        local_frame: int,
+        rate: FrameRate,
+        opacity: float,
+    ) -> None:
+        """画面より大きい絵を、画面の中心に等倍で置く
+
+        エフェクトは絵と同じ大きさのバッファで掛ける 画面の大きさのバッファへ先に
+        置くと、そこで端が切れ、あとから回したり動かしたりしたときに切れ目が見える
+        バッファの中心は画面の中心と同じなので、位置の計算（画素）は変わらない
+        """
+        screen_width, screen_height = self._compositor.width, self._compositor.height
+        placed = Placement(
+            (screen_width - texture.width) / 2.0,
+            (screen_height - texture.height) / 2.0,
+            float(texture.width),
+            float(texture.height),
+        )
+        if not self._effects.has_work(gpu_effects):
+            self._compositor.draw(texture, placement=placed, opacity=opacity, blend=clip.blend_mode)
+            return
+        self._effects.resize(texture.width, texture.height)
+        try:
+            box = _content_box(image)
+            result = self._effects.apply(
+                texture,
+                gpu_effects,
+                frame=local_frame,
+                fps=float(rate.fps),
+                duration=clip.duration,
+                bounds=None
+                if box is None
+                else (float(box[0]), float(box[1]), float(box[2]), float(box[3])),
+            )
+            self._compositor.draw_handle(
+                result.color, placed, opacity=opacity, flip=False, blend=clip.blend_mode
+            )
+        finally:
+            self._effects.resize(screen_width, screen_height)
 
     def _draw_scene(self, clip: Clip, frame: int, rate: FrameRate, depth: int) -> None:
         """入れ子のシーンを別の合成先に描き、1 本のクリップとして重ねる
@@ -640,12 +693,10 @@ class FrameRenderer:
                     text, frame=local_frame, fps=float(rate.fps), duration=clip.duration
                 )
                 source = source.with_param("text", expanded)
-        return render_source(
-            source,
-            self._compositor.width,
-            self._compositor.height,
-            frame=local_frame,
+        width, height = source_canvas(
+            source, self._compositor.width, self._compositor.height, frame=local_frame
         )
+        return render_source(source, width, height, frame=local_frame)
 
     def _decode(self, clip: Clip, frame: int, rate: FrameRate) -> np.ndarray | None:
         assert clip.media_id is not None

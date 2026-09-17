@@ -33,8 +33,9 @@ from typing import Any
 
 from kumiki.compat.aviutl.report import CompatibilityReport, global_report
 from kumiki.compat.mapped import MappedObject
-from kumiki.compat.ymm4.decorations import map_decorations, map_video_effects
-from kumiki.compat.ymm4.values import animated, colour, number, type_name
+from kumiki.compat.ymm4.decorations import map_decorations, map_video_effects, with_pivot
+from kumiki.compat.ymm4.effects import CenterPoint
+from kumiki.compat.ymm4.values import animated, brush_colour, colour, number, type_name
 from kumiki.core.model import AnimatedValue, Clip, Effect, GeneratedSource, ParamValue
 from kumiki.effects.definition import registry
 
@@ -292,7 +293,7 @@ def _group_effects(item: dict[str, Any], log: CompatibilityReport) -> list[Effec
     if border is not None and isinstance(width, AnimatedValue) and width.static > 0:
         outlines.append(border.create(width=width, color=video.params.get("border_color")))
 
-    return [*_placement(item, length, keyframes), *outlines, *video.effects]
+    return [*outlines, *video.effects, *_placement(item, length, keyframes, video.pivot)]
 
 
 def _map_item(item: dict[str, Any], log: CompatibilityReport) -> MappedObject | None:
@@ -320,7 +321,9 @@ def _map_item(item: dict[str, Any], log: CompatibilityReport) -> MappedObject | 
         effects.extend(decorations.effects)
     effects.extend(video.effects)
 
-    effects[0:0] = _placement(item, length, keyframes)
+    # YMM4 はエフェクトを掛けた絵を、最後に位置・拡大・回転で置く 先に置くと、
+    # 画面の中で動かしたあとの絵にエフェクトが掛かり、回した図形が中心点の前で切れる
+    effects.extend(_placement(item, length, keyframes, video.pivot))
 
     return MappedObject(
         clip=Clip(
@@ -430,19 +433,77 @@ def _shape(item: dict[str, Any], log: CompatibilityReport) -> GeneratedSource:
         log.note_missing(f"YMM4 の図形: {plugin or type_name(parameter) or '種類不明'}")
         shape = "rect"
 
-    return GeneratedSource(
-        kind="shape",
-        params={
-            "shape": shape,
-            "width": AnimatedValue(number(parameter.get("Width"), 400.0)),
-            "height": AnimatedValue(number(parameter.get("Height"), 400.0)),
-            "color": colour(parameter.get("Color"), (1.0, 1.0, 1.0, 1.0)),
-            "line_width": AnimatedValue(number(parameter.get("StrokeThickness"), 0.0)),
-        },
+    # 色はブラシ（``Brush.Parameter.Color``）に入っている 古い形だけが直に ``Color`` を持つ
+    # ブラシを見ないと、配布物の図形がすべて白で出る
+    fallback = colour(parameter.get("Color"), (1.0, 1.0, 1.0, 1.0))
+    brush = parameter.get("Brush")
+    colour_value = brush_colour(brush, fallback)
+    if isinstance(brush, dict) and "SolidColorBrush" not in str(brush.get("Type") or "SolidColor"):
+        log.note_missing(f"YMM4 の図形のブラシ: {str(brush.get('Type')).partition(',')[0]}")
+
+    length = max(1, int(number(item.get("Length"), 1.0)))
+    keyframes = item.get("KeyFrames")
+
+    def track(key: str, default: float) -> AnimatedValue:
+        # 大きさや線の太さも動く（斜めに伸びる帯のトランジションなど） 先頭の値だけ
+        # 読むと、0 から伸びる図形がずっと見えない
+        return animated(parameter.get(key), default, length=length, keyframes=keyframes)
+
+    width = track("Width", 400.0)
+    height = track("Height", 400.0)
+    if str(parameter.get("SizeMode") or "") == "Size":
+        # 大きさ 1 つと縦横比で決める形 縦横比は -100〜100 で、正なら縦長
+        size = track("Size", 100.0)
+        aspect = number(parameter.get("AspectRate"), 0.0) / 100.0
+        width = _scaled(size, 1.0 - max(0.0, aspect))
+        height = _scaled(size, 1.0 + min(0.0, aspect))
+
+    params: dict[str, ParamValue] = {
+        "shape": shape,
+        "width": width,
+        "height": height,
+        "color": colour_value,
+    }
+    # YMM4 の線の太さは図形の内側へ描く 半分の大きさを超えれば塗りつぶしと同じ
+    # （配布物は塗りつぶしに 4000 や 10000 を入れている） こちらの線は輪郭の上に
+    # 中心を置いて描くので、そのまま渡すと外側へ数千画素はみ出して画面を覆う
+    # 塗りつぶしなら線を付けず、枠だけなら線の太さの分だけ内側へ縮めて描く
+    thickness = max(0.0, number(parameter.get("StrokeThickness"), 0.0))
+    if shape != "background" and 0.0 < thickness * 2.0 < min(_peak(width), _peak(height)):
+        params["outline_only"] = True
+        params["line_width"] = AnimatedValue(thickness)
+        params["width"] = _shifted(width, -thickness)
+        params["height"] = _shifted(height, -thickness)
+    round_value = number(parameter.get("Round"), 0.0)
+    if shape == "rect" and round_value > 0:
+        params["shape"] = "rounded"
+        params["corner_radius"] = track("Round", 0.0)
+    return GeneratedSource(kind="shape", params=params)
+
+
+def _peak(value: AnimatedValue) -> float:
+    return max((k.value for k in value.keyframes), default=value.static)
+
+
+def _shifted(value: AnimatedValue, delta: float) -> AnimatedValue:
+    return replace(
+        value,
+        static=value.static + delta,
+        keyframes=tuple(replace(k, value=k.value + delta) for k in value.keyframes),
     )
 
 
-def _placement(item: dict[str, Any], length: int, keyframes: Any) -> list[Effect]:
+def _scaled(value: AnimatedValue, factor: float) -> AnimatedValue:
+    return replace(
+        value,
+        static=value.static * factor,
+        keyframes=tuple(replace(k, value=k.value * factor) for k in value.keyframes),
+    )
+
+
+def _placement(
+    item: dict[str, Any], length: int, keyframes: Any, pivot: CenterPoint | None = None
+) -> list[Effect]:
     """位置・拡大・回転を変形エフェクトへ
 
     AviUtl 側（:func:`~kumiki.compat.aviutl.mapping.map_object`）と同じ扱いに
@@ -458,13 +519,22 @@ def _placement(item: dict[str, Any], length: int, keyframes: Any) -> list[Effect
     zoom = animated(item.get("Zoom"), 100.0, length=length, keyframes=keyframes)
     rotation = animated(item.get("Rotation"), 0.0, length=length, keyframes=keyframes)
 
+    moves = pivot is not None and not pivot.keep
     resting = ((pos_x, 0.0), (pos_y, 0.0), (zoom, 100.0), (rotation, 0.0))
-    if not any(value.is_animated or value.static != rest for value, rest in resting):
+    if not moves and not any(value.is_animated or value.static != rest for value, rest in resting):
         return []
 
-    return [
-        definition.create(pos_x=pos_x, pos_y=pos_y, scale=zoom, scale_y=zoom, rotation=rotation)
-    ]
+    placed = definition.create(
+        pos_x=pos_x,
+        pos_y=pos_y,
+        scale=zoom,
+        scale_y=zoom,
+        rotation=rotation,
+        # 中心点で「位置を保つ」を切ると、選んだ点がアイテムの位置へ来る
+        move_to_pivot=moves,
+    )
+    # 中心点はアイテム自身の拡大と回転の支点にもなる
+    return [placed if pivot is None else with_pivot(placed, pivot)]
 
 
 def _negated(value: AnimatedValue) -> AnimatedValue:

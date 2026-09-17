@@ -48,7 +48,7 @@ DEFAULT_WORK = ROOT / ".work" / "ymm4-compare"
 #: 置いても比べられないアイテム 場面切り替えは前後の絵が要る
 SKIPPED_ITEMS = frozenset({"TransitionItem", "AudioItem"})
 
-_ANIMATION_NONE = {"Values": [{"Value": 0.0}], "Span": 0.0, "AnimationType": "なし"}
+_BRUSH_PARAMETER = "YukkuriMovieMaker.Plugin.Brush.SolidColorBrushParameter, YukkuriMovieMaker"
 
 
 def _still(value: float) -> dict[str, Any]:
@@ -72,7 +72,7 @@ def base_shape(frame: int, layer: int, length: int) -> dict[str, Any]:
             "Brush": {
                 "Type": "YukkuriMovieMaker.Plugin.Brush.SolidColorBrushPlugin, YukkuriMovieMaker",
                 "Parameter": {
-                    "$type": "YukkuriMovieMaker.Plugin.Brush.SolidColorBrushParameter, YukkuriMovieMaker",
+                    "$type": _BRUSH_PARAMETER,
                     "Color": "#FFE08A2C",
                 },
             },
@@ -208,6 +208,9 @@ def command_build(arguments: argparse.Namespace) -> int:
         for source in arguments.sources
         for path in (source.rglob("*.ymmt") if source.is_dir() else [source])
     )
+    if arguments.exclude:
+        # YMM4 自身が書き出しに失敗するテンプレートがある 外して並べ直す
+        files = [path for path in files if not any(word in path.name for word in arguments.exclude)]
     cases, skipped = build_cases(files)
     write_project(cases, work / "compare.ymmp")
     manifest = {
@@ -232,7 +235,10 @@ def command_build(arguments: argparse.Namespace) -> int:
         json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8"
     )
     total = max((case.start + case.length for case in cases), default=0)
-    print(f"{len(cases)} 本を並べた（{total} フレーム、{total / FPS:.0f} 秒） 飛ばした {len(skipped)} 本")
+    print(
+        f"{len(cases)} 本を並べた（{total} フレーム、{total / FPS:.0f} 秒）"
+        f" 飛ばした {len(skipped)} 本"
+    )
     print(f"YMM4 で {work / 'compare.ymmp'} を開き、{work / 'ymm4.mp4'} へ書き出してください")
     return 0
 
@@ -378,6 +384,7 @@ def main() -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     build = commands.add_parser("build")
     build.add_argument("sources", type=Path, nargs="+")
+    build.add_argument("--exclude", action="append", default=[], help="ファイル名に含む語で外す")
     compare = commands.add_parser("compare")
     compare.add_argument("--only", default="")
     compare.add_argument("--top", type=int, default=30)

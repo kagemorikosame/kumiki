@@ -60,6 +60,8 @@ class DecorationResult:
     params: dict[str, ParamValue] = field(default_factory=dict)
     #: 外側に積むエフェクト 内側から外側の順
     effects: list[Effect] = field(default_factory=list)
+    #: 最後に効いている中心点 アイテムの位置・拡大・回転の支点にもなる
+    pivot: CenterPoint | None = None
 
 
 def map_decorations(
@@ -153,9 +155,10 @@ def map_video_effects(
         name = type_name(entry)
         if name == "CenterPointEffect":
             # 後ろに続く回転と拡大の支点になる 位置を保たないなら絵もずらす
-            pivot, shift = center_point(entry, report, length=length, keyframes=keyframes)
-            if shift is not None:
-                result.effects.append(shift)
+            # 「位置を保つ」を切ったときのずらしは、アイテムを最後に置く変形
+            # （:func:`kumiki.compat.ymm4.template._placement`）がまとめて行う 途中で
+            # ずらすと、後ろの変形が元の範囲を支点にしたまま回り、支点が合わない
+            pivot, _ = center_point(entry, report, length=length, keyframes=keyframes)
             continue
         if name == "OutlineEffect":
             borders.append(
@@ -176,13 +179,14 @@ def map_video_effects(
             continue
         if pivot is not None:
             if built.kind == "transform":
-                built = _with_pivot(built, pivot)
+                built = with_pivot(built, pivot)
             elif built.kind in _PIVOTED_KINDS:
                 # 支点を受け取れない回転と拡大 中央で回るので見た目が変わりうる
                 report.note_missing(f"YMM4 の CenterPointEffect（{name} の支点）")
         result.effects.append(built)
 
     _place_borders(borders, result)
+    result.pivot = pivot
     return result
 
 
@@ -199,7 +203,7 @@ _PIVOTED_KINDS = frozenset(
 )
 
 
-def _with_pivot(effect: Effect, pivot: CenterPoint) -> Effect:
+def with_pivot(effect: Effect, pivot: CenterPoint) -> Effect:
     """変形の支点を、前にあった中心点に合わせる"""
     definition = registry.get(effect.kind)
     if definition is None:  # pragma: no cover - 変形は標準エフェクト

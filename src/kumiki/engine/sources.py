@@ -58,6 +58,40 @@ def render_source(
     return _to_array(image)
 
 
+#: 画面より大きい絵を作るときの一辺の上限（画素） GPU のテクスチャの上限より十分小さく
+MAX_CANVAS = 8192
+
+
+def source_canvas(
+    source: GeneratedSource, width: int, height: int, *, frame: int = 0
+) -> tuple[int, int]:
+    """生成オブジェクトを描く絵の大きさ 画面より大きい図形なら、はみ出す分まで広げる
+
+    中心は画面の中心のまま広げる（描く位置の計算は変えない） 画面の大きさで
+    切ってしまうと、画面より大きい図形を回したり動かしたりしたときに、切れた端が
+    見えてしまう（YMM4 の斜めの帯のトランジションは高さ 2160 の図形を 45 度回す）
+    """
+    if source.kind != "shape":
+        return width, height
+    definition = source_registry.get(source.kind)
+    if definition is None:
+        return width, height
+    values = _resolve(definition, source.params, frame)
+    shape_width = max(1.0, float(values.get("width", 400)))  # type: ignore[arg-type]
+    shape_height = max(1.0, float(values.get("height", 400)))  # type: ignore[arg-type]
+    line = float(values.get("line_width", 0.0))  # type: ignore[arg-type]
+    # 回しても収まるよう、対角線の長さで見積もる
+    reach = (shape_width**2 + shape_height**2) ** 0.5 / 2.0 + line
+    needed_width = 2.0 * (abs(float(values.get("pos_x", 0.0))) + reach)  # type: ignore[arg-type]
+    needed_height = 2.0 * (abs(float(values.get("pos_y", 0.0))) + reach)  # type: ignore[arg-type]
+    grown_width = min(MAX_CANVAS, max(width, int(np.ceil(needed_width))))
+    grown_height = min(MAX_CANVAS, max(height, int(np.ceil(needed_height))))
+    # 画面と偶奇をそろえる 差が奇数だと、中心が半画素ずれて輪郭がにじむ
+    grown_width += (grown_width - width) % 2
+    grown_height += (grown_height - height) % 2
+    return grown_width, grown_height
+
+
 def _resolve(
     definition: SourceDefinition, params: dict[str, ParamValue], frame: int
 ) -> dict[str, object]:
