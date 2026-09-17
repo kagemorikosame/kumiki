@@ -347,3 +347,45 @@ class TestShapes:
         kinds = [effect.kind for effect in clip.effects]
         assert kinds == ["flip", "transform"]
         assert clip.effects[0].params["horizontal"] is True
+
+
+class TestBrokenValues:
+    def test_a_noise_brush_with_a_broken_octave_still_loads(self) -> None:
+        # NaN を round へ渡すと例外になり、同じテンプレートのほかのアイテムまで読めなくなる
+        item = _shape_item(
+            "QuadrilateralShapePlugin",
+            {
+                "Width": _still(100.0),
+                "Height": _still(100.0),
+                "Brush": {
+                    "Type": "YukkuriMovieMaker.Brush.NoiseBrushPlugin, YukkuriMovieMaker",
+                    "Parameter": {
+                        "NoiseType": "Perlin",
+                        "Color1": "#FF000000",
+                        "Color2": "#FFFFFFFF",
+                        "NoiseParameter": {"Octaves": float("nan")},
+                    },
+                },
+            },
+        )
+        report = CompatibilityReport()
+        (mapped,) = map_template([item], report=report)
+        painted = next(e for e in mapped.clip.effects if e.kind == "brush_fill")
+        assert painted.params["noise_octaves"] == 5
+        assert any("重ね数" in line for line in report.lines())
+
+    def test_an_unknown_transition_setting_is_recorded(self) -> None:
+        item = {
+            "$type": "YukkuriMovieMaker.Project.Items.TransitionItem, YukkuriMovieMaker",
+            "TransitionType": "N.FadeTransitionPlugin, YukkuriMovieMaker",
+            "TransitionParameter": {"EasingType": "ぬるっと", "EasingMode": "Middle"},
+            "Frame": 0,
+            "Length": 30,
+        }
+        report = CompatibilityReport()
+        (mapped,) = map_template([item], report=report)
+        assert mapped.clip.source is not None
+        assert mapped.clip.source.params["easing"] == "linear"
+        lines = report.lines()
+        assert any("イージング" in line for line in lines)
+        assert any("向き" in line for line in lines)

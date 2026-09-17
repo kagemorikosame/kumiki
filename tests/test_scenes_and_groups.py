@@ -310,3 +310,28 @@ class TestSceneSubtitles:
         ]
         assert subtitles[0].clipped_head and subtitles[1].clipped_tail
         assert all(s.clip_id == placed.id for s in subtitles)
+
+    def test_a_fractional_start_keeps_the_frame(
+        self, with_scene: tuple[Project, SceneId], video_media: MediaItem, transcript: Transcript
+    ) -> None:
+        # 端数の source_in を先にフレームへ落とすと、速度を掛けたときに 1 フレームずれる
+        # 描画は秒のまま足してから 1 回だけフレームへ直している（そちらに合わせる）
+        project, scene_id = with_scene
+        media = replace(video_media, transcript=transcript)
+        project = AddMedia(media).apply(project)
+        track = Track(TrackKind.VIDEO, "V1")
+        project = InScene(scene_id, AddTrack(track)).apply(project)
+        project = InScene(scene_id, AddClip(track.id, make_clip(0, 300, media))).apply(project)
+        project = _apply(project, insert_scene(project, scene_id, at_frame=0, duration=300))
+        placed = project.timeline.tracks[0].clips[0]
+        project = project.with_timeline(
+            project.timeline.replace_track(
+                replace(
+                    project.timeline.tracks[0],
+                    clips=(replace(placed, source_in=Fraction(1, 60), speed=Fraction(1, 2)),),
+                )
+            )
+        )
+        subtitles = list(project_timeline(project))
+        # 1 秒の字幕は、半分の速さでは 2 秒目へ 端数の 1/60 秒（0.5 フレーム）は切り捨てる
+        assert subtitles[0].start_frame == 59

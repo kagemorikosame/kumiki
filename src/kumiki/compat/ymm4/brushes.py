@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import colorsys
+import math
 from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
@@ -273,7 +274,11 @@ def _noise(
     if isinstance(raw, dict) and number(raw.get("WarpStrength"), 0.0) != 0.0:
         report.note_missing("YMM4 のノイズのゆがみ（WarpStrength）")
     size = number(raw.get("Size"), 100.0) / 100.0 if isinstance(raw, dict) else 1.0
+    # NaN や無限大を round へ渡すと例外になり、同じテンプレートのほかのアイテムまで読めない
     octaves = number(raw.get("Octaves"), 5.0) if isinstance(raw, dict) else 5.0
+    if not math.isfinite(octaves):
+        report.note_missing("YMM4 のノイズのブラシの重ね数（数として読めない値）")
+        octaves = 5.0
     fractal = str(raw.get("FractalMode") or "Normal") if isinstance(raw, dict) else "Normal"
     return {
         "pattern": "noise",

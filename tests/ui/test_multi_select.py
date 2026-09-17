@@ -438,3 +438,15 @@ class TestTogether:
         other = window.view_project.timeline.locate_clip(b)
         assert other is not None
         assert targets == [second.id, other[1].effects[1].id]
+
+    def test_dropping_a_clip_from_the_selection_reaches_the_inspector(
+        self, window: MainWindow
+    ) -> None:
+        # 主のクリップが変わらない増減で知らせないと、外したクリップへ設定が当たる
+        timeline = window._timeline
+        clips = timeline.project.timeline.tracks[0].clips
+        a, b = clips[0].id, clips[1].id
+        timeline.set_selection((a, b))
+        assert set(window._inspector._selection) == {a, b}
+        timeline.set_selection((b,))
+        assert window._inspector._selection == (b,)

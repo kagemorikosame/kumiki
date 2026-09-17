@@ -185,6 +185,9 @@ def _keyframe_from_json(raw: object) -> Keyframe:
         if not isinstance(points_raw, list) or len(points_raw) != 4:
             raise ProjectFileError(f"control_points は 4 要素の配列: {points_raw!r}")
         a, b, c, d = (float(v) for v in points_raw)
+        if not all(math.isfinite(value) for value in (a, b, c, d)):
+            # 非有限の制御点は補間を通して描画へ流れ、GL の値が壊れる
+            raise ProjectFileError(f"control_points に扱えない数がある: {points_raw!r}")
         control_points = (a, b, c, d)
 
     return Keyframe(

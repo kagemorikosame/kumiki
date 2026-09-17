@@ -468,6 +468,14 @@ def _transition(
     raw = item.get("TransitionParameter")
     parameter = raw if isinstance(raw, dict) else {}
     target = str(parameter.get("Target") or parameter.get("OverlayTarget") or "After")
+    if target not in ("Before", "After"):
+        log.note_missing(f"YMM4 の場面切り替えの対象: {target}")
+    easing = str(parameter.get("EasingType") or "Linear")
+    if easing not in _EASING_NAMES:
+        log.note_missing(f"YMM4 の場面切り替えのイージング: {easing}")
+    easing_mode = str(parameter.get("EasingMode") or "In")
+    if easing_mode not in _EASING_MODE_NAMES:
+        log.note_missing(f"YMM4 の場面切り替えのイージングの向き: {easing_mode}")
     definition = source_registry.get("transition")
     if definition is None:  # pragma: no cover - 標準の生成オブジェクト
         return None
@@ -476,8 +484,8 @@ def _transition(
         # 押し出しの角度は YMM4 が見ていない（90 にしても 0 と同じ絵だった）
         angle=0.0 if style == "push" else number(parameter.get("Angle"), 0.0),
         target="before" if target == "Before" else "after",
-        easing=_EASING_NAMES.get(str(parameter.get("EasingType") or ""), "linear"),
-        easing_mode=_EASING_MODE_NAMES.get(str(parameter.get("EasingMode") or ""), "in"),
+        easing=_EASING_NAMES.get(easing, "linear"),
+        easing_mode=_EASING_MODE_NAMES.get(easing_mode, "in"),
     )
     before = map_video_effects(
         item.get("BeforeVideoEffects"), log, length=length, keyframes=keyframes

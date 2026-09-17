@@ -231,11 +231,11 @@ class TimelineView(QWidget):
         ordered = tuple(reversed(dict.fromkeys(reversed(tuple(clip_ids)))))
         if ordered == self._selection:
             return
-        previous = self.selected_clip
         self._selection = ordered
         self._anchor = self.selected_clip
-        if self.selected_clip != previous:
-            self.selection_changed.emit(self.selected_clip or "")
+        # 主のクリップが同じでも知らせる 選択から外したクリップへ、設定パネルの
+        # まとめ当てが届いてしまう
+        self.selection_changed.emit(self.selected_clip or "")
         self.update()
 
     def select_all(self) -> None:

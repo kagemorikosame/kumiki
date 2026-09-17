@@ -94,3 +94,19 @@ def test_broken_files_fail_only_as_file_errors(source: dict[str, Any]) -> None:
         except Exception as exc:
             leaks.append(f"{type(exc).__name__}: {exc}")
     assert leaks == [], f"{len(leaks)} 件漏れた 例: {sorted(set(leaks))[:5]}"
+
+
+def test_non_finite_control_points_are_refused(source: dict[str, Any]) -> None:
+    """ベジェの制御点の NaN や無限大を通すと、補間を経て描画へ非有限の値が流れる"""
+    data = copy.deepcopy(source)
+    found = False
+    for track in data["timeline"]["tracks"]:
+        for clip in track["clips"]:
+            for effect in clip["effects"]:
+                for value in effect["params"].values():
+                    if isinstance(value, dict) and value.get("keyframes"):
+                        value["keyframes"][0]["control_points"] = [0.1, float("nan"), 0.3, 0.4]
+                        found = True
+    assert found, "キーフレームを持つ値が試験のプロジェクトに無い"
+    with pytest.raises(ProjectFileError, match="control_points"):
+        project_from_dict(data)

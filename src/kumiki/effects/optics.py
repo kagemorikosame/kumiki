@@ -473,6 +473,8 @@ void main() {
     for (int k = 0; k < MAX_PARTICLES; ++k) {
         if (float(k) >= count) break;
         float index = newest - float(k);
+        // 番号が負の粒はまだ生まれていない（先に進めておく時間が 0 のとき、頭から密集する）
+        if (index < 0.0) continue;
         float age = now - index / per_second;
         if (age < 0.0 || age > life) continue;
         float jitter = randomness * 0.01;

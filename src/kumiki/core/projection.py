@@ -107,7 +107,8 @@ def _project_tracks(
             if clip.scene_id is not None:
                 # シーンの中の字幕も、置いた場所に出す 見ないと、シーンにまとめた
                 # 途端に字幕パネル・焼き込み・字幕ファイルから消える
-                if depth + 1 >= MAX_SCENE_DEPTH:
+                # 描画と同じ深さまで見る（レンダラは深さ 7 に置いたシーンの中身も描く）
+                if depth >= MAX_SCENE_DEPTH:
                     continue
                 scene = project.find_scene(clip.scene_id)
                 if scene is None:
@@ -132,7 +133,9 @@ def _place_scene(
     クリップの範囲の外に出る分は切り詰める 字幕は置いたクリップの持ち物として
     返す 中のクリップはメインのタイムラインに無いので、画面で選べない
     """
-    scene_start = seconds_to_frame(clip.source_in, rate)
+    # 端数を先にフレームへ落とすと、速度で割ったあとに 1 フレームずれる
+    # 描画（renderer._draw_scene）は秒のまま足してから 1 回だけフレームへ直している
+    scene_start = clip.source_in / rate.frame_duration
     for subtitle in inner:
         start = _scene_to_clip_frame(subtitle.start_frame - scene_start, clip, Rounding.FLOOR)
         end = _scene_to_clip_frame(subtitle.end_frame - scene_start, clip, Rounding.CEIL)
@@ -151,7 +154,7 @@ def _place_scene(
         )
 
 
-def _scene_to_clip_frame(scene_frames: int, clip: Clip, rounding: Rounding) -> int:
+def _scene_to_clip_frame(scene_frames: Fraction | int, clip: Clip, rounding: Rounding) -> int:
     elapsed = Fraction(scene_frames) / clip.speed
     if rounding is Rounding.CEIL:
         return -((-elapsed.numerator) // elapsed.denominator)

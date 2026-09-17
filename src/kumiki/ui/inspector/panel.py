@@ -73,14 +73,21 @@ BLEND_LABELS = {
 }
 
 
-def _same_effect(primary: Clip, other: Clip, effect_id: EffectId) -> Effect | None:
-    """主のクリップのエフェクトに当たる、相手側のエフェクト 同じ種類の同じ順番で探す"""
-    found = next((e for e in primary.effects if e.id == effect_id), None)
+def _same_effect(
+    primary: Clip, other: Clip, effect_id: EffectId, *, after: bool = False
+) -> Effect | None:
+    """主のクリップのエフェクトに当たる、相手側のエフェクト 同じ種類の同じ順番で探す
+
+    場面切り替えは前の場面と後の場面で別の列を持つので、同じ列の中で探す
+    """
+    mine = primary.after_effects if after else primary.effects
+    theirs = other.after_effects if after else other.effects
+    found = next((e for e in mine if e.id == effect_id), None)
     if found is None:
         return None
     # 同じ種類が何個目かを数える 種類の一覧から探すと、2 個目以降でも 0 番目が出る
-    index = sum(1 for e in primary.effects[: primary.effects.index(found)] if e.kind == found.kind)
-    same = [e for e in other.effects if e.kind == found.kind]
+    index = sum(1 for e in mine[: mine.index(found)] if e.kind == found.kind)
+    same = [e for e in theirs if e.kind == found.kind]
     return same[index] if index < len(same) else None
 
 
@@ -97,7 +104,7 @@ def _moved_path(path: ParamPath, primary: Clip, other: Clip) -> ParamPath | None
         return replace(path, clip_id=other.id)
     if path.effect_id is None:
         return None
-    twin = _same_effect(primary, other, path.effect_id)
+    twin = _same_effect(primary, other, path.effect_id, after=path.after)
     if twin is None or path.name not in twin.params:
         return None
     return replace(path, clip_id=other.id, effect_id=twin.id)
@@ -530,7 +537,9 @@ class InspectorPanel(QWidget):
             return getattr(clip, name, None)
         if owner == "source":
             return clip.source.params.get(name) if clip.source is not None else None
-        effect = next((e for e in clip.effects if e.id == owner), None)
+        # 場面切り替えは前の場面と後の場面の 2 列を持つ どちらに積んだものも拾う
+        both = (*clip.effects, *clip.after_effects)
+        effect = next((e for e in both if e.id == owner), None)
         return effect.params.get(name) if effect is not None else None
 
 
