@@ -510,6 +510,9 @@ class FrameRenderer:
             GL.glBlitFramebuffer(
                 0, 0, width, height, 0, 0, width, height, GL.GL_COLOR_BUFFER_BIT, GL.GL_NEAREST
             )
+            # 写し取った画面は黒の上に置いた絵にする YMM4 は何も無い所も不透明な黒として
+            # 写すので、反転すると白くなる 透明のまま渡すと反転しても黒のまま残る
+            self._compositor.underlay((0.0, 0.0, 0.0, 1.0), target=self._grab)
             source: Framebuffer = self._grab
             if self._effects.has_work(gpu_effects):
                 source = self._effects.apply(

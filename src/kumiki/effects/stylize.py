@@ -9,6 +9,7 @@ YMM4 の配布テンプレートに出てくるものを、同じ効き方にな
 
 from __future__ import annotations
 
+from kumiki.effects.blending import BLEND_FUNCTIONS, BLEND_MODES
 from kumiki.effects.builtin import PRELUDE
 from kumiki.effects.definition import EffectDefinition, registry
 from kumiki.effects.spec import CheckSpec, ColorSpec, SelectSpec, TrackSpec
@@ -227,6 +228,7 @@ void main() {
 
 _INNER_SHADOW = _shader(
     _SRGB
+    + BLEND_FUNCTIONS
     + """
 uniform float offset_x;
 uniform float offset_y;
@@ -246,17 +248,117 @@ void main() {
     }
     float shadow = blur1d(u_texture, v_uv, vec2(0.0, 1.0), blur).a;
     vec4 base = texture(u_source, v_uv);
-    // 合成は sRGB で行う（YMM4 と同じ） 0 通常 1 乗算 2 加算 3 スクリーン 4 オーバーレイ
+    // 合成は sRGB で行う（YMM4 と同じ）
     vec3 under = to_srgb(base.rgb);
-    vec3 over_ = to_srgb(color.rgb);
-    vec3 mixed = over_;
-    if (blend == 1) mixed = under * over_;
-    if (blend == 2) mixed = min(under + over_, 1.0);
-    if (blend == 3) mixed = under + over_ - under * over_;
-    vec3 lifted = 1.0 - 2.0 * (1.0 - under) * (1.0 - over_);
-    if (blend == 4) mixed = mix(2.0 * under * over_, lifted, step(0.5, under));
+    vec3 mixed = blend_colors(blend, under, to_srgb(color.rgb));
     float amount = clamp(shadow * color.a * opacity * 0.01, 0.0, 1.0);
     frag_color = vec4(to_linear(mix(under, mixed, amount)), base.a);
+}
+"""
+)
+
+_INNER_HALFTONE = _shader(
+    _SRGB
+    + BLEND_FUNCTIONS
+    + """
+uniform float offset_x;
+uniform float offset_y;
+uniform float blur;
+uniform float opacity;
+uniform vec4 color;
+uniform int blend;
+uniform int grid;
+uniform float spacing;
+uniform float dot_size;
+uniform float strength;
+
+const mat2 TURN = mat2(0.7071, 0.7071, -0.7071, 0.7071);
+
+void main() {
+    if (u_pass == 0) {
+        vec2 shift = -vec2(offset_x, offset_y) / u_size;
+        float covered = blur1d(u_texture, v_uv + shift, vec2(1.0, 0.0), blur).a;
+        frag_color = vec4(1.0, 1.0, 1.0, 1.0 - covered);
+        return;
+    }
+    // 影の濃さを網点の大きさで表す 点の中心で影を読み、濃さの平方根に比例した半径で描く
+    // 濃さ 1 で半径が格子の対角の半分になり、隣の点と重なって隙間なく塗る
+    // 半径は隣のマスまで届くので、周りの 9 マスの点を調べる
+    float pitch = max(spacing, 1.0);
+    vec2 pixel = v_uv * u_size - object_center();
+    vec2 lattice = grid == 0 ? TURN * pixel : pixel;
+    vec2 cell = floor(lattice / pitch);
+    float dotted = 0.0;
+    for (int j = -1; j <= 1; ++j) {
+        for (int i = -1; i <= 1; ++i) {
+            vec2 centre = (cell + vec2(i, j) + 0.5) * pitch;
+            vec2 at = grid == 0 ? transpose(TURN) * centre : centre;
+            vec2 uv = (at + object_center()) / u_size;
+            float amount = blur1d(u_texture, uv, vec2(0.0, 1.0), blur).a;
+            float reach = pitch * 0.7072 * sqrt(max(amount, 0.0)) * dot_size / 100.0;
+            float edge = clamp(reach - length(lattice - centre) + 0.5, 0.0, 1.0);
+            dotted = max(dotted, edge);
+        }
+    }
+    float shadow = blur1d(u_texture, v_uv, vec2(0.0, 1.0), blur).a;
+    float halftone = mix(shadow, dotted, clamp(strength / 100.0, 0.0, 1.0));
+    vec4 base = texture(u_source, v_uv);
+    vec3 under = to_srgb(base.rgb);
+    vec3 mixed = blend_colors(blend, under, to_srgb(color.rgb));
+    float amount = clamp(halftone * color.a * opacity * 0.01, 0.0, 1.0);
+    frag_color = vec4(to_linear(mix(under, mixed, amount)), base.a);
+}
+"""
+)
+
+_INNER_OUTLINE = _shader(
+    _SRGB
+    + BLEND_FUNCTIONS
+    + """
+uniform float thickness;
+uniform float blur;
+uniform float opacity;
+uniform vec4 color;
+uniform int blend;
+uniform bool outline_only;
+uniform bool angular;
+
+void main() {
+    if (u_pass == 0) {
+        // 縁から thickness 以内の内側を帯にする 角ばらせるなら正方形、そうでなければ円で削る
+        float t = min(max(thickness, 0.0), 256.0);
+        float inside = texture(u_texture, v_uv).a;
+        float kept = inside;
+        if (t >= 0.5) {
+            int rings = int(ceil(min(t, 64.0)));
+            for (int ring = 1; ring <= rings; ++ring) {
+                float r = t * float(ring) / float(rings);
+                for (int k = 0; k < 32; ++k) {
+                    float a = PI * 2.0 * float(k) / 32.0;
+                    vec2 d = vec2(cos(a), sin(a));
+                    if (angular) d /= max(abs(d.x), abs(d.y));
+                    kept = min(kept, texture(u_texture, v_uv + d * r / u_size).a);
+                }
+            }
+        }
+        frag_color = vec4(1.0, 1.0, 1.0, clamp(inside - kept, 0.0, 1.0));
+        return;
+    }
+    if (u_pass == 1) {
+        frag_color = blur1d(u_texture, v_uv, vec2(1.0, 0.0), blur);
+        return;
+    }
+    float band = blur1d(u_texture, v_uv, vec2(0.0, 1.0), blur).a;
+    vec4 base = texture(u_source, v_uv);
+    // ぼかした帯は絵の外へはみ出さない 内側の縁取りなので
+    float amount = clamp(band * base.a * color.a * opacity * 0.01, 0.0, 1.0);
+    if (outline_only) {
+        frag_color = vec4(color.rgb, amount);
+        return;
+    }
+    vec3 under = to_srgb(base.rgb);
+    vec3 mixed = blend_colors(blend, under, to_srgb(color.rgb));
+    frag_color = vec4(to_linear(mix(under, mixed, amount / max(base.a, 1e-4))), base.a);
 }
 """
 )
@@ -785,21 +887,45 @@ def register_stylize_effects() -> None:
                 TrackSpec("blur", "ぼかし", 0, 96, 0, unit="px"),
                 TrackSpec("opacity", "濃さ", 0, 100, 100, unit="%"),
                 ColorSpec("color", "色", (0.0, 0.0, 0.0, 1.0)),
-                SelectSpec(
-                    "blend",
-                    "合成",
-                    (
-                        ("normal", "通常"),
-                        ("multiply", "乗算"),
-                        ("add", "加算"),
-                        ("screen", "スクリーン"),
-                        ("overlay", "オーバーレイ"),
-                    ),
-                    "normal",
-                ),
+                SelectSpec("blend", "合成", BLEND_MODES, "normal"),
             ),
             fragment_shader=_INNER_SHADOW,
             passes=2,
+        ),
+        EffectDefinition(
+            kind="inner_halftone",
+            label="網点の内側の影",
+            category="装飾",
+            parameters=(
+                TrackSpec("offset_x", "X", -2000, 2000, 6, step=1, unit="px"),
+                TrackSpec("offset_y", "Y", -2000, 2000, -6, step=1, unit="px"),
+                TrackSpec("blur", "ぼかし", 0, 96, 0, unit="px"),
+                TrackSpec("opacity", "濃さ", 0, 100, 100, unit="%"),
+                ColorSpec("color", "色", (0.0, 0.0, 0.0, 1.0)),
+                SelectSpec("blend", "合成", BLEND_MODES, "normal"),
+                SelectSpec("grid", "並び", (("rhombus", "菱形"), ("square", "正方形")), "rhombus"),
+                TrackSpec("spacing", "間隔", 1, 200, 10, step=1, unit="px"),
+                TrackSpec("dot_size", "点の大きさ", 0, 200, 100, unit="%"),
+                TrackSpec("strength", "強さ", 0, 100, 100, unit="%"),
+            ),
+            fragment_shader=_INNER_HALFTONE,
+            passes=2,
+        ),
+        EffectDefinition(
+            kind="inner_outline",
+            label="内側の縁取り",
+            category="装飾",
+            parameters=(
+                TrackSpec("thickness", "太さ", 0, 256, 4, step=1, unit="px"),
+                TrackSpec("blur", "ぼかし", 0, 96, 0, unit="px"),
+                TrackSpec("opacity", "濃さ", 0, 100, 100, unit="%"),
+                ColorSpec("color", "色", (1.0, 1.0, 1.0, 1.0)),
+                SelectSpec("blend", "合成", BLEND_MODES, "normal"),
+                CheckSpec("outline_only", "縁だけ残す", False),
+                CheckSpec("angular", "角ばらせる", False),
+            ),
+            fragment_shader=_INNER_OUTLINE,
+            passes=3,
         ),
         EffectDefinition(
             kind="shape_mask",

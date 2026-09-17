@@ -462,13 +462,18 @@ class Compositor:
         """
         return self._canvas
 
-    def underlay(self, color: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0)) -> None:
+    def underlay(
+        self,
+        color: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0),
+        target: Framebuffer | None = None,
+    ) -> None:
         """重ね終わった絵の下へ色を敷く 透明な所だけがその色になる（リニア値）
 
         合成は透明な下地の上で行い、最後に背景を敷く 不透明な黒の上で合成すると、
         乗算などが下に何も無い所でも黒と混ざり、YMM4 と見え方が変わる
+        ``target`` を渡すと、キャンバスの代わりにそのバッファ（事前乗算アルファ）へ敷く
         """
-        self._canvas.bind()
+        (target or self._canvas).bind()
         GL.glEnable(GL.GL_BLEND)
         GL.glBlendFuncSeparate(
             GL.GL_ONE_MINUS_DST_ALPHA, GL.GL_ONE, GL.GL_ONE_MINUS_DST_ALPHA, GL.GL_ONE

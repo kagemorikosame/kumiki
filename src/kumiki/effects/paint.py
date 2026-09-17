@@ -32,6 +32,18 @@ PATTERNS = (
     ("stripe", "ストライプ"),
     ("dot", "水玉"),
     ("grid", "格子"),
+    ("noise", "ノイズ"),
+)
+
+#: ノイズの種類 シェーダの番号と同じ並び
+NOISE_KINDS = (
+    ("perlin", "なめらか"),
+    ("random", "砂嵐"),
+    ("fractal", "粗いなめらか"),
+    ("curl", "うねり"),
+    ("voronoi", "ボロノイ（面ごとの色）"),
+    ("cellular", "セル（点からの距離）"),
+    ("block", "ブロック"),
 )
 
 
@@ -69,6 +81,21 @@ uniform float zoom;
 uniform bool inverted;
 uniform bool pattern_only;
 uniform bool relative;
+uniform int noise_kind;
+uniform float noise_strength;
+uniform float noise_threshold;
+uniform float noise_levels;
+uniform int noise_octaves;
+uniform bool turbulence;
+uniform bool colorful;
+uniform float noise_scale_x;
+uniform float noise_scale_y;
+uniform float noise_x;
+uniform float noise_y;
+uniform float noise_z;
+uniform float speed_x;
+uniform float speed_y;
+uniform float speed_z;
 
 vec3 to_srgb(vec3 c) {
     c = clamp(c, 0.0, 1.0);
@@ -119,11 +146,114 @@ vec2 rotated(vec2 p, float degrees) {
     return mat2(cos(r), sin(r), -sin(r), cos(r)) * p;
 }
 
+
+// sin を使う乱数は大きな座標で桁が落ち、格子の値が横に揃って筋が出る 小数部だけで混ぜる
+float lattice_value(vec2 cell, float slice) {
+    vec3 p = fract(vec3(cell.xyx + vec3(slice * 17.13, slice * 5.71, slice * 11.3)) * 0.1031);
+    p += dot(p, p.yzx + 33.33);
+    return fract((p.x + p.y) * p.z);
+}
+
+float smooth_value(vec2 q, float slice) {
+    vec2 cell = floor(q);
+    vec2 f = fract(q);
+    vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    if (noise_kind == 2) {
+        // 粗いなめらか（Fractal）は格子の値をつなぐ 四角い粒が残る YMM4 の絵もそうだった
+        float a = lattice_value(cell, slice);
+        float b = lattice_value(cell + vec2(1.0, 0.0), slice);
+        float c = lattice_value(cell + vec2(0.0, 1.0), slice);
+        float d = lattice_value(cell + vec2(1.0, 1.0), slice);
+        return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+    }
+    // なめらかな種類は勾配ノイズ 格子の値をつなぐと四角い粒が見える
+    float corners[4];
+    for (int k = 0; k < 4; ++k) {
+        vec2 offset = vec2(float(k % 2), float(k / 2));
+        float a = lattice_value(cell + offset, slice) * 6.2831853;
+        corners[k] = dot(vec2(cos(a), sin(a)), f - offset);
+    }
+    float n = mix(mix(corners[0], corners[1], u.x), mix(corners[2], corners[3], u.x), u.y);
+    return clamp(0.5 + n * 0.5, 0.0, 1.0);
+}
+
+// 奥行き（z）は整数の層の間を補間して、時間で滑らかに変わるようにする
+float layered(vec2 q, float z, float salt) {
+    float lower = floor(z) + salt * 31.0;
+    return mix(smooth_value(q, lower), smooth_value(q, lower + 1.0), fract(z));
+}
+
+float fractal_sum(vec2 q, float z, float salt) {
+    float total = 0.0;
+    float weight = 0.5;
+    float norm = 0.0;
+    for (int i = 0; i < clamp(noise_octaves, 1, 8); ++i) {
+        float n = layered(q, z, salt + float(i));
+        // 乱流は 0.5 からの隔たりを裏返して足す 谷が白い筋になる（YMM4 の絵は明るい地に筋）
+        total += weight * (turbulence ? 1.0 - abs(n * 2.0 - 1.0) : n);
+        norm += weight;
+        weight *= 0.5;
+        q = q * 2.0 + 13.7;
+    }
+    return total / max(norm, 1e-4);
+}
+
+float cell_noise(vec2 q, float z, float salt, bool distance_only) {
+    vec2 cell = floor(q);
+    float nearest = 10.0;
+    float value = 0.0;
+    float slice = floor(z) + salt * 31.0;
+    for (int j = -1; j <= 1; ++j) {
+        for (int i = -1; i <= 1; ++i) {
+            vec2 c = cell + vec2(i, j);
+            vec2 point = c + vec2(lattice_value(c, slice + 0.3), lattice_value(c, slice + 0.7));
+            float d = length(q - point);
+            if (d < nearest) { nearest = d; value = lattice_value(c, slice + 0.9); }
+        }
+    }
+    return distance_only ? clamp(nearest, 0.0, 1.0) : value;
+}
+
+// YMM4 のノイズのブラシ 大きさ 100% の目の粗さは、YMM4 に描かせた絵の粒の数から決めた
+float noise_value(vec2 p, float salt) {
+    vec2 scale = max(vec2(noise_scale_x, noise_scale_y) * 0.01, vec2(0.0001));
+    vec2 moved = rotated(p, -angle) + vec2(noise_x, noise_y) + vec2(speed_x, speed_y) * u_time;
+    float z = noise_z + speed_z * u_time;
+    float v;
+    if (noise_kind == 1) {
+        v = layered(floor(moved / (2.0 * scale)), z * 7.0, salt);
+    } else if (noise_kind == 4 || noise_kind == 5) {
+        float grain = noise_kind == 5 ? 60.0 : 25.0;
+        v = cell_noise(moved / (grain * scale), z, salt, noise_kind == 5);
+    } else if (noise_kind == 6) {
+        v = lattice_value(floor(moved / (30.0 * scale)), floor(z) + salt * 31.0);
+    } else if (noise_kind == 2) {
+        v = fractal_sum(moved / (35.0 * scale), z, salt);
+    } else {
+        // なめらかな種類の値は 0.35〜0.65 ほどに収まる（YMM4 の絵と同じ散らばり）
+        v = fractal_sum(moved / (48.0 * scale), z, salt);
+    }
+    // 強さは値に掛ける しきい値を上げると明るい側へ寄る 段階は値を量子化する
+    v *= max(noise_strength, 0.0) * 0.01;
+    v /= max(1.0 - clamp(noise_threshold * 0.01, 0.0, 0.99), 0.01);
+    float levels = max(noise_levels, 2.0);
+    if (levels < 255.5) v = floor(clamp(v, 0.0, 0.9999) * levels) / (levels - 1.0);
+    return clamp(v, 0.0, 1.0);
+}
+
 // 模様の色（sRGB、ストレートアルファ） p は絵の中心からの画素で Y は下が正
 vec4 pattern_color(vec2 p) {
     float z = max(zoom, 0.0001) * 0.01;
     vec2 q = p - vec2(center_x, center_y);
     if (pattern == 0) return ramp(0.0);
+    if (pattern == 7) {
+        if (!colorful) return ramp(noise_value(q, 0.0));
+        // 色つきは色の通り道ごとに別のノイズを引く
+        vec3 channels = vec3(noise_value(q, 0.0), noise_value(q, 1.0), noise_value(q, 2.0));
+        vec4 low = ramp(0.0);
+        vec4 high = ramp(1.0);
+        return vec4(mix(low.rgb, high.rgb, channels), mix(low.a, high.a, channels.g));
+    }
     if (pattern == 1 || pattern == 3) {
         vec2 direction = vec2(cos(radians(angle)), sin(radians(angle)));
         // 割合で指定したときは絵の幅が 100（YMM4 の CoordinateMode が Relative）
@@ -237,6 +367,21 @@ def register_paint_effects() -> None:
                 TrackSpec("zoom", "拡大率", 1, 10000, 100, unit="%"),
                 CheckSpec("inverted", "反転", False),
                 CheckSpec("relative", "長さを絵の幅の割合で決める", False),
+                SelectSpec("noise_kind", "ノイズの種類", NOISE_KINDS, "perlin"),
+                TrackSpec("noise_strength", "ノイズの強さ", 0, 1000, 100, unit="%"),
+                TrackSpec("noise_threshold", "ノイズのしきい値", 0, 100, 0, unit="%"),
+                TrackSpec("noise_levels", "ノイズの段階", 2, 256, 256, step=1),
+                ValueSpec("noise_octaves", "ノイズの重ね数", 5, minimum=1, maximum=8),
+                CheckSpec("turbulence", "乱流", False),
+                CheckSpec("colorful", "ノイズを色ごとに変える", False),
+                TrackSpec("noise_scale_x", "ノイズの横の大きさ", 1, 100000, 100, unit="%"),
+                TrackSpec("noise_scale_y", "ノイズの縦の大きさ", 1, 100000, 100, unit="%"),
+                TrackSpec("noise_x", "ノイズの位置 X", -100000, 100000, 0, step=1, unit="px"),
+                TrackSpec("noise_y", "ノイズの位置 Y", -100000, 100000, 0, step=1, unit="px"),
+                TrackSpec("noise_z", "ノイズの奥行き", -100000, 100000, 0, step=0.01),
+                TrackSpec("speed_x", "ノイズの速さ X", -100000, 100000, 0, unit="px/秒"),
+                TrackSpec("speed_y", "ノイズの速さ Y", -100000, 100000, 0, unit="px/秒"),
+                TrackSpec("speed_z", "奥行きの速さ", -1000, 1000, 0, step=0.01, unit="/秒"),
             ),
             fragment_shader=_PAINT,
         )

@@ -18,7 +18,7 @@ from dataclasses import replace
 from typing import Any
 
 from kumiki.compat.aviutl.report import CompatibilityReport
-from kumiki.compat.ymm4.brushes import is_solid
+from kumiki.compat.ymm4.brushes import BLEND_NAMES, is_solid
 from kumiki.compat.ymm4.values import animated, brush_colour, colour, number
 from kumiki.core.model import AnimatedValue, Effect
 from kumiki.effects.definition import registry
@@ -151,16 +151,39 @@ def _create(kind: str, **params: Any) -> Effect | None:
     return definition.create(**params)
 
 
+#: 歪めるノイズに無い種類と、代わりに使う種類 面ごとに値が変わるものはブロックで近づける
+_NOISE_STAND_INS = {
+    "Voronoi": "block",
+    "Cellular": "block",
+    "Fractal": "perlin",
+    "Curl": "perlin",
+    "Simplex": "perlin",
+}
+
+
 def _noise_displacement(r: _Reader) -> Effect | None:
     parameter = r.entry.get("NoiseParameter")
     inner = _Reader(
         parameter if isinstance(parameter, dict) else {}, r.length, r.keyframes, r.report, r.name
     )
+    # 移動量は新しい形では Transform の XScale と YScale に入る 古い形は X と Y
+    transform = r.entry.get("Transform")
+    moves = (
+        _Reader(transform, r.length, r.keyframes, r.report, r.name)
+        if isinstance(transform, dict)
+        else None
+    )
+    kind = str(r.entry.get("NoiseType") or "Perlin")
+    if kind in _NOISE_STAND_INS:
+        r.report.note_missing(
+            f"YMM4 の NoiseDisplacementMapEffect の NoiseType: {kind}（近い種類で代用）"
+        )
     return _create(
         "noise_displacement",
-        amount_x=r.track("X"),
-        amount_y=r.track("Y", flip=True),
-        noise=r.choice(
+        amount_x=moves.track("XScale") if moves else r.track("X"),
+        amount_y=moves.track("YScale", flip=True) if moves else r.track("Y", flip=True),
+        noise=_NOISE_STAND_INS.get(kind)
+        or r.choice(
             "NoiseType", {"Block": "block", "Perlin": "perlin", "Random": "random"}, "perlin"
         ),
         strength=inner.track("Strength", 100.0),
@@ -282,7 +305,7 @@ def _shadow(r: _Reader) -> Effect | None:
 
 
 def _inner_shadow(r: _Reader) -> Effect | None:
-    """内側の影 X / Y は下が正 合成は通常・乗算・加算・スクリーン・オーバーレイだけ受ける"""
+    """内側の影 X / Y は下が正"""
     brush = r.entry.get("Brush")
     if not is_solid(brush):
         r.report.note_missing("YMM4 の内側の影のブラシ（単色以外は先頭の色で塗った）")
@@ -293,18 +316,41 @@ def _inner_shadow(r: _Reader) -> Effect | None:
         blur=r.track("Blur"),
         opacity=r.track("Opacity", 100.0),
         color=brush_colour(brush, (0.0, 0.0, 0.0, 1.0)),
-        blend=r.choice(
-            "BlendMode",
-            {
-                "Normal": "normal",
-                "Multiply": "multiply",
-                "Add": "add",
-                "LinearDodge": "add",
-                "Screen": "screen",
-                "Overlay": "overlay",
-            },
-            "normal",
-        ),
+        blend=r.choice("BlendMode", BLEND_NAMES, "normal"),
+    )
+
+
+def _inner_halftone(r: _Reader) -> Effect | None:
+    """網点の内側の影 色はブラシでなく ``Color`` に直に入る"""
+    return _create(
+        "inner_halftone",
+        offset_x=r.track("X"),
+        offset_y=r.track("Y", flip=True),
+        blur=r.track("Blur"),
+        opacity=r.track("Opacity", 100.0),
+        color=colour(r.entry.get("Color"), (0.0, 0.0, 0.0, 1.0)),
+        blend=r.choice("BlendMode", BLEND_NAMES, "normal"),
+        grid=r.choice("Layout", {"Rhombus": "rhombus", "Square": "square"}, "rhombus"),
+        spacing=r.track("Distance", 10.0),
+        dot_size=r.track("Size", 100.0),
+        strength=r.track("Strength", 100.0),
+    )
+
+
+def _inner_outline(r: _Reader) -> Effect | None:
+    brush = r.entry.get("Brush")
+    if not is_solid(brush):
+        r.report.note_missing("YMM4 の内側の縁取りのブラシ（単色以外は先頭の色で塗った）")
+    # Quality と Smoothness は縁の滑らかさの計算の細かさ 絵はほとんど変わらない
+    return _create(
+        "inner_outline",
+        thickness=r.track("Thickness", 4.0),
+        blur=r.track("Blur"),
+        opacity=r.track("Opacity", 100.0),
+        color=brush_colour(brush, (1.0, 1.0, 1.0, 1.0)),
+        blend=r.choice("Blend", BLEND_NAMES, "normal"),
+        outline_only=r.flag("IsOutlineOnly"),
+        angular=r.flag("IsAngular"),
     )
 
 
@@ -750,6 +796,8 @@ _MAPPERS: dict[str, Callable[[_Reader], Effect | None]] = {
     "RepeatRotateEffect": _repeat_rotate,
     "ShadowEffect": _shadow,
     "InnerShadowEffect": _inner_shadow,
+    "InnerHalfToneShadowEffect": _inner_halftone,
+    "InnerOutlineEffect": _inner_outline,
     "MaskEffect": _mask,
     "CopyAndReverseEffect": _copy_and_reverse,
     "FillBackgroundEffect": _fill_background,
@@ -831,12 +879,30 @@ def center_point(
     が後ろの変形に支点を配る
     """
     r = _Reader(entry, length, keyframes, report, "CenterPointEffect")
+    # 任意（Custom）は中央から X と Y だけずらした点 YMM4 に回させた絵と一致した
+    # 原点（Origin）はアイテムの置き場所 絵の置き場の中央（画面の中央の基準）にあたる
     point = CenterPoint(
         horizontal=r.choice(
-            "Horizontal", {"Left": "left", "Right": "right", "Center": "center"}, "center"
+            "Horizontal",
+            {
+                "Left": "left",
+                "Right": "right",
+                "Center": "center",
+                "Custom": "center",
+                "Origin": "screen",
+            },
+            "center",
         ),
         vertical=r.choice(
-            "Vertical", {"Top": "top", "Bottom": "bottom", "Center": "middle"}, "middle"
+            "Vertical",
+            {
+                "Top": "top",
+                "Bottom": "bottom",
+                "Center": "middle",
+                "Custom": "middle",
+                "Origin": "screen",
+            },
+            "middle",
         ),
         x=r.track("X"),
         y=r.track("Y", flip=True),

@@ -90,14 +90,32 @@ class TestBrushes:
         assert effect.params["pattern"] == "dot"
         assert _static(effect.params["span"]) == 40.0
 
-    def test_noise_brush_is_recorded(self) -> None:
-        # ノイズの模様は写せない 2 色の中間で塗り、記録に残す
+    def test_noise_brush_becomes_a_noise_pattern(self) -> None:
+        # 大きさ（Size）は横と縦の大きさに掛かる 乱流は FractalMode で決まる
         report = CompatibilityReport()
-        brush = _brush("NoiseBrushPlugin", Color1="#FF000000", Color2="#FFFFFFFF")
+        brush = _brush(
+            "NoiseBrushPlugin",
+            Color1="#FF000000",
+            Color2="#FFFFFFFF",
+            NoiseType="Voronoi",
+            NoiseParameter={
+                "Size": 200.0,
+                "ScaleX": _still(150.0),
+                "ScaleY": _still(100.0),
+                "Levels": _still(4.0),
+                "Octaves": 3.0,
+                "FractalMode": "Turbulence",
+            },
+        )
         effect = brush_effect(brush, report)
         assert effect is not None
-        assert effect.params["pattern"] == "solid"
-        assert any("NoiseBrush" in line for line in report.lines())
+        assert effect.params["pattern"] == "noise"
+        assert effect.params["noise_kind"] == "voronoi"
+        assert _static(effect.params["noise_scale_x"]) == 300.0
+        assert _static(effect.params["noise_levels"]) == 4.0
+        assert effect.params["noise_octaves"] == 3
+        assert effect.params["turbulence"] is True
+        assert not report.lines()
 
     def test_a_shape_with_a_pattern_is_painted_white_then_patterned(self) -> None:
         # 図形の色がブラシの模様なら、形は白で描き、模様だけで塗る

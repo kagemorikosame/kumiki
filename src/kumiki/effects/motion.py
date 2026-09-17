@@ -695,9 +695,10 @@ float channel(vec2 p, float z, float salt) {
 }
 
 void main() {
-    // ノイズの値でずらす 100% のノイズの大きさは 200 画素
+    // ノイズの値でずらす 100% のノイズの粒は 50 画素、移動量 100 で最大 40 画素ほど
+    // どちらも YMM4 に縞を歪めさせた絵（tools/ymm4_probes.py の 3 回目）に合わせた
     vec2 pixel = v_uv * u_size;
-    vec2 scale = max(vec2(scale_x, scale_y) / 100.0 * 200.0, vec2(1.0));
+    vec2 scale = max(vec2(scale_x, scale_y) / 100.0 * 50.0, vec2(1.0));
     vec2 position = (pixel + vec2(offset_x, offset_y) + vec2(speed_x, speed_y) * u_time) / scale;
     float z = (offset_z + speed_z * u_time) / max(scale_z, 1.0);
 
@@ -706,7 +707,7 @@ void main() {
     n = mix(vec2(0.0), n, step(vec2(cut), abs(n)));
     float steps = max(levels, 2.0);
     n = floor(n * steps + 0.5) / steps;
-    vec2 shift = n * vec2(amount_x, amount_y) * strength / 100.0;
+    vec2 shift = n * vec2(amount_x, amount_y) * 0.4 * strength / 100.0;
     frag_color = sample_pixel(pixel - shift);
 }
 """

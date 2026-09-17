@@ -429,6 +429,48 @@ class TestVideoEffects:
             actual = mapped.params[key]
             assert (actual if isinstance(value, bool) else value_at(actual)) == value
 
+    def test_the_halftone_inner_shadow(self) -> None:
+        # 色はブラシでなく Color に直に入る Y は下が正
+        effect = {
+            "$type": "N.InnerHalfToneShadowEffect, YukkuriMovieMaker",
+            "X": -12.0,
+            "Y": 5.0,
+            "Opacity": 100.0,
+            "Blur": 20.0,
+            "BlendMode": "PinLight",
+            "Layout": "Rhombus",
+            "Distance": 7.0,
+            "Size": 100.0,
+            "Color": "#FFFF0000",
+            "Strength": 100.0,
+            "IsEnabled": True,
+        }
+        report = CompatibilityReport()
+        (mapped,) = map_video_effects([effect], report, length=60).effects
+        assert not report.lines()
+        assert mapped.kind == "inner_halftone"
+        assert value_at(mapped.params["offset_y"]) == -5.0
+        assert mapped.params["color"] == (1.0, 0.0, 0.0, 1.0)
+        assert mapped.params["blend"] == "pin_light"
+        assert value_at(mapped.params["spacing"]) == 7.0
+
+    def test_the_inner_outline(self) -> None:
+        effect = {
+            "$type": "N.InnerOutline.InnerOutlineEffect, YukkuriMovieMaker.Plugin.Community",
+            "Thickness": 3.0,
+            "Opacity": 100.0,
+            "Blur": 2.5,
+            "Blend": "Normal",
+            "IsOutlineOnly": True,
+            "IsAngular": False,
+            "Brush": BRUSH,
+            "IsEnabled": True,
+        }
+        (mapped,) = map_video_effects([effect], CompatibilityReport(), length=60).effects
+        assert mapped.kind == "inner_outline"
+        assert value_at(mapped.params["thickness"]) == 3.0
+        assert mapped.params["outline_only"] is True
+
     def test_the_fill_effect_takes_its_colour_from_the_brush(self) -> None:
         # ブラシの模様・合成モード・濃さを 1 つの塗りに写す（色だけの塗りでは合成が消える）
         effect = {

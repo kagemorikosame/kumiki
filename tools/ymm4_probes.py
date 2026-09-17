@@ -887,11 +887,164 @@ def build_second(
     ]
 
 
+def _noise_parameters() -> dict[str, dict[str, Any]]:
+    """配布テンプレートに出てくるノイズの設定を、ノイズの種類ごとに 1 つずつ"""
+    found: dict[str, dict[str, Any]] = {}
+    for path in sorted(FIXTURES.rglob("*.ymmt")):
+        for template in load_template(path):
+            for item in template.items:
+                for node in _walk(item):
+                    parameter = node.get("NoiseParameter")
+                    kind = node.get("NoiseType")
+                    if isinstance(parameter, dict) and isinstance(kind, str):
+                        found.setdefault(kind, copy.deepcopy(parameter))
+    return found
+
+
+def build_third(
+    samples: dict[str, dict[str, Any]], brushes: dict[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """3 回目の試験 ノイズのブラシとノイズで歪める設定の意味、立体の回転の向き"""
+    probes: list[tuple[str, dict[str, Any]]] = []
+    noises = _noise_parameters()
+
+    def base(width: float = 800.0, height: float = 400.0) -> dict[str, Any]:
+        item = base_shape(0, 0, 60)
+        item["ShapeParameter"]["Width"] = still(width)
+        item["ShapeParameter"]["Height"] = still(height)
+        item["ShapeParameter"]["Brush"] = solid("#FFFFFFFF")
+        return item
+
+    def parameter(kind: str, **values: Any) -> dict[str, Any]:
+        source = noises.get(kind) or noises["Perlin"]
+        node = copy.deepcopy(source)
+        defaults: dict[str, Any] = {
+            "Strength": 100.0,
+            "Threshold": 0.0,
+            "Levels": 256.0,
+            "Octaves": 1.0,
+            "Lacunarity": 2.0,
+            "Gain": 0.5,
+            "FractalMode": "Normal",
+            "WarpStrength": 0.0,
+            "WarpScale": 100.0,
+            "X": 0.0,
+            "Y": 0.0,
+            "Z": 0.0,
+            "SpeedX": 0.0,
+            "SpeedY": 0.0,
+            "SpeedZ": 0.0,
+            "Size": 100.0,
+            "ScaleX": 100.0,
+            "ScaleY": 100.0,
+            "ScaleZ": 100.0,
+            "Angle": 0.0,
+        }
+        for key, value in {**defaults, **values}.items():
+            if key in node or key in values:
+                node[key] = still(float(value)) if isinstance(value, float) else value
+        return node
+
+    def noise_brush(
+        kind: str,
+        *,
+        colors: tuple[str, str] = ("#FF000000", "#FFFFFFFF"),
+        is_color: bool = False,
+        **values: Any,
+    ) -> dict[str, Any]:
+        item = base()
+        brush = copy.deepcopy(brushes["NoiseBrushPlugin"])
+        brush["Parameter"]["NoiseType"] = kind
+        brush["Parameter"]["NoiseParameter"] = parameter(kind, **values)
+        brush["Parameter"]["Color1"], brush["Parameter"]["Color2"] = colors
+        brush["Parameter"]["IsColor"] = is_color
+        item["ShapeParameter"]["Brush"] = brush
+        return item
+
+    def textured() -> dict[str, Any]:
+        item = base()
+        stripe = copy.deepcopy(brushes["StripeBrushPlugin"])
+        set_values(
+            stripe["Parameter"],
+            Color1="#FFFF4040",
+            Width1=40,
+            Color2="#FF4040FF",
+            Width2=40,
+            Offset=0,
+            Zoom=100,
+            Angle=0,
+        )
+        item["ShapeParameter"]["Brush"] = stripe
+        return item
+
+    def effect(kind: str, **values: Any) -> dict[str, Any]:
+        entry = copy.deepcopy(samples[kind])
+        entry["IsEnabled"] = True
+        return set_values(entry, **values)
+
+    def add(name: str, item: dict[str, Any], *effects: dict[str, Any]) -> None:
+        if effects:
+            item["VideoEffects"] = list(effects)
+        probes.append((name, item))
+
+    add("perlin", noise_brush("Perlin"))
+    add("perlin_scale400", noise_brush("Perlin", ScaleX=400.0, ScaleY=400.0))
+    add("perlin_scalex400", noise_brush("Perlin", ScaleX=400.0))
+    add("perlin_size400", noise_brush("Perlin", Size=400.0))
+    add("perlin_octaves5", noise_brush("Perlin", Octaves=5.0))
+    add("perlin_levels4", noise_brush("Perlin", Levels=4.0))
+    add("perlin_threshold50", noise_brush("Perlin", Threshold=50.0))
+    add("perlin_strength50", noise_brush("Perlin", Strength=50.0))
+    add("perlin_strength200", noise_brush("Perlin", Strength=200.0))
+    add("perlin_turbulence", noise_brush("Perlin", Octaves=5.0, FractalMode="Turbulence"))
+    add("perlin_x200", noise_brush("Perlin", X=200.0))
+    add("perlin_z1", noise_brush("Perlin", Z=1.0))
+    add("perlin_angle45", noise_brush("Perlin", ScaleX=400.0, Angle=45.0))
+    add("perlin_speedx100", noise_brush("Perlin", SpeedX=100.0))
+    add("perlin_speedz1", noise_brush("Perlin", SpeedZ=1.0))
+    add("perlin_red_blue", noise_brush("Perlin", colors=("#FFFF0000", "#FF0000FF")))
+    add("perlin_is_color", noise_brush("Perlin", is_color=True))
+    for kind in ("Random", "Fractal", "Curl", "Voronoi", "Cellular", "Block"):
+        add(kind.lower(), noise_brush(kind))
+    add("voronoi_scale400", noise_brush("Voronoi", ScaleX=400.0, ScaleY=400.0))
+    add("random_scale400", noise_brush("Random", ScaleX=400.0, ScaleY=400.0))
+
+    def displaced(kind: str, x: float, y: float, **values: Any) -> dict[str, Any]:
+        entry = effect("NoiseDisplacementMapEffect", NoiseType=kind)
+        entry["NoiseParameter"] = parameter(kind, **values)
+        transform = entry.get("Transform")
+        if isinstance(transform, dict):
+            transform["XScale"] = still(x)
+            transform["YScale"] = still(y)
+        return entry
+
+    add("move_perlin_x100", textured(), displaced("Perlin", 100.0, 0.0))
+    add("move_perlin_y100", textured(), displaced("Perlin", 0.0, 100.0))
+    add(
+        "move_perlin_x100_scale400",
+        textured(),
+        displaced("Perlin", 100.0, 0.0, ScaleX=400.0, ScaleY=400.0),
+    )
+    add("move_random_x100", textured(), displaced("Random", 100.0, 0.0))
+    add("move_voronoi_x100", textured(), displaced("Voronoi", 100.0, 0.0))
+
+    for axis, angle in (("X", 45.0), ("Y", 45.0), ("Z", 30.0)):
+        values = {"X": 0.0, "Y": 0.0, "Z": 0.0, axis: angle}
+        add(f"rotate_{axis.lower()}", base(600.0, 300.0), effect("RotateEffect", **values))
+    add("reflection_sample", base(600.0, 300.0), effect("ReflectionAndExtrusionEffect"))
+    add("three_dimensional_sample", base(600.0, 300.0), effect("ThreeDimensionalEffect"))
+    return [
+        {"Name": f"probe3_{name}", "Path": ["probe3", name], "Items": [item]}
+        for name, item in probes
+    ]
+
+
 def main() -> int:
     target = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / ".work" / "probes" / "probes.ymmt"
     samples, brushes = collect_samples()
-    second = len(sys.argv) > 2 and sys.argv[2] == "second"
-    templates = build_second(samples, brushes) if second else build(samples, brushes)
+    which = sys.argv[2] if len(sys.argv) > 2 else "first"
+    builders = {"first": build, "second": build_second, "third": build_third}
+    templates = builders[which](samples, brushes)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(
         json.dumps({"ItemTemplates": templates}, ensure_ascii=False), encoding="utf-8"

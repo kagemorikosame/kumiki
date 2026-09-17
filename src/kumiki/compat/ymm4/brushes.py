@@ -237,14 +237,65 @@ def _pattern_params(
             "extend": _EXTEND.get(str(parameter.get("ExtendMode") or ""), "wrap"),
             "relative": str(parameter.get("CoordinateMode") or "") == "Relative",
         }
+    if plugin.startswith("NoiseBrush"):
+        return _noise(parameter, length, keyframes, report)
     report.note_missing(f"YMM4 のブラシ: {plugin}")
-    if "NoiseBrush" in plugin:
-        # ノイズの模様は写せない 2 色の中間で塗り、色味だけを近づける
-        first = colour(parameter.get("Color1"), (1.0, 1.0, 1.0, 1.0))
-        second = colour(parameter.get("Color2"), first)
-        middle = tuple((a + b) / 2.0 for a, b in zip(first, second, strict=True))
-        return {"pattern": "solid", "stops": 1, "color0": middle}
     return None
+
+
+#: YMM4 のノイズの種類と、塗りのエフェクトのノイズ
+_NOISE_KINDS = {
+    "Perlin": "perlin",
+    "Simplex": "perlin",
+    "Random": "random",
+    "Fractal": "fractal",
+    "Curl": "curl",
+    "Voronoi": "voronoi",
+    "Cellular": "cellular",
+    "Block": "block",
+}
+
+
+def _noise(
+    parameter: dict[str, Any], length: int, keyframes: Any, report: CompatibilityReport
+) -> dict[str, ParamValue]:
+    """ノイズのブラシ 乱数の出方は YMM4 と違うが、粒の粗さ・濃さ・段階・動きを合わせる
+
+    値の意味は YMM4 に描かせた試験（``tools/ymm4_probes.py`` の 3 回目）から読んだ
+    大きさ（``Size``）は横と縦の大きさにそのまま掛かる
+    """
+    kind = str(parameter.get("NoiseType") or "Perlin")
+    mapped = _NOISE_KINDS.get(kind)
+    if mapped is None:
+        report.note_missing(f"YMM4 のノイズのブラシの種類: {kind}")
+        mapped = "perlin"
+    raw = parameter.get("NoiseParameter")
+    noise = _Values(raw if isinstance(raw, dict) else {}, length, keyframes)
+    if isinstance(raw, dict) and number(raw.get("WarpStrength"), 0.0) != 0.0:
+        report.note_missing("YMM4 のノイズのゆがみ（WarpStrength）")
+    size = number(raw.get("Size"), 100.0) / 100.0 if isinstance(raw, dict) else 1.0
+    octaves = number(raw.get("Octaves"), 5.0) if isinstance(raw, dict) else 5.0
+    fractal = str(raw.get("FractalMode") or "Normal") if isinstance(raw, dict) else "Normal"
+    return {
+        "pattern": "noise",
+        **_two_colours(parameter.get("Color1"), parameter.get("Color2")),
+        "noise_kind": mapped,
+        "noise_strength": noise.track("Strength", 100.0),
+        "noise_threshold": noise.track("Threshold"),
+        "noise_levels": noise.track("Levels", 256.0),
+        "noise_octaves": max(1, min(8, round(octaves))),
+        "turbulence": fractal == "Turbulence",
+        "colorful": parameter.get("IsColor") is True,
+        "noise_scale_x": noise.track("ScaleX", 100.0, scale=size),
+        "noise_scale_y": noise.track("ScaleY", 100.0, scale=size),
+        "noise_x": noise.track("X"),
+        "noise_y": noise.track("Y"),
+        "noise_z": noise.track("Z"),
+        "speed_x": noise.track("SpeedX"),
+        "speed_y": noise.track("SpeedY"),
+        "speed_z": noise.track("SpeedZ"),
+        "angle": noise.track("Angle"),
+    }
 
 
 def _create(params: dict[str, ParamValue]) -> Effect | None:
