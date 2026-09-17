@@ -18,7 +18,6 @@ import statistics
 import sys
 import tempfile
 import time
-from dataclasses import replace
 from pathlib import Path
 
 if isinstance(sys.stdout, io.TextIOWrapper):

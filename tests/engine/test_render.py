@@ -24,6 +24,7 @@ from kumiki.core.model import (
     TrackKind,
 )
 from kumiki.core.timebase import FrameRate
+from kumiki.effects.sources import TEXT
 from kumiki.engine.decode import probe_media
 from kumiki.engine.gpu import (
     Compositor,
@@ -33,7 +34,6 @@ from kumiki.engine.gpu import (
     Texture,
     fit_placement,
 )
-from kumiki.effects.sources import TEXT
 from kumiki.engine.render import FrameRenderer, RenderQuality
 from tests.media_fixtures import SampleMedia
 
