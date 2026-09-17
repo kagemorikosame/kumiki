@@ -19,8 +19,11 @@ from kumiki.compat.aviutl.report import global_report
 from kumiki.core.model import (
     AnimatedValue,
     Clip,
+    ClipId,
     Effect,
+    GeneratedSource,
     MediaId,
+    ParamValue,
     Project,
     Timeline,
     Track,
@@ -108,6 +111,35 @@ MAX_SCENE_DEPTH = 8
 #: 際限なく開くとファイルハンドルとメモリを食い潰す
 MAX_OPEN_DECODERS = 8
 
+#: 作った絵を覚えておくクリップの数 1 枚で画面 1 枚ぶんのメモリを使う
+MAX_GENERATED_CACHE = 48
+
+
+def _varies_over_time(source: GeneratedSource) -> bool:
+    """フレームごとに絵が変わる生成オブジェクトか
+
+    キーフレームの付いた値、埋め込んだ Lua、時間を数えるタイマー、集中線の
+    切り替えのように時計を見るものは、毎フレーム作り直す
+    """
+    for value in source.params.values():
+        if isinstance(value, AnimatedValue) and value.is_animated:
+            return True
+    if source.params.get("timer_format"):
+        return True
+    if source.params.get("shape") == "concentration":
+        return True
+    text = source.params.get("text")
+    return isinstance(text, str) and has_embedded(text)
+
+
+def _fingerprint(params: dict[str, ParamValue]) -> tuple[tuple[str, str], ...]:
+    """生成オブジェクトの設定の指紋 値が同じなら同じ絵になる
+
+    アニメーションの値も丸ごと文字にする キーフレームの有無で分けると、
+    動く値を持つクリップの絵を毎フレーム作り直すことになる（フレームは鍵の別の項目）
+    """
+    return tuple(sorted((name, repr(value)) for name, value in params.items()))
+
 
 @dataclass(frozen=True, slots=True)
 class RenderQuality:
@@ -166,6 +198,8 @@ class FrameRenderer:
         self._scripts: ScriptStage | None = None
         #: フレームバッファのクリップが画面を写し取る先 使うまで作らない
         self._grab: Framebuffer | None = None
+        #: クリップごとに作った絵 同じ設定と同じフレームなら作り直さない
+        self._generated: OrderedDict[ClipId, tuple[object, np.ndarray]] = OrderedDict()
         #: 入れ子のシーンを描く合成先 深さごとに 1 つ 使うまで作らない
         self._nested: dict[int, Compositor] = {}
         #: クリップを下のクリップの形で切り抜くときに使う合成先（役目と深さごと）
@@ -485,7 +519,8 @@ class FrameRenderer:
         gpu_effects, scripts = split_effects(clip.effects)
 
         if scripts:
-            self._draw_scripted(track, clip, image, gpu_effects, local_frame, rate, opacity)
+            # スクリプトは渡した絵を書き換えることがある 覚えておいた絵は渡さない
+            self._draw_scripted(track, clip, image.copy(), gpu_effects, local_frame, rate, opacity)
             return
 
         texture = self._texture_for(track.id)
@@ -996,7 +1031,21 @@ class FrameRenderer:
         width, height = source_canvas(
             source, self._compositor.width, self._compositor.height, frame=local_frame
         )
-        return render_source(source, width, height, frame=local_frame, fps=float(rate.fps))
+        # 同じ絵をもう一度作らない テキストは 1 枚で数ミリ秒かかり、動かない字幕を
+        # 何本も重ねたタイムラインでは、そこが再生の足を引っ張る
+        # 時間で変わらない絵は、フレームを鍵に入れない（毎フレーム作り直さない）
+        when = local_frame if _varies_over_time(source) else -1
+        key = (source.kind, width, height, when, _fingerprint(source.params))
+        cached = self._generated.get(clip.id)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        image = render_source(source, width, height, frame=local_frame, fps=float(rate.fps))
+        if image is not None:
+            if len(self._generated) >= MAX_GENERATED_CACHE:
+                self._generated.popitem(last=False)
+            self._generated[clip.id] = (key, image)
+            self._generated.move_to_end(clip.id)
+        return image
 
     def _decode(self, clip: Clip, frame: int, rate: FrameRate) -> np.ndarray | None:
         assert clip.media_id is not None
