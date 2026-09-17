@@ -67,9 +67,10 @@ _BLEND_MODES: dict[str, str] = {
     "スクリーン": "screen",
     "Overlay": "overlay",
     "オーバーレイ": "overlay",
-    "Lighten": "lighten",
+    # YMM4 の名前は Lighter と Darker（Lighten と Darken は YMM4 が読み込みで断る）
+    "Lighter": "lighten",
     "比較(明)": "lighten",
-    "Darken": "darken",
+    "Darker": "darken",
     "比較(暗)": "darken",
     "Subtract": "subtract",
     "減算": "subtract",
@@ -358,8 +359,19 @@ def _content(
 ) -> tuple[GeneratedSource | None, str, str]:
     if name in ("TextItem", "Text"):
         return _text(item), "", "text"
-    if name in ("ShapeItem", "EffectItem", "Shape"):
+    if name in ("ShapeItem", "Shape"):
         return _shape(item, log), "", "shape"
+
+    if name == "EffectItem":
+        # 下のレイヤーの絵にエフェクトを掛けるアイテム（範囲は図形で決める） 図形として
+        # 読むと、範囲の図形（多くは画面全体の背景）がそのまま画面を塗りつぶす
+        # 写し取った画面にエフェクトを掛けるフレームバッファと同じ形で読む
+        plugin = str(item.get("ShapeType2") or "").partition(",")[0].rpartition(".")[2]
+        if plugin and not plugin.startswith("Background"):
+            log.note_missing(f"YMM4 のエフェクトアイテムの範囲: {plugin}")
+        if number(item.get("Blur"), 0.0) > 0 or item.get("InvertMask") is True:
+            log.note_missing("YMM4 のエフェクトアイテムの範囲のぼかしと反転")
+        return GeneratedSource(kind="framebuffer"), "", "framebuffer"
 
     if name == "FrameBufferItem":
         # それまでに重ねた画面を素材にする 中身の設定は持たない
