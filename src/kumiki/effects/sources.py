@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from kumiki.core.model import GeneratedSource, ParamValue
+from kumiki.effects.easing import EASING_KINDS, EASING_MODES
 from kumiki.effects.spec import (
     CheckSpec,
     ColorSpec,
@@ -23,7 +24,14 @@ from kumiki.effects.spec import (
     TrackSpec,
 )
 
-__all__ = ["FRAMEBUFFER", "SHAPE", "TEXT", "SourceDefinition", "source_registry"]
+__all__ = [
+    "FRAMEBUFFER",
+    "SHAPE",
+    "TEXT",
+    "TRANSITION",
+    "SourceDefinition",
+    "source_registry",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +158,35 @@ SHAPE = SourceDefinition(
 FRAMEBUFFER = SourceDefinition(kind="framebuffer", label="フレームバッファ")
 
 
+#: 下のトラックの絵を、前の場面から後の場面へ切り替える（YMM4 の ``TransitionItem``）
+#: 前の場面はクリップに掛けたエフェクト、後の場面は ``Clip.after_effects`` を通す
+#: 絵はレンダラが GPU の中で作る（:mod:`kumiki.engine.render.renderer`）
+TRANSITION = SourceDefinition(
+    kind="transition",
+    label="場面切り替え",
+    parameters=(
+        SelectSpec(
+            "style",
+            "切り替え方",
+            (
+                ("switch", "切り替え"),
+                ("fade", "クロスフェード"),
+                ("push", "押し出し"),
+                ("slide", "スライド"),
+                ("overlay", "重ねる"),
+            ),
+            "fade",
+        ),
+        TrackSpec("angle", "向き", -360, 360, 0, unit="度"),
+        SelectSpec(
+            "target", "動かす・手前にする場面", (("before", "前"), ("after", "後")), "after"
+        ),
+        SelectSpec("easing", "イージング", EASING_KINDS, "linear"),
+        SelectSpec("easing_mode", "イージングの向き", EASING_MODES, "in"),
+    ),
+)
+
+
 class SourceRegistry:
     """生成オブジェクトの一覧"""
 
@@ -166,4 +203,4 @@ class SourceRegistry:
         return kind in self._definitions
 
 
-source_registry = SourceRegistry((TEXT, SHAPE, FRAMEBUFFER))
+source_registry = SourceRegistry((TEXT, SHAPE, FRAMEBUFFER, TRANSITION))

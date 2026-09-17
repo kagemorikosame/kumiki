@@ -141,6 +141,15 @@ void main() {
     float below_alpha = backdrop.a;
     vec3 below = below_alpha > 0.0001 ? backdrop.rgb / below_alpha : vec3(0.0);
 
+    if (u_mode == 300) {
+        // 黒の上に置いた絵どうしを、符号化した値のまま混ぜる（YMM4 の場面切り替えのフェード）
+        // 結果は黒を含んだ色なので不透明で書く
+        vec3 lower = srgb_encode(below) * below_alpha;
+        vec3 upper = srgb_encode(source.rgb) * clamp(source.a, 0.0, 1.0);
+        frag_color = vec4(srgb_decode(mix(lower, upper, clamp(u_opacity, 0.0, 1.0))), 1.0);
+        return;
+    }
+
     vec3 mixed = blend(below, source.rgb);
     vec3 color = above_alpha * (1.0 - below_alpha) * source.rgb
                + above_alpha * below_alpha * mixed
@@ -212,6 +221,9 @@ class BlendMode:
     #: 描いた絵の不透明度で、下の絵を切り抜く（色は使わない） 選べる合成ではなく、
     #: クリップを下のクリップの形で切り抜くときにレンダラが使う
     MASK = "mask"
+    #: 黒の上に置いた 2 枚の絵を sRGB の値で混ぜる 不透明度が混ぜる割合 選べる合成ではなく、
+    #: 場面切り替えのフェードでレンダラが使う
+    SRGB_MIX = "srgb_mix"
 
 
 #: シェーダで混ぜる合成と、シェーダに渡す番号
@@ -225,6 +237,7 @@ _SHADER_BLENDS: dict[str, int] = {
     BlendMode.MULTIPLY: 4,
     # 100 から先は共通の式の番号 既存の 5 つはリニアで混ぜてきたので、絵を変えないよう残す
     **{mode: 100 + blend_index(mode) for mode in BlendMode.EXTENDED},
+    BlendMode.SRGB_MIX: 300,
 }
 
 

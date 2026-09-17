@@ -46,7 +46,7 @@ MIN_SLOT = 60
 GAP = 6
 DEFAULT_WORK = ROOT / ".work" / "ymm4-compare"
 #: 置いても比べられないアイテム 場面切り替えは前後の絵が要る
-SKIPPED_ITEMS = frozenset({"TransitionItem", "AudioItem"})
+SKIPPED_ITEMS = frozenset({"AudioItem"})
 
 _BRUSH_PARAMETER = "YukkuriMovieMaker.Plugin.Brush.SolidColorBrushParameter, YukkuriMovieMaker"
 
@@ -155,6 +155,18 @@ def build_cases(files: list[Path]) -> tuple[list[Case], list[str]]:
                 item_length = max(1, int(number(item.get("Length"), 1.0)))
                 item["Length"] = max(1, min(item_length, length - offset))
             note = ""
+            if all(type_name(item) == "TransitionItem" for item in items):
+                # 場面切り替えだけのテンプレート 下に前の場面と後の場面を敷き、切れ目を真ん中に置く
+                for item in items:
+                    item["Layer"] = int(item["Layer"]) + 1
+                half = length // 2
+                before = base_shape(cursor, 0, half)
+                after = base_shape(cursor + half, 0, length - half)
+                after["ShapeParameter"]["Brush"]["Parameter"]["Color"] = "#FF2C7AE0"
+                after["X"] = _still(200.0)
+                before["X"] = _still(-200.0)
+                items[:0] = [before, after]
+                note = "前後の場面の図形を敷いた"
             has_content = any(type_name(item) not in ("GroupItem",) for item in items)
             if not has_content:
                 # エフェクトだけのテンプレート グループの範囲の中（1 つ下）に下地を置く

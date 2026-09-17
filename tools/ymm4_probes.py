@@ -1039,11 +1039,155 @@ def build_third(
     ]
 
 
+def _transition_parameters() -> dict[str, dict[str, Any]]:
+    """配布テンプレートに出てくる切り替えの設定を、切り替えの種類ごとに 1 つずつ"""
+    found: dict[str, dict[str, Any]] = {}
+    for path in sorted(FIXTURES.rglob("*.ymmt")):
+        for template in load_template(path):
+            for item in template.items:
+                if type_name(item) != "TransitionItem":
+                    continue
+                kind = str(item.get("TransitionType") or "").partition(",")[0]
+                found.setdefault(kind.rpartition(".")[2], copy.deepcopy(item))
+    return found
+
+
+def build_fourth(
+    samples: dict[str, dict[str, Any]], brushes: dict[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """4 回目の試験 場面切り替え（TransitionItem）の効き方
+
+    レイヤー 0 に前の場面 A（赤い四角、左）と後の場面 B（青い丸、右）を 90 フレームずつ
+    並べ、切り替えをレイヤー 1 の 60〜120 フレームに置く 切り替えの前後と真ん中を撮る
+    """
+    del brushes
+    transitions = _transition_parameters()
+    probes: list[tuple[str, list[dict[str, Any]]]] = []
+
+    def scene(
+        frame: int, layer: int, colour: str, x: float, *, ellipse: bool = False
+    ) -> dict[str, Any]:
+        item = base_shape(frame, layer, 90)
+        item["ShapeParameter"]["Width"] = still(500.0)
+        item["ShapeParameter"]["Height"] = still(300.0)
+        item["ShapeParameter"]["Brush"] = solid(colour)
+        item["X"] = still(x)
+        if ellipse:
+            circle = (
+                copy.deepcopy(samples["CircleShapeParameter"])
+                if "CircleShapeParameter" in samples
+                else None
+            )
+            if circle is not None:
+                item["ShapeType2"] = "YukkuriMovieMaker.Shape.CircleShapePlugin, YukkuriMovieMaker"
+                circle["Size"] = still(400.0)
+                circle["StrokeThickness"] = still(4000.0)
+                circle["Brush"] = solid(colour)
+                item["ShapeParameter"] = circle
+        return item
+
+    def rotate(values: list[float]) -> dict[str, Any]:
+        entry = copy.deepcopy(samples["RotateEffect"])
+        entry["IsEnabled"] = True
+        entry["X"] = still(0.0)
+        entry["Y"] = still(0.0)
+        entry["Is3D"] = False
+        entry["Z"] = {
+            "Values": [{"Value": v} for v in values],
+            "Span": 0.0,
+            "AnimationType": "直線移動",
+        }
+        return entry
+
+    def transition(
+        kind: str,
+        *,
+        frame: int = 60,
+        length: int = 60,
+        layer: int = 1,
+        before: list[dict[str, Any]] | None = None,
+        after: list[dict[str, Any]] | None = None,
+        **parameter: Any,
+    ) -> dict[str, Any]:
+        item = copy.deepcopy(transitions[kind])
+        item["Frame"] = frame
+        item["Length"] = length
+        item["Layer"] = layer
+        item["Group"] = 0
+        item["IsLocked"] = False
+        item["BeforeVideoEffects"] = before or []
+        item["AfterVideoEffects"] = after or []
+        item["VideoEffects"] = []
+        item["TransitionParameter"].update(parameter)
+        return item
+
+    def add(name: str, *items: dict[str, Any], a_layer: int = 0) -> None:
+        probes.append(
+            (
+                name,
+                [
+                    scene(0, a_layer, "#FFFF3030", -300.0),
+                    scene(90, a_layer, "#FF3060FF", 300.0, ellipse=True),
+                    *items,
+                ],
+            )
+        )
+
+    linear = {"EasingType": "Linear", "EasingMode": "In"}
+    add("switch", transition("SwitchTransitionPlugin"))
+    add("fade", transition("FadeTransitionPlugin", **linear))
+    add("push_0", transition("PushTransitionPlugin", Angle=0.0, **linear))
+    add("push_90", transition("PushTransitionPlugin", Angle=90.0, **linear))
+    add("slide_before_0", transition("SlideTransitionPlugin", Target="Before", Angle=0.0, **linear))
+    add("slide_after_0", transition("SlideTransitionPlugin", Target="After", Angle=0.0, **linear))
+    add("none_before", transition("NoneTransitionPlugin", OverlayTarget="Before"))
+    add("none_after", transition("NoneTransitionPlugin", OverlayTarget="After"))
+    add(
+        "switch_rotate",
+        transition(
+            "SwitchTransitionPlugin", before=[rotate([0.0, 90.0])], after=[rotate([-90.0, 0.0])]
+        ),
+    )
+    add(
+        "none_rotate",
+        transition(
+            "NoneTransitionPlugin",
+            OverlayTarget="Before",
+            before=[rotate([0.0, 90.0])],
+            after=[rotate([-90.0, 0.0])],
+        ),
+    )
+    add("switch_early", transition("SwitchTransitionPlugin", frame=30, length=90))
+    add("fade_early", transition("FadeTransitionPlugin", frame=30, length=90, **linear))
+    # 切り替えより上のレイヤーに置いた場面は変わるか（緑の小さな四角をずっと出す）
+    marker = base_shape(0, 2, 180)
+    marker["ShapeParameter"]["Width"] = still(200.0)
+    marker["ShapeParameter"]["Height"] = still(200.0)
+    marker["ShapeParameter"]["Brush"] = solid("#FF30C030")
+    marker["Y"] = still(300.0)
+    add("push_with_marker_above", transition("PushTransitionPlugin", Angle=0.0, **linear), marker)
+    # 切り替えより上に場面を置いたとき
+    add(
+        "push_scenes_above",
+        transition("PushTransitionPlugin", Angle=0.0, layer=0, **linear),
+        a_layer=1,
+    )
+    return [
+        {"Name": f"probe4_{name}", "Path": ["probe4", name], "Items": items}
+        for name, items in probes
+    ]
+
+
 def main() -> int:
     target = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / ".work" / "probes" / "probes.ymmt"
     samples, brushes = collect_samples()
     which = sys.argv[2] if len(sys.argv) > 2 else "first"
-    builders = {"first": build, "second": build_second, "third": build_third}
+    builders = {
+        "first": build,
+        "second": build_second,
+        "third": build_third,
+        "fourth": build_fourth,
+    }
     templates = builders[which](samples, brushes)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(

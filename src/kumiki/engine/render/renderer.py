@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import math
 from collections import OrderedDict
 from dataclasses import dataclass
 from fractions import Fraction
@@ -15,8 +16,18 @@ from OpenGL import GL
 
 from kumiki.compat.aviutl.embedded import has_embedded
 from kumiki.compat.aviutl.report import global_report
-from kumiki.core.model import Clip, Effect, MediaId, Project, Timeline, Track, TrackKind
+from kumiki.core.model import (
+    AnimatedValue,
+    Clip,
+    Effect,
+    MediaId,
+    Project,
+    Timeline,
+    Track,
+    TrackKind,
+)
 from kumiki.core.timebase import FrameRate, seconds_to_frame
+from kumiki.effects.easing import ease
 from kumiki.engine.decode import ProbeError, VideoDecoder
 from kumiki.engine.gpu import (
     BlendMode,
@@ -217,25 +228,181 @@ class FrameRenderer:
 
     def _compose_timeline(self, timeline: Timeline, frame: int, *, depth: int) -> None:
         """1 本のタイムラインを、いまの合成先へ重ねる シーンの入れ子でも同じ道を通る"""
+        self._compose_tracks(list(timeline.active_tracks(TrackKind.VIDEO)), frame, depth)
+
+    def _compose_tracks(self, tracks: list[Track], frame: int, depth: int) -> None:
+        """下のトラックから順に重ねる 場面切り替えは、それより下のトラックを見て描き直す"""
         rate = self._project.rate
         visible = [
-            (track, clip)
-            for track in timeline.active_tracks(TrackKind.VIDEO)
+            (index, track, clip)
+            for index, track in enumerate(tracks)
             if (clip := track.clip_at(frame)) is not None and clip.enabled
         ]
         below: Compositor | None = None
-        for index, (track, clip) in enumerate(visible):
+        for position, (index, track, clip) in enumerate(visible):
+            if clip.source is not None and clip.source.kind == "transition":
+                self._draw_transition(tracks[:index], clip, frame, rate, depth)
+                below = None
+                continue
             if clip.clip_to_below:
                 self._draw_clipped(track, clip, frame, rate, depth, below)
             else:
                 self._draw_clip(track, clip, frame, rate, depth)
-            above = visible[index + 1][1] if index + 1 < len(visible) else None
+            above = visible[position + 1][2] if position + 1 < len(visible) else None
             # すぐ上のクリップがこのクリップの形で切り抜くなら、形を取っておく
             below = (
                 self._capture(track, clip, frame, rate, depth)
                 if above is not None and above.clip_to_below
                 else None
             )
+
+    def _draw_transition(
+        self, tracks: list[Track], clip: Clip, frame: int, rate: FrameRate, depth: int
+    ) -> None:
+        """下のトラックの絵を、前の場面から後の場面へ切り替える（YMM4 の ``TransitionItem``）
+
+        決まりは YMM4 に描かせた試験（``tools/ymm4_probes.py`` の 4 回目）から読んだ
+
+        - 後の場面は、いまの時刻の下の絵そのもの
+        - 前の場面は、範囲の中で終わるクリップの終わり（切れ目）の直前で止めた絵
+          切れ目より前は、前の場面も後の場面も同じ絵になる 範囲の中で終わるクリップが
+          無ければ止めない
+        - 進み具合は範囲の頭から終わりまで 押し出しとスライドは画面 1 枚分を動く
+        - 切り替え（switch）は切れ目で入れ替わる（範囲の真ん中ではない）
+        - 上のトラックには効かない
+        """
+        if depth >= MAX_SCENE_DEPTH:
+            return
+        start, end = clip.timeline_start, clip.timeline_end
+        cut = max(
+            (
+                other.timeline_end
+                for track in tracks
+                for other in track.clips
+                if other.enabled and start < other.timeline_end <= end
+            ),
+            default=end,
+        )
+        before_frame = min(frame, cut - 1)
+        local_frame = frame - start
+        params = clip.source.params if clip.source is not None else {}
+        style = str(params.get("style", "fade"))
+        target = str(params.get("target", "after"))
+        angle = params.get("angle")
+        degrees = angle.at(local_frame) if isinstance(angle, AnimatedValue) else 0.0
+        progress = ease(
+            local_frame / clip.duration,
+            str(params.get("easing", "linear")),
+            str(params.get("easing_mode", "in")),
+        )
+
+        width, height = self._compositor.width, self._compositor.height
+        full = Placement(0.0, 0.0, float(width), float(height))
+        outer = self._compositor
+        after = self._layer("transition_after", depth)
+        after.begin((0.0, 0.0, 0.0, 0.0))
+        after.draw_handle(outer.canvas.color, full, flip=False, premultiplied=True)
+        before = self._layer("transition_before", depth)
+        self._compositor = before
+        try:
+            before.begin((0.0, 0.0, 0.0, 0.0))
+            if before_frame == frame:
+                before.draw_handle(after.canvas.color, full, flip=False, premultiplied=True)
+            else:
+                self._compose_tracks(tracks, before_frame, depth + 1)
+        finally:
+            self._compositor = outer
+
+        before_image = self._transition_scene(
+            before, clip.effects, "before", clip, local_frame, rate, depth
+        )
+        after_image = self._transition_scene(
+            after, clip.after_effects, "after", clip, local_frame, rate, depth
+        )
+
+        outer.begin((0.0, 0.0, 0.0, 0.0))
+        direction = (math.cos(math.radians(degrees)), math.sin(math.radians(degrees)))
+        travel = abs(direction[0]) * width + abs(direction[1]) * height
+
+        def moved(amount: float) -> Placement:
+            # 角度 0 で右へ、90 で下へ（画面の Y は下が正）
+            return Placement(
+                direction[0] * amount, direction[1] * amount, float(width), float(height)
+            )
+
+        def put(
+            image: Compositor,
+            placement: Placement = full,
+            opacity: float = 1.0,
+            blend: str = BlendMode.NORMAL,
+        ) -> None:
+            outer.draw_handle(
+                image.canvas.color,
+                placement,
+                opacity=opacity,
+                flip=False,
+                blend=blend,
+                premultiplied=True,
+            )
+
+        if style == "switch":
+            put(before_image if frame < cut else after_image)
+        elif style == "fade":
+            # YMM4 は黒の上の絵として sRGB の値のまま混ぜる リニアで混ぜると中間が明るく浮く
+            put(before_image)
+            outer.underlay((0.0, 0.0, 0.0, 1.0))
+            put(after_image, opacity=progress, blend=BlendMode.SRGB_MIX)
+        elif style == "push":
+            put(after_image, moved(-(1.0 - progress) * travel))
+            put(before_image, moved(progress * travel))
+        elif style == "slide" and target == "before":
+            put(after_image)
+            put(before_image, moved(progress * travel))
+        elif style == "slide":
+            put(before_image)
+            put(after_image, moved(-(1.0 - progress) * travel))
+        elif target == "before":
+            # 重ねるだけ 手前にする場面を後に描く
+            put(after_image)
+            put(before_image)
+        else:
+            put(before_image)
+            put(after_image)
+
+    def _transition_scene(
+        self,
+        image: Compositor,
+        effects: tuple[Effect, ...],
+        role: str,
+        clip: Clip,
+        local_frame: int,
+        rate: FrameRate,
+        depth: int,
+    ) -> Compositor:
+        """場面にエフェクトを掛けた絵 掛けるものが無ければそのまま返す
+
+        エフェクトの結果は次に掛けるまでしか残らない（中のバッファを使い回す）ので、
+        別の合成先へ描き写してから返す
+        """
+        gpu_effects, scripts = split_effects(effects)
+        if scripts:
+            global_report.note_missing("場面切り替えに積んだ AviUtl スクリプト")
+        if not self._effects.has_work(gpu_effects):
+            return image
+        result = self._effects.apply(
+            image.canvas,
+            gpu_effects,
+            frame=local_frame,
+            fps=float(rate.fps),
+            flip_source=False,
+            duration=clip.duration,
+            premultiplied=True,
+        )
+        done = self._layer(f"transition_{role}_done", depth)
+        done.begin((0.0, 0.0, 0.0, 0.0))
+        full = Placement(0.0, 0.0, float(done.width), float(done.height))
+        done.draw_handle(result.color, full, flip=False)
+        return done
 
     def render(self, frame: int) -> np.ndarray:
         """``frame`` の合成結果を sRGB の ``(高さ, 幅, 4)`` uint8 で返す

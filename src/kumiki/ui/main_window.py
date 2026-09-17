@@ -78,7 +78,7 @@ from kumiki.core.model import (
     ProjectSettings,
     SceneId,
 )
-from kumiki.effects.sources import SHAPE, TEXT
+from kumiki.effects.sources import SHAPE, TEXT, TRANSITION
 from kumiki.engine.audio.waveform import Waveform
 from kumiki.engine.cache import MediaAnalyzer
 from kumiki.engine.decode import ProbeError, probe_media
@@ -361,6 +361,7 @@ class MainWindow(QMainWindow):
         object_menu = self._menu("オブジェクト")
         self._add(object_menu, "テキストを追加", QKeySequence("Ctrl+T"), self.add_text)
         self._add(object_menu, "図形を追加", QKeySequence("Ctrl+Shift+T"), self.add_shape)
+        self._add(object_menu, "場面切り替えを追加", QKeySequence(), self.add_transition)
 
         scene_menu = self._menu("シーン")
         self._add(scene_menu, "新しいシーン…", QKeySequence("Ctrl+Alt+N"), self._ask_new_scene)
@@ -795,6 +796,10 @@ class MainWindow(QMainWindow):
 
     def add_shape(self) -> None:
         self._insert_generated(SHAPE.create(), "図形を追加")
+
+    def add_transition(self) -> None:
+        """再生ヘッドの位置に場面切り替えを置く 下のトラックの切れ目に重ねて使う"""
+        self._insert_generated(TRANSITION.create(), "場面切り替えを追加")
 
     def _insert_generated(self, source: GeneratedSource, label: str) -> None:
         commands = insert_generated(self.view_project, source, at_frame=self._timeline.playhead)

@@ -615,6 +615,56 @@ class TestPlacement:
 
 
 class TestOtherItems:
+    def test_a_transition_splits_its_effects_between_the_scenes(self) -> None:
+        rotate = {
+            "$type": "YukkuriMovieMaker.Project.Effects.RotateEffect, YukkuriMovieMaker",
+            "X": still(0.0),
+            "Y": still(0.0),
+            "Z": moving(0.0, 90.0),
+            "IsEnabled": True,
+        }
+        item = {
+            "$type": "YukkuriMovieMaker.Project.Items.TransitionItem, YukkuriMovieMaker",
+            "TransitionType": "N.SlideTransitionPlugin, YukkuriMovieMaker",
+            "TransitionParameter": {
+                "Target": "Before",
+                "Angle": 90.0,
+                "EasingType": "Back",
+                "EasingMode": "InOut",
+            },
+            "BeforeVideoEffects": [rotate],
+            "AfterVideoEffects": [],
+            "VideoEffects": [],
+            "Frame": 30,
+            "Length": 60,
+            "Layer": 3,
+        }
+        report = CompatibilityReport()
+        (mapped,) = map_template([item], report=report)
+        assert not report.lines()
+        clip = mapped.clip
+        assert clip.source is not None and clip.source.kind == "transition"
+        assert clip.source.params["style"] == "slide"
+        assert clip.source.params["target"] == "before"
+        assert clip.source.params["easing"] == "back"
+        assert value_at(clip.source.params["angle"]) == 90.0
+        assert [e.kind for e in clip.effects] == ["transform"]
+        assert clip.after_effects == ()
+        assert (clip.timeline_start, clip.duration, mapped.layer) == (30, 60, 4)
+
+    def test_a_push_ignores_its_angle(self) -> None:
+        # YMM4 は押し出しの角度を見ていなかった（90 にしても 0 と同じ絵）
+        item = {
+            "$type": "YukkuriMovieMaker.Project.Items.TransitionItem, YukkuriMovieMaker",
+            "TransitionType": "N.PushTransitionPlugin, YukkuriMovieMaker",
+            "TransitionParameter": {"Angle": 90.0},
+            "Frame": 0,
+            "Length": 30,
+        }
+        (mapped,) = map_template([item], report=CompatibilityReport())
+        assert mapped.clip.source is not None
+        assert value_at(mapped.clip.source.params["angle"]) == 0.0
+
     def test_a_media_item_returns_its_path(self) -> None:
         item = {
             "$type": "YukkuriMovieMaker.Project.Items.VideoItem, YukkuriMovieMaker",

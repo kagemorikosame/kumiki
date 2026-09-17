@@ -14,27 +14,10 @@ from __future__ import annotations
 
 from kumiki.effects.builtin import PRELUDE
 from kumiki.effects.definition import EffectDefinition, registry
+from kumiki.effects.easing import EASING_KINDS, EASING_MODES
 from kumiki.effects.spec import CheckSpec, SelectSpec, TrackSpec, ValueSpec
 
 __all__ = ["EASING_KINDS", "EASING_MODES", "register_motion_effects"]
-
-#: イージングの種類 シェーダの ``ease`` の番号と同じ順
-EASING_KINDS: tuple[tuple[str, str], ...] = (
-    ("linear", "直線"),
-    ("sine", "Sine"),
-    ("quad", "Quad"),
-    ("cubic", "Cubic"),
-    ("quart", "Quart"),
-    ("quint", "Quint"),
-    ("expo", "Expo"),
-    ("circ", "Circ"),
-    ("back", "Back"),
-    ("elastic", "Elastic"),
-    ("bounce", "Bounce"),
-)
-
-#: イージングの向き
-EASING_MODES: tuple[tuple[str, str], ...] = (("in", "In"), ("out", "Out"), ("inout", "InOut"))
 
 
 def _shader(body: str) -> str:

@@ -39,6 +39,7 @@ from kumiki.compat.ymm4.effects import CenterPoint
 from kumiki.compat.ymm4.values import animated, brush_colour, colour, number, type_name
 from kumiki.core.model import AnimatedValue, Clip, Effect, GeneratedSource, ParamValue
 from kumiki.effects.definition import registry
+from kumiki.effects.sources import source_registry
 
 __all__ = [
     "CATALOG_NAME",
@@ -313,6 +314,8 @@ def _map_item(item: dict[str, Any], log: CompatibilityReport) -> MappedObject | 
 
     if _preview_only(item):
         return None
+    if name == "TransitionItem":
+        return _transition(item, length, keyframes, log)
     source, media_path, kind = _content(item, name, log)
     if source is None and not media_path:
         return None
@@ -370,6 +373,72 @@ def _map_item(item: dict[str, Any], log: CompatibilityReport) -> MappedObject | 
         kind=kind,
         has_span="Length" in item,
     )
+
+
+#: YMM4 の切り替えの種類と、場面切り替えの切り替え方
+_TRANSITION_STYLES = {
+    "SwitchTransitionPlugin": "switch",
+    "FadeTransitionPlugin": "fade",
+    "PushTransitionPlugin": "push",
+    "SlideTransitionPlugin": "slide",
+    "NoneTransitionPlugin": "overlay",
+}
+
+
+def _transition(
+    item: dict[str, Any], length: int, keyframes: Any, log: CompatibilityReport
+) -> MappedObject | None:
+    """場面切り替え 前の場面のエフェクトはクリップ、後の場面のエフェクトは after_effects へ
+
+    位置・拡大・回転・不透明度はアイテムの設定画面に出ない（配布物ではどれも既定のまま）
+    """
+    plugin = str(item.get("TransitionType") or "").partition(",")[0].rpartition(".")[2]
+    style = _TRANSITION_STYLES.get(plugin)
+    if style is None:
+        log.note_missing(f"YMM4 の場面切り替えの種類: {plugin or '種類不明'}")
+        style = "fade"
+    raw = item.get("TransitionParameter")
+    parameter = raw if isinstance(raw, dict) else {}
+    target = str(parameter.get("Target") or parameter.get("OverlayTarget") or "After")
+    definition = source_registry.get("transition")
+    if definition is None:  # pragma: no cover - 標準の生成オブジェクト
+        return None
+    source = definition.create(
+        style=style,
+        # 押し出しの角度は YMM4 が見ていない（90 にしても 0 と同じ絵だった）
+        angle=0.0 if style == "push" else number(parameter.get("Angle"), 0.0),
+        target="before" if target == "Before" else "after",
+        easing=_EASING_NAMES.get(str(parameter.get("EasingType") or ""), "linear"),
+        easing_mode=_EASING_MODE_NAMES.get(str(parameter.get("EasingMode") or ""), "in"),
+    )
+    before = map_video_effects(
+        item.get("BeforeVideoEffects"), log, length=length, keyframes=keyframes
+    )
+    after = map_video_effects(
+        item.get("AfterVideoEffects"), log, length=length, keyframes=keyframes
+    )
+    if map_video_effects(item.get("VideoEffects"), log, length=length, keyframes=keyframes).effects:
+        log.note_missing("YMM4 の場面切り替えのアイテム自体に掛けたエフェクト")
+    return MappedObject(
+        clip=Clip(
+            timeline_start=max(0, int(number(item.get("Frame"), 0.0))),
+            duration=length,
+            source=source,
+            effects=tuple(before.effects),
+            after_effects=tuple(after.effects),
+        ),
+        layer=max(1, int(number(item.get("Layer"), 0.0)) + 1),
+        media_path="",
+        kind="transition",
+    )
+
+
+#: 切り替えのイージングの名前
+_EASING_NAMES = {
+    name: name.lower()
+    for name in ("Linear", "Sine", "Quad", "Cubic", "Quart", "Quint", "Expo", "Circ", "Back")
+} | {"Elastic": "elastic", "Bounce": "bounce"}
+_EASING_MODE_NAMES = {"In": "in", "Out": "out", "InOut": "inout"}
 
 
 def _preview_only(item: dict[str, Any]) -> bool:

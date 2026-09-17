@@ -437,6 +437,7 @@ def _clip_to_json(clip: Clip) -> dict[str, Any]:
         "clip_to_below": clip.clip_to_below,
         "enabled": clip.enabled,
         "effects": [effect_to_json(e) for e in clip.effects],
+        "after_effects": [effect_to_json(e) for e in clip.after_effects],
     }
 
 
@@ -469,6 +470,7 @@ def _clip_from_json(raw: object) -> Clip:
         stream_index=_get_int(data, "stream_index", 0),
         speed=_fraction_from_json(data.get("speed", 1), "speed"),
         effects=tuple(effect_from_json(e) for e in _get_list(data, "effects")),
+        after_effects=tuple(effect_from_json(e) for e in _get_list(data, "after_effects")),
         opacity=opacity,
         blend_mode=_get_str(data, "blend_mode", "normal"),
         link_group=GroupId(link_group) if link_group is not None else None,
