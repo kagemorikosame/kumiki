@@ -147,8 +147,13 @@ def build_cases(files: list[Path]) -> tuple[list[Case], list[str]]:
             length = max(MIN_SLOT, min(end - first, 300))
             top = min(int(number(item.get("Layer"), 0.0)) for item in items)
             for item in items:
-                item["Frame"] = int(number(item.get("Frame"), 0.0)) - first + cursor
+                offset = int(number(item.get("Frame"), 0.0)) - first
+                item["Frame"] = offset + cursor
                 item["Layer"] = int(number(item.get("Layer"), 0.0)) - top
+                # 枠より長いアイテムは枠の終わりで切る 切らないと次のテンプレートの枠へ
+                # はみ出し、YMM4 の絵にだけ前のテンプレートが映り込む
+                item_length = max(1, int(number(item.get("Length"), 1.0)))
+                item["Length"] = max(1, min(item_length, length - offset))
             note = ""
             has_content = any(type_name(item) not in ("GroupItem",) for item in items)
             if not has_content:

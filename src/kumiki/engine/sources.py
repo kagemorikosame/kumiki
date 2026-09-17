@@ -77,6 +77,8 @@ def source_canvas(
     if definition is None:
         return width, height
     values = _resolve(definition, source.params, frame)
+    if values.get("shape") == "background":
+        return width, height
     shape_width = max(1.0, float(values.get("width", 400)))  # type: ignore[arg-type]
     shape_height = max(1.0, float(values.get("height", 400)))  # type: ignore[arg-type]
     line = float(values.get("line_width", 0.0))  # type: ignore[arg-type]
@@ -327,6 +329,11 @@ def _draw_shape(painter: QPainter, values: dict[str, object], width: int, height
     centre_x = width / 2.0 + float(values.get("pos_x", 0.0))  # type: ignore[arg-type]
     centre_y = height / 2.0 - float(values.get("pos_y", 0.0))  # type: ignore[arg-type]
 
+    if str(values.get("shape", "rect")) == "background":
+        # 背景は大きさの設定を見ず、絵の全体を塗る 設定の大きさで描くと、画面より
+        # 大きく広げた絵や、大きさを持たない読み込み元（YMM4 の背景）で隙間が出る
+        shape_width = float(width) + abs(float(values.get("pos_x", 0.0))) * 2.0  # type: ignore[arg-type]
+        shape_height = float(height) + abs(float(values.get("pos_y", 0.0))) * 2.0  # type: ignore[arg-type]
     rect = QRectF(-shape_width / 2.0, -shape_height / 2.0, shape_width, shape_height)
     path = _shape_path(str(values.get("shape", "rect")), rect, values)
 

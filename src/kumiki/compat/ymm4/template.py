@@ -451,7 +451,7 @@ def _shape(item: dict[str, Any], log: CompatibilityReport) -> GeneratedSource:
 
     width = track("Width", 400.0)
     height = track("Height", 400.0)
-    if str(parameter.get("SizeMode") or "") == "Size":
+    if str(parameter.get("SizeMode") or "") in ("Size", "SizeAspect"):
         # 大きさ 1 つと縦横比で決める形 縦横比は -100〜100 で、正なら縦長
         size = track("Size", 100.0)
         aspect = number(parameter.get("AspectRate"), 0.0) / 100.0
