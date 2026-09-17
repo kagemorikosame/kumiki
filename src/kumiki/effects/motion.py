@@ -102,6 +102,60 @@ void main() {
 """
 )
 
+#: 変形の支点 既定は絵の中央 YMM4 の中心点エフェクトは端や画面の中央も選ぶ
+_PIVOT = """
+uniform float anchor_x;
+uniform float anchor_y;
+uniform int pivot_h;
+uniform int pivot_v;
+
+vec2 pivot_point() {
+    vec2 p = object_center();
+    if (pivot_h == 0) p.x = u_size.x * 0.5;
+    if (pivot_h == 1) p.x = u_object.x;
+    if (pivot_h == 2) p.x = u_object.z;
+    if (pivot_v == 0) p.y = u_size.y * 0.5;
+    if (pivot_v == 1) p.y = u_object.w;
+    if (pivot_v == 2) p.y = u_object.y;
+    return p + vec2(anchor_x, anchor_y);
+}
+
+// 支点が既定（絵の中央）から動かされているか
+bool pivot_chosen() {
+    return pivot_h != 3 || pivot_v != 3 || anchor_x != 0.0 || anchor_y != 0.0;
+}
+"""
+
+
+def _pivot_specs() -> tuple[TrackSpec | SelectSpec, ...]:
+    return (
+        TrackSpec("anchor_x", "中心 X", -4000, 4000, 0, step=1, unit="px"),
+        TrackSpec("anchor_y", "中心 Y", -4000, 4000, 0, step=1, unit="px"),
+        SelectSpec(
+            "pivot_h",
+            "中心の横",
+            (
+                ("screen", "画面の中央"),
+                ("left", "絵の左端"),
+                ("right", "絵の右端"),
+                ("center", "絵の中央"),
+            ),
+            "center",
+        ),
+        SelectSpec(
+            "pivot_v",
+            "中心の縦",
+            (
+                ("screen", "画面の中央"),
+                ("top", "絵の上端"),
+                ("bottom", "絵の下端"),
+                ("middle", "絵の中央"),
+            ),
+            "middle",
+        ),
+    )
+
+
 _RANDOM_ZOOM = _shader(
     """
 uniform float zoom;
@@ -110,6 +164,7 @@ uniform float zoom_y;
 uniform float interval;
 uniform int seed;
 """
+    + _PIVOT
     + _STEP
     + """
 void main() {
@@ -119,7 +174,7 @@ void main() {
     float swing = 1.0 + r * (zoom / 100.0 - 1.0);
     vec2 scale = vec2(zoom_x, zoom_y) / 100.0 * swing;
     if (scale.x <= 0.0001 || scale.y <= 0.0001) { frag_color = vec4(0.0); return; }
-    vec2 centre = object_center();
+    vec2 centre = pivot_point();
     frag_color = sample_pixel(centre + (v_uv * u_size - centre) / scale);
 }
 """
@@ -134,6 +189,7 @@ uniform bool three_d;
 uniform float interval;
 uniform int seed;
 """
+    + _PIVOT
     + _STEP
     + """
 void main() {
@@ -143,7 +199,7 @@ void main() {
         angles.x = random_signed(tick, 5.0) * angle_x;
         angles.y = random_signed(tick, 6.0) * angle_y;
     }
-    vec2 centre = object_center();
+    vec2 centre = pivot_point();
     frag_color = sample_pixel(centre + untilt(v_uv * u_size - centre, angles));
 }
 """
@@ -182,13 +238,14 @@ uniform bool centering;
 uniform int easing;
 uniform int easing_mode;
 """
+    + _PIVOT
     + _WAVE
     + """
 void main() {
     float k = repeat_wave() - (centering ? 0.5 : 0.0);
     vec3 angles = vec3(0.0, 0.0, angle_z) * k;
     if (three_d) angles.xy = vec2(angle_x, angle_y) * k;
-    vec2 centre = object_center();
+    vec2 centre = pivot_point();
     frag_color = sample_pixel(centre + untilt(v_uv * u_size - centre, angles));
 }
 """
@@ -235,11 +292,8 @@ _INOUT_ZOOM = _shader(
 uniform float zoom;
 uniform float zoom_x;
 uniform float zoom_y;
-uniform float anchor_x;
-uniform float anchor_y;
-uniform int pivot_h;
-uniform int pivot_v;
 """
+    + _PIVOT
     + _IN_OUT
     + """
 void main() {
@@ -248,15 +302,7 @@ void main() {
     vec2 target = vec2(zoom_x, zoom_y) / 100.0 * (zoom / 100.0);
     vec2 scale = mix(vec2(1.0), target, hidden_amount());
     if (scale.x <= 0.0001 || scale.y <= 0.0001) { frag_color = vec4(0.0); return; }
-    // 支点は変形（transform）と同じ決め方 既定は絵の中央
-    vec2 centre = object_center();
-    if (pivot_h == 1) centre.x = u_object.x;
-    if (pivot_h == 2) centre.x = u_object.z;
-    if (pivot_v == 1) centre.y = u_object.w;
-    if (pivot_v == 2) centre.y = u_object.y;
-    if (pivot_h == 0) centre.x = u_size.x * 0.5;
-    if (pivot_v == 0) centre.y = u_size.y * 0.5;
-    centre += vec2(anchor_x, anchor_y);
+    vec2 centre = pivot_point();
     frag_color = sample_pixel(centre + (v_uv * u_size - centre) / scale);
 }
 """
@@ -321,6 +367,7 @@ _INOUT_GETUP = _shader(
 uniform int base;
 uniform bool three_d;
 """
+    + _PIVOT
     + _IN_OUT
     + """
 void main() {
@@ -331,6 +378,8 @@ void main() {
     if (base == 1) pivot.y = u_object.w;
     if (base == 2) pivot.x = u_object.x;
     if (base == 3) pivot.x = u_object.z;
+    // 中心点で支点を選んでいれば、そちらを軸にする
+    if (pivot_chosen()) pivot = pivot_point();
     vec2 point = v_uv * u_size - pivot;
 
     if (three_d) {
@@ -458,10 +507,12 @@ _SPIRAL = _shader(
     """
 uniform float angle;
 uniform bool outer;
-
+"""
+    + _PIVOT
+    + """
 void main() {
     // 中心ほど大きく回す 外側ほど大きく回す指定もある
-    vec2 centre = object_center();
+    vec2 centre = pivot_point();
     vec2 point = v_uv * u_size - centre;
     float reach = max(length(object_size()) * 0.5, 1.0);
     float k = clamp(length(point) / reach, 0.0, 1.0);
@@ -771,6 +822,7 @@ def register_motion_effects() -> None:
                 TrackSpec("zoom_y", "縦の倍率", 0, 1000, 100, unit="%"),
                 _interval(),
                 _seed(),
+                *_pivot_specs(),
             ),
             fragment_shader=_RANDOM_ZOOM,
         ),
@@ -785,6 +837,7 @@ def register_motion_effects() -> None:
                 CheckSpec("three_d", "立体", False),
                 _interval(),
                 _seed(),
+                *_pivot_specs(),
             ),
             fragment_shader=_RANDOM_ROTATE,
         ),
@@ -814,6 +867,7 @@ def register_motion_effects() -> None:
                 TrackSpec("interval", "周期", 0.01, 60, 1, step=0.01, unit="秒"),
                 CheckSpec("centering", "元の角度を挟んで往復", True),
                 *_easing(),
+                *_pivot_specs(),
             ),
             fragment_shader=_REPEAT_ROTATE,
         ),
@@ -851,30 +905,7 @@ def register_motion_effects() -> None:
                 TrackSpec("zoom", "隠れたときの拡大率", 0, 1000, 0, unit="%"),
                 TrackSpec("zoom_x", "横の割合", 0, 1000, 100, unit="%"),
                 TrackSpec("zoom_y", "縦の割合", 0, 1000, 100, unit="%"),
-                TrackSpec("anchor_x", "中心 X", -4000, 4000, 0, step=1, unit="px"),
-                TrackSpec("anchor_y", "中心 Y", -4000, 4000, 0, step=1, unit="px"),
-                SelectSpec(
-                    "pivot_h",
-                    "中心の横",
-                    (
-                        ("screen", "画面の中央"),
-                        ("left", "絵の左端"),
-                        ("right", "絵の右端"),
-                        ("center", "絵の中央"),
-                    ),
-                    "center",
-                ),
-                SelectSpec(
-                    "pivot_v",
-                    "中心の縦",
-                    (
-                        ("screen", "画面の中央"),
-                        ("top", "絵の上端"),
-                        ("bottom", "絵の下端"),
-                        ("middle", "絵の中央"),
-                    ),
-                    "middle",
-                ),
+                *_pivot_specs(),
                 *_in_out_specs(),
             ),
             fragment_shader=_INOUT_ZOOM,
@@ -912,6 +943,7 @@ def register_motion_effects() -> None:
                 ),
                 CheckSpec("three_d", "立体", True),
                 *_in_out_specs(),
+                *_pivot_specs(),
             ),
             fragment_shader=_INOUT_GETUP,
         ),
@@ -990,6 +1022,7 @@ def register_motion_effects() -> None:
             parameters=(
                 TrackSpec("angle", "角度", -3600, 3600, 90, unit="度"),
                 CheckSpec("outer", "外側ほど回す", False),
+                *_pivot_specs(),
             ),
             fragment_shader=_SPIRAL,
         ),

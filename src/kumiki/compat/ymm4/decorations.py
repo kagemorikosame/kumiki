@@ -190,12 +190,8 @@ def map_video_effects(
             if name not in mapped_names():
                 report.note_missing(f"YMM4 の映像エフェクト: {name or '種類不明'}")
             continue
-        if pivot is not None:
-            if built.kind in ("transform", "inout_zoom"):
-                built = with_pivot(built, pivot)
-            elif built.kind in _PIVOTED_KINDS:
-                # 支点を受け取れない回転と拡大 中央で回るので見た目が変わりうる
-                report.note_missing(f"YMM4 の CenterPointEffect（{name} の支点）")
+        if pivot is not None and built.kind in _PIVOTED_KINDS:
+            built = with_pivot(built, pivot)
         result.effects.append(built)
 
     _place_borders(borders, result)
@@ -203,9 +199,11 @@ def map_video_effects(
     return result
 
 
-#: 支点で見た目が変わるが、まだ支点を受け取れないエフェクト
+#: 支点（中心点エフェクト）を受け取れる変形
 _PIVOTED_KINDS = frozenset(
     {
+        "transform",
+        "inout_zoom",
         "random_rotate",
         "random_zoom",
         "repeat_rotate",

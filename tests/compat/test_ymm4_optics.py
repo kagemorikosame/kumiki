@@ -203,7 +203,12 @@ class TestTiming:
 class TestWipeAndKey:
     @pytest.mark.parametrize(
         ("name", "pattern"),
-        [("ワイプ横", "horizontal"), ("円", "circle"), ("四角", "square"), ("時計回り", "clockwise")],
+        [
+            ("ワイプ横", "horizontal"),
+            ("円", "circle"),
+            ("四角", "square"),
+            ("時計回り", "clockwise"),
+        ],
     )
     def test_the_bundled_wipe_images_become_patterns(self, name: str, pattern: str) -> None:
         effect, report = _map(
@@ -237,7 +242,9 @@ class TestWipeAndKey:
             OutputForeground=True,
         )
         assert effect.kind == "directional_key"
-        assert effect.params["background"][0] == pytest.approx(0x28 / 255)
+        background = effect.params["background"]
+        assert isinstance(background, tuple)
+        assert background[0] == pytest.approx(0x28 / 255)
         assert effect.params["output_foreground"] is True
 
 

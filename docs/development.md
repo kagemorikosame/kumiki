@@ -164,6 +164,30 @@ AviUtl / YMM4 の読み込みは、**実際に配布されているファイル�
 **配布物そのものはリポジトリに入れない** 作者ごとに再配布の条件が違う
 `tests/fixtures/ymm4` に置けばテストが拾い、無ければ飛ばす
 
+### 値の意味は本体に描かせて読む
+
+JSON のキーの名前から意味を推し量ると必ず外れる（`InOutZoom` の `Value` は
+「縮める量」ではなく「隠れたときの大きさ」だった） 2 つの道具でそれを潰す
+
+- `tools/ymm4_probes.py` … 値を 1 つずつ変えたテンプレートを作る
+  （`第 1〜5 弾` を引数で選ぶ: `first` `second` `third` `fourth` `fifth`）
+- `tools/ymm4_compare.py` … テンプレートを時間差で並べた `.ymmp` を作り（`build`）、
+  YMM4 が書き出した動画と Kumiki の絵をフレームごとに比べる（`compare`）
+
+```
+.venv\Scripts\python.exe tools\ymm4_probes.py .work\probe5\probes.ymmt fifth
+.venv\Scripts\python.exe tools\ymm4_compare.py --work .work\probe5 build .work\probe5\probes.ymmt
+:: YMM4 で .work\probe5\compare.ymmp を開き、.work\probe5\ymm4.mp4 へ書き出す
+.venv\Scripts\python.exe tools\ymm4_compare.py --work .work\probe5 compare
+```
+
+`compare` は `report.html` と、`ymm4 | Kumiki | 差` を並べた画像を `images/` に書く
+差は 480x270 に縮めた平均なので、細い縁の違いは数に出にくい 数字だけでなく絵も見る
+
+YMM4 が読み込みで断った設定（列挙型の名前の間違いなど）は、ダイアログが別の窓に
+隠れて見えないことがある そのときは YMM4 を前に出して Ctrl+C を押すと、
+エラーの文面がクリップボードに入る
+
 ---
 
 ## 6. Git の使い方

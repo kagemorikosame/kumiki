@@ -511,8 +511,8 @@ class TestVideoEffects:
         result = map_video_effects([effect], CompatibilityReport(), length=30)
         assert value_at(result.effects[0].params["range_y"]) == -20.0
 
-    def test_a_pivot_that_cannot_be_passed_on_is_recorded(self) -> None:
-        # 中央で回ってしまう分を記録しないと、見た目の違いが互換の記録から漏れる
+    def test_the_pivot_reaches_the_effects_behind_it(self) -> None:
+        # 中心点は後ろの回転や拡大の支点になる 渡らないと絵の中央で回る
         report = CompatibilityReport()
         centre = {
             "$type": "YukkuriMovieMaker.Project.Effects.CenterPointEffect, YukkuriMovieMaker",
@@ -523,8 +523,9 @@ class TestVideoEffects:
             "$type": "YukkuriMovieMaker.Project.Effects.RepeatRotateEffect, YukkuriMovieMaker",
             "IsEnabled": True,
         }
-        map_video_effects([centre, spin], report, length=30)
-        assert any("CenterPointEffect" in line for line in report.lines())
+        (mapped,) = map_video_effects([centre, spin], report, length=30).effects
+        assert not report.lines()
+        assert mapped.params["pivot_h"] == "left"
 
     def test_a_count_that_is_not_a_number_is_recorded(self) -> None:
         # int(NaN) の例外で、同じアイテムの後ろのエフェクトまで読めなくなる
