@@ -159,8 +159,18 @@ def _templates_of(document: Any, path: Path) -> list[ItemTemplate]:
     """包み方の違いを吸収して、テンプレートの列を取り出す"""
     if isinstance(document, dict):
         catalogued = document.get("ItemTemplates")
-        if isinstance(catalogued, list):
-            built = [_template_of(entry) for entry in catalogued if isinstance(entry, dict)]
+        effect_templates = document.get("VideoEffectTemplates")
+        if isinstance(catalogued, list) or isinstance(effect_templates, list):
+            built = [
+                _template_of(entry)
+                for entry in (catalogued if isinstance(catalogued, list) else [])
+                if isinstance(entry, dict)
+            ]
+            built.extend(
+                _effect_template_of(entry)
+                for entry in (effect_templates if isinstance(effect_templates, list) else [])
+                if isinstance(entry, dict)
+            )
             found = [item for item in built if item.items]
             if found:
                 return found
@@ -185,6 +195,26 @@ def _template_of(entry: dict[str, Any]) -> ItemTemplate:
         if isinstance(items, list)
         else (),
     )
+
+
+#: 映像エフェクトのテンプレートを包むアイテム エフェクトだけを持つグループと同じ扱いになる
+_EFFECT_HOLDER = "YukkuriMovieMaker.Project.Items.GroupItem, YukkuriMovieMaker"
+
+
+def _effect_template_of(entry: dict[str, Any]) -> ItemTemplate:
+    """映像エフェクトのテンプレート（``VideoEffectTemplates``）を 1 本読む
+
+    アイテムを持たず、エフェクトの並びだけが入っている 置くものではなく、既にある
+    クリップへ着せて使う エフェクトだけを持つグループとして包めば、アイテムの
+    テンプレートと同じ道（:func:`map_template`）で読める 包まずに飛ばすと、
+    あおもや式のエフェクト集 15 本が棚に並ばず、読めないことにも気付けなかった
+    """
+    name = str(entry.get("Name") or "")
+    effects = entry.get("Effects")
+    if not isinstance(effects, list) or not effects:
+        return ItemTemplate(name=name)
+    holder = {"$type": _EFFECT_HOLDER, "VideoEffects": effects, "Length": 1}
+    return ItemTemplate(name=name, path=("映像エフェクト", name), items=(holder,))
 
 
 def _bare_items(document: Any) -> list[dict[str, Any]]:
