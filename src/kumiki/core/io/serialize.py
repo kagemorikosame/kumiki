@@ -434,6 +434,7 @@ def _clip_to_json(clip: Clip) -> dict[str, Any]:
         "link_group": clip.link_group,
         "scene_id": clip.scene_id,
         "group_id": clip.group_id,
+        "clip_to_below": clip.clip_to_below,
         "enabled": clip.enabled,
         "effects": [effect_to_json(e) for e in clip.effects],
     }
@@ -473,6 +474,7 @@ def _clip_from_json(raw: object) -> Clip:
         link_group=GroupId(link_group) if link_group is not None else None,
         scene_id=SceneId(scene_id) if scene_id is not None else None,
         group_id=GroupId(group_id) if group_id is not None else None,
+        clip_to_below=_get_bool(data, "clip_to_below", False),
         enabled=_get_bool(data, "enabled", True),
         id=ClipId(_get_str(data, "id")),
     )

@@ -78,6 +78,9 @@ class Clip:
     #: 下のトラックとの重ね方 値は :class:`~kumiki.engine.gpu.BlendMode` の定数
     #: 文字列で持つのは、プロジェクトファイルに出るものを列挙型に縛らないため
     blend_mode: str = "normal"
+    #: すぐ下に重なっているクリップの形（不透明度）で切り抜く YMM4 の「上のオブジェクトで
+    #: クリッピング」 背景の模様を吹き出しの形だけに見せる、といった使い方をする
+    clip_to_below: bool = False
     #: 映像と音声を連動させるためのグループ 同じ値を持つクリップは一緒に動く
     link_group: GroupId | None = None
     #: 入れ子にしたシーン 素材（``media_id``）とは同時に持てない

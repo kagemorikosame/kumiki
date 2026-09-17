@@ -79,6 +79,13 @@ def source_canvas(
     values = _resolve(definition, source.params, frame)
     if values.get("shape") == "background":
         return width, height
+    if values.get("shape") == "polyline":
+        # 線の図形は点の広がりで見積もる
+        points = polyline_points(str(values.get("points", "")))
+        line = float(values.get("line_width", 0.0))  # type: ignore[arg-type]
+        reach_x = max((abs(x) for x, _ in points), default=0.0) + line
+        reach_y = max((abs(y) for _, y in points), default=0.0) + line
+        values = {**values, "width": reach_x * 2.0, "height": reach_y * 2.0, "line_width": 0.0}
     shape_width = max(1.0, float(values.get("width", 400)))  # type: ignore[arg-type]
     shape_height = max(1.0, float(values.get("height", 400)))  # type: ignore[arg-type]
     line = float(values.get("line_width", 0.0))  # type: ignore[arg-type]
@@ -334,6 +341,9 @@ def _draw_shape(painter: QPainter, values: dict[str, object], width: int, height
         # 大きく広げた絵や、大きさを持たない読み込み元（YMM4 の背景）で隙間が出る
         shape_width = float(width) + abs(float(values.get("pos_x", 0.0))) * 2.0  # type: ignore[arg-type]
         shape_height = float(height) + abs(float(values.get("pos_y", 0.0))) * 2.0  # type: ignore[arg-type]
+    if str(values.get("shape", "rect")) == "polyline":
+        _draw_polyline(painter, values, centre_x, centre_y)
+        return
     rect = QRectF(-shape_width / 2.0, -shape_height / 2.0, shape_width, shape_height)
     path = _shape_path(str(values.get("shape", "rect")), rect, values)
 
@@ -356,6 +366,83 @@ def _draw_shape(painter: QPainter, values: dict[str, object], width: int, height
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.setPen(QPen(color, line_width))
         painter.drawPath(path)
+
+
+def polyline_points(text: str) -> list[tuple[float, float]]:
+    """``"x,y;x,y"`` を点の並びへ 読めない組は飛ばす 座標は中心からの画素で Y は下が正"""
+    points: list[tuple[float, float]] = []
+    for pair in text.split(";"):
+        parts = pair.split(",")
+        if len(parts) != 2:
+            continue
+        try:
+            x, y = float(parts[0]), float(parts[1])
+        except ValueError:
+            continue
+        if np.isfinite(x) and np.isfinite(y):
+            points.append((x, y))
+    return points
+
+
+def _polyline_path(values: dict[str, object], centre_x: float, centre_y: float) -> QPainterPath:
+    points = [
+        (centre_x + x, centre_y + y) for x, y in polyline_points(str(values.get("points", "")))
+    ]
+    path = QPainterPath()
+    if len(points) < 2:
+        return path
+    closed = bool(values.get("closed", False))
+    path.moveTo(*points[0])
+    if str(values.get("line_type", "straight")) == "quadratic" and len(points) >= 3:
+        # 2 次ベジェ 点を 1 つおきに制御点として読む（YMM4 の QuadraticBezier）
+        # 閉じるときは始点へ戻る曲線にする
+        sequence = [*points, points[0]] if closed else points
+        index = 1
+        while index + 1 < len(sequence):
+            control, end = sequence[index], sequence[index + 1]
+            path.quadTo(control[0], control[1], end[0], end[1])
+            index += 2
+        if index < len(sequence):
+            path.lineTo(*sequence[index])
+    else:
+        for point in points[1:]:
+            path.lineTo(*point)
+    if closed:
+        path.closeSubpath()
+    return path
+
+
+def _draw_polyline(
+    painter: QPainter, values: dict[str, object], centre_x: float, centre_y: float
+) -> None:
+    """線の図形 閉じていれば中を塗ってから線を引く 端と角は丸める（配布物はすべて丸）"""
+    path = _polyline_path(values, centre_x, centre_y)
+    if path.isEmpty():
+        return
+    if bool(values.get("closed", False)):
+        fill = _color(values.get("fill_color"))
+        if fill.alpha() > 0:
+            painter.fillPath(path, fill)
+    width = float(values.get("line_width", 0.0))  # type: ignore[arg-type]
+    if width <= 0:
+        return
+    pen = QPen(_color(values.get("color")), width)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    dashes = [float(v) for v in str(values.get("dash", "")).split(",") if _is_number(v)]
+    if len(dashes) >= 2 and all(v >= 0 for v in dashes) and sum(dashes) > 0:
+        # 破線の長さは線の太さを 1 とする割合（Qt も YMM4 も同じ決まり）
+        pen.setDashPattern(dashes)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.setPen(pen)
+    painter.drawPath(path)
+
+
+def _is_number(text: str) -> bool:
+    try:
+        return bool(np.isfinite(float(text)))
+    except ValueError:
+        return False
 
 
 def _shape_path(kind: str, rect: QRectF, values: dict[str, object]) -> QPainterPath:

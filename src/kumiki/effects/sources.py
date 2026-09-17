@@ -115,6 +115,7 @@ SHAPE = SourceDefinition(
                 ("fan", "扇"),
                 ("arrow", "矢印"),
                 ("superformula", "スーパーフォーミュラ"),
+                ("polyline", "線"),
             ),
             "rect",
         ),
@@ -129,6 +130,13 @@ SHAPE = SourceDefinition(
         TrackSpec("bar_thickness", "矢印の軸の太さ", 0, 1000, 50, unit="%"),
         TrackSpec("formula_m", "スーパーフォーミュラ M", 0, 100, 4, step=0.1),
         TrackSpec("formula_n", "スーパーフォーミュラ N", 0.05, 100, 1, step=0.05),
+        TextSpec("points", "線の点（x,y;x,y 中心から、下が正）", "", multiline=False),
+        SelectSpec(
+            "line_type", "線の種類", (("straight", "直線"), ("quadratic", "2 次ベジェ")), "straight"
+        ),
+        CheckSpec("closed", "線を閉じる", False),
+        ColorSpec("fill_color", "線の中の色", (1.0, 1.0, 1.0, 0.0)),
+        TextSpec("dash", "破線（線の太さに対する長さ、カンマ区切り）", "", multiline=False),
         TrackSpec("pos_x", "X", -4000, 4000, 0, step=1, unit="px"),
         TrackSpec("pos_y", "Y", -4000, 4000, 0, step=1, unit="px"),
         TrackSpec("rotation", "回転", -3600, 3600, 0, unit="度"),

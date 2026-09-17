@@ -137,6 +137,9 @@ class BlendMode:
     SUBTRACT = "subtract"
 
     ALL = (NORMAL, ADD, SUBTRACT, MULTIPLY, SCREEN, OVERLAY, LIGHTEN, DARKEN)
+    #: 描いた絵の不透明度で、下の絵を切り抜く（色は使わない） 選べる合成ではなく、
+    #: クリップを下のクリップの形で切り抜くときにレンダラが使う
+    MASK = "mask"
 
 
 #: シェーダで混ぜる合成と、シェーダに渡す番号
@@ -591,6 +594,10 @@ class Compositor:
             program.release()
 
     def _set_blend(self, mode: str) -> None:
+        if mode == BlendMode.MASK:
+            # 色も不透明度も、描いた絵の不透明度を掛けるだけ
+            GL.glBlendFuncSeparate(GL.GL_ZERO, GL.GL_SRC_ALPHA, GL.GL_ZERO, GL.GL_SRC_ALPHA)
+            return
         source, destination = _BLEND_FUNCS.get(mode, _BLEND_FUNCS[BlendMode.NORMAL])
         GL.glBlendFuncSeparate(source, destination, GL.GL_ONE, GL.GL_ONE_MINUS_SRC_ALPHA)
 

@@ -19,6 +19,7 @@ from kumiki.core.model import Clip, Effect, MediaId, Project, Timeline, Track, T
 from kumiki.core.timebase import FrameRate, seconds_to_frame
 from kumiki.engine.decode import ProbeError, VideoDecoder
 from kumiki.engine.gpu import (
+    BlendMode,
     Compositor,
     Corners,
     EffectProcessor,
@@ -156,6 +157,8 @@ class FrameRenderer:
         self._grab: Framebuffer | None = None
         #: 入れ子のシーンを描く合成先 深さごとに 1 つ 使うまで作らない
         self._nested: dict[int, Compositor] = {}
+        #: クリップを下のクリップの形で切り抜くときに使う合成先（役目と深さごと）
+        self._layers: dict[tuple[str, int], Compositor] = {}
         self._closed = False
 
     @property
@@ -211,11 +214,24 @@ class FrameRenderer:
     def _compose_timeline(self, timeline: Timeline, frame: int, *, depth: int) -> None:
         """1 本のタイムラインを、いまの合成先へ重ねる シーンの入れ子でも同じ道を通る"""
         rate = self._project.rate
-        for track in timeline.active_tracks(TrackKind.VIDEO):
-            clip = track.clip_at(frame)
-            if clip is None or not clip.enabled:
-                continue
-            self._draw_clip(track, clip, frame, rate, depth)
+        visible = [
+            (track, clip)
+            for track in timeline.active_tracks(TrackKind.VIDEO)
+            if (clip := track.clip_at(frame)) is not None and clip.enabled
+        ]
+        below: Compositor | None = None
+        for index, (track, clip) in enumerate(visible):
+            if clip.clip_to_below:
+                self._draw_clipped(track, clip, frame, rate, depth, below)
+            else:
+                self._draw_clip(track, clip, frame, rate, depth)
+            above = visible[index + 1][1] if index + 1 < len(visible) else None
+            # すぐ上のクリップがこのクリップの形で切り抜くなら、形を取っておく
+            below = (
+                self._capture(track, clip, frame, rate, depth)
+                if above is not None and above.clip_to_below
+                else None
+            )
 
     def render(self, frame: int) -> np.ndarray:
         """``frame`` の合成結果を sRGB の ``(高さ, 幅, 4)`` uint8 で返す
@@ -241,9 +257,10 @@ class FrameRenderer:
             self._effects.release()
             if self._grab is not None:
                 self._grab.release()
-            for nested in self._nested.values():
+            for nested in (*self._nested.values(), *self._layers.values()):
                 nested.release()
             self._nested.clear()
+            self._layers.clear()
             self._compositor.release()
         if self._owns_context:
             self._context.release()
@@ -306,6 +323,60 @@ class FrameRenderer:
             flip=False,
             blend=clip.blend_mode,
         )
+
+    def _layer(self, role: str, depth: int) -> Compositor:
+        """クリップ 1 本ぶんを描く透明な合成先 役目と入れ子の深さごとに使い回す"""
+        width, height = self._compositor.width, self._compositor.height
+        key = (role, depth)
+        layer = self._layers.get(key)
+        if layer is None:
+            layer = Compositor(width, height)
+            self._layers[key] = layer
+        layer.resize(width, height)
+        return layer
+
+    def _draw_into(
+        self, layer: Compositor, track: Track, clip: Clip, frame: int, rate: FrameRate, depth: int
+    ) -> None:
+        outer = self._compositor
+        self._compositor = layer
+        try:
+            layer.begin((0.0, 0.0, 0.0, 0.0))
+            self._draw_clip(track, clip, frame, rate, depth)
+        finally:
+            self._compositor = outer
+
+    def _capture(
+        self, track: Track, clip: Clip, frame: int, rate: FrameRate, depth: int
+    ) -> Compositor:
+        """上のクリップに切り抜きの形として使わせるため、このクリップだけを別に描く"""
+        layer = self._layer("below", depth)
+        self._draw_into(layer, track, clip, frame, rate, depth)
+        return layer
+
+    def _draw_clipped(
+        self,
+        track: Track,
+        clip: Clip,
+        frame: int,
+        rate: FrameRate,
+        depth: int,
+        below: Compositor | None,
+    ) -> None:
+        """すぐ下のクリップの形で切り抜いて重ねる（YMM4 の「上のオブジェクトでクリッピング」）
+
+        下にクリップが無ければ、切り抜く形が無いので何も見えない 合成モードは、切り抜く前の
+        透明な合成先で当てる（下の絵とは通常で重ねる）
+        """
+        if below is None:
+            return
+        layer = self._layer("clipped", depth)
+        self._draw_into(layer, track, clip, frame, rate, depth)
+        full = Placement(0.0, 0.0, float(layer.width), float(layer.height))
+        layer.draw_handle(
+            below.canvas.color, full, flip=False, blend=BlendMode.MASK, premultiplied=True
+        )
+        self._compositor.draw_handle(layer.canvas.color, full, flip=False, premultiplied=True)
 
     def _draw_oversized(
         self,

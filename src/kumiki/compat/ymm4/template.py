@@ -313,6 +313,10 @@ def _map_item(item: dict[str, Any], log: CompatibilityReport) -> MappedObject | 
     if source is None and not media_path:
         return None
 
+    if item.get("IsInverted") is True:
+        log.note_missing("YMM4 のアイテムの反転")
+    if item.get("IsAlwaysOnTop") is True or item.get("IsZOrderEnabled") is True:
+        log.note_missing("YMM4 のアイテムの重なり順の設定（常に手前・Z 順）")
     effects: list[Effect] = []
     if source is not None and source.kind == "shape":
         # 図形のブラシが単色でなければ、白で描いた形を模様で塗る
@@ -353,6 +357,8 @@ def _map_item(item: dict[str, Any], log: CompatibilityReport) -> MappedObject | 
                 item.get("Opacity"), 100.0, length=length, keyframes=keyframes, scale=0.01
             ),
             blend_mode=_blend_of(item, log),
+            # 上のオブジェクト（すぐ下に描かれる層）の形で切り抜く
+            clip_to_below=item.get("IsClippingWithObjectAbove") is True,
         ),
         # YMM4 のレイヤーは 0 始まり こちらのトラックは 1 始まり
         layer=max(1, int(number(item.get("Layer"), 0.0)) + 1),
@@ -452,6 +458,8 @@ def _shape(item: dict[str, Any], log: CompatibilityReport) -> GeneratedSource:
     # 種類はプラグイン名に入っている（``BackgroundShapePlugin`` など）
     raw = str(item.get("ShapeType2") or item.get("ShapeType") or item.get("Type") or "")
     plugin = raw.partition(",")[0].rpartition(".")[2]
+    if plugin.startswith("LineShape"):
+        return _line(parameter, log)
     shape = next(
         (value for key, value in _SHAPES.items() if plugin.startswith(key)),
         None,
@@ -514,6 +522,63 @@ def _shape(item: dict[str, Any], log: CompatibilityReport) -> GeneratedSource:
         params["shape"] = "rounded"
         params["corner_radius"] = track("Round", 0.0)
     return GeneratedSource(kind="shape", params=params)
+
+
+#: 破線の種類と、線の太さを 1 とした長さの並び（Direct2D の決まった模様）
+_DASHES = {
+    "Solid": "",
+    "Dash": "2,2",
+    "Dot": "0,2",
+    "DashDot": "2,2,0,2",
+    "DashDotDot": "2,2,0,2,0,2",
+}
+
+
+def _line(parameter: dict[str, Any], log: CompatibilityReport) -> GeneratedSource:
+    """線の図形 点は中心からの画素で Y は下が正 閉じていれば中を塗る"""
+    points: list[str] = []
+    for point in parameter.get("Points") or []:
+        if not isinstance(point, dict):
+            continue
+        x_value = animated(point.get("X"), 0.0)
+        y_value = animated(point.get("Y"), 0.0)
+        if x_value.is_animated or y_value.is_animated:
+            log.note_missing("YMM4 の線の図形の点の動き（先頭の位置で描いた）")
+        x = x_value.keyframes[0].value if x_value.is_animated else x_value.static
+        y = y_value.keyframes[0].value if y_value.is_animated else y_value.static
+        points.append(f"{x:g},{y:g}")
+    style = str(parameter.get("DashStyle") or "Solid")
+    dash = _DASHES.get(style)
+    if dash is None:
+        dash = str(parameter.get("DashPattern") or "")
+    if (
+        number(parameter.get("LengthRate"), 100.0) != 100.0
+        or animated(parameter.get("LengthRate"), 100.0).is_animated
+    ):
+        log.note_missing("YMM4 の線の図形の長さの割合（全体を描いた）")
+    fill = parameter.get("FillBrush")
+    fill_colour = (
+        brush_colour(fill, (1.0, 1.0, 1.0, 0.0)) if is_solid(fill) else (1.0, 1.0, 1.0, 1.0)
+    )
+    if not is_solid(fill):
+        log.note_missing("YMM4 の線の図形の塗りのブラシ（単色以外は白で塗った）")
+    return GeneratedSource(
+        kind="shape",
+        params={
+            "shape": "polyline",
+            "points": ";".join(points),
+            "line_type": "quadratic"
+            if str(parameter.get("LineType") or "") == "QuadraticBezier"
+            else "straight",
+            "closed": parameter.get("IsClosed") is True,
+            "fill_color": fill_colour,
+            "color": brush_colour(parameter.get("Brush"), (1.0, 1.0, 1.0, 1.0)),
+            "line_width": AnimatedValue(
+                number(animated(parameter.get("Thickness"), 1.0).static, 1.0)
+            ),
+            "dash": dash,
+        },
+    )
 
 
 def _peak(value: AnimatedValue) -> float:
