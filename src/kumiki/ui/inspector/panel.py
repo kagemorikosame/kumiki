@@ -238,6 +238,12 @@ class InspectorPanel(QWidget):
 
         for index, effect in enumerate(clip.effects):
             self._body_layout.addWidget(self._build_effect_section(clip, effect, index))
+        # 場面切り替えは、前の場面（上のエフェクト）と後の場面で別に積む
+        if clip.source is not None and clip.source.kind == "transition":
+            for index, effect in enumerate(clip.after_effects):
+                self._body_layout.addWidget(
+                    self._build_effect_section(clip, effect, index, after=True)
+                )
 
         self._body_layout.addStretch(1)
         self._refresh_animated()
@@ -292,11 +298,21 @@ class InspectorPanel(QWidget):
             )
         return section
 
-    def _build_effect_section(self, clip: Clip, effect: Effect, index: int) -> QWidget:
+    def _build_effect_section(
+        self, clip: Clip, effect: Effect, index: int, *, after: bool = False
+    ) -> QWidget:
         definition = registry.get(effect.kind)
         label = definition.label if definition is not None else f"{effect.kind}（未知）"
+        if after:
+            label = f"{label}（後の場面）"
+        stack = clip.after_effects if after else clip.effects
         section = _Section(
-            label, effect=effect, clip_id=clip.id, index=index, count=len(clip.effects)
+            label,
+            effect=effect,
+            clip_id=clip.id,
+            index=index,
+            count=len(stack),
+            after=after,
         )
         section.action_requested.connect(self._emit)
 
@@ -307,7 +323,7 @@ class InspectorPanel(QWidget):
             return section
 
         for spec in definition.parameters:
-            path = ParamPath.of_effect(clip.id, effect.id, spec.name)
+            path = ParamPath.of_effect(clip.id, effect.id, spec.name, after=after)
             value = effect.params.get(spec.name)
             section.add_row(
                 spec.label, self._make_editor(spec, path, value), self._keyframe_button(path, value)
@@ -389,20 +405,31 @@ class InspectorPanel(QWidget):
             return
 
         menu = QMenu(self)
-        submenus: dict[str, QMenu] = {}
-        for definition in registry.all():
-            submenu = submenus.get(definition.category)
-            if submenu is None:
-                submenu = menu.addMenu(definition.category)
-                submenus[definition.category] = submenu
-            action = submenu.addAction(definition.label)
-            action.setData(definition.kind)
+        # 場面切り替えは、前の場面と後の場面で積む先が違う
+        transition = clip.source is not None and clip.source.kind == "transition"
+        roots: dict[bool, QMenu] = {False: menu}
+        if transition:
+            roots = {False: menu.addMenu("前の場面へ"), True: menu.addMenu("後の場面へ")}
+        submenus: dict[tuple[bool, str], QMenu] = {}
+        for after, root in roots.items():
+            for definition in registry.all():
+                submenu = submenus.get((after, definition.category))
+                if submenu is None:
+                    submenu = root.addMenu(definition.category)
+                    submenus[(after, definition.category)] = submenu
+                action = submenu.addAction(definition.label)
+                action.setData((definition.kind, after))
 
         chosen = menu.exec(self._add_button.mapToGlobal(self._add_button.rect().bottomLeft()))
         if chosen is None:
             return
-        definition = registry.require(str(chosen.data()))
-        self._emit(AddEffect(clip.id, definition.create()), f"{definition.label}を追加")
+        kind, after = chosen.data()
+        definition = registry.require(str(kind))
+        where = "（後の場面）" if after else ""
+        self._emit(
+            AddEffect(clip.id, definition.create(), after=bool(after)),
+            f"{definition.label}を追加{where}",
+        )
 
     def _show_preset_menu(self) -> None:
         """プリセットの保存と適用
@@ -519,6 +546,7 @@ class _Section(QFrame):
         clip_id: ClipId | None = None,
         index: int = 0,
         count: int = 0,
+        after: bool = False,
     ) -> None:
         super().__init__()
         self.setFrameShape(QFrame.Shape.StyledPanel)
@@ -541,6 +569,7 @@ class _Section(QFrame):
         header.addWidget(label)
         header.addStretch(1)
 
+        self._after = after
         if effect is not None and clip_id is not None:
             header.addWidget(self._toggle(effect, clip_id))
             header.addWidget(self._move(effect, clip_id, index - 1, "▲", index > 0))
@@ -581,7 +610,7 @@ class _Section(QFrame):
         button.setAutoRaise(True)
         button.toggled.connect(
             lambda state: self.action_requested.emit(
-                SetEffectEnabled(clip_id, effect.id, bool(state))
+                SetEffectEnabled(clip_id, effect.id, bool(state), after=self._after)
             )
         )
         return button
@@ -595,7 +624,9 @@ class _Section(QFrame):
         button.setAutoRaise(True)
         button.setEnabled(enabled)
         button.clicked.connect(
-            lambda: self.action_requested.emit(MoveEffect(clip_id, effect.id, index))
+            lambda: self.action_requested.emit(
+                MoveEffect(clip_id, effect.id, index, after=self._after)
+            )
         )
         return button
 
@@ -604,5 +635,7 @@ class _Section(QFrame):
         button.setText("✕")
         button.setToolTip("このエフェクトを外す")
         button.setAutoRaise(True)
-        button.clicked.connect(lambda: self.action_requested.emit(RemoveEffect(clip_id, effect.id)))
+        button.clicked.connect(
+            lambda: self.action_requested.emit(RemoveEffect(clip_id, effect.id, after=self._after))
+        )
         return button
