@@ -15,7 +15,6 @@ import pytest
 
 from kumiki.core.io import ProjectFileError, project_from_dict, project_to_dict
 from kumiki.core.model import Project
-from tests.core.test_io import rich_project  # noqa: F401 - fixture を使い回す
 
 #: 値を差し替えるときの候補 型違い、極端な数、壊れた文字、入れ子の取り違え
 _BROKEN_VALUES: tuple[Any, ...] = (
@@ -92,6 +91,6 @@ def test_broken_files_fail_only_as_file_errors(source: dict[str, Any]) -> None:
             project_from_dict(data)
         except ProjectFileError:
             continue
-        except Exception as exc:  # noqa: BLE001 - 漏れた例外を全部集めて一度に見せる
+        except Exception as exc:
             leaks.append(f"{type(exc).__name__}: {exc}")
     assert leaks == [], f"{len(leaks)} 件漏れた 例: {sorted(set(leaks))[:5]}"
