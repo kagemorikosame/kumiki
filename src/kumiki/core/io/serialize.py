@@ -11,6 +11,7 @@ JSON にしているのは、外部ツールと AI エージェントから素�
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import replace
 from fractions import Fraction
@@ -142,7 +143,11 @@ def _get_float(data: dict[str, Any], key: str, default: float) -> float:
     value = data.get(key, default)
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise ProjectFileError(f"{key} が数値ではない: {value!r}")
-    return float(value)
+    result = float(value)
+    if not math.isfinite(result):
+        # JSON の読み込みは NaN と Infinity を受けてしまう 通すと描画や音の計算が壊れる
+        raise ProjectFileError(f"{key} が有限の数ではない: {value!r}")
+    return result
 
 
 def _get_list(data: dict[str, Any], key: str) -> list[Any]:
@@ -210,7 +215,10 @@ def _param_from_json(raw: object) -> ParamValue:
         keyframes = tuple(_keyframe_from_json(k) for k in _get_list(raw, "keyframes"))
         return AnimatedValue(static=_get_float(raw, "static", 0.0), keyframes=keyframes)
     if isinstance(raw, list):
-        return tuple(float(v) for v in raw)
+        values = tuple(float(v) for v in raw)
+        if not all(math.isfinite(v) for v in values):
+            raise ProjectFileError(f"パラメータに有限でない数がある: {raw!r}")
+        return values
     if isinstance(raw, bool | int | str):
         return raw
     raise ProjectFileError(f"パラメータとして読めない値: {raw!r}")
@@ -573,7 +581,31 @@ def project_to_dict(project: Project) -> dict[str, Any]:
 
 
 def project_from_dict(data: object) -> Project:
-    """:func:`project_to_dict` の出力からプロジェクトを復元する"""
+    """:func:`project_to_dict` の出力からプロジェクトを復元する
+
+    壊れた値はどの段で見つかっても :class:`ProjectFileError` にして返す 型を 1 つずつ
+    確かめる検査をすり抜けた値は、モデルの検査（ValueError）や数の変換（TypeError
+    など）で止まる 開く側は ProjectFileError しか受けないので、素のまま漏らすと
+    壊れたファイル 1 つで起動ごと落ちる
+    """
+    try:
+        return _project_from_dict(data)
+    except ProjectFileError:
+        raise
+    except (
+        ValueError,
+        TypeError,
+        KeyError,
+        IndexError,
+        AttributeError,
+        OverflowError,
+        ZeroDivisionError,
+        RecursionError,
+    ) as exc:
+        raise ProjectFileError(f"壊れた値がある: {exc}") from exc
+
+
+def _project_from_dict(data: object) -> Project:
     root = _require(data, "プロジェクト")
 
     format_name = _get_str(root, "format")
@@ -659,7 +691,7 @@ def load_project(path: Path) -> Project:
         raise ProjectFileError(f"プロジェクトファイルを開けない: {path}") from exc
     try:
         data = json.loads(text)
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, RecursionError) as exc:
         raise ProjectFileError(f"JSON として読めない: {path} ({exc})") from exc
 
     project = project_from_dict(data)

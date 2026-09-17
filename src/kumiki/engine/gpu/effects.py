@@ -9,13 +9,14 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from OpenGL import GL
 
-from kumiki.core.model import AnimatedValue, Effect, ParamValue
+from kumiki.core.model import Effect, ParamValue
 from kumiki.effects import EffectDefinition, registry
-from kumiki.effects.spec import ColorSpec, SelectSpec
+from kumiki.effects.spec import CheckSpec, ColorSpec, SelectSpec, TrackSpec, ValueSpec
 from kumiki.engine.gpu.glutil import (
     FULL_RECT,
     VERTEX_SHADER,
@@ -205,14 +206,23 @@ class EffectProcessor:
     def _set_parameters(
         self, program: Program, definition: EffectDefinition, effect: Effect, frame: int
     ) -> None:
-        """パラメータを uniform へ 名前はそのまま使う"""
+        """パラメータを uniform へ 名前はそのまま使う
+
+        値は仕様の型へ寄せてから渡す ファイルから読んだ値は型までしか確かめて
+        いないので、数のはずの所に文字が、整数の所に 32 ビットを超える数が入りうる
+        そのまま渡すと GL の呼び出しが例外を投げ、プレビューも書き出しも止まる
+        """
         for spec in definition.parameters:
             value: ParamValue | None = effect.params.get(spec.name)
             if value is None:
                 value = spec.default_value()
 
-            if isinstance(value, AnimatedValue):
-                program.set_float(spec.name, value.at(frame))
+            if isinstance(spec, TrackSpec):
+                animated = spec.coerce(value)
+                number = animated.at(frame)
+                # 範囲では切らない 読み込んだテンプレートは表示の範囲を超える値を
+                # 正しく使っていることがある 壊れた数（NaN や無限大）だけを既定へ戻す
+                program.set_float(spec.name, number if math.isfinite(number) else spec.default)
             elif isinstance(spec, ColorSpec):
                 color = spec.coerce(value)
                 program.set_vec4(
@@ -226,10 +236,10 @@ class EffectProcessor:
                 )
             elif isinstance(spec, SelectSpec):
                 program.set_int(spec.name, spec.index_of(spec.coerce(value)))
-            elif isinstance(value, bool):
-                program.set_bool(spec.name, value)
-            elif isinstance(value, int | float):
-                program.set_int(spec.name, int(value))
+            elif isinstance(spec, CheckSpec):
+                program.set_bool(spec.name, spec.coerce(value))
+            elif isinstance(spec, ValueSpec):
+                program.set_int(spec.name, spec.coerce(value))
 
     def _copy(self, source: Framebuffer, target: Framebuffer) -> None:
         target.bind(clear=(0.0, 0.0, 0.0, 0.0))
