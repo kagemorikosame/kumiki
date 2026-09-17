@@ -471,10 +471,10 @@ class FrameRenderer:
         self, track: Track, clip: Clip, frame: int, rate: FrameRate, depth: int = 0
     ) -> None:
         if clip.scene_id is not None:
-            self._draw_scene(clip, frame, rate, depth)
+            self._draw_scene(track, clip, frame, rate, depth)
             return
         if clip.source is not None and clip.source.kind == "framebuffer":
-            self._draw_framebuffer(clip, frame, rate)
+            self._draw_framebuffer(track, clip, frame, rate, depth)
             return
         image = self._image_for(clip, frame, rate)
         if image is None:
@@ -625,7 +625,9 @@ class FrameRenderer:
         finally:
             self._effects.resize(screen_width, screen_height)
 
-    def _draw_scene(self, clip: Clip, frame: int, rate: FrameRate, depth: int) -> None:
+    def _draw_scene(
+        self, track: Track, clip: Clip, frame: int, rate: FrameRate, depth: int
+    ) -> None:
         """入れ子のシーンを別の合成先に描き、1 本のクリップとして重ねる
 
         シーンの中の時刻は、クリップの ``source_in``（秒）と速度で決まる 素材の
@@ -658,10 +660,13 @@ class FrameRenderer:
             self._compositor = outer
 
         gpu_effects, scripts = split_effects(clip.effects)
-        if scripts:
-            global_report.note_missing("シーンのクリップに積んだ AviUtl スクリプト")
         full = Placement(0.0, 0.0, float(width), float(height))
         opacity = clip.opacity.at(local_frame)
+        if scripts:
+            # スクリプトは CPU の画像を書き換える作り シーンの絵を 1 枚読み戻して渡す
+            # （毎フレームの往復になるので、スクリプトを積んだシーンだけで行う）
+            self._draw_scripted(track, clip, nested.read(), gpu_effects, local_frame, rate, opacity)
+            return
         if not self._effects.has_work(gpu_effects):
             outer.draw_handle(
                 nested.canvas.color,
@@ -683,7 +688,9 @@ class FrameRenderer:
         )
         outer.draw_handle(result.color, full, opacity=opacity, flip=False, blend=clip.blend_mode)
 
-    def _draw_framebuffer(self, clip: Clip, frame: int, rate: FrameRate) -> None:
+    def _draw_framebuffer(
+        self, track: Track, clip: Clip, frame: int, rate: FrameRate, depth: int = 0
+    ) -> None:
         """それまでに重ねた画面を写し取り、エフェクトを掛けて重ねる
 
         キャンバスは描いている最中なので、そのまま読みながら同じキャンバスへ描くことは
@@ -691,13 +698,11 @@ class FrameRenderer:
         いるので、そう伝えて渡す 合成は透明な下地から始まるので、伝えないと半透明の
         縁が暗くなる
 
-        AviUtl スクリプトは掛けない スクリプトは CPU の画像を書き換える作りで、画面を
-        毎フレーム CPU へ読み戻すと再生が追いつかない（積まれていれば記録に残す）
+        AviUtl スクリプトを積んでいれば、写し取った画面を CPU へ読み戻して渡す
+        毎フレームの往復になるので、積んでいるクリップだけで行う
         """
         local_frame = frame - clip.timeline_start
         gpu_effects, scripts = split_effects(clip.effects)
-        if scripts:
-            global_report.note_missing("フレームバッファに積んだ AviUtl スクリプト")
         width, height = self._compositor.width, self._compositor.height
         with self._context:
             if self._grab is None:
@@ -711,6 +716,25 @@ class FrameRenderer:
             # 写し取った画面は黒の上に置いた絵にする YMM4 は何も無い所も不透明な黒として
             # 写すので、反転すると白くなる 透明のまま渡すと反転しても黒のまま残る
             self._compositor.underlay((0.0, 0.0, 0.0, 1.0), target=self._grab)
+            if scripts:
+                grabbed = self._layer("framebuffer", depth)
+                grabbed.begin((0.0, 0.0, 0.0, 0.0))
+                grabbed.draw_handle(
+                    self._grab.color,
+                    Placement(0.0, 0.0, float(width), float(height)),
+                    flip=False,
+                    premultiplied=True,
+                )
+                self._draw_scripted(
+                    track,
+                    clip,
+                    grabbed.read(),
+                    gpu_effects,
+                    local_frame,
+                    rate,
+                    clip.opacity.at(local_frame),
+                )
+                return
             source: Framebuffer = self._grab
             if self._effects.has_work(gpu_effects):
                 source = self._effects.apply(
