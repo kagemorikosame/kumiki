@@ -808,7 +808,12 @@ def _reflection(r: _Reader) -> Effect | None:
         surface_scale=_nested(r, "Lighting").track("SurfaceScale", 10.0),
         profile=heightmap.choice(
             "BevelMode",
-            {"Straight": "straight", "Round": "round", "InvertedRound": "inverted_round"},
+            {
+                "Straight": "straight",
+                "Round": "round",
+                "InvertedRound": "inverted_round",
+                "Step": "step",
+            },
             "straight",
         ),
         thickness=heightmap.track("Thickness", 10.0),

@@ -93,6 +93,7 @@ uniform float cell_height;
 uniform float zoom;
 uniform bool inverted;
 uniform bool pattern_only;
+uniform bool key_only;
 uniform bool relative;
 uniform int noise_kind;
 uniform float noise_strength;
@@ -321,6 +322,13 @@ void main() {
         return;
     }
     vec3 under = to_srgb(base.rgb);
+    if (key_only) {
+        // 目印の色（マゼンタ）に近い所だけを模様に替える 縁の中間色は割合で混ぜる
+        float distance_ = length(under - vec3(1.0, 0.0, 1.0));
+        amount *= clamp(1.0 - distance_ * 3.0, 0.0, 1.0);
+        frag_color = vec4(to_linear(mix(under, paint.rgb, amount)), base.a);
+        return;
+    }
     vec3 rgb = mix(under, blended(under, paint.rgb), amount);
     frag_color = vec4(to_linear(rgb), base.a);
 }
@@ -351,6 +359,7 @@ def register_paint_effects() -> None:
                 SelectSpec("blend", "合成", BLEND_MODES, "normal"),
                 TrackSpec("opacity", "濃さ", 0, 100, 100, unit="%"),
                 CheckSpec("pattern_only", "模様だけで塗る", False),
+                CheckSpec("key_only", "目印の色の所だけ塗る", False),
                 ValueSpec("stops", "色の数", 2, minimum=1, maximum=MAX_STOPS),
                 *_stop_parameters(),
                 SelectSpec("extend", "端の扱い", _EXTEND, "clamp"),

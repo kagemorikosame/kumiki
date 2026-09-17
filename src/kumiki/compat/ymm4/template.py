@@ -295,15 +295,79 @@ def _group_effects(item: dict[str, Any], log: CompatibilityReport) -> list[Effec
     """
     length = max(1, int(number(item.get("Length"), 1.0)))
     keyframes = item.get("KeyFrames")
-    video = map_video_effects(item.get("VideoEffects"), log, length=length, keyframes=keyframes)
+    params, chain, final = _video_chain(item, log, length, keyframes)
 
     outlines: list[Effect] = []
     border = registry.get("border")
-    width = video.params.get("border_width")
+    width = params.get("border_width")
     if border is not None and isinstance(width, AnimatedValue) and width.static > 0:
-        outlines.append(border.create(width=width, color=video.params.get("border_color")))
+        outlines.append(border.create(width=width, color=params.get("border_color")))
 
-    return [*outlines, *video.effects, *_placement(item, length, keyframes, video.pivot)]
+    return [*outlines, *chain, *final]
+
+
+#: 描画を遅らせる印（DrawLazyEffect）の設定と、その場で当てる配置の項目
+_LAZY_PARTS = (
+    ("IsXYZ", ("X", "Y")),
+    ("IsZoom", ("Zoom",)),
+    ("IsRotation", ("Rotation",)),
+)
+_RESTING = {"X": 0.0, "Y": 0.0, "Zoom": 100.0, "Rotation": 0.0}
+
+
+def _video_chain(
+    item: dict[str, Any], log: CompatibilityReport, length: int, keyframes: Any
+) -> tuple[dict[str, ParamValue], list[Effect], list[Effect]]:
+    """映像エフェクトの並びと、最後に当てる配置（反転と位置・拡大・回転）
+
+    YMM4 はエフェクトを掛けた絵を最後に置く ただし描画を遅らせる印があれば、印の場所で
+    印が指す分（位置・拡大・回転）だけを先に当て、残りを最後に当てる（試験で確かめた）
+    """
+    raw = item.get("VideoEffects")
+    entries = raw if isinstance(raw, list) else []
+    lazy = next(
+        (
+            index
+            for index, entry in enumerate(entries)
+            if isinstance(entry, dict)
+            and entry.get("IsEnabled") is not False
+            and type_name(entry) == "DrawLazyEffectEffect"
+        ),
+        None,
+    )
+    flip = _flip(item)
+    if lazy is None:
+        video = map_video_effects(entries, log, length=length, keyframes=keyframes)
+        final = [*flip, *_placement(item, length, keyframes, video.pivot)]
+        return video.params, list(video.effects), final
+
+    marker = entries[lazy]
+    first = map_video_effects(entries[:lazy], log, length=length, keyframes=keyframes)
+    rest = map_video_effects(entries[lazy + 1 :], log, length=length, keyframes=keyframes)
+    early = {key: _RESTING[key] for key in _RESTING}
+    late = dict(item)
+    for flag, keys in _LAZY_PARTS:
+        if marker.get(flag) is True:
+            for key in keys:
+                early[key] = item.get(key, _RESTING[key])
+                late[key] = _RESTING[key]
+    placed_early = _placement(early, length, keyframes, first.pivot)
+    final = [*flip, *_placement(late, length, keyframes, rest.pivot or first.pivot)]
+    params = {**first.params, **rest.params}
+    return params, [*first.effects, *placed_early, *rest.effects], final
+
+
+def _flip(item: dict[str, Any]) -> list[Effect]:
+    """アイテムの反転 YMM4 は左右に裏返してから回す（回す向きは変わらない）"""
+    if item.get("IsInverted") is not True:
+        return []
+    definition = registry.get("flip")
+    return [] if definition is None else [definition.create(horizontal=True, vertical=False)]
+
+
+#: 線の図形の塗りに模様を置くときの目印の色 描いたあと、この色の所だけを模様に替える
+#: 塗りだけに模様を掛けるには、形（線と塗り）の中で塗りの場所を伝える必要がある
+FILL_KEY = (1.0, 0.0, 1.0, 1.0)
 
 
 def _map_item(item: dict[str, Any], log: CompatibilityReport) -> MappedObject | None:
@@ -320,8 +384,6 @@ def _map_item(item: dict[str, Any], log: CompatibilityReport) -> MappedObject | 
     if source is None and not media_path:
         return None
 
-    if item.get("IsInverted") is True:
-        log.note_missing("YMM4 のアイテムの反転")
     if item.get("IsAlwaysOnTop") is True or item.get("IsZOrderEnabled") is True:
         log.note_missing("YMM4 のアイテムの重なり順の設定（常に手前・Z 順）")
     effects: list[Effect] = []
@@ -329,6 +391,7 @@ def _map_item(item: dict[str, Any], log: CompatibilityReport) -> MappedObject | 
         # 図形のブラシが単色でなければ、白で描いた形を模様で塗る
         parameter = item.get("ShapeParameter")
         brush = parameter.get("Brush") if isinstance(parameter, dict) else None
+        fill = parameter.get("FillBrush") if isinstance(parameter, dict) else None
         if not is_solid(brush):
             painted = brush_effect(
                 brush, log, length=length, keyframes=keyframes, pattern_only=True
@@ -336,7 +399,12 @@ def _map_item(item: dict[str, Any], log: CompatibilityReport) -> MappedObject | 
             if painted is not None:
                 source = source.with_param("color", (1.0, 1.0, 1.0, 1.0))
                 effects.append(painted)
-    video = map_video_effects(item.get("VideoEffects"), log, length=length, keyframes=keyframes)
+        if not is_solid(fill) and source.params.get("shape") == "polyline":
+            # 線の図形の塗りだけを模様にする 目印の色で塗った所を置き換える
+            filled = brush_effect(fill, log, length=length, keyframes=keyframes, key_only=True)
+            if filled is not None:
+                effects.append(filled)
+    params, chain, final = _video_chain(item, log, length, keyframes)
     if source is not None and source.kind == "text":
         decorations = map_decorations(
             item.get("Decorations"),
@@ -345,14 +413,14 @@ def _map_item(item: dict[str, Any], log: CompatibilityReport) -> MappedObject | 
             style=str(item.get("Style") or ""),
             style_colour=item.get("StyleColor"),
         )
-        merged = {**source.params, **decorations.params, **video.params}
+        merged = {**source.params, **decorations.params, **params}
         source = GeneratedSource(kind="text", params=merged)
         effects.extend(decorations.effects)
-    effects.extend(video.effects)
+    effects.extend(chain)
 
     # YMM4 はエフェクトを掛けた絵を、最後に位置・拡大・回転で置く 先に置くと、
     # 画面の中で動かしたあとの絵にエフェクトが掛かり、回した図形が中心点の前で切れる
-    effects.extend(_placement(item, length, keyframes, video.pivot))
+    effects.extend(final)
 
     return MappedObject(
         clip=Clip(
@@ -547,6 +615,12 @@ def _shape(item: dict[str, Any], log: CompatibilityReport) -> GeneratedSource:
     plugin = raw.partition(",")[0].rpartition(".")[2]
     if plugin.startswith("LineShape"):
         return _line(parameter, log)
+    if plugin.startswith("PenShape"):
+        return _pen(parameter, item, log)
+    if plugin.startswith("TimerShape"):
+        return _timer(parameter, item)
+    if plugin.startswith("ConcentrationLineShape"):
+        return _concentration(parameter, item)
     shape = next(
         (value for key, value in _SHAPES.items() if plugin.startswith(key)),
         None,
@@ -621,6 +695,123 @@ _DASHES = {
 }
 
 
+def _pen(
+    parameter: dict[str, Any], item: dict[str, Any], log: CompatibilityReport
+) -> GeneratedSource:
+    """手描きの線（ペン） 点は中心からの画素で Y は下が正
+
+    ``Offset`` と ``Length`` は線のどこからどこまでを描くかの割合 太さは描いたときの
+    ペンの幅（``DrawingAttributes.Width``）に ``Thickness`` の割合を掛ける
+    """
+    length = max(1, int(number(item.get("Length"), 1.0)))
+    keyframes = item.get("KeyFrames")
+
+    def track(key: str, default: float) -> AnimatedValue:
+        return animated(parameter.get(key), default, length=length, keyframes=keyframes)
+
+    strokes = parameter.get("Strokes")
+    strokes = strokes if isinstance(strokes, list) else []
+    if len(strokes) > 1:
+        log.note_missing(f"YMM4 のペンの図形の線の本数（{len(strokes)} 本のうち 1 本目だけ描いた）")
+    first = strokes[0] if strokes and isinstance(strokes[0], dict) else {}
+    attributes = first.get("DrawingAttributes")
+    attributes = attributes if isinstance(attributes, dict) else {}
+    # 点は画面の左上を原点にした画素 こちらの線は絵の中心が原点なので寄せ直す
+    # （配布物の点は 1920x1080 の画面で描かれている）
+    points = [
+        f"{number(point.get('X'), 0.0) - 960.0:g},{number(point.get('Y'), 0.0) - 540.0:g}"
+        for point in first.get("StylusPoints") or []
+        if isinstance(point, dict)
+    ]
+    offset = track("Offset", 0.0)
+    span = track("Length", 100.0)
+    return GeneratedSource(
+        kind="shape",
+        params={
+            "shape": "polyline",
+            "points": ";".join(points),
+            "closed": False,
+            "color": colour(attributes.get("Color"), (1.0, 1.0, 1.0, 1.0)),
+            "line_width": _scaled(
+                track("Thickness", 100.0), number(attributes.get("Width"), 10.0) / 100.0
+            ),
+            "trim_start": offset,
+            "trim_end": _summed(offset, span),
+            "fill_color": (1.0, 1.0, 1.0, 0.0),
+        },
+    )
+
+
+def _timer(parameter: dict[str, Any], item: dict[str, Any]) -> GeneratedSource:
+    """時間を数える図形 文字として描く 数え下げはクリップの終わりで初めの値になる"""
+    length = max(1, int(number(item.get("Length"), 1.0)))
+    keyframes = item.get("KeyFrames")
+    size = number(parameter.get("FontSize"), 64.0)
+    align, valign = _base_point(parameter)
+    params: dict[str, ParamValue] = {
+        "timer_format": str(parameter.get("Format") or "s"),
+        "timer_start": animated(
+            parameter.get("InitialValue"), 0.0, length=length, keyframes=keyframes
+        ),
+        "timer_rate": animated(
+            parameter.get("PlaybackRate"), 100.0, length=length, keyframes=keyframes
+        ),
+        "timer_countdown": str(parameter.get("Direction") or "") == "CountDown",
+        "timer_length": length,
+        "size": AnimatedValue(size),
+        "color": colour(parameter.get("FontColor"), (1.0, 1.0, 1.0, 1.0)),
+        "bold": bool(parameter.get("Bold")),
+        "italic": bool(parameter.get("Italic")),
+        "letter_spacing": animated(
+            parameter.get("LetterSpacing2"), 0.0, length=length, keyframes=keyframes
+        ),
+        "align": align,
+        "valign": valign,
+    }
+    font = parameter.get("Font")
+    if isinstance(font, str) and font:
+        params["font"] = font
+    return GeneratedSource(kind="text", params=params)
+
+
+def _concentration(parameter: dict[str, Any], item: dict[str, Any]) -> GeneratedSource:
+    """集中線 大きさは線が届く円の直径、中心の幅はぼかし、速さは選び直す回数"""
+    length = max(1, int(number(item.get("Length"), 1.0)))
+    keyframes = item.get("KeyFrames")
+
+    def track(key: str, default: float) -> AnimatedValue:
+        return animated(parameter.get(key), default, length=length, keyframes=keyframes)
+
+    size = track("Size", 1000.0)
+    return GeneratedSource(
+        kind="shape",
+        params={
+            "shape": "concentration",
+            "width": size,
+            "height": size,
+            "color": colour(parameter.get("Stroke"), (1.0, 1.0, 1.0, 1.0)),
+            "density": track("Density", 80.0),
+            "line_thickness": track("Thickness", 50.0),
+            "line_length": track("Length", 70.0),
+            "softness": track("CenterWidth", 50.0),
+            "flicker": track("Speed", 5.0),
+        },
+    )
+
+
+def _summed(first: AnimatedValue, second: AnimatedValue) -> AnimatedValue:
+    """2 つの動く値を足す 片方だけが動くときは、動く側の各点で足す"""
+    if not second.is_animated:
+        return AnimatedValue(
+            first.static + second.static,
+            tuple(replace(k, value=k.value + second.static) for k in first.keyframes),
+        )
+    return AnimatedValue(
+        first.static + second.static,
+        tuple(replace(k, value=k.value + first.static) for k in second.keyframes),
+    )
+
+
 def _line(parameter: dict[str, Any], log: CompatibilityReport) -> GeneratedSource:
     """線の図形 点は中心からの画素で Y は下が正 閉じていれば中を塗る"""
     points: list[str] = []
@@ -638,22 +829,15 @@ def _line(parameter: dict[str, Any], log: CompatibilityReport) -> GeneratedSourc
     dash = _DASHES.get(style)
     if dash is None:
         dash = str(parameter.get("DashPattern") or "")
-    if (
-        number(parameter.get("LengthRate"), 100.0) != 100.0
-        or animated(parameter.get("LengthRate"), 100.0).is_animated
-    ):
-        log.note_missing("YMM4 の線の図形の長さの割合（全体を描いた）")
     fill = parameter.get("FillBrush")
-    fill_colour = (
-        brush_colour(fill, (1.0, 1.0, 1.0, 0.0)) if is_solid(fill) else (1.0, 1.0, 1.0, 1.0)
-    )
-    if not is_solid(fill):
-        log.note_missing("YMM4 の線の図形の塗りのブラシ（単色以外は白で塗った）")
+    # 単色以外の塗りは、目印の色で塗っておいて、アイテムを読む所で模様に置き換える
+    fill_colour = brush_colour(fill, (1.0, 1.0, 1.0, 0.0)) if is_solid(fill) else FILL_KEY
     return GeneratedSource(
         kind="shape",
         params={
             "shape": "polyline",
             "points": ";".join(points),
+            "trim_end": animated(parameter.get("LengthRate"), 100.0),
             "line_type": "quadratic"
             if str(parameter.get("LineType") or "") == "QuadraticBezier"
             else "straight",

@@ -12,6 +12,7 @@ from __future__ import annotations
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (
+    QBrush,
     QColor,
     QFont,
     QFontMetricsF,
@@ -20,6 +21,7 @@ from PySide6.QtGui import (
     QPainterPath,
     QPainterPathStroker,
     QPen,
+    QRadialGradient,
     QTransform,
 )
 
@@ -33,14 +35,19 @@ _VERTICAL_SHARE = {"top": 0.0, "middle": 0.5, "bottom": 1.0}
 
 
 def render_source(
-    source: GeneratedSource, width: int, height: int, *, frame: int = 0
+    source: GeneratedSource, width: int, height: int, *, frame: int = 0, fps: float = 30.0
 ) -> np.ndarray | None:
-    """生成オブジェクトを描いて配列で返す 未知の種類なら ``None``"""
+    """生成オブジェクトを描いて配列で返す 未知の種類なら ``None``
+
+    ``fps`` は時間で変わる図形（タイマー・集中線）がフレームを秒へ直すのに使う
+    """
     definition = source_registry.get(source.kind)
     if definition is None:
         return None
 
     values = _resolve(definition, source.params, frame)
+    values["_seconds"] = frame / max(fps, 1e-6)
+    values["_fps"] = fps
     image = QImage(width, height, QImage.Format.Format_RGBA8888)
     image.fill(Qt.GlobalColor.transparent)
 
@@ -116,8 +123,65 @@ def _resolve(
     return resolved
 
 
+def timer_text(values: dict[str, object]) -> str:
+    """タイマーの文字 数え下げは、クリップの終わりで初めの値になるように数える
+
+    YMM4 に 2 秒のクリップ・初めの値 0.99 で描かせると、頭で 2、1 秒で 1 だった
+    （終わりから逆算した残り時間に初めの値を足している）
+    """
+    seconds = float(values.get("_seconds", 0.0))  # type: ignore[arg-type]
+    rate = float(values.get("timer_rate", 100.0)) / 100.0  # type: ignore[arg-type]
+    start = float(values.get("timer_start", 0.0))  # type: ignore[arg-type]
+    if bool(values.get("timer_countdown", False)):
+        fps = float(values.get("_fps", 30.0))  # type: ignore[arg-type]
+        total = float(values.get("timer_length", 0)) / max(fps, 1e-6)  # type: ignore[arg-type]
+        value = start + (total - seconds) * rate
+    else:
+        value = start + seconds * rate
+    return format_time(max(value, 0.0), str(values.get("timer_format", "")))
+
+
+#: 時間の書式で 1 つの文字を並べられる数の上限 壊れたファイルの巨大な書式で固まらないため
+MAX_TIME_DIGITS = 9
+
+
+def format_time(value: float, pattern: str) -> str:
+    """.NET の時間の書式（``h`` ``m`` ``s`` ``f`` と ``\\`` の逃がし）で秒を文字にする"""
+    value = min(max(value, 0.0), 10.0**9)
+    whole = int(value)
+    parts = {
+        "h": whole // 3600,
+        "m": (whole // 60) % 60,
+        "s": whole % 60,
+    }
+    out: list[str] = []
+    index = 0
+    while index < len(pattern):
+        letter = pattern[index]
+        if letter == "\\" and index + 1 < len(pattern):
+            out.append(pattern[index + 1])
+            index += 2
+            continue
+        run = 1
+        while index + run < len(pattern) and pattern[index + run] == letter:
+            run += 1
+        digits = min(run, MAX_TIME_DIGITS)
+        if letter in parts:
+            out.append(str(parts[letter]).zfill(digits))
+        elif letter in ("f", "F"):
+            fraction = value - whole
+            out.append(str(int(fraction * 10**digits)).zfill(digits))
+        else:
+            out.append(letter * digits)
+        index += run
+    return "".join(out)
+
+
 def _draw_text(painter: QPainter, values: dict[str, object], width: int, height: int) -> None:
-    text = _revealed(str(values.get("text", "")), values)
+    raw = str(values.get("text", ""))
+    if str(values.get("timer_format", "")):
+        raw = timer_text(values)[:200]
+    text = _revealed(raw, values)
     if not text:
         return
 
@@ -296,7 +360,9 @@ def _blur_alpha(image: QImage, radius: float) -> QImage:
     箱ぼかしを縦横 2 回ずつ掛ける 厳密なガウスではないが、影の輪郭を
     やわらげる用途では見分けが付かず、こちらは掛け算が要らない
     """
-    span = max(1, round(radius))
+    # 窓の幅は絵の大きさまで 壊れたファイルの巨大な値でも、絵より広くぼかす意味は無い
+    # （そのまま渡すと、埋めた配列が何百 GB にもなって落ちる）
+    span = max(1, min(round(radius), max(image.width(), image.height())))
     # ``_to_array`` は元のバッファをそのまま見ていることがあり、書き込めない
     array = _to_array(image).copy()
     alpha = array[:, :, 3].astype(np.float32)
@@ -343,6 +409,9 @@ def _draw_shape(painter: QPainter, values: dict[str, object], width: int, height
         shape_height = float(height) + abs(float(values.get("pos_y", 0.0))) * 2.0  # type: ignore[arg-type]
     if str(values.get("shape", "rect")) == "polyline":
         _draw_polyline(painter, values, centre_x, centre_y)
+        return
+    if str(values.get("shape", "rect")) == "concentration":
+        _draw_concentration(painter, values, centre_x, centre_y, width, height)
         return
     rect = QRectF(-shape_width / 2.0, -shape_height / 2.0, shape_width, shape_height)
     path = _shape_path(str(values.get("shape", "rect")), rect, values)
@@ -412,11 +481,104 @@ def _polyline_path(values: dict[str, object], centre_x: float, centre_y: float) 
     return path
 
 
+def _draw_concentration(
+    painter: QPainter,
+    values: dict[str, object],
+    centre_x: float,
+    centre_y: float,
+    width: int,
+    height: int,
+) -> None:
+    """集中線（YMM4 の ConcentrationLine） 中心から放つ細い三角を、半径で濃さを変えて描く
+
+    本数・太さ・長さ・ぼかしの効き方は YMM4 に描かせた絵から近づけた ぼかし 0 は大きさの
+    半分の円の中に硬い線、ぼかすと線は画面の外まで伸びて、中心側がぼんやり抜ける
+    """
+    radius = max(float(values.get("width", 400)) * 0.5, 1.0)  # type: ignore[arg-type]
+    count = max(1, min(1000, int(float(values.get("density", 80)))))  # type: ignore[arg-type]
+    thickness = float(values.get("line_thickness", 50.0)) / 100.0  # type: ignore[arg-type]
+    length = float(values.get("line_length", 70.0)) / 100.0  # type: ignore[arg-type]
+    soft = max(0.0, min(1.0, float(values.get("softness", 50.0)) / 100.0))  # type: ignore[arg-type]
+    flicker = float(values.get("flicker", 5.0))  # type: ignore[arg-type]
+    seconds = float(values.get("_seconds", 0.0))  # type: ignore[arg-type]
+    tick = int(seconds * flicker) if flicker > 0 else 0
+    random = np.random.default_rng(tick * 7919 + 17)
+
+    inner = radius * (1.0 - length)
+    far = radius * (1.0 + soft * 2.0) if soft > 0 else radius
+    reach = max(far, float(np.hypot(width, height)))
+    gradient = QRadialGradient(centre_x, centre_y, far)
+    colour = _color(values.get("color"))
+    # ぼかすと線は半透明になる（YMM4 の絵は白い線でも 170 ほどで、真っ白にならない）
+    colour.setAlphaF(colour.alphaF() * (1.0 - soft * 0.45))
+    clear = QColor(colour)
+    clear.setAlpha(0)
+    if soft <= 0:
+        gradient.setColorAt(0.0, colour)
+        gradient.setColorAt(1.0, colour)
+    else:
+        start = max(0.0, (inner - radius * soft) / far)
+        full = min(1.0, (inner + radius * soft) / far)
+        gradient.setColorAt(0.0, clear)
+        gradient.setColorAt(start, clear)
+        gradient.setColorAt(max(full, start + 1e-3), colour)
+        gradient.setColorAt(min(1.0, radius / far), colour)
+        gradient.setColorAt(1.0, clear)
+    path = QPainterPath()
+    spacing = 2.0 * np.pi / count
+    for _ in range(count):
+        angle = random.uniform(0.0, 2.0 * np.pi)
+        half = spacing * thickness * random.uniform(0.2, 1.0) * 0.5
+        start_radius = inner * random.uniform(0.8, 1.2) if soft <= 0 else 0.0
+        end_radius = radius if soft <= 0 else reach
+        tip_x = centre_x + np.cos(angle) * start_radius
+        tip_y = centre_y + np.sin(angle) * start_radius
+        path.moveTo(tip_x, tip_y)
+        path.lineTo(
+            centre_x + np.cos(angle - half) * end_radius,
+            centre_y + np.sin(angle - half) * end_radius,
+        )
+        path.lineTo(
+            centre_x + np.cos(angle + half) * end_radius,
+            centre_y + np.sin(angle + half) * end_radius,
+        )
+        path.closeSubpath()
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QBrush(gradient))
+    painter.drawPath(path)
+
+
+def _trimmed(path: QPainterPath, start: float, end: float) -> QPainterPath:
+    """線の途中だけを残す ``start`` と ``end`` は全長に対する 0..1"""
+    if start <= 0.0 and end >= 1.0:
+        return path
+    if end <= start:
+        return QPainterPath()
+    total = path.length()
+    trimmed = QPainterPath()
+    steps = max(8, int(total / 2.0))
+    first = True
+    for index in range(steps + 1):
+        fraction = start + (end - start) * index / steps
+        point = path.pointAtPercent(path.percentAtLength(total * fraction))
+        if first:
+            trimmed.moveTo(point)
+            first = False
+        else:
+            trimmed.lineTo(point)
+    return trimmed
+
+
 def _draw_polyline(
     painter: QPainter, values: dict[str, object], centre_x: float, centre_y: float
 ) -> None:
     """線の図形 閉じていれば中を塗ってから線を引く 端と角は丸める（配布物はすべて丸）"""
     path = _polyline_path(values, centre_x, centre_y)
+    if path.isEmpty():
+        return
+    trim_start = float(values.get("trim_start", 0.0)) / 100.0  # type: ignore[arg-type]
+    trim_end = float(values.get("trim_end", 100.0)) / 100.0  # type: ignore[arg-type]
+    path = _trimmed(path, max(0.0, trim_start), min(1.0, trim_end))
     if path.isEmpty():
         return
     if bool(values.get("closed", False)):

@@ -57,11 +57,14 @@ def test_most_templates_produce_something(loaded: Loaded) -> None:
 
 
 def test_the_text_survives(loaded: Loaded) -> None:
+    # タイマーの図形も文字として描くが、文字は時刻から作るので ``text`` を持たない
     texts = [
         item.clip.source.params.get("text")
         for _, objects in loaded
         for item in objects
-        if item.clip.source is not None and item.clip.source.kind == "text"
+        if item.clip.source is not None
+        and item.clip.source.kind == "text"
+        and not item.clip.source.params.get("timer_format")
     ]
     assert texts
     assert all(isinstance(text, str) and text for text in texts)

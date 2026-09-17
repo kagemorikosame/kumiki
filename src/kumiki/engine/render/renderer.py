@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from fractions import Fraction
 
 import numpy as np
@@ -221,7 +221,7 @@ class FrameRenderer:
 
         # 透明な下地の上で重ね、最後に黒を敷く 黒の上で重ねると、乗算などの合成が
         # 下に何も無い所でも黒と混ざる（YMM4 は透明な所では上の絵をそのまま出す）
-        # 写し取る絵（フレームバッファ）も、YMM4 と同じく透明な下地のまま渡る
+        # 写し取る絵（フレームバッファ）は、写すときに黒を敷く（YMM4 と同じ）
         self._compositor.begin((0.0, 0.0, 0.0, 0.0))
         self._compose_timeline(self._project.timeline, frame, depth=0)
         self._compositor.underlay((0.0, 0.0, 0.0, 1.0))
@@ -247,6 +247,7 @@ class FrameRenderer:
             if clip.clip_to_below:
                 self._draw_clipped(track, clip, frame, rate, depth, below)
             else:
+                self._draw_trail(track, clip, frame, rate, depth)
                 self._draw_clip(track, clip, frame, rate, depth)
             above = visible[position + 1][2] if position + 1 < len(visible) else None
             # すぐ上のクリップがこのクリップの形で切り抜くなら、形を取っておく
@@ -255,6 +256,36 @@ class FrameRenderer:
                 if above is not None and above.clip_to_below
                 else None
             )
+
+    def _draw_trail(
+        self, track: Track, clip: Clip, frame: int, rate: FrameRate, depth: int
+    ) -> None:
+        """残像（``after_image``）を積んだクリップの、前のフレームの絵を薄くして先に描く
+
+        1 フレーム前ほど濃く、強さの累乗で薄れる クリップの頭より前は描かない
+        エフェクトはフレームごとに独立して描けるので、前のフレームを描き直せば済む
+        """
+        trail = next((e for e in clip.effects if e.enabled and e.kind == "after_image"), None)
+        if trail is None:
+            return
+        local_frame = frame - clip.timeline_start
+        strength = trail.params.get("strength")
+        keep = strength.at(local_frame) if isinstance(strength, AnimatedValue) else 50.0
+        fade = min(max(keep / 100.0, 0.0), 0.99)
+        samples = trail.params.get("samples")
+        count = int(samples) if isinstance(samples, int | float) else 12
+        others = tuple(e for e in clip.effects if e.kind != "after_image")
+        for back in range(min(count, local_frame), 0, -1):
+            weight = fade**back
+            if weight < 0.02:
+                continue
+            earlier = frame - back
+            faded = replace(
+                clip,
+                effects=others,
+                opacity=AnimatedValue(clip.opacity.at(earlier - clip.timeline_start) * weight),
+            )
+            self._draw_clip(track, faded, earlier, rate, depth)
 
     def _draw_transition(
         self, tracks: list[Track], clip: Clip, frame: int, rate: FrameRate, depth: int
@@ -941,7 +972,7 @@ class FrameRenderer:
         width, height = source_canvas(
             source, self._compositor.width, self._compositor.height, frame=local_frame
         )
-        return render_source(source, width, height, frame=local_frame)
+        return render_source(source, width, height, frame=local_frame, fps=float(rate.fps))
 
     def _decode(self, clip: Clip, frame: int, rate: FrameRate) -> np.ndarray | None:
         assert clip.media_id is not None

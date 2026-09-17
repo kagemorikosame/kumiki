@@ -311,13 +311,23 @@ def brush_effect(
     blend: str = "normal",
     opacity: AnimatedValue | None = None,
     pattern_only: bool = False,
+    key_only: bool = False,
 ) -> Effect | None:
-    """ブラシで塗るエフェクト 写せないブラシなら ``None``"""
+    """ブラシで塗るエフェクト 写せないブラシなら ``None``
+
+    ``key_only`` は目印の色（マゼンタ）で塗った所だけを模様に替える
+    （線の図形の塗りのように、絵の一部だけを模様にしたいとき）
+    """
     params = _pattern_params(brush, length, keyframes, report)
     if params is None:
         return None
     params.update(
-        {"blend": blend, "pattern_only": pattern_only, "opacity": opacity or AnimatedValue(100.0)}
+        {
+            "blend": blend,
+            "pattern_only": pattern_only,
+            "key_only": key_only,
+            "opacity": opacity or AnimatedValue(100.0),
+        }
     )
     return _create(params)
 

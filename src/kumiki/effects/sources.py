@@ -22,6 +22,7 @@ from kumiki.effects.spec import (
     SelectSpec,
     TextSpec,
     TrackSpec,
+    ValueSpec,
 )
 
 __all__ = [
@@ -97,6 +98,13 @@ TEXT = SourceDefinition(
         ColorSpec("shadow_color", "影の色", (0.0, 0.0, 0.0, 1.0)),
         CheckSpec("vertical", "縦書き", False),
         TrackSpec("reveal", "文字送り", 0, 100, 100, step=1, unit="%"),
+        # タイマー 書式が空でなければ、文字の代わりに時間を出す（YMM4 のタイマーの図形）
+        # 書式は .NET の時間の書式（h m s f、\\ で文字をそのまま出す）
+        TextSpec("timer_format", "タイマーの書式", "", multiline=False),
+        TrackSpec("timer_start", "タイマーの初めの値", -360000, 360000, 0, step=0.01, unit="秒"),
+        TrackSpec("timer_rate", "タイマーの速さ", -10000, 10000, 100, unit="%"),
+        CheckSpec("timer_countdown", "数え下げる", False),
+        ValueSpec("timer_length", "数え下げる長さ", 0, minimum=0, maximum=10**9),
         TrackSpec("pos_x", "X", -4000, 4000, 0, step=1, unit="px"),
         TrackSpec("pos_y", "Y", -4000, 4000, 0, step=1, unit="px"),
     ),
@@ -124,6 +132,7 @@ SHAPE = SourceDefinition(
                 ("arrow", "矢印"),
                 ("superformula", "スーパーフォーミュラ"),
                 ("polyline", "線"),
+                ("concentration", "集中線"),
             ),
             "rect",
         ),
@@ -145,6 +154,13 @@ SHAPE = SourceDefinition(
         CheckSpec("closed", "線を閉じる", False),
         ColorSpec("fill_color", "線の中の色", (1.0, 1.0, 1.0, 0.0)),
         TextSpec("dash", "破線（線の太さに対する長さ、カンマ区切り）", "", multiline=False),
+        TrackSpec("trim_start", "線を描き始める位置", 0, 100, 0, unit="%"),
+        TrackSpec("trim_end", "線を描き終える位置", 0, 100, 100, unit="%"),
+        TrackSpec("density", "集中線の本数", 1, 1000, 80, step=1),
+        TrackSpec("line_thickness", "集中線の太さ", 0, 100, 50, unit="%"),
+        TrackSpec("line_length", "集中線の長さ", 0, 100, 70, unit="%"),
+        TrackSpec("softness", "集中線のぼかし", 0, 100, 50, unit="%"),
+        TrackSpec("flicker", "集中線の切り替え", 0, 240, 5, unit="回/秒"),
         TrackSpec("pos_x", "X", -4000, 4000, 0, step=1, unit="px"),
         TrackSpec("pos_y", "Y", -4000, 4000, 0, step=1, unit="px"),
         TrackSpec("rotation", "回転", -3600, 3600, 0, unit="度"),

@@ -57,6 +57,7 @@ float height_at(vec2 uv) {
     float h = t;
     if (profile == 1) h = sqrt(max(1.0 - (1.0 - t) * (1.0 - t), 0.0));
     if (profile == 2) h = 1.0 - sqrt(max(1.0 - t * t, 0.0));
+    if (profile == 3) h = step(0.5, t);
     return inverted ? -h : h;
 }
 
@@ -550,7 +551,12 @@ def register_optics_effects() -> None:
                 SelectSpec(
                     "profile",
                     "縁の形",
-                    (("straight", "直線"), ("round", "丸"), ("inverted_round", "くぼんだ丸")),
+                    (
+                        ("straight", "直線"),
+                        ("round", "丸"),
+                        ("inverted_round", "くぼんだ丸"),
+                        ("step", "段"),
+                    ),
                     "straight",
                 ),
                 TrackSpec("thickness", "縁の太さ", 1, 128, 10, step=0.1, unit="px"),
