@@ -208,8 +208,12 @@ class FrameRenderer:
         if self._closed:
             raise RuntimeError("閉じたレンダラは使えない")
 
-        self._compositor.begin()
+        # 透明な下地の上で重ね、最後に黒を敷く 黒の上で重ねると、乗算などの合成が
+        # 下に何も無い所でも黒と混ざる（YMM4 は透明な所では上の絵をそのまま出す）
+        # 写し取る絵（フレームバッファ）も、YMM4 と同じく透明な下地のまま渡る
+        self._compositor.begin((0.0, 0.0, 0.0, 0.0))
         self._compose_timeline(self._project.timeline, frame, depth=0)
+        self._compositor.underlay((0.0, 0.0, 0.0, 1.0))
 
     def _compose_timeline(self, timeline: Timeline, frame: int, *, depth: int) -> None:
         """1 本のタイムラインを、いまの合成先へ重ねる シーンの入れ子でも同じ道を通る"""
@@ -486,8 +490,8 @@ class FrameRenderer:
 
         キャンバスは描いている最中なので、そのまま読みながら同じキャンバスへ描くことは
         できない いったん別のバッファへ写す キャンバスは事前乗算アルファで溜まって
-        いるので、そう伝えて渡す メインは不透明な背景なので伝えなくても値は同じだが、
-        透明から始まるシーンの中では半透明の縁が暗くなる
+        いるので、そう伝えて渡す 合成は透明な下地から始まるので、伝えないと半透明の
+        縁が暗くなる
 
         AviUtl スクリプトは掛けない スクリプトは CPU の画像を書き換える作りで、画面を
         毎フレーム CPU へ読み戻すと再生が追いつかない（積まれていれば記録に残す）

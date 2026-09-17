@@ -74,6 +74,19 @@ void main() {
 """
 
 
+#: 1 色で塗る 背景を敷くときに使う（色は事前乗算で渡す）
+_FILL_FRAGMENT_SHADER = """
+#version 430 core
+in vec2 v_uv;
+out vec4 frag_color;
+uniform vec4 u_color;
+
+void main() {
+    frag_color = u_color;
+}
+"""
+
+
 #: 下の絵を読んで混ぜる合成 ``glBlendFunc`` の係数では式が書けないもの
 #: 描く直前に下の絵を別のバッファへ写し、シェーダの中で混ぜる
 #:
@@ -99,6 +112,7 @@ vec3 blend(vec3 below, vec3 above) {
     }
     if (u_mode == 1) return max(below, above);
     if (u_mode == 2) return min(below, above);
+    if (u_mode == 4) return below * above;
     return max(below - above, 0.0);
 }
 
@@ -148,6 +162,9 @@ _SHADER_BLENDS: dict[str, int] = {
     BlendMode.LIGHTEN: 1,
     BlendMode.DARKEN: 2,
     BlendMode.SUBTRACT: 3,
+    # 乗算もシェーダで混ぜる 係数の乗算は下の不透明度を見ないので、下に何も無い所
+    # （透明）で絵ごと消える YMM4 は透明な所では上の絵をそのまま出す
+    BlendMode.MULTIPLY: 4,
 }
 
 
@@ -346,6 +363,7 @@ class Compositor:
         self._mapped_program = Program(MAPPED_VERTEX_SHADER, _FRAGMENT_SHADER)
         self._mapped_blend_program = Program(MAPPED_VERTEX_SHADER, _BLEND_FRAGMENT_SHADER)
         self._resolve_program = Program(VERTEX_SHADER, _RESOLVE_FRAGMENT_SHADER)
+        self._fill_program = Program(VERTEX_SHADER, _FILL_FRAGMENT_SHADER)
         self._quad = ScreenQuad()
         self._canvas = Framebuffer(width, height)
         # シェーダで混ぜる合成のとき、下の絵を写しておく先 描いている最中の
@@ -383,6 +401,25 @@ class Compositor:
         バッファへ写すこと
         """
         return self._canvas
+
+    def underlay(self, color: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0)) -> None:
+        """重ね終わった絵の下へ色を敷く 透明な所だけがその色になる（リニア値）
+
+        合成は透明な下地の上で行い、最後に背景を敷く 不透明な黒の上で合成すると、
+        乗算などが下に何も無い所でも黒と混ざり、YMM4 と見え方が変わる
+        """
+        self._canvas.bind()
+        GL.glEnable(GL.GL_BLEND)
+        GL.glBlendFuncSeparate(
+            GL.GL_ONE_MINUS_DST_ALPHA, GL.GL_ONE, GL.GL_ONE_MINUS_DST_ALPHA, GL.GL_ONE
+        )
+        self._fill_program.use()
+        self._fill_program.set_vec4("u_rect", FULL_RECT)
+        self._fill_program.set_bool("u_flip", False)
+        red, green, blue, alpha = color
+        self._fill_program.set_vec4("u_color", (red * alpha, green * alpha, blue * alpha, alpha))
+        self._quad.draw()
+        self._set_blend(BlendMode.NORMAL)
 
     def begin(self, background: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0)) -> None:
         """合成を始める 背景色はリニア値で指定する"""
@@ -590,6 +627,7 @@ class Compositor:
             self._mapped_program,
             self._mapped_blend_program,
             self._resolve_program,
+            self._fill_program,
         ):
             program.release()
 
