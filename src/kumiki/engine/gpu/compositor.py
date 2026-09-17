@@ -16,6 +16,7 @@ from dataclasses import dataclass
 import numpy as np
 from OpenGL import GL
 
+from kumiki.effects.blending import BLEND_FUNCTIONS, blend_index
 from kumiki.engine.gpu.glutil import (
     FULL_RECT,
     IDENTITY,
@@ -92,7 +93,8 @@ void main() {
 #:
 #: 下の絵（キャンバス）は事前乗算アルファで溜まっている（``SRC_ALPHA`` と
 #: ``ONE_MINUS_SRC_ALPHA`` で重ねてきた結果） 混ぜる式は W3C の合成の定義どおり
-_BLEND_FRAGMENT_SHADER = """
+_BLEND_FRAGMENT_SHADER = (
+    """
 #version 430 core
 in vec2 v_uv;
 out vec4 frag_color;
@@ -103,7 +105,22 @@ uniform float u_opacity;
 uniform int u_mode;
 uniform bool u_premultiplied;
 
+vec3 srgb_encode(vec3 c) {
+    c = clamp(c, 0.0, 1.0);
+    return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+vec3 srgb_decode(vec3 c) {
+    return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
+}
+"""
+    + BLEND_FUNCTIONS
+    + """
 vec3 blend(vec3 below, vec3 above) {
+    if (u_mode >= 100) {
+        // YMM4 から来た合成 Direct2D と同じく sRGB のまま混ぜる
+        vec3 mixed = blend_colors(u_mode - 100, srgb_encode(below), srgb_encode(above));
+        return srgb_decode(mixed);
+    }
     if (u_mode == 0) {
         // オーバーレイ 下が暗いところは乗算、明るいところはスクリーン
         return mix(2.0 * below * above,
@@ -131,6 +148,7 @@ void main() {
     frag_color = vec4(color, above_alpha + below_alpha * (1.0 - above_alpha));
 }
 """
+)
 
 
 class BlendMode:
@@ -150,7 +168,47 @@ class BlendMode:
     DARKEN = "darken"
     SUBTRACT = "subtract"
 
-    ALL = (NORMAL, ADD, SUBTRACT, MULTIPLY, SCREEN, OVERLAY, LIGHTEN, DARKEN)
+    #: YMM4 の合成 式は塗りのエフェクト（:mod:`kumiki.effects.blending`）と同じ
+    SOFT_LIGHT = "soft_light"
+    HARD_LIGHT = "hard_light"
+    COLOR_DODGE = "color_dodge"
+    COLOR_BURN = "color_burn"
+    LIGHTER_COLOR = "lighter_color"
+    DARKER_COLOR = "darker_color"
+    DIFFERENCE = "difference"
+    EXCLUSION = "exclusion"
+    LINEAR_BURN = "linear_burn"
+    LINEAR_LIGHT = "linear_light"
+    VIVID_LIGHT = "vivid_light"
+    PIN_LIGHT = "pin_light"
+    HARD_MIX = "hard_mix"
+    DIVISION = "division"
+    HUE = "hue"
+    SATURATION = "saturation"
+    COLOR = "color"
+    LUMINOSITY = "luminosity"
+    EXTENDED = (
+        SOFT_LIGHT,
+        HARD_LIGHT,
+        COLOR_DODGE,
+        COLOR_BURN,
+        LIGHTER_COLOR,
+        DARKER_COLOR,
+        DIFFERENCE,
+        EXCLUSION,
+        LINEAR_BURN,
+        LINEAR_LIGHT,
+        VIVID_LIGHT,
+        PIN_LIGHT,
+        HARD_MIX,
+        DIVISION,
+        HUE,
+        SATURATION,
+        COLOR,
+        LUMINOSITY,
+    )
+
+    ALL = (NORMAL, ADD, SUBTRACT, MULTIPLY, SCREEN, OVERLAY, LIGHTEN, DARKEN, *EXTENDED)
     #: 描いた絵の不透明度で、下の絵を切り抜く（色は使わない） 選べる合成ではなく、
     #: クリップを下のクリップの形で切り抜くときにレンダラが使う
     MASK = "mask"
@@ -165,6 +223,8 @@ _SHADER_BLENDS: dict[str, int] = {
     # 乗算もシェーダで混ぜる 係数の乗算は下の不透明度を見ないので、下に何も無い所
     # （透明）で絵ごと消える YMM4 は透明な所では上の絵をそのまま出す
     BlendMode.MULTIPLY: 4,
+    # 100 から先は共通の式の番号 既存の 5 つはリニアで混ぜてきたので、絵を変えないよう残す
+    **{mode: 100 + blend_index(mode) for mode in BlendMode.EXTENDED},
 }
 
 

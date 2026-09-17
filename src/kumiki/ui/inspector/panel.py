@@ -40,6 +40,7 @@ from kumiki.core.commands import (
 from kumiki.core.io import Preset, PresetStore
 from kumiki.core.model import AnimatedValue, Clip, ClipId, Effect, ParamValue, Project
 from kumiki.effects import ParameterSpec, TrackSpec, registry
+from kumiki.effects.blending import BLEND_MODES
 from kumiki.effects.sources import source_registry
 from kumiki.engine.gpu import BlendMode
 from kumiki.ui.inspector.widgets import ParameterEditor, TrackEditor, create_editor
@@ -57,6 +58,7 @@ BLEND_LABELS = {
     BlendMode.OVERLAY: "オーバーレイ",
     BlendMode.LIGHTEN: "比較(明)",
     BlendMode.DARKEN: "比較(暗)",
+    **{mode: label for mode, label in BLEND_MODES if mode in BlendMode.EXTENDED},
 }
 
 

@@ -354,6 +354,87 @@ void main() {
 """
 )
 
+_INOUT_FADE = _shader(
+    """
+uniform float opacity;
+"""
+    + _IN_OUT
+    + """
+void main() {
+    // 隠れきった状態の不透明度が opacity 途中はその間を直線でつなぐ
+    float keep = mix(1.0, clamp(opacity / 100.0, 0.0, 1.0), hidden_amount());
+    frag_color = sample_pixel(v_uv * u_size) * keep;
+}
+"""
+)
+
+_INOUT_ROTATE = _shader(
+    """
+uniform float angle_x;
+uniform float angle_y;
+uniform float angle_z;
+uniform bool three_d;
+"""
+    + _IN_OUT
+    + """
+void main() {
+    float k = hidden_amount();
+    vec3 angles = vec3(0.0, 0.0, angle_z) * k;
+    if (three_d) angles.xy = vec2(angle_x, angle_y) * k;
+    vec2 centre = object_center();
+    frag_color = sample_pixel(centre + untilt(v_uv * u_size - centre, angles));
+}
+"""
+)
+
+_INOUT_OFFSET = _shader(
+    """
+uniform float offset_x;
+uniform float offset_y;
+"""
+    + _IN_OUT
+    + """
+void main() {
+    frag_color = sample_pixel(v_uv * u_size - vec2(offset_x, offset_y) * hidden_amount());
+}
+"""
+)
+
+_INOUT_SKEW = _shader(
+    """
+uniform float angle_x;
+uniform float angle_y;
+"""
+    + _IN_OUT
+    + """
+void main() {
+    // 傾きの角度そのものを隠れ具合に比例させる tan を比例させると 90 度近くで跳ねる
+    float k = hidden_amount();
+    vec2 pivot = object_center();
+    vec2 point = v_uv * u_size - pivot;
+    float tx = tan(radians(clamp(angle_x * k, -89.0, 89.0)));
+    float ty = tan(radians(clamp(angle_y * k, -89.0, 89.0)));
+    float determinant = 1.0 + tx * ty;
+    if (abs(determinant) < 1e-4) { frag_color = vec4(0.0); return; }
+    vec2 source = vec2(point.x + tx * point.y, point.y - ty * point.x) / determinant;
+    frag_color = sample_pixel(pivot + source);
+}
+"""
+)
+
+_INOUT_BLUR = _shader(
+    """
+uniform float radius;
+"""
+    + _IN_OUT
+    + """
+void main() {
+    vec2 direction = u_pass == 0 ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+    frag_color = blur1d(u_texture, v_uv, direction, radius * hidden_amount());
+}
+"""
+)
+
 _SKEW = _shader(
     """
 uniform float angle_x;
@@ -789,6 +870,62 @@ def register_motion_effects() -> None:
                 *_in_out_specs(),
             ),
             fragment_shader=_INOUT_GETUP,
+        ),
+        EffectDefinition(
+            kind="inout_fade",
+            label="フェードで登場",
+            category="登場・退場",
+            parameters=(
+                TrackSpec("opacity", "隠れたときの不透明度", 0, 100, 0, unit="%"),
+                *_in_out_specs(),
+            ),
+            fragment_shader=_INOUT_FADE,
+        ),
+        EffectDefinition(
+            kind="inout_rotate",
+            label="回って登場",
+            category="登場・退場",
+            parameters=(
+                TrackSpec("angle_x", "X 軸", -3600, 3600, 0, unit="度"),
+                TrackSpec("angle_y", "Y 軸", -3600, 3600, 0, unit="度"),
+                TrackSpec("angle_z", "回転", -3600, 3600, 360, unit="度"),
+                CheckSpec("three_d", "立体", False),
+                *_in_out_specs(),
+            ),
+            fragment_shader=_INOUT_ROTATE,
+        ),
+        EffectDefinition(
+            kind="inout_offset",
+            label="ずれた所から登場",
+            category="登場・退場",
+            parameters=(
+                TrackSpec("offset_x", "X", -4000, 4000, 100, step=1, unit="px"),
+                TrackSpec("offset_y", "Y", -4000, 4000, 0, step=1, unit="px"),
+                *_in_out_specs(),
+            ),
+            fragment_shader=_INOUT_OFFSET,
+        ),
+        EffectDefinition(
+            kind="inout_skew",
+            label="傾いて登場",
+            category="登場・退場",
+            parameters=(
+                TrackSpec("angle_x", "横の傾き", -89, 89, 30, unit="度"),
+                TrackSpec("angle_y", "縦の傾き", -89, 89, 0, unit="度"),
+                *_in_out_specs(),
+            ),
+            fragment_shader=_INOUT_SKEW,
+        ),
+        EffectDefinition(
+            kind="inout_blur",
+            label="ぼけて登場",
+            category="登場・退場",
+            parameters=(
+                TrackSpec("radius", "範囲", 0, 96, 20, unit="px"),
+                *_in_out_specs(),
+            ),
+            fragment_shader=_INOUT_BLUR,
+            passes=2,
         ),
         EffectDefinition(
             kind="skew",

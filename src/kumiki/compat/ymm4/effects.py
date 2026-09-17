@@ -488,6 +488,41 @@ def _inout_move(r: _Reader) -> Effect | None:
     return _create("inout_move", direction=direction, **_in_out(r))
 
 
+def _inout_fade(r: _Reader) -> Effect | None:
+    return _create("inout_fade", opacity=r.plain("Value"), **_in_out(r))
+
+
+def _inout_rotate(r: _Reader) -> Effect | None:
+    # YMM4 の X と Y は Kumiki の傾きと向きが逆 X が正だと上の辺が手前へ来る
+    return _create(
+        "inout_rotate",
+        angle_x=-r.plain("ValueX"),
+        angle_y=-r.plain("ValueY"),
+        angle_z=r.plain("ValueZ"),
+        three_d=r.flag("Is3D"),
+        **_in_out(r),
+    )
+
+
+def _inout_offset(r: _Reader) -> Effect | None:
+    # Value3 は実物で何を変えるのか読み取れなかった 配布テンプレートでは 0 のまま
+    r.unused("Value3")
+    return _create(
+        "inout_offset", offset_x=r.plain("Value"), offset_y=-r.plain("Value2"), **_in_out(r)
+    )
+
+
+def _inout_skew(r: _Reader) -> Effect | None:
+    r.choice("CenterPoint", {"Center": "center"}, "center")
+    return _create(
+        "inout_skew", angle_x=r.plain("AngleX"), angle_y=-r.plain("AngleY"), **_in_out(r)
+    )
+
+
+def _inout_blur(r: _Reader) -> Effect | None:
+    return _create("inout_blur", radius=r.plain("Value"), **_in_out(r))
+
+
 def _inout_zoom(r: _Reader) -> Effect | None:
     return _create(
         "inout_zoom",
@@ -542,8 +577,8 @@ def _highlights_shadows(r: _Reader) -> Effect | None:
 def _repeat_rotate(r: _Reader) -> Effect | None:
     return _create(
         "repeat_rotate",
-        angle_x=r.track("X"),
-        angle_y=r.track("Y"),
+        angle_x=r.track("X", flip=True),
+        angle_y=r.track("Y", flip=True),
         angle_z=r.track("Z"),
         three_d=r.flag("Is3D"),
         interval=r.track("Span", 1.0),
@@ -606,8 +641,8 @@ def _crash(r: _Reader) -> Effect | None:
 def _random_rotate(r: _Reader) -> Effect | None:
     return _create(
         "random_rotate",
-        angle_x=r.track("X"),
-        angle_y=r.track("Y"),
+        angle_x=r.track("X", flip=True),
+        angle_y=r.track("Y", flip=True),
         angle_z=r.track("Z"),
         three_d=r.flag("Is3D"),
         interval=r.track("Span"),
@@ -703,6 +738,11 @@ _MAPPERS: dict[str, Callable[[_Reader], Effect | None]] = {
     "RandomZoomEffect": _random_zoom,
     "InOutMoveFromOutsideFrameEffect": _inout_move,
     "InOutZoomEffect": _inout_zoom,
+    "InOutFadeEffect": _inout_fade,
+    "InOutRotateEffect": _inout_rotate,
+    "InOutMoveEffect": _inout_offset,
+    "InOutSkewEffect": _inout_skew,
+    "InOutGaussianBlurEffect": _inout_blur,
     "InOutJumpEffect": _inout_jump,
     "RepeatOpacityEffect": _repeat_opacity,
     "SkewEffect": _skew,

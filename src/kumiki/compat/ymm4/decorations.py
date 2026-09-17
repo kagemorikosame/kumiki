@@ -153,6 +153,9 @@ def map_video_effects(
             continue
 
         name = type_name(entry)
+        if name == "ShowOnlyPreviewEffect":
+            # 掛かったアイテムごと書き出しから外す（アイテムを読む所で見る）
+            continue
         if name == "CenterPointEffect":
             # 後ろに続く回転と拡大の支点になる 位置を保たないなら絵もずらす
             # 「位置を保つ」を切ったときのずらしは、アイテムを最後に置く変形
@@ -316,8 +319,12 @@ def _video_effect(name: str, entry: dict[str, Any], length: int, keyframes: Any)
         definition = registry.get("transform")
         if definition is None:  # pragma: no cover - 標準エフェクトは必ずある
             return None
-        # Z は平面の回転、X と Y は板を傾ける立体の回転
-        return definition.create(rotation=value("Z"), rotation_x=value("X"), rotation_y=value("Y"))
+        # Z は平面の回転、X と Y は板を傾ける立体の回転 X と Y は Kumiki と向きが逆
+        return definition.create(
+            rotation=value("Z"),
+            rotation_x=value("X", scale=-1.0),
+            rotation_y=value("Y", scale=-1.0),
+        )
     if kind == "crop":
         definition = registry.get("crop")
         if definition is None:  # pragma: no cover - 標準エフェクトは必ずある

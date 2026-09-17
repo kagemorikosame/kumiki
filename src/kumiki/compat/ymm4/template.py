@@ -33,7 +33,7 @@ from typing import Any
 
 from kumiki.compat.aviutl.report import CompatibilityReport, global_report
 from kumiki.compat.mapped import MappedObject
-from kumiki.compat.ymm4.brushes import brush_effect, is_solid
+from kumiki.compat.ymm4.brushes import BLEND_NAMES, brush_effect, is_solid
 from kumiki.compat.ymm4.decorations import map_decorations, map_video_effects, with_pivot
 from kumiki.compat.ymm4.effects import CenterPoint
 from kumiki.compat.ymm4.values import animated, brush_colour, colour, number, type_name
@@ -75,6 +75,8 @@ _BLEND_MODES: dict[str, str] = {
     "比較(暗)": "darken",
     "Subtract": "subtract",
     "減算": "subtract",
+    # 残りの名前は塗りのエフェクトと同じ表で読む
+    **BLEND_NAMES,
 }
 
 #: ``BasePoint`` の横と縦 ``CenterCenter`` ``LeftTop`` のように 2 つ並ぶ
@@ -309,6 +311,8 @@ def _map_item(item: dict[str, Any], log: CompatibilityReport) -> MappedObject | 
     length = max(1, int(number(item.get("Length"), 1.0)))
     keyframes = item.get("KeyFrames")
 
+    if _preview_only(item):
+        return None
     source, media_path, kind = _content(item, name, log)
     if source is None and not media_path:
         return None
@@ -365,6 +369,20 @@ def _map_item(item: dict[str, Any], log: CompatibilityReport) -> MappedObject | 
         media_path=media_path,
         kind=kind,
         has_span="Length" in item,
+    )
+
+
+def _preview_only(item: dict[str, Any]) -> bool:
+    """編集中の画面にだけ映すアイテムか YMM4 は書き出した動画に出さない
+
+    目印や下書きに使われる 読み込むと書き出しに映り込む
+    """
+    effects = item.get("VideoEffects")
+    return isinstance(effects, list) and any(
+        isinstance(entry, dict)
+        and entry.get("IsEnabled") is not False
+        and type_name(entry) == "ShowOnlyPreviewEffect"
+        for entry in effects
     )
 
 

@@ -651,10 +651,247 @@ def build(
     ]
 
 
+def build_second(
+    samples: dict[str, dict[str, Any]], brushes: dict[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """2 回目の試験 登場と退場（時間で変わる）、ノイズ、変形、光の当て方など
+
+    登場は 2 秒（60 フレーム）にして、枠の中の 3 枚（入り・真ん中・終わり）で途中の
+    進み具合が見えるようにする
+    """
+    probes: list[tuple[str, dict[str, Any]]] = []
+
+    def base(width: float = 600.0, height: float = 300.0) -> dict[str, Any]:
+        item = base_shape(0, 0, 60)
+        item["ShapeParameter"]["Width"] = still(width)
+        item["ShapeParameter"]["Height"] = still(height)
+        item["ShapeParameter"]["Brush"] = solid("#FFFFFFFF")
+        return item
+
+    def textured() -> dict[str, Any]:
+        item = base(800.0, 400.0)
+        item["ShapeParameter"]["Brush"] = set_values(
+            copy.deepcopy(brushes["StripeBrushPlugin"]["Parameter"])
+            and copy.deepcopy(brushes["StripeBrushPlugin"]),
+        )
+        set_values(
+            item["ShapeParameter"]["Brush"]["Parameter"],
+            Color1="#FFFF4040",
+            Width1=40,
+            Color2="#FF4040FF",
+            Width2=40,
+            Offset=0,
+            Zoom=100,
+            Angle=0,
+        )
+        return item
+
+    def effect(kind: str, **values: Any) -> dict[str, Any]:
+        entry = copy.deepcopy(samples[kind])
+        entry["IsEnabled"] = True
+        return set_values(entry, **values)
+
+    def add(name: str, *effects: dict[str, Any], item: dict[str, Any] | None = None) -> None:
+        target = item if item is not None else base()
+        target["VideoEffects"] = list(effects)
+        probes.append((name, target))
+
+    timing = {
+        "IsInEffect": True,
+        "IsOutEffect": False,
+        "EffectTimeSeconds": 2.0,
+        "EasingType": "Linear",
+        "EasingMode": "In",
+    }
+    add("inout_fade", effect("InOutFadeEffect", Value=0.0, **timing))
+    add(
+        "inout_fade_out",
+        effect(
+            "InOutFadeEffect", Value=0.0, **{**timing, "IsInEffect": False, "IsOutEffect": True}
+        ),
+    )
+    add(
+        "inout_rotate_z180",
+        effect("InOutRotateEffect", ValueX=0.0, ValueY=0.0, ValueZ=180.0, Is3D=False, **timing),
+    )
+    add(
+        "inout_rotate_x90_3d",
+        effect("InOutRotateEffect", ValueX=90.0, ValueY=0.0, ValueZ=0.0, Is3D=True, **timing),
+    )
+    add(
+        "inout_rotate_y90_3d",
+        effect("InOutRotateEffect", ValueX=0.0, ValueY=90.0, ValueZ=0.0, Is3D=True, **timing),
+    )
+    add("inout_move_x600", effect("InOutMoveEffect", Value=600.0, Value2=0.0, Value3=0.0, **timing))
+    add(
+        "inout_move_v2_90",
+        effect("InOutMoveEffect", Value=600.0, Value2=90.0, Value3=0.0, **timing),
+    )
+    add(
+        "inout_move_v3_300",
+        effect("InOutMoveEffect", Value=600.0, Value2=0.0, Value3=300.0, **timing),
+    )
+    add(
+        "inout_skew_x30",
+        effect(
+            "InOutSkewEffect",
+            AngleX=30.0,
+            AngleY=0.0,
+            CenterPoint="Center",
+            CenterX=0.0,
+            CenterY=0.0,
+            **timing,
+        ),
+    )
+    add(
+        "inout_skew_y30",
+        effect(
+            "InOutSkewEffect",
+            AngleX=0.0,
+            AngleY=30.0,
+            CenterPoint="Center",
+            CenterX=0.0,
+            CenterY=0.0,
+            **timing,
+        ),
+    )
+    add("inout_blur20", effect("InOutGaussianBlurEffect", Value=20.0, **timing))
+    add(
+        "repeat_zoom",
+        effect(
+            "RepeatZoomEffect",
+            Zoom=150.0,
+            ZoomX=100.0,
+            ZoomY=100.0,
+            Span=2.0,
+            EasingType="Linear",
+            EasingMode="In",
+            IsCentering=True,
+        ),
+    )
+    add(
+        "center_custom_rotate",
+        effect(
+            "CenterPointEffect",
+            Horizontal="Custom",
+            Vertical="Custom",
+            X=150.0,
+            Y=100.0,
+            IsKeepPosition=True,
+        ),
+        effect("RotateEffect", X=0.0, Y=0.0, Z=45.0)
+        if "RotateEffect" in samples
+        else effect("CenterPointEffect"),
+    )
+    add(
+        "center_origin_rotate",
+        effect(
+            "CenterPointEffect",
+            Horizontal="Origin",
+            Vertical="Origin",
+            X=0.0,
+            Y=0.0,
+            IsKeepPosition=True,
+        ),
+        effect("RotateEffect", X=0.0, Y=0.0, Z=45.0)
+        if "RotateEffect" in samples
+        else effect("CenterPointEffect"),
+    )
+    add(
+        "reel_spin",
+        effect("ReelSpinEffect", Rotation=50.0, Direction=0.0, Blur=0.0, Tile=False),
+        item=textured(),
+    )
+    add(
+        "fish_eye",
+        effect("FishEyeLensEffect", Projection="Orthographic", Angle=60.0, Zoom=100.0),
+        item=textured(),
+    )
+    add(
+        "ripple",
+        effect("RippleEffect", X=0.0, Y=0.0, Amplitude=20.0, WaveLength=200.0, Period=1.0),
+        item=textured(),
+    )
+    add(
+        "stretch",
+        effect(
+            "StretchEffect",
+            X=0.0,
+            Y=0.0,
+            Angle=0.0,
+            StretchLength=300.0,
+            Range=0.0,
+            IsCentering=True,
+        ),
+    )
+    add("polar", effect("PolarTransformEffect", CoreWidth=100.0, TwistAngle=0.0), item=textured())
+    add(
+        "inner_outline",
+        effect(
+            "InnerOutlineEffect",
+            Thickness=20.0,
+            Opacity=100.0,
+            Blur=0.0,
+            Quality=64.0,
+            Smoothness=100.0,
+            Blend="Normal",
+            IsOutlineOnly=False,
+            IsAngular=False,
+            Brush=solid("#FFFF0000"),
+        ),
+    )
+    add(
+        "inner_halftone",
+        effect(
+            "InnerHalfToneShadowEffect",
+            X=40.0,
+            Y=30.0,
+            Opacity=100.0,
+            Blur=0.0,
+            BlendMode="Normal",
+            Layout="Rhombus",
+            Distance=10.0,
+            Size=100.0,
+            Color="#FFFF0000",
+            Strength=100.0,
+        ),
+    )
+    add(
+        "three_dimensional",
+        effect(
+            "ThreeDimensionalEffect",
+            X=100.0,
+            Y=100.0,
+            Length=30.0,
+            Opacity=100.0,
+            Attenuation=0.0,
+            ShadowType="Solid",
+            Color1="#FFFF0000",
+            Color2="#FF0000FF",
+            IsAbsolutePoint=False,
+        ),
+    )
+    add("reflection_bevel", effect("ReflectionAndExtrusionEffect", Blur=0.0, IsInvert=False))
+    add("show_only_preview", effect("ShowOnlyPreviewEffect"))
+    for noise in ("Perlin", "Voronoi", "Cellular", "Curl", "Random", "Block"):
+        brush = copy.deepcopy(brushes["NoiseBrushPlugin"])
+        brush["Parameter"]["NoiseType"] = noise
+        brush["Parameter"]["Color1"] = "#FF000000"
+        brush["Parameter"]["Color2"] = "#FFFFFFFF"
+        item = base(800.0, 400.0)
+        item["ShapeParameter"]["Brush"] = brush
+        probes.append((f"noise_brush_{noise.lower()}", item))
+    return [
+        {"Name": f"probe2_{name}", "Path": ["probe2", name], "Items": [item]}
+        for name, item in probes
+    ]
+
+
 def main() -> int:
     target = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / ".work" / "probes" / "probes.ymmt"
     samples, brushes = collect_samples()
-    templates = build(samples, brushes)
+    second = len(sys.argv) > 2 and sys.argv[2] == "second"
+    templates = build_second(samples, brushes) if second else build(samples, brushes)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(
         json.dumps({"ItemTemplates": templates}, ensure_ascii=False), encoding="utf-8"

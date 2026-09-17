@@ -367,6 +367,68 @@ class TestVideoEffects:
         result = map_video_effects([effect], CompatibilityReport(), length=300)
         assert value_at(result.effects[0].params["rotation"]) == 60.0
 
+    def test_the_tilt_axes_are_reversed(self) -> None:
+        # YMM4 の X が正だと上の辺が手前へ来る Kumiki の X 軸の正は上の辺が奥へ倒れる
+        effect = {
+            "$type": "YukkuriMovieMaker.Project.Effects.RotateEffect, YukkuriMovieMaker",
+            "X": still(30.0),
+            "Y": still(-20.0),
+            "Z": still(0.0),
+            "IsEnabled": True,
+        }
+        result = map_video_effects([effect], CompatibilityReport(), length=300)
+        assert value_at(result.effects[0].params["rotation_x"]) == -30.0
+        assert value_at(result.effects[0].params["rotation_y"]) == 20.0
+
+    @pytest.mark.parametrize(
+        ("name", "fields", "kind", "expected"),
+        [
+            ("InOutFadeEffect", {"Value": 20.0}, "inout_fade", {"opacity": 20.0}),
+            (
+                "InOutRotateEffect",
+                {"ValueX": 90.0, "ValueY": 0.0, "ValueZ": 45.0, "Is3D": True},
+                "inout_rotate",
+                {"angle_x": -90.0, "angle_z": 45.0, "three_d": True},
+            ),
+            (
+                "InOutMoveEffect",
+                {"Value": 600.0, "Value2": 90.0, "Value3": 0.0},
+                "inout_offset",
+                {"offset_x": 600.0, "offset_y": -90.0},
+            ),
+            (
+                "InOutSkewEffect",
+                {"AngleX": 30.0, "AngleY": 10.0, "CenterPoint": "Center"},
+                "inout_skew",
+                {"angle_x": 30.0, "angle_y": -10.0},
+            ),
+            ("InOutGaussianBlurEffect", {"Value": 20.0}, "inout_blur", {"radius": 20.0}),
+        ],
+    )
+    def test_the_in_out_effects(
+        self, name: str, fields: dict[str, Any], kind: str, expected: dict[str, Any]
+    ) -> None:
+        effect = {
+            "$type": f"YukkuriMovieMaker.Project.Effects.{name}, YukkuriMovieMaker",
+            "IsInEffect": True,
+            "IsOutEffect": True,
+            "EffectTimeSeconds": 1.5,
+            "EasingType": "Linear",
+            "EasingMode": "In",
+            "IsEnabled": True,
+            **fields,
+        }
+        report = CompatibilityReport()
+        result = map_video_effects([effect], report, length=300)
+        assert not report.lines()
+        (mapped,) = result.effects
+        assert mapped.kind == kind
+        assert value_at(mapped.params["effect_time"]) == 1.5
+        assert mapped.params["effect_out"] is True
+        for key, value in expected.items():
+            actual = mapped.params[key]
+            assert (actual if isinstance(value, bool) else value_at(actual)) == value
+
     def test_the_fill_effect_takes_its_colour_from_the_brush(self) -> None:
         # ブラシの模様・合成モード・濃さを 1 つの塗りに写す（色だけの塗りでは合成が消える）
         effect = {
@@ -487,9 +549,27 @@ class TestPlacement:
 
     def test_an_unsupported_blend_is_recorded(self) -> None:
         report = CompatibilityReport()
-        mapped = map_template([text_item(Blend="HardMix")], report=report)
+        mapped = map_template([text_item(Blend="Lighten")], report=report)
         assert mapped[0].clip.blend_mode == "normal"
-        assert any("HardMix" in line for line in report.lines())
+        assert any("Lighten" in line for line in report.lines())
+
+    def test_the_photoshop_style_blends_are_kept(self) -> None:
+        # 焼き込みカラーやハードミックスも、塗りのエフェクトと同じ名前で写す
+        report = CompatibilityReport()
+        mapped = map_template([text_item(Blend="HardMix")], report=report)
+        assert mapped[0].clip.blend_mode == "hard_mix"
+        assert not report.lines()
+
+    def test_an_item_shown_only_in_the_preview_is_left_out(self) -> None:
+        # YMM4 は書き出した動画に映さない 読み込むと目印が映り込む
+        hidden = {
+            "$type": "YukkuriMovieMaker.Project.Effects.ShowOnlyPreviewEffect, YukkuriMovieMaker",
+            "IsEnabled": True,
+        }
+        report = CompatibilityReport()
+        mapped = map_template([text_item(VideoEffects=[hidden]), text_item()], report=report)
+        assert len(mapped) == 1
+        assert not report.lines()
 
 
 class TestOtherItems:

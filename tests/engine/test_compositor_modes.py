@@ -113,10 +113,18 @@ class TestShaderBlends:
         pairs = ((100, 150), (150, 100))
         normal = [_mix(gl_context, below, above, BlendMode.NORMAL) for below, above in pairs]
         for mode in BlendMode.ALL:
-            if mode == BlendMode.NORMAL:
+            # 輝度は上の明るさを下の色へ移す 灰色どうしでは上の色そのものになり、通常と重なる
+            if mode in (BlendMode.NORMAL, BlendMode.LUMINOSITY):
                 continue
             mixed = [_mix(gl_context, below, above, mode) for below, above in pairs]
             assert mixed != normal, f"{mode} が通常と同じ"
+
+    def test_extended_modes_mix_in_srgb(self, gl_context: OffscreenGLContext) -> None:
+        # YMM4 の合成は sRGB のまま混ぜる 差の絶対値なら符号化した値の差がそのまま出る
+        assert abs(_mix(gl_context, 200, 50, BlendMode.DIFFERENCE) - 150) <= 1
+        # ハードミックスは足して 1 を超えるかどうかで白か黒
+        assert _mix(gl_context, 200, 100, BlendMode.HARD_MIX) >= 254
+        assert _mix(gl_context, 100, 100, BlendMode.HARD_MIX) <= 1
 
 
 class TestProjection:

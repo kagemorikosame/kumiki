@@ -12,6 +12,7 @@ YMM4 の「前景を塗りつぶし」「グラデーション」エフェクト
 
 from __future__ import annotations
 
+from kumiki.effects.blending import BLEND_FUNCTIONS, BLEND_MODES
 from kumiki.effects.builtin import PRELUDE
 from kumiki.effects.definition import EffectDefinition, registry
 from kumiki.effects.spec import CheckSpec, ColorSpec, SelectSpec, TrackSpec, ValueSpec
@@ -33,35 +34,6 @@ PATTERNS = (
     ("grid", "格子"),
 )
 
-#: 合成モード シェーダの番号と同じ並び 名前は YMM4 の表記に寄せた
-BLEND_MODES = (
-    ("normal", "通常"),
-    ("add", "加算"),
-    ("subtract", "減算"),
-    ("multiply", "乗算"),
-    ("screen", "スクリーン"),
-    ("overlay", "オーバーレイ"),
-    ("soft_light", "ソフトライト"),
-    ("hard_light", "ハードライト"),
-    ("color_dodge", "覆い焼きカラー"),
-    ("color_burn", "焼き込みカラー"),
-    ("lighten", "比較(明)"),
-    ("darken", "比較(暗)"),
-    ("lighter_color", "カラー比較(明)"),
-    ("darker_color", "カラー比較(暗)"),
-    ("difference", "差の絶対値"),
-    ("exclusion", "除外"),
-    ("linear_burn", "焼き込みリニア"),
-    ("linear_light", "リニアライト"),
-    ("vivid_light", "ビビッドライト"),
-    ("pin_light", "ピンライト"),
-    ("hard_mix", "ハードミックス"),
-    ("division", "除算"),
-    ("hue", "色相"),
-    ("saturation", "彩度"),
-    ("color", "カラー"),
-    ("luminosity", "輝度"),
-)
 
 _EXTEND = (("clamp", "端の色"), ("wrap", "繰り返し"), ("mirror", "折り返し"))
 
@@ -197,72 +169,10 @@ vec4 pattern_color(vec2 p) {
     return line ? ramp(0.0) : ramp(1.0);
 }
 
-float luminance(vec3 c) { return dot(c, vec3(0.3, 0.59, 0.11)); }
-vec3 with_luminance(vec3 c, float l) {
-    c += l - luminance(c);
-    float n = min(min(c.r, c.g), c.b);
-    float x = max(max(c.r, c.g), c.b);
-    float lum = luminance(c);
-    if (n < 0.0) c = lum + (c - lum) * lum / max(lum - n, 1e-5);
-    if (x > 1.0) c = lum + (c - lum) * (1.0 - lum) / max(x - lum, 1e-5);
-    return c;
-}
-float saturation_of(vec3 c) { return max(max(c.r, c.g), c.b) - min(min(c.r, c.g), c.b); }
-vec3 with_saturation(vec3 c, float s) {
-    float n = min(min(c.r, c.g), c.b);
-    float x = max(max(c.r, c.g), c.b);
-    return x > n ? (c - n) * s / (x - n) : vec3(0.0);
-}
-
-float soft_light(float b, float s) {
-    if (s <= 0.5) return b - (1.0 - 2.0 * s) * b * (1.0 - b);
-    float d = b <= 0.25 ? ((16.0 * b - 12.0) * b + 4.0) * b : sqrt(b);
-    return b + (2.0 * s - 1.0) * (d - b);
-}
-float color_dodge(float b, float s) {
-    return b <= 0.0 ? 0.0 : (s >= 1.0 ? 1.0 : min(1.0, b / (1.0 - s)));
-}
-float color_burn(float b, float s) {
-    return b >= 1.0 ? 1.0 : (s <= 0.0 ? 0.0 : 1.0 - min(1.0, (1.0 - b) / s));
-}
-vec3 dodge3(vec3 b, vec3 s) {
-    return vec3(color_dodge(b.r, s.r), color_dodge(b.g, s.g), color_dodge(b.b, s.b));
-}
-vec3 burn3(vec3 b, vec3 s) {
-    return vec3(color_burn(b.r, s.r), color_burn(b.g, s.g), color_burn(b.b, s.b));
-}
-
-// b は下（元の絵）、s は上（模様） どちらも sRGB
-vec3 blended(vec3 b, vec3 s) {
-    if (blend == 1) return min(b + s, 1.0);
-    if (blend == 2) return max(b - s, 0.0);
-    if (blend == 3) return b * s;
-    if (blend == 4) return b + s - b * s;
-    if (blend == 5) return mix(2.0 * b * s, 1.0 - 2.0 * (1.0 - b) * (1.0 - s), step(0.5, b));
-    if (blend == 6) return vec3(soft_light(b.r, s.r), soft_light(b.g, s.g), soft_light(b.b, s.b));
-    if (blend == 7) return mix(2.0 * b * s, 1.0 - 2.0 * (1.0 - b) * (1.0 - s), step(0.5, s));
-    if (blend == 8) return dodge3(b, s);
-    if (blend == 9) return burn3(b, s);
-    if (blend == 10) return max(b, s);
-    if (blend == 11) return min(b, s);
-    if (blend == 12) return luminance(s) > luminance(b) ? s : b;
-    if (blend == 13) return luminance(s) < luminance(b) ? s : b;
-    if (blend == 14) return abs(b - s);
-    if (blend == 15) return b + s - 2.0 * b * s;
-    if (blend == 16) return max(b + s - 1.0, 0.0);
-    if (blend == 17) return clamp(b + 2.0 * s - 1.0, 0.0, 1.0);
-    if (blend == 18) {
-        return mix(burn3(b, 2.0 * s), dodge3(b, 2.0 * s - 1.0), step(0.5, s));
-    }
-    if (blend == 19) return mix(min(b, 2.0 * s), max(b, 2.0 * s - 1.0), step(0.5, s));
-    if (blend == 20) return step(1.0, b + s);
-    if (blend == 21) return clamp(b / max(s, 1e-5), 0.0, 1.0);
-    if (blend == 22) return with_luminance(with_saturation(s, saturation_of(b)), luminance(b));
-    if (blend == 23) return with_luminance(with_saturation(b, saturation_of(s)), luminance(b));
-    if (blend == 24) return with_luminance(s, luminance(b));
-    if (blend == 25) return with_luminance(b, luminance(s));
-    return s;
-}
+"""
+    + BLEND_FUNCTIONS
+    + """
+vec3 blended(vec3 b, vec3 s) { return blend_colors(blend, b, s); }
 
 void main() {
     vec4 base = texture(u_texture, v_uv);
