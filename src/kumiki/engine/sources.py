@@ -376,6 +376,24 @@ def _shape_path(kind: str, rect: QRectF, values: dict[str, object]) -> QPainterP
         path = _polygon_path(rect, 6)
     elif kind == "star":
         path = _star_path(rect)
+    elif kind == "inscribed_triangle":
+        # 頂点を上にして楕円に内接する三角形（YMM4 の三角形） 四角に合わせた三角形とは
+        # 底辺の位置と幅が違う
+        path = _polygon_path(rect, 3)
+    elif kind == "fan":
+        path = _fan_path(rect, float(values.get("span", 360.0)))  # type: ignore[arg-type]
+    elif kind == "arrow":
+        path = _arrow_path(
+            rect,
+            float(values.get("bar_length", 50.0)),  # type: ignore[arg-type]
+            float(values.get("bar_thickness", 50.0)),  # type: ignore[arg-type]
+        )
+    elif kind == "superformula":
+        path = _superformula_path(
+            rect,
+            float(values.get("formula_m", 4.0)),  # type: ignore[arg-type]
+            float(values.get("formula_n", 1.0)),  # type: ignore[arg-type]
+        )
     else:
         # ``background`` もここ 大きさは呼び出し側が画面いっぱいに指定する
         path.addRect(rect)
@@ -415,6 +433,63 @@ def _star_path(rect: QRectF, points: int = 5) -> QPainterPath:
         ratio = 1.0 if index % 2 == 0 else inner_ratio
         x = centre.x() + np.cos(angle) * outer_x * ratio
         y = centre.y() + np.sin(angle) * outer_y * ratio
+        if index == 0:
+            path.moveTo(x, y)
+        else:
+            path.lineTo(x, y)
+    path.closeSubpath()
+    return path
+
+
+def _fan_path(rect: QRectF, span: float) -> QPainterPath:
+    """扇 上を 0 として反時計回りに ``span`` 度（YMM4 の CenterAngle）"""
+    path = QPainterPath()
+    path.moveTo(rect.center())
+    # Qt の角度は右が 0 で反時計回り 上（90 度）から反時計回りに広げる
+    path.arcTo(rect, 90.0, max(0.0, min(span, 360.0)))
+    path.closeSubpath()
+    return path
+
+
+def _arrow_path(rect: QRectF, bar_length: float, bar_thickness: float) -> QPainterPath:
+    """上向きの矢印 頭は楕円に内接する三角形、軸は頭の底辺から下へ伸びる
+
+    軸の長さは半径の 3 倍を 100、太さは半径を 100 とする割合（YMM4 の絵に合わせた）
+    """
+    radius_x, radius_y = rect.width() / 2.0, rect.height() / 2.0
+    centre = rect.center()
+    base_y = centre.y() + radius_y * 0.5
+    half_head = radius_x * np.sqrt(3.0) / 2.0
+    half_bar = radius_x * max(bar_thickness, 0.0) / 200.0
+    bar_end = base_y + radius_y * 3.0 * max(bar_length, 0.0) / 100.0
+    path = QPainterPath()
+    path.moveTo(centre.x(), centre.y() - radius_y)
+    path.lineTo(centre.x() + half_head, base_y)
+    path.lineTo(centre.x() + half_bar, base_y)
+    path.lineTo(centre.x() + half_bar, bar_end)
+    path.lineTo(centre.x() - half_bar, bar_end)
+    path.lineTo(centre.x() - half_bar, base_y)
+    path.lineTo(centre.x() - half_head, base_y)
+    path.closeSubpath()
+    return path
+
+
+def _superformula_path(rect: QRectF, m: float, n: float) -> QPainterPath:
+    """スーパーフォーミュラ（Gielis の式、n1 = n2 = n3 = n） 一番遠い点が楕円に届くよう縮める"""
+    angles = np.linspace(0.0, 2.0 * np.pi, 721)
+    exponent = max(abs(n), 0.05)
+    quarter = m * angles / 4.0
+    radius = (np.abs(np.cos(quarter)) ** exponent + np.abs(np.sin(quarter)) ** exponent) ** (
+        -1.0 / exponent
+    )
+    radius = np.nan_to_num(radius, nan=0.0, posinf=0.0)
+    peak = float(radius.max()) if radius.size else 1.0
+    radius = radius / (peak if peak > 0 else 1.0)
+    centre = rect.center()
+    path = QPainterPath()
+    for index, (angle, r) in enumerate(zip(angles, radius, strict=True)):
+        x = centre.x() + np.cos(angle - np.pi / 2.0) * r * rect.width() / 2.0
+        y = centre.y() + np.sin(angle - np.pi / 2.0) * r * rect.height() / 2.0
         if index == 0:
             path.moveTo(x, y)
         else:

@@ -88,9 +88,14 @@ _SHAPES: dict[str, str] = {
     "RoundedRectangle": "rounded",
     "Ellipse": "ellipse",
     "Circle": "ellipse",
-    "Triangle": "triangle",
+    # YMM4 の三角形は円に内接する（試験の絵で確かめた）
+    "Triangle": "inscribed_triangle",
     "Star": "star",
     "Background": "background",
+    "Hexagon": "hexagon",
+    "Fan": "fan",
+    "Arrow": "arrow",
+    "Superformula": "superformula",
 }
 
 #: 素材を参照するアイテム 中身ではなくパスだけを返す
@@ -496,6 +501,14 @@ def _shape(item: dict[str, Any], log: CompatibilityReport) -> GeneratedSource:
         params["line_width"] = AnimatedValue(thickness)
         params["width"] = _shifted(width, -thickness)
         params["height"] = _shifted(height, -thickness)
+    if params["shape"] == "fan":
+        params["span"] = track("CenterAngle", 360.0)
+    elif params["shape"] == "arrow":
+        params["bar_length"] = track("BarLength", 50.0)
+        params["bar_thickness"] = track("BarThickness", 50.0)
+    elif params["shape"] == "superformula":
+        params["formula_m"] = track("M", 4.0)
+        params["formula_n"] = track("N", 1.0)
     round_value = number(parameter.get("Round"), 0.0)
     if shape == "rect" and round_value > 0:
         params["shape"] = "rounded"
