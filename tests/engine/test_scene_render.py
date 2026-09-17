@@ -153,6 +153,7 @@ class TestSound:
         assert np.all(before == 0.0)
         assert float(np.sqrt(np.mean(during**2))) > 0.0
 
+
 class TestScripts:
     """シーンとフレームバッファのクリップにも AviUtl スクリプトを掛けられること
 
