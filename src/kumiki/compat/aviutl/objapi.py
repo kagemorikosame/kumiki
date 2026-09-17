@@ -448,7 +448,12 @@ class ObjApi:
             width, height = state.screen_w, state.screen_h
             figure = "rect"
         else:
-            width = height = max(1, int(size))
+            if size > MAX_FIGURE_SIZE:
+                # 大きさはスクリプトが決める そのまま画像を作ると 1 回で数 GB になる
+                self._report.note_missing(
+                    f'obj.load("figure") の大きさ {int(size)}（上限で切った）'
+                )
+            width = height = max(1, min(int(size), MAX_FIGURE_SIZE))
         self.state.image = self._render_source(
             "shape",
             {
@@ -492,8 +497,13 @@ class ObjApi:
             return
         if target_name == "obj":
             state.image = origin.copy()
-        else:
-            state.buffers[target_name] = origin.copy()
+            state.image_shared = False
+            return
+        if target_name not in state.buffers and len(state.buffers) >= MAX_BUFFERS:
+            # 名前はスクリプトが決める 毎回違う名前で写されると、画面 1 枚ぶんずつ溜まる
+            self._report.note_missing("obj.copybuffer（バッファの数が上限を超えた）")
+            return
+        state.buffers[target_name] = origin.copy()
 
     def lua_mes(self, text: str = "") -> None:
         """テキストを描く ``obj.mes`` と ``obj.load("text", …)`` の実体"""
@@ -698,6 +708,13 @@ class ObjApi:
     def lua_multiobject(self, *args: Any) -> None:
         del args
         self._report.note_missing("obj.multiobject")
+
+
+#: ``obj.load("figure")`` の一辺の上限（画素） AviUtl の既定の最大画像サイズより大きい
+MAX_FIGURE_SIZE = 4096
+
+#: 名前付きバッファの数の上限 AviUtl の配布スクリプトが使うのは tmp と数個の cache だけ
+MAX_BUFFERS = 16
 
 
 def _buffer_name(name: str) -> str:

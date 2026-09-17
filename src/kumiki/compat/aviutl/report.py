@@ -42,11 +42,11 @@ class CompatibilityReport:
 
     def note_missing(self, name: str) -> None:
         with self._lock:
-            self.missing[name] += 1
+            self.missing[_bounded(self.missing, name)] += 1
 
     def note_control(self, line: str) -> None:
         with self._lock:
-            self.controls[line] += 1
+            self.controls[_bounded(self.controls, line)] += 1
 
     def note_failure(self, script: str, message: str) -> None:
         with self._lock:
@@ -82,6 +82,22 @@ class CompatibilityReport:
             rows.extend(f"{line} — {count} 回" for line, count in self.controls.most_common())
             rows.extend(f"{f.script}: {f.message}" for f in self.failures.values())
         return tuple(rows)
+
+
+#: 記録する種類の上限と、1 件の長さの上限 名前はスクリプトが決められる
+#: （``debug_print`` の中身、``obj.effect`` の名前など） ループで毎回違う名前を
+#: 出されると、記録だけでメモリを使い切る
+MAX_KINDS = 500
+MAX_NAME = 200
+#: 上限を超えた分をまとめて数える行
+OVERFLOW = "（記録の種類が多すぎるため、ほかは省略）"
+
+
+def _bounded(counter: Counter[str], name: str) -> str:
+    name = name[:MAX_NAME]
+    if name in counter or len(counter) < MAX_KINDS:
+        return name
+    return OVERFLOW
 
 
 #: アプリ全体で 1 つ スクリプトはどこから走っても同じ場所へ記録する
