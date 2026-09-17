@@ -20,3 +20,6 @@ htmlcov/
 /proxies/
 *.kmk.bak
 *.peaks
+
+# 比較などの作業フォルダ 配布物の絵が入るので入れない
+/.work/
