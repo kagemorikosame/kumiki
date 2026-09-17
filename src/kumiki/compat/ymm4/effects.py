@@ -360,6 +360,40 @@ def _scaled(value: AnimatedValue, factor: float) -> AnimatedValue:
     )
 
 
+def _copy_and_reverse(r: _Reader) -> Effect | None:
+    return _create(
+        "copy_reverse",
+        position=r.choice(
+            "Position",
+            {"Right": "right", "Left": "left", "Bottom": "bottom", "Top": "top"},
+            "right",
+        ),
+        distance=r.track("Distance"),
+        flip_horizontal=r.flag("IsLeftRightReversed"),
+        flip_vertical=r.flag("IsTopBottomReversed"),
+        centering=r.flag("IsCentering", True),
+    )
+
+
+def _fill_background(r: _Reader) -> Effect | None:
+    brush = r.entry.get("Brush")
+    if not is_solid(brush):
+        r.report.note_missing("YMM4 の背景の塗りのブラシ（単色以外は先頭の色で塗った）")
+    if str(r.entry.get("BlendMode") or "Normal") != "Normal":
+        r.report.note_missing(f"YMM4 の背景の塗りの合成モード: {r.entry.get('BlendMode')}")
+    return _create(
+        "fill_background",
+        color=brush_colour(brush, (1.0, 1.0, 1.0, 1.0)),
+        opacity=r.track("Opacity", 100.0),
+        corner=r.track("Round"),
+        margin_top=r.track("Top", 10.0),
+        margin_bottom=r.track("Bottom", 10.0),
+        margin_left=r.track("Left", 10.0),
+        margin_right=r.track("Right", 10.0),
+        background_only=r.flag("IsBackgroundOnly"),
+    )
+
+
 def _long_shadow(r: _Reader) -> Effect | None:
     return _create(
         "long_shadow",
@@ -625,6 +659,8 @@ _MAPPERS: dict[str, Callable[[_Reader], Effect | None]] = {
     "ShadowEffect": _shadow,
     "InnerShadowEffect": _inner_shadow,
     "MaskEffect": _mask,
+    "CopyAndReverseEffect": _copy_and_reverse,
+    "FillBackgroundEffect": _fill_background,
     "CircularDuplicatorEffect": _circular_duplicator,
     "MeshDeformationEffect": _mesh_deformation,
     "InOutGetUpEffect": _inout_getup,

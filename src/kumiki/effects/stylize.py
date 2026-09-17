@@ -325,6 +325,63 @@ void main() {
 }
 """)
 
+_COPY_REVERSE = _shader("""
+uniform int position;
+uniform float distance;
+uniform bool flip_horizontal;
+uniform bool flip_vertical;
+uniform bool centering;
+
+// 絵の範囲の中で左右や上下を入れ替えて読む
+vec4 mirrored(vec2 pixel, vec2 center) {
+    if (flip_horizontal) pixel.x = 2.0 * center.x - pixel.x;
+    if (flip_vertical) pixel.y = 2.0 * center.y - pixel.y;
+    return sample_pixel(pixel);
+}
+
+void main() {
+    // 並べる向き 0 右 1 左 2 下 3 上（画面の見た目 GL の Y は上が正）
+    vec2 size = object_size();
+    vec2 step_ = position == 0 ? vec2(size.x + distance, 0.0)
+        : position == 1 ? vec2(-(size.x + distance), 0.0)
+        : position == 2 ? vec2(0.0, -(size.y + distance))
+        : vec2(0.0, size.y + distance);
+    // 中央に寄せると、元と写しの組の真ん中が元の中心に来る
+    vec2 base_shift = centering ? -step_ * 0.5 : vec2(0.0);
+    vec2 pixel = v_uv * u_size;
+    vec4 original = sample_pixel(pixel - base_shift);
+    vec4 copy = mirrored(pixel - base_shift - step_, object_center());
+    frag_color = over(original, copy);
+}
+""")
+
+_FILL_BACKGROUND = _shader("""
+uniform vec4 color;
+uniform float opacity;
+uniform float corner;
+uniform float margin_top;
+uniform float margin_bottom;
+uniform float margin_left;
+uniform float margin_right;
+uniform bool background_only;
+
+void main() {
+    // 絵の範囲を上下左右に広げた角丸の四角を、絵の後ろに敷く（負の値なら狭める）
+    vec2 pixel = v_uv * u_size;
+    vec2 low = u_object.xy - vec2(margin_left, margin_bottom);
+    vec2 high = u_object.zw + vec2(margin_right, margin_top);
+    vec2 center = (low + high) * 0.5;
+    vec2 half_size = max((high - low) * 0.5, vec2(0.0));
+    float radius = clamp(corner, 0.0, min(half_size.x, half_size.y));
+    vec2 q = abs(pixel - center) - (half_size - radius);
+    float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;
+    float inside = 1.0 - smoothstep(-0.5, 0.5, d);
+    vec4 plate = vec4(color.rgb, color.a * inside * clamp(opacity * 0.01, 0.0, 1.0));
+    vec4 base = texture(u_texture, v_uv);
+    frag_color = background_only ? plate : over(base, plate);
+}
+""")
+
 _HIGHLIGHTS_SHADOWS = _shader("""
 uniform float highlights;
 uniform float shadows;
@@ -690,6 +747,40 @@ def register_stylize_effects() -> None:
                 CheckSpec("invert", "反転", False),
             ),
             fragment_shader=_SHAPE_MASK,
+        ),
+        EffectDefinition(
+            kind="copy_reverse",
+            label="反転コピー",
+            category="形",
+            parameters=(
+                SelectSpec(
+                    "position",
+                    "並べる向き",
+                    (("right", "右"), ("left", "左"), ("bottom", "下"), ("top", "上")),
+                    "right",
+                ),
+                TrackSpec("distance", "間隔", -4000, 4000, 0, step=1, unit="px"),
+                CheckSpec("flip_horizontal", "左右を反転", True),
+                CheckSpec("flip_vertical", "上下を反転", False),
+                CheckSpec("centering", "中央に寄せる", True),
+            ),
+            fragment_shader=_COPY_REVERSE,
+        ),
+        EffectDefinition(
+            kind="fill_background",
+            label="背景を塗る",
+            category="装飾",
+            parameters=(
+                ColorSpec("color", "色", (1.0, 1.0, 1.0, 1.0)),
+                TrackSpec("opacity", "濃さ", 0, 100, 100, unit="%"),
+                TrackSpec("corner", "角の丸み", 0, 2000, 0, step=1, unit="px"),
+                TrackSpec("margin_top", "上の余白", -4000, 4000, 10, step=1, unit="px"),
+                TrackSpec("margin_bottom", "下の余白", -4000, 4000, 10, step=1, unit="px"),
+                TrackSpec("margin_left", "左の余白", -4000, 4000, 10, step=1, unit="px"),
+                TrackSpec("margin_right", "右の余白", -4000, 4000, 10, step=1, unit="px"),
+                CheckSpec("background_only", "背景だけ", False),
+            ),
+            fragment_shader=_FILL_BACKGROUND,
         ),
         EffectDefinition(
             kind="edge_detect",
