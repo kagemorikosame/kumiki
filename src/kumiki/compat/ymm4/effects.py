@@ -373,7 +373,7 @@ _MASK_SHAPES = {
 
 
 def _mask(r: _Reader) -> Effect | None:
-    """図形で切り抜く 位置は下が正、角度は時計回り（YMM4 の絵で確かめた）"""
+    """図形で切り抜く YMM4 の位置は下が正、角度は時計回り（YMM4 の絵で確かめた）"""
     plugin = str(r.entry.get("ShapeType2") or "").partition(",")[0].rpartition(".")[2]
     shape = next((kind for key, kind in _MASK_SHAPES.items() if plugin.startswith(key)), None)
     if shape is None:
@@ -399,7 +399,7 @@ def _mask(r: _Reader) -> Effect | None:
         corner=parameter.track("Round"),
         span=parameter.track("CenterAngle", 360.0),
         center_x=r.track("X"),
-        center_y=r.track("Y"),
+        center_y=r.track("Y", flip=True),
         rotation=r.track("Angle"),
         blur=r.track("Blur"),
         invert=r.flag("InvertMask"),

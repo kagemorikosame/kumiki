@@ -283,6 +283,41 @@ class TestPixels:
         assert int(columns.min()) == 16
 
 
+class TestAxes:
+    """Y は上が正 例外は表示名に「下が正」と書いてあるものだけ"""
+
+    def test_the_mask_centre_moves_up_with_a_positive_y(
+        self, gl_context: OffscreenGLContext, processor: EffectProcessor
+    ) -> None:
+        # 逆向きだと、YMM4 から写した切り抜きが上下反対の場所に出る
+        picture = np.full((SIZE, SIZE, 4), 200, dtype=np.uint8)
+        effect = _make("shape_mask", shape="ellipse", width=16.0, height=16.0, center_y=24.0)
+        result = _run(gl_context, processor, effect, image=picture)
+        # GL の向きなので、行番号が大きいほど画面の上
+        rows = np.flatnonzero(result[..., 3].max(axis=1) > 0.5)
+        assert rows.mean() > SIZE / 2
+
+    def test_the_particle_emitter_uses_the_screen_direction(
+        self, gl_context: OffscreenGLContext, processor: EffectProcessor
+    ) -> None:
+        # 放つ位置だけは YMM4 と同じ下向き正（表示名にもそう書いてある）
+        effect = _make(
+            "particles",
+            rate=60.0,
+            lifetime=1.0,
+            size=100.0,
+            emitter_y=-20.0,
+            speed=0.0,
+            gravity=0.0,
+            randomness=0.0,
+        )
+        result = _run(gl_context, processor, effect)
+        rows = np.flatnonzero(result[..., 3].max(axis=1) > 0.5)
+        assert len(rows), "粒が 1 つも出ていない"
+        # 下向き正なので -20 は画面の上（GL の向きでは行番号が大きい側）
+        assert rows.mean() > SIZE / 2
+
+
 class TestFrameBuffer:
     def test_it_reads_what_was_drawn_below(self, gl_context: OffscreenGLContext) -> None:
         # 下の絵を読めないと、YMM4 の「背景だけぼかす帯」が黒い板になる

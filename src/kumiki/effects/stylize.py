@@ -397,10 +397,11 @@ float sd_triangle(vec2 p, float r) {
 }
 
 void main() {
-    // 絵の中心からの画素 Y は下が正 図形は時計回りに rotation 度回っている
+    // 図形の当たり判定は Y 下向きで書いてある（扇や矢印の向きがそのまま読める）
+    // 設定の中心はほかのエフェクトと同じ Y 上向きなので、ここで符号を合わせる
     vec2 p = v_uv * u_size - object_center();
     p.y = -p.y;
-    p -= vec2(center_x, center_y);
+    p -= vec2(center_x, -center_y);
     float r = radians(-rotation);
     p = mat2(cos(r), sin(r), -sin(r), cos(r)) * p;
     vec2 half_size = max(vec2(width, height) * 0.5, vec2(0.5));
