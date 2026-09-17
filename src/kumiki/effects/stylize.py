@@ -225,6 +225,42 @@ void main() {
 }
 """)
 
+_INNER_SHADOW = _shader(
+    _SRGB
+    + """
+uniform float offset_x;
+uniform float offset_y;
+uniform float blur;
+uniform float opacity;
+uniform vec4 color;
+uniform int blend;
+
+void main() {
+    if (u_pass == 0) {
+        // 影は絵の内側で、ずらした絵に隠れない所に落ちる まず横にぼかす
+        // ずらす向きは影が落ちる向き（Y は上が正）
+        vec2 shift = -vec2(offset_x, offset_y) / u_size;
+        float covered = blur1d(u_texture, v_uv + shift, vec2(1.0, 0.0), blur).a;
+        frag_color = vec4(1.0, 1.0, 1.0, 1.0 - covered);
+        return;
+    }
+    float shadow = blur1d(u_texture, v_uv, vec2(0.0, 1.0), blur).a;
+    vec4 base = texture(u_source, v_uv);
+    // 合成は sRGB で行う（YMM4 と同じ） 0 通常 1 乗算 2 加算 3 スクリーン 4 オーバーレイ
+    vec3 under = to_srgb(base.rgb);
+    vec3 over_ = to_srgb(color.rgb);
+    vec3 mixed = over_;
+    if (blend == 1) mixed = under * over_;
+    if (blend == 2) mixed = min(under + over_, 1.0);
+    if (blend == 3) mixed = under + over_ - under * over_;
+    vec3 lifted = 1.0 - 2.0 * (1.0 - under) * (1.0 - over_);
+    if (blend == 4) mixed = mix(2.0 * under * over_, lifted, step(0.5, under));
+    float amount = clamp(shadow * color.a * opacity * 0.01, 0.0, 1.0);
+    frag_color = vec4(to_linear(mix(under, mixed, amount)), base.a);
+}
+"""
+)
+
 _HIGHLIGHTS_SHADOWS = _shader("""
 uniform float highlights;
 uniform float shadows;
@@ -535,6 +571,32 @@ def register_stylize_effects() -> None:
             category="色",
             parameters=(ColorSpec("color", "色", (1.0, 0.9, 0.7, 1.0)),),
             fragment_shader=_TINT,
+        ),
+        EffectDefinition(
+            kind="inner_shadow",
+            label="内側の影",
+            category="装飾",
+            parameters=(
+                TrackSpec("offset_x", "X", -2000, 2000, 6, step=1, unit="px"),
+                TrackSpec("offset_y", "Y", -2000, 2000, -6, step=1, unit="px"),
+                TrackSpec("blur", "ぼかし", 0, 96, 0, unit="px"),
+                TrackSpec("opacity", "濃さ", 0, 100, 100, unit="%"),
+                ColorSpec("color", "色", (0.0, 0.0, 0.0, 1.0)),
+                SelectSpec(
+                    "blend",
+                    "合成",
+                    (
+                        ("normal", "通常"),
+                        ("multiply", "乗算"),
+                        ("add", "加算"),
+                        ("screen", "スクリーン"),
+                        ("overlay", "オーバーレイ"),
+                    ),
+                    "normal",
+                ),
+            ),
+            fragment_shader=_INNER_SHADOW,
+            passes=2,
         ),
         EffectDefinition(
             kind="edge_detect",

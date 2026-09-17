@@ -281,6 +281,33 @@ def _shadow(r: _Reader) -> Effect | None:
     )
 
 
+def _inner_shadow(r: _Reader) -> Effect | None:
+    """内側の影 X / Y は下が正 合成は通常・乗算・加算・スクリーン・オーバーレイだけ受ける"""
+    brush = r.entry.get("Brush")
+    if not is_solid(brush):
+        r.report.note_missing("YMM4 の内側の影のブラシ（単色以外は先頭の色で塗った）")
+    return _create(
+        "inner_shadow",
+        offset_x=r.track("X"),
+        offset_y=r.track("Y", flip=True),
+        blur=r.track("Blur"),
+        opacity=r.track("Opacity", 100.0),
+        color=brush_colour(brush, (0.0, 0.0, 0.0, 1.0)),
+        blend=r.choice(
+            "BlendMode",
+            {
+                "Normal": "normal",
+                "Multiply": "multiply",
+                "Add": "add",
+                "LinearDodge": "add",
+                "Screen": "screen",
+                "Overlay": "overlay",
+            },
+            "normal",
+        ),
+    )
+
+
 def _long_shadow(r: _Reader) -> Effect | None:
     return _create(
         "long_shadow",
@@ -544,6 +571,7 @@ _MAPPERS: dict[str, Callable[[_Reader], Effect | None]] = {
     "HightlightsAndShadowsEffect": _highlights_shadows,
     "RepeatRotateEffect": _repeat_rotate,
     "ShadowEffect": _shadow,
+    "InnerShadowEffect": _inner_shadow,
     "CircularDuplicatorEffect": _circular_duplicator,
     "MeshDeformationEffect": _mesh_deformation,
     "InOutGetUpEffect": _inout_getup,
