@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 from kumiki.compat.aviutl.report import CompatibilityReport
-from kumiki.compat.ymm4.values import animated, colour, number
+from kumiki.compat.ymm4.brushes import is_solid
+from kumiki.compat.ymm4.values import animated, brush_colour, colour, number
 from kumiki.core.model import AnimatedValue, Effect
 from kumiki.effects.definition import registry
 
@@ -249,14 +251,47 @@ def _stripe_glitch(r: _Reader) -> Effect | None:
     )
 
 
+def _shifted_angle(value: AnimatedValue, base: float, *, negate: bool = False) -> AnimatedValue:
+    """角度の基準と向きをそろえる ``base - value``（``negate``）か ``base + value``"""
+
+    def change(angle: float) -> float:
+        return base - angle if negate else base + angle
+
+    return AnimatedValue(
+        change(value.static),
+        tuple(replace(frame, value=change(frame.value)) for frame in value.keyframes),
+    )
+
+
+def _shadow(r: _Reader) -> Effect | None:
+    """影 X / Y は下が正 拡大と回転は絵の中心を支点にする（YMM4 の絵で確かめた）"""
+    brush = r.entry.get("Brush")
+    if not is_solid(brush):
+        r.report.note_missing("YMM4 の影のブラシ（単色以外は先頭の色で塗った）")
+    # IsRotateAtCenter は試験の絵で違いが出なかった
+    return _create(
+        "shadow",
+        offset_x=r.track("X"),
+        offset_y=r.track("Y", flip=True),
+        blur=r.track("Blur"),
+        opacity=r.track("Opacity", 100.0),
+        color=brush_colour(brush, (0.0, 0.0, 0.0, 1.0)),
+        zoom=r.track("Zoom", 100.0),
+        angle=r.track("Angle"),
+    )
+
+
 def _long_shadow(r: _Reader) -> Effect | None:
     return _create(
         "long_shadow",
-        angle=r.track("Angle", flip=True),
+        # YMM4 は上を 0 とした時計回り こちらは右を 0 とした反時計回り（Y が上）
+        angle=_shifted_angle(r.track("Angle"), 90.0, negate=True),
         length_=r.track("Length"),
         opacity=r.track("Opacity", 100.0),
         attenuation=r.track("Attenuation"),
-        shadow_type=r.choice("ShadowType", {"Solid": "solid", "Gradient": "gradient"}, "solid"),
+        shadow_type=r.choice(
+            "ShadowType", {"Solid": "solid", "Gradient": "gradient", "Image": "image"}, "solid"
+        ),
         color1=colour(r.entry.get("Color1"), (0.0, 0.0, 0.0, 1.0)),
         color2=colour(r.entry.get("Color2"), (0.0, 0.0, 0.0, 0.0)),
     )
@@ -508,6 +543,7 @@ _MAPPERS: dict[str, Callable[[_Reader], Effect | None]] = {
     "SkewEffect": _skew,
     "HightlightsAndShadowsEffect": _highlights_shadows,
     "RepeatRotateEffect": _repeat_rotate,
+    "ShadowEffect": _shadow,
     "CircularDuplicatorEffect": _circular_duplicator,
     "MeshDeformationEffect": _mesh_deformation,
     "InOutGetUpEffect": _inout_getup,

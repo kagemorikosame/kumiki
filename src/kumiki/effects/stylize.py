@@ -209,13 +209,17 @@ void main() {
     int taps = int(clamp(length_, 0.0, 512.0));
     float coverage = 0.0;
     float where = 0.0;
+    vec3 image = vec3(0.0);
     for (int i = 1; i <= taps; ++i) {
         float t = float(i) / max(float(taps), 1.0);
-        float a = texture(u_texture, v_uv - direction * float(i) / u_size).a;
-        a *= 1.0 - clamp(attenuation / 100.0, 0.0, 1.0) * t;
-        if (a > coverage) { coverage = a; where = t; }
+        vec4 found = texture(u_texture, v_uv - direction * float(i) / u_size);
+        float a = found.a * (1.0 - clamp(attenuation / 100.0, 0.0, 1.0) * t);
+        if (a > coverage) { coverage = a; where = t; image = found.rgb; }
     }
-    vec4 tint = shadow_type == 0 ? color1 : mix(color1, color2, where);
+    // 画像: 絵そのものの色で伸ばす（YMM4 の ShadowType が Image のとき）
+    vec4 tint = shadow_type == 0 ? color1
+        : shadow_type == 2 ? vec4(image, 1.0)
+        : mix(color1, color2, where);
     vec4 shadow = vec4(tint.rgb, tint.a * coverage * clamp(opacity / 100.0, 0.0, 1.0));
     frag_color = over(base, shadow);
 }
@@ -460,7 +464,7 @@ def register_stylize_effects() -> None:
                 SelectSpec(
                     "shadow_type",
                     "塗り",
-                    (("solid", "単色"), ("gradient", "グラデーション")),
+                    (("solid", "単色"), ("gradient", "グラデーション"), ("image", "絵の色")),
                     "solid",
                 ),
                 ColorSpec("color1", "色 1", (0.0, 0.0, 0.0, 1.0)),

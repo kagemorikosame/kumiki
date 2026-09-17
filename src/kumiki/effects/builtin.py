@@ -416,14 +416,21 @@ uniform float offset_y;
 uniform float blur;
 uniform float opacity;
 uniform vec4 color;
+uniform float zoom;
+uniform float angle;
 
 void main() {
     if (u_pass == 0) {
         // 影の形を作って横にぼかす 位置は元の絵からずらす
         // Y は正が上 変形エフェクトの pos_y と揃えてある ここだけ逆にすると、
         // 同じ「Y」という表示で上下が反対に動くことになる
-        vec2 shift = -vec2(offset_x, offset_y) / u_size;
-        vec4 shape = blur1d(u_texture, v_uv + shift, vec2(1.0, 0.0), blur);
+        // 拡大と回転は絵の中心を支点にする（YMM4 の影と同じ）
+        vec2 pixel = v_uv * u_size - object_center() - vec2(offset_x, offset_y);
+        float r = radians(-angle);
+        pixel = mat2(cos(r), -sin(r), sin(r), cos(r)) * pixel;
+        pixel /= max(zoom, 0.0001) * 0.01;
+        vec2 shifted = (pixel + object_center()) / u_size;
+        vec4 shape = blur1d(u_texture, shifted, vec2(1.0, 0.0), blur);
         frag_color = vec4(color.rgb, shape.a * color.a * (opacity / 100.0));
         return;
     }
@@ -786,6 +793,8 @@ def register_builtin_effects() -> None:
                 TrackSpec("blur", "ぼかし", 0, 96, 6, unit="px"),
                 TrackSpec("opacity", "濃さ", 0, 100, 70, unit="%"),
                 ColorSpec("color", "色", (0.0, 0.0, 0.0, 1.0)),
+                TrackSpec("zoom", "拡大率", 0, 1000, 100, unit="%"),
+                TrackSpec("angle", "回転", -3600, 3600, 0, unit="度"),
             ),
             fragment_shader=_SHADOW,
             passes=2,
