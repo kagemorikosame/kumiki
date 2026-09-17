@@ -138,6 +138,7 @@ class TestTrackHeight:
         with pytest.raises(ToolError, match="list_tracks"):
             run(host, "set_track_height", track_id="無い", height=80)
 
+
 class TestTransition:
     def test_a_transition_is_placed(self, host: FakeHost) -> None:
         result = run(host, "add_transition", style="push", duration=40, angle=90.0)
@@ -156,4 +157,3 @@ class TestTransition:
     def test_an_unknown_style_is_refused(self, host: FakeHost) -> None:
         with pytest.raises(ToolError, match="style"):
             run(host, "add_transition", style="ワイプ")
-
