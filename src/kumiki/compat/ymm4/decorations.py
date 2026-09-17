@@ -191,7 +191,7 @@ def map_video_effects(
                 report.note_missing(f"YMM4 の映像エフェクト: {name or '種類不明'}")
             continue
         if pivot is not None:
-            if built.kind == "transform":
+            if built.kind in ("transform", "inout_zoom"):
                 built = with_pivot(built, pivot)
             elif built.kind in _PIVOTED_KINDS:
                 # 支点を受け取れない回転と拡大 中央で回るので見た目が変わりうる
@@ -209,7 +209,6 @@ _PIVOTED_KINDS = frozenset(
         "random_rotate",
         "random_zoom",
         "repeat_rotate",
-        "inout_zoom",
         "inout_getup",
         "spiral",
     }

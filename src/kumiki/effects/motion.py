@@ -235,15 +235,28 @@ _INOUT_ZOOM = _shader(
 uniform float zoom;
 uniform float zoom_x;
 uniform float zoom_y;
+uniform float anchor_x;
+uniform float anchor_y;
+uniform int pivot_h;
+uniform int pivot_v;
 """
     + _IN_OUT
     + """
 void main() {
-    // 隠れきった状態で、各軸が zoom% × 軸の割合 だけ縮む 軸の割合が 0 の軸は縮まない
-    vec2 shrink = vec2(zoom_x, zoom_y) / 100.0 * (zoom / 100.0) * hidden_amount();
-    vec2 scale = 1.0 - shrink;
+    // 隠れきった状態の大きさが「拡大率 × 軸の割合」 100% どうしなら大きさは変わらない
+    // （YMM4 に描かせて確かめた 0 の軸はその向きに潰れた所から広がる）
+    vec2 target = vec2(zoom_x, zoom_y) / 100.0 * (zoom / 100.0);
+    vec2 scale = mix(vec2(1.0), target, hidden_amount());
     if (scale.x <= 0.0001 || scale.y <= 0.0001) { frag_color = vec4(0.0); return; }
+    // 支点は変形（transform）と同じ決め方 既定は絵の中央
     vec2 centre = object_center();
+    if (pivot_h == 1) centre.x = u_object.x;
+    if (pivot_h == 2) centre.x = u_object.z;
+    if (pivot_v == 1) centre.y = u_object.w;
+    if (pivot_v == 2) centre.y = u_object.y;
+    if (pivot_h == 0) centre.x = u_size.x * 0.5;
+    if (pivot_v == 0) centre.y = u_size.y * 0.5;
+    centre += vec2(anchor_x, anchor_y);
     frag_color = sample_pixel(centre + (v_uv * u_size - centre) / scale);
 }
 """
@@ -586,6 +599,7 @@ uniform float fall;
 uniform float delay;
 uniform float impact;
 uniform float spread;
+uniform float spin;
 
 void main() {
     // 絵を size 四方の欠片に割り、欠片ごとに飛ばして落とす
@@ -606,11 +620,18 @@ void main() {
             vec2 home = (index + 0.5) * cell;
             float wait = hash(index + 3.1) * 0.5 * delay / 100.0;
             float t = max(elapsed - wait, 0.0);
-            vec2 outward = normalize(home - centre + vec2(0.001)) * 300.0 * fly / 100.0;
+            vec2 outward = normalize(home - centre + vec2(0.001)) * 300.0 * fly / 100.0
+                         * impact / 100.0;
             vec2 scatter = (vec2(hash(index + 1.7), hash(index + 9.3)) - 0.5) * 400.0
                          * impact / 100.0 * spread / 100.0;
             vec2 moved = home + (outward + scatter) * t + vec2(0.0, -0.5 * gravity * t * t);
-            vec2 source = pixel - (moved - home);
+            // 欠片ごとに向きと速さの違う回転 経過に比例して回る
+            float turn_angle = (hash(index + 5.1) * 2.0 - 1.0) * 2.0 * PI * spin / 100.0 * t;
+            vec2 local = pixel - moved;
+            float c_ = cos(turn_angle);
+            float s_ = sin(turn_angle);
+            local = mat2(c_, s_, -s_, c_) * local;
+            vec2 source = home + local;
             if (all(equal(floor(source / cell), index))) {
                 result = over(sample_pixel(source), result);
             }
@@ -658,6 +679,21 @@ float channel(vec2 p, float z, float salt) {
     if (noise == 2) {
         // 画素ごとのばらばらな値
         return mix(hash(floor(p * 40.0) + slice), hash(floor(p * 40.0) + next), blend);
+    }
+    if (noise == 3 || noise == 4) {
+        // ボロノイは近い点の面ごとの値、セルは近い点までの距離
+        vec2 cell = floor(p);
+        float nearest = 10.0;
+        float value = 0.0;
+        for (int j = -1; j <= 1; ++j) {
+            for (int i = -1; i <= 1; ++i) {
+                vec2 c = cell + vec2(i, j);
+                vec2 point = c + vec2(hash(c + slice + 0.3), hash(c + slice + 0.7));
+                float d = length(p - point);
+                if (d < nearest) { nearest = d; value = hash(c + slice + 0.9); }
+            }
+        }
+        return noise == 3 ? value : clamp(nearest, 0.0, 1.0);
     }
     if (noise == 0) {
         // ブロック 格子ごとに一様
@@ -812,9 +848,33 @@ def register_motion_effects() -> None:
             label="拡大して登場",
             category="登場・退場",
             parameters=(
-                TrackSpec("zoom", "縮める量", 0, 100, 100, unit="%"),
-                TrackSpec("zoom_x", "横の割合", 0, 100, 100, unit="%"),
-                TrackSpec("zoom_y", "縦の割合", 0, 100, 100, unit="%"),
+                TrackSpec("zoom", "隠れたときの拡大率", 0, 1000, 0, unit="%"),
+                TrackSpec("zoom_x", "横の割合", 0, 1000, 100, unit="%"),
+                TrackSpec("zoom_y", "縦の割合", 0, 1000, 100, unit="%"),
+                TrackSpec("anchor_x", "中心 X", -4000, 4000, 0, step=1, unit="px"),
+                TrackSpec("anchor_y", "中心 Y", -4000, 4000, 0, step=1, unit="px"),
+                SelectSpec(
+                    "pivot_h",
+                    "中心の横",
+                    (
+                        ("screen", "画面の中央"),
+                        ("left", "絵の左端"),
+                        ("right", "絵の右端"),
+                        ("center", "絵の中央"),
+                    ),
+                    "center",
+                ),
+                SelectSpec(
+                    "pivot_v",
+                    "中心の縦",
+                    (
+                        ("screen", "画面の中央"),
+                        ("top", "絵の上端"),
+                        ("bottom", "絵の下端"),
+                        ("middle", "絵の中央"),
+                    ),
+                    "middle",
+                ),
                 *_in_out_specs(),
             ),
             fragment_shader=_INOUT_ZOOM,
@@ -984,6 +1044,7 @@ def register_motion_effects() -> None:
                 TrackSpec("delay", "ばらつき", 0, 1000, 100, unit="%"),
                 TrackSpec("impact", "衝撃", 0, 1000, 100, unit="%"),
                 TrackSpec("spread", "散らばり", 0, 1000, 100, unit="%"),
+                TrackSpec("spin", "欠片の回転", 0, 1000, 0, unit="%"),
             ),
             fragment_shader=_CRASH,
         ),
@@ -997,7 +1058,13 @@ def register_motion_effects() -> None:
                 SelectSpec(
                     "noise",
                     "ノイズ",
-                    (("block", "ブロック"), ("perlin", "パーリン"), ("random", "ランダム")),
+                    (
+                        ("block", "ブロック"),
+                        ("perlin", "パーリン"),
+                        ("random", "ランダム"),
+                        ("voronoi", "ボロノイ"),
+                        ("cellular", "セル"),
+                    ),
                     "perlin",
                 ),
                 TrackSpec("strength", "強さ", 0, 400, 100, unit="%"),

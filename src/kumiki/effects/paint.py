@@ -21,7 +21,7 @@ __all__ = ["BLEND_MODES", "MAX_STOPS", "PATTERNS", "register_paint_effects"]
 
 #: グラデーションの色の数の上限 配布物の多くは 2〜5 色 金属風の文字で 10 を超えるものが
 #: あるが、上限を超えた分は間引いて写す（:mod:`kumiki.compat.ymm4.brushes`）
-MAX_STOPS = 8
+MAX_STOPS = 16
 
 #: 模様の種類 シェーダの番号と同じ並び
 PATTERNS = (
@@ -53,6 +53,16 @@ _STOP_UNIFORMS = "\n".join(
     f"uniform vec4 color{index};\nuniform float offset{index};" for index in range(MAX_STOPS)
 )
 
+#: 番号から色と位置を引く GLSL の uniform は配列にせず名前で持つ（パラメータの名前と揃える）
+_STOP_LOOKUP = (
+    "vec4 stop_color(int i) {\n"
+    + "".join(f"    if (i == {i}) return color{i};\n" for i in range(MAX_STOPS - 1))
+    + f"    return color{MAX_STOPS - 1};\n}}\n"
+    + "float stop_offset(int i) {\n"
+    + "".join(f"    if (i == {i}) return offset{i};\n" for i in range(MAX_STOPS - 1))
+    + f"    return offset{MAX_STOPS - 1};\n}}\n"
+)
+
 _PAINT = (
     PRELUDE
     + _STOP_UNIFORMS
@@ -60,6 +70,9 @@ _PAINT = (
 uniform int pattern;
 uniform int extend;
 uniform int stops;
+"""
+    + f"const int MAX_STOPS = {MAX_STOPS};\n"
+    + """
 uniform int blend;
 uniform float opacity;
 uniform float center_x;
@@ -105,20 +118,12 @@ vec3 to_linear(vec3 c) {
     return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
 }
 
-vec4 stop_color(int i) {
-    if (i == 0) return color0; if (i == 1) return color1; if (i == 2) return color2;
-    if (i == 3) return color3; if (i == 4) return color4; if (i == 5) return color5;
-    if (i == 6) return color6; return color7;
-}
-float stop_offset(int i) {
-    if (i == 0) return offset0; if (i == 1) return offset1; if (i == 2) return offset2;
-    if (i == 3) return offset3; if (i == 4) return offset4; if (i == 5) return offset5;
-    if (i == 6) return offset6; return offset7;
-}
-
+"""
+    + _STOP_LOOKUP
+    + """
 // 色は sRGB で補間する（YMM4 と同じ） uniform の色はリニアで届くので先に戻す
 vec4 ramp(float t) {
-    int count = clamp(stops, 1, 8);
+    int count = clamp(stops, 1, MAX_STOPS);
     vec4 first = stop_color(0);
     if (count == 1 || t <= stop_offset(0)) return vec4(to_srgb(first.rgb), first.a);
     for (int i = 1; i < count; ++i) {

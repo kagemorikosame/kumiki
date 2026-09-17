@@ -38,6 +38,7 @@ _EASINGS = {
     "Back": "back",
     "Elastic": "elastic",
     "Bounce": "bounce",
+    "Jump": "jump",
 }
 _EASING_MODES = {"In": "in", "Out": "out", "InOut": "inout"}
 
@@ -153,8 +154,6 @@ def _create(kind: str, **params: Any) -> Effect | None:
 
 #: 歪めるノイズに無い種類と、代わりに使う種類 面ごとに値が変わるものはブロックで近づける
 _NOISE_STAND_INS = {
-    "Voronoi": "block",
-    "Cellular": "block",
     "Fractal": "perlin",
     "Curl": "perlin",
     "Simplex": "perlin",
@@ -184,7 +183,15 @@ def _noise_displacement(r: _Reader) -> Effect | None:
         amount_y=moves.track("YScale", flip=True) if moves else r.track("Y", flip=True),
         noise=_NOISE_STAND_INS.get(kind)
         or r.choice(
-            "NoiseType", {"Block": "block", "Perlin": "perlin", "Random": "random"}, "perlin"
+            "NoiseType",
+            {
+                "Block": "block",
+                "Perlin": "perlin",
+                "Random": "random",
+                "Voronoi": "voronoi",
+                "Cellular": "cellular",
+            },
+            "perlin",
         ),
         strength=inner.track("Strength", 100.0),
         threshold=inner.track("Threshold"),
@@ -260,9 +267,9 @@ def _halftone_border(r: _Reader) -> Effect | None:
 
 
 def _stripe_glitch(r: _Reader) -> Effect | None:
-    r.unused("Repeat")
     return _create(
         "stripe_glitch",
+        repeat=r.track("Repeat", 1.0),
         count=r.track("StripeCount", 10.0),
         max_width=r.track("StripeMaxWidth", 10.0),
         max_shift=r.track("StripeMaxShift", 100.0),
@@ -478,13 +485,15 @@ def _border_blur(r: _Reader) -> Effect | None:
 
 
 def _bloom(r: _Reader) -> Effect | None:
-    if r.flag("IsColorizationEnabled"):
-        r.report.note_missing("YMM4 のブルームの色付け")
+    # 大きさを固定する設定（IsFixedSizeEnabled）は、試験の絵で違いが見えなかった
     return _create(
         "glow",
         threshold=_scaled(r.track("Threshold", 50.0), 0.01),
         intensity=r.track("Strength", 100.0),
-        radius=r.track("Blur", 30.0),
+        # YMM4 の光は Blur の長さでほぼ消える こちらのぼかしは範囲の半分が標準偏差なので縮める
+        radius=_scaled(r.track("Blur", 30.0), 0.67),
+        tinted=r.flag("IsColorizationEnabled"),
+        tint=colour(r.entry.get("Color"), (1.0, 1.0, 1.0, 1.0)),
     )
 
 
@@ -670,9 +679,10 @@ def _inout_getup(r: _Reader) -> Effect | None:
 
 
 def _crash(r: _Reader) -> Effect | None:
-    r.unused("X", "Y", "Z", "RandomRotate")
+    r.unused("X", "Y", "Z")
     return _create(
         "crash",
+        spin=r.plain("RandomRotate"),
         start=r.plain("StartTime"),
         speed=r.plain("PlaybackRate", 100.0),
         size=r.plain("Size", 50.0),
@@ -769,7 +779,246 @@ def _edge_detection(r: _Reader) -> Effect | None:
 
 
 #: 名前と写し方 回数の多い順（手元の配布物での記録の回数）
+def _nested(r: _Reader, *keys: str) -> _Reader:
+    """入れ子の設定を読む係 無ければ空の辞書を読む"""
+    node: Any = r.entry
+    for key in keys:
+        node = node.get(key) if isinstance(node, dict) else None
+    return _Reader(node if isinstance(node, dict) else {}, r.length, r.keyframes, r.report, r.name)
+
+
+def _reflection(r: _Reader) -> Effect | None:
+    """反射と押し出し 縁からの距離で高さを作り、光を当てて明るさを足す"""
+    lighting = r.choice(
+        "LightingMode", {"DistantSpecular": "specular", "DistantDiffuse": "diffuse"}, "specular"
+    )
+    r.choice("HeightmapMode", {"Bevel": "bevel"}, "bevel")
+    source = _nested(r, "Lighting", "LightSource")
+    highlight = _nested(r, "Lighting", "Highlight")
+    heightmap = _nested(r, "Heightmap")
+    return _create(
+        "bevel_light",
+        lighting=lighting,
+        azimuth=source.track("Azimuth"),
+        elevation=source.track("Elevation"),
+        constant=highlight.track("Constant", 50.0),
+        exponent=highlight.track("Exponent", 1.0),
+        color=colour(highlight.entry.get("Color"), (1.0, 1.0, 1.0, 1.0)),
+        blend=highlight.choice("Blend", BLEND_NAMES, "add"),
+        surface_scale=_nested(r, "Lighting").track("SurfaceScale", 10.0),
+        profile=heightmap.choice(
+            "BevelMode",
+            {"Straight": "straight", "Round": "round", "InvertedRound": "inverted_round"},
+            "straight",
+        ),
+        thickness=heightmap.track("Thickness", 10.0),
+        blur=r.track("Blur"),
+        inverted=r.flag("IsInvert"),
+    )
+
+
+def _lens_blur(r: _Reader) -> Effect | None:
+    # Quality は丸を作る点の数 絵はほとんど変わらない
+    return _create(
+        "lens_blur",
+        radius=r.track("BlurRadius", 10.0),
+        brightness=r.track("Brightness", 100.0),
+        edge_strength=r.track("EdgeStrength", 2.0),
+    )
+
+
+def _fish_eye(r: _Reader) -> Effect | None:
+    return _create(
+        "fish_eye",
+        projection=r.choice(
+            "Projection",
+            {
+                "Orthographic": "orthographic",
+                "Equidistant": "equidistant",
+                "Stereographic": "stereographic",
+                "Equisolid": "equisolid",
+                "EquisolidAngle": "equisolid",
+            },
+            "orthographic",
+        ),
+        angle=r.track("Angle", 90.0),
+        zoom=r.track("Zoom", 100.0),
+    )
+
+
+def _ripple(r: _Reader) -> Effect | None:
+    return _create(
+        "ripple",
+        center_x=r.track("X"),
+        center_y=r.track("Y", flip=True),
+        amplitude=r.track("Amplitude", 20.0),
+        wavelength=r.track("WaveLength", 100.0),
+        period=r.track("Period", 2.0),
+    )
+
+
+def _polar(r: _Reader) -> Effect | None:
+    return _create("polar", core=r.track("CoreWidth"), twist=r.track("TwistAngle"))
+
+
+def _stretch(r: _Reader) -> Effect | None:
+    return _create(
+        "stretch",
+        center_x=r.track("X"),
+        center_y=r.track("Y", flip=True),
+        angle=r.track("Angle"),
+        stretch=r.track("StretchLength", 100.0),
+        range=r.track("Range"),
+        centering=r.flag("IsCentering", True),
+    )
+
+
+def _reel_spin(r: _Reader) -> Effect | None:
+    # 回すときのぶれ（Blur）は動く速さから決まる こちらは速さを持たないので写さない
+    r.unused("Blur")
+    return _create("reel_spin", rotation=r.track("Rotation"), direction=r.track("Direction"))
+
+
+def _tiling(r: _Reader) -> Effect | None:
+    return _create("tile", count_x=r.track("X", 1.0), count_y=r.track("Y", 1.0))
+
+
+#: YMM4 に付いている切り替え画像の名前と、同じ形を作る式
+_WIPE_IMAGES = {
+    "ワイプ横": "horizontal",
+    "ワイプ縦": "vertical",
+    "円": "circle",
+    "四角": "square",
+    "時計回り": "clockwise",
+}
+
+
+def _inout_wipe(r: _Reader) -> Effect | None:
+    """画像で切り替える登場と退場 付属の 5 枚は式で作る
+
+    ほかの画像は読み込まない（配布物のパスは作者の PC の場所で、開けないことが多い）
+    YMM4 も画像が開けないときはフェードになった
+    """
+    name = str(r.entry.get("File") or "").replace("\\", "/").rpartition("/")[2]
+    stem = name.rpartition(".")[0] or name
+    pattern = _WIPE_IMAGES.get(stem)
+    if pattern is None:
+        r.report.note_missing(f"YMM4 の切り替え画像: {stem or '指定なし'}（フェードで代用）")
+        pattern = "fade"
+    return _create(
+        "inout_wipe",
+        pattern=pattern,
+        tolerance=r.track("Tolerance", 3.0),
+        angle=r.track("Angle"),
+        reverse_in=r.flag("IsReversedInEffect"),
+        reverse_out=r.flag("IsReversedOutEffect"),
+        **_in_out(r),
+    )
+
+
+def _directional_key(r: _Reader) -> Effect | None:
+    # 色の塊の数や散らばりの見積もりは、2 色の間の位置で抜く形に畳んだ
+    return _create(
+        "directional_key",
+        background=colour(r.entry.get("BackgroundColor"), (0.0, 0.0, 0.0, 1.0)),
+        foreground=colour(r.entry.get("ForegroundColor"), (1.0, 1.0, 1.0, 1.0)),
+        softness=r.track("EdgeSoftness", 3.0),
+        threshold=r.track("NoiseThreshold", 0.02),
+        output_foreground=r.flag("OutputForeground", True),
+    )
+
+
+def _repeat_zoom(r: _Reader) -> Effect | None:
+    return _create(
+        "repeat_zoom",
+        zoom=r.track("Zoom", 100.0),
+        zoom_x=r.track("ZoomX", 100.0),
+        zoom_y=r.track("ZoomY", 100.0),
+        interval=r.track("Span", 1.0),
+        centering=r.flag("IsCentering"),
+        **r.easing(),
+    )
+
+
+def _jump(r: _Reader) -> Effect | None:
+    r.unused("X", "Y")
+    return _create(
+        "jump",
+        height=r.track("JumpHeight", 50.0),
+        stretch=r.track("Stretch"),
+        period=r.track("Period", 0.5),
+        distortion=r.track("Distortion"),
+        interval=r.track("Interval"),
+    )
+
+
+def _particles(r: _Reader) -> Effect | None:
+    # 奥行き（Z・遠近・仰角）と渦の流れは平面の動きに畳んだ
+    r.unused("Z", "EmitElevation", "ElevationSpreadAngle", "CurlStrength")
+    return _create(
+        "particles",
+        rate=r.track("Rate", 50.0),
+        lifetime=r.track("Lifetime", 2.0),
+        preroll=r.track("Preroll"),
+        size=r.track("Size", 100.0),
+        end_scale=r.track("EndScale", 100.0),
+        emitter_x=r.track("X"),
+        emitter_y=r.track("Y"),
+        emit_range=r.track("EmitRange"),
+        emit_angle=r.track("EmitAngle", 90.0),
+        spread=r.track("SpreadAngle"),
+        speed=r.track("Speed", 100.0),
+        gravity=r.track("Gravity"),
+        wind_angle=r.track("WindAngle"),
+        wind_speed=r.track("WindSpeed"),
+        turbulence=r.track("Turbulence"),
+        rotation=r.track("Rotation"),
+        fade=r.track("Fade"),
+        randomness=r.track("Randomness", 50.0),
+    )
+
+
+def _after_image(r: _Reader) -> Effect | None:
+    return _create(
+        "after_image",
+        strength=r.track("Strength", 50.0),
+        mode=r.choice("Mode", {"Front": "front", "Back": "back"}, "front"),
+    )
+
+
+def _no_visible_change(r: _Reader) -> Effect | None:
+    """YMM4 に描かせても絵が変わらなかったもの 何も足さない
+
+    立体（ThreeDimensional）は配布物の設定でも、値を振った試験でも絵が同じだった
+    奥行きのあるカメラの中でだけ効くと見ている
+    """
+    del r
+    return None
+
+
+def _draw_lazy(r: _Reader) -> Effect | None:
+    """位置と拡大をこの場所で当てる印 並べ替えはアイテムを読む所（template）で行う"""
+    del r
+    return None
+
+
 _MAPPERS: dict[str, Callable[[_Reader], Effect | None]] = {
+    "ReflectionAndExtrusionEffect": _reflection,
+    "LensBlurEffect": _lens_blur,
+    "FishEyeLensEffect": _fish_eye,
+    "RippleEffect": _ripple,
+    "PolarTransformEffect": _polar,
+    "StretchEffect": _stretch,
+    "ReelSpinEffect": _reel_spin,
+    "TilingEffect": _tiling,
+    "InOutTransitionEffect": _inout_wipe,
+    "DirectionalColorKeyEffect": _directional_key,
+    "RepeatZoomEffect": _repeat_zoom,
+    "JumpEffect": _jump,
+    "ParticleOutputEffect": _particles,
+    "AfterImageEffect": _after_image,
+    "ThreeDimensionalEffect": _no_visible_change,
+    "DrawLazyEffectEffect": _draw_lazy,
     "NoiseDisplacementMapEffect": _noise_displacement,
     "RandomMoveEffect": _random_move,
     "MorphologyEffect": _morphology,

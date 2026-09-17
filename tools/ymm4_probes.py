@@ -1178,6 +1178,637 @@ def build_fourth(
     ]
 
 
+def _fixture_item(predicate: Callable[[dict[str, Any]], bool]) -> dict[str, Any] | None:
+    """配布テンプレートから条件に合うアイテムを 1 つ写して返す"""
+    for path in sorted(FIXTURES.rglob("*.ymmt")):
+        for template in load_template(path):
+            for item in template.items:
+                if predicate(item):
+                    return copy.deepcopy(item)
+    return None
+
+
+def build_fifth(
+    samples: dict[str, dict[str, Any]], brushes: dict[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """5 回目の試験 残りの映像エフェクトと図形 どれも 2 秒（60 フレーム）"""
+    probes: list[tuple[str, dict[str, Any]]] = []
+
+    def base(
+        width: float = 600.0, height: float = 300.0, colour: str = "#FFE08A2C"
+    ) -> dict[str, Any]:
+        item = base_shape(0, 0, 60)
+        item["ShapeParameter"]["Width"] = still(width)
+        item["ShapeParameter"]["Height"] = still(height)
+        item["ShapeParameter"]["Brush"] = solid(colour)
+        return item
+
+    def brushed(kind: str, **values: Any) -> dict[str, Any]:
+        brush = copy.deepcopy(brushes[kind])
+        set_values(brush["Parameter"], **values)
+        return brush
+
+    def gradient_item() -> dict[str, Any]:
+        item = base(800.0, 400.0)
+        brush = copy.deepcopy(brushes["LinearGradientBrushPlugin"])
+        brush["Parameter"]["Stops"] = [
+            {"Offset": 0.0, "Color": "#FFFF3030"},
+            {"Offset": 1.0, "Color": "#FF3060FF"},
+        ]
+        set_values(brush["Parameter"], Size=800.0, Offset=0.0, Angle=0.0)
+        brush["Parameter"]["CoordinateMode"] = "Pixel"
+        brush["Parameter"]["ExtendMode"] = "Clamp"
+        item["ShapeParameter"]["Brush"] = brush
+        return item
+
+    def textured() -> dict[str, Any]:
+        item = base(800.0, 400.0)
+        item["ShapeParameter"]["Brush"] = brushed(
+            "StripeBrushPlugin",
+            Color1="#FFFF4040",
+            Width1=40,
+            Color2="#FF4040FF",
+            Width2=40,
+            Offset=0,
+            Zoom=100,
+            Angle=30,
+        )
+        return item
+
+    def dots() -> dict[str, Any]:
+        item = base(1600.0, 800.0)
+        item["ShapeParameter"]["Brush"] = brushed(
+            "DotBrushPlugin",
+            Foreground="#FFFFFFFF",
+            Background="#FF000000",
+            Radius=6,
+            Span=120,
+            Zoom=100,
+            X=0,
+            Y=0,
+            Angle=0,
+            Aspect=0,
+        )
+        return item
+
+    def effect(kind: str, **values: Any) -> dict[str, Any]:
+        entry = copy.deepcopy(samples[kind])
+        entry["IsEnabled"] = True
+        return set_values(entry, **values)
+
+    def add(name: str, item: dict[str, Any], *effects: dict[str, Any]) -> None:
+        item["VideoEffects"] = list(effects)
+        probes.append((name, item))
+
+    def shape_of(word: str) -> dict[str, Any]:
+        found = _fixture_item(
+            lambda item: type_name(item) == "ShapeItem" and word in str(item.get("ShapeType2"))
+        )
+        assert found is not None, word
+        found.update(
+            {
+                "Frame": 0,
+                "Layer": 0,
+                "Length": 60,
+                "X": still(0.0),
+                "Y": still(0.0),
+                "Zoom": still(100.0),
+                "Rotation": still(0.0),
+                "Opacity": still(100.0),
+                "Blend": "Normal",
+                "Group": 0,
+                "IsInverted": False,
+                "KeyFrames": {"Frames": [], "Count": 0},
+            }
+        )
+        return found
+
+    # アイテムの反転（左右か上下か）
+    inverted = gradient_item()
+    inverted["IsInverted"] = True
+    inverted["Rotation"] = still(20.0)
+    add("item_inverted", inverted)
+    add("item_not_inverted_rotated", set_values(gradient_item(), Rotation=20.0))
+
+    # 反射と押し出し（光の当て方）
+    reflection = samples["ReflectionAndExtrusionEffect"]
+    add("reflection_sample", base(), effect("ReflectionAndExtrusionEffect"))
+    for label, change in (
+        ("azimuth90", ("LightSource", "Azimuth", 90.0)),
+        ("elevation45", ("LightSource", "Elevation", 45.0)),
+        ("constant100", ("Highlight", "Constant", 100.0)),
+    ):
+        entry = effect("ReflectionAndExtrusionEffect", Blur=0.0)
+        entry["Lighting"][change[0]][change[1]] = change[2]
+        add(f"reflection_{label}", base(), entry)
+    thick = effect("ReflectionAndExtrusionEffect", Blur=0.0)
+    thick["Heightmap"]["Thickness"] = still(40.0)
+    add("reflection_thick40", base(), thick)
+    inverted_light = effect("ReflectionAndExtrusionEffect", Blur=0.0, IsInvert=True)
+    add("reflection_invert", base(), inverted_light)
+    for mode in ("Round", "InvertedRound", "Straight"):
+        entry = effect("ReflectionAndExtrusionEffect", Blur=0.0)
+        entry["Heightmap"]["BevelMode"] = mode
+        entry["Heightmap"]["Thickness"] = still(40.0)
+        add(f"reflection_bevel_{mode.lower()}", base(), entry)
+    diffuse = _fixture_item(
+        lambda item: '"DistantDiffuse"' in json.dumps(item.get("VideoEffects", []))
+    )
+    if diffuse is not None:
+        entry = next(
+            e for e in diffuse["VideoEffects"] if type_name(e) == "ReflectionAndExtrusionEffect"
+        )
+        entry["IsEnabled"] = True
+        add("reflection_diffuse", base(), entry)
+    del reflection
+
+    # 縦横の指定がある反復拡大
+    add(
+        "repeat_zoom_x",
+        base(),
+        effect(
+            "RepeatZoomEffect",
+            Zoom=100.0,
+            ZoomX=50.0,
+            ZoomY=100.0,
+            Span=2.0,
+            EasingType="Linear",
+            EasingMode="In",
+            IsCentering=False,
+        ),
+    )
+    add(
+        "repeat_zoom_150_nocenter",
+        base(),
+        effect(
+            "RepeatZoomEffect",
+            Zoom=150.0,
+            ZoomX=100.0,
+            ZoomY=100.0,
+            Span=2.0,
+            EasingType="Linear",
+            EasingMode="In",
+            IsCentering=False,
+        ),
+    )
+
+    # 色で方向を見て抜く
+    keyed = base(800.0, 400.0)
+    keyed["ShapeParameter"]["Brush"] = brushed(
+        "StripeBrushPlugin",
+        Color1="#FF282828",
+        Width1=60,
+        Color2="#FFE7E7E7",
+        Width2=60,
+        Offset=0,
+        Zoom=100,
+        Angle=0,
+    )
+    color_keys = _all_effects("DirectionalColorKeyEffect")
+    for index, entry in enumerate(color_keys[:2]):
+        add(f"directional_key_{index}", copy.deepcopy(keyed), entry)
+
+    # 集中線
+    lines = shape_of("ConcentrationLine")
+    add("concentration_sample", lines)
+    for label, values in (
+        ("density30", {"Density": 30.0}),
+        ("thickness10", {"Thickness": 10.0}),
+        ("length20", {"Length": 20.0}),
+        ("center0", {"CenterWidth": 0.0}),
+        ("speed0", {"Speed": 0.0}),
+    ):
+        item = shape_of("ConcentrationLine")
+        set_values(item["ShapeParameter"], **values)
+        add(f"concentration_{label}", item)
+
+    # 跳ねる
+    add(
+        "jump_sample",
+        base(),
+        effect(
+            "JumpEffect",
+            JumpHeight=100.0,
+            Stretch=0.0,
+            Period=1.0,
+            Distortion=0.0,
+            Interval=0.0,
+            X=0.0,
+            Y=0.0,
+        ),
+    )
+    add(
+        "jump_stretch",
+        base(),
+        effect(
+            "JumpEffect",
+            JumpHeight=100.0,
+            Stretch=1.0,
+            Period=1.0,
+            Distortion=0.0,
+            Interval=0.0,
+            X=0.0,
+            Y=0.0,
+        ),
+    )
+    add(
+        "jump_distortion",
+        base(),
+        effect(
+            "JumpEffect",
+            JumpHeight=100.0,
+            Stretch=0.0,
+            Period=1.0,
+            Distortion=1.0,
+            Interval=0.5,
+            X=0.0,
+            Y=0.0,
+        ),
+    )
+
+    # パーティクル（配布物の雨と雪）
+    for index, entry in enumerate(_all_effects("ParticleOutputEffect")[:2]):
+        add(f"particle_{index}", base(20.0, 60.0, "#FFFFFFFF"), entry)
+
+    # レンズぼかし
+    add(
+        "lens_blur_20",
+        dots(),
+        effect("LensBlurEffect", BlurRadius=20.0, Brightness=100.0, EdgeStrength=2.0, Quality=16.0),
+    )
+    add(
+        "lens_blur_edge0",
+        dots(),
+        effect("LensBlurEffect", BlurRadius=20.0, Brightness=100.0, EdgeStrength=0.0, Quality=16.0),
+    )
+    add(
+        "lens_blur_bright200",
+        dots(),
+        effect("LensBlurEffect", BlurRadius=20.0, Brightness=200.0, EdgeStrength=2.0, Quality=16.0),
+    )
+
+    # 画像のワイプ（YMM4 に付いている切り替え画像）
+    resources = "D:\\Program\\YukkuriMovieMaker_v4\\Resources\\Transition\\"
+    wipe = {
+        "Tolerance": 3.0,
+        "Angle": 0.0,
+        "KeepAspect": True,
+        "IsFixedCoveringScale": False,
+        "IsInEffect": True,
+        "IsReversedInEffect": False,
+        "IsOutEffect": False,
+        "IsReversedOutEffect": False,
+        "EffectTimeSeconds": 2.0,
+        "EasingType": "Linear",
+        "EasingMode": "In",
+    }
+    for name in ("ワイプ横", "円", "四角", "時計回り"):
+        add(
+            f"wipe_{name}",
+            base(800.0, 400.0),
+            effect("InOutTransitionEffect", File=resources + name + ".png", **wipe),
+        )
+    add(
+        "wipe_reversed",
+        base(800.0, 400.0),
+        effect(
+            "InOutTransitionEffect",
+            File=resources + "ワイプ横.png",
+            **{**wipe, "IsReversedInEffect": True},
+        ),
+    )
+    add(
+        "wipe_tolerance50",
+        base(800.0, 400.0),
+        effect(
+            "InOutTransitionEffect", File=resources + "ワイプ横.png", **{**wipe, "Tolerance": 50.0}
+        ),
+    )
+    add(
+        "wipe_angle90",
+        base(800.0, 400.0),
+        effect("InOutTransitionEffect", File=resources + "ワイプ横.png", **{**wipe, "Angle": 90.0}),
+    )
+    add(
+        "wipe_missing_file",
+        base(800.0, 400.0),
+        effect(
+            "InOutTransitionEffect",
+            File="C:\\tools\\YukkuriMovieMaker4_Lite\\Resources\\Transition\\ワイプ横.png",
+            **wipe,
+        ),
+    )
+    add(
+        "wipe_out",
+        base(800.0, 400.0),
+        effect(
+            "InOutTransitionEffect",
+            File=resources + "ワイプ横.png",
+            **{**wipe, "IsInEffect": False, "IsOutEffect": True},
+        ),
+    )
+
+    # 並べる
+    add("tiling_sample", textured(), effect("TilingEffect", X=1.0, Y=41.0))
+    add("tiling_2_3", textured(), effect("TilingEffect", X=2.0, Y=3.0))
+
+    # 立体
+    for shadow in ("Image", "Solid", "Gradient"):
+        add(
+            f"three_dimensional_{shadow.lower()}",
+            gradient_item(),
+            effect(
+                "ThreeDimensionalEffect",
+                X=100.0,
+                Y=60.0,
+                Length=30.0,
+                Opacity=100.0,
+                Attenuation=0.0,
+                ShadowType=shadow,
+                Color1="#FFFFFFFF",
+                Color2="#FF00A000",
+                IsAbsolutePoint=False,
+            ),
+        )
+
+    # 虹色のブラシの幅を割合で
+    for width in (400.0, 800.0):
+        item = base(width, 300.0)
+        item["ShapeParameter"]["Brush"] = copy.deepcopy(brushes["RainbowLinearGradientBrushPlugin"])
+        set_values(item["ShapeParameter"]["Brush"]["Parameter"], Width=100.0, Offset=0.0, Angle=0.0)
+        item["ShapeParameter"]["Brush"]["Parameter"]["CoordinateMode"] = "Relative"
+        add(f"rainbow_relative_{int(width)}", item)
+
+    # リール回転
+    add(
+        "reel_direction71",
+        textured(),
+        effect("ReelSpinEffect", Rotation=30.0, Direction=71.0, Blur=0.0, Tile=False),
+    )
+    add(
+        "reel_tile",
+        textured(),
+        effect("ReelSpinEffect", Rotation=30.0, Direction=0.0, Blur=0.0, Tile=True),
+    )
+    add(
+        "reel_blur50",
+        textured(),
+        effect("ReelSpinEffect", Rotation=30.0, Direction=0.0, Blur=50.0, Tile=False),
+    )
+    add(
+        "reel_rotation100",
+        textured(),
+        effect("ReelSpinEffect", Rotation=100.0, Direction=0.0, Blur=0.0, Tile=False),
+    )
+
+    # 残像（動く四角で）
+    for mode in ("Front", "Back"):
+        item = base(200.0, 200.0)
+        item["X"] = {
+            "Values": [{"Value": -600.0}, {"Value": 600.0}],
+            "Span": 0.0,
+            "AnimationType": "直線移動",
+        }
+        add(
+            f"after_image_{mode.lower()}",
+            item,
+            effect("AfterImageEffect", Strength=50.0, Mode=mode),
+        )
+
+    # 中心点と登場の拡大
+    add(
+        "inout_zoom_pivot",
+        base(),
+        effect(
+            "CenterPointEffect",
+            Horizontal="Left",
+            Vertical="Top",
+            X=0.0,
+            Y=0.0,
+            IsKeepPosition=True,
+        ),
+        effect(
+            "InOutZoomEffect",
+            Value=100.0,
+            X=100.0,
+            Y=100.0,
+            IsInEffect=True,
+            IsOutEffect=False,
+            EffectTimeSeconds=2.0,
+            EasingType="Linear",
+            EasingMode="In",
+        ),
+    )
+
+    # 反復回転の Jump
+    add(
+        "repeat_rotate_jump",
+        base(),
+        effect(
+            "RepeatRotateEffect",
+            X=0.0,
+            Y=0.0,
+            Z=90.0,
+            Is3D=False,
+            Span=1.0,
+            EasingType="Jump",
+            EasingMode="In",
+            IsCentering=False,
+        ),
+    )
+
+    # 魚眼
+    for label, values in (
+        ("angle120", {"Projection": "Orthographic", "Angle": 120.0, "Zoom": 100.0}),
+        ("zoom50", {"Projection": "Orthographic", "Angle": 60.0, "Zoom": 50.0}),
+        ("equidistant", {"Projection": "Equidistant", "Angle": 120.0, "Zoom": 100.0}),
+        ("stereographic", {"Projection": "Stereographic", "Angle": 120.0, "Zoom": 100.0}),
+    ):
+        add(f"fish_eye_{label}", textured(), effect("FishEyeLensEffect", **values))
+
+    # 波紋
+    add(
+        "ripple_center",
+        textured(),
+        effect("RippleEffect", X=0.0, Y=0.0, Amplitude=20.0, WaveLength=100.0, Period=2.0),
+    )
+    add(
+        "ripple_offset",
+        textured(),
+        effect("RippleEffect", X=300.0, Y=100.0, Amplitude=20.0, WaveLength=100.0, Period=2.0),
+    )
+    add(
+        "ripple_negative",
+        textured(),
+        effect("RippleEffect", X=0.0, Y=0.0, Amplitude=-20.0, WaveLength=300.0, Period=2.0),
+    )
+
+    # 描画を遅らせる（位置と拡大をこの位置で当てる）
+    lazy = base()
+    lazy["X"] = still(400.0)
+    lazy["Zoom"] = still(50.0)
+    circle_mask = effect("MaskEffect")
+    add(
+        "draw_lazy_mask",
+        copy.deepcopy(lazy),
+        effect(
+            "DrawLazyEffectEffect",
+            IsXYZ=True,
+            IsOpacity=False,
+            IsZoom=True,
+            IsRotation=True,
+            IsInvert=False,
+            IsCamera=False,
+        ),
+        copy.deepcopy(circle_mask),
+    )
+    add("draw_lazy_none_mask", copy.deepcopy(lazy), copy.deepcopy(circle_mask))
+
+    # ブルームの色付け
+    add(
+        "bloom_colorize",
+        dots(),
+        effect(
+            "BloomEffect",
+            Strength=134.2,
+            Threshold=45.8,
+            Blur=39.1,
+            IsFixedSizeEnabled=True,
+            IsColorizationEnabled=True,
+            Color="#FFFFC039",
+        ),
+    )
+    add(
+        "bloom_plain",
+        dots(),
+        effect(
+            "BloomEffect",
+            Strength=134.2,
+            Threshold=45.8,
+            Blur=39.1,
+            IsFixedSizeEnabled=True,
+            IsColorizationEnabled=False,
+            Color="#FFFFC039",
+        ),
+    )
+    add(
+        "bloom_not_fixed",
+        dots(),
+        effect(
+            "BloomEffect",
+            Strength=134.2,
+            Threshold=45.8,
+            Blur=39.1,
+            IsFixedSizeEnabled=False,
+            IsColorizationEnabled=False,
+            Color="#FFFFC039",
+        ),
+    )
+
+    # タイマー
+    timer = shape_of("Timer")
+    add("timer_sample", timer)
+
+    # 引き伸ばし
+    for label, values in (
+        (
+            "sample",
+            {
+                "X": 0.0,
+                "Y": 0.0,
+                "Angle": 0.0,
+                "StretchLength": 4000.0,
+                "Range": 0.0,
+                "IsCentering": True,
+            },
+        ),
+        (
+            "range100",
+            {
+                "X": 0.0,
+                "Y": 0.0,
+                "Angle": 0.0,
+                "StretchLength": 300.0,
+                "Range": 100.0,
+                "IsCentering": True,
+            },
+        ),
+        (
+            "angle45",
+            {
+                "X": 0.0,
+                "Y": 0.0,
+                "Angle": 45.0,
+                "StretchLength": 300.0,
+                "Range": 0.0,
+                "IsCentering": True,
+            },
+        ),
+        (
+            "offset",
+            {
+                "X": 100.0,
+                "Y": 50.0,
+                "Angle": 0.0,
+                "StretchLength": 300.0,
+                "Range": 0.0,
+                "IsCentering": False,
+            },
+        ),
+    ):
+        add(f"stretch_{label}", gradient_item(), effect("StretchEffect", **values))
+
+    # 極座標
+    add("polar_core0", textured(), effect("PolarTransformEffect", CoreWidth=0.0, TwistAngle=0.0))
+    add(
+        "polar_twist90",
+        textured(),
+        effect("PolarTransformEffect", CoreWidth=100.0, TwistAngle=90.0),
+    )
+
+    # 破片の回転
+    for amount in (0.0, 100.0):
+        add(
+            f"crash_rotate{int(amount)}",
+            gradient_item(),
+            effect(
+                "CrashEffect",
+                StartTime=0.0,
+                PlaybackRate=100.0,
+                Size=80.0,
+                X=0.0,
+                Y=0.0,
+                Z=0.0,
+                FlySpeed=30.0,
+                FallSpeed=0.0,
+                Delay=0.0,
+                Impact=0.0,
+                RandomRotate=amount,
+                RandomVector=0.0,
+            ),
+        )
+
+    # ペン
+    add("pen_sample", shape_of("PenShape"))
+    return [
+        {"Name": f"probe5_{name}", "Path": ["probe5", name], "Items": [item]}
+        for name, item in probes
+    ]
+
+
+def _all_effects(name: str) -> list[dict[str, Any]]:
+    found: list[dict[str, Any]] = []
+    for path in sorted(FIXTURES.rglob("*.ymmt")):
+        for template in load_template(path):
+            for item in template.items:
+                for node in _walk(item):
+                    if type_name(node) == name:
+                        entry = copy.deepcopy(node)
+                        entry["IsEnabled"] = True
+                        found.append(entry)
+    return found
+
+
 def main() -> int:
     target = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / ".work" / "probes" / "probes.ymmt"
     samples, brushes = collect_samples()
@@ -1187,6 +1818,7 @@ def main() -> int:
         "second": build_second,
         "third": build_third,
         "fourth": build_fourth,
+        "fifth": build_fifth,
     }
     templates = builders[which](samples, brushes)
     target.parent.mkdir(parents=True, exist_ok=True)

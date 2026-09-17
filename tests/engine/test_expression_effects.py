@@ -198,13 +198,14 @@ class TestPixels:
     def test_inout_zoom_can_squash_one_axis(
         self, gl_context: OffscreenGLContext, processor: EffectProcessor
     ) -> None:
-        # 配布物は縦だけ 0 から伸ばす（X=0 Y=100） 横まで縮むと別の動きになる
+        # 軸の割合は隠れたときのその向きの大きさ X=0 Y=100 は横だけ潰れた所から広がる
+        # （YMM4 に描かせて確かめた 「広がって登場」の配布物がこの値）
         effect = _make("inout_zoom", zoom=100, zoom_x=0, zoom_y=100, effect_time=1.0)
         halfway = _run(gl_context, processor, effect, frame=15)
         rows = np.nonzero(halfway[..., 3].max(axis=1) > 0.5)[0]
         columns = np.nonzero(halfway[..., 3].max(axis=0) > 0.5)[0]
-        assert len(columns) == pytest.approx(32, abs=2)
-        assert 0 < len(rows) < 32
+        assert len(rows) == pytest.approx(32, abs=2)
+        assert 0 < len(columns) < 32
 
     def test_the_exit_counts_back_from_the_end(
         self, gl_context: OffscreenGLContext, processor: EffectProcessor

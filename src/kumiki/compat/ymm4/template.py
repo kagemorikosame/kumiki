@@ -437,7 +437,7 @@ def _transition(
 _EASING_NAMES = {
     name: name.lower()
     for name in ("Linear", "Sine", "Quad", "Cubic", "Quart", "Quint", "Expo", "Circ", "Back")
-} | {"Elastic": "elastic", "Bounce": "bounce"}
+} | {"Elastic": "elastic", "Bounce": "bounce", "Jump": "jump"}
 _EASING_MODE_NAMES = {"In": "in", "Out": "out", "InOut": "inout"}
 
 

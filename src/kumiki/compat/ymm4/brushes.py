@@ -226,8 +226,7 @@ def _pattern_params(
             "inverted": parameter.get("IsInverted") is True,
         }
     if plugin.startswith("RainbowLinearGradientBrush"):
-        if str(parameter.get("CoordinateMode") or "") == "Relative":
-            report.note_missing("YMM4 の虹色ブラシの幅（割合の指定は絵の幅で近づけた）")
+        # 割合の指定は絵の幅が 100（YMM4 に 400 と 800 の幅で描かせて確かめた）
         return {
             "pattern": "linear",
             **_rainbow(),

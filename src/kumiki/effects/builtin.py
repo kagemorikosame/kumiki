@@ -56,7 +56,7 @@ vec4 over(vec4 above, vec4 below) {
 }
 
 // イージング 種類は 0 直線 1 Sine 2 Quad 3 Cubic 4 Quart 5 Quint 6 Expo 7 Circ
-// 8 Back 9 Elastic 10 Bounce、向きは 0 In 1 Out 2 InOut
+// 8 Back 9 Elastic 10 Bounce 11 Jump、向きは 0 In 1 Out 2 InOut
 float bounce_out(float t) {
     if (t < 1.0 / 2.75) return 7.5625 * t * t;
     if (t < 2.0 / 2.75) { t -= 1.5 / 2.75; return 7.5625 * t * t + 0.75; }
@@ -79,6 +79,7 @@ float ease_in(float t, int kind) {
         return -pow(2.0, 10.0 * (t - 1.0)) * sin((t - 1.075) * 2.0 * PI / 0.3);
     }
     if (kind == 10) return 1.0 - bounce_out(1.0 - t);
+    if (kind == 11) return t >= 1.0 ? 1.0 : 0.0;
     return t;
 }
 
@@ -212,6 +213,8 @@ _GLOW = _shader("""
 uniform float threshold;
 uniform float intensity;
 uniform float radius;
+uniform bool tinted;
+uniform vec4 tint;
 
 void main() {
     vec2 direction = u_pass == 0 ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
@@ -247,6 +250,8 @@ void main() {
         total += w;
     }
     vec4 halo = sum / max(total, 0.0001);
+    // 色付けは光の明るさだけを残して色を塗り替える（YMM4 のブルームの色付け）
+    if (tinted) halo.rgb = tint.rgb * dot(halo.rgb, LUMA);
 
     vec4 base = texture(u_source, v_uv);
     vec3 lit = base.rgb * base.a + halo.rgb * (intensity / 100.0);
@@ -670,6 +675,8 @@ def register_builtin_effects() -> None:
                 TrackSpec("threshold", "しきい値", 0, 1, 0.6, step=0.01),
                 TrackSpec("intensity", "強さ", 0, 400, 100, unit="%"),
                 TrackSpec("radius", "範囲", 0, 96, 24, unit="px"),
+                CheckSpec("tinted", "光に色を付ける", False),
+                ColorSpec("tint", "光の色", (1.0, 1.0, 1.0, 1.0)),
             ),
             fragment_shader=_GLOW,
             passes=2,

@@ -22,6 +22,8 @@ EASING_KINDS: tuple[tuple[str, str], ...] = (
     ("back", "Back"),
     ("elastic", "Elastic"),
     ("bounce", "Bounce"),
+    #: 終わりまで動かず、終わりで一気に行き着く YMM4 の Jump（反復回転に描かせて確かめた）
+    ("jump", "Jump"),
 )
 
 #: イージングの向き
@@ -58,6 +60,8 @@ def _ease_in(t: float, kind: str) -> float:
         return -math.pow(2.0, 10.0 * (t - 1.0)) * math.sin((t - 1.075) * 2.0 * math.pi / 0.3)
     if kind == "bounce":
         return 1.0 - _bounce_out(1.0 - t)
+    if kind == "jump":
+        return 1.0 if t >= 1.0 else 0.0
     return t
 
 

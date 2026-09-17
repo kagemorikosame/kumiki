@@ -167,6 +167,7 @@ uniform float rate;
 uniform bool hard;
 uniform float width_attenuation;
 uniform float shift_attenuation;
+uniform float repeat;
 
 void main() {
     // 横の帯をいくつか選び、左右へずらす 帯と量は rate 回/秒で選び直す
@@ -175,8 +176,11 @@ void main() {
     float height = object_size().y;
     float shift = 0.0;
     int stripes = int(clamp(count, 0.0, 64.0));
+    // 繰り返しは帯の組を別の乱数で何度か選び直して重ねる
+    int rounds = int(clamp(repeat, 1.0, 16.0));
+    for (int round_ = 0; round_ < rounds; ++round_)
     for (int i = 0; i < stripes; ++i) {
-        float salt = float(i) * 3.7 + tick * 11.3;
+        float salt = float(i) * 3.7 + tick * 11.3 + float(round_) * 101.9;
         float fade_width = 1.0 / (1.0 + float(i) * width_attenuation / 100.0);
         float fade_shift = 1.0 / (1.0 + float(i) * shift_attenuation / 100.0);
         float centre = u_object.y + hash(vec2(salt, 1.0)) * height;
@@ -790,6 +794,7 @@ def register_stylize_effects() -> None:
                 CheckSpec("hard", "境目をぼかさない", False),
                 TrackSpec("width_attenuation", "幅の減衰", 0, 1000, 10, unit="%"),
                 TrackSpec("shift_attenuation", "ずれの減衰", 0, 1000, 50, unit="%"),
+                TrackSpec("repeat", "重ねる回数", 1, 16, 1, step=1),
             ),
             fragment_shader=_STRIPE_GLITCH,
         ),

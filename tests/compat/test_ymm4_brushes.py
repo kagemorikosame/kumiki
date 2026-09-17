@@ -45,13 +45,13 @@ class TestGradientEffect:
 
     def test_stops_are_sorted_and_thinned(self) -> None:
         # 位置の順に並んでいない配布物がある 上限を超えた分は間引いて記録に残す
-        stops = [{"Offset": i / 11, "Color": "#FFFFFFFF"} for i in reversed(range(12))]
+        stops = [{"Offset": i / 19, "Color": "#FFFFFFFF"} for i in reversed(range(20))]
         report = CompatibilityReport()
         effect = gradient_effect({"Stops": stops}, report)
         assert effect is not None
-        assert effect.params["stops"] == 8
+        assert effect.params["stops"] == 16
         assert _static(effect.params["offset0"]) == 0.0
-        assert _static(effect.params["offset7"]) == 1.0
+        assert _static(effect.params["offset15"]) == 1.0
         assert any("間引いた" in line for line in report.lines())
 
 
