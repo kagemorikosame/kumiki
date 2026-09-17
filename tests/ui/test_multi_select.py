@@ -18,9 +18,9 @@ from PySide6.QtWidgets import QApplication
 from kumiki.core.commands import (
     AddEffect,
     Command,
-    ParamPath,
     GroupClips,
     MoveClips,
+    ParamPath,
     RemoveClips,
     SetClipProperty,
     SetParam,
