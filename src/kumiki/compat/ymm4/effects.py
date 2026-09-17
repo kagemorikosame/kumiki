@@ -394,6 +394,58 @@ def _fill_background(r: _Reader) -> Effect | None:
     )
 
 
+def _binarization(r: _Reader) -> Effect | None:
+    return _create(
+        "binarize",
+        threshold=r.track("Threshold", 50.0),
+        invert=r.flag("IsInverted"),
+        keep_color=r.flag("KeepColor"),
+    )
+
+
+def _chroma_key(r: _Reader) -> Effect | None:
+    return _create(
+        "color_key",
+        key_color=colour(r.entry.get("Color"), (0.0, 0.0, 0.0, 1.0)),
+        tolerance=r.track("Tolerance", 10.0),
+        feather=r.flag("Feather", True),
+        invert=r.flag("IsInvert"),
+    )
+
+
+def _linear_transfer(r: _Reader) -> Effect | None:
+    return _create(
+        "linear_transfer",
+        red_slope=r.track("RedSlope", 100.0),
+        red_intercept=r.track("RedYIntercept"),
+        green_slope=r.track("GreenSlope", 100.0),
+        green_intercept=r.track("GreenYIntercept"),
+        blue_slope=r.track("BlueSlope", 100.0),
+        blue_intercept=r.track("BlueYIntercept"),
+        alpha_slope=r.track("AlphaSlope", 100.0),
+        alpha_intercept=r.track("AlphaYIntercept"),
+    )
+
+
+def _border_blur(r: _Reader) -> Effect | None:
+    return _create("border_blur", blur=r.track("Blur", 10.0))
+
+
+def _bloom(r: _Reader) -> Effect | None:
+    if r.flag("IsColorizationEnabled"):
+        r.report.note_missing("YMM4 のブルームの色付け")
+    return _create(
+        "glow",
+        threshold=_scaled(r.track("Threshold", 50.0), 0.01),
+        intensity=r.track("Strength", 100.0),
+        radius=r.track("Blur", 30.0),
+    )
+
+
+def _sharpen(r: _Reader) -> Effect | None:
+    return _create("sharpen", strength=_scaled(r.track("Sharpness", 10.0), 10.0))
+
+
 def _long_shadow(r: _Reader) -> Effect | None:
     return _create(
         "long_shadow",
@@ -661,6 +713,12 @@ _MAPPERS: dict[str, Callable[[_Reader], Effect | None]] = {
     "MaskEffect": _mask,
     "CopyAndReverseEffect": _copy_and_reverse,
     "FillBackgroundEffect": _fill_background,
+    "BinarizationEffect": _binarization,
+    "ChromaKeyEffect": _chroma_key,
+    "LinearTransferEffect": _linear_transfer,
+    "BorderBlurEffect": _border_blur,
+    "BloomEffect": _bloom,
+    "SharpenEffect": _sharpen,
     "CircularDuplicatorEffect": _circular_duplicator,
     "MeshDeformationEffect": _mesh_deformation,
     "InOutGetUpEffect": _inout_getup,

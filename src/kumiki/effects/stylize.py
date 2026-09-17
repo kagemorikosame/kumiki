@@ -382,6 +382,88 @@ void main() {
 }
 """)
 
+_BINARIZE = _shader(
+    _SRGB
+    + """
+uniform float threshold;
+uniform bool invert;
+uniform bool keep_color;
+
+void main() {
+    // 明るさ（sRGB の 3 色の平均）が threshold% 以上の所だけ残す 残した所は白か元の色
+    vec4 base = texture(u_texture, v_uv);
+    vec3 srgb = to_srgb(base.rgb);
+    bool on = (srgb.r + srgb.g + srgb.b) / 3.0 * 100.0 >= threshold;
+    if (invert) on = !on;
+    vec3 rgb = keep_color ? base.rgb : vec3(1.0);
+    frag_color = vec4(rgb, on ? base.a : 0.0);
+}
+"""
+)
+
+_COLOR_KEY = _shader(
+    _SRGB
+    + """
+uniform vec4 key_color;
+uniform float tolerance;
+uniform bool feather;
+uniform bool invert;
+
+void main() {
+    // 指定の色に近い所を抜く 近さは sRGB の 3 色の差の大きさ（0〜100）
+    vec4 base = texture(u_texture, v_uv);
+    float distance = length(to_srgb(base.rgb) - to_srgb(key_color.rgb)) / sqrt(3.0) * 100.0;
+    float keep = feather
+        ? smoothstep(tolerance * 0.5, max(tolerance, 0.0001), distance)
+        : step(tolerance, distance);
+    if (invert) keep = 1.0 - keep;
+    frag_color = vec4(base.rgb, base.a * keep);
+}
+"""
+)
+
+_LINEAR_TRANSFER = _shader(
+    _SRGB
+    + """
+uniform float red_slope;
+uniform float red_intercept;
+uniform float green_slope;
+uniform float green_intercept;
+uniform float blue_slope;
+uniform float blue_intercept;
+uniform float alpha_slope;
+uniform float alpha_intercept;
+
+void main() {
+    // 色ごとに 傾き% × 値 + 切片% （sRGB で計算する）
+    vec4 base = texture(u_texture, v_uv);
+    vec3 c = to_srgb(base.rgb);
+    vec3 slope = vec3(red_slope, green_slope, blue_slope) * 0.01;
+    vec3 intercept = vec3(red_intercept, green_intercept, blue_intercept) * 0.01;
+    vec3 rgb = clamp(c * slope + intercept, 0.0, 1.0);
+    float a = clamp(base.a * alpha_slope * 0.01 + alpha_intercept * 0.01, 0.0, 1.0);
+    frag_color = vec4(to_linear(rgb), a);
+}
+"""
+)
+
+_BORDER_BLUR = _shader("""
+uniform float blur;
+
+void main() {
+    // 縁を内側へ向けて透明にする 不透明度をぼかし、半分まで下がった所で消える
+    vec2 direction = u_pass == 0 ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+    if (u_pass == 0) {
+        float a = blur1d(u_texture, v_uv, direction, blur).a;
+        frag_color = vec4(1.0, 1.0, 1.0, a);
+        return;
+    }
+    float softened = blur1d(u_texture, v_uv, direction, blur).a;
+    vec4 base = texture(u_source, v_uv);
+    frag_color = vec4(base.rgb, base.a * smoothstep(0.5, 1.0, softened));
+}
+""")
+
 _HIGHLIGHTS_SHADOWS = _shader("""
 uniform float highlights;
 uniform float shadows;
@@ -781,6 +863,53 @@ def register_stylize_effects() -> None:
                 CheckSpec("background_only", "背景だけ", False),
             ),
             fragment_shader=_FILL_BACKGROUND,
+        ),
+        EffectDefinition(
+            kind="binarize",
+            label="2 値化",
+            category="色",
+            parameters=(
+                TrackSpec("threshold", "しきい値", 0, 100, 50, unit="%"),
+                CheckSpec("invert", "反転", False),
+                CheckSpec("keep_color", "元の色を残す", False),
+            ),
+            fragment_shader=_BINARIZE,
+        ),
+        EffectDefinition(
+            kind="color_key",
+            label="色で抜く",
+            category="合成",
+            parameters=(
+                ColorSpec("key_color", "抜く色", (0.0, 0.0, 0.0, 1.0)),
+                TrackSpec("tolerance", "許容範囲", 0, 100, 10, unit="%"),
+                CheckSpec("feather", "境界をぼかす", True),
+                CheckSpec("invert", "反転", False),
+            ),
+            fragment_shader=_COLOR_KEY,
+        ),
+        EffectDefinition(
+            kind="linear_transfer",
+            label="色の直線変換",
+            category="色",
+            parameters=(
+                TrackSpec("red_slope", "赤の傾き", -1000, 1000, 100, unit="%"),
+                TrackSpec("red_intercept", "赤の切片", -100, 100, 0, unit="%"),
+                TrackSpec("green_slope", "緑の傾き", -1000, 1000, 100, unit="%"),
+                TrackSpec("green_intercept", "緑の切片", -100, 100, 0, unit="%"),
+                TrackSpec("blue_slope", "青の傾き", -1000, 1000, 100, unit="%"),
+                TrackSpec("blue_intercept", "青の切片", -100, 100, 0, unit="%"),
+                TrackSpec("alpha_slope", "不透明度の傾き", -1000, 1000, 100, unit="%"),
+                TrackSpec("alpha_intercept", "不透明度の切片", -100, 100, 0, unit="%"),
+            ),
+            fragment_shader=_LINEAR_TRANSFER,
+        ),
+        EffectDefinition(
+            kind="border_blur",
+            label="縁のぼかし",
+            category="ぼかし",
+            parameters=(TrackSpec("blur", "ぼかし", 0, 96, 10, unit="px"),),
+            fragment_shader=_BORDER_BLUR,
+            passes=2,
         ),
         EffectDefinition(
             kind="edge_detect",
