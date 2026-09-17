@@ -261,6 +261,70 @@ void main() {
 """
 )
 
+_SHAPE_MASK = _shader("""
+uniform int shape;
+uniform float width;
+uniform float height;
+uniform float corner;
+uniform float span;
+uniform float center_x;
+uniform float center_y;
+uniform float rotation;
+uniform float blur;
+uniform bool invert;
+
+float sd_box(vec2 p, vec2 half_size, float radius) {
+    vec2 q = abs(p) - (half_size - radius);
+    return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;
+}
+
+// 頂点を上に向けた正三角形 外接円の半径 r
+float sd_triangle(vec2 p, float r) {
+    const float k = sqrt(3.0);
+    p.y = -p.y - r * 0.25;
+    float half_side = r * k * 0.5;
+    p.x = abs(p.x) - half_side;
+    p.y = p.y + half_side / k;
+    if (p.x + k * p.y > 0.0) p = vec2(p.x - k * p.y, -k * p.x - p.y) / 2.0;
+    p.x -= clamp(p.x, -2.0 * half_side, 0.0);
+    return -length(p) * sign(p.y);
+}
+
+void main() {
+    // 絵の中心からの画素 Y は下が正 図形は時計回りに rotation 度回っている
+    vec2 p = v_uv * u_size - object_center();
+    p.y = -p.y;
+    p -= vec2(center_x, center_y);
+    float r = radians(-rotation);
+    p = mat2(cos(r), sin(r), -sin(r), cos(r)) * p;
+    vec2 half_size = max(vec2(width, height) * 0.5, vec2(0.5));
+
+    float d;
+    if (shape == 0) {
+        d = -1.0e6;
+    } else if (shape == 1) {
+        d = (length(p / half_size) - 1.0) * min(half_size.x, half_size.y);
+    } else if (shape == 2) {
+        d = sd_box(p, half_size, clamp(corner, 0.0, min(half_size.x, half_size.y)));
+    } else if (shape == 3) {
+        // 扇 上を 0 として反時計回りに span 度ぶん（YMM4 の CenterAngle）
+        d = (length(p / half_size) - 1.0) * min(half_size.x, half_size.y);
+        float theta = degrees(atan(p.x, -p.y));
+        if (theta > 0.0) theta -= 360.0;
+        if (theta < -clamp(span, 0.0, 360.0)) d = max(d, 1.0e6);
+    } else {
+        d = sd_triangle(p, min(half_size.x, half_size.y));
+    }
+
+    float edge = max(blur, 0.75);
+    // ぼかしは縁の前後に広げる 幅は YMM4 の絵に近づけて 2 倍にした
+    float inside = 1.0 - smoothstep(-edge, edge, d);
+    if (invert) inside = 1.0 - inside;
+    vec4 color = texture(u_texture, v_uv);
+    frag_color = vec4(color.rgb, color.a * inside);
+}
+""")
+
 _HIGHLIGHTS_SHADOWS = _shader("""
 uniform float highlights;
 uniform float shadows;
@@ -597,6 +661,35 @@ def register_stylize_effects() -> None:
             ),
             fragment_shader=_INNER_SHADOW,
             passes=2,
+        ),
+        EffectDefinition(
+            kind="shape_mask",
+            label="図形で切り抜く",
+            category="形",
+            parameters=(
+                SelectSpec(
+                    "shape",
+                    "図形",
+                    (
+                        ("background", "全体"),
+                        ("ellipse", "楕円"),
+                        ("rect", "四角"),
+                        ("fan", "扇"),
+                        ("triangle", "三角"),
+                    ),
+                    "ellipse",
+                ),
+                TrackSpec("width", "幅", 0, 20000, 400, step=1, unit="px"),
+                TrackSpec("height", "高さ", 0, 20000, 400, step=1, unit="px"),
+                TrackSpec("corner", "角の丸み", 0, 10000, 0, step=1, unit="px"),
+                TrackSpec("span", "扇の角度", 0, 360, 360, unit="度"),
+                TrackSpec("center_x", "X", -20000, 20000, 0, step=1, unit="px"),
+                TrackSpec("center_y", "Y（下が正）", -20000, 20000, 0, step=1, unit="px"),
+                TrackSpec("rotation", "回転", -3600, 3600, 0, unit="度"),
+                TrackSpec("blur", "ぼかし", 0, 1000, 0, unit="px"),
+                CheckSpec("invert", "反転", False),
+            ),
+            fragment_shader=_SHAPE_MASK,
         ),
         EffectDefinition(
             kind="edge_detect",

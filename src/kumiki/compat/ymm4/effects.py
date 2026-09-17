@@ -308,6 +308,58 @@ def _inner_shadow(r: _Reader) -> Effect | None:
     )
 
 
+#: マスクに使える図形 プラグイン名の先頭と、切り抜きの図形
+_MASK_SHAPES = {
+    "Background": "background",
+    "Circle": "ellipse",
+    "Quadrilateral": "rect",
+    "Rectangle": "rect",
+    "Fan": "fan",
+    "Triangle": "triangle",
+}
+
+
+def _mask(r: _Reader) -> Effect | None:
+    """図形で切り抜く 位置は下が正、角度は時計回り（YMM4 の絵で確かめた）"""
+    plugin = str(r.entry.get("ShapeType2") or "").partition(",")[0].rpartition(".")[2]
+    shape = next((kind for key, kind in _MASK_SHAPES.items() if plugin.startswith(key)), None)
+    if shape is None:
+        r.report.note_missing(f"YMM4 のマスクの図形: {plugin or '種類不明'}")
+        return None
+    raw = r.entry.get("ShapeParameter")
+    parameter = _Reader(
+        raw if isinstance(raw, dict) else {}, r.length, r.keyframes, r.report, r.name
+    )
+    if str(parameter.entry.get("SizeMode") or "") in ("Size", "SizeAspect"):
+        size = parameter.track("Size", 100.0)
+        aspect = parameter.plain("AspectRate") / 100.0
+        width = _scaled(size, 1.0 - max(0.0, aspect))
+        height = _scaled(size, 1.0 + min(0.0, aspect))
+    else:
+        width = parameter.track("Width", 100.0)
+        height = parameter.track("Height", 100.0)
+    return _create(
+        "shape_mask",
+        shape=shape,
+        width=width,
+        height=height,
+        corner=parameter.track("Round"),
+        span=parameter.track("CenterAngle", 360.0),
+        center_x=r.track("X"),
+        center_y=r.track("Y"),
+        rotation=r.track("Angle"),
+        blur=r.track("Blur"),
+        invert=r.flag("InvertMask"),
+    )
+
+
+def _scaled(value: AnimatedValue, factor: float) -> AnimatedValue:
+    return AnimatedValue(
+        value.static * factor,
+        tuple(replace(frame, value=frame.value * factor) for frame in value.keyframes),
+    )
+
+
 def _long_shadow(r: _Reader) -> Effect | None:
     return _create(
         "long_shadow",
@@ -572,6 +624,7 @@ _MAPPERS: dict[str, Callable[[_Reader], Effect | None]] = {
     "RepeatRotateEffect": _repeat_rotate,
     "ShadowEffect": _shadow,
     "InnerShadowEffect": _inner_shadow,
+    "MaskEffect": _mask,
     "CircularDuplicatorEffect": _circular_duplicator,
     "MeshDeformationEffect": _mesh_deformation,
     "InOutGetUpEffect": _inout_getup,
