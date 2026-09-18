@@ -1,0 +1,7 @@
+# 配布物と、AviUtl2 に作らせた試験用のエイリアスはリポジトリに入れない
+# ここへ置くと tests/compat/test_real_aliases.py が拾って検査する
+*.object
+*.exa
+*.exa2
+*.exo
+*.exo2

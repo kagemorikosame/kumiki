@@ -198,6 +198,20 @@ YMM4 が読み込みで断った設定（列挙型の名前の間違いなど）
 隠れて見えないことがある そのときは YMM4 を前に出して Ctrl+C を押すと、
 エラーの文面がクリップボードに入る
 
+### AviUtl 側も同じやり方で確かめる
+
+- `tools/aviutl_count.py` … 手元のエイリアスを全部通して、写せない所を回数つきで数える
+  見に行くのは `%PROGRAMDATA%\aviutl2\Alias` と `tests/fixtures/aviutl`
+
+```
+.venv\Scripts\python.exe tools\aviutl_count.py
+```
+
+トラックバーの「移動方法」の書き方は、AviUtl2 に実際に作らせたエイリアスから読んだ
+作り方は `tests/fixtures/aviutl/README.md` に書いてある 要点は
+**オブジェクト設定でトラックバーの名前をクリックすると移動方法の一覧が出る**こと
+（値の欄ではなく名前 値の左右の `-` と `◆` は増減のボタン）
+
 ---
 
 ## 6. Git の使い方
