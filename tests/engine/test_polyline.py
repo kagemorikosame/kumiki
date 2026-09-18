@@ -21,3 +21,9 @@ def test_unreadable_pairs_are_skipped() -> None:
 def test_the_y_axis_points_up() -> None:
     # ほかの位置と同じ向き 下向きのままだと線だけ上下が逆に出る
     assert polyline_points("0,10")[0][1] == 10.0
+
+
+def test_a_long_tail_is_dropped_even_when_pairs_are_unreadable() -> None:
+    # 余りを残すと、読めない組のぶんだけ巨大な文字列をカンマで割ることになる
+    text = ";".join(["だめ"] * 10 + [f"{i},0" for i in range(MAX_POLYLINE_POINTS + 50)])
+    assert len(polyline_points(text)) == MAX_POLYLINE_POINTS - 10

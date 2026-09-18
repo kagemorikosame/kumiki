@@ -444,10 +444,10 @@ def polyline_points(text: str) -> list[tuple[float, float]]:
     読み込むと、1 フレームごとに点列を解き直して再生が止まる
     """
     points: list[tuple[float, float]] = []
-    for pair in text.split(";", MAX_POLYLINE_POINTS):
-        if len(points) >= MAX_POLYLINE_POINTS:
-            break
-        parts = pair.split(",")
+    # 区切りの数を抑えたうえで、余りの 1 つ（上限より後ろの全部）は捨てる
+    # 残しておくと、読めない組があったときに巨大な余りをカンマで割ってしまう
+    for pair in text.split(";", MAX_POLYLINE_POINTS)[:MAX_POLYLINE_POINTS]:
+        parts = pair.split(",", 2)
         if len(parts) != 2:
             continue
         try:
