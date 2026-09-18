@@ -15,7 +15,7 @@ from fractions import Fraction
 
 from kumiki.compat.aviutl.encoding import decode_utf16_hex
 from kumiki.compat.aviutl.exo import ExoEntry, ExoFile, ExoObject
-from kumiki.compat.aviutl.motion import FLAG_EXPRESSION, animated_value
+from kumiki.compat.aviutl.motion import FLAG_EXPRESSION, FLAG_SCRIPT, Motion, animated_value
 from kumiki.compat.aviutl.report import CompatibilityReport, global_report
 from kumiki.compat.decoration import decoration_params, find_decoration
 from kumiki.compat.mapped import MappedObject
@@ -628,6 +628,17 @@ def _as_number(value: str) -> float:
 ZERO = Fraction(0)
 
 
+def _varies(motion: Motion | None) -> bool:
+    """時間で変わりうるか
+
+    値が同じでも、式やスクリプトの移動方法なら変わる（``100,100,回転,4|360``）
+    値の並びだけ見ると、そういう行を止めたことに気付けない
+    """
+    if motion is None:
+        return False
+    return motion.moves or bool(motion.flags & (FLAG_EXPRESSION | FLAG_SCRIPT))
+
+
 def _playback(
     entry: ExoEntry, rate: FrameRate, log: CompatibilityReport
 ) -> tuple[Fraction, Fraction]:
@@ -642,7 +653,7 @@ def _playback(
     変速は写せないので、記録に残してから先頭の値で止める
     """
     position = entry.motion("再生位置")
-    if position is not None and (position.moves or position.flags & FLAG_EXPRESSION):
+    if _varies(position):
         log.note_missing("AviUtl の動く再生位置（切り出し位置は 1 つしか持てない）")
     if entry.generation >= 2:
         start = Fraction(position.first).limit_denominator(10_000) if position is not None else ZERO
@@ -651,7 +662,7 @@ def _playback(
         start = Fraction(frames - 1).limit_denominator(10_000) * rate.frame_duration
 
     speed_motion = entry.motion("再生速度")
-    if speed_motion is not None and (speed_motion.moves or speed_motion.flags & FLAG_EXPRESSION):
+    if _varies(speed_motion):
         log.note_missing("AviUtl の変速（再生速度は 1 つしか持てない）")
     percent = speed_motion.first if speed_motion is not None else 100.0
     if percent <= 0.0:

@@ -92,10 +92,11 @@ class TestKeyframes:
         assert pos_x.at(89) == 150.0
 
     def test_two_values_span_the_whole_clip(self) -> None:
-        # 時間制御やスクリプトの移動方法は中間点を見ない 値は 2 つのまま来る
-        params, _ = _transform("X=0,300,直線移動(時間制御),0", frame="244,333,423")
+        # 中間点より値が少ないファイル 動きは両端へ寄せて残し、落ちた分は記録する
+        params, report = _transform("X=0,300,直線移動(時間制御),0", frame="244,333,423")
         pos_x = _animated(params["pos_x"])
         assert [k.frame for k in pos_x.keyframes] == [0, 179]
+        assert any("中間点より値が少ない" in line for line in report.lines())
 
     def test_an_instant_move_holds_its_value(self) -> None:
         params, _ = _transform("拡大率=100,200,瞬間移動,0")
@@ -182,7 +183,7 @@ frame=0,310
 effect.name=動画ファイル
 再生位置=0.967,6.151,再生範囲,0
 再生速度=200.00
-ファイル=D:\\録画先\\a.mp4
+ファイル=D:/録画先/a.mp4
 [Object.1]
 effect.name=映像再生
 X=0.00
@@ -205,7 +206,7 @@ frame=0,310
 effect.name=動画ファイル
 再生位置=1.0,2.0,直線移動,0
 再生速度=100.00,200.00,直線移動,0
-ファイル=D:\a.mp4
+ファイル=D:/a.mp4
 [Object.1]
 effect.name=映像再生
 X=0.00
@@ -215,6 +216,23 @@ X=0.00
         assert item is not None
         assert item.clip.speed == Fraction(1)
         assert any("変速" in line for line in report.lines())
+        assert any("動く再生位置" in line for line in report.lines())
+
+    def test_a_still_script_playback_is_recorded(self) -> None:
+        # 値が同じでもスクリプトの移動方法なら時間で変わりうる
+        body = """[Object]
+frame=0,310
+[Object.0]
+effect.name=動画ファイル
+再生位置=100,100,回転,4|360
+ファイル=D:/a.mp4
+[Object.1]
+effect.name=映像再生
+X=0.00
+"""
+        report = CompatibilityReport()
+        item = map_object(parse_exo(body).objects[0], RATE, report=report)
+        assert item is not None
         assert any("動く再生位置" in line for line in report.lines())
 
 
@@ -248,8 +266,15 @@ class TestTheThingsThatUsedToBreak:
         assert any("中間点と値の数が合わない" in line for line in report.lines())
 
     def test_points_that_go_backwards_are_refused(self) -> None:
+        # 断らないと同じフレームへ 2 つキーフレームが並び、AnimatedValue が例外を出す
         params, _ = _transform("X=10,20,30,直線移動,0", frame="10,20,15")
         assert _animated(params["pos_x"]) == AnimatedValue(10.0)
+
+    def test_a_value_that_is_not_a_number_is_recorded(self) -> None:
+        # 既定値へ置き換えたことを残さないと、設定が消えたことに気付けない
+        params, report = _transform("X=10\n拡大率=おかしな値")
+        assert _animated(params["scale"]) == AnimatedValue(100.0)
+        assert any("数として読めない値" in line for line in report.lines())
 
     def test_a_still_expression_is_still_recorded(self) -> None:
         # 値が同じでも、式なら時間で変わりうる
@@ -282,19 +307,22 @@ class TestHowValuesReachTheSpec:
     """動きを読めるのはトラックバーだけ ほかは元の文字列のまま渡す"""
 
     def test_a_track_becomes_an_animated_value(self) -> None:
+        # ここが壊れると、動きを読めずに数値 1 つ（か既定値）へ落ちる
         spec = TrackSpec("radius", "範囲", 0, 100, 10)
         value = _spec_value(spec, "0,50,直線移動,0", (0, 59), CompatibilityReport(), "試し")
         assert isinstance(value, AnimatedValue)
         assert value.at(59) == 50.0
 
     def test_a_check_keeps_its_text(self) -> None:
-        # AnimatedValue に包むと coerce が型違いとして既定値へ落とす
+        # AnimatedValue に包むと coerce が型違いとして既定値（False）へ落とし、
+        # スクリプトのチェック項目が指定と逆になる
         spec = CheckSpec("bold", "太字", default=False)
         value = _spec_value(spec, "true", (0, 59), CompatibilityReport(), "試し")
         assert value == "true"
         assert spec.coerce("true") is True
 
     def test_a_select_keeps_its_text(self) -> None:
+        # 包むと選択肢が既定値（linear）に戻り、形が別物になる
         spec = SelectSpec("shape", "形状", (("linear", "線形"), ("radial", "円形")), "linear")
         value = _spec_value(spec, "radial", (0, 59), CompatibilityReport(), "試し")
         assert value == "radial"

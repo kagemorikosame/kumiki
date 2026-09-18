@@ -186,6 +186,9 @@ def animated_value(
     scale = convert if convert is not None else (lambda value: value)
     motion = parse_motion(raw)
     if motion is None:
+        if raw is not None:
+            # 項目はあるのに数として読めない 既定値へ置き換えたことを残す
+            log.note_missing(f"AviUtl の数として読めない値: {label}")
         # 項目そのものが無い行 既定値にも変換を掛ける（透明度 0 は不透明 1）
         return AnimatedValue(scale(default))
 
@@ -199,6 +202,9 @@ def animated_value(
     if frames is None:
         log.note_missing(f"AviUtl の中間点と値の数が合わない: {label}")
         return AnimatedValue(scale(motion.first))
+    if len(motion.values) != len(points):
+        # 両端へ寄せて動きは残す 中間点の値は落ちるので記録に残す
+        log.note_missing(f"AviUtl の中間点より値が少ない: {label}")
     interpolation = _interpolation(motion)
     keyframes = tuple(
         Keyframe(frame=frame, value=scale(value), interpolation=interpolation)
@@ -219,10 +225,11 @@ def _frames_for(motion: Motion, points: tuple[int, ...]) -> tuple[int, ...] | No
     if len(motion.values) == len(points):
         chosen = points
     elif len(motion.values) == 2:
-        # 中間点を見ない移動方法 区間の両端へ置く
+        # 値が 2 つなら区間の両端へ置く 実物では中間点の数だけ値が並ぶので、
+        # 中間点があるのに 2 つしか無いのは別の書き手のファイル 動きは残すが
+        # 呼び出し元が記録に残せるよう、合っていないことを知らせる
         chosen = (points[0], points[-1])
     else:
-        # 値と中間点の数が食い違うファイル
         return None
     if any(right <= left for left, right in itertools.pairwise(chosen)):
         return None
