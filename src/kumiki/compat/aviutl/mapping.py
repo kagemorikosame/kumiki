@@ -653,7 +653,10 @@ def _playback_value(
     if motion is None:
         log.note_missing(f"AviUtl の数として読めない{label}")
         return None
-    varies = motion.moves or bool(motion.flags & (FLAG_EXPRESSION | FLAG_SCRIPT))
+    # 再生範囲の 2 つの値は素材の切り出しの始めと終わりで、動きではない
+    # 値が違うのが普通の形なので、これを動きとして数えると記録が埋まる
+    moves = motion.moves and motion.method != "再生範囲"
+    varies = moves or bool(motion.flags & (FLAG_EXPRESSION | FLAG_SCRIPT))
     if varies or motion.method not in _STILL_PLAYBACK:
         log.note_missing(f"AviUtl の{label}（1 つの値しか持てない）")
     return motion

@@ -93,6 +93,8 @@ class TestKeyframes:
 
     def test_two_values_span_the_whole_clip(self) -> None:
         # 中間点より値が少ないファイル 動きは両端へ寄せて残し、落ちた分は記録する
+        # ここが壊れると、普通の時間制御まで「値数不足」として記録され、
+        # 多い順の並びが実際の穴と食い違う
         params, report = _transform("X=0,300,直線移動(時間制御),0", frame="244,333,423")
         pos_x = _animated(params["pos_x"])
         assert [k.frame for k in pos_x.keyframes] == [0, 179]
@@ -189,10 +191,14 @@ effect.name=動画ファイル
 effect.name=映像再生
 X=0.00
 """
-        item = map_object(parse_exo(body).objects[0], RATE, report=CompatibilityReport())
+        report = CompatibilityReport()
+        item = map_object(parse_exo(body).objects[0], RATE, report=report)
         assert item is not None
         assert item.clip.source_in == Fraction(967, 1000)
         assert item.clip.speed == Fraction(2)
+        # 再生範囲の 2 つの値は切り出しの始めと終わりで、動きではない
+        # 動きとして数えると、普通のクリップまで未対応の記録で埋まる
+        assert not any("再生位置" in line for line in report.lines())
 
     def test_a_missing_speed_means_normal(self) -> None:
         item, _ = _mapped("X=0")
@@ -237,6 +243,7 @@ X=0.00
         assert any("動く再生位置" in line for line in report.lines())
 
     def test_a_playback_value_that_is_not_a_number_is_recorded(self) -> None:
+        # 記録しないと、指定した速度が黙って 1 倍へ置き換わる
         body = """[Object]
 frame=0,310
 [Object.0]
