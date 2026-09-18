@@ -96,7 +96,8 @@ class TestKeyframes:
         params, report = _transform("X=0,300,直線移動(時間制御),0", frame="244,333,423")
         pos_x = _animated(params["pos_x"])
         assert [k.frame for k in pos_x.keyframes] == [0, 179]
-        assert any("中間点より値が少ない" in line for line in report.lines())
+        # 時間制御は中間点を見ない決まりなので、値 2 つは壊れた形ではない
+        assert not any("中間点より値が少ない" in line for line in report.lines())
 
     def test_an_instant_move_holds_its_value(self) -> None:
         params, _ = _transform("拡大率=100,200,瞬間移動,0")
@@ -217,6 +218,40 @@ X=0.00
         assert item.clip.speed == Fraction(1)
         assert any("変速" in line for line in report.lines())
         assert any("動く再生位置" in line for line in report.lines())
+
+    def test_an_unknown_playback_method_is_recorded(self) -> None:
+        # 知らない移動方法は中身が分からない 止めたことを残さないと気付けない
+        body = """[Object]
+frame=0,310
+[Object.0]
+effect.name=動画ファイル
+再生位置=1.0,1.0,未知の再生,0
+ファイル=D:/a.mp4
+[Object.1]
+effect.name=映像再生
+X=0.00
+"""
+        report = CompatibilityReport()
+        item = map_object(parse_exo(body).objects[0], RATE, report=report)
+        assert item is not None
+        assert any("動く再生位置" in line for line in report.lines())
+
+    def test_a_playback_value_that_is_not_a_number_is_recorded(self) -> None:
+        body = """[Object]
+frame=0,310
+[Object.0]
+effect.name=動画ファイル
+再生速度=はやい
+ファイル=D:/a.mp4
+[Object.1]
+effect.name=映像再生
+X=0.00
+"""
+        report = CompatibilityReport()
+        item = map_object(parse_exo(body).objects[0], RATE, report=report)
+        assert item is not None
+        assert item.clip.speed == Fraction(1)
+        assert any("数として読めない" in line for line in report.lines())
 
     def test_a_still_script_playback_is_recorded(self) -> None:
         # 値が同じでもスクリプトの移動方法なら時間で変わりうる

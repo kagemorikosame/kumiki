@@ -15,7 +15,13 @@ from fractions import Fraction
 
 from kumiki.compat.aviutl.encoding import decode_utf16_hex
 from kumiki.compat.aviutl.exo import ExoEntry, ExoFile, ExoObject
-from kumiki.compat.aviutl.motion import FLAG_EXPRESSION, FLAG_SCRIPT, Motion, animated_value
+from kumiki.compat.aviutl.motion import (
+    FLAG_EXPRESSION,
+    FLAG_SCRIPT,
+    Motion,
+    animated_value,
+    parse_motion,
+)
 from kumiki.compat.aviutl.report import CompatibilityReport, global_report
 from kumiki.compat.decoration import decoration_params, find_decoration
 from kumiki.compat.mapped import MappedObject
@@ -628,15 +634,29 @@ def _as_number(value: str) -> float:
 ZERO = Fraction(0)
 
 
-def _varies(motion: Motion | None) -> bool:
-    """時間で変わりうるか
+#: 再生の項目で「止まっている」と言い切れる移動方法 これ以外は中身を知らない
+_STILL_PLAYBACK = frozenset({"", "移動無し", "再生範囲"})
 
-    値が同じでも、式やスクリプトの移動方法なら変わる（``100,100,回転,4|360``）
-    値の並びだけ見ると、そういう行を止めたことに気付けない
+
+def _playback_value(
+    entry: ExoEntry, key: str, log: CompatibilityReport, label: str
+) -> Motion | None:
+    """再生の項目を読む 写せないものはここで記録に残す
+
+    :class:`Clip` の切り出し位置と速度は 1 つの値しか持てない 動くもの・式・
+    スクリプトの移動方法・知らない移動方法は先頭の値で止まるので、黙って落とさない
     """
+    raw = entry.params.get(key)
+    if raw is None:
+        return None
+    motion = parse_motion(raw)
     if motion is None:
-        return False
-    return motion.moves or bool(motion.flags & (FLAG_EXPRESSION | FLAG_SCRIPT))
+        log.note_missing(f"AviUtl の数として読めない{label}")
+        return None
+    varies = motion.moves or bool(motion.flags & (FLAG_EXPRESSION | FLAG_SCRIPT))
+    if varies or motion.method not in _STILL_PLAYBACK:
+        log.note_missing(f"AviUtl の{label}（1 つの値しか持てない）")
+    return motion
 
 
 def _playback(
@@ -652,18 +672,14 @@ def _playback(
     :class:`Clip` の切り出し位置と速度は 1 つの値しか持てない 動く再生位置や
     変速は写せないので、記録に残してから先頭の値で止める
     """
-    position = entry.motion("再生位置")
-    if _varies(position):
-        log.note_missing("AviUtl の動く再生位置（切り出し位置は 1 つしか持てない）")
+    position = _playback_value(entry, "再生位置", log, "動く再生位置")
     if entry.generation >= 2:
         start = Fraction(position.first).limit_denominator(10_000) if position is not None else ZERO
     else:
         frames = position.first if position is not None else float(entry.integer("開始位置", 1))
         start = Fraction(frames - 1).limit_denominator(10_000) * rate.frame_duration
 
-    speed_motion = entry.motion("再生速度")
-    if _varies(speed_motion):
-        log.note_missing("AviUtl の変速（再生速度は 1 つしか持てない）")
+    speed_motion = _playback_value(entry, "再生速度", log, "変速")
     percent = speed_motion.first if speed_motion is not None else 100.0
     if percent <= 0.0:
         # 0 や負の速度は AviUtl では「止める」 こちらは速度に 0 を置けない

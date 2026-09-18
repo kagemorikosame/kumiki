@@ -202,8 +202,10 @@ def animated_value(
     if frames is None:
         log.note_missing(f"AviUtl の中間点と値の数が合わない: {label}")
         return AnimatedValue(scale(motion.first))
-    if len(motion.values) != len(points):
+    if len(motion.values) != len(points) and motion.method not in _TIME_CONTROLLED:
         # 両端へ寄せて動きは残す 中間点の値は落ちるので記録に残す
+        # 時間制御は中間点を見ない決まりなので、値が 2 つでも壊れてはいない
+        # （そちらは時間の伸縮を写せないことを別に記録している）
         log.note_missing(f"AviUtl の中間点より値が少ない: {label}")
     interpolation = _interpolation(motion)
     keyframes = tuple(
