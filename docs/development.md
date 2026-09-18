@@ -251,6 +251,22 @@ PR には必ず含める:
 | Sourcery | `@sourcery-ai review` | Web の画面（Review Settings） 言語は日本語、`tests/fixtures/**` を外す |
 | Qodo | `/agentic_review` | `.pr_agent.toml` |
 
+#### 承認（Approved）の出し方
+
+CodeRabbit と Sourcery は承認を出す 指摘が残っている間は「変更を求める」状態で、
+全部片付くと承認に変わるので、**PR の一覧を見るだけで手が要るかどうかが分かる**
+
+- CodeRabbit … `.coderabbit.yaml` の `reviews.request_changes_workflow: true`
+  承認が出る条件は「指摘が全部解決」「最新のコミットまで見た」「マージ前の検査が緑」
+- Sourcery … Web の画面（Review Settings）で承認を有効にする（本人の操作）
+- Copilot の承認は**有効にしない** 既定のまま（指摘だけ） 承認 1 つで必須承認を
+  満たせてしまい、門として弱くなるため
+- Qodo は指摘が 0 件のときだけ承認する作りなので、今の進め方では出ない 使っていない
+
+**承認そのものはマージの門ではない**（`main` の必須承認は 0 のまま）
+門は今までどおり CI 2 本・`Qodo review`・会話の解決 AI の承認は「自分が出した指摘が
+消えた」ことしか保証しないので、それだけを門にすると、指摘を解決済みにするだけで通る
+
 約束（コメントの書き方・コア層の依存・テストの書き方）は、どの役にも同じものを渡す
 `.coderabbit.yaml` を直したら、`.pr_agent.toml` もそろえる
 
