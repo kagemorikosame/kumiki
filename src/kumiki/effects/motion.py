@@ -408,7 +408,9 @@ uniform float opacity;
 void main() {
     // 隠れきった状態の不透明度が opacity 途中はその間を直線でつなぐ
     float keep = mix(1.0, clamp(opacity / 100.0, 0.0, 1.0), hidden_amount());
-    frag_color = sample_pixel(v_uv * u_size) * keep;
+    // ストレートアルファなので薄めるのは不透明度だけ 色まで掛けると縁が黒ずむ
+    vec4 color = sample_pixel(v_uv * u_size);
+    frag_color = vec4(color.rgb, color.a * keep);
 }
 """
 )

@@ -724,10 +724,10 @@ def _pen(
     first = strokes[0] if strokes and isinstance(strokes[0], dict) else {}
     attributes = first.get("DrawingAttributes")
     attributes = attributes if isinstance(attributes, dict) else {}
-    # 点は画面の左上を原点にした画素 こちらの線は絵の中心が原点なので寄せ直す
+    # 点は画面の左上を原点にした画素 こちらの線は絵の中心が原点で Y は上が正
     # （配布物の点は 1920x1080 の画面で描かれている）
     points = [
-        f"{number(point.get('X'), 0.0) - 960.0:g},{number(point.get('Y'), 0.0) - 540.0:g}"
+        f"{number(point.get('X'), 0.0) - 960.0:g},{540.0 - number(point.get('Y'), 0.0):g}"
         for point in first.get("StylusPoints") or []
         if isinstance(point, dict)
     ]
@@ -832,7 +832,8 @@ def _line(parameter: dict[str, Any], log: CompatibilityReport) -> GeneratedSourc
             log.note_missing("YMM4 の線の図形の点の動き（先頭の位置で描いた）")
         x = x_value.keyframes[0].value if x_value.is_animated else x_value.static
         y = y_value.keyframes[0].value if y_value.is_animated else y_value.static
-        points.append(f"{x:g},{y:g}")
+        # YMM4 の点は下が正 こちらは上が正
+        points.append(f"{x:g},{-y:g}")
     style = str(parameter.get("DashStyle") or "Solid")
     dash = _DASHES.get(style)
     if dash is None:

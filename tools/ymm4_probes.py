@@ -670,10 +670,7 @@ def build_second(
 
     def textured() -> dict[str, Any]:
         item = base(800.0, 400.0)
-        item["ShapeParameter"]["Brush"] = set_values(
-            copy.deepcopy(brushes["StripeBrushPlugin"]["Parameter"])
-            and copy.deepcopy(brushes["StripeBrushPlugin"]),
-        )
+        item["ShapeParameter"]["Brush"] = copy.deepcopy(brushes["StripeBrushPlugin"])
         set_values(
             item["ShapeParameter"]["Brush"]["Parameter"],
             Color1="#FFFF4040",

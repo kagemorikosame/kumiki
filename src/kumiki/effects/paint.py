@@ -283,7 +283,8 @@ vec4 pattern_color(vec2 p) {
         float b = max(width_b * z, 0.0);
         float period = max(a + b, 1.0);
         // 1 本目の帯は絵の中心にまたがる（YMM4 の絵で中心の画素が帯の真ん中だった）
-        float m = mod(dot(p, direction) - offset * z + a * 0.5, period);
+        // 中心のずらしはほかの模様と同じく q（中心を引いたあと）で測る
+        float m = mod(dot(q, direction) - offset * z + a * 0.5, period);
         return m < a ? ramp(0.0) : ramp(1.0);
     }
     vec2 r = rotated(q, -angle);

@@ -174,6 +174,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--frames", type=int, default=20, help="測るフレーム数")
     arguments = parser.parse_args(argv)
 
+    for name in ("width", "height", "depth", "tracks", "effects", "texts", "frames"):
+        # 0 や負の値は「測れた」と言いながら何も測らない
+        if getattr(arguments, name) <= 0:
+            parser.error(f"--{name} は 1 以上にしてください")
     settings = ProjectSettings(
         width=arguments.width, height=arguments.height, frame_rate=FrameRate(30)
     )

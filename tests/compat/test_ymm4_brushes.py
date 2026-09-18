@@ -74,8 +74,13 @@ class TestBrushes:
             ("Darker", "darken"),
             ("LinearDodge", "add"),
         ):
-            effect = fill_foreground({"BlendMode": name}, CompatibilityReport())
-            assert effect is None or effect.params["blend"] == expected
+            entry = {
+                "BlendMode": name,
+                "Brush": _brush("SolidColorBrushPlugin", Color="#FFFF0000"),
+            }
+            effect = fill_foreground(entry, CompatibilityReport())
+            assert effect is not None, f"{name} が写せていない"
+            assert effect.params["blend"] == expected
 
     def test_dot_brush_keeps_its_spacing(self) -> None:
         brush = _brush(

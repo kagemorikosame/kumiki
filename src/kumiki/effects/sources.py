@@ -147,7 +147,7 @@ SHAPE = SourceDefinition(
         TrackSpec("bar_thickness", "矢印の軸の太さ", 0, 1000, 50, unit="%"),
         TrackSpec("formula_m", "スーパーフォーミュラ M", 0, 100, 4, step=0.1),
         TrackSpec("formula_n", "スーパーフォーミュラ N", 0.05, 100, 1, step=0.05),
-        TextSpec("points", "線の点（x,y;x,y 中心から、下が正）", "", multiline=False),
+        TextSpec("points", "線の点（x,y;x,y 中心から）", "", multiline=False),
         SelectSpec(
             "line_type", "線の種類", (("straight", "直線"), ("quadratic", "2 次ベジェ")), "straight"
         ),

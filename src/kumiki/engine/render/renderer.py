@@ -1072,7 +1072,8 @@ class FrameRenderer:
             return cached[1]
         image = render_source(source, width, height, frame=local_frame, fps=float(rate.fps))
         if image is not None:
-            if len(self._generated) >= MAX_GENERATED_CACHE:
+            # 入れ替えのときは減らない 先に捨てると、関係ないクリップの絵が消える
+            if clip.id not in self._generated and len(self._generated) >= MAX_GENERATED_CACHE:
                 self._generated.popitem(last=False)
             self._generated[clip.id] = (key, image)
             self._generated.move_to_end(clip.id)

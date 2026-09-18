@@ -448,6 +448,10 @@ class ObjApi:
             width, height = state.screen_w, state.screen_h
             figure = "rect"
         else:
+            if not math.isfinite(size):
+                # int(NaN) は例外になり、スクリプト全体が止まる
+                self._report.note_missing(f'obj.load("figure") の大きさ {size!r}（数ではない）')
+                size = 100.0
             if size > MAX_FIGURE_SIZE:
                 # 大きさはスクリプトが決める そのまま画像を作ると 1 回で数 GB になる
                 self._report.note_missing(

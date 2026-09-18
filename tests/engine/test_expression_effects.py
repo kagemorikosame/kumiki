@@ -297,7 +297,7 @@ class TestAxes:
         rows = np.flatnonzero(result[..., 3].max(axis=1) > 0.5)
         assert rows.mean() > SIZE / 2
 
-    def test_the_particle_emitter_uses_the_screen_direction(
+    def test_a_negative_emitter_y_puts_particles_above_the_centre(
         self, gl_context: OffscreenGLContext, processor: EffectProcessor
     ) -> None:
         # 放つ位置だけは YMM4 と同じ下向き正（表示名にもそう書いてある）

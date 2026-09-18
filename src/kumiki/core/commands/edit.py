@@ -379,13 +379,18 @@ class TrimClips(Command):
     def apply(self, project: Project) -> Project:
         if self.head_delta == 0 and self.tail_delta == 0:
             return project
+        done: set[ClipId] = set()
         for clip_id in self.clip_ids:
             located = project.timeline.locate_clip(clip_id)
             if located is None:
                 raise KeyError(f"クリップが見つからない: {clip_id}")
-            track, _ = located
+            track, clip = located
             if track.locked:
                 raise ValueError(f"トラック {track.name!r} はロックされている")
+            if clip_id in done:
+                continue
+            # リンクした映像と音声は 1 回で両方が削れる 2 回当てると相手だけ余分に縮む
+            done.update(member.id for _, member in _linked_group(project, clip))
             project = TrimClip(
                 clip_id, head_delta=self.head_delta, tail_delta=self.tail_delta
             ).apply(project)

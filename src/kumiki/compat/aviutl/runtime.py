@@ -136,7 +136,10 @@ _GUARD = """
     return function(s, pattern, ...)
       local plain = plain_at and select(plain_at - 2, ...)
       if not plain and type(s) == "string" and type(pattern) == "string" then
-        if (#s + 1) ^ quantifiers(pattern) > PATTERN_BUDGET then
+        -- 先頭を決めない（``^`` で始まらない）パターンは、開始位置ごとに試すので
+        -- 文字列の長さのぶんだけ手間が増える それも見積もりに入れる
+        local starts = pattern:sub(1, 1) == "^" and 1 or (#s + 1)
+        if starts * (#s + 1) ^ quantifiers(pattern) > PATTERN_BUDGET then
           error("文字列のパターンが重すぎます（" .. #s .. " 文字）", 2)
         end
       end

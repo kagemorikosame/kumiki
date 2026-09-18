@@ -438,7 +438,7 @@ def _draw_shape(painter: QPainter, values: dict[str, object], width: int, height
 
 
 def polyline_points(text: str) -> list[tuple[float, float]]:
-    """``"x,y;x,y"`` を点の並びへ 読めない組は飛ばす 座標は中心からの画素で Y は下が正"""
+    """``"x,y;x,y"`` を点の並びへ 読めない組は飛ばす 座標は中心からの画素で Y は上が正"""
     points: list[tuple[float, float]] = []
     for pair in text.split(";"):
         parts = pair.split(",")
@@ -455,7 +455,9 @@ def polyline_points(text: str) -> list[tuple[float, float]]:
 
 def _polyline_path(values: dict[str, object], centre_x: float, centre_y: float) -> QPainterPath:
     points = [
-        (centre_x + x, centre_y + y) for x, y in polyline_points(str(values.get("points", "")))
+        # 点も Y は上が正 ほかの位置の設定と向きがそろう
+        (centre_x + x, centre_y - y)
+        for x, y in polyline_points(str(values.get("points", "")))
     ]
     path = QPainterPath()
     if len(points) < 2:
@@ -548,6 +550,10 @@ def _draw_concentration(
     painter.drawPath(path)
 
 
+#: 線の一部を描き直すときの刻みの上限 長い線で刻みが増えると、1 フレームに何秒もかかる
+MAX_TRIM_STEPS = 2000
+
+
 def _trimmed(path: QPainterPath, start: float, end: float) -> QPainterPath:
     """線の途中だけを残す ``start`` と ``end`` は全長に対する 0..1"""
     if start <= 0.0 and end >= 1.0:
@@ -556,7 +562,8 @@ def _trimmed(path: QPainterPath, start: float, end: float) -> QPainterPath:
         return QPainterPath()
     total = path.length()
     trimmed = QPainterPath()
-    steps = max(8, int(total / 2.0))
+    # 2 画素ごとに点を打つ 長い線でも刻みが増えすぎないように頭を抑える
+    steps = max(8, min(int(total / 2.0), MAX_TRIM_STEPS))
     first = True
     for index in range(steps + 1):
         fraction = start + (end - start) * index / steps

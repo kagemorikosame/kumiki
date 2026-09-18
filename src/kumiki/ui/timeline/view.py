@@ -386,6 +386,19 @@ class TimelineView(QWidget):
         painter.setBrush(fill)
         painter.drawRect(QRect(origin, current).normalized())
 
+    def _trimmable_selection(self) -> tuple[ClipId, ...]:
+        """選んだうち、端を動かせるもの ロックしたトラックのものは外す
+
+        動かすときと違い、リンクした相手のトラックは見ない トリムは相手のトラックが
+        ロックされていれば、その相手だけが元の長さで残る（:class:`TrimClip` の決まり）
+        """
+        timeline = self._project.timeline
+        return tuple(
+            clip_id
+            for clip_id in self._selection
+            if (located := timeline.locate_clip(clip_id)) is not None and not located[0].locked
+        )
+
     def _movable_selection(self) -> tuple[ClipId, ...]:
         """選んだうち、ロックしていないトラックのもの
 
@@ -652,11 +665,11 @@ class TimelineView(QWidget):
 
         if drag.kind is DragKind.TRIM_HEAD and drag.preview_head_delta:
             if drag.group:
-                return TrimClips(self._movable_selection(), head_delta=drag.preview_head_delta)
+                return TrimClips(self._trimmable_selection(), head_delta=drag.preview_head_delta)
             return TrimClip(drag.clip_id, head_delta=drag.preview_head_delta)
         if drag.kind is DragKind.TRIM_TAIL and drag.preview_tail_delta:
             if drag.group:
-                return TrimClips(self._movable_selection(), tail_delta=drag.preview_tail_delta)
+                return TrimClips(self._trimmable_selection(), tail_delta=drag.preview_tail_delta)
             return TrimClip(drag.clip_id, tail_delta=drag.preview_tail_delta)
         return None
 
