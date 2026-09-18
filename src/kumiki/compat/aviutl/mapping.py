@@ -15,6 +15,7 @@ from fractions import Fraction
 
 from kumiki.compat.aviutl.encoding import decode_utf16_hex
 from kumiki.compat.aviutl.exo import ExoEntry, ExoFile, ExoObject
+from kumiki.compat.aviutl.motion import animated_value
 from kumiki.compat.aviutl.report import CompatibilityReport, global_report
 from kumiki.compat.decoration import decoration_params, find_decoration
 from kumiki.compat.mapped import MappedObject
@@ -188,53 +189,48 @@ def map_object(
     effects: list[Effect] = []
     opacity = AnimatedValue(1.0)
     blend = "normal"
-    position = (0.0, 0.0)
-    scale = 100.0
-    rotation = 0.0
+    # 中間点はオブジェクトの持ち物 トラックバーの値はこの点の数だけ並ぶ
+    points = obj.relative_points()
+    placement: dict[str, AnimatedValue] | None = None
 
     for entry in obj.filters():
         if entry.name in _DRAW_NAMES:
-            position = (entry.number("X"), entry.number("Y"))
-            scale = entry.number("拡大率", 100.0)
-            # AviUtl2 は軸ごとに分けて持つ 回転として使えるのは Z 軸だけで、
-            # X/Y 軸の回転は板を傾ける立体的な変形なのでここでは写せない
-            rotation = entry.numeric("回転", "Z軸回転", default=0.0)
-            for axis in ("X軸回転", "Y軸回転"):
-                if entry.number(axis) != 0.0:
-                    log.note_missing(f"描画設定: {axis}")
-            opacity = AnimatedValue(1.0 - entry.number("透明度", 0.0) / 100.0)
+            placement = _placement(entry, points, log)
+            opacity = animated_value(
+                entry.params.get("透明度"),
+                points=points,
+                log=log,
+                label="描画設定の透明度",
+                convert=lambda value: 1.0 - value / 100.0,
+            )
             blend = _blend_of(entry, log)
             continue
 
-        effect = _filter(entry, log)
+        effect = _filter(entry, points, log)
         if effect is not None:
             effects.append(effect)
 
     # 位置・拡大・回転は変形エフェクトへ AviUtl では描画設定だが、こちらでは
     # クリップの持ち物ではないので、同じ見た目になるエフェクトへ写す
-    if position != (0.0, 0.0) or scale != 100.0 or rotation != 0.0:
+    if placement is not None and any(
+        value.is_animated or value.static != _PLACEMENT_DEFAULTS[name]
+        for name, value in placement.items()
+    ):
         transform = registry.get("transform")
         if transform is not None:
-            effects.insert(
-                0,
-                transform.create(
-                    pos_x=position[0],
-                    pos_y=-position[1],
-                    scale=scale,
-                    scale_y=scale,
-                    rotation=rotation,
-                ),
-            )
+            effects.insert(0, transform.create(**placement))
 
+    source_in, speed = _playback(content, rate, log)
     clip = Clip(
         timeline_start=obj.start,
         duration=obj.duration,
         source=source,
+        source_in=source_in,
+        speed=speed,
         effects=tuple(effects),
         opacity=opacity,
         blend_mode=blend,
     )
-    del rate
     return MappedObject(
         clip=clip,
         layer=max(1, obj.layer),
@@ -242,6 +238,55 @@ def map_object(
         kind=kind,
         has_span=obj.span_given,
     )
+
+
+#: 変形エフェクトへ写す描画設定と、その既定値（既定のままなら変形を足さない）
+_PLACEMENT_DEFAULTS: dict[str, float] = {
+    "pos_x": 0.0,
+    "pos_y": 0.0,
+    "scale": 100.0,
+    "scale_y": 100.0,
+    "rotation": 0.0,
+}
+
+
+def _placement(
+    entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport
+) -> dict[str, AnimatedValue]:
+    """描画設定（位置・拡大・回転）を変形エフェクトのパラメータへ
+
+    AviUtl2 は軸ごとに分けて持つ 回転として使えるのは Z 軸だけで、
+    X/Y 軸の回転は板を傾ける立体的な変形なのでここでは写せない
+    """
+    for axis in ("X軸回転", "Y軸回転"):
+        motion = entry.motion(axis)
+        if motion is not None and (motion.first != 0.0 or motion.moves):
+            log.note_missing(f"描画設定: {axis}")
+
+    scale = animated_value(
+        entry.params.get("拡大率"), points=points, log=log, label="描画設定の拡大率", default=100.0
+    )
+    return {
+        "pos_x": animated_value(
+            entry.params.get("X"), points=points, log=log, label="描画設定の X"
+        ),
+        # Y は AviUtl が下向き正 こちらは上向き正なので符号を反転する
+        "pos_y": animated_value(
+            entry.params.get("Y"),
+            points=points,
+            log=log,
+            label="描画設定の Y",
+            convert=lambda value: -value,
+        ),
+        "scale": scale,
+        "scale_y": scale,
+        "rotation": animated_value(
+            entry.params.get("回転") or entry.params.get("Z軸回転"),
+            points=points,
+            log=log,
+            label="描画設定の回転",
+        ),
+    }
 
 
 def _content(entry: ExoEntry, log: CompatibilityReport) -> tuple[GeneratedSource | None, str, str]:
@@ -361,13 +406,15 @@ _SELECT_PARAMS: dict[str, dict[str, tuple[str, dict[str, str]]]] = {
 }
 
 
-def _filter(entry: ExoEntry, log: CompatibilityReport) -> Effect | None:
+def _filter(
+    entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport
+) -> Effect | None:
     """フィルタをエフェクトへ"""
     if entry.name == "アニメーション効果":
-        return _animation(entry, log)
+        return _animation(entry, points, log)
     if "@" in entry.name:
         # AviUtl2 のエイリアスはスクリプトを ``表示名@ファイル名`` で書く
-        return _script_filter(entry, log)
+        return _script_filter(entry, points, log)
 
     kind = _FILTERS.get(entry.name)
     if kind is None:
@@ -387,7 +434,11 @@ def _filter(entry: ExoEntry, log: CompatibilityReport) -> Effect | None:
         if target is not None:
             spec = definition.spec(target)
             if spec is not None:
-                params[spec.name] = spec.coerce(_as_number(value))
+                params[spec.name] = spec.coerce(
+                    animated_value(
+                        value, points=points, log=log, label=f"{entry.name}の{source_name}"
+                    )
+                )
             continue
 
         colour_target = colours.get(source_name)
@@ -406,7 +457,9 @@ def _filter(entry: ExoEntry, log: CompatibilityReport) -> Effect | None:
     return Effect(kind=kind, params=params)
 
 
-def _script_filter(entry: ExoEntry, log: CompatibilityReport) -> Effect | None:
+def _script_filter(
+    entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport
+) -> Effect | None:
     """``表示名@ファイル名`` で書かれたスクリプトを繋ぐ
 
     AviUtl2 のエイリアスはアニメーション効果を専用の名前ではなく、この形で
@@ -431,11 +484,15 @@ def _script_filter(entry: ExoEntry, log: CompatibilityReport) -> Effect | None:
             # 制御文字で名前を付けていないスクリプトは track0..3 で並ぶ
             spec = next((s for s in definition.parameters if s.label == source_name), None)
         if spec is not None:
-            params[spec.name] = spec.coerce(_as_number(value))
+            params[spec.name] = spec.coerce(
+                animated_value(value, points=points, log=log, label=f"{entry.name}の{source_name}")
+            )
     return Effect(kind=found.identifier, params=params)
 
 
-def _animation(entry: ExoEntry, log: CompatibilityReport) -> Effect | None:
+def _animation(
+    entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport
+) -> Effect | None:
     """アニメーション効果 スクリプトが手元にあれば繋ぐ"""
     from kumiki.compat.aviutl.catalog import script_catalog
 
@@ -455,7 +512,9 @@ def _animation(entry: ExoEntry, log: CompatibilityReport) -> Effect | None:
         spec = definition.spec(f"track{index}")
         raw = entry.params.get(f"param{index}") or entry.params.get(str(index))
         if spec is not None and raw is not None:
-            params[spec.name] = spec.coerce(_as_number(raw))
+            params[spec.name] = spec.coerce(
+                animated_value(raw, points=points, log=log, label=f"{name}の track{index}")
+            )
     return Effect(kind=found.identifier, params=params)
 
 
@@ -555,8 +614,32 @@ def _as_number(value: str) -> float:
         return 0.0
 
 
-def _source_in(entry: ExoEntry) -> Fraction:  # pragma: no cover - 素材対応は次の段階
-    return Fraction(entry.integer("開始位置", 1) - 1, 1)
+#: 0 秒 いちいち ``Fraction(0)`` と書かずに済ませる
+ZERO = Fraction(0)
+
+
+def _playback(
+    entry: ExoEntry, rate: FrameRate, log: CompatibilityReport
+) -> tuple[Fraction, Fraction]:
+    """素材の切り出し位置（秒）と再生速度
+
+    AviUtl2 は ``再生位置=0.967,6.151,再生範囲,0`` と**秒**で書く
+    AviUtl1 は ``開始位置`` にフレーム番号（1 始まり）で書く
+    以前はどちらも読めておらず、素材が必ず頭から始まっていた
+    """
+    if entry.generation >= 2:
+        motion = entry.motion("再生位置")
+        start = Fraction(motion.first).limit_denominator(10_000) if motion is not None else ZERO
+    else:
+        start = (entry.integer("開始位置", 1) - 1) * rate.frame_duration
+    percent = entry.number("再生速度", 100.0)
+    if percent <= 0.0:
+        # 0 や負の速度は AviUtl では「止める」 こちらは速度に 0 を置けない
+        if percent != 100.0:
+            log.note_missing(f"再生速度: {percent}")
+        percent = 100.0
+    speed = Fraction(percent / 100.0).limit_denominator(1_000)
+    return max(ZERO, start), speed
 
 
 def decode_text_param(value: str) -> str:

@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from kumiki.compat.aviutl.encoding import decode_utf16_hex, read_text
+from kumiki.compat.aviutl.motion import Motion, parse_motion
 
 __all__ = [
     "ALIAS_SUFFIXES",
@@ -72,14 +73,29 @@ class ExoEntry:
     generation: int = 1
 
     def number(self, key: str, default: float = 0.0) -> float:
-        """数値として読む 読めなければ ``default``"""
+        """数値として読む 読めなければ ``default``
+
+        動きの付いた項目（``X=0,300,直線移動,0``）は先頭の値を返す
+        以前はここで例外になり、既定値へ落ちて黙って消えていた
+        """
         raw = self.params.get(key)
         if raw is None:
             return default
         try:
             return float(raw)
         except ValueError:
-            return default
+            motion = parse_motion(raw)
+            return motion.first if motion is not None else default
+
+    def motion(self, *keys: str) -> Motion | None:
+        """動きの付いた項目として読む 名前が世代で違うものは順に試す"""
+        for key in keys:
+            raw = self.params.get(key)
+            if raw is not None:
+                found = parse_motion(raw)
+                if found is not None:
+                    return found
+        return None
 
     def integer(self, key: str, default: int = 0) -> int:
         raw = self.params.get(key)
@@ -126,6 +142,10 @@ class ExoObject:
     #: AviUtl1 の ``start=1`` も AviUtl2 の ``frame=0,…`` もここでは 0 になる
     start: int
     end: int
+    #: 開始・中間点・終了のフレーム（0 始まり） 中間点が無ければ開始と終了の 2 つ
+    #: AviUtl2 は ``frame=244,333,423`` のように中間点も同じ行に書く
+    #: トラックバーの値はこの点の数だけ並ぶので、動きを読むときに対で使う
+    points: tuple[int, ...] = ()
     layer: int = 1
     group: int = 0
     overlay: int = 1
@@ -138,6 +158,11 @@ class ExoObject:
     def duration(self) -> int:
         """フレーム数 AviUtl の終端は含む側なので 1 足す"""
         return max(1, self.end - self.start + 1)
+
+    def relative_points(self) -> tuple[int, ...]:
+        """中間点をクリップ先頭からのフレームで 動きのキーフレームを置く位置"""
+        points = self.points or (self.start, self.end)
+        return tuple(point - self.start for point in points)
 
     @property
     def content(self) -> ExoEntry | None:
@@ -284,12 +309,13 @@ def _build_objects(
         header = sections.get((index, None), {})
         parts = sorted(part for owner, part in sections if owner == index and part is not None)
         entries = tuple(_build_entry(sections[(index, part)], generation) for part in parts)
-        start, end = _span(header, generation)
+        points = _span(header, generation)
         built.append(
             ExoObject(
                 index=index,
-                start=start,
-                end=end,
+                start=points[0],
+                end=points[-1],
+                points=points,
                 layer=_as_int(header.get("layer"), 1),
                 group=_as_int(header.get("group"), 0),
                 overlay=_as_int(header.get("overlay"), 1),
@@ -301,16 +327,26 @@ def _build_objects(
     return tuple(built)
 
 
-def _span(header: dict[str, str], generation: int) -> tuple[int, int]:
-    """区間を 0 始まりで返す
+def _span(header: dict[str, str], generation: int) -> tuple[int, ...]:
+    """開始・中間点・終了を 0 始まりで返す
 
     AviUtl1 は ``start=1`` ``end=60``（1 始まり）、AviUtl2 は ``frame=0,179``
     数え方の違いをここで吸収しておかないと、写した先が 1 フレームずれる
+
+    AviUtl2 は中間点も同じ行に並べる（``frame=244,333,423``） 以前は 2 つ目を
+    終了として読んでいたので、中間点のあるオブジェクトが 1 フレームになっていた
     """
     if generation >= 2:
-        first, _, last = header.get("frame", "").partition(",")
-        start = _as_int(first, 0)
-        return start, max(start, _as_int(last, start))
+        parts = [part for part in header.get("frame", "").split(",") if part.strip()]
+        numbers = [_as_int(part, 0) for part in parts]
+        if not numbers:
+            return (0, 0)
+        start = numbers[0]
+        # 並びが崩れたファイルでも、前の点より手前へは戻さない
+        points = [start]
+        for number in numbers[1:]:
+            points.append(max(points[-1], number))
+        return tuple(points) if len(points) > 1 else (start, start)
     start = max(0, _as_int(header.get("start"), 1) - 1)
     return start, max(start, _as_int(header.get("end"), 1) - 1)
 

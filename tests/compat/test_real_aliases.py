@@ -28,8 +28,23 @@ def alias_root() -> Path | None:
     return root if root.is_dir() else None
 
 
+def fixture_root() -> Path | None:
+    """落としてきた配布物の置き場 リポジトリには入れていない"""
+    root = Path(__file__).resolve().parent.parent / "fixtures" / "aviutl"
+    return root if root.is_dir() else None
+
+
+def _files() -> list[Path]:
+    found: list[Path] = []
+    for root in (alias_root(), fixture_root()):
+        if root is not None:
+            found.extend(root.rglob("*.object"))
+            found.extend(root.rglob("*.exa"))
+    return sorted(set(found))
+
+
 ROOT = alias_root()
-FILES = sorted(ROOT.rglob("*.object")) if ROOT is not None else []
+FILES = _files()
 
 pytestmark = pytest.mark.skipif(not FILES, reason="このマシンに AviUtl2 の配布エイリアスが無い")
 
@@ -101,3 +116,27 @@ def test_the_decorated_ones_actually_get_a_decoration(
         assert "border_width" in source.params or "shadow_x" in source.params, path.name
         decorated += 1
     assert decorated > 0
+
+
+def test_every_middle_point_becomes_a_keyframe(
+    mapped: list[tuple[Path, MappedObject]],
+) -> None:
+    """中間点を持つエイリアスは、動く値を持って写っていること
+
+    中間点があるのにどの値も動いていなければ、移動方法の行を読み落としている
+    """
+    from kumiki.compat.aviutl.exo import load_exo as _load
+    from kumiki.core.model import AnimatedValue
+
+    with_points = [path for path in FILES if len(_load(path).objects[0].points) > 2]
+    if not with_points:
+        pytest.skip("中間点を持つ配布物が手元に無い")
+    moving = [
+        item
+        for path, item in mapped
+        if path in with_points
+        for effect in item.clip.effects
+        for value in effect.params.values()
+        if isinstance(value, AnimatedValue) and value.is_animated
+    ]
+    assert moving, "中間点のあるエイリアスに動く値が 1 つも無い"
