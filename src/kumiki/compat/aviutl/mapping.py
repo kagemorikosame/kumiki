@@ -493,6 +493,15 @@ def _placement(
     }
 
 
+def _varies(motion: Motion) -> bool:
+    """時間で変わりうるか
+
+    値が同じでも、式やスクリプトの移動方法なら変わる（``100,100,回転,4|360``）
+    値の並びだけ見ると、そういう行を止めたことに気付けない
+    """
+    return motion.moves or bool(motion.flags & (FLAG_EXPRESSION | FLAG_SCRIPT))
+
+
 def _spec_value(
     spec: ParameterSpec,
     raw: str,
@@ -513,12 +522,12 @@ def _spec_value(
         if motion is None:
             # 数として読めない 写し先の既定値をそのまま使う
             # （既定値に変換を掛けると、透明度 100 が不透明度 0 になって全透明になる）
-            if raw.strip():
-                log.note_missing(f"AviUtl の数として読めない値: {label}")
+            # 空の値も記録する 既定値へ置き換えたことに変わりはない
+            log.note_missing(f"AviUtl の数として読めない値: {label}")
             return spec.default_value()
         if isinstance(spec, ValueSpec):
             # スライダーを持たない数値は動かせない 先頭の値だけ使う
-            if motion.moves:
+            if _varies(motion):
                 log.note_missing(f"AviUtl の動く値を写せない項目: {label}")
             value = motion.first if convert is None else convert(motion.first)
             return value
@@ -889,11 +898,15 @@ def _filter(entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport) 
 
         choice = choices.get(source_name)
         if choice is not None:
-            handled.add(source_name)
             target_name, table = choice
+            chosen = table.get(value.strip())
+            if chosen is None:
+                # 表に無い選択肢 既定値のままになるので、写せたことにしない
+                continue
+            handled.add(source_name)
             spec = definition.spec(target_name)
             if spec is not None:
-                params[spec.name] = spec.coerce(table.get(value.strip(), ""))
+                params[spec.name] = spec.coerce(chosen)
 
     _note_dropped(entry, handled, log)
     return Effect(kind=kind, params=params)
@@ -1096,9 +1109,7 @@ def _playback_value(
         log.note_missing(f"AviUtl の数として読めない{label}")
         return None
     # 再生範囲の 2 つの値は素材の切り出しの始めと終わりで、動きではない
-    # 値が違うのが普通の形なので、これを動きとして数えると記録が埋まる
-    moves = motion.moves and motion.method != "再生範囲"
-    varies = moves or bool(motion.flags & (FLAG_EXPRESSION | FLAG_SCRIPT))
+    varies = _varies(motion) if motion.method != "再生範囲" else bool(motion.flags)
     if varies or motion.method not in _STILL_PLAYBACK:
         log.note_missing(f"AviUtl の{label}（1 つの値しか持てない）")
     return motion

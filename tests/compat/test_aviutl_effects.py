@@ -208,6 +208,7 @@ class TestTheThingsReviewFound:
         assert effect.params["direction"] == "right"
 
     def test_a_negative_angle_also_goes_right(self) -> None:
+        # 折り返しを見落とすと、-2 度が上（270 度に近い）として扱われる
         effect = _one("画面外から登場\n時間=0.5\n角度=-2\n数=1\nランダム方向=0")
         assert effect.params["direction"] == "right"
 
@@ -239,3 +240,18 @@ class TestTheThingsReviewFound:
         # Group は並びの区切りで、値ではない 記録に出すと本当の穴が埋もれる
         _, report = _effects("座標\nX=10\nY=0\nZ=0\nGroup=1")
         assert not any("Group" in line for line in report.lines())
+
+    def test_an_empty_value_is_recorded(self) -> None:
+        # 記録しないと、指定したつもりの値が既定値へ置き換わったことに気付けない
+        _, report = _effects("透明度\n透明度=")
+        assert any("数として読めない値" in line for line in report.lines())
+
+    def test_an_unknown_choice_is_recorded(self) -> None:
+        # 表に無い選択肢は既定値のままになる 写せたことにすると形が変わったまま残る
+        _, report = _effects("マスク\n種類=三角\n中心X=0\n中心Y=0")
+        assert any("マスクの項目: 種類" in line for line in report.lines())
+
+    def test_a_still_expression_on_a_plain_number_is_recorded(self) -> None:
+        # 値が同じでも、式なら時間で変わりうる
+        _, report = _effects("円形配置\n円周=100\n半径=200\n数=3,3,瞬間移動,8|3+time")
+        assert any("動く値を写せない項目" in line for line in report.lines())
