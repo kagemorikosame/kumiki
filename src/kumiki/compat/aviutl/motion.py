@@ -28,6 +28,7 @@ AviUtl は動きの付いた数値項目を 1 行で書く 値を並べ、最後
 
 from __future__ import annotations
 
+import itertools
 import math
 import re
 from collections.abc import Callable
@@ -68,7 +69,7 @@ _INTERPOLATIONS: dict[str, Interpolation] = {
     "再生範囲": Interpolation.LINEAR,
 }
 
-#: 動かない移動方法
+#: 値が 1 つだけ並ぶときの書かれ方 空は移動方法そのものが書かれていない行
 _STILL = frozenset({"", "移動無し"})
 
 #: 中身を写せない移動方法 先頭の値で止めて記録に残す
@@ -182,16 +183,21 @@ def animated_value(
 
     ``convert`` は値を写すときの変換 Y のように向きが逆の項目で使う
     """
+    scale = convert if convert is not None else (lambda value: value)
     motion = parse_motion(raw)
     if motion is None:
-        return AnimatedValue(default)
+        # 項目そのものが無い行 既定値にも変換を掛ける（透明度 0 は不透明 1）
+        return AnimatedValue(scale(default))
 
-    scale = convert if convert is not None else (lambda value: value)
-    if not motion.moves or not _note(motion, log, label):
+    # 写せるかどうかは先に見る 値が動かなくても、参照式やスクリプトなら
+    # 時間で変わりうる 記録に残さないと、静止したことに気付けない
+    usable = _note(motion, log, label)
+    if not motion.moves or not usable:
         return AnimatedValue(scale(motion.first))
 
     frames = _frames_for(motion, points)
     if frames is None:
+        log.note_missing(f"AviUtl の中間点と値の数が合わない: {label}")
         return AnimatedValue(scale(motion.first))
     interpolation = _interpolation(motion)
     keyframes = tuple(
@@ -202,13 +208,22 @@ def animated_value(
 
 
 def _frames_for(motion: Motion, points: tuple[int, ...]) -> tuple[int, ...] | None:
-    """値 1 つずつを置くフレーム 置けなければ ``None``"""
+    """値 1 つずつを置くフレーム 置けなければ ``None``
+
+    同じフレームが 2 つ並ぶ形は返さない ``AnimatedValue`` は同じフレームの
+    キーフレームを拒む（例外になる） 1 フレームのオブジェクトや、中間点が
+    前の点より手前にある壊れたファイルで起きる
+    """
     if len(points) < 2:
         return None
     if len(motion.values) == len(points):
-        return points
-    if len(motion.values) == 2:
+        chosen = points
+    elif len(motion.values) == 2:
         # 中間点を見ない移動方法 区間の両端へ置く
-        return (points[0], points[-1])
-    # 値と中間点の数が食い違うファイル 端どうしだけ合わせる
-    return None
+        chosen = (points[0], points[-1])
+    else:
+        # 値と中間点の数が食い違うファイル
+        return None
+    if any(right <= left for left, right in itertools.pairwise(chosen)):
+        return None
+    return chosen

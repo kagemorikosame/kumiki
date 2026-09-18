@@ -84,9 +84,9 @@ def main() -> int:
                 map_object(obj, rate, report=report)
             except Exception as exc:
                 broken.append((path, f"{type(exc).__name__}: {exc}"))
-        for line in report.lines():
-            # 記録は「内容 — N 回」の形なので、回数の部分を落として数え直す
-            missing[line.split(" — ")[0]] += 1
+        # 報告が数えた回数をそのまま足す 行を数え直すと、同じファイルの
+        # 中で何度出ても 1 回になり、多い順の並びが崩れる
+        missing.update(report.missing)
 
     print(f"オブジェクト {objects} 個 うち中間点を持つもの {animated} 個")
     print(f"読めなかったファイル {len(broken)} 本")

@@ -15,7 +15,7 @@ from fractions import Fraction
 
 from kumiki.compat.aviutl.encoding import decode_utf16_hex
 from kumiki.compat.aviutl.exo import ExoEntry, ExoFile, ExoObject
-from kumiki.compat.aviutl.motion import animated_value
+from kumiki.compat.aviutl.motion import FLAG_EXPRESSION, animated_value
 from kumiki.compat.aviutl.report import CompatibilityReport, global_report
 from kumiki.compat.decoration import decoration_params, find_decoration
 from kumiki.compat.mapped import MappedObject
@@ -33,6 +33,7 @@ from kumiki.core.model import (
 )
 from kumiki.core.timebase import FrameRate
 from kumiki.effects.definition import registry
+from kumiki.effects.spec import ParameterSpec, ParamInput, TrackSpec
 
 __all__ = ["MappedObject", "map_exo", "map_object", "media_paths"]
 
@@ -289,6 +290,21 @@ def _placement(
     }
 
 
+def _spec_value(
+    spec: ParameterSpec, raw: str, points: tuple[int, ...], log: CompatibilityReport, label: str
+) -> ParamInput:
+    """仕様に合わせて値を渡す形へ
+
+    動きを読めるのはトラックバーだけ チェックや選択肢まで
+    :class:`AnimatedValue` に包むと、``coerce`` が型違いとして既定値へ落とす
+    """
+    if isinstance(spec, TrackSpec):
+        return animated_value(
+            raw, points=points, log=log, label=label, convert=spec.clamp, default=spec.default
+        )
+    return raw
+
+
 def _content(entry: ExoEntry, log: CompatibilityReport) -> tuple[GeneratedSource | None, str, str]:
     """中身を生成オブジェクトへ 素材ファイルの場合はパスだけ返す"""
     if entry.name == "テキスト":
@@ -406,9 +422,7 @@ _SELECT_PARAMS: dict[str, dict[str, tuple[str, dict[str, str]]]] = {
 }
 
 
-def _filter(
-    entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport
-) -> Effect | None:
+def _filter(entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport) -> Effect | None:
     """フィルタをエフェクトへ"""
     if entry.name == "アニメーション効果":
         return _animation(entry, points, log)
@@ -435,9 +449,7 @@ def _filter(
             spec = definition.spec(target)
             if spec is not None:
                 params[spec.name] = spec.coerce(
-                    animated_value(
-                        value, points=points, log=log, label=f"{entry.name}の{source_name}"
-                    )
+                    _spec_value(spec, value, points, log, f"{entry.name}の{source_name}")
                 )
             continue
 
@@ -485,14 +497,12 @@ def _script_filter(
             spec = next((s for s in definition.parameters if s.label == source_name), None)
         if spec is not None:
             params[spec.name] = spec.coerce(
-                animated_value(value, points=points, log=log, label=f"{entry.name}の{source_name}")
+                _spec_value(spec, value, points, log, f"{entry.name}の{source_name}")
             )
     return Effect(kind=found.identifier, params=params)
 
 
-def _animation(
-    entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport
-) -> Effect | None:
+def _animation(entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport) -> Effect | None:
     """アニメーション効果 スクリプトが手元にあれば繋ぐ"""
     from kumiki.compat.aviutl.catalog import script_catalog
 
@@ -513,7 +523,7 @@ def _animation(
         raw = entry.params.get(f"param{index}") or entry.params.get(str(index))
         if spec is not None and raw is not None:
             params[spec.name] = spec.coerce(
-                animated_value(raw, points=points, log=log, label=f"{name}の track{index}")
+                _spec_value(spec, raw, points, log, f"{name}の track{index}")
             )
     return Effect(kind=found.identifier, params=params)
 
@@ -624,19 +634,29 @@ def _playback(
     """素材の切り出し位置（秒）と再生速度
 
     AviUtl2 は ``再生位置=0.967,6.151,再生範囲,0`` と**秒**で書く
-    AviUtl1 は ``開始位置`` にフレーム番号（1 始まり）で書く
+    AviUtl1 は ``再生位置`` にフレーム番号（1 始まり）で書く（古い ``開始位置``
+    という書き方も受ける） 世代 1 の実物は手元に無いので、そちらは確かめていない
     以前はどちらも読めておらず、素材が必ず頭から始まっていた
+
+    :class:`Clip` の切り出し位置と速度は 1 つの値しか持てない 動く再生位置や
+    変速は写せないので、記録に残してから先頭の値で止める
     """
+    position = entry.motion("再生位置")
+    if position is not None and (position.moves or position.flags & FLAG_EXPRESSION):
+        log.note_missing("AviUtl の動く再生位置（切り出し位置は 1 つしか持てない）")
     if entry.generation >= 2:
-        motion = entry.motion("再生位置")
-        start = Fraction(motion.first).limit_denominator(10_000) if motion is not None else ZERO
+        start = Fraction(position.first).limit_denominator(10_000) if position is not None else ZERO
     else:
-        start = (entry.integer("開始位置", 1) - 1) * rate.frame_duration
-    percent = entry.number("再生速度", 100.0)
+        frames = position.first if position is not None else float(entry.integer("開始位置", 1))
+        start = Fraction(frames - 1).limit_denominator(10_000) * rate.frame_duration
+
+    speed_motion = entry.motion("再生速度")
+    if speed_motion is not None and (speed_motion.moves or speed_motion.flags & FLAG_EXPRESSION):
+        log.note_missing("AviUtl の変速（再生速度は 1 つしか持てない）")
+    percent = speed_motion.first if speed_motion is not None else 100.0
     if percent <= 0.0:
         # 0 や負の速度は AviUtl では「止める」 こちらは速度に 0 を置けない
-        if percent != 100.0:
-            log.note_missing(f"再生速度: {percent}")
+        log.note_missing(f"再生速度: {percent}")
         percent = 100.0
     speed = Fraction(percent / 100.0).limit_denominator(1_000)
     return max(ZERO, start), speed

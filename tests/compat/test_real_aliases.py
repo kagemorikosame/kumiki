@@ -46,7 +46,7 @@ def _files() -> list[Path]:
 ROOT = alias_root()
 FILES = _files()
 
-pytestmark = pytest.mark.skipif(not FILES, reason="このマシンに AviUtl2 の配布エイリアスが無い")
+pytestmark = pytest.mark.skipif(not FILES, reason="このマシンに AviUtl の配布エイリアスが無い")
 
 
 @pytest.fixture(scope="module")

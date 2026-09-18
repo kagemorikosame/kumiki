@@ -11,11 +11,13 @@ from fractions import Fraction
 import pytest
 
 from kumiki.compat.aviutl.exo import parse_exo
-from kumiki.compat.aviutl.mapping import map_object
+from kumiki.compat.aviutl.mapping import _spec_value, map_object
 from kumiki.compat.aviutl.motion import Motion, animated_value, parse_motion
 from kumiki.compat.aviutl.report import CompatibilityReport
+from kumiki.compat.mapped import MappedObject
 from kumiki.core.model import AnimatedValue, Interpolation
 from kumiki.core.timebase import FrameRate
+from kumiki.effects.spec import CheckSpec, SelectSpec, TrackSpec
 
 RATE = FrameRate(60)
 
@@ -35,7 +37,7 @@ effect.name=標準描画
 """
 
 
-def _mapped(draw: str, *, frame: str = "0,59") -> tuple[object, CompatibilityReport]:
+def _mapped(draw: str, *, frame: str = "0,59") -> tuple[MappedObject, CompatibilityReport]:
     report = CompatibilityReport()
     document = parse_exo(_object(draw, frame=frame))
     item = map_object(document.objects[0], RATE, report=report)
@@ -45,7 +47,7 @@ def _mapped(draw: str, *, frame: str = "0,59") -> tuple[object, CompatibilityRep
 
 def _transform(draw: str, *, frame: str = "0,59") -> tuple[dict[str, object], CompatibilityReport]:
     item, report = _mapped(draw, frame=frame)
-    effects = item.clip.effects  # type: ignore[attr-defined]
+    effects = item.clip.effects
     assert effects, "変形エフェクトが作られていない"
     return dict(effects[0].params), report
 
@@ -192,8 +194,28 @@ X=0.00
 
     def test_a_missing_speed_means_normal(self) -> None:
         item, _ = _mapped("X=0")
-        assert item.clip.speed == Fraction(1)  # type: ignore[attr-defined]
-        assert item.clip.source_in == Fraction(0)  # type: ignore[attr-defined]
+        assert item.clip.speed == Fraction(1)
+        assert item.clip.source_in == Fraction(0)
+
+    def test_a_changing_speed_is_recorded(self) -> None:
+        # クリップの速度は 1 つしか持てない 黙って先頭へ固定すると気付けない
+        body = """[Object]
+frame=0,310
+[Object.0]
+effect.name=動画ファイル
+再生位置=1.0,2.0,直線移動,0
+再生速度=100.00,200.00,直線移動,0
+ファイル=D:\a.mp4
+[Object.1]
+effect.name=映像再生
+X=0.00
+"""
+        report = CompatibilityReport()
+        item = map_object(parse_exo(body).objects[0], RATE, report=report)
+        assert item is not None
+        assert item.clip.speed == Fraction(1)
+        assert any("変速" in line for line in report.lines())
+        assert any("動く再生位置" in line for line in report.lines())
 
 
 class TestTheOldReaders:
@@ -211,3 +233,69 @@ def test_a_value_without_points_stays_still() -> None:
     report = CompatibilityReport()
     value = animated_value("0,300,直線移動,0", points=(0,), log=report, label="試し")
     assert value == AnimatedValue(0.0)
+
+
+class TestTheThingsThatUsedToBreak:
+    def test_a_draw_without_opacity_stays_opaque(self) -> None:
+        # 透明度が書かれていない描画設定で、既定値 0 をそのまま不透明度にしていた
+        item, _ = _mapped("X=100")
+        assert item.clip.opacity == AnimatedValue(1.0)
+
+    def test_a_one_frame_object_does_not_crash(self) -> None:
+        # 同じフレームに 2 つキーフレームを置くと AnimatedValue が例外を出す
+        params, report = _transform("X=10,300,直線移動,0", frame="5,5")
+        assert _animated(params["pos_x"]) == AnimatedValue(10.0)
+        assert any("中間点と値の数が合わない" in line for line in report.lines())
+
+    def test_points_that_go_backwards_are_refused(self) -> None:
+        params, _ = _transform("X=10,20,30,直線移動,0", frame="10,20,15")
+        assert _animated(params["pos_x"]) == AnimatedValue(10.0)
+
+    def test_a_still_expression_is_still_recorded(self) -> None:
+        # 値が同じでも、式なら時間で変わりうる
+        _, report = _transform("X=100,100,瞬間移動,8|100+time*10")
+        assert any("参照式" in line for line in report.lines())
+
+    def test_a_track_value_is_clamped_to_its_range(self) -> None:
+        # 範囲の外の値をそのまま持つと、エフェクトの仕様と食い違う
+        report = CompatibilityReport()
+        document = parse_exo(
+            """[Object]
+frame=0,59
+[Object.0]
+effect.name=テキスト
+テキスト=あ
+[Object.1]
+effect.name=ぼかし
+範囲=0,100000,直線移動,0
+"""
+        )
+        item = map_object(document.objects[0], RATE, report=report)
+        assert item is not None
+        blur = next(effect for effect in item.clip.effects if effect.kind == "blur")
+        radius = blur.params["radius"]
+        assert isinstance(radius, AnimatedValue)
+        assert radius.at(59) < 100000
+
+
+class TestHowValuesReachTheSpec:
+    """動きを読めるのはトラックバーだけ ほかは元の文字列のまま渡す"""
+
+    def test_a_track_becomes_an_animated_value(self) -> None:
+        spec = TrackSpec("radius", "範囲", 0, 100, 10)
+        value = _spec_value(spec, "0,50,直線移動,0", (0, 59), CompatibilityReport(), "試し")
+        assert isinstance(value, AnimatedValue)
+        assert value.at(59) == 50.0
+
+    def test_a_check_keeps_its_text(self) -> None:
+        # AnimatedValue に包むと coerce が型違いとして既定値へ落とす
+        spec = CheckSpec("bold", "太字", default=False)
+        value = _spec_value(spec, "true", (0, 59), CompatibilityReport(), "試し")
+        assert value == "true"
+        assert spec.coerce("true") is True
+
+    def test_a_select_keeps_its_text(self) -> None:
+        spec = SelectSpec("shape", "形状", (("linear", "線形"), ("radial", "円形")), "linear")
+        value = _spec_value(spec, "radial", (0, 59), CompatibilityReport(), "試し")
+        assert value == "radial"
+        assert spec.coerce("radial") == "radial"
