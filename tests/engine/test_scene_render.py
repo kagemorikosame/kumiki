@@ -12,8 +12,10 @@ from fractions import Fraction
 import numpy as np
 import pytest
 
+from kumiki.compat.aviutl.catalog import ScriptCatalog, set_script_catalog
 from kumiki.core.commands import (
     AddClip,
+    AddEffect,
     AddMedia,
     AddScene,
     AddTrack,
@@ -32,6 +34,7 @@ from kumiki.core.model import (
     TrackKind,
 )
 from kumiki.core.timebase import FrameRate
+from kumiki.effects.definition import registry
 from kumiki.engine.audio import AudioMixer
 from kumiki.engine.decode import probe_media
 from kumiki.engine.gpu import GLContextError, OffscreenGLContext
@@ -149,3 +152,52 @@ class TestSound:
             mixer.close()
         assert np.all(before == 0.0)
         assert float(np.sqrt(np.mean(during**2))) > 0.0
+
+
+class TestScripts:
+    """シーンとフレームバッファのクリップにも AviUtl スクリプトを掛けられること
+
+    どちらも絵を GPU の中で作る スクリプトは CPU の画像を書き換える作りなので、
+    掛けるときだけ 1 枚読み戻して渡す
+    """
+
+    def _moved(self) -> str:
+        catalog = ScriptCatalog(roots=())
+        catalog.add_text("aviutl:試験.anm:寄せる", "obj.ox = 16")
+        set_script_catalog(catalog)
+        return "aviutl:試験.anm:寄せる"
+
+    def test_a_script_moves_the_scene(self, gl_context: OffscreenGLContext) -> None:
+        identifier = self._moved()
+        project, placed = _scene_with(
+            Project.create(SETTINGS),
+            Clip(timeline_start=0, duration=60, source=_shape((1.0, 1.0, 1.0, 1.0), 8)),
+        )
+        definition = registry.get(identifier)
+        assert definition is not None
+        project = AddEffect(placed.id, definition.create()).apply(project)
+        image = _render(project, gl_context, 10)
+        # 8px の四角が中央から右へ 16px 動く
+        assert int(image[32, 48, 0]) > 250
+        assert int(image[32, 32, 0]) < 8
+
+    def test_a_script_moves_the_framebuffer(self, gl_context: OffscreenGLContext) -> None:
+        identifier = self._moved()
+        project = Project.create(SETTINGS)
+        below = Track(TrackKind.VIDEO, "V0")
+        project = AddTrack(below).apply(project)
+        project = AddClip(
+            below.id, Clip(timeline_start=0, duration=60, source=_shape((1.0, 1.0, 1.0, 1.0), 8))
+        ).apply(project)
+        above = Track(TrackKind.VIDEO, "V1")
+        project = AddTrack(above).apply(project)
+        grabbed = Clip(
+            timeline_start=0, duration=60, source=GeneratedSource(kind="framebuffer", params={})
+        )
+        project = AddClip(above.id, grabbed).apply(project)
+        definition = registry.get(identifier)
+        assert definition is not None
+        project = AddEffect(grabbed.id, definition.create()).apply(project)
+        image = _render(project, gl_context, 10)
+        # 写し取った画面ごと右へ動くので、元の四角の右に同じ四角が出る
+        assert int(image[32, 48, 0]) > 250

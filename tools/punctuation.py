@@ -48,7 +48,15 @@ ROOT = Path(__file__).resolve().parent.parent
 TEXT_SUFFIXES = {".md", ".mdc", ".yml", ".yaml", ".toml", ".txt"}
 
 #: 見ないところ
-SKIP_PARTS = {".venv", ".git", "__pycache__", ".mypy_cache", ".ruff_cache", ".pytest_cache"}
+SKIP_PARTS = {
+    ".venv",
+    ".git",
+    "__pycache__",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".pytest_cache",
+    ".work",
+}
 SKIP_PREFIXES = ("tests/fixtures/",)
 
 #: 文字列リテラルがデータとして句点を持つファイル リテラルだけ見逃す

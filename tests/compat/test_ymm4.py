@@ -367,16 +367,123 @@ class TestVideoEffects:
         result = map_video_effects([effect], CompatibilityReport(), length=300)
         assert value_at(result.effects[0].params["rotation"]) == 60.0
 
+    def test_the_tilt_axes_are_reversed(self) -> None:
+        # YMM4 の X が正だと上の辺が手前へ来る Kumiki の X 軸の正は上の辺が奥へ倒れる
+        effect = {
+            "$type": "YukkuriMovieMaker.Project.Effects.RotateEffect, YukkuriMovieMaker",
+            "X": still(30.0),
+            "Y": still(-20.0),
+            "Z": still(0.0),
+            "IsEnabled": True,
+        }
+        result = map_video_effects([effect], CompatibilityReport(), length=300)
+        assert value_at(result.effects[0].params["rotation_x"]) == -30.0
+        assert value_at(result.effects[0].params["rotation_y"]) == 20.0
+
+    @pytest.mark.parametrize(
+        ("name", "fields", "kind", "expected"),
+        [
+            ("InOutFadeEffect", {"Value": 20.0}, "inout_fade", {"opacity": 20.0}),
+            (
+                "InOutRotateEffect",
+                {"ValueX": 90.0, "ValueY": 0.0, "ValueZ": 45.0, "Is3D": True},
+                "inout_rotate",
+                {"angle_x": -90.0, "angle_z": 45.0, "three_d": True},
+            ),
+            (
+                "InOutMoveEffect",
+                {"Value": 600.0, "Value2": 90.0, "Value3": 0.0},
+                "inout_offset",
+                {"offset_x": 600.0, "offset_y": -90.0},
+            ),
+            (
+                "InOutSkewEffect",
+                {"AngleX": 30.0, "AngleY": 10.0, "CenterPoint": "Center"},
+                "inout_skew",
+                {"angle_x": 30.0, "angle_y": -10.0},
+            ),
+            ("InOutGaussianBlurEffect", {"Value": 20.0}, "inout_blur", {"radius": 20.0}),
+        ],
+    )
+    def test_the_in_out_effects(
+        self, name: str, fields: dict[str, Any], kind: str, expected: dict[str, Any]
+    ) -> None:
+        effect = {
+            "$type": f"YukkuriMovieMaker.Project.Effects.{name}, YukkuriMovieMaker",
+            "IsInEffect": True,
+            "IsOutEffect": True,
+            "EffectTimeSeconds": 1.5,
+            "EasingType": "Linear",
+            "EasingMode": "In",
+            "IsEnabled": True,
+            **fields,
+        }
+        report = CompatibilityReport()
+        result = map_video_effects([effect], report, length=300)
+        assert not report.lines()
+        (mapped,) = result.effects
+        assert mapped.kind == kind
+        assert value_at(mapped.params["effect_time"]) == 1.5
+        assert mapped.params["effect_out"] is True
+        for key, value in expected.items():
+            actual = mapped.params[key]
+            assert (actual if isinstance(value, bool) else value_at(actual)) == value
+
+    def test_the_halftone_inner_shadow(self) -> None:
+        # 色はブラシでなく Color に直に入る Y は下が正
+        effect = {
+            "$type": "N.InnerHalfToneShadowEffect, YukkuriMovieMaker",
+            "X": -12.0,
+            "Y": 5.0,
+            "Opacity": 100.0,
+            "Blur": 20.0,
+            "BlendMode": "PinLight",
+            "Layout": "Rhombus",
+            "Distance": 7.0,
+            "Size": 100.0,
+            "Color": "#FFFF0000",
+            "Strength": 100.0,
+            "IsEnabled": True,
+        }
+        report = CompatibilityReport()
+        (mapped,) = map_video_effects([effect], report, length=60).effects
+        assert not report.lines()
+        assert mapped.kind == "inner_halftone"
+        assert value_at(mapped.params["offset_y"]) == -5.0
+        assert mapped.params["color"] == (1.0, 0.0, 0.0, 1.0)
+        assert mapped.params["blend"] == "pin_light"
+        assert value_at(mapped.params["spacing"]) == 7.0
+
+    def test_the_inner_outline(self) -> None:
+        effect = {
+            "$type": "N.InnerOutline.InnerOutlineEffect, YukkuriMovieMaker.Plugin.Community",
+            "Thickness": 3.0,
+            "Opacity": 100.0,
+            "Blur": 2.5,
+            "Blend": "Normal",
+            "IsOutlineOnly": True,
+            "IsAngular": False,
+            "Brush": BRUSH,
+            "IsEnabled": True,
+        }
+        (mapped,) = map_video_effects([effect], CompatibilityReport(), length=60).effects
+        assert mapped.kind == "inner_outline"
+        assert value_at(mapped.params["thickness"]) == 3.0
+        assert mapped.params["outline_only"] is True
+
     def test_the_fill_effect_takes_its_colour_from_the_brush(self) -> None:
+        # ブラシの模様・合成モード・濃さを 1 つの塗りに写す（色だけの塗りでは合成が消える）
         effect = {
             "$type": "YukkuriMovieMaker.Project.Effects.FillForegroundEffect, YukkuriMovieMaker",
             "Opacity": still(50.0),
+            "BlendMode": "Multiply",
             "Brush": BRUSH,
             "IsEnabled": True,
         }
         result = map_video_effects([effect], CompatibilityReport(), length=300)
-        assert result.effects[0].kind == "fill"
-        assert value_at(result.effects[0].params["amount"]) == 50.0
+        assert result.effects[0].kind == "brush_fill"
+        assert result.effects[0].params["blend"] == "multiply"
+        assert value_at(result.effects[0].params["opacity"]) == 50.0
 
     def test_the_colour_correction_is_re_centred(self) -> None:
         # YMM4 は 100 が「変化なし」 こちらは 0 が変化なし
@@ -404,8 +511,8 @@ class TestVideoEffects:
         result = map_video_effects([effect], CompatibilityReport(), length=30)
         assert value_at(result.effects[0].params["range_y"]) == -20.0
 
-    def test_a_pivot_that_cannot_be_passed_on_is_recorded(self) -> None:
-        # 中央で回ってしまう分を記録しないと、見た目の違いが互換の記録から漏れる
+    def test_the_pivot_reaches_the_effects_behind_it(self) -> None:
+        # 中心点は後ろの回転や拡大の支点になる 渡らないと絵の中央で回る
         report = CompatibilityReport()
         centre = {
             "$type": "YukkuriMovieMaker.Project.Effects.CenterPointEffect, YukkuriMovieMaker",
@@ -416,8 +523,9 @@ class TestVideoEffects:
             "$type": "YukkuriMovieMaker.Project.Effects.RepeatRotateEffect, YukkuriMovieMaker",
             "IsEnabled": True,
         }
-        map_video_effects([centre, spin], report, length=30)
-        assert any("CenterPointEffect" in line for line in report.lines())
+        (mapped,) = map_video_effects([centre, spin], report, length=30).effects
+        assert not report.lines()
+        assert mapped.params["pivot_h"] == "left"
 
     def test_a_count_that_is_not_a_number_is_recorded(self) -> None:
         # int(NaN) の例外で、同じアイテムの後ろのエフェクトまで読めなくなる
@@ -484,12 +592,80 @@ class TestPlacement:
 
     def test_an_unsupported_blend_is_recorded(self) -> None:
         report = CompatibilityReport()
-        mapped = map_template([text_item(Blend="HardMix")], report=report)
+        mapped = map_template([text_item(Blend="Lighten")], report=report)
         assert mapped[0].clip.blend_mode == "normal"
-        assert any("HardMix" in line for line in report.lines())
+        assert any("Lighten" in line for line in report.lines())
+
+    def test_the_photoshop_style_blends_are_kept(self) -> None:
+        # 焼き込みカラーやハードミックスも、塗りのエフェクトと同じ名前で写す
+        report = CompatibilityReport()
+        mapped = map_template([text_item(Blend="HardMix")], report=report)
+        assert mapped[0].clip.blend_mode == "hard_mix"
+        assert not report.lines()
+
+    def test_an_item_shown_only_in_the_preview_is_left_out(self) -> None:
+        # YMM4 は書き出した動画に映さない 読み込むと目印が映り込む
+        hidden = {
+            "$type": "YukkuriMovieMaker.Project.Effects.ShowOnlyPreviewEffect, YukkuriMovieMaker",
+            "IsEnabled": True,
+        }
+        report = CompatibilityReport()
+        mapped = map_template([text_item(VideoEffects=[hidden]), text_item()], report=report)
+        assert len(mapped) == 1
+        assert not report.lines()
 
 
 class TestOtherItems:
+    def test_a_transition_splits_its_effects_between_the_scenes(self) -> None:
+        rotate = {
+            "$type": "YukkuriMovieMaker.Project.Effects.RotateEffect, YukkuriMovieMaker",
+            "X": still(0.0),
+            "Y": still(0.0),
+            "Z": moving(0.0, 90.0),
+            "IsEnabled": True,
+        }
+        item = {
+            "$type": "YukkuriMovieMaker.Project.Items.TransitionItem, YukkuriMovieMaker",
+            "TransitionType": "N.SlideTransitionPlugin, YukkuriMovieMaker",
+            "TransitionParameter": {
+                "Target": "Before",
+                "Angle": 90.0,
+                "EasingType": "Back",
+                "EasingMode": "InOut",
+            },
+            "BeforeVideoEffects": [rotate],
+            "AfterVideoEffects": [],
+            "VideoEffects": [],
+            "Frame": 30,
+            "Length": 60,
+            "Layer": 3,
+        }
+        report = CompatibilityReport()
+        (mapped,) = map_template([item], report=report)
+        assert not report.lines()
+        clip = mapped.clip
+        assert clip.source is not None and clip.source.kind == "transition"
+        assert clip.source.params["style"] == "slide"
+        assert clip.source.params["target"] == "before"
+        assert clip.source.params["easing"] == "back"
+        assert value_at(clip.source.params["angle"]) == 90.0
+        assert [e.kind for e in clip.effects] == ["transform"]
+        assert clip.after_effects == ()
+        assert (clip.timeline_start, clip.duration, mapped.layer) == (30, 60, 4)
+
+    def test_a_push_ignores_its_angle(self) -> None:
+        # YMM4 は押し出しの角度を見ていなかった（90 にしても 0 と同じ絵）
+        item = {
+            "$type": "YukkuriMovieMaker.Project.Items.TransitionItem, YukkuriMovieMaker",
+            "TransitionType": "N.PushTransitionPlugin, YukkuriMovieMaker",
+            "TransitionParameter": {"Angle": 90.0},
+            "Frame": 0,
+            "Length": 30,
+        }
+        (mapped,) = map_template([item], report=CompatibilityReport())
+        assert mapped.clip.source is not None
+        assert value_at(mapped.clip.source.params["angle"]) == 0.0
+
     def test_a_media_item_returns_its_path(self) -> None:
         item = {
             "$type": "YukkuriMovieMaker.Project.Items.VideoItem, YukkuriMovieMaker",
@@ -504,7 +680,8 @@ class TestOtherItems:
         assert map_template([{"$type": "N.TachieItem, A"}], report=report) == []
         assert any("TachieItem" in line for line in report.lines())
 
-    def test_an_effect_item_becomes_a_shape(self) -> None:
+    def test_an_effect_item_works_on_what_is_below(self) -> None:
+        # 図形として読むと、範囲の背景が画面を塗りつぶす（YMM4 の絵で確かめた）
         item = {
             "$type": "YukkuriMovieMaker.Project.Items.EffectItem, YukkuriMovieMaker",
             "ShapeType2": "YukkuriMovieMaker.Shape.BackgroundShapePlugin, YukkuriMovieMaker",
@@ -517,8 +694,7 @@ class TestOtherItems:
         }
         source = map_template([item], report=CompatibilityReport())[0].clip.source
         assert source is not None
-        assert source.params["shape"] == "background"
-        assert source.params["color"] == pytest.approx((0.0, 1.0, 0.0, 1.0))
+        assert source.kind == "framebuffer"
 
 
 class TestDecorationsList:

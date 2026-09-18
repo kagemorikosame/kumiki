@@ -6,8 +6,9 @@
 
 from __future__ import annotations
 
+import math
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from fractions import Fraction
 
 import numpy as np
@@ -15,10 +16,24 @@ from OpenGL import GL
 
 from kumiki.compat.aviutl.embedded import has_embedded
 from kumiki.compat.aviutl.report import global_report
-from kumiki.core.model import Clip, Effect, MediaId, Project, Timeline, Track, TrackKind
+from kumiki.core.model import (
+    AnimatedValue,
+    Clip,
+    ClipId,
+    Effect,
+    GeneratedSource,
+    MediaId,
+    ParamValue,
+    Project,
+    Timeline,
+    Track,
+    TrackKind,
+)
 from kumiki.core.timebase import FrameRate, seconds_to_frame
+from kumiki.effects.easing import ease
 from kumiki.engine.decode import ProbeError, VideoDecoder
 from kumiki.engine.gpu import (
+    BlendMode,
     Compositor,
     Corners,
     EffectProcessor,
@@ -38,7 +53,7 @@ from kumiki.engine.render.scripts import (
     script_effects,
     split_effects,
 )
-from kumiki.engine.sources import render_source
+from kumiki.engine.sources import render_source, source_canvas
 
 __all__ = ["FrameRenderer", "RenderQuality"]
 
@@ -80,6 +95,23 @@ def _placed_bounds(
     )
 
 
+def _object_sized(image: np.ndarray) -> tuple[np.ndarray, tuple[float, float]]:
+    """色の付いた所だけを切り出した絵と、画面の中心からのずれ（画素、Y は下が正）
+
+    AviUtl のスクリプトは ``obj.w`` ``obj.h`` をオブジェクト自身の大きさとして読む
+    画面と同じ大きさの絵を渡すと、画面の幅で位置を計算してしまう
+    """
+    box = _content_box(image)
+    if box is None:
+        return image, (0.0, 0.0)
+    left, top, right, bottom = box
+    height, width = int(image.shape[0]), int(image.shape[1])
+    if (left, top, right, bottom) == (0, 0, width, height):
+        return image, (0.0, 0.0)
+    offset = ((left + right) / 2.0 - width / 2.0, (top + bottom) / 2.0 - height / 2.0)
+    return image[top:bottom, left:right], offset
+
+
 def _as_corners(points: tuple[tuple[float, float], ...] | None) -> Corners | None:
     """4 点の組を四隅の型へ 数が合わなければ ``None``"""
     if points is None or len(points) != 4:
@@ -95,6 +127,35 @@ MAX_SCENE_DEPTH = 8
 #: 同時に開いておくデコーダの上限 素材ごとにコンテナとスレッドを抱えるので、
 #: 際限なく開くとファイルハンドルとメモリを食い潰す
 MAX_OPEN_DECODERS = 8
+
+#: 作った絵を覚えておくクリップの数 1 枚で画面 1 枚ぶんのメモリを使う
+MAX_GENERATED_CACHE = 48
+
+
+def _varies_over_time(source: GeneratedSource) -> bool:
+    """フレームごとに絵が変わる生成オブジェクトか
+
+    キーフレームの付いた値、埋め込んだ Lua、時間を数えるタイマー、集中線の
+    切り替えのように時計を見るものは、毎フレーム作り直す
+    """
+    for value in source.params.values():
+        if isinstance(value, AnimatedValue) and value.is_animated:
+            return True
+    if source.params.get("timer_format"):
+        return True
+    if source.params.get("shape") == "concentration":
+        return True
+    text = source.params.get("text")
+    return isinstance(text, str) and has_embedded(text)
+
+
+def _fingerprint(params: dict[str, ParamValue]) -> tuple[tuple[str, str], ...]:
+    """生成オブジェクトの設定の指紋 値が同じなら同じ絵になる
+
+    アニメーションの値も丸ごと文字にする キーフレームの有無で分けると、
+    動く値を持つクリップの絵を毎フレーム作り直すことになる（フレームは鍵の別の項目）
+    """
+    return tuple(sorted((name, repr(value)) for name, value in params.items()))
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,8 +215,12 @@ class FrameRenderer:
         self._scripts: ScriptStage | None = None
         #: フレームバッファのクリップが画面を写し取る先 使うまで作らない
         self._grab: Framebuffer | None = None
+        #: クリップごとに作った絵 同じ設定と同じフレームなら作り直さない
+        self._generated: OrderedDict[ClipId, tuple[object, np.ndarray]] = OrderedDict()
         #: 入れ子のシーンを描く合成先 深さごとに 1 つ 使うまで作らない
         self._nested: dict[int, Compositor] = {}
+        #: クリップを下のクリップの形で切り抜くときに使う合成先（役目と深さごと）
+        self._layers: dict[tuple[str, int], Compositor] = {}
         self._closed = False
 
     @property
@@ -205,17 +270,221 @@ class FrameRenderer:
         if self._closed:
             raise RuntimeError("閉じたレンダラは使えない")
 
-        self._compositor.begin()
+        # 透明な下地の上で重ね、最後に黒を敷く 黒の上で重ねると、乗算などの合成が
+        # 下に何も無い所でも黒と混ざる（YMM4 は透明な所では上の絵をそのまま出す）
+        # 写し取る絵（フレームバッファ）は、写すときに黒を敷く（YMM4 と同じ）
+        self._compositor.begin((0.0, 0.0, 0.0, 0.0))
         self._compose_timeline(self._project.timeline, frame, depth=0)
+        self._compositor.underlay((0.0, 0.0, 0.0, 1.0))
 
     def _compose_timeline(self, timeline: Timeline, frame: int, *, depth: int) -> None:
         """1 本のタイムラインを、いまの合成先へ重ねる シーンの入れ子でも同じ道を通る"""
+        self._compose_tracks(list(timeline.active_tracks(TrackKind.VIDEO)), frame, depth)
+
+    def _compose_tracks(self, tracks: list[Track], frame: int, depth: int) -> None:
+        """下のトラックから順に重ねる 場面切り替えは、それより下のトラックを見て描き直す"""
         rate = self._project.rate
-        for track in timeline.active_tracks(TrackKind.VIDEO):
-            clip = track.clip_at(frame)
-            if clip is None or not clip.enabled:
+        visible = [
+            (index, track, clip)
+            for index, track in enumerate(tracks)
+            if (clip := track.clip_at(frame)) is not None and clip.enabled
+        ]
+        below: Compositor | None = None
+        for position, (index, track, clip) in enumerate(visible):
+            if clip.source is not None and clip.source.kind == "transition":
+                self._draw_transition(tracks[:index], clip, frame, rate, depth)
+                below = None
                 continue
-            self._draw_clip(track, clip, frame, rate, depth)
+            if clip.clip_to_below:
+                self._draw_clipped(track, clip, frame, rate, depth, below)
+            else:
+                self._draw_trail(track, clip, frame, rate, depth)
+                self._draw_clip(track, clip, frame, rate, depth)
+            above = visible[position + 1][2] if position + 1 < len(visible) else None
+            # すぐ上のクリップがこのクリップの形で切り抜くなら、形を取っておく
+            below = (
+                self._capture(track, clip, frame, rate, depth)
+                if above is not None and above.clip_to_below
+                else None
+            )
+
+    def _draw_trail(
+        self, track: Track, clip: Clip, frame: int, rate: FrameRate, depth: int
+    ) -> None:
+        """残像（``after_image``）を積んだクリップの、前のフレームの絵を薄くして先に描く
+
+        1 フレーム前ほど濃く、強さの累乗で薄れる クリップの頭より前は描かない
+        エフェクトはフレームごとに独立して描けるので、前のフレームを描き直せば済む
+        """
+        trail = next((e for e in clip.effects if e.enabled and e.kind == "after_image"), None)
+        if trail is None:
+            return
+        local_frame = frame - clip.timeline_start
+        strength = trail.params.get("strength")
+        keep = strength.at(local_frame) if isinstance(strength, AnimatedValue) else 50.0
+        fade = min(max(keep / 100.0, 0.0), 0.99)
+        samples = trail.params.get("samples")
+        count = int(samples) if isinstance(samples, int | float) else 12
+        others = tuple(e for e in clip.effects if e.kind != "after_image")
+        for back in range(min(count, local_frame), 0, -1):
+            weight = fade**back
+            if weight < 0.02:
+                continue
+            earlier = frame - back
+            faded = replace(
+                clip,
+                effects=others,
+                opacity=AnimatedValue(clip.opacity.at(earlier - clip.timeline_start) * weight),
+            )
+            self._draw_clip(track, faded, earlier, rate, depth)
+
+    def _draw_transition(
+        self, tracks: list[Track], clip: Clip, frame: int, rate: FrameRate, depth: int
+    ) -> None:
+        """下のトラックの絵を、前の場面から後の場面へ切り替える（YMM4 の ``TransitionItem``）
+
+        決まりは YMM4 に描かせた試験（``tools/ymm4_probes.py`` の 4 回目）から読んだ
+
+        - 後の場面は、いまの時刻の下の絵そのもの
+        - 前の場面は、範囲の中で終わるクリップの終わり（切れ目）の直前で止めた絵
+          切れ目より前は、前の場面も後の場面も同じ絵になる 範囲の中で終わるクリップが
+          無ければ止めない
+        - 進み具合は範囲の頭から終わりまで 押し出しとスライドは画面 1 枚分を動く
+        - 切り替え（switch）は切れ目で入れ替わる（範囲の真ん中ではない）
+        - 上のトラックには効かない
+        """
+        if depth >= MAX_SCENE_DEPTH:
+            return
+        start, end = clip.timeline_start, clip.timeline_end
+        cut = max(
+            (
+                other.timeline_end
+                for track in tracks
+                for other in track.clips
+                if other.enabled and start < other.timeline_end <= end
+            ),
+            default=end,
+        )
+        before_frame = min(frame, cut - 1)
+        local_frame = frame - start
+        params = clip.source.params if clip.source is not None else {}
+        style = str(params.get("style", "fade"))
+        target = str(params.get("target", "after"))
+        angle = params.get("angle")
+        degrees = angle.at(local_frame) if isinstance(angle, AnimatedValue) else 0.0
+        progress = ease(
+            local_frame / clip.duration,
+            str(params.get("easing", "linear")),
+            str(params.get("easing_mode", "in")),
+        )
+
+        width, height = self._compositor.width, self._compositor.height
+        full = Placement(0.0, 0.0, float(width), float(height))
+        outer = self._compositor
+        after = self._layer("transition_after", depth)
+        after.begin((0.0, 0.0, 0.0, 0.0))
+        after.draw_handle(outer.canvas.color, full, flip=False, premultiplied=True)
+        before = self._layer("transition_before", depth)
+        self._compositor = before
+        try:
+            before.begin((0.0, 0.0, 0.0, 0.0))
+            if before_frame == frame:
+                before.draw_handle(after.canvas.color, full, flip=False, premultiplied=True)
+            else:
+                self._compose_tracks(tracks, before_frame, depth + 1)
+        finally:
+            self._compositor = outer
+
+        before_image = self._transition_scene(
+            before, clip.effects, "before", clip, local_frame, rate, depth
+        )
+        after_image = self._transition_scene(
+            after, clip.after_effects, "after", clip, local_frame, rate, depth
+        )
+
+        outer.begin((0.0, 0.0, 0.0, 0.0))
+        direction = (math.cos(math.radians(degrees)), math.sin(math.radians(degrees)))
+        travel = abs(direction[0]) * width + abs(direction[1]) * height
+
+        def moved(amount: float) -> Placement:
+            # 角度 0 で右へ、90 で下へ（画面の Y は下が正）
+            return Placement(
+                direction[0] * amount, direction[1] * amount, float(width), float(height)
+            )
+
+        def put(
+            image: Compositor,
+            placement: Placement = full,
+            opacity: float = 1.0,
+            blend: str = BlendMode.NORMAL,
+        ) -> None:
+            outer.draw_handle(
+                image.canvas.color,
+                placement,
+                opacity=opacity,
+                flip=False,
+                blend=blend,
+                premultiplied=True,
+            )
+
+        if style == "switch":
+            put(before_image if frame < cut else after_image)
+        elif style == "fade":
+            # YMM4 は黒の上の絵として sRGB の値のまま混ぜる リニアで混ぜると中間が明るく浮く
+            put(before_image)
+            outer.underlay((0.0, 0.0, 0.0, 1.0))
+            put(after_image, opacity=progress, blend=BlendMode.SRGB_MIX)
+        elif style == "push":
+            put(after_image, moved(-(1.0 - progress) * travel))
+            put(before_image, moved(progress * travel))
+        elif style == "slide" and target == "before":
+            put(after_image)
+            put(before_image, moved(progress * travel))
+        elif style == "slide":
+            put(before_image)
+            put(after_image, moved(-(1.0 - progress) * travel))
+        elif target == "before":
+            # 重ねるだけ 手前にする場面を後に描く
+            put(after_image)
+            put(before_image)
+        else:
+            put(before_image)
+            put(after_image)
+
+    def _transition_scene(
+        self,
+        image: Compositor,
+        effects: tuple[Effect, ...],
+        role: str,
+        clip: Clip,
+        local_frame: int,
+        rate: FrameRate,
+        depth: int,
+    ) -> Compositor:
+        """場面にエフェクトを掛けた絵 掛けるものが無ければそのまま返す
+
+        エフェクトの結果は次に掛けるまでしか残らない（中のバッファを使い回す）ので、
+        別の合成先へ描き写してから返す
+        """
+        gpu_effects, scripts = split_effects(effects)
+        if scripts:
+            global_report.note_missing("場面切り替えに積んだ AviUtl スクリプト")
+        if not self._effects.has_work(gpu_effects):
+            return image
+        result = self._effects.apply(
+            image.canvas,
+            gpu_effects,
+            frame=local_frame,
+            fps=float(rate.fps),
+            flip_source=False,
+            duration=clip.duration,
+            premultiplied=True,
+        )
+        done = self._layer(f"transition_{role}_done", depth)
+        done.begin((0.0, 0.0, 0.0, 0.0))
+        full = Placement(0.0, 0.0, float(done.width), float(done.height))
+        done.draw_handle(result.color, full, flip=False)
+        return done
 
     def render(self, frame: int) -> np.ndarray:
         """``frame`` の合成結果を sRGB の ``(高さ, 幅, 4)`` uint8 で返す
@@ -241,9 +510,10 @@ class FrameRenderer:
             self._effects.release()
             if self._grab is not None:
                 self._grab.release()
-            for nested in self._nested.values():
+            for nested in (*self._nested.values(), *self._layers.values()):
                 nested.release()
             self._nested.clear()
+            self._layers.clear()
             self._compositor.release()
         if self._owns_context:
             self._context.release()
@@ -252,10 +522,10 @@ class FrameRenderer:
         self, track: Track, clip: Clip, frame: int, rate: FrameRate, depth: int = 0
     ) -> None:
         if clip.scene_id is not None:
-            self._draw_scene(clip, frame, rate, depth)
+            self._draw_scene(track, clip, frame, rate, depth)
             return
         if clip.source is not None and clip.source.kind == "framebuffer":
-            self._draw_framebuffer(clip, frame, rate)
+            self._draw_framebuffer(track, clip, frame, rate, depth)
             return
         image = self._image_for(clip, frame, rate)
         if image is None:
@@ -266,11 +536,32 @@ class FrameRenderer:
         gpu_effects, scripts = split_effects(clip.effects)
 
         if scripts:
-            self._draw_scripted(track, clip, image, gpu_effects, local_frame, rate, opacity)
+            # スクリプトは渡した絵を書き換えることがある 覚えておいた絵は渡さない
+            # 生成オブジェクトは画面と同じ大きさで作るので、AviUtl と同じ「自分の大きさ」
+            # （obj.w / obj.h）になるよう、色の付いた所だけを切り出して渡す
+            cropped, offset = _object_sized(image) if clip.media_id is None else (image, (0.0, 0.0))
+            self._draw_scripted(
+                track,
+                clip,
+                cropped.copy(),
+                gpu_effects,
+                local_frame,
+                rate,
+                opacity,
+                offset=offset,
+            )
             return
 
         texture = self._texture_for(track.id)
         texture.upload(image)
+
+        screen_width, screen_height = self._compositor.width, self._compositor.height
+        if clip.media_id is None and (
+            texture.width > screen_width or texture.height > screen_height
+        ):
+            # 画面より大きく作った生成オブジェクト 縮めて収めず、画面の中心に等倍で置く
+            self._draw_oversized(texture, image, clip, gpu_effects, local_frame, rate, opacity)
+            return
 
         if not self._effects.has_work(gpu_effects):
             # エフェクトが無ければ中間バッファを通さない 全画面のパスが 1 回
@@ -299,7 +590,108 @@ class FrameRenderer:
             blend=clip.blend_mode,
         )
 
-    def _draw_scene(self, clip: Clip, frame: int, rate: FrameRate, depth: int) -> None:
+    def _layer(self, role: str, depth: int) -> Compositor:
+        """クリップ 1 本ぶんを描く透明な合成先 役目と入れ子の深さごとに使い回す"""
+        width, height = self._compositor.width, self._compositor.height
+        key = (role, depth)
+        layer = self._layers.get(key)
+        if layer is None:
+            layer = Compositor(width, height)
+            self._layers[key] = layer
+        layer.resize(width, height)
+        return layer
+
+    def _draw_into(
+        self, layer: Compositor, track: Track, clip: Clip, frame: int, rate: FrameRate, depth: int
+    ) -> None:
+        outer = self._compositor
+        self._compositor = layer
+        try:
+            layer.begin((0.0, 0.0, 0.0, 0.0))
+            self._draw_clip(track, clip, frame, rate, depth)
+        finally:
+            self._compositor = outer
+
+    def _capture(
+        self, track: Track, clip: Clip, frame: int, rate: FrameRate, depth: int
+    ) -> Compositor:
+        """上のクリップに切り抜きの形として使わせるため、このクリップだけを別に描く"""
+        layer = self._layer("below", depth)
+        self._draw_into(layer, track, clip, frame, rate, depth)
+        return layer
+
+    def _draw_clipped(
+        self,
+        track: Track,
+        clip: Clip,
+        frame: int,
+        rate: FrameRate,
+        depth: int,
+        below: Compositor | None,
+    ) -> None:
+        """すぐ下のクリップの形で切り抜いて重ねる（YMM4 の「上のオブジェクトでクリッピング」）
+
+        下にクリップが無ければ、切り抜く形が無いので何も見えない 合成モードは、切り抜く前の
+        透明な合成先で当てる（下の絵とは通常で重ねる）
+        """
+        if below is None:
+            return
+        layer = self._layer("clipped", depth)
+        self._draw_into(layer, track, clip, frame, rate, depth)
+        full = Placement(0.0, 0.0, float(layer.width), float(layer.height))
+        layer.draw_handle(
+            below.canvas.color, full, flip=False, blend=BlendMode.MASK, premultiplied=True
+        )
+        self._compositor.draw_handle(layer.canvas.color, full, flip=False, premultiplied=True)
+
+    def _draw_oversized(
+        self,
+        texture: Texture,
+        image: np.ndarray,
+        clip: Clip,
+        gpu_effects: tuple[Effect, ...],
+        local_frame: int,
+        rate: FrameRate,
+        opacity: float,
+    ) -> None:
+        """画面より大きい絵を、画面の中心に等倍で置く
+
+        エフェクトは絵と同じ大きさのバッファで掛ける 画面の大きさのバッファへ先に
+        置くと、そこで端が切れ、あとから回したり動かしたりしたときに切れ目が見える
+        バッファの中心は画面の中心と同じなので、位置の計算（画素）は変わらない
+        """
+        screen_width, screen_height = self._compositor.width, self._compositor.height
+        placed = Placement(
+            (screen_width - texture.width) / 2.0,
+            (screen_height - texture.height) / 2.0,
+            float(texture.width),
+            float(texture.height),
+        )
+        if not self._effects.has_work(gpu_effects):
+            self._compositor.draw(texture, placement=placed, opacity=opacity, blend=clip.blend_mode)
+            return
+        self._effects.resize(texture.width, texture.height)
+        try:
+            box = _content_box(image)
+            result = self._effects.apply(
+                texture,
+                gpu_effects,
+                frame=local_frame,
+                fps=float(rate.fps),
+                duration=clip.duration,
+                bounds=None
+                if box is None
+                else (float(box[0]), float(box[1]), float(box[2]), float(box[3])),
+            )
+            self._compositor.draw_handle(
+                result.color, placed, opacity=opacity, flip=False, blend=clip.blend_mode
+            )
+        finally:
+            self._effects.resize(screen_width, screen_height)
+
+    def _draw_scene(
+        self, track: Track, clip: Clip, frame: int, rate: FrameRate, depth: int
+    ) -> None:
         """入れ子のシーンを別の合成先に描き、1 本のクリップとして重ねる
 
         シーンの中の時刻は、クリップの ``source_in``（秒）と速度で決まる 素材の
@@ -332,10 +724,13 @@ class FrameRenderer:
             self._compositor = outer
 
         gpu_effects, scripts = split_effects(clip.effects)
-        if scripts:
-            global_report.note_missing("シーンのクリップに積んだ AviUtl スクリプト")
         full = Placement(0.0, 0.0, float(width), float(height))
         opacity = clip.opacity.at(local_frame)
+        if scripts:
+            # スクリプトは CPU の画像を書き換える作り シーンの絵を 1 枚読み戻して渡す
+            # （毎フレームの往復になるので、スクリプトを積んだシーンだけで行う）
+            self._draw_scripted(track, clip, nested.read(), gpu_effects, local_frame, rate, opacity)
+            return
         if not self._effects.has_work(gpu_effects):
             outer.draw_handle(
                 nested.canvas.color,
@@ -357,21 +752,21 @@ class FrameRenderer:
         )
         outer.draw_handle(result.color, full, opacity=opacity, flip=False, blend=clip.blend_mode)
 
-    def _draw_framebuffer(self, clip: Clip, frame: int, rate: FrameRate) -> None:
+    def _draw_framebuffer(
+        self, track: Track, clip: Clip, frame: int, rate: FrameRate, depth: int = 0
+    ) -> None:
         """それまでに重ねた画面を写し取り、エフェクトを掛けて重ねる
 
         キャンバスは描いている最中なので、そのまま読みながら同じキャンバスへ描くことは
         できない いったん別のバッファへ写す キャンバスは事前乗算アルファで溜まって
-        いるので、そう伝えて渡す メインは不透明な背景なので伝えなくても値は同じだが、
-        透明から始まるシーンの中では半透明の縁が暗くなる
+        いるので、そう伝えて渡す 合成は透明な下地から始まるので、伝えないと半透明の
+        縁が暗くなる
 
-        AviUtl スクリプトは掛けない スクリプトは CPU の画像を書き換える作りで、画面を
-        毎フレーム CPU へ読み戻すと再生が追いつかない（積まれていれば記録に残す）
+        AviUtl スクリプトを積んでいれば、写し取った画面を CPU へ読み戻して渡す
+        毎フレームの往復になるので、積んでいるクリップだけで行う
         """
         local_frame = frame - clip.timeline_start
         gpu_effects, scripts = split_effects(clip.effects)
-        if scripts:
-            global_report.note_missing("フレームバッファに積んだ AviUtl スクリプト")
         width, height = self._compositor.width, self._compositor.height
         with self._context:
             if self._grab is None:
@@ -382,6 +777,28 @@ class FrameRenderer:
             GL.glBlitFramebuffer(
                 0, 0, width, height, 0, 0, width, height, GL.GL_COLOR_BUFFER_BIT, GL.GL_NEAREST
             )
+            # 写し取った画面は黒の上に置いた絵にする YMM4 は何も無い所も不透明な黒として
+            # 写すので、反転すると白くなる 透明のまま渡すと反転しても黒のまま残る
+            self._compositor.underlay((0.0, 0.0, 0.0, 1.0), target=self._grab)
+            if scripts:
+                grabbed = self._layer("framebuffer", depth)
+                grabbed.begin((0.0, 0.0, 0.0, 0.0))
+                grabbed.draw_handle(
+                    self._grab.color,
+                    Placement(0.0, 0.0, float(width), float(height)),
+                    flip=False,
+                    premultiplied=True,
+                )
+                self._draw_scripted(
+                    track,
+                    clip,
+                    grabbed.read(),
+                    gpu_effects,
+                    local_frame,
+                    rate,
+                    clip.opacity.at(local_frame),
+                )
+                return
             source: Framebuffer = self._grab
             if self._effects.has_work(gpu_effects):
                 source = self._effects.apply(
@@ -412,6 +829,7 @@ class FrameRenderer:
         local_frame: int,
         rate: FrameRate,
         opacity: float,
+        offset: tuple[float, float] = (0.0, 0.0),
     ) -> None:
         """AviUtl スクリプトを積んだクリップを描く
 
@@ -438,7 +856,8 @@ class FrameRenderer:
             alpha = opacity * call.alpha
 
             if call.quad is not None:
-                projected = [project(point, width, height) for point in call.quad]
+                shifted = tuple((x + offset[0], y + offset[1], z) for x, y, z in call.quad)
+                projected = [project(point, width, height) for point in shifted]
                 points = [point for point in projected if point is not None]
                 if len(points) != 4:
                     # カメラを越えた隅がある 写せる隅だけで描くと形の違う板になる
@@ -463,8 +882,8 @@ class FrameRenderer:
                 continue
 
             transform = Transform(
-                x=call.x,
-                y=call.y,
+                x=call.x + offset[0],
+                y=call.y + offset[1],
                 zoom=call.zoom,
                 rotation=call.rz,
                 aspect=call.aspect,
@@ -640,12 +1059,25 @@ class FrameRenderer:
                     text, frame=local_frame, fps=float(rate.fps), duration=clip.duration
                 )
                 source = source.with_param("text", expanded)
-        return render_source(
-            source,
-            self._compositor.width,
-            self._compositor.height,
-            frame=local_frame,
+        width, height = source_canvas(
+            source, self._compositor.width, self._compositor.height, frame=local_frame
         )
+        # 同じ絵をもう一度作らない テキストは 1 枚で数ミリ秒かかり、動かない字幕を
+        # 何本も重ねたタイムラインでは、そこが再生の足を引っ張る
+        # 時間で変わらない絵は、フレームを鍵に入れない（毎フレーム作り直さない）
+        when = local_frame if _varies_over_time(source) else -1
+        key = (source.kind, width, height, when, _fingerprint(source.params))
+        cached = self._generated.get(clip.id)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        image = render_source(source, width, height, frame=local_frame, fps=float(rate.fps))
+        if image is not None:
+            # 入れ替えのときは減らない 先に捨てると、関係ないクリップの絵が消える
+            if clip.id not in self._generated and len(self._generated) >= MAX_GENERATED_CACHE:
+                self._generated.popitem(last=False)
+            self._generated[clip.id] = (key, image)
+            self._generated.move_to_end(clip.id)
+        return image
 
     def _decode(self, clip: Clip, frame: int, rate: FrameRate) -> np.ndarray | None:
         assert clip.media_id is not None

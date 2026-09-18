@@ -293,6 +293,8 @@ class MoveClips(Command):
 
     clip_ids: tuple[ClipId, ...]
     delta: int
+    #: 動かすトラックの本数（同じ種類のトラックの並びで数える） 正で下へ
+    track_delta: int = 0
 
     @property
     def label(self) -> str:
@@ -315,7 +317,7 @@ class MoveClips(Command):
                         f"リンクした相手のトラック {partner_track.name!r} がロックされている"
                     )
                 targets.setdefault(member.id, (track_id, member))
-        if self.delta == 0 or not targets:
+        if (self.delta == 0 and self.track_delta == 0) or not targets:
             return project
         if any(clip.timeline_start + self.delta < 0 for _, clip in targets.values()):
             raise ValueError("タイムラインの先頭より前へは動かせない")
@@ -323,13 +325,76 @@ class MoveClips(Command):
         by_track: dict[TrackId, list[Clip]] = {}
         for track_id, clip in targets.values():
             by_track.setdefault(track_id, []).append(clip)
+
+        # まず全員を元のトラックから外す 先に置き直すと、行き先のトラックにまだ残って
+        # いる元のクリップと重なって失敗する
+        arrivals: dict[TrackId, list[Clip]] = {}
         for track_id, moving in by_track.items():
             track = _require_track(project, track_id)
             leaving = {clip.id for clip in moving}
             staying = tuple(c for c in track.clips if c.id not in leaving)
-            moved = tuple(c.moved_to(c.timeline_start + self.delta) for c in moving)
-            timeline = timeline.replace_track(track.with_clips((*staying, *moved)))
+            timeline = timeline.replace_track(track.with_clips(staying))
+            destination = _shifted_track(project, track_id, self.track_delta)
+            arrivals.setdefault(destination, []).extend(
+                c.moved_to(c.timeline_start + self.delta) for c in moving
+            )
+        for track_id, coming in arrivals.items():
+            arrival = timeline.find_track(track_id)
+            if arrival is None:
+                raise KeyError(f"トラックが見つからない: {track_id}")
+            if arrival.locked:
+                raise ValueError(f"トラック {arrival.name!r} はロックされている")
+            timeline = timeline.replace_track(arrival.with_clips((*arrival.clips, *coming)))
         return project.with_timeline(timeline)
+
+
+def _shifted_track(project: Project, track_id: TrackId, delta: int) -> TrackId:
+    """同じ種類のトラックの並びで ``delta`` 本ずらした先 端を越えれば断る"""
+    if delta == 0:
+        return track_id
+    track = _require_track(project, track_id)
+    same = [t for t in project.timeline.tracks if t.kind is track.kind]
+    index = next(i for i, t in enumerate(same) if t.id == track_id) + delta
+    if not 0 <= index < len(same):
+        raise ValueError("トラックの並びの外へは動かせない")
+    return same[index].id
+
+
+@dataclass(frozen=True, slots=True)
+class TrimClips(Command):
+    """選んだクリップの端をまとめて動かす
+
+    1 本ずつ :class:`TrimClip` を当てる 途中で失敗すれば、コマンドごと失敗するので
+    タイムラインは元のまま残る（履歴も 1 段）
+    """
+
+    clip_ids: tuple[ClipId, ...]
+    head_delta: int = 0
+    tail_delta: int = 0
+
+    @property
+    def label(self) -> str:
+        return f"{len(self.clip_ids)} 本をトリム"
+
+    def apply(self, project: Project) -> Project:
+        if self.head_delta == 0 and self.tail_delta == 0:
+            return project
+        done: set[ClipId] = set()
+        for clip_id in self.clip_ids:
+            located = project.timeline.locate_clip(clip_id)
+            if located is None:
+                raise KeyError(f"クリップが見つからない: {clip_id}")
+            track, clip = located
+            if track.locked:
+                raise ValueError(f"トラック {track.name!r} はロックされている")
+            if clip_id in done:
+                continue
+            # リンクした映像と音声は 1 回で両方が削れる 2 回当てると相手だけ余分に縮む
+            done.update(member.id for _, member in _linked_group(project, clip))
+            project = TrimClip(
+                clip_id, head_delta=self.head_delta, tail_delta=self.tail_delta
+            ).apply(project)
+        return project
 
 
 @dataclass(frozen=True, slots=True)

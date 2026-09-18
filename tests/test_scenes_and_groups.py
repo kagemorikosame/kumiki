@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from fractions import Fraction
 from pathlib import Path
 
 import pytest
@@ -33,8 +34,10 @@ from kumiki.core.commands import (
 )
 from kumiki.core.io import load_project, save_project
 from kumiki.core.io.serialize import ProjectFileError, project_from_dict, project_to_dict
-from kumiki.core.model import Clip, MediaItem, Project, SceneId, Track, TrackKind
+from kumiki.core.model import Clip, MediaItem, Project, SceneId, Track, TrackKind, Transcript
+from kumiki.core.projection import project_timeline
 from kumiki.effects.sources import TEXT
+from tests.conftest import make_clip
 
 
 def _apply(project: Project, commands: list[Command]) -> Project:
@@ -274,3 +277,61 @@ class TestSaving:
         ]
         with pytest.raises(ProjectFileError):
             project_from_dict(data)
+
+
+class TestSceneSubtitles:
+    def test_subtitles_inside_a_scene_appear_where_it_is_placed(
+        self, with_scene: tuple[Project, SceneId], video_media: MediaItem, transcript: Transcript
+    ) -> None:
+        # 見なければ、シーンにまとめた途端に字幕パネル・焼き込み・字幕ファイルから消える
+        project, scene_id = with_scene
+        media = replace(video_media, transcript=transcript)
+        project = AddMedia(media).apply(project)
+        track = Track(TrackKind.VIDEO, "V1")
+        project = InScene(scene_id, AddTrack(track)).apply(project)
+        project = InScene(scene_id, AddClip(track.id, make_clip(0, 300, media))).apply(project)
+        # シーンの頭 2 秒（60 フレーム）を飛ばして、メインの 100 フレーム目から 90 フレームだけ置く
+        project = _apply(project, insert_scene(project, scene_id, at_frame=100, duration=90))
+        placed = project.timeline.tracks[0].clips[0]
+        project = project.with_timeline(
+            project.timeline.replace_track(
+                replace(
+                    project.timeline.tracks[0],
+                    clips=(replace(placed, source_in=Fraction(2)),),
+                )
+            )
+        )
+
+        subtitles = list(project_timeline(project))
+        # 「今日は」は 1〜3 秒 頭を 2 秒飛ばしたので 100〜130 フレームに切り詰めて出る
+        assert [(s.segment.text, s.start_frame, s.end_frame) for s in subtitles] == [
+            ("今日は", 100, 130),
+            ("編集ソフトを", 160, 190),
+        ]
+        assert subtitles[0].clipped_head and subtitles[1].clipped_tail
+        assert all(s.clip_id == placed.id for s in subtitles)
+
+    def test_a_fractional_start_keeps_the_frame(
+        self, with_scene: tuple[Project, SceneId], video_media: MediaItem, transcript: Transcript
+    ) -> None:
+        # 端数の source_in を先にフレームへ落とすと、速度を掛けたときに 1 フレームずれる
+        # 描画は秒のまま足してから 1 回だけフレームへ直している（そちらに合わせる）
+        project, scene_id = with_scene
+        media = replace(video_media, transcript=transcript)
+        project = AddMedia(media).apply(project)
+        track = Track(TrackKind.VIDEO, "V1")
+        project = InScene(scene_id, AddTrack(track)).apply(project)
+        project = InScene(scene_id, AddClip(track.id, make_clip(0, 300, media))).apply(project)
+        project = _apply(project, insert_scene(project, scene_id, at_frame=0, duration=300))
+        placed = project.timeline.tracks[0].clips[0]
+        project = project.with_timeline(
+            project.timeline.replace_track(
+                replace(
+                    project.timeline.tracks[0],
+                    clips=(replace(placed, source_in=Fraction(1, 60), speed=Fraction(1, 2)),),
+                )
+            )
+        )
+        subtitles = list(project_timeline(project))
+        # 1 秒の字幕は、半分の速さでは 2 秒目へ 端数の 1/60 秒（0.5 フレーム）は切り捨てる
+        assert subtitles[0].start_frame == 59

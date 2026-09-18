@@ -9,6 +9,8 @@
 # プロジェクトを開いたときに全部「未知のエフェクト」になる
 from kumiki.effects import builtin as _builtin
 from kumiki.effects import motion as _motion
+from kumiki.effects import optics as _optics
+from kumiki.effects import paint as _paint
 from kumiki.effects import stylize as _stylize
 from kumiki.effects.definition import EffectDefinition, EffectRegistry, registry
 from kumiki.effects.spec import (
@@ -29,6 +31,8 @@ from kumiki.effects.spec import (
 _builtin.register_builtin_effects()
 _motion.register_motion_effects()
 _stylize.register_stylize_effects()
+_paint.register_paint_effects()
+_optics.register_optics_effects()
 
 __all__ = [
     "CheckSpec",

@@ -69,7 +69,7 @@ from kumiki.core.model import (
 from kumiki.core.projection import project_timeline
 from kumiki.core.timebase import format_timecode
 from kumiki.effects import registry
-from kumiki.effects.sources import SHAPE, TEXT, source_registry
+from kumiki.effects.sources import SHAPE, TEXT, TRANSITION, source_registry
 from kumiki.effects.spec import (
     CheckSpec,
     ColorSpec,
@@ -539,6 +539,39 @@ def _add_text(host: EditorHost, arguments: dict[str, Any]) -> object:
     )
     host.apply_commands(commands, f"テキストを追加: {text[:12]}")
     return {"added": text}
+
+
+#: 場面切り替えの切り替え方 生成オブジェクトの選択肢と同じ並び
+_TRANSITION_STYLES = ("switch", "fade", "push", "slide", "overlay")
+
+
+def _add_transition(host: EditorHost, arguments: dict[str, Any]) -> object:
+    """下のトラックの切れ目に重ねる場面切り替えを置く"""
+    style = str(arguments.get("style", "fade"))
+    if style not in _TRANSITION_STYLES:
+        raise ToolError(f"style は {'、'.join(_TRANSITION_STYLES)} のどれかです: {style}")
+    duration = int(arguments.get("duration", 30))
+    if duration < 1:
+        raise ToolError("duration は 1 フレーム以上です")
+    overrides: dict[str, float | str] = {"style": style}
+    if "angle" in arguments:
+        overrides["angle"] = float(arguments["angle"])
+    if "target" in arguments:
+        target = str(arguments["target"])
+        if target not in ("before", "after"):
+            raise ToolError(f"target は before か after です: {target}")
+        overrides["target"] = target
+
+    project = _project(host)
+    at_frame = arguments.get("at_frame")
+    commands = insert_generated(
+        project,
+        TRANSITION.create(**overrides),
+        at_frame=int(at_frame) if at_frame is not None else host.playhead,
+        duration=duration,
+    )
+    host.apply_commands(commands, f"場面切り替えを追加: {style}")
+    return {"added": style, "duration": duration}
 
 
 def _split_clip(host: EditorHost, arguments: dict[str, Any]) -> object:
@@ -1184,6 +1217,26 @@ OPERATIONS: tuple[Operation, ...] = (
             ["text"],
         ),
         handler=_add_text,
+        writes=True,
+    ),
+    Operation(
+        name="add_transition",
+        description=(
+            "場面切り替えを置く 下のトラックのクリップの切れ目に重ねて使う "
+            "切り替え方は switch（切り替え）fade（クロスフェード）push（押し出し）"
+            "slide（スライド）overlay（重ねる）"
+        ),
+        schema=_schema(
+            {
+                "style": _string("切り替え方 既定は fade"),
+                "at_frame": _integer("置く位置 省略すると再生ヘッド"),
+                "duration": _integer("長さ（フレーム、既定 30）"),
+                "angle": _number("押し出しとスライドの向き（度、0 で右へ）"),
+                "target": _string("スライドと重ねるで動かす・手前にする場面 before か after"),
+            },
+            [],
+        ),
+        handler=_add_transition,
         writes=True,
     ),
     Operation(

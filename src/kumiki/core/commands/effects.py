@@ -68,14 +68,18 @@ class ParamPath:
     name: str
     #: ``target`` が :attr:`ParamTarget.EFFECT` のときだけ意味を持つ
     effect_id: EffectId | None = None
+    #: 場面切り替えの「後の場面」に積んだエフェクトを指すか
+    after: bool = False
 
     def __post_init__(self) -> None:
         if self.target is ParamTarget.EFFECT and self.effect_id is None:
             raise ValueError("エフェクトのパラメータには effect_id が要る")
 
     @classmethod
-    def of_effect(cls, clip_id: ClipId, effect_id: EffectId, name: str) -> ParamPath:
-        return cls(clip_id, ParamTarget.EFFECT, name, effect_id)
+    def of_effect(
+        cls, clip_id: ClipId, effect_id: EffectId, name: str, *, after: bool = False
+    ) -> ParamPath:
+        return cls(clip_id, ParamTarget.EFFECT, name, effect_id, after=after)
 
     @classmethod
     def of_source(cls, clip_id: ClipId, name: str) -> ParamPath:
@@ -84,6 +88,15 @@ class ParamPath:
     @classmethod
     def of_clip(cls, clip_id: ClipId, name: str) -> ParamPath:
         return cls(clip_id, ParamTarget.CLIP, name)
+
+
+def stack_of(clip: Clip, after: bool) -> tuple[Effect, ...]:
+    """エフェクトの置き場 場面切り替えの「後の場面」だけ別に持つ"""
+    return clip.after_effects if after else clip.effects
+
+
+def with_stack(clip: Clip, after: bool, effects: tuple[Effect, ...]) -> Clip:
+    return replace(clip, after_effects=effects) if after else replace(clip, effects=effects)
 
 
 def resolve_param(project: Project, path: ParamPath) -> ParamValue | None:
@@ -98,7 +111,7 @@ def resolve_param(project: Project, path: ParamPath) -> ParamValue | None:
     if path.target is ParamTarget.SOURCE:
         return clip.source.params.get(path.name) if clip.source is not None else None
 
-    effect = _find_effect(clip, path.effect_id)
+    effect = next((e for e in stack_of(clip, path.after) if e.id == path.effect_id), None)
     return effect.params.get(path.name) if effect is not None else None
 
 
@@ -241,6 +254,8 @@ class AddEffect(Command):
     clip_id: ClipId
     effect: Effect
     index: int | None = None
+    #: 場面切り替えの「後の場面」へ積むか
+    after: bool = False
 
     @property
     def label(self) -> str:
@@ -248,9 +263,9 @@ class AddEffect(Command):
 
     def apply(self, project: Project) -> Project:
         def update(clip: Clip) -> Clip:
-            effects = list(clip.effects)
+            effects = list(stack_of(clip, self.after))
             effects.insert(len(effects) if self.index is None else self.index, self.effect)
-            return replace(clip, effects=tuple(effects))
+            return with_stack(clip, self.after, tuple(effects))
 
         return _update_clip(project, self.clip_id, update)
 
@@ -259,6 +274,7 @@ class AddEffect(Command):
 class RemoveEffect(Command):
     clip_id: ClipId
     effect_id: EffectId
+    after: bool = False
 
     @property
     def label(self) -> str:
@@ -266,10 +282,11 @@ class RemoveEffect(Command):
 
     def apply(self, project: Project) -> Project:
         def update(clip: Clip) -> Clip:
-            remaining = tuple(e for e in clip.effects if e.id != self.effect_id)
-            if len(remaining) == len(clip.effects):
+            stack = stack_of(clip, self.after)
+            remaining = tuple(e for e in stack if e.id != self.effect_id)
+            if len(remaining) == len(stack):
                 raise KeyError(f"エフェクトが見つからない: {self.effect_id}")
-            return replace(clip, effects=remaining)
+            return with_stack(clip, self.after, remaining)
 
         return _update_clip(project, self.clip_id, update)
 
@@ -285,6 +302,7 @@ class MoveEffect(Command):
     clip_id: ClipId
     effect_id: EffectId
     index: int
+    after: bool = False
 
     @property
     def label(self) -> str:
@@ -292,12 +310,12 @@ class MoveEffect(Command):
 
     def apply(self, project: Project) -> Project:
         def update(clip: Clip) -> Clip:
-            effects = list(clip.effects)
+            effects = list(stack_of(clip, self.after))
             for position, effect in enumerate(effects):
                 if effect.id == self.effect_id:
                     effects.pop(position)
                     effects.insert(max(0, min(self.index, len(effects))), effect)
-                    return replace(clip, effects=tuple(effects))
+                    return with_stack(clip, self.after, tuple(effects))
             raise KeyError(f"エフェクトが見つからない: {self.effect_id}")
 
         return _update_clip(project, self.clip_id, update)
@@ -313,6 +331,7 @@ class SetEffectEnabled(Command):
     clip_id: ClipId
     effect_id: EffectId
     enabled: bool
+    after: bool = False
 
     @property
     def label(self) -> str:
@@ -322,9 +341,9 @@ class SetEffectEnabled(Command):
         def update(clip: Clip) -> Clip:
             effects = tuple(
                 replace(e, enabled=self.enabled) if e.id == self.effect_id else e
-                for e in clip.effects
+                for e in stack_of(clip, self.after)
             )
-            return replace(clip, effects=effects)
+            return with_stack(clip, self.after, effects)
 
         return _update_clip(project, self.clip_id, update)
 
@@ -424,11 +443,12 @@ def _update_param(
             current = clip.source.params.get(path.name)
             return replace(clip, source=clip.source.with_param(path.name, update(current)))
 
-        effect = _find_effect(clip, path.effect_id)
+        stack = stack_of(clip, path.after)
+        effect = next((e for e in stack if e.id == path.effect_id), None)
         if effect is None:
             raise KeyError(f"エフェクトが見つからない: {path.effect_id}")
         updated = effect.with_param(path.name, update(effect.params.get(path.name)))
-        effects = tuple(updated if e.id == effect.id else e for e in clip.effects)
-        return replace(clip, effects=effects)
+        effects = tuple(updated if e.id == effect.id else e for e in stack)
+        return with_stack(clip, path.after, effects)
 
     return _update_clip(project, path.clip_id, change)

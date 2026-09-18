@@ -11,6 +11,7 @@ JSON にしているのは、外部ツールと AI エージェントから素�
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import replace
 from fractions import Fraction
@@ -142,7 +143,11 @@ def _get_float(data: dict[str, Any], key: str, default: float) -> float:
     value = data.get(key, default)
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise ProjectFileError(f"{key} が数値ではない: {value!r}")
-    return float(value)
+    result = float(value)
+    if not math.isfinite(result):
+        # JSON の読み込みは NaN と Infinity を受けてしまう 通すと描画や音の計算が壊れる
+        raise ProjectFileError(f"{key} が有限の数ではない: {value!r}")
+    return result
 
 
 def _get_list(data: dict[str, Any], key: str) -> list[Any]:
@@ -180,6 +185,9 @@ def _keyframe_from_json(raw: object) -> Keyframe:
         if not isinstance(points_raw, list) or len(points_raw) != 4:
             raise ProjectFileError(f"control_points は 4 要素の配列: {points_raw!r}")
         a, b, c, d = (float(v) for v in points_raw)
+        if not all(math.isfinite(value) for value in (a, b, c, d)):
+            # 非有限の制御点は補間を通して描画へ流れ、GL の値が壊れる
+            raise ProjectFileError(f"control_points に扱えない数がある: {points_raw!r}")
         control_points = (a, b, c, d)
 
     return Keyframe(
@@ -210,7 +218,10 @@ def _param_from_json(raw: object) -> ParamValue:
         keyframes = tuple(_keyframe_from_json(k) for k in _get_list(raw, "keyframes"))
         return AnimatedValue(static=_get_float(raw, "static", 0.0), keyframes=keyframes)
     if isinstance(raw, list):
-        return tuple(float(v) for v in raw)
+        values = tuple(float(v) for v in raw)
+        if not all(math.isfinite(v) for v in values):
+            raise ProjectFileError(f"パラメータに有限でない数がある: {raw!r}")
+        return values
     if isinstance(raw, bool | int | str):
         return raw
     raise ProjectFileError(f"パラメータとして読めない値: {raw!r}")
@@ -426,8 +437,10 @@ def _clip_to_json(clip: Clip) -> dict[str, Any]:
         "link_group": clip.link_group,
         "scene_id": clip.scene_id,
         "group_id": clip.group_id,
+        "clip_to_below": clip.clip_to_below,
         "enabled": clip.enabled,
         "effects": [effect_to_json(e) for e in clip.effects],
+        "after_effects": [effect_to_json(e) for e in clip.after_effects],
     }
 
 
@@ -460,11 +473,13 @@ def _clip_from_json(raw: object) -> Clip:
         stream_index=_get_int(data, "stream_index", 0),
         speed=_fraction_from_json(data.get("speed", 1), "speed"),
         effects=tuple(effect_from_json(e) for e in _get_list(data, "effects")),
+        after_effects=tuple(effect_from_json(e) for e in _get_list(data, "after_effects")),
         opacity=opacity,
         blend_mode=_get_str(data, "blend_mode", "normal"),
         link_group=GroupId(link_group) if link_group is not None else None,
         scene_id=SceneId(scene_id) if scene_id is not None else None,
         group_id=GroupId(group_id) if group_id is not None else None,
+        clip_to_below=_get_bool(data, "clip_to_below", False),
         enabled=_get_bool(data, "enabled", True),
         id=ClipId(_get_str(data, "id")),
     )
@@ -573,7 +588,31 @@ def project_to_dict(project: Project) -> dict[str, Any]:
 
 
 def project_from_dict(data: object) -> Project:
-    """:func:`project_to_dict` の出力からプロジェクトを復元する"""
+    """:func:`project_to_dict` の出力からプロジェクトを復元する
+
+    壊れた値はどの段で見つかっても :class:`ProjectFileError` にして返す 型を 1 つずつ
+    確かめる検査をすり抜けた値は、モデルの検査（ValueError）や数の変換（TypeError
+    など）で止まる 開く側は ProjectFileError しか受けないので、素のまま漏らすと
+    壊れたファイル 1 つで起動ごと落ちる
+    """
+    try:
+        return _project_from_dict(data)
+    except ProjectFileError:
+        raise
+    except (
+        ValueError,
+        TypeError,
+        KeyError,
+        IndexError,
+        AttributeError,
+        OverflowError,
+        ZeroDivisionError,
+        RecursionError,
+    ) as exc:
+        raise ProjectFileError(f"壊れた値がある: {exc}") from exc
+
+
+def _project_from_dict(data: object) -> Project:
     root = _require(data, "プロジェクト")
 
     format_name = _get_str(root, "format")
@@ -659,7 +698,7 @@ def load_project(path: Path) -> Project:
         raise ProjectFileError(f"プロジェクトファイルを開けない: {path}") from exc
     try:
         data = json.loads(text)
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, RecursionError) as exc:
         raise ProjectFileError(f"JSON として読めない: {path} ({exc})") from exc
 
     project = project_from_dict(data)

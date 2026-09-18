@@ -198,13 +198,14 @@ class TestPixels:
     def test_inout_zoom_can_squash_one_axis(
         self, gl_context: OffscreenGLContext, processor: EffectProcessor
     ) -> None:
-        # 配布物は縦だけ 0 から伸ばす（X=0 Y=100） 横まで縮むと別の動きになる
+        # 軸の割合は隠れたときのその向きの大きさ X=0 Y=100 は横だけ潰れた所から広がる
+        # （YMM4 に描かせて確かめた 「広がって登場」の配布物がこの値）
         effect = _make("inout_zoom", zoom=100, zoom_x=0, zoom_y=100, effect_time=1.0)
         halfway = _run(gl_context, processor, effect, frame=15)
         rows = np.nonzero(halfway[..., 3].max(axis=1) > 0.5)[0]
         columns = np.nonzero(halfway[..., 3].max(axis=0) > 0.5)[0]
-        assert len(columns) == pytest.approx(32, abs=2)
-        assert 0 < len(rows) < 32
+        assert len(rows) == pytest.approx(32, abs=2)
+        assert 0 < len(columns) < 32
 
     def test_the_exit_counts_back_from_the_end(
         self, gl_context: OffscreenGLContext, processor: EffectProcessor
@@ -280,6 +281,41 @@ class TestPixels:
         result = _run(gl_context, processor, _make("transform", scale=50, pivot_h="left"))
         columns = np.nonzero(result[..., 3].max(axis=0) > 0.5)[0]
         assert int(columns.min()) == 16
+
+
+class TestAxes:
+    """Y は上が正 例外は表示名に「下が正」と書いてあるものだけ"""
+
+    def test_the_mask_centre_moves_up_with_a_positive_y(
+        self, gl_context: OffscreenGLContext, processor: EffectProcessor
+    ) -> None:
+        # 逆向きだと、YMM4 から写した切り抜きが上下反対の場所に出る
+        picture = np.full((SIZE, SIZE, 4), 200, dtype=np.uint8)
+        effect = _make("shape_mask", shape="ellipse", width=16.0, height=16.0, center_y=24.0)
+        result = _run(gl_context, processor, effect, image=picture)
+        # GL の向きなので、行番号が大きいほど画面の上
+        rows = np.flatnonzero(result[..., 3].max(axis=1) > 0.5)
+        assert rows.mean() > SIZE / 2
+
+    def test_a_negative_emitter_y_puts_particles_above_the_centre(
+        self, gl_context: OffscreenGLContext, processor: EffectProcessor
+    ) -> None:
+        # 放つ位置だけは YMM4 と同じ下向き正（表示名にもそう書いてある）
+        effect = _make(
+            "particles",
+            rate=60.0,
+            lifetime=1.0,
+            size=100.0,
+            emitter_y=-20.0,
+            speed=0.0,
+            gravity=0.0,
+            randomness=0.0,
+        )
+        result = _run(gl_context, processor, effect)
+        rows = np.flatnonzero(result[..., 3].max(axis=1) > 0.5)
+        assert len(rows), "粒が 1 つも出ていない"
+        # 下向き正なので -20 は画面の上（GL の向きでは行番号が大きい側）
+        assert rows.mean() > SIZE / 2
 
 
 class TestFrameBuffer:

@@ -12,6 +12,7 @@ from __future__ import annotations
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (
+    QBrush,
     QColor,
     QFont,
     QFontMetricsF,
@@ -20,6 +21,7 @@ from PySide6.QtGui import (
     QPainterPath,
     QPainterPathStroker,
     QPen,
+    QRadialGradient,
     QTransform,
 )
 
@@ -33,14 +35,19 @@ _VERTICAL_SHARE = {"top": 0.0, "middle": 0.5, "bottom": 1.0}
 
 
 def render_source(
-    source: GeneratedSource, width: int, height: int, *, frame: int = 0
+    source: GeneratedSource, width: int, height: int, *, frame: int = 0, fps: float = 30.0
 ) -> np.ndarray | None:
-    """生成オブジェクトを描いて配列で返す 未知の種類なら ``None``"""
+    """生成オブジェクトを描いて配列で返す 未知の種類なら ``None``
+
+    ``fps`` は時間で変わる図形（タイマー・集中線）がフレームを秒へ直すのに使う
+    """
     definition = source_registry.get(source.kind)
     if definition is None:
         return None
 
     values = _resolve(definition, source.params, frame)
+    values["_seconds"] = frame / max(fps, 1e-6)
+    values["_fps"] = fps
     image = QImage(width, height, QImage.Format.Format_RGBA8888)
     image.fill(Qt.GlobalColor.transparent)
 
@@ -58,6 +65,49 @@ def render_source(
     return _to_array(image)
 
 
+#: 画面より大きい絵を作るときの一辺の上限（画素） GPU のテクスチャの上限より十分小さく
+MAX_CANVAS = 8192
+
+
+def source_canvas(
+    source: GeneratedSource, width: int, height: int, *, frame: int = 0
+) -> tuple[int, int]:
+    """生成オブジェクトを描く絵の大きさ 画面より大きい図形なら、はみ出す分まで広げる
+
+    中心は画面の中心のまま広げる（描く位置の計算は変えない） 画面の大きさで
+    切ってしまうと、画面より大きい図形を回したり動かしたりしたときに、切れた端が
+    見えてしまう（YMM4 の斜めの帯のトランジションは高さ 2160 の図形を 45 度回す）
+    """
+    if source.kind != "shape":
+        return width, height
+    definition = source_registry.get(source.kind)
+    if definition is None:
+        return width, height
+    values = _resolve(definition, source.params, frame)
+    if values.get("shape") == "background":
+        return width, height
+    if values.get("shape") == "polyline":
+        # 線の図形は点の広がりで見積もる
+        points = polyline_points(str(values.get("points", "")))
+        line = float(values.get("line_width", 0.0))  # type: ignore[arg-type]
+        reach_x = max((abs(x) for x, _ in points), default=0.0) + line
+        reach_y = max((abs(y) for _, y in points), default=0.0) + line
+        values = {**values, "width": reach_x * 2.0, "height": reach_y * 2.0, "line_width": 0.0}
+    shape_width = max(1.0, float(values.get("width", 400)))  # type: ignore[arg-type]
+    shape_height = max(1.0, float(values.get("height", 400)))  # type: ignore[arg-type]
+    line = float(values.get("line_width", 0.0))  # type: ignore[arg-type]
+    # 回しても収まるよう、対角線の長さで見積もる
+    reach = (shape_width**2 + shape_height**2) ** 0.5 / 2.0 + line
+    needed_width = 2.0 * (abs(float(values.get("pos_x", 0.0))) + reach)  # type: ignore[arg-type]
+    needed_height = 2.0 * (abs(float(values.get("pos_y", 0.0))) + reach)  # type: ignore[arg-type]
+    grown_width = min(MAX_CANVAS, max(width, int(np.ceil(needed_width))))
+    grown_height = min(MAX_CANVAS, max(height, int(np.ceil(needed_height))))
+    # 画面と偶奇をそろえる 差が奇数だと、中心が半画素ずれて輪郭がにじむ
+    grown_width += (grown_width - width) % 2
+    grown_height += (grown_height - height) % 2
+    return grown_width, grown_height
+
+
 def _resolve(
     definition: SourceDefinition, params: dict[str, ParamValue], frame: int
 ) -> dict[str, object]:
@@ -73,8 +123,65 @@ def _resolve(
     return resolved
 
 
+def timer_text(values: dict[str, object]) -> str:
+    """タイマーの文字 数え下げは、クリップの終わりで初めの値になるように数える
+
+    YMM4 に 2 秒のクリップ・初めの値 0.99 で描かせると、頭で 2、1 秒で 1 だった
+    （終わりから逆算した残り時間に初めの値を足している）
+    """
+    seconds = float(values.get("_seconds", 0.0))  # type: ignore[arg-type]
+    rate = float(values.get("timer_rate", 100.0)) / 100.0  # type: ignore[arg-type]
+    start = float(values.get("timer_start", 0.0))  # type: ignore[arg-type]
+    if bool(values.get("timer_countdown", False)):
+        fps = float(values.get("_fps", 30.0))  # type: ignore[arg-type]
+        total = float(values.get("timer_length", 0)) / max(fps, 1e-6)  # type: ignore[arg-type]
+        value = start + (total - seconds) * rate
+    else:
+        value = start + seconds * rate
+    return format_time(max(value, 0.0), str(values.get("timer_format", "")))
+
+
+#: 時間の書式で 1 つの文字を並べられる数の上限 壊れたファイルの巨大な書式で固まらないため
+MAX_TIME_DIGITS = 9
+
+
+def format_time(value: float, pattern: str) -> str:
+    """.NET の時間の書式（``h`` ``m`` ``s`` ``f`` と ``\\`` の逃がし）で秒を文字にする"""
+    value = min(max(value, 0.0), 10.0**9)
+    whole = int(value)
+    parts = {
+        "h": whole // 3600,
+        "m": (whole // 60) % 60,
+        "s": whole % 60,
+    }
+    out: list[str] = []
+    index = 0
+    while index < len(pattern):
+        letter = pattern[index]
+        if letter == "\\" and index + 1 < len(pattern):
+            out.append(pattern[index + 1])
+            index += 2
+            continue
+        run = 1
+        while index + run < len(pattern) and pattern[index + run] == letter:
+            run += 1
+        digits = min(run, MAX_TIME_DIGITS)
+        if letter in parts:
+            out.append(str(parts[letter]).zfill(digits))
+        elif letter in ("f", "F"):
+            fraction = value - whole
+            out.append(str(int(fraction * 10**digits)).zfill(digits))
+        else:
+            out.append(letter * digits)
+        index += run
+    return "".join(out)
+
+
 def _draw_text(painter: QPainter, values: dict[str, object], width: int, height: int) -> None:
-    text = _revealed(str(values.get("text", "")), values)
+    raw = str(values.get("text", ""))
+    if str(values.get("timer_format", "")):
+        raw = timer_text(values)[:200]
+    text = _revealed(raw, values)
     if not text:
         return
 
@@ -253,7 +360,9 @@ def _blur_alpha(image: QImage, radius: float) -> QImage:
     箱ぼかしを縦横 2 回ずつ掛ける 厳密なガウスではないが、影の輪郭を
     やわらげる用途では見分けが付かず、こちらは掛け算が要らない
     """
-    span = max(1, round(radius))
+    # 窓の幅は絵の大きさまで 壊れたファイルの巨大な値でも、絵より広くぼかす意味は無い
+    # （そのまま渡すと、埋めた配列が何百 GB にもなって落ちる）
+    span = max(1, min(round(radius), max(image.width(), image.height())))
     # ``_to_array`` は元のバッファをそのまま見ていることがあり、書き込めない
     array = _to_array(image).copy()
     alpha = array[:, :, 3].astype(np.float32)
@@ -293,6 +402,17 @@ def _draw_shape(painter: QPainter, values: dict[str, object], width: int, height
     centre_x = width / 2.0 + float(values.get("pos_x", 0.0))  # type: ignore[arg-type]
     centre_y = height / 2.0 - float(values.get("pos_y", 0.0))  # type: ignore[arg-type]
 
+    if str(values.get("shape", "rect")) == "background":
+        # 背景は大きさの設定を見ず、絵の全体を塗る 設定の大きさで描くと、画面より
+        # 大きく広げた絵や、大きさを持たない読み込み元（YMM4 の背景）で隙間が出る
+        shape_width = float(width) + abs(float(values.get("pos_x", 0.0))) * 2.0  # type: ignore[arg-type]
+        shape_height = float(height) + abs(float(values.get("pos_y", 0.0))) * 2.0  # type: ignore[arg-type]
+    if str(values.get("shape", "rect")) == "polyline":
+        _draw_polyline(painter, values, centre_x, centre_y)
+        return
+    if str(values.get("shape", "rect")) == "concentration":
+        _draw_concentration(painter, values, centre_x, centre_y, width, height)
+        return
     rect = QRectF(-shape_width / 2.0, -shape_height / 2.0, shape_width, shape_height)
     path = _shape_path(str(values.get("shape", "rect")), rect, values)
 
@@ -317,6 +437,192 @@ def _draw_shape(painter: QPainter, values: dict[str, object], width: int, height
         painter.drawPath(path)
 
 
+def polyline_points(text: str) -> list[tuple[float, float]]:
+    """``"x,y;x,y"`` を点の並びへ 読めない組は飛ばす 座標は中心からの画素で Y は上が正
+
+    点の数は :data:`MAX_POLYLINE_POINTS` で頭を抑える 壊れたファイルや巨大な線を
+    読み込むと、1 フレームごとに点列を解き直して再生が止まる
+    """
+    points: list[tuple[float, float]] = []
+    # 区切りの数を抑えたうえで、余りの 1 つ（上限より後ろの全部）は捨てる
+    # 残しておくと、読めない組があったときに巨大な余りをカンマで割ってしまう
+    for pair in text.split(";", MAX_POLYLINE_POINTS)[:MAX_POLYLINE_POINTS]:
+        parts = pair.split(",", 2)
+        if len(parts) != 2:
+            continue
+        try:
+            x, y = float(parts[0]), float(parts[1])
+        except ValueError:
+            continue
+        if np.isfinite(x) and np.isfinite(y):
+            points.append((x, y))
+    return points
+
+
+def _polyline_path(values: dict[str, object], centre_x: float, centre_y: float) -> QPainterPath:
+    points = [
+        # 点も Y は上が正 ほかの位置の設定と向きがそろう
+        (centre_x + x, centre_y - y)
+        for x, y in polyline_points(str(values.get("points", "")))
+    ]
+    path = QPainterPath()
+    if len(points) < 2:
+        return path
+    closed = bool(values.get("closed", False))
+    path.moveTo(*points[0])
+    if str(values.get("line_type", "straight")) == "quadratic" and len(points) >= 3:
+        # 2 次ベジェ 点を 1 つおきに制御点として読む（YMM4 の QuadraticBezier）
+        # 閉じるときは始点へ戻る曲線にする
+        sequence = [*points, points[0]] if closed else points
+        index = 1
+        while index + 1 < len(sequence):
+            control, end = sequence[index], sequence[index + 1]
+            path.quadTo(control[0], control[1], end[0], end[1])
+            index += 2
+        if index < len(sequence):
+            path.lineTo(*sequence[index])
+    else:
+        for point in points[1:]:
+            path.lineTo(*point)
+    if closed:
+        path.closeSubpath()
+    return path
+
+
+def _draw_concentration(
+    painter: QPainter,
+    values: dict[str, object],
+    centre_x: float,
+    centre_y: float,
+    width: int,
+    height: int,
+) -> None:
+    """集中線（YMM4 の ConcentrationLine） 中心から放つ細い三角を、半径で濃さを変えて描く
+
+    本数・太さ・長さ・ぼかしの効き方は YMM4 に描かせた絵から近づけた ぼかし 0 は大きさの
+    半分の円の中に硬い線、ぼかすと線は画面の外まで伸びて、中心側がぼんやり抜ける
+    """
+    radius = max(float(values.get("width", 400)) * 0.5, 1.0)  # type: ignore[arg-type]
+    count = max(1, min(1000, int(float(values.get("density", 80)))))  # type: ignore[arg-type]
+    thickness = float(values.get("line_thickness", 50.0)) / 100.0  # type: ignore[arg-type]
+    length = float(values.get("line_length", 70.0)) / 100.0  # type: ignore[arg-type]
+    soft = max(0.0, min(1.0, float(values.get("softness", 50.0)) / 100.0))  # type: ignore[arg-type]
+    flicker = float(values.get("flicker", 5.0))  # type: ignore[arg-type]
+    seconds = float(values.get("_seconds", 0.0))  # type: ignore[arg-type]
+    tick = int(seconds * flicker) if flicker > 0 else 0
+    random = np.random.default_rng(tick * 7919 + 17)
+
+    inner = radius * (1.0 - length)
+    far = radius * (1.0 + soft * 2.0) if soft > 0 else radius
+    reach = max(far, float(np.hypot(width, height)))
+    gradient = QRadialGradient(centre_x, centre_y, far)
+    colour = _color(values.get("color"))
+    # ぼかすと線は半透明になる（YMM4 の絵は白い線でも 170 ほどで、真っ白にならない）
+    colour.setAlphaF(colour.alphaF() * (1.0 - soft * 0.45))
+    clear = QColor(colour)
+    clear.setAlpha(0)
+    if soft <= 0:
+        gradient.setColorAt(0.0, colour)
+        gradient.setColorAt(1.0, colour)
+    else:
+        start = max(0.0, (inner - radius * soft) / far)
+        full = min(1.0, (inner + radius * soft) / far)
+        gradient.setColorAt(0.0, clear)
+        gradient.setColorAt(start, clear)
+        gradient.setColorAt(max(full, start + 1e-3), colour)
+        gradient.setColorAt(min(1.0, radius / far), colour)
+        gradient.setColorAt(1.0, clear)
+    path = QPainterPath()
+    spacing = 2.0 * np.pi / count
+    for _ in range(count):
+        angle = random.uniform(0.0, 2.0 * np.pi)
+        half = spacing * thickness * random.uniform(0.2, 1.0) * 0.5
+        start_radius = inner * random.uniform(0.8, 1.2) if soft <= 0 else 0.0
+        end_radius = radius if soft <= 0 else reach
+        tip_x = centre_x + np.cos(angle) * start_radius
+        tip_y = centre_y + np.sin(angle) * start_radius
+        path.moveTo(tip_x, tip_y)
+        path.lineTo(
+            centre_x + np.cos(angle - half) * end_radius,
+            centre_y + np.sin(angle - half) * end_radius,
+        )
+        path.lineTo(
+            centre_x + np.cos(angle + half) * end_radius,
+            centre_y + np.sin(angle + half) * end_radius,
+        )
+        path.closeSubpath()
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QBrush(gradient))
+    painter.drawPath(path)
+
+
+#: 折れ線で読み取る点の数の上限 これ以上は捨てる（描画は 1 フレームごとに走る）
+MAX_POLYLINE_POINTS = 4096
+
+#: 線の一部を描き直すときの刻みの上限 長い線で刻みが増えると、1 フレームに何秒もかかる
+MAX_TRIM_STEPS = 2000
+
+
+def _trimmed(path: QPainterPath, start: float, end: float) -> QPainterPath:
+    """線の途中だけを残す ``start`` と ``end`` は全長に対する 0..1"""
+    if start <= 0.0 and end >= 1.0:
+        return path
+    if end <= start:
+        return QPainterPath()
+    total = path.length()
+    trimmed = QPainterPath()
+    # 2 画素ごとに点を打つ 長い線でも刻みが増えすぎないように頭を抑える
+    steps = max(8, min(int(total / 2.0), MAX_TRIM_STEPS))
+    first = True
+    for index in range(steps + 1):
+        fraction = start + (end - start) * index / steps
+        point = path.pointAtPercent(path.percentAtLength(total * fraction))
+        if first:
+            trimmed.moveTo(point)
+            first = False
+        else:
+            trimmed.lineTo(point)
+    return trimmed
+
+
+def _draw_polyline(
+    painter: QPainter, values: dict[str, object], centre_x: float, centre_y: float
+) -> None:
+    """線の図形 閉じていれば中を塗ってから線を引く 端と角は丸める（配布物はすべて丸）"""
+    path = _polyline_path(values, centre_x, centre_y)
+    if path.isEmpty():
+        return
+    trim_start = float(values.get("trim_start", 0.0)) / 100.0  # type: ignore[arg-type]
+    trim_end = float(values.get("trim_end", 100.0)) / 100.0  # type: ignore[arg-type]
+    path = _trimmed(path, max(0.0, trim_start), min(1.0, trim_end))
+    if path.isEmpty():
+        return
+    if bool(values.get("closed", False)):
+        fill = _color(values.get("fill_color"))
+        if fill.alpha() > 0:
+            painter.fillPath(path, fill)
+    width = float(values.get("line_width", 0.0))  # type: ignore[arg-type]
+    if width <= 0:
+        return
+    pen = QPen(_color(values.get("color")), width)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    dashes = [float(v) for v in str(values.get("dash", "")).split(",") if _is_number(v)]
+    if len(dashes) >= 2 and all(v >= 0 for v in dashes) and sum(dashes) > 0:
+        # 破線の長さは線の太さを 1 とする割合（Qt も YMM4 も同じ決まり）
+        pen.setDashPattern(dashes)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.setPen(pen)
+    painter.drawPath(path)
+
+
+def _is_number(text: str) -> bool:
+    try:
+        return bool(np.isfinite(float(text)))
+    except ValueError:
+        return False
+
+
 def _shape_path(kind: str, rect: QRectF, values: dict[str, object]) -> QPainterPath:
     path = QPainterPath()
     if kind == "ellipse":
@@ -335,6 +641,24 @@ def _shape_path(kind: str, rect: QRectF, values: dict[str, object]) -> QPainterP
         path = _polygon_path(rect, 6)
     elif kind == "star":
         path = _star_path(rect)
+    elif kind == "inscribed_triangle":
+        # 頂点を上にして楕円に内接する三角形（YMM4 の三角形） 四角に合わせた三角形とは
+        # 底辺の位置と幅が違う
+        path = _polygon_path(rect, 3)
+    elif kind == "fan":
+        path = _fan_path(rect, float(values.get("span", 360.0)))  # type: ignore[arg-type]
+    elif kind == "arrow":
+        path = _arrow_path(
+            rect,
+            float(values.get("bar_length", 50.0)),  # type: ignore[arg-type]
+            float(values.get("bar_thickness", 50.0)),  # type: ignore[arg-type]
+        )
+    elif kind == "superformula":
+        path = _superformula_path(
+            rect,
+            float(values.get("formula_m", 4.0)),  # type: ignore[arg-type]
+            float(values.get("formula_n", 1.0)),  # type: ignore[arg-type]
+        )
     else:
         # ``background`` もここ 大きさは呼び出し側が画面いっぱいに指定する
         path.addRect(rect)
@@ -374,6 +698,63 @@ def _star_path(rect: QRectF, points: int = 5) -> QPainterPath:
         ratio = 1.0 if index % 2 == 0 else inner_ratio
         x = centre.x() + np.cos(angle) * outer_x * ratio
         y = centre.y() + np.sin(angle) * outer_y * ratio
+        if index == 0:
+            path.moveTo(x, y)
+        else:
+            path.lineTo(x, y)
+    path.closeSubpath()
+    return path
+
+
+def _fan_path(rect: QRectF, span: float) -> QPainterPath:
+    """扇 上を 0 として反時計回りに ``span`` 度（YMM4 の CenterAngle）"""
+    path = QPainterPath()
+    path.moveTo(rect.center())
+    # Qt の角度は右が 0 で反時計回り 上（90 度）から反時計回りに広げる
+    path.arcTo(rect, 90.0, max(0.0, min(span, 360.0)))
+    path.closeSubpath()
+    return path
+
+
+def _arrow_path(rect: QRectF, bar_length: float, bar_thickness: float) -> QPainterPath:
+    """上向きの矢印 頭は楕円に内接する三角形、軸は頭の底辺から下へ伸びる
+
+    軸の長さは半径の 3 倍を 100、太さは半径を 100 とする割合（YMM4 の絵に合わせた）
+    """
+    radius_x, radius_y = rect.width() / 2.0, rect.height() / 2.0
+    centre = rect.center()
+    base_y = centre.y() + radius_y * 0.5
+    half_head = radius_x * np.sqrt(3.0) / 2.0
+    half_bar = radius_x * max(bar_thickness, 0.0) / 200.0
+    bar_end = base_y + radius_y * 3.0 * max(bar_length, 0.0) / 100.0
+    path = QPainterPath()
+    path.moveTo(centre.x(), centre.y() - radius_y)
+    path.lineTo(centre.x() + half_head, base_y)
+    path.lineTo(centre.x() + half_bar, base_y)
+    path.lineTo(centre.x() + half_bar, bar_end)
+    path.lineTo(centre.x() - half_bar, bar_end)
+    path.lineTo(centre.x() - half_bar, base_y)
+    path.lineTo(centre.x() - half_head, base_y)
+    path.closeSubpath()
+    return path
+
+
+def _superformula_path(rect: QRectF, m: float, n: float) -> QPainterPath:
+    """スーパーフォーミュラ（Gielis の式、n1 = n2 = n3 = n） 一番遠い点が楕円に届くよう縮める"""
+    angles = np.linspace(0.0, 2.0 * np.pi, 721)
+    exponent = max(abs(n), 0.05)
+    quarter = m * angles / 4.0
+    radius = (np.abs(np.cos(quarter)) ** exponent + np.abs(np.sin(quarter)) ** exponent) ** (
+        -1.0 / exponent
+    )
+    radius = np.nan_to_num(radius, nan=0.0, posinf=0.0)
+    peak = float(radius.max()) if radius.size else 1.0
+    radius = radius / (peak if peak > 0 else 1.0)
+    centre = rect.center()
+    path = QPainterPath()
+    for index, (angle, r) in enumerate(zip(angles, radius, strict=True)):
+        x = centre.x() + np.cos(angle - np.pi / 2.0) * r * rect.width() / 2.0
+        y = centre.y() + np.sin(angle - np.pi / 2.0) * r * rect.height() / 2.0
         if index == 0:
             path.moveTo(x, y)
         else:

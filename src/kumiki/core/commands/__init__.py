@@ -24,6 +24,7 @@ from kumiki.core.commands.edit import (
     SetTranscript,
     SplitClip,
     TrimClip,
+    TrimClips,
 )
 from kumiki.core.commands.effects import (
     AddEffect,
@@ -116,6 +117,7 @@ __all__ = [
     "SplitClip",
     "SplitSegment",
     "TrimClip",
+    "TrimClips",
     "UngroupClips",
     "burn_subtitles",
     "insert_generated",

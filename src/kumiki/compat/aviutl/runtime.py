@@ -55,7 +55,6 @@ end
 #: モジュールとして読む拡張子 テキストの Lua を先に探す
 MODULE_SUFFIXES = (".lua", ".mod", ".mod2")
 
-#: 命令数に上限を掛けて呼ぶための包み 無限ループを書いたスクリプトは実在する
 #: 書き出しの手前で Lua の中のまま長さを数える Python へ渡してから数えると、
 #: Lua に許した大きさの文字列を Python 側にも丸ごと写してから断ることになる
 #: 上限はバイト数（UTF-8 の 1 文字は最大 4 バイト） 文字数は Python 側でも数える
@@ -73,16 +72,118 @@ function(sink, limit)
 end
 """
 
+#: 命令数に上限を掛けて呼ぶための包み 無限ループを書いたスクリプトは実在する
+#:
+#: フックはコルーチンごとに掛かる スクリプトが自分で作ったコルーチンに掛けないと、
+#: その中の無限ループで編集画面が戻らなくなる ``coroutine.create`` と ``wrap`` を
+#: 差し替えて、実行中に作られたコルーチンにも同じフックを掛け、命令数は全体で数える
+#:
+#: ``debug.sethook`` はここで取っておき、スクリプトからは見えなくする 見えると
+#: フックを外して上限から逃げられる
 _GUARD = """
-function(fn, limit)
-  local co = coroutine.create(fn)
-  local hit = false
-  debug.sethook(co, function() hit = true; error("時間切れ", 2) end, "", limit)
-  local ok, err = coroutine.resume(co)
-  debug.sethook(co)
-  if not ok then return err, hit end
-  return nil, false
-end
+(function()
+  local sethook = debug.sethook
+  local create = coroutine.create
+  local resume = coroutine.resume
+  local unpack = unpack or table.unpack
+  local STEP = 1000
+  local active = nil
+
+  local function guarded_create(fn)
+    local co = create(fn)
+    if active then sethook(co, active, "", STEP) end
+    return co
+  end
+
+  coroutine.create = guarded_create
+  coroutine.wrap = function(fn)
+    local co = guarded_create(fn)
+    return function(...)
+      local results = {resume(co, ...)}
+      if not results[1] then error(results[2], 0) end
+      return unpack(results, 2)
+    end
+  end
+  debug = {traceback = debug.traceback, getinfo = debug.getinfo}
+
+  -- 文字列のパターン照合は C の中で回るので、命令数のフックが掛からない
+  -- ``.-`` を何個も並べたパターンは、文字列の長さの個数乗の手間になり、数百文字でも
+  -- 戻らない 繰り返し記号の数から手間を見積もり、重すぎるものは照合せずに断る
+  local PATTERN_BUDGET = 1e10
+  local function quantifiers(pattern)
+    local count, i, n = 0, 1, #pattern
+    while i <= n do
+      local c = pattern:sub(i, i)
+      if c == "%" then
+        i = i + 2
+      elseif c == "[" then
+        i = i + 1
+        if pattern:sub(i, i) == "^" then i = i + 1 end
+        if pattern:sub(i, i) == "]" then i = i + 1 end
+        while i <= n and pattern:sub(i, i) ~= "]" do
+          if pattern:sub(i, i) == "%" then i = i + 1 end
+          i = i + 1
+        end
+        i = i + 1
+      else
+        if c == "*" or c == "+" or c == "-" or c == "?" then count = count + 1 end
+        i = i + 1
+      end
+    end
+    return count
+  end
+  local function checked(original, plain_at)
+    return function(s, pattern, ...)
+      local plain = plain_at and select(plain_at - 2, ...)
+      if not plain and type(s) == "string" and type(pattern) == "string" then
+        -- 先頭を決めない（``^`` で始まらない）パターンは、開始位置ごとに試すので
+        -- 文字列の長さのぶんだけ手間が増える それも見積もりに入れる
+        local starts = pattern:sub(1, 1) == "^" and 1 or (#s + 1)
+        if starts * (#s + 1) ^ quantifiers(pattern) > PATTERN_BUDGET then
+          error("文字列のパターンが重すぎます（" .. #s .. " 文字）", 2)
+        end
+      end
+      return original(s, pattern, ...)
+    end
+  end
+  -- xpcall の後始末の関数は、エラーを起こした場所（上限のフックの中）で呼ばれる
+  -- フックの中では次のフックが掛からないので、そこで無限ループされると止められない
+  -- 巻き戻してから呼ぶ形に置き換える 呼ばれる時点のスタックは変わるが、戻り値は同じ
+  local protect = pcall
+  xpcall = function(fn, handler, ...)
+    local results = {protect(fn, ...)}
+    if results[1] then return unpack(results) end
+    local _, handled = protect(handler, results[2])
+    return false, handled
+  end
+
+  string.find = checked(string.find, 4)
+  string.match = checked(string.match)
+  string.gmatch = checked(string.gmatch)
+  string.gsub = checked(string.gsub)
+
+  return function(fn, limit)
+    local used, hit = 0, false
+    local previous = active
+    local hook
+    hook = function()
+      used = used + STEP
+      if used > limit then
+        hit = true
+        -- 超えたあとは命令ごとに止める pcall でエラーを握り潰してループを続けても、
+        -- pcall の外へ戻った最初の命令で止まる
+        sethook(hook, "", 1)
+        error("時間切れ", 2)
+      end
+    end
+    active = hook
+    local co = guarded_create(fn)
+    local ok, value = resume(co)
+    active = previous
+    if not ok then return value, hit, nil end
+    return nil, false, value
+  end
+end)()
 """
 
 
@@ -224,8 +325,8 @@ class LuaScriptRuntime:
         globals_table = self._lua.globals()
 
         # ファイルとプロセスへの入口を閉じる 配布スクリプトは読み込むだけで
-        # 走るので、ここを開けたままにはできない ``debug`` は残す
-        # 実行時間の上限を ``debug.sethook`` で掛けているため
+        # 走るので、ここを開けたままにはできない ``debug`` は上限の包み（_GUARD）が
+        # ``sethook`` を取っておいてから、中身を絞る
         for name in ("io", "os", "package", "require", "dofile", "loadfile", "load", "loadstring"):
             globals_table[name] = None
 
@@ -379,7 +480,11 @@ class LuaScriptRuntime:
         else:
             try:
                 text, _ = read_text(path)
-                value = self._lua.execute(_strip_bom(text))
+                # 上限の包みの中で走らせる Python から直に実行すると命令数のフックが
+                # 掛からず、モジュールの無限ループで固まる
+                value = self._call_guarded(self._compile(text, path.name))
+            except LuaError as exc:
+                self._report.note_failure(path.name, f"モジュールを読めない: {exc}")
             except Exception as exc:
                 self._report.note_failure(path.name, f"モジュールを読めない: {exc}")
         self._modules[key] = value
@@ -420,18 +525,19 @@ class LuaScriptRuntime:
         except Exception as exc:
             raise LuaError(f"{script or 'スクリプト'} を読めません: {exc}") from exc
 
-    def _call_guarded(self, function: Any) -> None:
+    def _call_guarded(self, function: Any) -> Any:
         """命令数に上限を掛けて呼ぶ
 
         無限ループを書いたスクリプトは実在する 掛けておかないと、編集画面が
         戻ってこなくなる
         """
         try:
-            message, timed_out = self._guard(function, self._instruction_limit)
+            message, timed_out, value = self._guard(function, self._instruction_limit)
         except Exception as exc:
             raise LuaError(str(exc)) from exc
         if message is not None:
             raise LuaError("実行が長すぎます" if timed_out else str(message))
+        return value
 
 
 def _is_native(path: Path) -> bool:

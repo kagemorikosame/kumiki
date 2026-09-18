@@ -78,7 +78,7 @@ from kumiki.core.model import (
     ProjectSettings,
     SceneId,
 )
-from kumiki.effects.sources import SHAPE, TEXT
+from kumiki.effects.sources import SHAPE, TEXT, TRANSITION
 from kumiki.engine.audio.waveform import Waveform
 from kumiki.engine.cache import MediaAnalyzer
 from kumiki.engine.decode import ProbeError, probe_media
@@ -196,6 +196,9 @@ class MainWindow(QMainWindow):
         self._timeline = TimelineView(project, self._analyzer, self)
         self._media_pool = MediaPoolWidget(project, self)
         self._inspector = InspectorPanel(self)
+        # 設定パネルは選んだクリップを引くためにプロジェクトを持つ 起動直後にも渡す
+        # （渡さないと、最初の編集まで何本も選んだときのまとめ当てが効かない）
+        self._inspector.set_project(self.view_project)
         self._graph = GraphEditor(self)
         self._subtitles = SubtitlePanel(project, self._analyzer, self)
         self._chat = ChatPanel(self, self)
@@ -361,6 +364,7 @@ class MainWindow(QMainWindow):
         object_menu = self._menu("オブジェクト")
         self._add(object_menu, "テキストを追加", QKeySequence("Ctrl+T"), self.add_text)
         self._add(object_menu, "図形を追加", QKeySequence("Ctrl+Shift+T"), self.add_shape)
+        self._add(object_menu, "場面切り替えを追加", QKeySequence(), self.add_transition)
 
         scene_menu = self._menu("シーン")
         self._add(scene_menu, "新しいシーン…", QKeySequence("Ctrl+Alt+N"), self._ask_new_scene)
@@ -796,6 +800,10 @@ class MainWindow(QMainWindow):
     def add_shape(self) -> None:
         self._insert_generated(SHAPE.create(), "図形を追加")
 
+    def add_transition(self) -> None:
+        """再生ヘッドの位置に場面切り替えを置く 下のトラックの切れ目に重ねて使う"""
+        self._insert_generated(TRANSITION.create(), "場面切り替えを追加")
+
     def _insert_generated(self, source: GeneratedSource, label: str) -> None:
         commands = insert_generated(self.view_project, source, at_frame=self._timeline.playhead)
         self.execute_all(commands, label)
@@ -887,7 +895,10 @@ class MainWindow(QMainWindow):
 
     def _on_selection_changed(self, clip_id: str) -> None:
         selected = ClipId(clip_id) if clip_id else None
-        self._inspector.set_clip(selected)
+        # 何本も選んでいれば、設定パネルは主の 1 本を出しつつ、触った設定を全部へ当てる
+        chosen = self._timeline.selected_clips
+        ordered = (selected, *(c for c in chosen if c != selected)) if selected else ()
+        self._inspector.set_selection(tuple(c for c in ordered if c is not None))
         if selected is None:
             self._graph.set_path(None)
 

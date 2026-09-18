@@ -6,11 +6,15 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
+from pathlib import Path
+
 import numpy as np
 import pytest
 
-from kumiki.compat.aviutl.objapi import ObjectState
-from kumiki.compat.aviutl.report import CompatibilityReport
+from kumiki.compat.aviutl.objapi import MAX_BUFFERS, ObjectState
+from kumiki.compat.aviutl.report import MAX_KINDS, CompatibilityReport
 from kumiki.compat.aviutl.runtime import LuaScriptRuntime, blank_image, lua_available
 
 
@@ -331,6 +335,85 @@ class TestSandbox:
         runtime = LuaScriptRuntime(report=report, instruction_limit=100_000)
         runtime.run("error('だめ')", state(), script="ためし.anm")
         assert any("ためし.anm" in line for line in report.lines())
+
+
+#: 別のプロセスで 1 本のスクリプトを走らせ、失敗したかを出す 守りが壊れると
+#: 戻ってこないので、同じプロセスで走らせるとテスト全体が止まる
+_ISOLATED = """
+import sys
+from pathlib import Path
+from kumiki.compat.aviutl.objapi import ObjectState
+from kumiki.compat.aviutl.report import CompatibilityReport
+from kumiki.compat.aviutl.runtime import LuaScriptRuntime, blank_image
+runtime = LuaScriptRuntime(report=CompatibilityReport(), instruction_limit=200_000)
+if len(sys.argv) > 2:
+    runtime.set_roots((Path(sys.argv[2]),))
+result = runtime.run(sys.argv[1], ObjectState(image=blank_image(8, 8)))
+print("failed" if result.failed else "ok")
+"""
+
+
+def _run_isolated(code: str, *roots: Path) -> str:
+    completed = subprocess.run(
+        [sys.executable, "-c", _ISOLATED, code, *map(str, roots)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+    )
+    return completed.stdout.strip()
+
+
+class TestLimits:
+    """スクリプトが上限から逃げられないこと 逃げられると編集画面が戻らない"""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "coroutine.wrap(function() while true do end end)()",
+            "local co = coroutine.create(function() while true do end end)"
+            " assert(coroutine.resume(co))",
+            "while true do pcall(function() while true do end end) end",
+            "while true do xpcall(function() while true do end end,"
+            " function() while true do end end) end",
+            "debug.sethook() while true do end",
+            'string.find(string.rep("a", 3000), "a-a-a-a-a-b")',
+            'string.match(string.rep("a", 200), ".-.-.-.-.-.-b")',
+        ],
+    )
+    def test_the_limit_cannot_be_escaped(self, code: str) -> None:
+        # コルーチン、pcall、xpcall の後始末、フックの取り外し、パターン照合（C の中で回る）
+        assert _run_isolated(code) == "failed"
+
+    def test_a_module_with_an_endless_loop_is_cut_off(self, tmp_path: Path) -> None:
+        # Python から直に実行すると命令数のフックが掛からず、require の 1 行で固まる
+        (tmp_path / "ループ.lua").write_text("while true do end return {}", encoding="utf-8")
+        assert _run_isolated('local m = require("ループ") obj.ox = 1', tmp_path) == "ok"
+
+    def test_ordinary_patterns_and_xpcall_still_work(self, runtime: LuaScriptRuntime) -> None:
+        # 守りのために、配布スクリプトがよく使う書き方まで断ると本末転倒
+        target = state()
+        code = (
+            'local a, b, c = string.match("12,34,56", "(%d+),(%d+),(%d+)") '
+            'local ok, message = xpcall(function() error("x") end, function() return "拾った" end) '
+            'obj.ox = a + b + c + ((not ok and message == "拾った") and 1 or 0)'
+        )
+        assert runtime.run(code, target).failed is False
+        assert target.ox == 103.0
+
+    def test_the_report_does_not_grow_without_end(self) -> None:
+        # 毎回違う名前を記録させると、記録だけでメモリを使い切る
+        report = CompatibilityReport()
+        runtime = LuaScriptRuntime(report=report, instruction_limit=5_000_000)
+        runtime.run("for i = 1, 5000 do debug_print(i) end", state())
+        assert len(report.missing) <= MAX_KINDS + 1
+
+    def test_named_buffers_are_limited(self) -> None:
+        # 毎回違う名前で写されると、画面 1 枚ぶんずつ溜まる
+        runtime = LuaScriptRuntime(report=CompatibilityReport(), instruction_limit=200_000)
+        target = state()
+        runtime.run('for i = 1, 100 do obj.copybuffer("cache:" .. i, "obj") end', target)
+        assert len(target.buffers) <= MAX_BUFFERS
 
 
 class TestSetup:

@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from fractions import Fraction
 
 from kumiki.core.model import (
@@ -19,6 +19,7 @@ from kumiki.core.model import (
     ClipId,
     MediaItem,
     Project,
+    Timeline,
     TrackId,
     TranscriptSegment,
 )
@@ -89,18 +90,75 @@ def project_timeline(project: Project) -> Iterator[ProjectedSubtitle]:
     同じ素材を複数回置けば、字幕もその回数だけ現れる これは意図した挙動で、
     素材を使い回したときに字幕が片方にしか出ないことの方が驚きが大きい
     """
-    projected: list[ProjectedSubtitle] = []
-    for track in project.timeline.tracks:
+    projected = list(_project_tracks(project, project.timeline, 0))
+    projected.sort(key=lambda p: (p.start_frame, p.end_frame))
+    yield from projected
+
+
+#: シーンの入れ子をたどる深さの上限 描画と音（MAX_SCENE_DEPTH）に揃える
+MAX_SCENE_DEPTH = 8
+
+
+def _project_tracks(
+    project: Project, timeline: Timeline, depth: int
+) -> Iterator[ProjectedSubtitle]:
+    for track in timeline.tracks:
         for clip in track.clips:
+            if clip.scene_id is not None:
+                # シーンの中の字幕も、置いた場所に出す 見ないと、シーンにまとめた
+                # 途端に字幕パネル・焼き込み・字幕ファイルから消える
+                # 描画と同じ深さまで見る（レンダラは深さ 7 に置いたシーンの中身も描く）
+                if depth >= MAX_SCENE_DEPTH:
+                    continue
+                scene = project.find_scene(clip.scene_id)
+                if scene is None:
+                    continue
+                inner = _project_tracks(project, scene.timeline, depth + 1)
+                yield from _place_scene(inner, clip, project.rate, track.id)
+                continue
             if clip.media_id is None:
                 continue
             media = project.find_media(clip.media_id)
             if media is None or media.transcript is None:
                 continue
-            projected.extend(project_clip(clip, media, project.rate, track.id))
+            yield from project_clip(clip, media, project.rate, track.id)
 
-    projected.sort(key=lambda p: (p.start_frame, p.end_frame))
-    yield from projected
+
+def _place_scene(
+    inner: Iterator[ProjectedSubtitle], clip: Clip, rate: FrameRate, track_id: TrackId
+) -> Iterator[ProjectedSubtitle]:
+    """シーンの中の位置を、シーンを置いたクリップの上の位置へ写す
+
+    シーンの中の時刻は ``source_in``（秒）と速度で決まる（描画と同じ決まり）
+    クリップの範囲の外に出る分は切り詰める 字幕は置いたクリップの持ち物として
+    返す 中のクリップはメインのタイムラインに無いので、画面で選べない
+    """
+    # 端数を先にフレームへ落とすと、速度で割ったあとに 1 フレームずれる
+    # 描画（renderer._draw_scene）は秒のまま足してから 1 回だけフレームへ直している
+    scene_start = clip.source_in / rate.frame_duration
+    for subtitle in inner:
+        start = _scene_to_clip_frame(subtitle.start_frame - scene_start, clip, Rounding.FLOOR)
+        end = _scene_to_clip_frame(subtitle.end_frame - scene_start, clip, Rounding.CEIL)
+        if end <= 0 or start >= clip.duration:
+            continue
+        clipped_start = max(0, start)
+        clipped_end = min(clip.duration, max(end, clipped_start + 1))
+        yield replace(
+            subtitle,
+            clip_id=clip.id,
+            track_id=track_id,
+            start_frame=clip.timeline_start + clipped_start,
+            end_frame=clip.timeline_start + clipped_end,
+            clipped_head=subtitle.clipped_head or start < 0,
+            clipped_tail=subtitle.clipped_tail or end > clip.duration,
+        )
+
+
+def _scene_to_clip_frame(scene_frames: Fraction | int, clip: Clip, rounding: Rounding) -> int:
+    elapsed = Fraction(scene_frames) / clip.speed
+    if rounding is Rounding.CEIL:
+        return -((-elapsed.numerator) // elapsed.denominator)
+    return elapsed.numerator // elapsed.denominator
 
 
 def _source_to_clip_frame(

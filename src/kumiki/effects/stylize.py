@@ -9,6 +9,7 @@ YMM4 の配布テンプレートに出てくるものを、同じ効き方にな
 
 from __future__ import annotations
 
+from kumiki.effects.blending import BLEND_FUNCTIONS, BLEND_MODES
 from kumiki.effects.builtin import PRELUDE
 from kumiki.effects.definition import EffectDefinition, registry
 from kumiki.effects.spec import CheckSpec, ColorSpec, SelectSpec, TrackSpec
@@ -166,6 +167,7 @@ uniform float rate;
 uniform bool hard;
 uniform float width_attenuation;
 uniform float shift_attenuation;
+uniform float repeat;
 
 void main() {
     // 横の帯をいくつか選び、左右へずらす 帯と量は rate 回/秒で選び直す
@@ -174,8 +176,11 @@ void main() {
     float height = object_size().y;
     float shift = 0.0;
     int stripes = int(clamp(count, 0.0, 64.0));
+    // 繰り返しは帯の組を別の乱数で何度か選び直して重ねる
+    int rounds = int(clamp(repeat, 1.0, 16.0));
+    for (int round_ = 0; round_ < rounds; ++round_)
     for (int i = 0; i < stripes; ++i) {
-        float salt = float(i) * 3.7 + tick * 11.3;
+        float salt = float(i) * 3.7 + tick * 11.3 + float(round_) * 101.9;
         float fade_width = 1.0 / (1.0 + float(i) * width_attenuation / 100.0);
         float fade_shift = 1.0 / (1.0 + float(i) * shift_attenuation / 100.0);
         float centre = u_object.y + hash(vec2(salt, 1.0)) * height;
@@ -209,15 +214,360 @@ void main() {
     int taps = int(clamp(length_, 0.0, 512.0));
     float coverage = 0.0;
     float where = 0.0;
+    vec3 image = vec3(0.0);
     for (int i = 1; i <= taps; ++i) {
         float t = float(i) / max(float(taps), 1.0);
-        float a = texture(u_texture, v_uv - direction * float(i) / u_size).a;
-        a *= 1.0 - clamp(attenuation / 100.0, 0.0, 1.0) * t;
-        if (a > coverage) { coverage = a; where = t; }
+        vec4 found = texture(u_texture, v_uv - direction * float(i) / u_size);
+        float a = found.a * (1.0 - clamp(attenuation / 100.0, 0.0, 1.0) * t);
+        if (a > coverage) { coverage = a; where = t; image = found.rgb; }
     }
-    vec4 tint = shadow_type == 0 ? color1 : mix(color1, color2, where);
+    // 画像: 絵そのものの色で伸ばす（YMM4 の ShadowType が Image のとき）
+    vec4 tint = shadow_type == 0 ? color1
+        : shadow_type == 2 ? vec4(image, 1.0)
+        : mix(color1, color2, where);
     vec4 shadow = vec4(tint.rgb, tint.a * coverage * clamp(opacity / 100.0, 0.0, 1.0));
     frag_color = over(base, shadow);
+}
+""")
+
+_INNER_SHADOW = _shader(
+    _SRGB
+    + BLEND_FUNCTIONS
+    + """
+uniform float offset_x;
+uniform float offset_y;
+uniform float blur;
+uniform float opacity;
+uniform vec4 color;
+uniform int blend;
+
+void main() {
+    if (u_pass == 0) {
+        // 影は絵の内側で、ずらした絵に隠れない所に落ちる まず横にぼかす
+        // ずらす向きは影が落ちる向き（Y は上が正）
+        vec2 shift = -vec2(offset_x, offset_y) / u_size;
+        float covered = blur1d(u_texture, v_uv + shift, vec2(1.0, 0.0), blur).a;
+        frag_color = vec4(1.0, 1.0, 1.0, 1.0 - covered);
+        return;
+    }
+    float shadow = blur1d(u_texture, v_uv, vec2(0.0, 1.0), blur).a;
+    vec4 base = texture(u_source, v_uv);
+    // 合成は sRGB で行う（YMM4 と同じ）
+    vec3 under = to_srgb(base.rgb);
+    vec3 mixed = blend_colors(blend, under, to_srgb(color.rgb));
+    float amount = clamp(shadow * color.a * opacity * 0.01, 0.0, 1.0);
+    frag_color = vec4(to_linear(mix(under, mixed, amount)), base.a);
+}
+"""
+)
+
+_INNER_HALFTONE = _shader(
+    _SRGB
+    + BLEND_FUNCTIONS
+    + """
+uniform float offset_x;
+uniform float offset_y;
+uniform float blur;
+uniform float opacity;
+uniform vec4 color;
+uniform int blend;
+uniform int grid;
+uniform float spacing;
+uniform float dot_size;
+uniform float strength;
+
+const mat2 TURN = mat2(0.7071, 0.7071, -0.7071, 0.7071);
+
+void main() {
+    if (u_pass == 0) {
+        vec2 shift = -vec2(offset_x, offset_y) / u_size;
+        float covered = blur1d(u_texture, v_uv + shift, vec2(1.0, 0.0), blur).a;
+        frag_color = vec4(1.0, 1.0, 1.0, 1.0 - covered);
+        return;
+    }
+    // 影の濃さを網点の大きさで表す 点の中心で影を読み、濃さの平方根に比例した半径で描く
+    // 濃さ 1 で半径が格子の対角の半分になり、隣の点と重なって隙間なく塗る
+    // 半径は隣のマスまで届くので、周りの 9 マスの点を調べる
+    float pitch = max(spacing, 1.0);
+    vec2 pixel = v_uv * u_size - object_center();
+    vec2 lattice = grid == 0 ? TURN * pixel : pixel;
+    vec2 cell = floor(lattice / pitch);
+    float dotted = 0.0;
+    for (int j = -1; j <= 1; ++j) {
+        for (int i = -1; i <= 1; ++i) {
+            vec2 centre = (cell + vec2(i, j) + 0.5) * pitch;
+            vec2 at = grid == 0 ? transpose(TURN) * centre : centre;
+            vec2 uv = (at + object_center()) / u_size;
+            float amount = blur1d(u_texture, uv, vec2(0.0, 1.0), blur).a;
+            float reach = pitch * 0.7072 * sqrt(max(amount, 0.0)) * dot_size / 100.0;
+            float edge = clamp(reach - length(lattice - centre) + 0.5, 0.0, 1.0);
+            dotted = max(dotted, edge);
+        }
+    }
+    float shadow = blur1d(u_texture, v_uv, vec2(0.0, 1.0), blur).a;
+    float halftone = mix(shadow, dotted, clamp(strength / 100.0, 0.0, 1.0));
+    vec4 base = texture(u_source, v_uv);
+    vec3 under = to_srgb(base.rgb);
+    vec3 mixed = blend_colors(blend, under, to_srgb(color.rgb));
+    float amount = clamp(halftone * color.a * opacity * 0.01, 0.0, 1.0);
+    frag_color = vec4(to_linear(mix(under, mixed, amount)), base.a);
+}
+"""
+)
+
+_INNER_OUTLINE = _shader(
+    _SRGB
+    + BLEND_FUNCTIONS
+    + """
+uniform float thickness;
+uniform float blur;
+uniform float opacity;
+uniform vec4 color;
+uniform int blend;
+uniform bool outline_only;
+uniform bool angular;
+
+void main() {
+    if (u_pass == 0) {
+        // 縁から thickness 以内の内側を帯にする 角ばらせるなら正方形、そうでなければ円で削る
+        float t = min(max(thickness, 0.0), 256.0);
+        float inside = texture(u_texture, v_uv).a;
+        float kept = inside;
+        if (t >= 0.5) {
+            int rings = int(ceil(min(t, 64.0)));
+            for (int ring = 1; ring <= rings; ++ring) {
+                float r = t * float(ring) / float(rings);
+                for (int k = 0; k < 32; ++k) {
+                    float a = PI * 2.0 * float(k) / 32.0;
+                    vec2 d = vec2(cos(a), sin(a));
+                    if (angular) d /= max(abs(d.x), abs(d.y));
+                    kept = min(kept, texture(u_texture, v_uv + d * r / u_size).a);
+                }
+            }
+        }
+        frag_color = vec4(1.0, 1.0, 1.0, clamp(inside - kept, 0.0, 1.0));
+        return;
+    }
+    if (u_pass == 1) {
+        frag_color = blur1d(u_texture, v_uv, vec2(1.0, 0.0), blur);
+        return;
+    }
+    float band = blur1d(u_texture, v_uv, vec2(0.0, 1.0), blur).a;
+    vec4 base = texture(u_source, v_uv);
+    // ぼかした帯は絵の外へはみ出さない 内側の縁取りなので
+    float amount = clamp(band * base.a * color.a * opacity * 0.01, 0.0, 1.0);
+    if (outline_only) {
+        frag_color = vec4(color.rgb, amount);
+        return;
+    }
+    vec3 under = to_srgb(base.rgb);
+    vec3 mixed = blend_colors(blend, under, to_srgb(color.rgb));
+    frag_color = vec4(to_linear(mix(under, mixed, amount / max(base.a, 1e-4))), base.a);
+}
+"""
+)
+
+_SHAPE_MASK = _shader("""
+uniform int shape;
+uniform float width;
+uniform float height;
+uniform float corner;
+uniform float span;
+uniform float center_x;
+uniform float center_y;
+uniform float rotation;
+uniform float blur;
+uniform bool invert;
+
+float sd_box(vec2 p, vec2 half_size, float radius) {
+    vec2 q = abs(p) - (half_size - radius);
+    return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;
+}
+
+// 頂点を上に向けた正三角形 外接円の半径 r
+float sd_triangle(vec2 p, float r) {
+    const float k = sqrt(3.0);
+    p.y = -p.y - r * 0.25;
+    float half_side = r * k * 0.5;
+    p.x = abs(p.x) - half_side;
+    p.y = p.y + half_side / k;
+    if (p.x + k * p.y > 0.0) p = vec2(p.x - k * p.y, -k * p.x - p.y) / 2.0;
+    p.x -= clamp(p.x, -2.0 * half_side, 0.0);
+    return -length(p) * sign(p.y);
+}
+
+void main() {
+    // 図形の当たり判定は Y 下向きで書いてある（扇や矢印の向きがそのまま読める）
+    // 設定の中心はほかのエフェクトと同じ Y 上向きなので、ここで符号を合わせる
+    vec2 p = v_uv * u_size - object_center();
+    p.y = -p.y;
+    p -= vec2(center_x, -center_y);
+    float r = radians(-rotation);
+    p = mat2(cos(r), sin(r), -sin(r), cos(r)) * p;
+    vec2 half_size = max(vec2(width, height) * 0.5, vec2(0.5));
+
+    float d;
+    if (shape == 0) {
+        d = -1.0e6;
+    } else if (shape == 1) {
+        d = (length(p / half_size) - 1.0) * min(half_size.x, half_size.y);
+    } else if (shape == 2) {
+        d = sd_box(p, half_size, clamp(corner, 0.0, min(half_size.x, half_size.y)));
+    } else if (shape == 3) {
+        // 扇 上を 0 として反時計回りに span 度ぶん（YMM4 の CenterAngle）
+        d = (length(p / half_size) - 1.0) * min(half_size.x, half_size.y);
+        float theta = degrees(atan(p.x, -p.y));
+        if (theta > 0.0) theta -= 360.0;
+        if (theta < -clamp(span, 0.0, 360.0)) d = max(d, 1.0e6);
+    } else {
+        d = sd_triangle(p, min(half_size.x, half_size.y));
+    }
+
+    float edge = max(blur, 0.75);
+    // ぼかしは縁の前後に広げる 幅は YMM4 の絵に近づけて 2 倍にした
+    float inside = 1.0 - smoothstep(-edge, edge, d);
+    if (invert) inside = 1.0 - inside;
+    vec4 color = texture(u_texture, v_uv);
+    frag_color = vec4(color.rgb, color.a * inside);
+}
+""")
+
+_COPY_REVERSE = _shader("""
+uniform int position;
+uniform float distance;
+uniform bool flip_horizontal;
+uniform bool flip_vertical;
+uniform bool centering;
+
+// 絵の範囲の中で左右や上下を入れ替えて読む
+vec4 mirrored(vec2 pixel, vec2 center) {
+    if (flip_horizontal) pixel.x = 2.0 * center.x - pixel.x;
+    if (flip_vertical) pixel.y = 2.0 * center.y - pixel.y;
+    return sample_pixel(pixel);
+}
+
+void main() {
+    // 並べる向き 0 右 1 左 2 下 3 上（画面の見た目 GL の Y は上が正）
+    vec2 size = object_size();
+    vec2 step_ = position == 0 ? vec2(size.x + distance, 0.0)
+        : position == 1 ? vec2(-(size.x + distance), 0.0)
+        : position == 2 ? vec2(0.0, -(size.y + distance))
+        : vec2(0.0, size.y + distance);
+    // 中央に寄せると、元と写しの組の真ん中が元の中心に来る
+    vec2 base_shift = centering ? -step_ * 0.5 : vec2(0.0);
+    vec2 pixel = v_uv * u_size;
+    vec4 original = sample_pixel(pixel - base_shift);
+    vec4 copy = mirrored(pixel - base_shift - step_, object_center());
+    frag_color = over(original, copy);
+}
+""")
+
+_FILL_BACKGROUND = _shader("""
+uniform vec4 color;
+uniform float opacity;
+uniform float corner;
+uniform float margin_top;
+uniform float margin_bottom;
+uniform float margin_left;
+uniform float margin_right;
+uniform bool background_only;
+
+void main() {
+    // 絵の範囲を上下左右に広げた角丸の四角を、絵の後ろに敷く（負の値なら狭める）
+    vec2 pixel = v_uv * u_size;
+    vec2 low = u_object.xy - vec2(margin_left, margin_bottom);
+    vec2 high = u_object.zw + vec2(margin_right, margin_top);
+    vec2 center = (low + high) * 0.5;
+    vec2 half_size = max((high - low) * 0.5, vec2(0.0));
+    float radius = clamp(corner, 0.0, min(half_size.x, half_size.y));
+    vec2 q = abs(pixel - center) - (half_size - radius);
+    float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;
+    float inside = 1.0 - smoothstep(-0.5, 0.5, d);
+    vec4 plate = vec4(color.rgb, color.a * inside * clamp(opacity * 0.01, 0.0, 1.0));
+    vec4 base = texture(u_texture, v_uv);
+    frag_color = background_only ? plate : over(base, plate);
+}
+""")
+
+_BINARIZE = _shader(
+    _SRGB
+    + """
+uniform float threshold;
+uniform bool invert;
+uniform bool keep_color;
+
+void main() {
+    // 明るさ（sRGB の 3 色の平均）が threshold% 以上の所だけ残す 残した所は白か元の色
+    vec4 base = texture(u_texture, v_uv);
+    vec3 srgb = to_srgb(base.rgb);
+    bool on = (srgb.r + srgb.g + srgb.b) / 3.0 * 100.0 >= threshold;
+    if (invert) on = !on;
+    vec3 rgb = keep_color ? base.rgb : vec3(1.0);
+    frag_color = vec4(rgb, on ? base.a : 0.0);
+}
+"""
+)
+
+_COLOR_KEY = _shader(
+    _SRGB
+    + """
+uniform vec4 key_color;
+uniform float tolerance;
+uniform bool feather;
+uniform bool invert;
+
+void main() {
+    // 指定の色に近い所を抜く 近さは sRGB の 3 色の差の大きさ（0〜100）
+    vec4 base = texture(u_texture, v_uv);
+    float distance = length(to_srgb(base.rgb) - to_srgb(key_color.rgb)) / sqrt(3.0) * 100.0;
+    float keep = feather
+        ? smoothstep(tolerance * 0.5, max(tolerance, 0.0001), distance)
+        : step(tolerance, distance);
+    if (invert) keep = 1.0 - keep;
+    frag_color = vec4(base.rgb, base.a * keep);
+}
+"""
+)
+
+_LINEAR_TRANSFER = _shader(
+    _SRGB
+    + """
+uniform float red_slope;
+uniform float red_intercept;
+uniform float green_slope;
+uniform float green_intercept;
+uniform float blue_slope;
+uniform float blue_intercept;
+uniform float alpha_slope;
+uniform float alpha_intercept;
+
+void main() {
+    // 色ごとに 傾き% × 値 + 切片% （sRGB で計算する）
+    vec4 base = texture(u_texture, v_uv);
+    vec3 c = to_srgb(base.rgb);
+    vec3 slope = vec3(red_slope, green_slope, blue_slope) * 0.01;
+    vec3 intercept = vec3(red_intercept, green_intercept, blue_intercept) * 0.01;
+    vec3 rgb = clamp(c * slope + intercept, 0.0, 1.0);
+    float a = clamp(base.a * alpha_slope * 0.01 + alpha_intercept * 0.01, 0.0, 1.0);
+    frag_color = vec4(to_linear(rgb), a);
+}
+"""
+)
+
+_BORDER_BLUR = _shader("""
+uniform float blur;
+
+void main() {
+    // 縁を内側へ向けて透明にする 不透明度をぼかし、半分まで下がった所で消える
+    vec2 direction = u_pass == 0 ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+    if (u_pass == 0) {
+        float a = blur1d(u_texture, v_uv, direction, blur).a;
+        frag_color = vec4(1.0, 1.0, 1.0, a);
+        return;
+    }
+    float softened = blur1d(u_texture, v_uv, direction, blur).a;
+    vec4 base = texture(u_source, v_uv);
+    frag_color = vec4(base.rgb, base.a * smoothstep(0.5, 1.0, softened));
 }
 """)
 
@@ -445,6 +795,7 @@ def register_stylize_effects() -> None:
                 CheckSpec("hard", "境目をぼかさない", False),
                 TrackSpec("width_attenuation", "幅の減衰", 0, 1000, 10, unit="%"),
                 TrackSpec("shift_attenuation", "ずれの減衰", 0, 1000, 50, unit="%"),
+                TrackSpec("repeat", "重ねる回数", 1, 16, 1, step=1),
             ),
             fragment_shader=_STRIPE_GLITCH,
         ),
@@ -460,7 +811,7 @@ def register_stylize_effects() -> None:
                 SelectSpec(
                     "shadow_type",
                     "塗り",
-                    (("solid", "単色"), ("gradient", "グラデーション")),
+                    (("solid", "単色"), ("gradient", "グラデーション"), ("image", "絵の色")),
                     "solid",
                 ),
                 ColorSpec("color1", "色 1", (0.0, 0.0, 0.0, 1.0)),
@@ -531,6 +882,166 @@ def register_stylize_effects() -> None:
             category="色",
             parameters=(ColorSpec("color", "色", (1.0, 0.9, 0.7, 1.0)),),
             fragment_shader=_TINT,
+        ),
+        EffectDefinition(
+            kind="inner_shadow",
+            label="内側の影",
+            category="装飾",
+            parameters=(
+                TrackSpec("offset_x", "X", -2000, 2000, 6, step=1, unit="px"),
+                TrackSpec("offset_y", "Y", -2000, 2000, -6, step=1, unit="px"),
+                TrackSpec("blur", "ぼかし", 0, 96, 0, unit="px"),
+                TrackSpec("opacity", "濃さ", 0, 100, 100, unit="%"),
+                ColorSpec("color", "色", (0.0, 0.0, 0.0, 1.0)),
+                SelectSpec("blend", "合成", BLEND_MODES, "normal"),
+            ),
+            fragment_shader=_INNER_SHADOW,
+            passes=2,
+        ),
+        EffectDefinition(
+            kind="inner_halftone",
+            label="網点の内側の影",
+            category="装飾",
+            parameters=(
+                TrackSpec("offset_x", "X", -2000, 2000, 6, step=1, unit="px"),
+                TrackSpec("offset_y", "Y", -2000, 2000, -6, step=1, unit="px"),
+                TrackSpec("blur", "ぼかし", 0, 96, 0, unit="px"),
+                TrackSpec("opacity", "濃さ", 0, 100, 100, unit="%"),
+                ColorSpec("color", "色", (0.0, 0.0, 0.0, 1.0)),
+                SelectSpec("blend", "合成", BLEND_MODES, "normal"),
+                SelectSpec("grid", "並び", (("rhombus", "菱形"), ("square", "正方形")), "rhombus"),
+                TrackSpec("spacing", "間隔", 1, 200, 10, step=1, unit="px"),
+                TrackSpec("dot_size", "点の大きさ", 0, 200, 100, unit="%"),
+                TrackSpec("strength", "強さ", 0, 100, 100, unit="%"),
+            ),
+            fragment_shader=_INNER_HALFTONE,
+            passes=2,
+        ),
+        EffectDefinition(
+            kind="inner_outline",
+            label="内側の縁取り",
+            category="装飾",
+            parameters=(
+                TrackSpec("thickness", "太さ", 0, 256, 4, step=1, unit="px"),
+                TrackSpec("blur", "ぼかし", 0, 96, 0, unit="px"),
+                TrackSpec("opacity", "濃さ", 0, 100, 100, unit="%"),
+                ColorSpec("color", "色", (1.0, 1.0, 1.0, 1.0)),
+                SelectSpec("blend", "合成", BLEND_MODES, "normal"),
+                CheckSpec("outline_only", "縁だけ残す", False),
+                CheckSpec("angular", "角ばらせる", False),
+            ),
+            fragment_shader=_INNER_OUTLINE,
+            passes=3,
+        ),
+        EffectDefinition(
+            kind="shape_mask",
+            label="図形で切り抜く",
+            category="形",
+            parameters=(
+                SelectSpec(
+                    "shape",
+                    "図形",
+                    (
+                        ("background", "全体"),
+                        ("ellipse", "楕円"),
+                        ("rect", "四角"),
+                        ("fan", "扇"),
+                        ("triangle", "三角"),
+                    ),
+                    "ellipse",
+                ),
+                TrackSpec("width", "幅", 0, 20000, 400, step=1, unit="px"),
+                TrackSpec("height", "高さ", 0, 20000, 400, step=1, unit="px"),
+                TrackSpec("corner", "角の丸み", 0, 10000, 0, step=1, unit="px"),
+                TrackSpec("span", "扇の角度", 0, 360, 360, unit="度"),
+                TrackSpec("center_x", "X", -20000, 20000, 0, step=1, unit="px"),
+                TrackSpec("center_y", "Y（下が正）", -20000, 20000, 0, step=1, unit="px"),
+                TrackSpec("rotation", "回転", -3600, 3600, 0, unit="度"),
+                TrackSpec("blur", "ぼかし", 0, 1000, 0, unit="px"),
+                CheckSpec("invert", "反転", False),
+            ),
+            fragment_shader=_SHAPE_MASK,
+        ),
+        EffectDefinition(
+            kind="copy_reverse",
+            label="反転コピー",
+            category="形",
+            parameters=(
+                SelectSpec(
+                    "position",
+                    "並べる向き",
+                    (("right", "右"), ("left", "左"), ("bottom", "下"), ("top", "上")),
+                    "right",
+                ),
+                TrackSpec("distance", "間隔", -4000, 4000, 0, step=1, unit="px"),
+                CheckSpec("flip_horizontal", "左右を反転", True),
+                CheckSpec("flip_vertical", "上下を反転", False),
+                CheckSpec("centering", "中央に寄せる", True),
+            ),
+            fragment_shader=_COPY_REVERSE,
+        ),
+        EffectDefinition(
+            kind="fill_background",
+            label="背景を塗る",
+            category="装飾",
+            parameters=(
+                ColorSpec("color", "色", (1.0, 1.0, 1.0, 1.0)),
+                TrackSpec("opacity", "濃さ", 0, 100, 100, unit="%"),
+                TrackSpec("corner", "角の丸み", 0, 2000, 0, step=1, unit="px"),
+                TrackSpec("margin_top", "上の余白", -4000, 4000, 10, step=1, unit="px"),
+                TrackSpec("margin_bottom", "下の余白", -4000, 4000, 10, step=1, unit="px"),
+                TrackSpec("margin_left", "左の余白", -4000, 4000, 10, step=1, unit="px"),
+                TrackSpec("margin_right", "右の余白", -4000, 4000, 10, step=1, unit="px"),
+                CheckSpec("background_only", "背景だけ", False),
+            ),
+            fragment_shader=_FILL_BACKGROUND,
+        ),
+        EffectDefinition(
+            kind="binarize",
+            label="2 値化",
+            category="色",
+            parameters=(
+                TrackSpec("threshold", "しきい値", 0, 100, 50, unit="%"),
+                CheckSpec("invert", "反転", False),
+                CheckSpec("keep_color", "元の色を残す", False),
+            ),
+            fragment_shader=_BINARIZE,
+        ),
+        EffectDefinition(
+            kind="color_key",
+            label="色で抜く",
+            category="合成",
+            parameters=(
+                ColorSpec("key_color", "抜く色", (0.0, 0.0, 0.0, 1.0)),
+                TrackSpec("tolerance", "許容範囲", 0, 100, 10, unit="%"),
+                CheckSpec("feather", "境界をぼかす", True),
+                CheckSpec("invert", "反転", False),
+            ),
+            fragment_shader=_COLOR_KEY,
+        ),
+        EffectDefinition(
+            kind="linear_transfer",
+            label="色の直線変換",
+            category="色",
+            parameters=(
+                TrackSpec("red_slope", "赤の傾き", -1000, 1000, 100, unit="%"),
+                TrackSpec("red_intercept", "赤の切片", -100, 100, 0, unit="%"),
+                TrackSpec("green_slope", "緑の傾き", -1000, 1000, 100, unit="%"),
+                TrackSpec("green_intercept", "緑の切片", -100, 100, 0, unit="%"),
+                TrackSpec("blue_slope", "青の傾き", -1000, 1000, 100, unit="%"),
+                TrackSpec("blue_intercept", "青の切片", -100, 100, 0, unit="%"),
+                TrackSpec("alpha_slope", "不透明度の傾き", -1000, 1000, 100, unit="%"),
+                TrackSpec("alpha_intercept", "不透明度の切片", -100, 100, 0, unit="%"),
+            ),
+            fragment_shader=_LINEAR_TRANSFER,
+        ),
+        EffectDefinition(
+            kind="border_blur",
+            label="縁のぼかし",
+            category="ぼかし",
+            parameters=(TrackSpec("blur", "ぼかし", 0, 96, 10, unit="px"),),
+            fragment_shader=_BORDER_BLUR,
+            passes=2,
         ),
         EffectDefinition(
             kind="edge_detect",

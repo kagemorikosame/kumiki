@@ -95,17 +95,22 @@ class TestShaderBlends:
     def test_subtract_never_goes_negative(self, gl_context: OffscreenGLContext) -> None:
         # 負の値が残ると、次に加算したときに下の絵が暗く沈む
         assert _mix(gl_context, 60, 200, BlendMode.SUBTRACT) == 0
-        expected = _encoded(_linear(200) - _linear(60))
-        assert abs(_mix(gl_context, 200, 60, BlendMode.SUBTRACT) - expected) <= 1
+        # 混ぜる式は符号化した値のまま計算する（AviUtl と YMM4 に合わせた）
+        assert abs(_mix(gl_context, 200, 60, BlendMode.SUBTRACT) - (200 - 60)) <= 1
+
+    def test_the_modes_mix_in_srgb(self, gl_context: OffscreenGLContext) -> None:
+        # リニアで混ぜると、乗算やスクリーンの中間が配布物と違う明るさになる
+        assert abs(_mix(gl_context, 200, 100, BlendMode.MULTIPLY) - round(200 * 100 / 255)) <= 2
+        screen = 255 - (255 - 200) * (255 - 100) / 255
+        assert abs(_mix(gl_context, 200, 100, BlendMode.SCREEN) - round(screen)) <= 2
+        assert abs(_mix(gl_context, 200, 100, BlendMode.ADD) - 255) <= 1
 
     def test_overlay_follows_the_backdrop(self, gl_context: OffscreenGLContext) -> None:
         # 暗い下地では乗算、明るい下地ではスクリーンになる 反対にすると
         # コントラストを強めるはずが弱める
-        dark, light = _linear(40), _linear(230)
-        above = _linear(180)
-        assert abs(_mix(gl_context, 40, 180, BlendMode.OVERLAY) - _encoded(2 * dark * above)) <= 1
-        screen = 1 - 2 * (1 - light) * (1 - above)
-        assert abs(_mix(gl_context, 230, 180, BlendMode.OVERLAY) - _encoded(screen)) <= 1
+        assert abs(_mix(gl_context, 40, 180, BlendMode.OVERLAY) - round(2 * 40 * 180 / 255)) <= 2
+        screen = 255 - 2 * (255 - 230) * (255 - 180) / 255
+        assert abs(_mix(gl_context, 230, 180, BlendMode.OVERLAY) - round(screen)) <= 2
 
     def test_every_mode_has_a_way_to_draw(self, gl_context: OffscreenGLContext) -> None:
         # 一覧にあるのに描き方が無いと、選んでも通常と同じに見える
@@ -113,10 +118,18 @@ class TestShaderBlends:
         pairs = ((100, 150), (150, 100))
         normal = [_mix(gl_context, below, above, BlendMode.NORMAL) for below, above in pairs]
         for mode in BlendMode.ALL:
-            if mode == BlendMode.NORMAL:
+            # 輝度は上の明るさを下の色へ移す 灰色どうしでは上の色そのものになり、通常と重なる
+            if mode in (BlendMode.NORMAL, BlendMode.LUMINOSITY):
                 continue
             mixed = [_mix(gl_context, below, above, mode) for below, above in pairs]
             assert mixed != normal, f"{mode} が通常と同じ"
+
+    def test_extended_modes_mix_in_srgb(self, gl_context: OffscreenGLContext) -> None:
+        # YMM4 の合成は sRGB のまま混ぜる 差の絶対値なら符号化した値の差がそのまま出る
+        assert abs(_mix(gl_context, 200, 50, BlendMode.DIFFERENCE) - 150) <= 1
+        # ハードミックスは足して 1 を超えるかどうかで白か黒
+        assert _mix(gl_context, 200, 100, BlendMode.HARD_MIX) >= 254
+        assert _mix(gl_context, 100, 100, BlendMode.HARD_MIX) <= 1
 
 
 class TestProjection:

@@ -16,6 +16,7 @@ from dataclasses import dataclass
 import numpy as np
 from OpenGL import GL
 
+from kumiki.effects.blending import BLEND_FUNCTIONS, blend_index
 from kumiki.engine.gpu.glutil import (
     FULL_RECT,
     IDENTITY,
@@ -74,12 +75,26 @@ void main() {
 """
 
 
+#: 1 色で塗る 背景を敷くときに使う（色は事前乗算で渡す）
+_FILL_FRAGMENT_SHADER = """
+#version 430 core
+in vec2 v_uv;
+out vec4 frag_color;
+uniform vec4 u_color;
+
+void main() {
+    frag_color = u_color;
+}
+"""
+
+
 #: 下の絵を読んで混ぜる合成 ``glBlendFunc`` の係数では式が書けないもの
 #: 描く直前に下の絵を別のバッファへ写し、シェーダの中で混ぜる
 #:
 #: 下の絵（キャンバス）は事前乗算アルファで溜まっている（``SRC_ALPHA`` と
 #: ``ONE_MINUS_SRC_ALPHA`` で重ねてきた結果） 混ぜる式は W3C の合成の定義どおり
-_BLEND_FRAGMENT_SHADER = """
+_BLEND_FRAGMENT_SHADER = (
+    """
 #version 430 core
 in vec2 v_uv;
 out vec4 frag_color;
@@ -90,16 +105,20 @@ uniform float u_opacity;
 uniform int u_mode;
 uniform bool u_premultiplied;
 
+vec3 srgb_encode(vec3 c) {
+    c = clamp(c, 0.0, 1.0);
+    return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+vec3 srgb_decode(vec3 c) {
+    return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
+}
+"""
+    + BLEND_FUNCTIONS
+    + """
+// 混ぜる式は符号化した値（sRGB）で計算する AviUtl も YMM4 もそうしている
 vec3 blend(vec3 below, vec3 above) {
-    if (u_mode == 0) {
-        // オーバーレイ 下が暗いところは乗算、明るいところはスクリーン
-        return mix(2.0 * below * above,
-                   1.0 - 2.0 * (1.0 - below) * (1.0 - above),
-                   step(0.5, below));
-    }
-    if (u_mode == 1) return max(below, above);
-    if (u_mode == 2) return min(below, above);
-    return max(below - above, 0.0);
+    vec3 mixed = blend_colors(u_mode - 100, srgb_encode(below), srgb_encode(above));
+    return srgb_decode(mixed);
 }
 
 void main() {
@@ -110,6 +129,15 @@ void main() {
     float below_alpha = backdrop.a;
     vec3 below = below_alpha > 0.0001 ? backdrop.rgb / below_alpha : vec3(0.0);
 
+    if (u_mode == 300) {
+        // 黒の上に置いた絵どうしを、符号化した値のまま混ぜる（YMM4 の場面切り替えのフェード）
+        // 結果は黒を含んだ色なので不透明で書く
+        vec3 lower = srgb_encode(below) * below_alpha;
+        vec3 upper = srgb_encode(source.rgb) * clamp(source.a, 0.0, 1.0);
+        frag_color = vec4(srgb_decode(mix(lower, upper, clamp(u_opacity, 0.0, 1.0))), 1.0);
+        return;
+    }
+
     vec3 mixed = blend(below, source.rgb);
     vec3 color = above_alpha * (1.0 - below_alpha) * source.rgb
                + above_alpha * below_alpha * mixed
@@ -117,6 +145,7 @@ void main() {
     frag_color = vec4(color, above_alpha + below_alpha * (1.0 - above_alpha));
 }
 """
+)
 
 
 class BlendMode:
@@ -136,15 +165,62 @@ class BlendMode:
     DARKEN = "darken"
     SUBTRACT = "subtract"
 
-    ALL = (NORMAL, ADD, SUBTRACT, MULTIPLY, SCREEN, OVERLAY, LIGHTEN, DARKEN)
+    #: YMM4 の合成 式は塗りのエフェクト（:mod:`kumiki.effects.blending`）と同じ
+    SOFT_LIGHT = "soft_light"
+    HARD_LIGHT = "hard_light"
+    COLOR_DODGE = "color_dodge"
+    COLOR_BURN = "color_burn"
+    LIGHTER_COLOR = "lighter_color"
+    DARKER_COLOR = "darker_color"
+    DIFFERENCE = "difference"
+    EXCLUSION = "exclusion"
+    LINEAR_BURN = "linear_burn"
+    LINEAR_LIGHT = "linear_light"
+    VIVID_LIGHT = "vivid_light"
+    PIN_LIGHT = "pin_light"
+    HARD_MIX = "hard_mix"
+    DIVISION = "division"
+    HUE = "hue"
+    SATURATION = "saturation"
+    COLOR = "color"
+    LUMINOSITY = "luminosity"
+    EXTENDED = (
+        SOFT_LIGHT,
+        HARD_LIGHT,
+        COLOR_DODGE,
+        COLOR_BURN,
+        LIGHTER_COLOR,
+        DARKER_COLOR,
+        DIFFERENCE,
+        EXCLUSION,
+        LINEAR_BURN,
+        LINEAR_LIGHT,
+        VIVID_LIGHT,
+        PIN_LIGHT,
+        HARD_MIX,
+        DIVISION,
+        HUE,
+        SATURATION,
+        COLOR,
+        LUMINOSITY,
+    )
+
+    ALL = (NORMAL, ADD, SUBTRACT, MULTIPLY, SCREEN, OVERLAY, LIGHTEN, DARKEN, *EXTENDED)
+    #: 描いた絵の不透明度で、下の絵を切り抜く（色は使わない） 選べる合成ではなく、
+    #: クリップを下のクリップの形で切り抜くときにレンダラが使う
+    MASK = "mask"
+    #: 黒の上に置いた 2 枚の絵を sRGB の値で混ぜる 不透明度が混ぜる割合 選べる合成ではなく、
+    #: 場面切り替えのフェードでレンダラが使う
+    SRGB_MIX = "srgb_mix"
 
 
 #: シェーダで混ぜる合成と、シェーダに渡す番号
 _SHADER_BLENDS: dict[str, int] = {
-    BlendMode.OVERLAY: 0,
-    BlendMode.LIGHTEN: 1,
-    BlendMode.DARKEN: 2,
-    BlendMode.SUBTRACT: 3,
+    # 通常以外はシェーダの中で混ぜる 係数（glBlendFunc）ではリニアの値で混ざるが、
+    # AviUtl も YMM4（Direct2D）も符号化した値（sRGB）のまま混ぜる
+    # 乗算を係数で書くと、下に何も無い所（透明）で絵ごと消えるという違いもある
+    **{mode: 100 + blend_index(mode) for mode in BlendMode.ALL if mode != BlendMode.NORMAL},
+    BlendMode.SRGB_MIX: 300,
 }
 
 
@@ -152,9 +228,6 @@ _SHADER_BLENDS: dict[str, int] = {
 #: どれもストレートアルファ（非乗算済み）前提
 _BLEND_FUNCS: dict[str, tuple[int, int]] = {
     BlendMode.NORMAL: (GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA),
-    BlendMode.ADD: (GL.GL_SRC_ALPHA, GL.GL_ONE),
-    BlendMode.MULTIPLY: (GL.GL_DST_COLOR, GL.GL_ONE_MINUS_SRC_ALPHA),
-    BlendMode.SCREEN: (GL.GL_ONE_MINUS_DST_COLOR, GL.GL_ONE),
 }
 
 
@@ -343,6 +416,7 @@ class Compositor:
         self._mapped_program = Program(MAPPED_VERTEX_SHADER, _FRAGMENT_SHADER)
         self._mapped_blend_program = Program(MAPPED_VERTEX_SHADER, _BLEND_FRAGMENT_SHADER)
         self._resolve_program = Program(VERTEX_SHADER, _RESOLVE_FRAGMENT_SHADER)
+        self._fill_program = Program(VERTEX_SHADER, _FILL_FRAGMENT_SHADER)
         self._quad = ScreenQuad()
         self._canvas = Framebuffer(width, height)
         # シェーダで混ぜる合成のとき、下の絵を写しておく先 描いている最中の
@@ -380,6 +454,30 @@ class Compositor:
         バッファへ写すこと
         """
         return self._canvas
+
+    def underlay(
+        self,
+        color: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0),
+        target: Framebuffer | None = None,
+    ) -> None:
+        """重ね終わった絵の下へ色を敷く 透明な所だけがその色になる（リニア値）
+
+        合成は透明な下地の上で行い、最後に背景を敷く 不透明な黒の上で合成すると、
+        乗算などが下に何も無い所でも黒と混ざり、YMM4 と見え方が変わる
+        ``target`` を渡すと、キャンバスの代わりにそのバッファ（事前乗算アルファ）へ敷く
+        """
+        (target or self._canvas).bind()
+        GL.glEnable(GL.GL_BLEND)
+        GL.glBlendFuncSeparate(
+            GL.GL_ONE_MINUS_DST_ALPHA, GL.GL_ONE, GL.GL_ONE_MINUS_DST_ALPHA, GL.GL_ONE
+        )
+        self._fill_program.use()
+        self._fill_program.set_vec4("u_rect", FULL_RECT)
+        self._fill_program.set_bool("u_flip", False)
+        red, green, blue, alpha = color
+        self._fill_program.set_vec4("u_color", (red * alpha, green * alpha, blue * alpha, alpha))
+        self._quad.draw()
+        self._set_blend(BlendMode.NORMAL)
 
     def begin(self, background: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0)) -> None:
         """合成を始める 背景色はリニア値で指定する"""
@@ -587,10 +685,15 @@ class Compositor:
             self._mapped_program,
             self._mapped_blend_program,
             self._resolve_program,
+            self._fill_program,
         ):
             program.release()
 
     def _set_blend(self, mode: str) -> None:
+        if mode == BlendMode.MASK:
+            # 色も不透明度も、描いた絵の不透明度を掛けるだけ
+            GL.glBlendFuncSeparate(GL.GL_ZERO, GL.GL_SRC_ALPHA, GL.GL_ZERO, GL.GL_SRC_ALPHA)
+            return
         source, destination = _BLEND_FUNCS.get(mode, _BLEND_FUNCS[BlendMode.NORMAL])
         GL.glBlendFuncSeparate(source, destination, GL.GL_ONE, GL.GL_ONE_MINUS_SRC_ALPHA)
 

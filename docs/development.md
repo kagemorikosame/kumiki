@@ -142,6 +142,16 @@ UI の操作も AI の操作も同じ `Command` を発行し、同じ Undo ス�
 過去に変形とマスクだけ逆になっていて、配布エイリアスを描いて初めて気付いた
 新しく座標を扱うものを足すときは、向きをテストで固定する
 
+例外は次の 2 つだけで、どちらも**表示名に「下が正」と書く**
+
+| エフェクト | 設定 | なぜ |
+| --- | --- | --- |
+| `brush_fill` | 模様の中心・ずらし・ノイズの位置と速さ | YMM4 のブラシの値をそのまま持つ |
+| `particles` | 放つ位置 Y | YMM4 のパーティクルの値をそのまま持つ |
+
+どちらも「YMM4 の設定をそのまま渡して同じ絵になる」ことを優先している
+シェーダの中で画面の向きへ直すので、写す側で反転してはいけない
+
 ---
 
 ## 5. 互換層は実物で確かめる
@@ -163,6 +173,30 @@ AviUtl / YMM4 の読み込みは、**実際に配布されているファイル�
 
 **配布物そのものはリポジトリに入れない** 作者ごとに再配布の条件が違う
 `tests/fixtures/ymm4` に置けばテストが拾い、無ければ飛ばす
+
+### 値の意味は本体に描かせて読む
+
+JSON のキーの名前から意味を推し量ると必ず外れる（`InOutZoom` の `Value` は
+「縮める量」ではなく「隠れたときの大きさ」だった） 2 つの道具でそれを潰す
+
+- `tools/ymm4_probes.py` … 値を 1 つずつ変えたテンプレートを作る
+  （`第 1〜5 弾` を引数で選ぶ: `first` `second` `third` `fourth` `fifth`）
+- `tools/ymm4_compare.py` … テンプレートを時間差で並べた `.ymmp` を作り（`build`）、
+  YMM4 が書き出した動画と Kumiki の絵をフレームごとに比べる（`compare`）
+
+```
+.venv\Scripts\python.exe tools\ymm4_probes.py .work\probe5\probes.ymmt fifth
+.venv\Scripts\python.exe tools\ymm4_compare.py --work .work\probe5 build .work\probe5\probes.ymmt
+:: YMM4 で .work\probe5\compare.ymmp を開き、.work\probe5\ymm4.mp4 へ書き出す
+.venv\Scripts\python.exe tools\ymm4_compare.py --work .work\probe5 compare
+```
+
+`compare` は `report.html` と、`ymm4 | Kumiki | 差` を並べた画像を `images/` に書く
+差は 480x270 に縮めた平均なので、細い縁の違いは数に出にくい 数字だけでなく絵も見る
+
+YMM4 が読み込みで断った設定（列挙型の名前の間違いなど）は、ダイアログが別の窓に
+隠れて見えないことがある そのときは YMM4 を前に出して Ctrl+C を押すと、
+エラーの文面がクリップボードに入る
 
 ---
 
@@ -218,6 +252,21 @@ status を出す（判定は `tools/qodo_gate.py`） main の保護でこれを�
 ことがあるので、そのときも `/agentic_review` で頼み直す
 PR の向き先（base）を変えたときは、変えたあとに書かれた Qodo のコメントだけを数える
 （SHA は同じまま、比べる相手が変わって別の差分になるため） 変えたら頼み直す
+
+気を付けること
+
+- **Qodo は push のたびに自動で見直す** そのとき、指摘より先にまとめのコメントを書き換える
+  ので、`Qodo review` が通った数十秒後に新しい指摘が届くことがある マージの前に、
+  最後の push より後に届いた指摘が無いかを見る
+- 同じ PR の判定が重なると、新しい実行が古い実行を取り消す（古い判定で新しい結果を
+  上書きしないため） 取り消された実行はチェックの一覧に赤く残るが、判定の status は
+  最後の実行が書くので気にしなくてよい
+- **Git Bash から `/agentic_review` を書くときは `MSYS_NO_PATHCONV=1` を付ける** 付けないと
+  パスの変換で `C:/Program Files/Git/agentic_review` と書き込まれ、Qodo に届かない
+
+```bash
+MSYS_NO_PATHCONV=1 gh pr comment <番号> --body "/agentic_review"
+```
 
 Qodo が止まった、無料枠が切れたなどで返事が来ないときは、マージが止まったままになる
 その場合だけ、理由を書いて手で通す（管理者の操作 何を確かめたかを PR に残す）

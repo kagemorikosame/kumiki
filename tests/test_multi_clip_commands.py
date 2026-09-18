@@ -16,6 +16,7 @@ from kumiki.core.commands import (
     RemoveClips,
     RenameProject,
     SetTrackHeights,
+    TrimClips,
     insert_media,
 )
 from kumiki.core.model import Clip, MediaItem, Project, ProjectSettings, Track, TrackKind
@@ -84,6 +85,59 @@ class TestMoveClips:
         moving, staying = _text(0), _text(40)
         with pytest.raises(ValueError):
             MoveClips((moving.id,), 20).apply(_project(moving, staying))
+
+
+class TestMoveClipsAcrossTracks:
+    def _two_tracks(self) -> Project:
+        base = Project.create()
+        upper = Track(TrackKind.VIDEO, "V1", (_text(0), _text(60)))
+        lower = Track(TrackKind.VIDEO, "V2", ())
+        return base.with_timeline(replace(base.timeline, tracks=(upper, lower)))
+
+    def test_the_whole_selection_changes_track(self) -> None:
+        project = self._two_tracks()
+        clips = project.timeline.tracks[0].clips
+        moved = MoveClips(tuple(c.id for c in clips), 0, track_delta=1).apply(project)
+        assert [c.timeline_start for c in moved.timeline.tracks[1].clips] == [0, 60]
+        assert moved.timeline.tracks[0].clips == ()
+
+    def test_moving_past_the_last_track_fails(self) -> None:
+        project = self._two_tracks()
+        clips = project.timeline.tracks[0].clips
+        with pytest.raises(ValueError, match="並びの外"):
+            MoveClips(tuple(c.id for c in clips), 0, track_delta=5).apply(project)
+
+    def test_a_clip_already_there_stops_the_move(self) -> None:
+        base = Project.create()
+        upper = Track(TrackKind.VIDEO, "V1", (_text(0),))
+        lower = Track(TrackKind.VIDEO, "V2", (_text(10),))
+        project = base.with_timeline(replace(base.timeline, tracks=(upper, lower)))
+        moving = upper.clips[0].id
+        with pytest.raises(ValueError):
+            MoveClips((moving,), 0, track_delta=1).apply(project)
+        assert project.timeline.tracks[0].clips[0].id == moving
+
+
+class TestTrimClips:
+    def test_every_selected_clip_is_trimmed(self) -> None:
+        project = _project(_text(0), _text(60))
+        clips = project.timeline.tracks[0].clips
+        trimmed = TrimClips(tuple(c.id for c in clips), tail_delta=-10).apply(project)
+        assert [c.duration for c in trimmed.timeline.tracks[0].clips] == [20, 20]
+
+    def test_a_failure_leaves_everything_alone(self) -> None:
+        # 2 本目が隣へ食い込む長さ 途中まで伸びた状態が残ってはいけない
+        project = _project(_text(0), _text(30), _text(60))
+        clips = project.timeline.tracks[0].clips
+        with pytest.raises(ValueError):
+            TrimClips(tuple(c.id for c in clips), tail_delta=20).apply(project)
+        assert [c.duration for c in project.timeline.tracks[0].clips] == [30, 30, 30]
+
+    def test_a_locked_track_is_refused(self) -> None:
+        project = _project(_text(0), locked=True)
+        clip = project.timeline.tracks[0].clips[0]
+        with pytest.raises(ValueError, match="ロック"):
+            TrimClips((clip.id,), tail_delta=-5).apply(project)
 
 
 class TestRemoveClips:

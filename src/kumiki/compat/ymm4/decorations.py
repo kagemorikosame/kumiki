@@ -24,6 +24,7 @@ from typing import Any
 
 from kumiki.compat.aviutl.report import CompatibilityReport
 from kumiki.compat.decoration import decoration_params, find_decoration
+from kumiki.compat.ymm4.brushes import fill_foreground, gradient_effect
 from kumiki.compat.ymm4.effects import CenterPoint, center_point, map_effect, mapped_names
 from kumiki.compat.ymm4.values import (
     animated,
@@ -60,6 +61,8 @@ class DecorationResult:
     params: dict[str, ParamValue] = field(default_factory=dict)
     #: 外側に積むエフェクト 内側から外側の順
     effects: list[Effect] = field(default_factory=list)
+    #: 最後に効いている中心点 アイテムの位置・拡大・回転の支点にもなる
+    pivot: CenterPoint | None = None
 
 
 def map_decorations(
@@ -124,7 +127,6 @@ _VIDEO_EFFECTS: dict[str, str] = {
     "ZoomEffect": "zoom",
     "RotateEffect": "rotate",
     "DrawPositionEffect": "position",
-    "FillForegroundEffect": "fill",
     "OpacityEffect": "opacity",
     "LuminanceKeyEffect": "luminance_key",
 }
@@ -151,11 +153,15 @@ def map_video_effects(
             continue
 
         name = type_name(entry)
+        if name == "ShowOnlyPreviewEffect":
+            # 掛かったアイテムごと書き出しから外す（アイテムを読む所で見る）
+            continue
         if name == "CenterPointEffect":
             # 後ろに続く回転と拡大の支点になる 位置を保たないなら絵もずらす
-            pivot, shift = center_point(entry, report, length=length, keyframes=keyframes)
-            if shift is not None:
-                result.effects.append(shift)
+            # 「位置を保つ」を切ったときのずらしは、アイテムを最後に置く変形
+            # （:func:`kumiki.compat.ymm4.template._placement`）がまとめて行う 途中で
+            # ずらすと、後ろの変形が元の範囲を支点にしたまま回り、支点が合わない
+            pivot, _ = center_point(entry, report, length=length, keyframes=keyframes)
             continue
         if name == "OutlineEffect":
             borders.append(
@@ -166,6 +172,16 @@ def map_video_effects(
             )
             continue
 
+        if name == "FillForegroundEffect":
+            result.effects.append(
+                _or_skip(fill_foreground(entry, report, length=length, keyframes=keyframes))
+            )
+            continue
+        if name == "GradientEffect":
+            result.effects.append(
+                _or_skip(gradient_effect(entry, report, length=length, keyframes=keyframes))
+            )
+            continue
         built = _video_effect(name, entry, length, keyframes)
         if built is None:
             built = map_effect(name, entry, report, length=length, keyframes=keyframes)
@@ -174,32 +190,39 @@ def map_video_effects(
             if name not in mapped_names():
                 report.note_missing(f"YMM4 の映像エフェクト: {name or '種類不明'}")
             continue
-        if pivot is not None:
-            if built.kind == "transform":
-                built = _with_pivot(built, pivot)
-            elif built.kind in _PIVOTED_KINDS:
-                # 支点を受け取れない回転と拡大 中央で回るので見た目が変わりうる
-                report.note_missing(f"YMM4 の CenterPointEffect（{name} の支点）")
+        if pivot is not None and built.kind in _PIVOTED_KINDS:
+            built = with_pivot(built, pivot)
         result.effects.append(built)
 
     _place_borders(borders, result)
+    result.pivot = pivot
     return result
 
 
-#: 支点で見た目が変わるが、まだ支点を受け取れないエフェクト
+#: 支点（中心点エフェクト）を受け取れる変形
 _PIVOTED_KINDS = frozenset(
     {
+        "transform",
+        "inout_zoom",
         "random_rotate",
         "random_zoom",
         "repeat_rotate",
-        "inout_zoom",
         "inout_getup",
         "spiral",
     }
 )
 
 
-def _with_pivot(effect: Effect, pivot: CenterPoint) -> Effect:
+def _or_skip(effect: Effect | None) -> Effect:
+    """写せなかったブラシは素通しのエフェクトにする（記録は写す側が残してある）"""
+    if effect is not None:
+        return effect
+    definition = registry.get("opacity")
+    assert definition is not None  # 標準エフェクトは必ずある
+    return definition.create(amount=100.0)
+
+
+def with_pivot(effect: Effect, pivot: CenterPoint) -> Effect:
     """変形の支点を、前にあった中心点に合わせる"""
     definition = registry.get(effect.kind)
     if definition is None:  # pragma: no cover - 変形は標準エフェクト
@@ -293,8 +316,12 @@ def _video_effect(name: str, entry: dict[str, Any], length: int, keyframes: Any)
         definition = registry.get("transform")
         if definition is None:  # pragma: no cover - 標準エフェクトは必ずある
             return None
-        # Z は平面の回転、X と Y は板を傾ける立体の回転
-        return definition.create(rotation=value("Z"), rotation_x=value("X"), rotation_y=value("Y"))
+        # Z は平面の回転、X と Y は板を傾ける立体の回転 X と Y は Kumiki と向きが逆
+        return definition.create(
+            rotation=value("Z"),
+            rotation_x=value("X", scale=-1.0),
+            rotation_y=value("Y", scale=-1.0),
+        )
     if kind == "crop":
         definition = registry.get("crop")
         if definition is None:  # pragma: no cover - 標準エフェクトは必ずある

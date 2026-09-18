@@ -14,27 +14,10 @@ from __future__ import annotations
 
 from kumiki.effects.builtin import PRELUDE
 from kumiki.effects.definition import EffectDefinition, registry
+from kumiki.effects.easing import EASING_KINDS, EASING_MODES
 from kumiki.effects.spec import CheckSpec, SelectSpec, TrackSpec, ValueSpec
 
 __all__ = ["EASING_KINDS", "EASING_MODES", "register_motion_effects"]
-
-#: イージングの種類 シェーダの ``ease`` の番号と同じ順
-EASING_KINDS: tuple[tuple[str, str], ...] = (
-    ("linear", "直線"),
-    ("sine", "Sine"),
-    ("quad", "Quad"),
-    ("cubic", "Cubic"),
-    ("quart", "Quart"),
-    ("quint", "Quint"),
-    ("expo", "Expo"),
-    ("circ", "Circ"),
-    ("back", "Back"),
-    ("elastic", "Elastic"),
-    ("bounce", "Bounce"),
-)
-
-#: イージングの向き
-EASING_MODES: tuple[tuple[str, str], ...] = (("in", "In"), ("out", "Out"), ("inout", "InOut"))
 
 
 def _shader(body: str) -> str:
@@ -119,6 +102,60 @@ void main() {
 """
 )
 
+#: 変形の支点 既定は絵の中央 YMM4 の中心点エフェクトは端や画面の中央も選ぶ
+_PIVOT = """
+uniform float anchor_x;
+uniform float anchor_y;
+uniform int pivot_h;
+uniform int pivot_v;
+
+vec2 pivot_point() {
+    vec2 p = object_center();
+    if (pivot_h == 0) p.x = u_size.x * 0.5;
+    if (pivot_h == 1) p.x = u_object.x;
+    if (pivot_h == 2) p.x = u_object.z;
+    if (pivot_v == 0) p.y = u_size.y * 0.5;
+    if (pivot_v == 1) p.y = u_object.w;
+    if (pivot_v == 2) p.y = u_object.y;
+    return p + vec2(anchor_x, anchor_y);
+}
+
+// 支点が既定（絵の中央）から動かされているか
+bool pivot_chosen() {
+    return pivot_h != 3 || pivot_v != 3 || anchor_x != 0.0 || anchor_y != 0.0;
+}
+"""
+
+
+def _pivot_specs() -> tuple[TrackSpec | SelectSpec, ...]:
+    return (
+        TrackSpec("anchor_x", "中心 X", -4000, 4000, 0, step=1, unit="px"),
+        TrackSpec("anchor_y", "中心 Y", -4000, 4000, 0, step=1, unit="px"),
+        SelectSpec(
+            "pivot_h",
+            "中心の横",
+            (
+                ("screen", "画面の中央"),
+                ("left", "絵の左端"),
+                ("right", "絵の右端"),
+                ("center", "絵の中央"),
+            ),
+            "center",
+        ),
+        SelectSpec(
+            "pivot_v",
+            "中心の縦",
+            (
+                ("screen", "画面の中央"),
+                ("top", "絵の上端"),
+                ("bottom", "絵の下端"),
+                ("middle", "絵の中央"),
+            ),
+            "middle",
+        ),
+    )
+
+
 _RANDOM_ZOOM = _shader(
     """
 uniform float zoom;
@@ -127,6 +164,7 @@ uniform float zoom_y;
 uniform float interval;
 uniform int seed;
 """
+    + _PIVOT
     + _STEP
     + """
 void main() {
@@ -136,7 +174,7 @@ void main() {
     float swing = 1.0 + r * (zoom / 100.0 - 1.0);
     vec2 scale = vec2(zoom_x, zoom_y) / 100.0 * swing;
     if (scale.x <= 0.0001 || scale.y <= 0.0001) { frag_color = vec4(0.0); return; }
-    vec2 centre = object_center();
+    vec2 centre = pivot_point();
     frag_color = sample_pixel(centre + (v_uv * u_size - centre) / scale);
 }
 """
@@ -151,6 +189,7 @@ uniform bool three_d;
 uniform float interval;
 uniform int seed;
 """
+    + _PIVOT
     + _STEP
     + """
 void main() {
@@ -160,7 +199,7 @@ void main() {
         angles.x = random_signed(tick, 5.0) * angle_x;
         angles.y = random_signed(tick, 6.0) * angle_y;
     }
-    vec2 centre = object_center();
+    vec2 centre = pivot_point();
     frag_color = sample_pixel(centre + untilt(v_uv * u_size - centre, angles));
 }
 """
@@ -199,13 +238,14 @@ uniform bool centering;
 uniform int easing;
 uniform int easing_mode;
 """
+    + _PIVOT
     + _WAVE
     + """
 void main() {
     float k = repeat_wave() - (centering ? 0.5 : 0.0);
     vec3 angles = vec3(0.0, 0.0, angle_z) * k;
     if (three_d) angles.xy = vec2(angle_x, angle_y) * k;
-    vec2 centre = object_center();
+    vec2 centre = pivot_point();
     frag_color = sample_pixel(centre + untilt(v_uv * u_size - centre, angles));
 }
 """
@@ -253,14 +293,16 @@ uniform float zoom;
 uniform float zoom_x;
 uniform float zoom_y;
 """
+    + _PIVOT
     + _IN_OUT
     + """
 void main() {
-    // 隠れきった状態で、各軸が zoom% × 軸の割合 だけ縮む 軸の割合が 0 の軸は縮まない
-    vec2 shrink = vec2(zoom_x, zoom_y) / 100.0 * (zoom / 100.0) * hidden_amount();
-    vec2 scale = 1.0 - shrink;
+    // 隠れきった状態の大きさが「拡大率 × 軸の割合」 100% どうしなら大きさは変わらない
+    // （YMM4 に描かせて確かめた 0 の軸はその向きに潰れた所から広がる）
+    vec2 target = vec2(zoom_x, zoom_y) / 100.0 * (zoom / 100.0);
+    vec2 scale = mix(vec2(1.0), target, hidden_amount());
     if (scale.x <= 0.0001 || scale.y <= 0.0001) { frag_color = vec4(0.0); return; }
-    vec2 centre = object_center();
+    vec2 centre = pivot_point();
     frag_color = sample_pixel(centre + (v_uv * u_size - centre) / scale);
 }
 """
@@ -325,6 +367,7 @@ _INOUT_GETUP = _shader(
 uniform int base;
 uniform bool three_d;
 """
+    + _PIVOT
     + _IN_OUT
     + """
 void main() {
@@ -335,6 +378,8 @@ void main() {
     if (base == 1) pivot.y = u_object.w;
     if (base == 2) pivot.x = u_object.x;
     if (base == 3) pivot.x = u_object.z;
+    // 中心点で支点を選んでいれば、そちらを軸にする
+    if (pivot_chosen()) pivot = pivot_point();
     vec2 point = v_uv * u_size - pivot;
 
     if (three_d) {
@@ -350,6 +395,89 @@ void main() {
     if (base < 2) scale.y = 1.0 - amount; else scale.x = 1.0 - amount;
     if (scale.x <= 0.0001 || scale.y <= 0.0001) { frag_color = vec4(0.0); return; }
     frag_color = sample_pixel(pivot + point / scale);
+}
+"""
+)
+
+_INOUT_FADE = _shader(
+    """
+uniform float opacity;
+"""
+    + _IN_OUT
+    + """
+void main() {
+    // 隠れきった状態の不透明度が opacity 途中はその間を直線でつなぐ
+    float keep = mix(1.0, clamp(opacity / 100.0, 0.0, 1.0), hidden_amount());
+    // ストレートアルファなので薄めるのは不透明度だけ 色まで掛けると縁が黒ずむ
+    vec4 color = sample_pixel(v_uv * u_size);
+    frag_color = vec4(color.rgb, color.a * keep);
+}
+"""
+)
+
+_INOUT_ROTATE = _shader(
+    """
+uniform float angle_x;
+uniform float angle_y;
+uniform float angle_z;
+uniform bool three_d;
+"""
+    + _IN_OUT
+    + """
+void main() {
+    float k = hidden_amount();
+    vec3 angles = vec3(0.0, 0.0, angle_z) * k;
+    if (three_d) angles.xy = vec2(angle_x, angle_y) * k;
+    vec2 centre = object_center();
+    frag_color = sample_pixel(centre + untilt(v_uv * u_size - centre, angles));
+}
+"""
+)
+
+_INOUT_OFFSET = _shader(
+    """
+uniform float offset_x;
+uniform float offset_y;
+"""
+    + _IN_OUT
+    + """
+void main() {
+    frag_color = sample_pixel(v_uv * u_size - vec2(offset_x, offset_y) * hidden_amount());
+}
+"""
+)
+
+_INOUT_SKEW = _shader(
+    """
+uniform float angle_x;
+uniform float angle_y;
+"""
+    + _IN_OUT
+    + """
+void main() {
+    // 傾きの角度そのものを隠れ具合に比例させる tan を比例させると 90 度近くで跳ねる
+    float k = hidden_amount();
+    vec2 pivot = object_center();
+    vec2 point = v_uv * u_size - pivot;
+    float tx = tan(radians(clamp(angle_x * k, -89.0, 89.0)));
+    float ty = tan(radians(clamp(angle_y * k, -89.0, 89.0)));
+    float determinant = 1.0 + tx * ty;
+    if (abs(determinant) < 1e-4) { frag_color = vec4(0.0); return; }
+    vec2 source = vec2(point.x + tx * point.y, point.y - ty * point.x) / determinant;
+    frag_color = sample_pixel(pivot + source);
+}
+"""
+)
+
+_INOUT_BLUR = _shader(
+    """
+uniform float radius;
+"""
+    + _IN_OUT
+    + """
+void main() {
+    vec2 direction = u_pass == 0 ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+    frag_color = blur1d(u_texture, v_uv, direction, radius * hidden_amount());
 }
 """
 )
@@ -381,10 +509,12 @@ _SPIRAL = _shader(
     """
 uniform float angle;
 uniform bool outer;
-
+"""
+    + _PIVOT
+    + """
 void main() {
     // 中心ほど大きく回す 外側ほど大きく回す指定もある
-    vec2 centre = object_center();
+    vec2 centre = pivot_point();
     vec2 point = v_uv * u_size - centre;
     float reach = max(length(object_size()) * 0.5, 1.0);
     float k = clamp(length(point) / reach, 0.0, 1.0);
@@ -522,6 +652,7 @@ uniform float fall;
 uniform float delay;
 uniform float impact;
 uniform float spread;
+uniform float spin;
 
 void main() {
     // 絵を size 四方の欠片に割り、欠片ごとに飛ばして落とす
@@ -542,11 +673,18 @@ void main() {
             vec2 home = (index + 0.5) * cell;
             float wait = hash(index + 3.1) * 0.5 * delay / 100.0;
             float t = max(elapsed - wait, 0.0);
-            vec2 outward = normalize(home - centre + vec2(0.001)) * 300.0 * fly / 100.0;
+            vec2 outward = normalize(home - centre + vec2(0.001)) * 300.0 * fly / 100.0
+                         * impact / 100.0;
             vec2 scatter = (vec2(hash(index + 1.7), hash(index + 9.3)) - 0.5) * 400.0
                          * impact / 100.0 * spread / 100.0;
             vec2 moved = home + (outward + scatter) * t + vec2(0.0, -0.5 * gravity * t * t);
-            vec2 source = pixel - (moved - home);
+            // 欠片ごとに向きと速さの違う回転 経過に比例して回る
+            float turn_angle = (hash(index + 5.1) * 2.0 - 1.0) * 2.0 * PI * spin / 100.0 * t;
+            vec2 local = pixel - moved;
+            float c_ = cos(turn_angle);
+            float s_ = sin(turn_angle);
+            local = mat2(c_, s_, -s_, c_) * local;
+            vec2 source = home + local;
             if (all(equal(floor(source / cell), index))) {
                 result = over(sample_pixel(source), result);
             }
@@ -595,6 +733,21 @@ float channel(vec2 p, float z, float salt) {
         // 画素ごとのばらばらな値
         return mix(hash(floor(p * 40.0) + slice), hash(floor(p * 40.0) + next), blend);
     }
+    if (noise == 3 || noise == 4) {
+        // ボロノイは近い点の面ごとの値、セルは近い点までの距離
+        vec2 cell = floor(p);
+        float nearest = 10.0;
+        float value = 0.0;
+        for (int j = -1; j <= 1; ++j) {
+            for (int i = -1; i <= 1; ++i) {
+                vec2 c = cell + vec2(i, j);
+                vec2 point = c + vec2(hash(c + slice + 0.3), hash(c + slice + 0.7));
+                float d = length(p - point);
+                if (d < nearest) { nearest = d; value = hash(c + slice + 0.9); }
+            }
+        }
+        return noise == 3 ? value : clamp(nearest, 0.0, 1.0);
+    }
     if (noise == 0) {
         // ブロック 格子ごとに一様
         return mix(hash(floor(p) + slice), hash(floor(p) + next), blend);
@@ -614,9 +767,10 @@ float channel(vec2 p, float z, float salt) {
 }
 
 void main() {
-    // ノイズの値でずらす 100% のノイズの大きさは 200 画素
+    // ノイズの値でずらす 100% のノイズの粒は 50 画素、移動量 100 で最大 40 画素ほど
+    // どちらも YMM4 に縞を歪めさせた絵（tools/ymm4_probes.py の 3 回目）に合わせた
     vec2 pixel = v_uv * u_size;
-    vec2 scale = max(vec2(scale_x, scale_y) / 100.0 * 200.0, vec2(1.0));
+    vec2 scale = max(vec2(scale_x, scale_y) / 100.0 * 50.0, vec2(1.0));
     vec2 position = (pixel + vec2(offset_x, offset_y) + vec2(speed_x, speed_y) * u_time) / scale;
     float z = (offset_z + speed_z * u_time) / max(scale_z, 1.0);
 
@@ -625,7 +779,7 @@ void main() {
     n = mix(vec2(0.0), n, step(vec2(cut), abs(n)));
     float steps = max(levels, 2.0);
     n = floor(n * steps + 0.5) / steps;
-    vec2 shift = n * vec2(amount_x, amount_y) * strength / 100.0;
+    vec2 shift = n * vec2(amount_x, amount_y) * 0.4 * strength / 100.0;
     frag_color = sample_pixel(pixel - shift);
 }
 """
@@ -670,6 +824,7 @@ def register_motion_effects() -> None:
                 TrackSpec("zoom_y", "縦の倍率", 0, 1000, 100, unit="%"),
                 _interval(),
                 _seed(),
+                *_pivot_specs(),
             ),
             fragment_shader=_RANDOM_ZOOM,
         ),
@@ -684,6 +839,7 @@ def register_motion_effects() -> None:
                 CheckSpec("three_d", "立体", False),
                 _interval(),
                 _seed(),
+                *_pivot_specs(),
             ),
             fragment_shader=_RANDOM_ROTATE,
         ),
@@ -713,6 +869,7 @@ def register_motion_effects() -> None:
                 TrackSpec("interval", "周期", 0.01, 60, 1, step=0.01, unit="秒"),
                 CheckSpec("centering", "元の角度を挟んで往復", True),
                 *_easing(),
+                *_pivot_specs(),
             ),
             fragment_shader=_REPEAT_ROTATE,
         ),
@@ -747,9 +904,10 @@ def register_motion_effects() -> None:
             label="拡大して登場",
             category="登場・退場",
             parameters=(
-                TrackSpec("zoom", "縮める量", 0, 100, 100, unit="%"),
-                TrackSpec("zoom_x", "横の割合", 0, 100, 100, unit="%"),
-                TrackSpec("zoom_y", "縦の割合", 0, 100, 100, unit="%"),
+                TrackSpec("zoom", "隠れたときの拡大率", 0, 1000, 0, unit="%"),
+                TrackSpec("zoom_x", "横の割合", 0, 1000, 100, unit="%"),
+                TrackSpec("zoom_y", "縦の割合", 0, 1000, 100, unit="%"),
+                *_pivot_specs(),
                 *_in_out_specs(),
             ),
             fragment_shader=_INOUT_ZOOM,
@@ -787,8 +945,65 @@ def register_motion_effects() -> None:
                 ),
                 CheckSpec("three_d", "立体", True),
                 *_in_out_specs(),
+                *_pivot_specs(),
             ),
             fragment_shader=_INOUT_GETUP,
+        ),
+        EffectDefinition(
+            kind="inout_fade",
+            label="フェードで登場",
+            category="登場・退場",
+            parameters=(
+                TrackSpec("opacity", "隠れたときの不透明度", 0, 100, 0, unit="%"),
+                *_in_out_specs(),
+            ),
+            fragment_shader=_INOUT_FADE,
+        ),
+        EffectDefinition(
+            kind="inout_rotate",
+            label="回って登場",
+            category="登場・退場",
+            parameters=(
+                TrackSpec("angle_x", "X 軸", -3600, 3600, 0, unit="度"),
+                TrackSpec("angle_y", "Y 軸", -3600, 3600, 0, unit="度"),
+                TrackSpec("angle_z", "回転", -3600, 3600, 360, unit="度"),
+                CheckSpec("three_d", "立体", False),
+                *_in_out_specs(),
+            ),
+            fragment_shader=_INOUT_ROTATE,
+        ),
+        EffectDefinition(
+            kind="inout_offset",
+            label="ずれた所から登場",
+            category="登場・退場",
+            parameters=(
+                TrackSpec("offset_x", "X", -4000, 4000, 100, step=1, unit="px"),
+                TrackSpec("offset_y", "Y", -4000, 4000, 0, step=1, unit="px"),
+                *_in_out_specs(),
+            ),
+            fragment_shader=_INOUT_OFFSET,
+        ),
+        EffectDefinition(
+            kind="inout_skew",
+            label="傾いて登場",
+            category="登場・退場",
+            parameters=(
+                TrackSpec("angle_x", "横の傾き", -89, 89, 30, unit="度"),
+                TrackSpec("angle_y", "縦の傾き", -89, 89, 0, unit="度"),
+                *_in_out_specs(),
+            ),
+            fragment_shader=_INOUT_SKEW,
+        ),
+        EffectDefinition(
+            kind="inout_blur",
+            label="ぼけて登場",
+            category="登場・退場",
+            parameters=(
+                TrackSpec("radius", "範囲", 0, 96, 20, unit="px"),
+                *_in_out_specs(),
+            ),
+            fragment_shader=_INOUT_BLUR,
+            passes=2,
         ),
         EffectDefinition(
             kind="skew",
@@ -809,6 +1024,7 @@ def register_motion_effects() -> None:
             parameters=(
                 TrackSpec("angle", "角度", -3600, 3600, 90, unit="度"),
                 CheckSpec("outer", "外側ほど回す", False),
+                *_pivot_specs(),
             ),
             fragment_shader=_SPIRAL,
         ),
@@ -863,6 +1079,7 @@ def register_motion_effects() -> None:
                 TrackSpec("delay", "ばらつき", 0, 1000, 100, unit="%"),
                 TrackSpec("impact", "衝撃", 0, 1000, 100, unit="%"),
                 TrackSpec("spread", "散らばり", 0, 1000, 100, unit="%"),
+                TrackSpec("spin", "欠片の回転", 0, 1000, 0, unit="%"),
             ),
             fragment_shader=_CRASH,
         ),
@@ -876,7 +1093,13 @@ def register_motion_effects() -> None:
                 SelectSpec(
                     "noise",
                     "ノイズ",
-                    (("block", "ブロック"), ("perlin", "パーリン"), ("random", "ランダム")),
+                    (
+                        ("block", "ブロック"),
+                        ("perlin", "パーリン"),
+                        ("random", "ランダム"),
+                        ("voronoi", "ボロノイ"),
+                        ("cellular", "セル"),
+                    ),
                     "perlin",
                 ),
                 TrackSpec("strength", "強さ", 0, 400, 100, unit="%"),

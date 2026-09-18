@@ -16,14 +16,28 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from kumiki.core.commands import (
+    AddEffect,
     Command,
     GroupClips,
     MoveClips,
+    ParamPath,
     RemoveClips,
+    SetClipProperty,
+    SetParam,
     SetTrackHeights,
+    TrimClips,
     insert_media,
 )
-from kumiki.core.model import Clip, ClipId, MediaItem, Project, Track, TrackKind
+from kumiki.core.model import (
+    AnimatedValue,
+    Clip,
+    ClipId,
+    MediaItem,
+    Project,
+    Track,
+    TrackKind,
+)
+from kumiki.effects import registry
 from kumiki.effects.sources import TEXT
 from kumiki.engine.cache import MediaAnalyzer
 from kumiki.ui.main_window import MainWindow
@@ -348,3 +362,91 @@ def window(qt_application: QApplication) -> Iterator[MainWindow]:
     created = MainWindow(_project(), confirm_unsaved=False)
     yield created
     created.close()
+
+
+class TestTogether:
+    """何本か選んだときのトリム・トラック跨ぎ・設定パネル"""
+
+    def test_trimming_the_edge_trims_them_all(self, view: TimelineView) -> None:
+        a, b, _ = _ids(view)
+        QTest.mouseClick(view, _LEFT, pos=_point(view, 0, 10))
+        QTest.mouseClick(view, _LEFT, _CTRL, _point(view, 0, 50))
+        received = _received(view)
+        # 2 本目の末尾（内側 1 フレーム）を掴んで 10 フレーム縮める
+        QTest.mousePress(view, _LEFT, pos=_point(view, 0, 69))
+        QTest.mouseMove(view, _point(view, 0, 60))
+        QTest.mouseRelease(view, _LEFT, pos=_point(view, 0, 60))
+        (commands,) = received
+        (command,) = commands
+        assert isinstance(command, TrimClips)
+        assert set(command.clip_ids) == {a, b}
+        assert command.tail_delta == -10
+
+    def test_a_group_can_change_track(self, view: TimelineView) -> None:
+        a, b, _ = _ids(view)
+        QTest.mouseClick(view, _LEFT, pos=_point(view, 0, 10))
+        QTest.mouseClick(view, _LEFT, _CTRL, _point(view, 0, 50))
+        received = _received(view)
+        QTest.mousePress(view, _LEFT, pos=_point(view, 0, 10))
+        QTest.mouseMove(view, _point(view, 1, 10))
+        QTest.mouseRelease(view, _LEFT, pos=_point(view, 1, 10))
+        (commands,) = received
+        (command,) = commands
+        assert isinstance(command, MoveClips)
+        assert set(command.clip_ids) == {a, b}
+        assert command.track_delta == 1
+
+    def test_the_inspector_sets_every_selected_clip(self, window: MainWindow) -> None:
+        timeline = window._timeline
+        a, b, _ = (
+            timeline.project.timeline.tracks[0].clips[0].id,
+            timeline.project.timeline.tracks[0].clips[1].id,
+            timeline.project.timeline.tracks[1].clips[0].id,
+        )
+        timeline.set_selection((a, b))
+        received: list[list[Command]] = []
+        window._inspector.commands_requested.connect(lambda cs, _l: received.append(cs))
+        # 設定パネルは主のクリップ（最後に選んだ b）の設定を出す 触ると a にも当たる
+        window._inspector._emit(SetClipProperty(b, "blend_mode", "add"))
+        (commands,) = received
+        assert [c.clip_id for c in commands if isinstance(c, SetClipProperty)] == [b, a]
+
+    def test_the_second_effect_of_a_kind_maps_to_the_second(self, window: MainWindow) -> None:
+        # 同じ種類を 2 つ積んだクリップで、2 つ目を触ったのに 1 つ目へ当たってはいけない
+        timeline = window._timeline
+        clips = timeline.project.timeline.tracks[0].clips
+        a, b = clips[0].id, clips[1].id
+        blur = registry.get("blur")
+        assert blur is not None
+        first, second = blur.create(radius=4.0), blur.create(radius=8.0)
+        window.execute_all(
+            [
+                AddEffect(a, first),
+                AddEffect(a, second),
+                AddEffect(b, blur.create(radius=1.0)),
+                AddEffect(b, blur.create(radius=2.0)),
+            ],
+            "準備",
+        )
+        timeline.set_selection((b, a))
+        received: list[list[Command]] = []
+        window._inspector.commands_requested.connect(lambda cs, _l: received.append(cs))
+        path = ParamPath.of_effect(a, second.id, "radius")
+        window._inspector._emit(SetParam(path, AnimatedValue(16.0)))
+        (commands,) = received
+        targets = [c.path.effect_id for c in commands if isinstance(c, SetParam)]
+        other = window.view_project.timeline.locate_clip(b)
+        assert other is not None
+        assert targets == [second.id, other[1].effects[1].id]
+
+    def test_dropping_a_clip_from_the_selection_reaches_the_inspector(
+        self, window: MainWindow
+    ) -> None:
+        # 主のクリップが変わらない増減で知らせないと、外したクリップへ設定が当たる
+        timeline = window._timeline
+        clips = timeline.project.timeline.tracks[0].clips
+        a, b = clips[0].id, clips[1].id
+        timeline.set_selection((a, b))
+        assert set(window._inspector._selection) == {a, b}
+        timeline.set_selection((b,))
+        assert window._inspector._selection == (b,)

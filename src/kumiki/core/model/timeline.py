@@ -74,10 +74,16 @@ class Clip:
     #: 再生速度 2 なら 2 倍速で、同じ長さに 2 倍のソース範囲が入る
     speed: Fraction = Fraction(1)
     effects: tuple[Effect, ...] = ()
+    #: 場面切り替え（生成オブジェクト ``transition``）で、後の場面に掛けるエフェクト
+    #: 前の場面には :attr:`effects` が掛かる ほかのクリップでは使わない
+    after_effects: tuple[Effect, ...] = ()
     opacity: AnimatedValue = field(default_factory=lambda: AnimatedValue(1.0))
     #: 下のトラックとの重ね方 値は :class:`~kumiki.engine.gpu.BlendMode` の定数
     #: 文字列で持つのは、プロジェクトファイルに出るものを列挙型に縛らないため
     blend_mode: str = "normal"
+    #: すぐ下に重なっているクリップの形（不透明度）で切り抜く YMM4 の「上のオブジェクトで
+    #: クリッピング」 背景の模様を吹き出しの形だけに見せる、といった使い方をする
+    clip_to_below: bool = False
     #: 映像と音声を連動させるためのグループ 同じ値を持つクリップは一緒に動く
     link_group: GroupId | None = None
     #: 入れ子にしたシーン 素材（``media_id``）とは同時に持てない

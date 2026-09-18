@@ -39,6 +39,7 @@ from kumiki.core.commands import (
     SetTrackState,
     SplitClip,
     TrimClip,
+    TrimClips,
     UngroupClips,
 )
 from kumiki.core.commands.edit import DEFAULT_TRACK_HEIGHT, MAX_TRACK_HEIGHT, MIN_TRACK_HEIGHT
@@ -230,11 +231,11 @@ class TimelineView(QWidget):
         ordered = tuple(reversed(dict.fromkeys(reversed(tuple(clip_ids)))))
         if ordered == self._selection:
             return
-        previous = self.selected_clip
         self._selection = ordered
         self._anchor = self.selected_clip
-        if self.selected_clip != previous:
-            self.selection_changed.emit(self.selected_clip or "")
+        # 主のクリップが同じでも知らせる 選択から外したクリップへ、設定パネルの
+        # まとめ当てが届いてしまう
+        self.selection_changed.emit(self.selected_clip or "")
         self.update()
 
     def select_all(self) -> None:
@@ -384,6 +385,19 @@ class TimelineView(QWidget):
         painter.setPen(QPen(Colors.SELECTION, 1, Qt.PenStyle.DashLine))
         painter.setBrush(fill)
         painter.drawRect(QRect(origin, current).normalized())
+
+    def _trimmable_selection(self) -> tuple[ClipId, ...]:
+        """選んだうち、端を動かせるもの ロックしたトラックのものは外す
+
+        動かすときと違い、リンクした相手のトラックは見ない トリムは相手のトラックが
+        ロックされていれば、その相手だけが元の長さで残る（:class:`TrimClip` の決まり）
+        """
+        timeline = self._project.timeline
+        return tuple(
+            clip_id
+            for clip_id in self._selection
+            if (located := timeline.locate_clip(clip_id)) is not None and not located[0].locked
+        )
 
     def _movable_selection(self) -> tuple[ClipId, ...]:
         """選んだうち、ロックしていないトラックのもの
@@ -543,7 +557,9 @@ class TimelineView(QWidget):
             grab_offset=frame - clip.timeline_start,
             preview_start=clip.timeline_start,
             preview_track=track_id,
-            group=edge is DragKind.MOVE_CLIP and len(self._selection) > 1,
+            # 何本も選んでいれば、動かすのもトリムもまとめて当てる
+            group=edge in (DragKind.MOVE_CLIP, DragKind.TRIM_HEAD, DragKind.TRIM_TAIL)
+            and len(self._selection) > 1,
         )
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt の命名規約
@@ -574,7 +590,7 @@ class TimelineView(QWidget):
             floor = self._group_floor() if self._drag.group else 0
             self._drag.preview_start = max(floor, frame - self._drag.grab_offset)
             band = self._layout.band_at(self._project.timeline, position.y())
-            if not self._drag.group and band is not None and not band.track.locked:
+            if band is not None and not band.track.locked:
                 self._drag.preview_track = band.track.id
         elif self._drag.clip_id is not None:
             located = self._project.timeline.locate_clip(self._drag.clip_id)
@@ -627,9 +643,12 @@ class TimelineView(QWidget):
             movable = self._movable_selection()
             # 掴んだクリップ自身が動かせない（ロックしている）なら何もしない 動かすと、
             # 掴んだものはその場に残り、選んだほかのクリップだけが動く
-            if not delta or drag.clip_id not in movable:
+            if drag.clip_id not in movable:
                 return None
-            return MoveClips(movable, delta)
+            tracks = self._track_delta(drag)
+            if not delta and not tracks:
+                return None
+            return MoveClips(movable, delta, track_delta=tracks)
 
         if drag.kind is DragKind.MOVE_CLIP:
             unchanged = (
@@ -645,10 +664,26 @@ class TimelineView(QWidget):
             )
 
         if drag.kind is DragKind.TRIM_HEAD and drag.preview_head_delta:
+            if drag.group:
+                return TrimClips(self._trimmable_selection(), head_delta=drag.preview_head_delta)
             return TrimClip(drag.clip_id, head_delta=drag.preview_head_delta)
         if drag.kind is DragKind.TRIM_TAIL and drag.preview_tail_delta:
+            if drag.group:
+                return TrimClips(self._trimmable_selection(), tail_delta=drag.preview_tail_delta)
             return TrimClip(drag.clip_id, tail_delta=drag.preview_tail_delta)
         return None
+
+    def _track_delta(self, drag: DragState) -> int:
+        """掴んだクリップが何本ぶんトラックを跨いだか 同じ種類の並びで数える"""
+        if drag.preview_track is None or drag.preview_track == drag.origin_track:
+            return 0
+        timeline = self._project.timeline
+        origin = timeline.find_track(drag.origin_track) if drag.origin_track else None
+        target = timeline.find_track(drag.preview_track)
+        if origin is None or target is None or origin.kind is not target.kind:
+            return 0
+        same = [t.id for t in timeline.tracks if t.kind is origin.kind]
+        return same.index(target.id) - same.index(origin.id)
 
     def _preview_height(self, y: int) -> None:
         """ドラッグ中の高さを描画にだけ当てる 履歴には載せない"""

@@ -24,6 +24,7 @@ from kumiki.core.model import (
     TrackKind,
 )
 from kumiki.core.timebase import FrameRate
+from kumiki.effects.sources import TEXT
 from kumiki.engine.decode import probe_media
 from kumiki.engine.gpu import (
     Compositor,
@@ -402,3 +403,45 @@ class TestRenderQuality:
 
     def test_never_shrinks_below_one_pixel(self) -> None:
         assert RenderQuality(100).apply(32, 32) == (1, 1)
+
+
+class TestGeneratedCache:
+    """作った絵を使い回すこと 動かない字幕を何本も重ねると、作り直しが再生の足を引く"""
+
+    def _project(self, text: str = "字幕") -> Project:
+        settings = ProjectSettings(width=64, height=64, frame_rate=FrameRate(30))
+        base = Project.create(settings)
+        clip = Clip(timeline_start=0, duration=30, source=TEXT.create(text=text, size=16))
+        track = Track(TrackKind.VIDEO, "V1", (clip,))
+        return base.with_timeline(replace(base.timeline, tracks=(track,)))
+
+    def test_a_still_text_is_drawn_once(self, gl_context: OffscreenGLContext) -> None:
+        project = self._project()
+        renderer = FrameRenderer(project, context=gl_context)
+        try:
+            clip = project.timeline.tracks[0].clips[0]
+            first = renderer._generate(clip, 0, project.rate)
+            second = renderer._generate(clip, 7, project.rate)
+            assert first is not None
+            # 別のフレームでも同じ絵をそのまま返す（作り直していない）
+            assert second is first
+        finally:
+            renderer.close()
+
+    def test_an_animated_value_is_drawn_again(self, gl_context: OffscreenGLContext) -> None:
+        settings = ProjectSettings(width=64, height=64, frame_rate=FrameRate(30))
+        base = Project.create(settings)
+        moving = AnimatedValue(0.0, (Keyframe(0, 0.0), Keyframe(29, 40.0)))
+        source = TEXT.create(text="字幕", size=16)
+        source = source.with_param("pos_x", moving)
+        clip = Clip(timeline_start=0, duration=30, source=source)
+        track = Track(TrackKind.VIDEO, "V1", (clip,))
+        project = base.with_timeline(replace(base.timeline, tracks=(track,)))
+        renderer = FrameRenderer(project, context=gl_context)
+        try:
+            first = renderer._generate(clip, 0, project.rate)
+            second = renderer._generate(clip, 20, project.rate)
+            assert first is not None and second is not None
+            assert second is not first
+        finally:
+            renderer.close()
