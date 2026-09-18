@@ -199,3 +199,43 @@ class TestShapesAndSwings:
         assert effect.kind == "repeat_rotate"
         assert effect.params["centering"] is True
         assert _value(effect, "angle_z") == 30.0
+
+
+class TestTheThingsReviewFound:
+    def test_an_angle_near_zero_goes_right(self) -> None:
+        # 角度は 1 周でつながっている まっすぐ引き算すると 359 度が上になる
+        effect = _one("画面外から登場\n時間=0.5\n角度=359\n数=1\nランダム方向=0")
+        assert effect.params["direction"] == "right"
+
+    def test_a_negative_angle_also_goes_right(self) -> None:
+        effect = _one("画面外から登場\n時間=0.5\n角度=-2\n数=1\nランダム方向=0")
+        assert effect.params["direction"] == "right"
+
+    def test_a_plain_number_reaches_a_value_spec(self) -> None:
+        # スライダーを持たない数値を文字列のまま渡すと、既定値（8 個）へ落ちる
+        effect = _one("円形配置\n円周=100\n半径=200\n数=3")
+        assert effect.kind == "circular_duplicate"
+        assert effect.params["count"] == 3
+
+    def test_an_unreadable_value_keeps_the_target_default(self) -> None:
+        # 写し先の既定値に変換を掛けると、不透明度 100 が 0 になって全透明になる
+        effects, report = _effects("透明度\n透明度=おかしな値")
+        assert _value(effects[0], "amount") == 100.0
+        assert any("数として読めない値" in line for line in report.lines())
+
+    def test_an_appearance_value_can_move(self) -> None:
+        # 登場の値に動きが付いていたら、キーフレームとして残す
+        effect = _one("拡大縮小して登場\n時間=0.3\n拡大率=100,300,直線移動,0\n加減速=0")
+        value = effect.params["zoom"]
+        assert isinstance(value, AnimatedValue)
+        assert value.is_animated
+
+    def test_a_dropped_setting_is_recorded(self) -> None:
+        # 効果を写せても、項目を落とせば見た目は変わる（震えるの角度）
+        _, report = _effects("震える\n振幅=8\n角度=45\n間隔=2")
+        assert any("震えるの項目: 角度" in line for line in report.lines())
+
+    def test_structural_keys_are_not_recorded(self) -> None:
+        # Group は並びの区切りで、値ではない 記録に出すと本当の穴が埋もれる
+        _, report = _effects("座標\nX=10\nY=0\nZ=0\nGroup=1")
+        assert not any("Group" in line for line in report.lines())

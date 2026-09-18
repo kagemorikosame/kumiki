@@ -41,7 +41,7 @@ from kumiki.core.model import (
 )
 from kumiki.core.timebase import FrameRate
 from kumiki.effects.definition import EffectDefinition, registry
-from kumiki.effects.spec import ParameterSpec, ParamInput, TrackSpec
+from kumiki.effects.spec import ParameterSpec, ParamInput, TrackSpec, ValueSpec
 
 __all__ = ["MappedObject", "map_exo", "map_object", "media_paths"]
 
@@ -100,6 +100,12 @@ def _flip(value: float) -> float:
 def _rest(value: float) -> float:
     """透明度（0 で不透明）を不透明度（100 で不透明）へ"""
     return 100.0 - value
+
+
+def _turn(one: int, other: int) -> int:
+    """2 つの角度の近さ 1 周でつながっているので短い側を見る"""
+    gap = abs(one - other) % 360
+    return min(gap, 360 - gap)
 
 
 def _quarter(value: float) -> float:
@@ -502,7 +508,20 @@ def _spec_value(
 
     ``convert`` は対応表が持つ値の直し（Y の向きなど） 直してから範囲へ収める
     """
-    if isinstance(spec, TrackSpec):
+    motion = parse_motion(raw)
+    if isinstance(spec, TrackSpec | ValueSpec):
+        if motion is None:
+            # 数として読めない 写し先の既定値をそのまま使う
+            # （既定値に変換を掛けると、透明度 100 が不透明度 0 になって全透明になる）
+            if raw.strip():
+                log.note_missing(f"AviUtl の数として読めない値: {label}")
+            return spec.default_value()
+        if isinstance(spec, ValueSpec):
+            # スライダーを持たない数値は動かせない 先頭の値だけ使う
+            if motion.moves:
+                log.note_missing(f"AviUtl の動く値を写せない項目: {label}")
+            value = motion.first if convert is None else convert(motion.first)
+            return value
         adjust = spec.clamp if convert is None else (lambda value: spec.clamp(convert(value)))
         return animated_value(
             raw, points=points, log=log, label=label, convert=adjust, default=spec.default
@@ -685,10 +704,15 @@ def _appearance(
             log.note_missing(f"{entry.name}の登場と退場で違う時間")
         seconds = max(enter, leave)
     else:
-        enter, leave, seconds = entry.number("時間"), 0.0, entry.number("時間")
+        enter = leave = 0.0
+        seconds = entry.number("時間")
+        enter = seconds
     params["effect_in"] = enter > 0.0
     params["effect_out"] = leave > 0.0
-    _put(definition, params, "effect_time", seconds)
+    if entry.name in ("フェード", "ワイプ") or not _put_raw(
+        definition, params, "effect_time", entry, "時間", points, log
+    ):
+        _put(definition, params, "effect_time", seconds)
 
     # 加減速の旗は、両端を滑らかにするイージング（時間制御のプリセットと同じ考え方）
     if entry.number("加減速") != 0.0:
@@ -715,7 +739,7 @@ def _appearance_extras(
             log.note_missing(f"ワイプの種類: {shape}")
             pattern = "fade"
         params["pattern"] = pattern
-        _put(definition, params, "tolerance", entry.number("ぼかし"))
+        _put_raw(definition, params, "tolerance", entry, "ぼかし", points, log)
         params["reverse_in"] = entry.number("反転(イン)") != 0.0
         params["reverse_out"] = entry.number("反転(アウト)") != 0.0
         return
@@ -725,8 +749,10 @@ def _appearance_extras(
         direction = _MOVE_DIRECTIONS.get(angle)
         if direction is None:
             # 向きは上下左右の 4 つしか持てない 近い方へ丸める
+            # 角度は 1 周でつながっているので、差は 0 度をまたぐ側も見る
+            # （まっすぐ引き算すると 359 度が右ではなく上になる）
             log.note_missing(f"画面外から登場の角度: {entry.number('角度')}")
-            direction = _MOVE_DIRECTIONS[min(_MOVE_DIRECTIONS, key=lambda key: abs(key - angle))]
+            direction = _MOVE_DIRECTIONS[min(_MOVE_DIRECTIONS, key=lambda key: _turn(key, angle))]
         params["direction"] = direction
         if entry.number("数", 1.0) != 1.0:
             log.note_missing("画面外から登場の数（何回も出入りする）")
@@ -735,7 +761,7 @@ def _appearance_extras(
         return
 
     if entry.name == "拡大縮小して登場":
-        _put(definition, params, "zoom", entry.number("拡大率", 100.0))
+        _put_raw(definition, params, "zoom", entry, "拡大率", points, log)
         return
 
     if entry.name == "広がって登場":
@@ -752,7 +778,7 @@ def _appearance_extras(
         return
 
     if entry.name == "弾んで登場":
-        _put(definition, params, "height", entry.number("高さ"))
+        _put_raw(definition, params, "height", entry, "高さ", points, log)
         count = entry.number("回数")
         if count > 0.0:
             # 1 回の長さ ＝ 全体の時間 ÷ 回数
@@ -760,7 +786,7 @@ def _appearance_extras(
         return
 
     if entry.name == "何処からともなく登場":
-        _put(definition, params, "radius", entry.number("ぼかし"))
+        _put_raw(definition, params, "radius", entry, "ぼかし", points, log)
         if entry.number("位置") != 0.0:
             log.note_missing("何処からともなく登場の位置（ずれながら出る）")
         del points
@@ -770,10 +796,38 @@ def _appearance_extras(
 def _put(
     definition: EffectDefinition, params: dict[str, ParamValue], name: str, value: float
 ) -> None:
-    """トラックバーの項目へ 1 つの値を入れる 仕様が無ければ何もしない"""
+    """項目へ 1 つの数を入れる 仕様が無ければ何もしない
+
+    こちらで計算した数（回数から出した 1 回の長さなど）を入れるときに使う
+    ファイルの値をそのまま入れるときは :func:`_put_raw` を使う 動きが落ちるため
+    """
     spec = definition.spec(name)
     if spec is not None:
         params[spec.name] = spec.coerce(value)
+
+
+def _put_raw(
+    definition: EffectDefinition,
+    params: dict[str, ParamValue],
+    name: str,
+    entry: ExoEntry,
+    source: str,
+    points: tuple[int, ...],
+    log: CompatibilityReport,
+    convert: Callable[[float], float] | None = None,
+) -> bool:
+    """ファイルの項目をそのまま写す 動きが付いていればキーフレームも残す
+
+    返り値は写せたか（項目がファイルに無ければ ``False``）
+    """
+    spec = definition.spec(name)
+    raw = entry.params.get(source)
+    if spec is None or raw is None:
+        return False
+    params[spec.name] = spec.coerce(
+        _spec_value(spec, raw, points, log, f"{entry.name}の{source}", convert=convert)
+    )
+    return True
 
 
 def _filter(entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport) -> Effect | None:
@@ -805,9 +859,11 @@ def _filter(entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport) 
     names = _PARAMS.get(entry.name, {})
     colours = _COLOR_PARAMS.get(entry.name, {})
     choices = _SELECT_PARAMS.get(entry.name, {})
+    handled: set[str] = set()
     for source_name, value in entry.params.items():
         target = names.get(source_name)
         if target is not None:
+            handled.add(source_name)
             for field in (target.name, target.also):
                 spec = definition.spec(field) if field is not None else None
                 if spec is not None:
@@ -825,6 +881,7 @@ def _filter(entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport) 
 
         colour_target = colours.get(source_name)
         if colour_target is not None:
+            handled.add(source_name)
             spec = definition.spec(colour_target)
             if spec is not None:
                 params[spec.name] = spec.coerce(_color(value))
@@ -832,11 +889,32 @@ def _filter(entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport) 
 
         choice = choices.get(source_name)
         if choice is not None:
+            handled.add(source_name)
             target_name, table = choice
             spec = definition.spec(target_name)
             if spec is not None:
                 params[spec.name] = spec.coerce(table.get(value.strip(), ""))
+
+    _note_dropped(entry, handled, log)
     return Effect(kind=kind, params=params)
+
+
+#: 値ではなく並びの区切りに使われる項目 写せなくても困らない
+_STRUCTURAL = ("Group", "詳細設定")
+
+
+def _note_dropped(entry: ExoEntry, handled: set[str], log: CompatibilityReport) -> None:
+    """対応表に無い項目を記録する
+
+    効果そのものを写せても、項目を落としていれば見た目は変わる（``震える`` の
+    ``角度`` など） 黙って捨てると、写せたつもりのまま違う絵が出る
+    """
+    for source_name in entry.params:
+        if source_name in handled:
+            continue
+        if source_name.startswith(_STRUCTURAL) or source_name.endswith(".hide"):
+            continue
+        log.note_missing(f"{entry.name}の項目: {source_name}")
 
 
 def _script_filter(
