@@ -438,9 +438,15 @@ def _draw_shape(painter: QPainter, values: dict[str, object], width: int, height
 
 
 def polyline_points(text: str) -> list[tuple[float, float]]:
-    """``"x,y;x,y"`` を点の並びへ 読めない組は飛ばす 座標は中心からの画素で Y は上が正"""
+    """``"x,y;x,y"`` を点の並びへ 読めない組は飛ばす 座標は中心からの画素で Y は上が正
+
+    点の数は :data:`MAX_POLYLINE_POINTS` で頭を抑える 壊れたファイルや巨大な線を
+    読み込むと、1 フレームごとに点列を解き直して再生が止まる
+    """
     points: list[tuple[float, float]] = []
-    for pair in text.split(";"):
+    for pair in text.split(";", MAX_POLYLINE_POINTS):
+        if len(points) >= MAX_POLYLINE_POINTS:
+            break
         parts = pair.split(",")
         if len(parts) != 2:
             continue
@@ -549,6 +555,9 @@ def _draw_concentration(
     painter.setBrush(QBrush(gradient))
     painter.drawPath(path)
 
+
+#: 折れ線で読み取る点の数の上限 これ以上は捨てる（描画は 1 フレームごとに走る）
+MAX_POLYLINE_POINTS = 4096
 
 #: 線の一部を描き直すときの刻みの上限 長い線で刻みが増えると、1 フレームに何秒もかかる
 MAX_TRIM_STEPS = 2000

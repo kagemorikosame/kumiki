@@ -274,6 +274,10 @@ def _noise(
     if isinstance(raw, dict) and number(raw.get("WarpStrength"), 0.0) != 0.0:
         report.note_missing("YMM4 のノイズのゆがみ（WarpStrength）")
     size = number(raw.get("Size"), 100.0) / 100.0 if isinstance(raw, dict) else 1.0
+    if not math.isfinite(size):
+        # 粒の大きさへ非有限が入ると、掛けた先の横縦の大きさまで NaN になり模様が消える
+        report.note_missing("YMM4 のノイズのブラシの大きさ（数として読めない値）")
+        size = 1.0
     # NaN や無限大を round へ渡すと例外になり、同じテンプレートのほかのアイテムまで読めない
     octaves = number(raw.get("Octaves"), 5.0) if isinstance(raw, dict) else 5.0
     if not math.isfinite(octaves):

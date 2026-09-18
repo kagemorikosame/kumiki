@@ -122,6 +122,20 @@ class TestBrushes:
         assert effect.params["turbulence"] is True
         assert not report.lines()
 
+    def test_a_broken_noise_size_falls_back_and_is_recorded(self) -> None:
+        # 大きさが数として読めないと、掛けた先の横縦の大きさまで NaN になり模様が消える
+        report = CompatibilityReport()
+        brush = _brush(
+            "NoiseBrushPlugin",
+            Color1="#FF000000",
+            Color2="#FFFFFFFF",
+            NoiseParameter={"Size": float("nan"), "ScaleX": _still(150.0)},
+        )
+        effect = brush_effect(brush, report)
+        assert effect is not None
+        assert _static(effect.params["noise_scale_x"]) == 150.0
+        assert any("大きさ" in line for line in report.lines())
+
     def test_a_shape_with_a_pattern_is_painted_white_then_patterned(self) -> None:
         # 図形の色がブラシの模様なら、形は白で描き、模様だけで塗る
         item = {
