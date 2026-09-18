@@ -293,6 +293,7 @@ class TestShapes:
         source = map_template([item], report=report)[0].clip.source
         assert source is not None
         # 点は画面の左上からの座標 中心を引き、Y は上向きへ直す
+        # この直しが抜けると、線が中心からずれたうえ上下が逆さまに出る
         assert source.params["points"] == "0,0;100,-100"
         assert _value(source.params["line_width"]) == pytest.approx(320.0)
         assert _value(source.params["trim_end"]) == pytest.approx(90.0)
