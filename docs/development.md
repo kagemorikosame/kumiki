@@ -251,6 +251,37 @@ PR には必ず含める:
 | Sourcery | `@sourcery-ai review` | Web の画面（Review Settings） 言語は日本語、`tests/fixtures/**` を外す |
 | Qodo | `/agentic_review` | `.pr_agent.toml` |
 
+#### 承認（Approved）の出し方
+
+CodeRabbit と Sourcery は承認を出す 指摘が残っている間は「変更を求める」状態で、
+全部片付くと承認に変わるので、**PR の一覧を見るだけで手が要るかどうかが分かる**
+
+- CodeRabbit … `.coderabbit.yaml` の `reviews.request_changes_workflow: true`
+  承認へ変わるのは「指摘が全部解決」「最新のコミットまで見た」とき
+  **こちらの CI の結果は見ていない** CI が赤でも承認は出るので、承認を CI の代わりにしない
+- Sourcery … Web の画面（Review Settings）の `Let Sourcery approve pull requests`
+- Copilot の承認は**有効にしない** 既定のまま（指摘だけ） 承認 1 つで必須承認を
+  満たせてしまい、門として弱くなるため
+- Qodo の自動承認は指摘が 0 件のときだけ出る作りなので、今の進め方では出ない 使っていない
+  （`Qodo review` の status はこれとは別物 Qodo が最新のコミットを見たかだけを見ており、
+  指摘の数や承認は見ていない）
+
+**承認はマージの門ではない**（`main` の必須承認は 0 のまま）
+門は今までどおり CI 2 本・`Qodo review`・会話の解決
+
+ただし **CodeRabbit の「変更を求める」は、必須承認が 0 でもマージを止める**
+（PR #18 で確かめた `reviewDecision` が `CHANGES_REQUESTED` になり `BLOCKED` に変わる）
+止まったときの外し方は 2 つ
+
+1. 指摘を直すか返事をしてスレッドを解決し、`@coderabbitai review` で見直してもらう
+   （これが普通の道 承認へ変わる 見るのは前回のレビューからの差分なので、
+   PR 全体を見直してほしいときは `@coderabbitai full review`）
+2. CodeRabbit の枠が切れて見直しが返ってこないときは、**管理者が GitHub の画面で
+   その レビューを Dismiss する**（`main` の保護は管理者に強制していないので外せる）
+
+`@coderabbitai approve` と `@coderabbitai resolve` は**使わない** 指摘を見ないまま
+承認や解決ができてしまい、承認の表示と実際に見た範囲が食い違う
+
 約束（コメントの書き方・コア層の依存・テストの書き方）は、どの役にも同じものを渡す
 `.coderabbit.yaml` を直したら、`.pr_agent.toml` もそろえる
 

@@ -14,8 +14,12 @@ reviews:
   # 落ち着いた口調 細かい指摘を大量に出されると本題が埋もれる
   profile: chill
 
-  # レビューで PR を止めない 判断はこちらでする
-  request_changes_workflow: false
+  # 指摘が残っている間は「変更を求める」、全部片付いたら承認を出す
+  # 変更を求める状態は、必須承認が 0 でもマージを止める（PR #18 で確かめた）
+  # 枠切れで見直しが返ってこないときは、管理者が画面でそのレビューを外す
+  # 承認そのものを門にはしていない（main の必須承認は 0 のまま） 進み具合が
+  # PR の一覧から見えるようにするためで、承認が出ても会話の解決と CI は別に要る
+  request_changes_workflow: true
 
   high_level_summary: true
   review_status: true
