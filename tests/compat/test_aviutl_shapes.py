@@ -14,7 +14,7 @@ from kumiki.compat.aviutl.report import CompatibilityReport
 from kumiki.compat.mapped import MappedObject
 from kumiki.core.model import AnimatedValue, GeneratedSource
 from kumiki.core.timebase import FrameRate
-from kumiki.engine.sources import format_time
+from kumiki.engine.sources import format_time, timer_text
 
 RATE = FrameRate(60)
 
@@ -273,4 +273,18 @@ class TestWhatTheSecondReviewFound:
     def test_too_few_corners_are_recorded_without_trimming(self) -> None:
         # 頂点数 が座標より多いファイル 切り詰めないが、食い違いは残す
         _, report = _mapped("多角形\n色=ffffff\nライン幅=20\n頂点数=5\n座標=0,0,10,0")
+        assert any("頂点数と座標の数が合わない" in line for line in report.lines())
+
+    def test_a_clock_format_still_stops_at_zero(self) -> None:
+        # 時計が負になることはない 通算の n だけ負の値を出す
+        assert timer_text({"_seconds": 0.0, "timer_start": -5.0, "timer_format": "s"}) == "0"
+        assert timer_text({"_seconds": 0.0, "timer_start": -5.0, "timer_format": "n"}) == "-5"
+
+    def test_a_value_that_is_not_a_number_does_not_stop_the_drawing(self) -> None:
+        # NaN を int() へ渡すと例外になり、そのフレームの描画ごと止まる
+        assert format_time(float("nan"), "n") == "0"
+
+    def test_a_corner_count_mismatch_is_recorded_even_with_no_points(self) -> None:
+        # 座標を全部捨てたときも、頂点数の食い違いは残す
+        _, report = _mapped("多角形\n色=ffffff\n頂点数=3\n座標=0,だめ")
         assert any("頂点数と座標の数が合わない" in line for line in report.lines())

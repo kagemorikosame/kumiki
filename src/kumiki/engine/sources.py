@@ -9,6 +9,8 @@ Qt の描画系（``QPainter``）を使う 日本語の禁則処理やフォン�
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (
@@ -138,7 +140,12 @@ def timer_text(values: dict[str, object]) -> str:
         value = start + (total - seconds) * rate
     else:
         value = start + seconds * rate
-    return format_time(value, str(values.get("timer_format", "")))
+    pattern = str(values.get("timer_format", ""))
+    # 時刻の書式（h・m・s）は 0 で止める 時計が負になることはない
+    # 通算の n だけ負の値を出す（AviUtl のカウンターは数え下げで負になる）
+    if "n" not in pattern:
+        value = max(value, 0.0)
+    return format_time(value, pattern)
 
 
 #: 時間の書式で 1 つの文字を並べられる数の上限 壊れたファイルの巨大な書式で固まらないため
@@ -151,6 +158,9 @@ def format_time(value: float, pattern: str) -> str:
     ``n`` だけは .NET に無いこちらの追加で、**60 で折り返さない通算の値**
     AviUtl のカウンターのように、ただ数を数えるものに使う（``s`` は分に繰り上がる）
     """
+    # 非有限は 0 として扱う int() が例外になり、描画がフレームごと止まる
+    if not math.isfinite(value):
+        value = 0.0
     # 負の値も出す AviUtl のカウンターは負の初めの値や数え下げを持てる
     # 0 で止めると、下がっていくはずの数字が途中から動かなくなる
     sign = "-" if value < 0.0 else ""

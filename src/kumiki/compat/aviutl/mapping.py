@@ -765,7 +765,7 @@ def _polygon(entry: ExoEntry, log: CompatibilityReport) -> GeneratedSource:
         log.note_missing("多角形の座標（読めない）")
 
     corners = round(entry.number("頂点数", float(len(pairs))))
-    if pairs and corners != len(pairs):
+    if corners != len(pairs):
         # 頂点数と座標の数が食い違うファイル 余分な点まで描くと形が変わるので、
         # 頂点数が正でかつ少ないときだけそのぶんを使う どちらにしても記録に残す
         log.note_missing("多角形の頂点数と座標の数が合わない")
