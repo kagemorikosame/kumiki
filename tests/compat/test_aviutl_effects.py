@@ -334,3 +334,33 @@ class TestTheLeftoverSettings:
         # ここを使用中と数えると、直したばかりの多い順の並びがまた埋まる
         _, report = _effects("縁取り\nサイズ=6\nぼかし=0,0,補間移動,3\n縁色=ffffff")
         assert not any("縁取りの項目: ぼかし" in line for line in report.lines())
+
+
+class TestWhatTheRealOutputFound:
+    """AviUtl2 に書き出させた動画と 1 枚ずつ比べて見つかったもの"""
+
+    def test_black_stays_black(self) -> None:
+        """``000000`` が白へ化けない
+
+        頭の飾りを ``lstrip`` で落としていたので、``000000`` が空文字になり
+        「読めない色」＝白へ落ちていた 黒は縁取りと影の既定色なので、
+        配布物のほとんどが白い縁に覆われて別物になる
+        """
+        effect = _one("縁取り\nサイズ=6\n縁色=000000")
+        assert effect.params["color"] == (0.0, 0.0, 0.0, 1.0)
+
+    def test_a_black_gradient_end_stays_black(self) -> None:
+        # 終了色が白へ化けると、暗く落ちていくはずのグラデーションが
+        # 明るい方へ伸びる 文字の下半分が白飛びして読めなくなる
+        effect = _one(
+            "グラデーション\n強さ=100.0\n角度=90.00\n幅=100\n形状=線形\n"
+            "開始色=6c6c6c\n終了色=000000"
+        )
+        assert effect.params["end_color"] == (0.0, 0.0, 0.0, 1.0)
+
+    def test_a_hash_or_an_0x_prefix_is_still_dropped(self) -> None:
+        # 飾りを 1 つずつ落とす作りにしたので、付いていても読めること
+        # 落とし損ねると色として読めず、白（読めない色の逃げ先）になる
+        # 緑の縁取りが白い縁になって、文字の周りだけ配色が変わる
+        assert _one("縁取り\nサイズ=6\n縁色=#00ff00").params["color"] == (0.0, 1.0, 0.0, 1.0)
+        assert _one("縁取り\nサイズ=6\n縁色=0x00ff00").params["color"] == (0.0, 1.0, 0.0, 1.0)

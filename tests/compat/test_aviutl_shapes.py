@@ -108,13 +108,26 @@ class TestConcentration:
         source = _source("集中線\n濃さ=40.0\n速さ=25.0\n中心幅=0\n色=ffffff")
         assert source.kind == "shape"
         assert source.params["shape"] == "concentration"
-        assert _value(source, "density") == 40.0
         assert _value(source, "flicker") == 25.0
+        # AviUtl の集中線は中心幅が 0 でも画面いっぱい 空きの有無で描き方を
+        # 分けると、空きを 0 にしたものだけが小さな円に縮む
+        assert source.params["fill_frame"] is True
 
-    def test_the_centre_gap_is_recorded(self) -> None:
-        # 真ん中の空きに当たる項目が無い 黙って落とすと線が中心まで伸びる
-        _, report = _mapped("集中線\n濃さ=40.0\n速さ=25.0\n中心幅=300.0\n色=ffffff")
-        assert any("中心幅" in line for line in report.lines())
+    def test_the_density_drives_both_the_count_and_the_width(self) -> None:
+        # AviUtl2 に濃さ 40・80・160 を描かせて測ると、線の占める角度が
+        # 18%・約 65%・100% と 2 乗で増える 本数だけに渡すと、
+        # 濃くしたはずの画面が埋まらず、線が増えただけの絵になる
+        source = _source("集中線\n濃さ=40.0\n速さ=25.0\n中心幅=0\n色=ffffff")
+        assert _value(source, "density") == 64.0
+        assert _value(source, "line_thickness") == 33.0
+        thick = _source("集中線\n濃さ=80.0\n速さ=25.0\n中心幅=0\n色=ffffff")
+        assert _value(thick, "line_thickness") == 132.0
+
+    def test_the_centre_gap_is_the_radius_of_the_hole(self) -> None:
+        # AviUtl2 の実物で 中心幅 300 の絵は半径 300 まで真っ暗だった
+        # 直径として扱うと、空きが半分になって線が中心まで伸びる
+        source = _source("集中線\n濃さ=40.0\n速さ=25.0\n中心幅=300.0\n色=ffffff")
+        assert _value(source, "center_gap") == 300.0
 
 
 class TestTheThingsReviewFound:
@@ -137,10 +150,12 @@ class TestTheThingsReviewFound:
         assert isinstance(density, AnimatedValue)
         assert density.is_animated
 
-    def test_a_moving_centre_gap_is_recorded(self) -> None:
-        # 0 から動く中心幅も「使っている」 記録しないと落としたことに気付けない
-        _, report = _mapped("集中線\n濃さ=40\n速さ=25\n中心幅=0,300,直線移動,0\n色=ffffff")
-        assert any("中心幅" in line for line in report.lines())
+    def test_a_moving_centre_gap_keeps_moving(self) -> None:
+        # 動きを落とすと、広がっていく空きが最初の大きさで止まる
+        source = _source("集中線\n濃さ=40\n速さ=25\n中心幅=0,300,直線移動,0\n色=ffffff")
+        gap = source.params["center_gap"]
+        assert isinstance(gap, AnimatedValue)
+        assert gap.is_animated
 
     def test_a_moving_size_is_recorded(self) -> None:
         # 大きさは サイズ と 縦横比 から計算してから渡すので、動きを残せない

@@ -537,9 +537,12 @@ def _draw_concentration(
     本数・太さ・長さ・ぼかしの効き方は YMM4 に描かせた絵から近づけた ぼかし 0 は大きさの
     半分の円の中に硬い線、ぼかすと線は画面の外まで伸びて、中心側がぼんやり抜ける
     """
-    radius = max(float(values.get("width", 400)) * 0.5, 1.0)  # type: ignore[arg-type]
-    count = max(1, min(1000, int(float(values.get("density", 80)))))  # type: ignore[arg-type]
-    thickness = float(values.get("line_thickness", 50.0)) / 100.0  # type: ignore[arg-type]
+    if bool(values.get("fill_frame", False)):
+        _draw_concentration_frame(painter, values, centre_x, centre_y, width, height)
+        return
+    radius = max(_number(values, "width", 400.0) * 0.5, 1.0)
+    count = max(1, min(1000, int(_number(values, "density", 80.0))))
+    thickness = _number(values, "line_thickness", 50.0) / 100.0
     length = float(values.get("line_length", 70.0)) / 100.0  # type: ignore[arg-type]
     soft = max(0.0, min(1.0, float(values.get("softness", 50.0)) / 100.0))  # type: ignore[arg-type]
     flicker = float(values.get("flicker", 5.0))  # type: ignore[arg-type]
@@ -589,6 +592,75 @@ def _draw_concentration(
     painter.setPen(Qt.PenStyle.NoPen)
     painter.setBrush(QBrush(gradient))
     painter.drawPath(path)
+
+
+#: 真ん中の空きを持つ集中線の、1 本あたりの薄さ
+#: AviUtl2 の絵で、線が 1 枚だけ載っている所の明るさが 255 中の 67 ほどだった
+CONCENTRATION_LINE_ALPHA = 67.0 / 255.0
+
+
+def _draw_concentration_frame(
+    painter: QPainter,
+    values: dict[str, object],
+    centre_x: float,
+    centre_y: float,
+    width: int,
+    height: int,
+) -> None:
+    """画面いっぱいの集中線（AviUtl の ``集中線``）
+
+    YMM4 のものとは絵の作りが違うので分けてある AviUtl2 に ``中心幅`` と ``濃さ``
+    を変えた 3 本を描かせて測った結果、
+
+    * ``中心幅`` は真ん中の空きの **半径**（px） 300 → 341、600 → 599、100 → 119
+    * 線は空きの縁から画面の外まで伸びる 半径を変えても角度の占有率が変わらない
+      ので、中心から広がる三角ではなく、中心を頂点とする扇（角度が一定）
+    * ``濃さ`` は本数と 1 本の太さの両方に効く 占有率が 40 → 18%、80 → 約 65%、
+      160 → 100% と、おおよそ濃さの 2 乗で増える
+    * 1 本は真っ白ではない 占有率 18% のときの明るさの平均が 255 中の 67 ほど
+      重なった所だけが 200 を超えるので、薄い線を重ねている
+
+    YMM4 の方の描き方（大きさの円に収め、ぼかしで中心を抜く）で代えると、
+    小さな円が真ん中に浮くだけの別物になる
+    """
+    gap = max(0.0, _number(values, "center_gap", 300.0))
+    count = max(1, min(1000, int(_number(values, "density", 64.0))))
+    thickness = max(0.0, _number(values, "line_thickness", 30.0) / 100.0)
+    flicker = _number(values, "flicker", 25.0)
+    seconds = _number(values, "_seconds", 0.0)
+    tick = int(seconds * flicker) if flicker > 0 else 0
+    random = np.random.default_rng(tick * 7919 + 17)
+
+    colour = _color(values.get("color"))
+    # 実測に合わせた 1 本あたりの薄さ 不透明で描くと、同じ占有率でも真っ白な絵になる
+    colour.setAlphaF(colour.alphaF() * CONCENTRATION_LINE_ALPHA)
+    # 画面の四隅まで届かせる 中心をずらしても端が空かないよう、ずれのぶんを足す
+    reach = float(np.hypot(width, height)) + float(
+        np.hypot(centre_x - width / 2.0, centre_y - height / 2.0)
+    )
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QBrush(colour))
+    spacing = 2.0 * np.pi / count
+    for _ in range(count):
+        angle = random.uniform(0.0, 2.0 * np.pi)
+        half = spacing * thickness * random.uniform(0.2, 1.0) * 0.5
+        lo, hi = angle - half, angle + half
+        # 内も外も円弧で閉じる 直線（弦）で閉じると中心寄りに食い込み、
+        # 太い線では空けたはずの真ん中に線が入る（外側の弦は中心を横切る）
+        #
+        # Qt の角度は度で、反時計回りが正 こちらの角度は下向きの Y で持っているので
+        # 符号を反転してから渡す 走る量は hi − lo（内側は逆向きに戻る）
+        start, sweep = float(np.degrees(-lo)), float(np.degrees(lo - hi))
+        wedge = QPainterPath()
+        wedge.arcMoveTo(_around(centre_x, centre_y, reach), start)
+        wedge.arcTo(_around(centre_x, centre_y, reach), start, sweep)
+        if gap > 0.0:
+            wedge.arcTo(_around(centre_x, centre_y, gap), start + sweep, -sweep)
+        else:
+            wedge.lineTo(centre_x, centre_y)
+        # 1 本ずつ描く 1 つのパスにまとめると、重なった所が塗り分けの規則で
+        # 抜けたり、重ねても濃くならなかったりする
+        painter.drawPath(wedge)
 
 
 #: 折れ線で読み取る点の数の上限 これ以上は捨てる（描画は 1 フレームごとに走る）
@@ -796,6 +868,29 @@ def _superformula_path(rect: QRectF, m: float, n: float) -> QPainterPath:
             path.lineTo(x, y)
     path.closeSubpath()
     return path
+
+
+def _around(centre_x: float, centre_y: float, radius: float) -> QRectF:
+    """中心と半径から、円弧を描くための四角"""
+    return QRectF(centre_x - radius, centre_y - radius, radius * 2.0, radius * 2.0)
+
+
+def _number(values: dict[str, object], name: str, default: float) -> float:
+    """解けた設定から数を 1 つ読む
+
+    :func:`_resolve` を通った後の値は数（か数の文字）になっているが、型としては
+    ``object`` のまま ここで 1 か所にまとめておくと、読む側に
+    理由の無い ``type: ignore`` を並べずに済む
+    """
+    value = values.get(name, default)
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, int | float):
+        return float(value)
+    try:
+        return float(str(value))
+    except ValueError:
+        return default
 
 
 def _color(value: object) -> QColor:

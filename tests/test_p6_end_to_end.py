@@ -161,6 +161,18 @@ def ink(image: np.ndarray) -> int:
     return int((image[:, :, :3].max(axis=2) > 24).sum())
 
 
+def _extent(image: np.ndarray) -> tuple[int, int]:
+    """描かれたものの幅と高さ 何も描かれていなければ 0"""
+    lit = image[:, :, :3].max(axis=2) > 24
+    rows, columns = np.where(lit)
+    if not len(rows):
+        return (0, 0)
+    return (
+        int(columns.max() - columns.min() + 1),
+        int(rows.max() - rows.min() + 1),
+    )
+
+
 def _without_decoration(project: Project) -> Project:
     """文字装飾だけを外した同じプロジェクト 比較のために作る"""
     from dataclasses import replace
@@ -218,11 +230,14 @@ class TestRestylingMyOwnSubtitle:
     ) -> None:
         """``文字装飾=縁取り文字（太）`` の黒縁が、実際に画面を占めている
 
-        背景が黒なので「黒い画素があるか」では確かめられない 装飾を外した
-        同じ絵と比べて、文字のまわりが太っているかを見る
+        背景が黒なので「黒い画素があるか」でも「色の付いた画素が増えたか」でも
+        確かめられない 縁は黒なので、数えると逆に**減る**（文字の縁を黒が食う）
+        装飾を外した同じ絵と比べ、絵の広がり（外周）が縁のぶん太るかを見る
         """
-        bare = _without_decoration(restyled)
-        assert ink(draw(restyled, gl)) > ink(draw(bare, gl)) * 1.1
+        bare = _extent(draw(_without_decoration(restyled), gl))
+        decorated = _extent(draw(restyled, gl))
+        assert decorated[0] > bare[0]
+        assert decorated[1] > bare[1]
 
     def test_the_stacked_border_effect_is_drawn(
         self, restyled: Project, gl: OffscreenGLContext
