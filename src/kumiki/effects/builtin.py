@@ -579,15 +579,26 @@ void main() {
         // 円形 中心からの距離
         t = length(pixel - centre) / length_;
     } else {
-        // 線形 角度 0 で左から右、90 で上から下
+        // 線形 角度 0 で上から下、90 で右から左（終了色の向き）
+        //
+        // AviUtl2 に 角度 0 と 90 のグラデーションを描かせて読み取った
+        // 0 は上が開始色・下が終了色、90 は右が開始色・左が終了色だった
+        // (cos, sin) のまま使うと 0 が左右、90 が上下になり、
+        // 画面の端に寄せた配布物の文字が丸ごと終了色（多くは黒）で塗り潰される
         float radian = radians(angle);
-        vec2 direction = vec2(cos(radian), sin(radian));
+        vec2 direction = vec2(-sin(radian), cos(radian));
         t = dot(pixel - centre, direction) / length_ + 0.5;
     }
 
-    vec4 ramp = mix(start_color, end_color, clamp(t, 0.0, 1.0));
+    // 開始色から終了色への混ぜ方も **符号化した値（sRGB）で計算する**
+    // AviUtl2 に赤から青のグラデーションを描かせると真ん中が (117, 0, 122) で、
+    // 符号化した値の中点（127 付近）に当たる リニアで混ぜると真ん中が 186 の
+    // 明るいマゼンタになり、配布物の中間色が全部派手になる
+    float along = clamp(t, 0.0, 1.0);
+    vec3 ramp_rgb = mix(to_srgb(start_color.rgb), to_srgb(end_color.rgb), along);
+    float ramp_alpha = mix(start_color.a, end_color.a, along);
     // 元の絵の不透明度はそのまま グラデーションは色だけを塗り替える
-    float amount = clamp(strength * 0.01, 0.0, 1.0) * ramp.a;
+    float amount = clamp(strength * 0.01, 0.0, 1.0) * ramp_alpha;
     // 合成の仕方は塗りと同じ関数を使う AviUtl のグラデーションは
     // 加算や乗算で重ねる使い方が多く、通常だけだと配布物の見た目が出ない
     //
@@ -595,8 +606,7 @@ void main() {
     // 戻してから混ぜ、最後にリニアへ直す AviUtl も YMM4 も sRGB で混ぜており、
     // リニアのまま掛けると加算や乗算の見た目が別物になる
     vec3 under = to_srgb(base.rgb);
-    vec3 over = to_srgb(ramp.rgb);
-    vec3 rgb = mix(under, blend_colors(blend, under, over), amount);
+    vec3 rgb = mix(under, blend_colors(blend, under, ramp_rgb), amount);
     frag_color = vec4(to_linear(rgb), base.a);
 }
 """

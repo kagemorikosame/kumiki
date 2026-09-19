@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from fractions import Fraction
 
 from kumiki.compat.aviutl.encoding import decode_utf16_hex
@@ -830,17 +830,29 @@ def _concentration(
     """集中線 AviUtl2 ではカスタムオブジェクト（図形の仲間）
 
     項目は ``濃さ`` ``速さ`` ``中心幅`` ``色`` AviUtl2 に置かせて読み取った
-    ``中心幅``（真ん中の空き）に当たる項目がこちらに無いので記録に残す
+
+    ``濃さ`` は本数でも太さでもなく、その両方に効く AviUtl2 に 40・80・160 を
+    描かせて角度の占有率を測ると 18%・約 65%・100% と 2 乗で増えたので、
+    本数と 1 本の太さの両方へ掛ける 片方だけに渡すと、濃くしたときに
+    線がただ増える（または太るだけの）別の絵になる
     """
-    centre = parse_motion(entry.params.get("中心幅"))
-    if centre is not None and (centre.first != 0.0 or _varies(centre)):
-        log.note_missing("集中線の中心幅（真ん中の空き）")
+    density = animated_value(
+        entry.params.get("濃さ"), points=points, log=log, label="集中線の濃さ", default=40.0
+    )
     return GeneratedSource(
         kind="shape",
         params={
             "shape": "concentration",
-            "density": animated_value(
-                entry.params.get("濃さ"), points=points, log=log, label="集中線の濃さ", default=40.0
+            # 濃さ 40 で 64 本・占有率 18%（実測）に合わせた係数
+            # 太さは 2 乗 100% を超えると線が重なり、濃さ 160 で画面が埋まる
+            "density": _mapped(density, lambda value: value * 1.6),
+            "line_thickness": _mapped(density, _line_thickness),
+            "center_gap": animated_value(
+                entry.params.get("中心幅"),
+                points=points,
+                log=log,
+                label="集中線の中心幅",
+                default=300.0,
             ),
             "flicker": animated_value(
                 entry.params.get("速さ"), points=points, log=log, label="集中線の速さ", default=25.0
@@ -1304,9 +1316,39 @@ def _align(index: int) -> str:
     return ("center", "left", "right")[index % 3] if 0 <= index < 9 else "center"
 
 
+def _line_thickness(density: float) -> float:
+    """集中線の ``濃さ`` を、線 1 本の太さ（間隔に対する %）へ
+
+    濃さ 40 のとき 33%（実測の占有率 18% に当たる） そこから 2 乗で増やす
+    線形にすると、濃さ 160 で埋まるはずの画面が半分しか埋まらない
+    """
+    return min((density / 40.0) ** 2 * 33.0, 400.0)
+
+
+def _mapped(value: AnimatedValue, convert: Callable[[float], float]) -> AnimatedValue:
+    """動く値の中身を、キーフレームごと作り直す
+
+    1 つの項目が 2 つの値へ効くとき（集中線の ``濃さ`` は本数と太さの両方）に使う
+    元の欄を 2 回読ませると、読めなかったときの記録が二重に残る
+    """
+    return AnimatedValue(
+        static=convert(value.static),
+        keyframes=tuple(
+            replace(keyframe, value=convert(keyframe.value)) for keyframe in value.keyframes
+        ),
+    )
+
+
 def _color(value: str) -> tuple[float, ...]:
-    """``ffffff`` の形の色を 0..1 の組へ"""
-    text = value.strip().lstrip("#").lstrip("0xX")
+    """``ffffff`` の形の色を 0..1 の組へ
+
+    頭の飾りは ``removeprefix`` で 1 つずつ落とす ``lstrip`` は文字の集合として
+    削るので、``000000``（黒）が空文字になって「読めない色」＝白へ落ちる
+    黒は縁取りと影の既定色なので、配布物のほとんどが白く塗り潰される
+    """
+    text = value.strip().removeprefix("#")
+    for prefix in ("0x", "0X"):
+        text = text.removeprefix(prefix)
     try:
         number = int(text, 16)
     except ValueError:

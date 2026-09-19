@@ -157,9 +157,11 @@ SHAPE = SourceDefinition(
         TrackSpec("trim_start", "線を描き始める位置", 0, 100, 0, unit="%"),
         TrackSpec("trim_end", "線を描き終える位置", 0, 100, 100, unit="%"),
         TrackSpec("density", "集中線の本数", 1, 1000, 80, step=1),
-        TrackSpec("line_thickness", "集中線の太さ", 0, 100, 50, unit="%"),
+        # 100% で線が隙間なく並ぶ それより上は重なる（AviUtl の濃い集中線がここを使う）
+        TrackSpec("line_thickness", "集中線の太さ", 0, 400, 50, unit="%"),
         TrackSpec("line_length", "集中線の長さ", 0, 100, 70, unit="%"),
         TrackSpec("softness", "集中線のぼかし", 0, 100, 50, unit="%"),
+        TrackSpec("center_gap", "集中線の真ん中の空き", 0, 4000, 0, step=1, unit="px"),
         TrackSpec("flicker", "集中線の切り替え", 0, 240, 5, unit="回/秒"),
         TrackSpec("pos_x", "X", -4000, 4000, 0, step=1, unit="px"),
         TrackSpec("pos_y", "Y", -4000, 4000, 0, step=1, unit="px"),

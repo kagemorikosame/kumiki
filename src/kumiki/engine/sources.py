@@ -537,6 +537,9 @@ def _draw_concentration(
     本数・太さ・長さ・ぼかしの効き方は YMM4 に描かせた絵から近づけた ぼかし 0 は大きさの
     半分の円の中に硬い線、ぼかすと線は画面の外まで伸びて、中心側がぼんやり抜ける
     """
+    if float(values.get("center_gap", 0.0)) > 0.0:  # type: ignore[arg-type]
+        _draw_concentration_gap(painter, values, centre_x, centre_y, width, height)
+        return
     radius = max(float(values.get("width", 400)) * 0.5, 1.0)  # type: ignore[arg-type]
     count = max(1, min(1000, int(float(values.get("density", 80)))))  # type: ignore[arg-type]
     thickness = float(values.get("line_thickness", 50.0)) / 100.0  # type: ignore[arg-type]
@@ -589,6 +592,68 @@ def _draw_concentration(
     painter.setPen(Qt.PenStyle.NoPen)
     painter.setBrush(QBrush(gradient))
     painter.drawPath(path)
+
+
+#: 真ん中の空きを持つ集中線の、1 本あたりの薄さ
+#: AviUtl2 の絵で、線が 1 枚だけ載っている所の明るさが 255 中の 67 ほどだった
+CONCENTRATION_LINE_ALPHA = 67.0 / 255.0
+
+
+def _draw_concentration_gap(
+    painter: QPainter,
+    values: dict[str, object],
+    centre_x: float,
+    centre_y: float,
+    width: int,
+    height: int,
+) -> None:
+    """真ん中の空きを持つ集中線（AviUtl の ``集中線``）
+
+    YMM4 のものとは絵の作りが違うので分けてある AviUtl2 に ``中心幅`` と ``濃さ``
+    を変えた 3 本を描かせて測った結果、
+
+    * ``中心幅`` は真ん中の空きの **半径**（px） 300 → 341、600 → 599、100 → 119
+    * 線は空きの縁から画面の外まで伸びる 半径を変えても角度の占有率が変わらない
+      ので、中心から広がる三角ではなく、中心を頂点とする扇（角度が一定）
+    * ``濃さ`` は本数と 1 本の太さの両方に効く 占有率が 40 → 18%、80 → 約 65%、
+      160 → 100% と、おおよそ濃さの 2 乗で増える
+    * 1 本は真っ白ではない 占有率 18% のときの明るさの平均が 255 中の 67 ほど
+      重なった所だけが 200 を超えるので、薄い線を重ねている
+
+    YMM4 の方の描き方（大きさの円に収め、ぼかしで中心を抜く）で代えると、
+    小さな円が真ん中に浮くだけの別物になる
+    """
+    gap = max(1.0, float(values.get("center_gap", 300.0)))  # type: ignore[arg-type]
+    count = max(1, min(1000, int(float(values.get("density", 64)))))  # type: ignore[arg-type]
+    thickness = max(0.0, float(values.get("line_thickness", 30.0)) / 100.0)  # type: ignore[arg-type]
+    flicker = float(values.get("flicker", 25.0))  # type: ignore[arg-type]
+    seconds = float(values.get("_seconds", 0.0))  # type: ignore[arg-type]
+    tick = int(seconds * flicker) if flicker > 0 else 0
+    random = np.random.default_rng(tick * 7919 + 17)
+
+    colour = _color(values.get("color"))
+    # 実測に合わせた 1 本あたりの薄さ 不透明で描くと、同じ占有率でも真っ白な絵になる
+    colour.setAlphaF(colour.alphaF() * CONCENTRATION_LINE_ALPHA)
+    # 画面の四隅まで届かせる 中心をずらしても端が空かないよう、ずれのぶんを足す
+    reach = float(np.hypot(width, height)) + float(
+        np.hypot(centre_x - width / 2.0, centre_y - height / 2.0)
+    )
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QBrush(colour))
+    spacing = 2.0 * np.pi / count
+    for _ in range(count):
+        angle = random.uniform(0.0, 2.0 * np.pi)
+        half = spacing * thickness * random.uniform(0.2, 1.0) * 0.5
+        lo, hi = angle - half, angle + half
+        wedge = QPainterPath()
+        wedge.moveTo(centre_x + np.cos(lo) * gap, centre_y + np.sin(lo) * gap)
+        wedge.lineTo(centre_x + np.cos(lo) * reach, centre_y + np.sin(lo) * reach)
+        wedge.lineTo(centre_x + np.cos(hi) * reach, centre_y + np.sin(hi) * reach)
+        wedge.lineTo(centre_x + np.cos(hi) * gap, centre_y + np.sin(hi) * gap)
+        wedge.closeSubpath()
+        # 1 本ずつ描く 1 つのパスにまとめると、重なった所が塗り分けの規則で
+        # 抜けたり、重ねても濃くならなかったりする
+        painter.drawPath(wedge)
 
 
 #: 折れ線で読み取る点の数の上限 これ以上は捨てる（描画は 1 フレームごとに走る）

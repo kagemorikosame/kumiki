@@ -342,24 +342,57 @@ class TestDecorationEffects:
     def test_gradient_runs_from_one_colour_to_the_other(
         self, draw: Callable[..., np.ndarray]
     ) -> None:
-        # 角度 90 は上から下 金色のテキストなどはこの向きで作られている
+        # 角度 0 が上から下、90 が右から左 AviUtl2 に両方を描かせて読み取った
+        # 金色のテキストなどは 0 の向きで作られている
+        #
+        # 逆にすると、画面の端に寄せた配布物の文字が丸ごと終了色（多くは黒）になる
         square = white_square(120)
+
+        def paint(angle: int) -> np.ndarray:
+            return draw(
+                square,
+                (
+                    registry.require("gradient").create(
+                        start_color=(1.0, 0.0, 0.0, 1.0),
+                        end_color=(0.0, 0.0, 1.0, 1.0),
+                        angle=angle,
+                        span=120,
+                        strength=100,
+                    ),
+                ),
+            )
+
+        down = paint(0)
+        assert down[HEIGHT // 2 - 50, WIDTH // 2][0] > down[HEIGHT // 2 - 50, WIDTH // 2][2]
+        assert down[HEIGHT // 2 + 50, WIDTH // 2][2] > down[HEIGHT // 2 + 50, WIDTH // 2][0]
+
+        sideways = paint(90)
+        assert sideways[HEIGHT // 2, WIDTH // 2 + 50][0] > sideways[HEIGHT // 2, WIDTH // 2 + 50][2]
+        assert sideways[HEIGHT // 2, WIDTH // 2 - 50][2] > sideways[HEIGHT // 2, WIDTH // 2 - 50][0]
+
+    def test_the_middle_of_a_gradient_is_not_too_bright(
+        self, draw: Callable[..., np.ndarray]
+    ) -> None:
+        """赤から青の真ん中が、符号化した値の中点に来る
+
+        リニアのまま混ぜると真ん中が 186 ほどの派手なマゼンタになる
+        AviUtl2 の実物は 117 だった（配布物の中間色が全部違ってくる）
+        """
         painted = draw(
-            square,
+            white_square(120),
             (
                 registry.require("gradient").create(
                     start_color=(1.0, 0.0, 0.0, 1.0),
                     end_color=(0.0, 0.0, 1.0, 1.0),
-                    angle=90,
+                    angle=0,
                     span=120,
                     strength=100,
                 ),
             ),
         )
-        top = painted[HEIGHT // 2 - 50, WIDTH // 2]
-        bottom = painted[HEIGHT // 2 + 50, WIDTH // 2]
-        assert top[0] > top[2], "上が開始色になっていない"
-        assert bottom[2] > bottom[0], "下が終了色になっていない"
+        middle = painted[HEIGHT // 2, WIDTH // 2]
+        assert 100 <= int(middle[0]) <= 150
+        assert 100 <= int(middle[2]) <= 150
 
     def test_gradient_keeps_the_alpha(self, draw: Callable[..., np.ndarray]) -> None:
         # 色だけを塗り替える 不透明度まで触ると、図形の外まで色が付く
