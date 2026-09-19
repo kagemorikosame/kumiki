@@ -11,6 +11,8 @@ AviUtl のオブジェクトは「中身 1 つ + フィルタの列」ででき�
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
+from dataclasses import dataclass
 from fractions import Fraction
 
 from kumiki.compat.aviutl.encoding import decode_utf16_hex
@@ -38,8 +40,8 @@ from kumiki.core.model import (
     TrackKind,
 )
 from kumiki.core.timebase import FrameRate
-from kumiki.effects.definition import registry
-from kumiki.effects.spec import ParameterSpec, ParamInput, TrackSpec
+from kumiki.effects.definition import EffectDefinition, registry
+from kumiki.effects.spec import ParameterSpec, ParamInput, TrackSpec, ValueSpec
 
 __all__ = ["MappedObject", "map_exo", "map_object", "media_paths"]
 
@@ -76,15 +78,204 @@ _CONTENT_NAMES = frozenset(
 #: 位置と大きさを決める要素 エフェクトではなくクリップの配置として扱う
 _DRAW_NAMES = frozenset({"標準描画", "拡張描画"})
 
+
+@dataclass(frozen=True, slots=True)
+class _Param:
+    """写し先の項目
+
+    ``convert`` は値の直し方（Y の向きや、透明度と不透明度のように意味が逆のとき）
+    ``also`` は同じ値を入れるもう 1 つの項目（AviUtl が縦横をまとめて持つとき）
+    """
+
+    name: str
+    convert: Callable[[float], float] | None = None
+    also: str | None = None
+
+
+def _flip(value: float) -> float:
+    """AviUtl の下向き正の Y を、こちらの上向き正へ"""
+    return -value
+
+
+def _rest(value: float) -> float:
+    """透明度（0 で不透明）を不透明度（100 で不透明）へ"""
+    return 100.0 - value
+
+
+def _turn(one: int, other: int) -> int:
+    """2 つの角度の近さ 1 周でつながっているので短い側を見る"""
+    gap = abs(one - other) % 360
+    return min(gap, 360 - gap)
+
+
+def _quarter(value: float) -> float:
+    """90 度単位の回し方（0〜3）を角度へ"""
+    return value * 90.0
+
+
+#: フィルタのパラメータの対応 **AviUtl の効果名で引く**
+#:
+#: 種別で引くと、同じエフェクトへ写す効果（``座標`` ``拡大率`` ``回転`` は
+#: どれも変形）の項目名がぶつかる AviUtl では ``X`` が効果ごとに別の意味を持つ
+#:
+#: 項目名は AviUtl2 に効果を積んだエイリアスを作らせて読み取った（推測していない）
+_PARAMS: dict[str, dict[str, _Param]] = {
+    "ぼかし": {"範囲": _Param("radius")},
+    "発光": {
+        "強さ": _Param("intensity"),
+        "しきい値": _Param("threshold"),
+        "範囲": _Param("radius"),
+    },
+    "グロー": {
+        "強さ": _Param("intensity"),
+        "しきい値": _Param("threshold"),
+        "拡散": _Param("radius"),
+    },
+    "拡散光": {"強さ": _Param("intensity"), "拡散": _Param("radius")},
+    "色調補正": {
+        "明るさ": _Param("brightness"),
+        "コントラスト": _Param("contrast"),
+        "色相": _Param("hue"),
+        "彩度": _Param("saturation"),
+    },
+    "クロマキー": {
+        "色相範囲": _Param("hue_range"),
+        "彩度範囲": _Param("saturation_range"),
+        "境界補正": _Param("softness"),
+    },
+    # AviUtl2 の縁取りは ``サイズ`` ``ぼかし`` ``縁色`` 色は数値ではないので
+    # 対応表とは別に扱う（:func:`_filter` を参照）
+    "縁取り": {"サイズ": _Param("width")},
+    "枠線": {"サイズ": _Param("width")},
+    "グラデーション": {
+        "強さ": _Param("strength"),
+        "中心X": _Param("center_x"),
+        "中心Y": _Param("center_y", _flip),
+        "角度": _Param("angle"),
+        "幅": _Param("span"),
+    },
+    "影": {"X": _Param("offset_x"), "Y": _Param("offset_y", _flip), "濃さ": _Param("opacity")},
+    "シャドー": {
+        "X": _Param("offset_x"),
+        "Y": _Param("offset_y", _flip),
+        "濃さ": _Param("opacity"),
+    },
+    "ドロップシャドウ": {
+        "X": _Param("offset_x"),
+        "Y": _Param("offset_y", _flip),
+        "濃さ": _Param("opacity"),
+        "拡散": _Param("blur"),
+    },
+    "シャープ": {"強さ": _Param("strength"), "範囲": _Param("radius")},
+    "ノイズ": {"強さ": _Param("strength")},
+    "モザイク": {"サイズ": _Param("size")},
+    "クリッピング": {
+        "上": _Param("top"),
+        "下": _Param("bottom"),
+        "左": _Param("left"),
+        "右": _Param("right"),
+    },
+    "境界ぼかし": {"範囲": _Param("blur")},
+    "エッジ抽出": {"強さ": _Param("strength"), "しきい値": _Param("radius")},
+    "凸エッジ": {"幅": _Param("thickness"), "高さ": _Param("elevation"), "角度": _Param("azimuth")},
+    "方向ブラー": {"範囲": _Param("radius"), "角度": _Param("angle")},
+    "放射ブラー": {
+        "範囲": _Param("amount"),
+        "X": _Param("center_x"),
+        "Y": _Param("center_y", _flip),
+    },
+    "レンズブラー": {"範囲": _Param("radius"), "光の強さ": _Param("brightness")},
+    "色ずれ": {"ずれ幅": _Param("shift"), "角度": _Param("angle"), "強さ": _Param("strength")},
+    "カラーキー": {"色差範囲": _Param("tolerance"), "境界補正": _Param("feather")},
+    "ルミナンスキー": {"基準輝度": _Param("threshold"), "輝度範囲": _Param("smoothness")},
+    "斜めクリッピング": {
+        "中心X": _Param("center_x"),
+        "中心Y": _Param("center_y", _flip),
+        "角度": _Param("angle"),
+        "ぼかし": _Param("blur"),
+        "幅": _Param("width"),
+    },
+    "波紋": {
+        "中心X": _Param("center_x"),
+        "中心Y": _Param("center_y", _flip),
+        "幅": _Param("amplitude"),
+        "高さ": _Param("wavelength"),
+        "速度": _Param("period"),
+    },
+    "ラスター": {
+        "横幅": _Param("wavelength"),
+        "高さ": _Param("amplitude"),
+        "周期": _Param("period"),
+    },
+    "極座標変換": {"中心幅": _Param("core"), "渦巻": _Param("twist")},
+    "リール回転": {"回転数": _Param("rotation")},
+    "砕け散る": {
+        "開始時間": _Param("start"),
+        "再生速度": _Param("speed"),
+        "破片サイズ": _Param("size"),
+        "速度": _Param("fly"),
+        "重力": _Param("fall"),
+        "時間差": _Param("delay"),
+        "距離影響": _Param("impact"),
+    },
+    "粒子化": {
+        "開始時間": _Param("preroll"),
+        "起点X": _Param("emitter_x"),
+        # 放つ位置の Y は YMM4 に合わせて下が正のまま持つ（表示名にも書いてある）
+        "起点Y": _Param("emitter_y"),
+        "粒子速度": _Param("speed"),
+        "角度": _Param("emit_angle"),
+        "ゆらぎ": _Param("turbulence"),
+    },
+    "振動": {
+        "X": _Param("range_x"),
+        "Y": _Param("range_y"),
+        "Z": _Param("range_z"),
+        "周期": _Param("interval"),
+    },
+    # 震える は縦横をまとめて 1 つの振幅で持つ 本人の回答（2026-09-19）で
+    # 手ぶれ・振動・震えるは 1 つにまとめる
+    "震える": {"振幅": _Param("range_x", also="range_y"), "間隔": _Param("interval")},
+    "反復移動": {"距離": _Param("move_x"), "速さ": _Param("interval")},
+    "点滅": {"速さ": _Param("interval"), "点滅割合": _Param("opacity")},
+    "弾む": {"速さ": _Param("period"), "高さ": _Param("height")},
+    "円形配置": {
+        "円周": _Param("circumference"),
+        "半径": _Param("radius"),
+        "数": _Param("count"),
+    },
+    "画像ループ": {"横回数": _Param("count_x"), "縦回数": _Param("count_y")},
+    # 振り子は元の角度を挟んで往復する回転 速さは 1 往復の長さ
+    "振り子": {"角度": _Param("angle_z"), "速さ": _Param("interval")},
+    # ローテーションは 90 度単位の回し方を数で持つ
+    "ローテーション": {"90度回転": _Param("rotation", _quarter)},
+    "扇クリッピング": {
+        "中心X": _Param("center_x"),
+        "中心Y": _Param("center_y", _flip),
+        "基準角": _Param("rotation"),
+        "範囲角": _Param("span"),
+        "ぼかし": _Param("blur"),
+    },
+    "座標": {"X": _Param("pos_x"), "Y": _Param("pos_y", _flip)},
+    "拡大率": {"拡大率": _Param("scale", also="scale_y")},
+    "透明度": {"透明度": _Param("amount", _rest)},
+    "回転": {"Z": _Param("rotation"), "X": _Param("rotation_x"), "Y": _Param("rotation_y")},
+    "リサイズ": {"拡大率": _Param("scale", also="scale_y")},
+}
+
 #: AviUtl のフィルタ名と、こちらのエフェクト種別
 _FILTERS: dict[str, str] = {
     "ぼかし": "blur",
     "発光": "glow",
+    "グロー": "glow",
+    "拡散光": "glow",
     "色調補正": "color",
     "クロマキー": "chroma_key",
     "縁取り": "border",
+    "枠線": "border",
     "影": "shadow",
     "シャドー": "shadow",
+    "ドロップシャドウ": "shadow",
     "シャープ": "sharpen",
     "ノイズ": "noise",
     "モザイク": "mosaic",
@@ -92,34 +283,40 @@ _FILTERS: dict[str, str] = {
     "クリッピング": "crop",
     "リサイズ": "transform",
     "グラデーション": "gradient",
-}
-
-#: フィルタのパラメータ名の対応
-_PARAMS: dict[str, dict[str, str]] = {
-    "blur": {"範囲": "radius"},
-    "glow": {"強さ": "strength", "しきい値": "threshold", "範囲": "radius"},
-    "color": {
-        "明るさ": "brightness",
-        "コントラスト": "contrast",
-        "色相": "hue",
-        "彩度": "saturation",
-    },
-    "chroma_key": {"色相範囲": "hue_range", "彩度範囲": "saturation_range", "境界補正": "softness"},
-    # AviUtl2 の縁取りは ``サイズ`` ``ぼかし`` ``縁色`` 色は数値ではないので
-    # 対応表とは別に扱う（:func:`_filter` を参照）
-    "border": {"サイズ": "width"},
-    "gradient": {
-        "強さ": "strength",
-        "中心X": "center_x",
-        "中心Y": "center_y",
-        "角度": "angle",
-        "幅": "span",
-    },
-    "shadow": {"X": "offset_x", "Y": "offset_y", "濃さ": "opacity"},
-    "sharpen": {"強さ": "strength", "範囲": "radius"},
-    "noise": {"強さ": "strength"},
-    "mosaic": {"サイズ": "size"},
-    "crop": {"上": "top", "下": "bottom", "左": "left", "右": "right"},
+    "境界ぼかし": "border_blur",
+    "エッジ抽出": "edge_detect",
+    "凸エッジ": "bevel_light",
+    "方向ブラー": "directional_blur",
+    "放射ブラー": "radial_blur",
+    "レンズブラー": "lens_blur",
+    "モーションブラー": "after_image",
+    "色ずれ": "color_shift",
+    "単色化": "tint",
+    "反転": "invert",
+    "ミラー": "flip",
+    "カラーキー": "color_key",
+    "ルミナンスキー": "luminance_key",
+    "斜めクリッピング": "crop_angle",
+    "波紋": "ripple",
+    "ラスター": "wave",
+    "極座標変換": "polar",
+    "リール回転": "reel_spin",
+    "砕け散る": "crash",
+    "粒子化": "particles",
+    "振動": "random_move",
+    "震える": "random_move",
+    "反復移動": "repeat_move",
+    "点滅": "repeat_opacity",
+    "弾む": "jump",
+    "円形配置": "circular_duplicate",
+    "画像ループ": "tile",
+    "振り子": "repeat_rotate",
+    "ローテーション": "transform",
+    "扇クリッピング": "shape_mask",
+    "座標": "transform",
+    "拡大率": "transform",
+    "透明度": "opacity",
+    "回転": "transform",
 }
 
 
@@ -296,17 +493,47 @@ def _placement(
     }
 
 
+def _varies(motion: Motion) -> bool:
+    """時間で変わりうるか
+
+    値が同じでも、式やスクリプトの移動方法なら変わる（``100,100,回転,4|360``）
+    値の並びだけ見ると、そういう行を止めたことに気付けない
+    """
+    return motion.moves or bool(motion.flags & (FLAG_EXPRESSION | FLAG_SCRIPT))
+
+
 def _spec_value(
-    spec: ParameterSpec, raw: str, points: tuple[int, ...], log: CompatibilityReport, label: str
+    spec: ParameterSpec,
+    raw: str,
+    points: tuple[int, ...],
+    log: CompatibilityReport,
+    label: str,
+    convert: Callable[[float], float] | None = None,
 ) -> ParamInput:
     """仕様に合わせて値を渡す形へ
 
     動きを読めるのはトラックバーだけ チェックや選択肢まで
     :class:`AnimatedValue` に包むと、``coerce`` が型違いとして既定値へ落とす
+
+    ``convert`` は対応表が持つ値の直し（Y の向きなど） 直してから範囲へ収める
     """
-    if isinstance(spec, TrackSpec):
+    motion = parse_motion(raw)
+    if isinstance(spec, TrackSpec | ValueSpec):
+        if motion is None:
+            # 数として読めない 写し先の既定値をそのまま使う
+            # （既定値に変換を掛けると、透明度 100 が不透明度 0 になって全透明になる）
+            # 空の値も記録する 既定値へ置き換えたことに変わりはない
+            log.note_missing(f"AviUtl の数として読めない値: {label}")
+            return spec.default_value()
+        if isinstance(spec, ValueSpec):
+            # スライダーを持たない数値は動かせない 先頭の値だけ使う
+            if _varies(motion):
+                log.note_missing(f"AviUtl の動く値を写せない項目: {label}")
+            value = motion.first if convert is None else convert(motion.first)
+            return value
+        adjust = spec.clamp if convert is None else (lambda value: spec.clamp(convert(value)))
         return animated_value(
-            raw, points=points, log=log, label=label, convert=spec.clamp, default=spec.default
+            raw, points=points, log=log, label=label, convert=adjust, default=spec.default
         )
     return raw
 
@@ -413,19 +640,203 @@ def _figure(entry: ExoEntry) -> GeneratedSource:
     )
 
 
-#: 色として読むパラメータ ``ffffff`` の形で入っている
+#: 色として読むパラメータ ``ffffff`` の形で入っている **AviUtl の効果名で引く**
 _COLOR_PARAMS: dict[str, dict[str, str]] = {
-    "border": {"縁色": "color", "色": "color"},
-    "gradient": {"開始色": "start_color", "終了色": "end_color"},
-    "shadow": {"影色": "color", "色": "color"},
-    "chroma_key": {"色": "key_color"},
+    "縁取り": {"縁色": "color", "色": "color"},
+    "枠線": {"枠色": "color"},
+    "グラデーション": {"開始色": "start_color", "終了色": "end_color"},
+    "影": {"影色": "color", "色": "color"},
+    "シャドー": {"影色": "color", "色": "color"},
+    "ドロップシャドウ": {"影色": "color"},
+    "クロマキー": {"色": "key_color"},
+    "カラーキー": {"基準色": "key_color"},
+    "単色化": {"色": "color"},
+    "エッジ抽出": {"色": "color"},
+    "発光": {"光色": "tint"},
+    "グロー": {"光色": "tint"},
+    "拡散光": {"光色": "tint"},
+    "凸エッジ": {"光色": "color"},
 }
 
 #: 選択肢として読むパラメータ ``元の名前 -> (こちらの名前, 表示名の対応)``
 _SELECT_PARAMS: dict[str, dict[str, tuple[str, dict[str, str]]]] = {
-    "gradient": {"形状": ("shape", {"線形": "linear", "円形": "radial"})},
-    "mask": {"種類": ("shape", {"矩形": "rect", "円": "ellipse", "楕円": "ellipse"})},
+    "グラデーション": {"形状": ("shape", {"線形": "linear", "円形": "radial"})},
+    "マスク": {"種類": ("shape", {"矩形": "rect", "円": "ellipse", "楕円": "ellipse"})},
 }
+
+
+#: 登場・退場の効果と、こちらのエフェクト種別
+#:
+#: AviUtl は ``フェード`` ``ワイプ`` だけ「イン」「アウト」を**秒**で持ち、
+#: ほかは ``時間`` 1 つで登場だけに掛かる こちらは登場と退場を旗で選び、
+#: 時間は 1 つしか持てないので、食い違うときは記録に残す
+_APPEARANCE: dict[str, str] = {
+    "フェード": "inout_fade",
+    "ワイプ": "inout_wipe",
+    "画面外から登場": "inout_move",
+    "拡大縮小して登場": "inout_zoom",
+    "広がって登場": "inout_zoom",
+    "起き上がって登場": "inout_getup",
+    "弾んで登場": "inout_jump",
+    "何処からともなく登場": "inout_blur",
+}
+
+#: ``ワイプの種類`` の対応 付属の絵は式で作ってある（[[互換性の穴]]）
+_WIPE_PATTERNS: dict[str, str] = {
+    "ワイプ(横)": "horizontal",
+    "ワイプ(縦)": "vertical",
+    "ワイプ(円)": "circle",
+    "ワイプ(四角)": "square",
+    "ワイプ(時計回り)": "clockwise",
+}
+
+#: ``画面外から登場`` の角度と向き AviUtl の角度は画面で時計回り
+#: （Y が下向き正なので 90 度は下）
+_MOVE_DIRECTIONS: dict[int, str] = {0: "right", 90: "bottom", 180: "left", 270: "top"}
+
+
+def _appearance(
+    entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport
+) -> Effect | None:
+    """登場・退場の効果をエフェクトへ"""
+    kind = _APPEARANCE[entry.name]
+    definition = registry.get(kind)
+    if definition is None:  # pragma: no cover - 対応表の種別は必ずある
+        return None
+
+    params = definition.default_params()
+    if entry.name in ("フェード", "ワイプ"):
+        enter = entry.number("イン")
+        leave = entry.number("アウト")
+        if enter > 0.0 and leave > 0.0 and enter != leave:
+            # こちらは時間を 1 つしか持てない 長い方に合わせる
+            log.note_missing(f"{entry.name}の登場と退場で違う時間")
+        seconds = max(enter, leave)
+    else:
+        enter = leave = 0.0
+        seconds = entry.number("時間")
+        enter = seconds
+    params["effect_in"] = enter > 0.0
+    params["effect_out"] = leave > 0.0
+    if entry.name in ("フェード", "ワイプ") or not _put_raw(
+        definition, params, "effect_time", entry, "時間", points, log
+    ):
+        _put(definition, params, "effect_time", seconds)
+
+    # 加減速の旗は、両端を滑らかにするイージング（時間制御のプリセットと同じ考え方）
+    if entry.number("加減速") != 0.0:
+        params["easing"] = "sine"
+        params["easing_mode"] = "inout"
+
+    _appearance_extras(entry, definition, params, points, log)
+    return Effect(kind=kind, params=params)
+
+
+def _appearance_extras(
+    entry: ExoEntry,
+    definition: EffectDefinition,
+    params: dict[str, ParamValue],
+    points: tuple[int, ...],
+    log: CompatibilityReport,
+) -> None:
+    """効果ごとの追加の項目 写せないものはここで記録に残す"""
+    if entry.name == "ワイプ":
+        shape = entry.params.get("ワイプの種類", "").strip()
+        pattern = _WIPE_PATTERNS.get(shape)
+        if pattern is None:
+            # 付属の 5 枚以外の絵は作れない フェードで代わりにする
+            log.note_missing(f"ワイプの種類: {shape}")
+            pattern = "fade"
+        params["pattern"] = pattern
+        _put_raw(definition, params, "tolerance", entry, "ぼかし", points, log)
+        params["reverse_in"] = entry.number("反転(イン)") != 0.0
+        params["reverse_out"] = entry.number("反転(アウト)") != 0.0
+        return
+
+    if entry.name == "画面外から登場":
+        angle = round(entry.number("角度")) % 360
+        direction = _MOVE_DIRECTIONS.get(angle)
+        if direction is None:
+            # 向きは上下左右の 4 つしか持てない 近い方へ丸める
+            # 角度は 1 周でつながっているので、差は 0 度をまたぐ側も見る
+            # （まっすぐ引き算すると 359 度が右ではなく上になる）
+            log.note_missing(f"画面外から登場の角度: {entry.number('角度')}")
+            direction = _MOVE_DIRECTIONS[min(_MOVE_DIRECTIONS, key=lambda key: _turn(key, angle))]
+        params["direction"] = direction
+        if entry.number("数", 1.0) != 1.0:
+            log.note_missing("画面外から登場の数（何回も出入りする）")
+        if entry.number("ランダム方向") != 0.0:
+            log.note_missing("画面外から登場のランダム方向")
+        return
+
+    if entry.name == "拡大縮小して登場":
+        _put_raw(definition, params, "zoom", entry, "拡大率", points, log)
+        return
+
+    if entry.name == "広がって登場":
+        # 隠れたときに片方の軸だけ 0 になる 縦方向の旗で軸が入れ替わる
+        vertical = entry.number("縦方向") != 0.0
+        _put(definition, params, "zoom", 100.0)
+        _put(definition, params, "zoom_x", 100.0 if vertical else 0.0)
+        _put(definition, params, "zoom_y", 0.0 if vertical else 100.0)
+        return
+
+    if entry.name == "起き上がって登場":
+        if entry.number("勢い") != 0.0:
+            log.note_missing("起き上がって登場の勢い")
+        return
+
+    if entry.name == "弾んで登場":
+        _put_raw(definition, params, "height", entry, "高さ", points, log)
+        count = entry.number("回数")
+        if count > 0.0:
+            # 1 回の長さ ＝ 全体の時間 ÷ 回数
+            _put(definition, params, "period", entry.number("時間") / count)
+        return
+
+    if entry.name == "何処からともなく登場":
+        _put_raw(definition, params, "radius", entry, "ぼかし", points, log)
+        if entry.number("位置") != 0.0:
+            log.note_missing("何処からともなく登場の位置（ずれながら出る）")
+        del points
+        return
+
+
+def _put(
+    definition: EffectDefinition, params: dict[str, ParamValue], name: str, value: float
+) -> None:
+    """項目へ 1 つの数を入れる 仕様が無ければ何もしない
+
+    こちらで計算した数（回数から出した 1 回の長さなど）を入れるときに使う
+    ファイルの値をそのまま入れるときは :func:`_put_raw` を使う 動きが落ちるため
+    """
+    spec = definition.spec(name)
+    if spec is not None:
+        params[spec.name] = spec.coerce(value)
+
+
+def _put_raw(
+    definition: EffectDefinition,
+    params: dict[str, ParamValue],
+    name: str,
+    entry: ExoEntry,
+    source: str,
+    points: tuple[int, ...],
+    log: CompatibilityReport,
+    convert: Callable[[float], float] | None = None,
+) -> bool:
+    """ファイルの項目をそのまま写す 動きが付いていればキーフレームも残す
+
+    返り値は写せたか（項目がファイルに無ければ ``False``）
+    """
+    spec = definition.spec(name)
+    raw = entry.params.get(source)
+    if spec is None or raw is None:
+        return False
+    params[spec.name] = spec.coerce(
+        _spec_value(spec, raw, points, log, f"{entry.name}の{source}", convert=convert)
+    )
+    return True
 
 
 def _filter(entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport) -> Effect | None:
@@ -435,6 +846,8 @@ def _filter(entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport) 
     if "@" in entry.name:
         # AviUtl2 のエイリアスはスクリプトを ``表示名@ファイル名`` で書く
         return _script_filter(entry, points, log)
+    if entry.name in _APPEARANCE:
+        return _appearance(entry, points, log)
 
     kind = _FILTERS.get(entry.name)
     if kind is None:
@@ -446,21 +859,38 @@ def _filter(entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport) 
         return None
 
     params = definition.default_params()
-    names = _PARAMS.get(kind, {})
-    colours = _COLOR_PARAMS.get(kind, {})
-    choices = _SELECT_PARAMS.get(kind, {})
+    if entry.name == "扇クリッピング":
+        # 形は扇で固定 中心を通る角度の範囲だけを残す
+        params["shape"] = "fan"
+    if entry.name == "振り子":
+        # 元の角度を挟んで振れる（片側だけに振れるのではない）
+        params["centering"] = True
+    names = _PARAMS.get(entry.name, {})
+    colours = _COLOR_PARAMS.get(entry.name, {})
+    choices = _SELECT_PARAMS.get(entry.name, {})
+    handled: set[str] = set()
     for source_name, value in entry.params.items():
         target = names.get(source_name)
         if target is not None:
-            spec = definition.spec(target)
-            if spec is not None:
-                params[spec.name] = spec.coerce(
-                    _spec_value(spec, value, points, log, f"{entry.name}の{source_name}")
-                )
+            handled.add(source_name)
+            for field in (target.name, target.also):
+                spec = definition.spec(field) if field is not None else None
+                if spec is not None:
+                    params[spec.name] = spec.coerce(
+                        _spec_value(
+                            spec,
+                            value,
+                            points,
+                            log,
+                            f"{entry.name}の{source_name}",
+                            convert=target.convert,
+                        )
+                    )
             continue
 
         colour_target = colours.get(source_name)
         if colour_target is not None:
+            handled.add(source_name)
             spec = definition.spec(colour_target)
             if spec is not None:
                 params[spec.name] = spec.coerce(_color(value))
@@ -469,10 +899,35 @@ def _filter(entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport) 
         choice = choices.get(source_name)
         if choice is not None:
             target_name, table = choice
+            chosen = table.get(value.strip())
+            if chosen is None:
+                # 表に無い選択肢 既定値のままになるので、写せたことにしない
+                continue
+            handled.add(source_name)
             spec = definition.spec(target_name)
             if spec is not None:
-                params[spec.name] = spec.coerce(table.get(value.strip(), ""))
+                params[spec.name] = spec.coerce(chosen)
+
+    _note_dropped(entry, handled, log)
     return Effect(kind=kind, params=params)
+
+
+#: 値ではなく並びの区切りに使われる項目 写せなくても困らない
+_STRUCTURAL = ("Group", "詳細設定")
+
+
+def _note_dropped(entry: ExoEntry, handled: set[str], log: CompatibilityReport) -> None:
+    """対応表に無い項目を記録する
+
+    効果そのものを写せても、項目を落としていれば見た目は変わる（``震える`` の
+    ``角度`` など） 黙って捨てると、写せたつもりのまま違う絵が出る
+    """
+    for source_name in entry.params:
+        if source_name in handled:
+            continue
+        if source_name.startswith(_STRUCTURAL) or source_name.endswith(".hide"):
+            continue
+        log.note_missing(f"{entry.name}の項目: {source_name}")
 
 
 def _script_filter(
@@ -654,9 +1109,7 @@ def _playback_value(
         log.note_missing(f"AviUtl の数として読めない{label}")
         return None
     # 再生範囲の 2 つの値は素材の切り出しの始めと終わりで、動きではない
-    # 値が違うのが普通の形なので、これを動きとして数えると記録が埋まる
-    moves = motion.moves and motion.method != "再生範囲"
-    varies = moves or bool(motion.flags & (FLAG_EXPRESSION | FLAG_SCRIPT))
+    varies = _varies(motion) if motion.method != "再生範囲" else bool(motion.flags)
     if varies or motion.method not in _STILL_PLAYBACK:
         log.note_missing(f"AviUtl の{label}（1 つの値しか持てない）")
     return motion
