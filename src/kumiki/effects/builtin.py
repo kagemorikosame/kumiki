@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+from kumiki.effects.blending import BLEND_FUNCTIONS, BLEND_MODES
 from kumiki.effects.definition import EffectDefinition, registry
 from kumiki.effects.spec import CheckSpec, ColorSpec, SelectSpec, TrackSpec, ValueSpec
 
@@ -540,15 +541,27 @@ void main() {
 """)
 
 
-_GRADIENT = _shader("""
+_GRADIENT = _shader(
+    BLEND_FUNCTIONS
+    + """
 uniform float strength;
 uniform float center_x;
 uniform float center_y;
 uniform float angle;
 uniform float span;
 uniform int shape;
+uniform int blend;
 uniform vec4 start_color;
 uniform vec4 end_color;
+
+// 合成は符号化した値（sRGB）で計算する ここはリニアで持っているので往復する
+vec3 to_srgb(vec3 c) {
+    c = clamp(c, 0.0, 1.0);
+    return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+vec3 to_linear(vec3 c) {
+    return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
+}
 
 void main() {
     vec4 base = texture(u_texture, v_uv);
@@ -575,9 +588,19 @@ void main() {
     vec4 ramp = mix(start_color, end_color, clamp(t, 0.0, 1.0));
     // 元の絵の不透明度はそのまま グラデーションは色だけを塗り替える
     float amount = clamp(strength * 0.01, 0.0, 1.0) * ramp.a;
-    frag_color = vec4(mix(base.rgb, ramp.rgb, amount), base.a);
+    // 合成の仕方は塗りと同じ関数を使う AviUtl のグラデーションは
+    // 加算や乗算で重ねる使い方が多く、通常だけだと配布物の見た目が出ない
+    //
+    // 合成は **符号化した値（sRGB）で計算する** ここはリニアで持っているので
+    // 戻してから混ぜ、最後にリニアへ直す AviUtl も YMM4 も sRGB で混ぜており、
+    // リニアのまま掛けると加算や乗算の見た目が別物になる
+    vec3 under = to_srgb(base.rgb);
+    vec3 over = to_srgb(ramp.rgb);
+    vec3 rgb = mix(under, blend_colors(blend, under, over), amount);
+    frag_color = vec4(to_linear(rgb), base.a);
 }
-""")
+"""
+)
 
 
 _FILL = _shader("""
@@ -784,6 +807,7 @@ def register_builtin_effects() -> None:
                 TrackSpec("span", "幅", 1, 4000, 100, step=1, unit="px"),
                 TrackSpec("center_x", "中心 X", -4000, 4000, 0, step=1, unit="px"),
                 TrackSpec("center_y", "中心 Y", -4000, 4000, 0, step=1, unit="px"),
+                SelectSpec("blend", "合成", BLEND_MODES, "normal"),
             ),
             fragment_shader=_GRADIENT,
         )

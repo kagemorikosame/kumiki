@@ -245,6 +245,9 @@ _PARAMS: dict[str, dict[str, _Param]] = {
         "数": _Param("count"),
     },
     "画像ループ": {"横回数": _Param("count_x"), "縦回数": _Param("count_y")},
+    "単色化": {"強さ": _Param("amount")},
+    # 反転は軸ごとの旗 輝度・色相・透明度の反転は当たるものが無いので記録に回る
+    "反転": {"上下反転": _Param("vertical"), "左右反転": _Param("horizontal")},
     # 振り子は元の角度を挟んで往復する回転 速さは 1 往復の長さ
     "振り子": {"角度": _Param("angle_z"), "速さ": _Param("interval")},
     # ローテーションは 90 度単位の回し方を数で持つ
@@ -291,9 +294,11 @@ _FILTERS: dict[str, str] = {
     "レンズブラー": "lens_blur",
     "モーションブラー": "after_image",
     "色ずれ": "color_shift",
-    "単色化": "tint",
-    "反転": "invert",
-    "ミラー": "flip",
+    # 単色化は「色」と「強さ」を持つ 単色塗り（fill）がそのまま当たる
+    "単色化": "fill",
+    # 反転は上下・左右の旗 AviUtl の ミラー は鏡像を映す別の効果なので写さない
+    # （項目が 透明度・減衰・境目調整・ミラーの方向 で、こちらに当たるものが無い）
+    "反転": "flip",
     "カラーキー": "color_key",
     "ルミナンスキー": "luminance_key",
     "斜めクリッピング": "crop_angle",
@@ -658,10 +663,30 @@ _COLOR_PARAMS: dict[str, dict[str, str]] = {
     "凸エッジ": {"光色": "color"},
 }
 
+#: AviUtl2 の ``合成モード`` 番号ではなく表示名で入っている
+_BLEND_NAMES: dict[str, str] = {
+    "通常": "normal",
+    "加算": "add",
+    "減算": "subtract",
+    "乗算": "multiply",
+    "スクリーン": "screen",
+    "オーバーレイ": "overlay",
+    "比較(明)": "lighten",
+    "比較(暗)": "darken",
+}
+
 #: 選択肢として読むパラメータ ``元の名前 -> (こちらの名前, 表示名の対応)``
 _SELECT_PARAMS: dict[str, dict[str, tuple[str, dict[str, str]]]] = {
-    "グラデーション": {"形状": ("shape", {"線形": "linear", "円形": "radial"})},
+    "グラデーション": {
+        "形状": ("shape", {"線形": "linear", "円形": "radial"}),
+        # 配布物は加算や乗算で重ねる使い方が多い 通常のままだと見た目が別物になる
+        "合成モード": ("blend", _BLEND_NAMES),
+    },
     "マスク": {"種類": ("shape", {"矩形": "rect", "円": "ellipse", "楕円": "ellipse"})},
+    "ルミナンスキー": {
+        # 暗い部分を透過 ＝ 明るい所が残る こちらの旗は「暗いところを残す」
+        "モード": ("invert", {"暗い部分を透過": "", "明るい部分を透過": "1"}),
+    },
 }
 
 
@@ -916,16 +941,39 @@ def _filter(entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport) 
 _STRUCTURAL = ("Group", "詳細設定")
 
 
+def _is_off(value: str) -> bool:
+    """その項目が「使っていない」状態か
+
+    空か、値が全部 0 なら、写さなくても見た目は変わらない
+    手元の配布物では ``縁取り`` の ``ぼかし`` が 26 本とも 0 で、これを記録に
+    出していたせいで、本当に埋めるべき穴が埋もれていた
+
+    **動きが付いていれば 0 でも使っている** ``0,0,回転,4|360`` や
+    ``0`` から始まる参照式は、時間が進むと 0 ではなくなる
+    移動方法の名前だけでは見ない（``0,0,直線移動,0`` は名前が付いていても動かない）
+    加速と減速の旗も同じで、値が動かなければ見た目は変わらない
+    """
+    text = value.strip()
+    if not text:
+        return True
+    motion = parse_motion(text)
+    if motion is None or _varies(motion):
+        return False
+    return all(number == 0.0 for number in motion.values)
+
+
 def _note_dropped(entry: ExoEntry, handled: set[str], log: CompatibilityReport) -> None:
-    """対応表に無い項目を記録する
+    """対応表に無い項目のうち、**使われているもの**を記録する
 
     効果そのものを写せても、項目を落としていれば見た目は変わる（``震える`` の
     ``角度`` など） 黙って捨てると、写せたつもりのまま違う絵が出る
     """
-    for source_name in entry.params:
+    for source_name, value in entry.params.items():
         if source_name in handled:
             continue
         if source_name.startswith(_STRUCTURAL) or source_name.endswith(".hide"):
+            continue
+        if _is_off(value):
             continue
         log.note_missing(f"{entry.name}の項目: {source_name}")
 
@@ -1006,18 +1054,6 @@ def _tracks_for(project: Project, layers: set[int], commands: list[Command]) -> 
         tracks[layer] = track
     return tracks
 
-
-#: AviUtl2 の ``合成モード`` 番号ではなく表示名で入っている
-_BLEND_NAMES: dict[str, str] = {
-    "通常": "normal",
-    "加算": "add",
-    "減算": "subtract",
-    "乗算": "multiply",
-    "スクリーン": "screen",
-    "オーバーレイ": "overlay",
-    "比較(明)": "lighten",
-    "比較(暗)": "darken",
-}
 
 #: こちらの合成器が持っている方法 AviUtl の合成モードはすべて揃った
 _SUPPORTED_BLENDS = frozenset(

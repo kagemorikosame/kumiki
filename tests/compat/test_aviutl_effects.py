@@ -255,3 +255,82 @@ class TestTheThingsReviewFound:
         # 値が同じでも、式なら時間で変わりうる
         _, report = _effects("円形配置\n円周=100\n半径=200\n数=3,3,瞬間移動,8|3+time")
         assert any("動く値を写せない項目" in line for line in report.lines())
+
+
+class TestTheLeftoverSettings:
+    """取りこぼしていた項目 記録の数え方を直したら、本当の穴だけが残った"""
+
+    def test_the_gradient_keeps_its_blend(self) -> None:
+        # 配布物 36 本で 8 回使われていた 通常のままだと見た目が別物になる
+        effect = _one("グラデーション\n強さ=100\n合成モード=加算\n形状=線形\n開始色=ffffff")
+        assert effect.kind == "gradient"
+        assert effect.params["blend"] == "add"
+
+    def test_a_single_colour_fill_keeps_its_strength(self) -> None:
+        # 単色化は色と強さを持つ 強さを落とすと必ず真っ白（指定色）になる
+        effect = _one("単色化\n強さ=40\n色=ff0000\n輝度を保持する=0")
+        assert effect.kind == "fill"
+        assert _value(effect, "amount") == 40.0
+        assert effect.params["color"] == (1.0, 0.0, 0.0, 1.0)
+
+    def test_the_flip_filter_reads_both_axes(self) -> None:
+        # 旗を取り違えると、上下だけ反転させたつもりが左右にひっくり返る
+        effect = _one("反転\n上下反転=1\n左右反転=0\n輝度反転=0\n色相反転=0\n透明度反転=0")
+        assert effect.kind == "flip"
+        assert effect.params["vertical"] is True
+        assert effect.params["horizontal"] is False
+
+    def test_a_colour_inversion_is_recorded(self) -> None:
+        # 上下左右の反転しか写せない 輝度や色相の反転は別の効果
+        _, report = _effects("反転\n上下反転=0\n左右反転=0\n輝度反転=1\n色相反転=0\n透明度反転=0")
+        assert any("反転の項目: 輝度反転" in line for line in report.lines())
+
+    def test_the_mirror_filter_is_not_a_flip(self) -> None:
+        # AviUtl の ミラー は鏡像を映す効果（透明度・減衰・境目調整・向きを持つ）
+        # 反転として写すと、上下がひっくり返った別の絵になる
+        effects, report = _effects("ミラー\n透明度=0\n減衰=50\nミラーの方向=下側")
+        assert not effects
+        assert any("フィルタ: ミラー" in line for line in report.lines())
+
+    def test_the_luminance_key_mode(self) -> None:
+        # 逆に読むと、抜ける所と残る所が入れ替わって絵が反転して見える
+        effect = _one("ルミナンスキー\n基準輝度=2048\n輝度範囲=512\nモード=明るい部分を透過")
+        assert effect.kind == "luminance_key"
+        assert effect.params["invert"] is True
+
+    def test_settings_left_at_zero_are_not_recorded(self) -> None:
+        # 0 や空は「使っていない」 記録に出すと、本当に埋めるべき穴が埋もれる
+        # （縁取りのぼかしが 26 本とも 0 なのに、一番多い穴として並んでいた）
+        _, report = _effects("縁取り\nサイズ=6\nぼかし=0\n縁色=ffffff\nパターン画像=")
+        assert not any("縁取りの項目" in line for line in report.lines())
+
+    def test_a_setting_in_use_is_still_recorded(self) -> None:
+        # 使っている設定まで数えるのをやめると、落とした所が記録から消えて
+        # 「写せたつもりで違う絵」に気付けなくなる
+        _, report = _effects("縁取り\nサイズ=6\nぼかし=3\n縁色=ffffff")
+        assert any("縁取りの項目: ぼかし" in line for line in report.lines())
+
+    def test_a_zero_that_moves_is_still_in_use(self) -> None:
+        # 0 から動く値を「使っていない」と数えると、動きを落としたことが記録から消える
+        # 逆に ``0,0,直線移動,0`` のような動かない値まで数えると、記録が埋まって
+        # 本当に埋めるべき穴が見えなくなる
+        _, report = _effects("縁取り\nサイズ=6\nぼかし=0,10,直線移動,0\n縁色=ffffff")
+        assert any("縁取りの項目: ぼかし" in line for line in report.lines())
+
+    def test_a_zero_with_an_expression_is_still_in_use(self) -> None:
+        # 参照式は 0 から始まっても時間で変わる ここで未使用と見ると、
+        # 写せていない ぼかし が記録から消えて、見た目の違いに気付けない
+        _, report = _effects("縁取り\nサイズ=6\nぼかし=0,0,瞬間移動,8|time\n縁色=ffffff")
+        assert any("縁取りの項目: ぼかし" in line for line in report.lines())
+
+    def test_a_named_move_that_does_not_move_is_off(self) -> None:
+        # 移動方法の名前が付いていても、値が動かなければ見た目は変わらない
+        # ここを使用中と数えると、記録が埋まって多い順の並びが役に立たなくなる
+        _, report = _effects("縁取り\nサイズ=6\nぼかし=0,0,直線移動,0\n縁色=ffffff")
+        assert not any("縁取りの項目: ぼかし" in line for line in report.lines())
+
+    def test_an_easing_flag_alone_is_off(self) -> None:
+        # 加速や減速の旗が付いていても、値が動かなければ見た目は変わらない
+        # ここを使用中と数えると、直したばかりの多い順の並びがまた埋まる
+        _, report = _effects("縁取り\nサイズ=6\nぼかし=0,0,補間移動,3\n縁色=ffffff")
+        assert not any("縁取りの項目: ぼかし" in line for line in report.lines())
