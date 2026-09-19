@@ -114,3 +114,33 @@ class TestConcentration:
         # 真ん中の空きに当たる項目が無い 黙って落とすと線が中心まで伸びる
         _, report = _mapped("集中線\n濃さ=40.0\n速さ=25.0\n中心幅=300.0\n色=ffffff")
         assert any("中心幅" in line for line in report.lines())
+
+
+class TestTheThingsReviewFound:
+    def test_a_missing_line_width_means_filled(self) -> None:
+        # AviUtl1 の図形に ライン幅 は無い 輪郭だけにすると、
+        # 塗ってあった図形が中抜きになる
+        source = _source("図形\ntype=1\nサイズ=100\ncolor=ffffff")
+        assert source.params["outline_only"] is False
+        assert _value(source, "line_width") == 0.0
+
+    def test_a_zero_line_width_means_filled(self) -> None:
+        source = _source("図形\n図形の種類=円\nサイズ=100\n色=ffffff\nライン幅=0")
+        assert source.params["outline_only"] is False
+
+    def test_the_concentration_keeps_its_motion(self) -> None:
+        # 動きを落とすと、濃さが変わっていく集中線が最初の濃さで止まる
+        source = _source("集中線\n濃さ=10,80,直線移動,0\n速さ=25\n中心幅=0\n色=ffffff")
+        density = source.params["density"]
+        assert isinstance(density, AnimatedValue)
+        assert density.is_animated
+
+    def test_a_moving_centre_gap_is_recorded(self) -> None:
+        # 0 から動く中心幅も「使っている」 記録しないと落としたことに気付けない
+        _, report = _mapped("集中線\n濃さ=40\n速さ=25\n中心幅=0,300,直線移動,0\n色=ffffff")
+        assert any("中心幅" in line for line in report.lines())
+
+    def test_a_moving_size_is_recorded(self) -> None:
+        # 大きさは サイズ と 縦横比 から計算してから渡すので、動きを残せない
+        _, report = _mapped("図形\n図形の種類=円\nサイズ=100,400,直線移動,0\n色=ffffff")
+        assert any("図形の動くサイズ" in line for line in report.lines())

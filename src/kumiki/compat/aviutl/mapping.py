@@ -411,7 +411,7 @@ def map_object(
     if content is None:
         return None
 
-    source, media_path, kind = _content(content, log)
+    source, media_path, kind = _content(content, obj.relative_points(), log)
     effects: list[Effect] = []
     opacity = AnimatedValue(1.0)
     blend = "normal"
@@ -560,14 +560,16 @@ def _spec_value(
     return raw
 
 
-def _content(entry: ExoEntry, log: CompatibilityReport) -> tuple[GeneratedSource | None, str, str]:
+def _content(
+    entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport
+) -> tuple[GeneratedSource | None, str, str]:
     """中身を生成オブジェクトへ 素材ファイルの場合はパスだけ返す"""
     if entry.name == "テキスト":
         return _text(entry, log), "", "text"
     if entry.name == "図形":
         return _figure(entry, log), "", "shape"
     if entry.name == "集中線":
-        return _concentration(entry, log), "", "shape"
+        return _concentration(entry, points, log), "", "shape"
     if entry.name in ("動画ファイル", "画像ファイル", "音声ファイル"):
         return None, entry.params.get("file", ""), entry.name
 
@@ -658,6 +660,12 @@ def _figure(entry: ExoEntry, log: CompatibilityReport) -> GeneratedSource:
     width = size * (1.0 - max(0.0, ratio))
     height = size * (1.0 - max(0.0, -ratio))
 
+    for key in ("サイズ", "縦横比", "ライン幅"):
+        motion = parse_motion(entry.params.get(key))
+        if motion is not None and motion.moves:
+            # 大きさは サイズ と 縦横比 から計算してから渡すので、動きを残せない
+            log.note_missing(f"図形の動く{key}")
+
     named = entry.params.get("図形の種類")
     if named is not None:
         shape = _FIGURE_NAMES.get(named.strip())
@@ -673,8 +681,10 @@ def _figure(entry: ExoEntry, log: CompatibilityReport) -> GeneratedSource:
         shape = "rounded"
 
     # 線の太さが図形より大きければ塗りつぶし そのまま渡すと画面を覆う輪郭になる
+    # 項目が無いか 0 のときも塗りつぶし AviUtl1 の図形には ライン幅 が無く、
+    # 輪郭だけにすると、塗ってあった図形が中抜きになる
     line = entry.number("ライン幅")
-    filled = line >= min(_FILLED_LINE, max(width, height))
+    filled = line <= 0.0 or line >= min(_FILLED_LINE, max(width, height))
     return GeneratedSource(
         kind="shape",
         params={
@@ -688,20 +698,27 @@ def _figure(entry: ExoEntry, log: CompatibilityReport) -> GeneratedSource:
     )
 
 
-def _concentration(entry: ExoEntry, log: CompatibilityReport) -> GeneratedSource:
+def _concentration(
+    entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport
+) -> GeneratedSource:
     """集中線 AviUtl2 ではカスタムオブジェクト（図形の仲間）
 
     項目は ``濃さ`` ``速さ`` ``中心幅`` ``色`` AviUtl2 に置かせて読み取った
     ``中心幅``（真ん中の空き）に当たる項目がこちらに無いので記録に残す
     """
-    if entry.number("中心幅") != 0.0:
+    centre = parse_motion(entry.params.get("中心幅"))
+    if centre is not None and (centre.first != 0.0 or centre.moves):
         log.note_missing("集中線の中心幅（真ん中の空き）")
     return GeneratedSource(
         kind="shape",
         params={
             "shape": "concentration",
-            "density": AnimatedValue(entry.number("濃さ", 40.0)),
-            "flicker": AnimatedValue(entry.number("速さ", 25.0)),
+            "density": animated_value(
+                entry.params.get("濃さ"), points=points, log=log, label="集中線の濃さ", default=40.0
+            ),
+            "flicker": animated_value(
+                entry.params.get("速さ"), points=points, log=log, label="集中線の速さ", default=25.0
+            ),
             "color": _color(entry.value("色", default="ffffff")),
         },
     )
