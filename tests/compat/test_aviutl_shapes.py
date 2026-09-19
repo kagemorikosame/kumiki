@@ -14,6 +14,7 @@ from kumiki.compat.aviutl.report import CompatibilityReport
 from kumiki.compat.mapped import MappedObject
 from kumiki.core.model import AnimatedValue, GeneratedSource
 from kumiki.core.timebase import FrameRate
+from kumiki.engine.sources import format_time, timer_text
 
 RATE = FrameRate(60)
 
@@ -150,3 +151,145 @@ class TestTheThingsReviewFound:
         # 値が同じでも式なら時間で変わる 記録しないと、大きさが止まったことに気付けない
         _, report = _mapped("図形\n図形の種類=円\nサイズ=100,100,瞬間移動,8|100+time\n色=ffffff")
         assert any("図形の動くサイズ" in line for line in report.lines())
+
+
+class TestCustomObjects:
+    """AviUtl2 の「カスタムオブジェクト」 効果ではなく中身として置かれる
+
+    どれも AviUtl2 に置かせたエイリアスから項目名を読み取った
+    """
+
+    def test_a_fan_keeps_its_angle(self) -> None:
+        # 中心角を落とすと、扇が必ず全円（360 度）になる
+        source = _source("扇型\n中心角=270.0\nサイズ=100.0\nライン幅=2000.0\n色=ffffff")
+        assert source.params["shape"] == "fan"
+        assert _value(source, "span") == 270.0
+        # ライン幅 2000 は図形より大きい 塗りつぶしとして扱う
+        assert source.params["outline_only"] is False
+
+    def test_a_polygon_becomes_a_line_through_its_points(self) -> None:
+        # 座標は x と y を並べて書く（Y は下が正） 反転を忘れると上下逆の形になる
+        source = _source("多角形\n色=ffffff\nライン幅=20\n頂点数=3\n座標=0,-150,130,75,-130,75")
+        assert source.params["shape"] == "polyline"
+        assert source.params["points"] == "0.0,150.0;130.0,-75.0;-130.0,-75.0"
+        # 閉じないと、最後の頂点から最初へ戻る線が引かれず開いた折れ線になる
+        assert source.params["closed"] is True
+
+    def test_a_polygon_is_hollow_unless_told_otherwise(self) -> None:
+        # 中抜きの指定を落とすと、線だけのはずの多角形が塗りつぶされる
+        source = _source(
+            "多角形\n色=ffffff\nライン幅=20\n座標=0,-150,130,75,-130,75\n簡易塗り潰し=0"
+        )
+        assert source.params["fill_color"] == (0.0, 0.0, 0.0, 0.0)
+
+    def test_a_filled_polygon_uses_its_colour(self) -> None:
+        # 塗り潰しの指定を落とすと、塗ってあるはずの中が透明になる
+        source = _source(
+            "多角形\n色=ff0000\nライン幅=20\n座標=0,-150,130,75,-130,75\n簡易塗り潰し=1"
+        )
+        assert source.params["fill_color"] == (1.0, 0.0, 0.0, 1.0)
+
+    def test_a_broken_polygon_is_recorded(self) -> None:
+        # 座標が読めないと線が 1 本も出ない 黙って空の図形を置くと気付けない
+        _, report = _mapped("多角形\n色=ffffff\nライン幅=20\n座標=")
+        assert any("多角形の座標" in line for line in report.lines())
+
+    def test_a_counter_becomes_a_timer(self) -> None:
+        source = _source(
+            "カウンター\n初期値=5.0\n速度=2.0\nサイズ=34.0"
+            + "\n表示形式=標準\nフォント名=MS UI Gothic\n文字色=ffffff"
+        )
+        assert source.kind == "text"
+        assert _value(source, "timer_start") == 5.0
+        # 速度は 1 秒あたりの進み方 こちらは百分率なので 100 倍する
+        assert _value(source, "timer_rate") == 200.0
+        assert source.params["font"] == "MS UI Gothic"
+
+    def test_an_unknown_counter_format_is_recorded(self) -> None:
+        # 書式を落とすと、時計のつもりの表示がただの秒数になる
+        _, report = _mapped(
+            "カウンター\n初期値=0\n速度=1\n表示形式=時分秒\nフォント名=MS UI Gothic"
+        )
+        assert any("表示形式" in line for line in report.lines())
+
+    def test_the_motion_trail_is_recorded(self) -> None:
+        # ライン(移動軌跡) は折れ線ではなく、動いた跡を描く別物
+        # 折れ線として写すと、まったく違う絵が出たまま気付けない
+        report = CompatibilityReport()
+        document = parse_exo(_object("ライン(移動軌跡)\nライン幅=16.0\n先端=48.0\n色=ffffff"))
+        map_object(document.objects[0], RATE, report=report)
+        assert any("ライン(移動軌跡)" in line for line in report.lines())
+
+
+class TestWhatTheSecondReviewFound:
+    def test_the_counter_does_not_wrap_at_a_minute(self) -> None:
+        # 書式 s は 60 で分へ繰り上がる カウンターは数を数えるだけなので、
+        # そのまま使うと 60 で 0 に戻り、100 のつもりが 40 と出る
+        source = _source("カウンター\n初期値=0\n速度=1\nフォント名=MS UI Gothic")
+        assert source.params["timer_format"] == "n"
+        assert format_time(100.0, "n") == "100"
+
+    def test_the_counter_keeps_its_decoration(self) -> None:
+        # 装飾タイプ を読まないと、縁取りのカウンターが素の文字になる
+        source = _source(
+            "カウンター\n初期値=0\n速度=1\n装飾タイプ=縁取り文字"
+            + "\n影・縁色=000000\nフォント名=MS UI Gothic"
+        )
+        assert "border_width" in source.params or "shadow_x" in source.params
+
+    def test_a_broken_coordinate_drops_the_whole_polygon(self) -> None:
+        # 読めない値だけを捨てると、その後ろの x と y が入れ替わって別の形になる
+        _, report = _mapped("多角形\n色=ffffff\nライン幅=20\n座標=0,だめ,130,75")
+        assert any("多角形の座標" in line for line in report.lines())
+
+    def test_an_odd_number_of_coordinates_is_refused(self) -> None:
+        # x と y の組にできない並び 1 つ足りないまま組むと全部ずれる
+        _, report = _mapped("多角形\n色=ffffff\nライン幅=20\n座標=0,-150,130")
+        assert any("多角形の座標" in line for line in report.lines())
+
+    def test_extra_coordinates_are_trimmed_to_the_corner_count(self) -> None:
+        # 頂点数 より座標が多いファイル 余分を描くと形が変わる
+        source = _source("多角形\n色=ffffff\nライン幅=20\n頂点数=2\n座標=0,0,10,0,20,0")
+        assert source.params["points"] == "0.0,-0.0;10.0,-0.0"
+
+    def test_a_moving_fan_angle_is_recorded(self) -> None:
+        # 動きを落とすと、開いていく扇が開いたまま止まる
+        _, report = _mapped("扇型\n中心角=0,270,直線移動,0\nサイズ=100\n色=ffffff")
+        assert any("扇型の動く中心角" in line for line in report.lines())
+
+    def test_a_moving_counter_speed_is_recorded(self) -> None:
+        _, report = _mapped("カウンター\n初期値=0\n速度=1,5,直線移動,0\nフォント名=MS UI Gothic")
+        assert any("カウンターの動く速度" in line for line in report.lines())
+
+    def test_a_counter_can_go_below_zero(self) -> None:
+        # 0 で止めると、下がっていくはずの数字が途中から動かなくなる
+        assert format_time(-5.0, "n") == "-5"
+
+    def test_a_coordinate_that_is_not_finite_is_refused(self) -> None:
+        # NaN や無限大は描画の側で落ちる 受け取ると黙って別の形になる
+        _, report = _mapped("多角形\n色=ffffff\nライン幅=20\n座標=0,nan,130,75")
+        assert any("多角形の座標" in line for line in report.lines())
+
+    def test_too_few_corners_are_recorded_without_trimming(self) -> None:
+        # 頂点数 が座標より多いファイル 切り詰めないが、食い違いは残す
+        _, report = _mapped("多角形\n色=ffffff\nライン幅=20\n頂点数=5\n座標=0,0,10,0")
+        assert any("頂点数と座標の数が合わない" in line for line in report.lines())
+
+    def test_a_clock_format_still_stops_at_zero(self) -> None:
+        # 時計が負になることはない 通算の n だけ負の値を出す
+        assert timer_text({"_seconds": 0.0, "timer_start": -5.0, "timer_format": "s"}) == "0"
+        assert timer_text({"_seconds": 0.0, "timer_start": -5.0, "timer_format": "n"}) == "-5"
+
+    def test_a_value_that_is_not_a_number_does_not_stop_the_drawing(self) -> None:
+        # NaN を int() へ渡すと例外になり、そのフレームの描画ごと止まる
+        assert format_time(float("nan"), "n") == "0"
+
+    def test_a_corner_count_mismatch_is_recorded_even_with_no_points(self) -> None:
+        # 座標を全部捨てたときも、頂点数の食い違いは残す
+        _, report = _mapped("多角形\n色=ffffff\n頂点数=3\n座標=0,だめ")
+        assert any("頂点数と座標の数が合わない" in line for line in report.lines())
+
+    def test_an_escaped_n_is_not_the_total_format(self) -> None:
+        # 逃がした（文字としての）n まで拾うと、時計の書式が 0 で止まらなくなる
+        values = {"_seconds": 0.0, "timer_start": -5.0, "timer_format": "s\\n"}
+        assert timer_text(values) == "0n"

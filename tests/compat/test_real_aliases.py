@@ -76,10 +76,15 @@ def test_they_are_all_read_as_the_second_generation() -> None:
 
 def test_the_text_survives(mapped: list[tuple[Path, MappedObject]]) -> None:
     # 空文字になっていたら、テキスト欄の読み方が世代と合っていない
+    #
+    # カウンター（数を数えるカスタムオブジェクト）は除く 文字を持たず、
+    # 数字をタイマーが出すので、空なのが正しい姿
     texts = [
-        item.clip.source.params.get("text")
+        source.params.get("text")
         for _, item in mapped
-        if item.clip.source is not None and item.clip.source.kind == "text"
+        if (source := item.clip.source) is not None
+        and source.kind == "text"
+        and "timer_format" not in source.params
     ]
     assert texts
     assert all(isinstance(text, str) and text for text in texts)

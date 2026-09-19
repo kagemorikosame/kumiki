@@ -570,6 +570,12 @@ def _content(
         return _figure(entry, log), "", "shape"
     if entry.name == "集中線":
         return _concentration(entry, points, log), "", "shape"
+    if entry.name == "扇型":
+        return _fan(entry, log), "", "shape"
+    if entry.name == "多角形":
+        return _polygon(entry, log), "", "shape"
+    if entry.name == "カウンター":
+        return _counter(entry, log), "", "text"
     if entry.name in ("動画ファイル", "画像ファイル", "音声ファイル"):
         return None, entry.params.get("file", ""), entry.name
 
@@ -634,8 +640,12 @@ def _text_alignment(entry: ExoEntry) -> tuple[str, str]:
 
 
 def _decoration_of(entry: ExoEntry, size: float, log: CompatibilityReport) -> dict[str, ParamValue]:
-    """``文字装飾`` を縁取りと影のパラメータへ"""
-    name = entry.params.get("文字装飾")
+    """``文字装飾`` を縁取りと影のパラメータへ
+
+    カウンター（カスタムオブジェクト）は同じものを ``装飾タイプ`` と書く
+    読まないと、縁取りや影の付いたカウンターが素の文字になる
+    """
+    name = entry.params.get("文字装飾", entry.params.get("装飾タイプ"))
     if name is None:
         index = entry.integer("type")
         name = _DECORATION_BY_INDEX[index] if 0 <= index < len(_DECORATION_BY_INDEX) else ""
@@ -697,6 +707,121 @@ def _figure(entry: ExoEntry, log: CompatibilityReport) -> GeneratedSource:
             "outline_only": not filled,
         },
     )
+
+
+def _note_frozen(entry: ExoEntry, keys: tuple[str, ...], log: CompatibilityReport) -> None:
+    """動きの付いた項目を先頭の値で止めたことを記録する
+
+    生成オブジェクトの値は計算してから渡すものが多く、キーフレームを残せない
+    黙って止めると、動くはずの絵が止まったまま気付けない
+    """
+    for key in keys:
+        motion = parse_motion(entry.params.get(key))
+        if motion is not None and _varies(motion):
+            log.note_missing(f"{entry.name}の動く{key}")
+
+
+def _fan(entry: ExoEntry, log: CompatibilityReport) -> GeneratedSource:
+    """扇型 AviUtl2 のカスタムオブジェクト
+
+    項目は ``中心角`` ``サイズ`` ``ライン幅`` ``色`` AviUtl2 に置かせて読み取った
+    """
+    _note_frozen(entry, ("中心角", "サイズ", "ライン幅"), log)
+    size = max(1.0, entry.number("サイズ", 100.0))
+    line = entry.number("ライン幅")
+    # 塗りつぶしの判定は、幅と高さに渡すのと同じ値で見る
+    filled = line <= 0.0 or line >= min(_FILLED_LINE, size)
+    return GeneratedSource(
+        kind="shape",
+        params={
+            "shape": "fan",
+            "span": AnimatedValue(entry.number("中心角", 360.0)),
+            "width": AnimatedValue(size),
+            "height": AnimatedValue(size),
+            "color": _color(entry.value("色", default="ffffff")),
+            "line_width": AnimatedValue(0.0 if filled else line),
+            "outline_only": not filled,
+        },
+    )
+
+
+def _polygon(entry: ExoEntry, log: CompatibilityReport) -> GeneratedSource:
+    """多角形 AviUtl2 のカスタムオブジェクト
+
+    頂点は ``座標=0,-150,130,75,-130,75`` と x と y を並べて書く（Y は下が正）
+    こちらの線の図形（``polyline``）は ``x,y;x,y`` なので組み直す
+    """
+    _note_frozen(entry, ("ライン幅",), log)
+    raw = [part.strip() for part in entry.params.get("座標", "").split(",") if part.strip()]
+    # 読めない値だけを捨てると、その後ろの x と y が入れ替わって別の形になる
+    # 非有限（NaN や無限大）も同じ 描画の側で落ちて、黙って違う形が出る
+    numbers = [value for part in raw if (value := _as_number(part)) is not None]
+    usable = len(numbers) == len(raw) and len(numbers) % 2 == 0 and numbers
+    pairs: list[tuple[float, float]] = []
+    if usable:
+        pairs = [(numbers[index], numbers[index + 1]) for index in range(0, len(numbers), 2)]
+    else:
+        # 組にできない並びは、まるごと諦めて記録に残す
+        log.note_missing("多角形の座標（読めない）")
+
+    corners = round(entry.number("頂点数", float(len(pairs))))
+    if corners != len(pairs):
+        # 頂点数と座標の数が食い違うファイル 余分な点まで描くと形が変わるので、
+        # 頂点数が正でかつ少ないときだけそのぶんを使う どちらにしても記録に残す
+        log.note_missing("多角形の頂点数と座標の数が合わない")
+        if 0 < corners < len(pairs):
+            pairs = pairs[:corners]
+
+    # Y は AviUtl が下向き正 こちらは上向き正なので符号を反転する
+    points = ";".join(f"{x},{_flip(y)}" for x, y in pairs)
+
+    repeats = entry.number("繰り返し描画数", 1.0)
+    if repeats != 1.0:
+        log.note_missing("多角形の繰り返し描画")
+
+    line = entry.number("ライン幅")
+    filled = entry.number("簡易塗り潰し") != 0.0
+    colour = _color(entry.value("色", default="ffffff"))
+    return GeneratedSource(
+        kind="shape",
+        params={
+            "shape": "polyline",
+            "points": points,
+            "closed": True,
+            "line_width": AnimatedValue(max(1.0, line)),
+            "color": colour,
+            # 簡易塗り潰し のときだけ中を塗る 既定は線だけ
+            "fill_color": colour if filled else (0.0, 0.0, 0.0, 0.0),
+        },
+    )
+
+
+def _counter(entry: ExoEntry, log: CompatibilityReport) -> GeneratedSource:
+    """カウンター AviUtl2 のカスタムオブジェクト 数を数えて出すテキスト
+
+    項目は ``初期値`` ``速度`` ``サイズ`` ``表示形式`` ``フォント名``
+    ``装飾タイプ`` ``文字色`` ``影・縁色``
+    """
+    _note_frozen(entry, ("初期値", "速度", "サイズ"), log)
+    style = entry.params.get("表示形式", "標準").strip()
+    if style != "標準":
+        # 書式（時分秒など）の書き方が分からないものは記録に残す
+        log.note_missing(f"カウンターの表示形式: {style}")
+    params: dict[str, ParamValue] = {
+        "text": "",
+        "size": AnimatedValue(entry.number("サイズ", 34.0)),
+        "font": entry.params.get("フォント名", "").strip(),
+        "color": _color(entry.value("文字色", default="ffffff")),
+        # ``s`` は 60 で分へ繰り上がる カウンターはただ数を数えるので通算の ``n``
+        # 負の初めの値や数え下げもそのまま出せる（:func:`format_time` が符号を付ける）
+        "timer_format": "n",
+        "timer_start": AnimatedValue(entry.number("初期値")),
+        # 速度は 1 秒あたりの進み方 こちらは百分率で持つ
+        "timer_rate": AnimatedValue(entry.number("速度", 1.0) * 100.0),
+    }
+    # 装飾はテキストと同じ仕組みで写す（縁取りや影が消えないように）
+    params.update(_decoration_of(entry, entry.number("サイズ", 34.0), log))
+    return GeneratedSource(kind="text", params=params)
 
 
 def _concentration(
@@ -1194,11 +1319,17 @@ def _color(value: str) -> tuple[float, ...]:
     )
 
 
-def _as_number(value: str) -> float:
+def _as_number(value: str) -> float | None:
+    """数として読む 読めなければ ``None``
+
+    多角形の座標のように「読めない要素は落とす」場面があるので、0 では返さない
+    """
     try:
-        return float(value)
+        number = float(value)
     except ValueError:
-        return 0.0
+        return None
+    # NaN と無限大は数として扱わない 座標や大きさに入ると描画の側で落ちる
+    return number if math.isfinite(number) else None
 
 
 #: 0 秒 いちいち ``Fraction(0)`` と書かずに済ませる

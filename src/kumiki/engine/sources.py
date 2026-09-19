@@ -9,6 +9,8 @@ Qt の描画系（``QPainter``）を使う 日本語の禁則処理やフォン�
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (
@@ -138,7 +140,29 @@ def timer_text(values: dict[str, object]) -> str:
         value = start + (total - seconds) * rate
     else:
         value = start + seconds * rate
-    return format_time(max(value, 0.0), str(values.get("timer_format", "")))
+    pattern = str(values.get("timer_format", ""))
+    # 時刻の書式（h・m・s）は 0 で止める 時計が負になることはない
+    # 通算の n だけ負の値を出す（AviUtl のカウンターは数え下げで負になる）
+    if not _counts_total(pattern):
+        value = max(value, 0.0)
+    return format_time(value, pattern)
+
+
+def _counts_total(pattern: str) -> bool:
+    """書式に通算の ``n`` が入っているか
+
+    ただの文字列の検索では、``s\n`` のように逃がした（文字としての）``n`` まで
+    拾ってしまい、時計の書式が 0 で止まらなくなる 逃がした文字は飛ばして見る
+    """
+    index = 0
+    while index < len(pattern):
+        if pattern[index] == chr(92):
+            index += 2
+            continue
+        if pattern[index] == "n":
+            return True
+        index += 1
+    return False
 
 
 #: 時間の書式で 1 つの文字を並べられる数の上限 壊れたファイルの巨大な書式で固まらないため
@@ -146,13 +170,24 @@ MAX_TIME_DIGITS = 9
 
 
 def format_time(value: float, pattern: str) -> str:
-    """.NET の時間の書式（``h`` ``m`` ``s`` ``f`` と ``\\`` の逃がし）で秒を文字にする"""
-    value = min(max(value, 0.0), 10.0**9)
+    """.NET の時間の書式（``h`` ``m`` ``s`` ``f`` と ``\\`` の逃がし）で秒を文字にする
+
+    ``n`` だけは .NET に無いこちらの追加で、**60 で折り返さない通算の値**
+    AviUtl のカウンターのように、ただ数を数えるものに使う（``s`` は分に繰り上がる）
+    """
+    # 非有限は 0 として扱う int() が例外になり、描画がフレームごと止まる
+    if not math.isfinite(value):
+        value = 0.0
+    # 負の値も出す AviUtl のカウンターは負の初めの値や数え下げを持てる
+    # 0 で止めると、下がっていくはずの数字が途中から動かなくなる
+    sign = "-" if value < 0.0 else ""
+    value = min(abs(value), 10.0**9)
     whole = int(value)
     parts = {
         "h": whole // 3600,
         "m": (whole // 60) % 60,
         "s": whole % 60,
+        "n": whole,
     }
     out: list[str] = []
     index = 0
@@ -174,7 +209,7 @@ def format_time(value: float, pattern: str) -> str:
         else:
             out.append(letter * digits)
         index += run
-    return "".join(out)
+    return sign + "".join(out)
 
 
 def _draw_text(painter: QPainter, values: dict[str, object], width: int, height: int) -> None:
