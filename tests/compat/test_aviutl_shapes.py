@@ -124,7 +124,8 @@ class TestTheThingsReviewFound:
         assert source.params["outline_only"] is False
         assert _value(source, "line_width") == 0.0
 
-    def test_a_zero_line_width_means_filled(self) -> None:
+    def test_a_zero_line_width_does_not_make_the_shape_hollow(self) -> None:
+        # 0 を輪郭として扱うと、塗ってあった図形が中抜きになる
         source = _source("図形\n図形の種類=円\nサイズ=100\n色=ffffff\nライン幅=0")
         assert source.params["outline_only"] is False
 
@@ -143,4 +144,9 @@ class TestTheThingsReviewFound:
     def test_a_moving_size_is_recorded(self) -> None:
         # 大きさは サイズ と 縦横比 から計算してから渡すので、動きを残せない
         _, report = _mapped("図形\n図形の種類=円\nサイズ=100,400,直線移動,0\n色=ffffff")
+        assert any("図形の動くサイズ" in line for line in report.lines())
+
+    def test_a_still_expression_on_a_size_is_recorded(self) -> None:
+        # 値が同じでも式なら時間で変わる 記録しないと、大きさが止まったことに気付けない
+        _, report = _mapped("図形\n図形の種類=円\nサイズ=100,100,瞬間移動,8|100+time\n色=ffffff")
         assert any("図形の動くサイズ" in line for line in report.lines())

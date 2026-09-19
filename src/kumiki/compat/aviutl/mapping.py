@@ -662,7 +662,8 @@ def _figure(entry: ExoEntry, log: CompatibilityReport) -> GeneratedSource:
 
     for key in ("サイズ", "縦横比", "ライン幅"):
         motion = parse_motion(entry.params.get(key))
-        if motion is not None and motion.moves:
+        # 値が同じでも式やスクリプトなら時間で変わる（_varies で見る）
+        if motion is not None and _varies(motion):
             # 大きさは サイズ と 縦横比 から計算してから渡すので、動きを残せない
             log.note_missing(f"図形の動く{key}")
 
@@ -707,7 +708,7 @@ def _concentration(
     ``中心幅``（真ん中の空き）に当たる項目がこちらに無いので記録に残す
     """
     centre = parse_motion(entry.params.get("中心幅"))
-    if centre is not None and (centre.first != 0.0 or centre.moves):
+    if centre is not None and (centre.first != 0.0 or _varies(centre)):
         log.note_missing("集中線の中心幅（真ん中の空き）")
     return GeneratedSource(
         kind="shape",
