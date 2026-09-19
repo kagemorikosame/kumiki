@@ -947,12 +947,17 @@ def _is_off(value: str) -> bool:
     空か、値が全部 0 なら、写さなくても見た目は変わらない
     手元の配布物では ``縁取り`` の ``ぼかし`` が 26 本とも 0 で、これを記録に
     出していたせいで、本当に埋めるべき穴が埋もれていた
+
+    **動きが付いていれば 0 でも使っている** ``0,0,回転,4|360`` や
+    ``0`` から始まる参照式は、時間が進むと 0 ではなくなる
     """
     text = value.strip()
     if not text:
         return True
     motion = parse_motion(text)
-    return motion is not None and all(number == 0.0 for number in motion.values)
+    if motion is None or motion.method or motion.flags or motion.extra:
+        return False
+    return all(number == 0.0 for number in motion.values)
 
 
 def _note_dropped(entry: ExoEntry, handled: set[str], log: CompatibilityReport) -> None:

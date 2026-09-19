@@ -305,3 +305,13 @@ class TestTheLeftoverSettings:
     def test_a_setting_in_use_is_still_recorded(self) -> None:
         _, report = _effects("縁取り\nサイズ=6\nぼかし=3\n縁色=ffffff")
         assert any("縁取りの項目: ぼかし" in line for line in report.lines())
+
+    def test_a_zero_that_moves_is_still_in_use(self) -> None:
+        # 0 から動く値を「使っていない」と数えると、動きを落としたことが記録から消える
+        _, report = _effects("縁取り\nサイズ=6\nぼかし=0,10,直線移動,0\n縁色=ffffff")
+        assert any("縁取りの項目: ぼかし" in line for line in report.lines())
+
+    def test_a_zero_with_an_expression_is_still_in_use(self) -> None:
+        # 参照式は 0 から始まっても時間で変わる
+        _, report = _effects("縁取り\nサイズ=6\nぼかし=0,0,瞬間移動,8|time\n縁色=ffffff")
+        assert any("縁取りの項目: ぼかし" in line for line in report.lines())
