@@ -57,8 +57,9 @@ COMPARE_WIDTH, COMPARE_HEIGHT = 480, 270
 #: 書いてあるものは**そのエイリアス自身の長さ**を使う（:func:`_own_length`）
 SLOT = 120
 
-#: 1 本に使う長さの上限（フレーム） 長さの書いていないエイリアスへ SLOT を当てる一方、
-#: 壊れたファイルが何万フレームを名乗っても書き出しが終わるようにする
+#: 並べられる長さの上限（フレーム 30 秒） これより長いものは**切り詰めずに外す**
+#: 切り詰めると AviUtl 側だけが短くなり、進み具合で決まる効果を別の時点で比べてしまう
+#: 壊れたファイルが何万フレームを名乗っても書き出しが終わるようにする意味もある
 MAX_LENGTH = 1800
 #: 枠と枠の間に空ける黒 前のエイリアスの残りが次へ混ざらないように
 GAP = 12
@@ -150,7 +151,7 @@ def _own_length(head: list[str]) -> int:
             span = int(last) - int(first) + 1
         except ValueError:
             return SLOT
-        return min(span, MAX_LENGTH) if span >= 1 else SLOT
+        return span if span >= 1 else SLOT
     return SLOT
 
 
@@ -178,11 +179,18 @@ def build_cases(files: list[Path]) -> tuple[list[Case], list[str]]:
         # 長さはエイリアス自身が持つものに合わせる 揃えないと、長い方の端で
         # 片側だけが空になって差が跳ね上がる（登場と退場の効き方も区間の長さで決まる）
         length = _own_length(blocks[0])
+        if length > MAX_LENGTH:
+            # 切り詰めると AviUtl 側だけが短くなり、進み具合や終わり際で決まる
+            # 効果を別の時点同士で比べることになる 比べずに外して記録に残す
+            skipped.append(f"{path.name}（{length} フレーム 上限の {MAX_LENGTH} を超える）")
+            continue
         cases.append(
             Case(
                 name=path.stem,
                 file=path.name,
-                source=str(path),
+                # 丸ごとの道にしてから持つ 相対のまま書くと、別の場所から
+                # compare を走らせたときに元ファイルを見失う
+                source=str(path.resolve()),
                 index=len(cases),
                 start=cursor,
                 length=length,
