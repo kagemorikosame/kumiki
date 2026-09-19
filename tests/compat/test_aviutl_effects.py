@@ -274,6 +274,7 @@ class TestTheLeftoverSettings:
         assert effect.params["color"] == (1.0, 0.0, 0.0, 1.0)
 
     def test_the_flip_filter_reads_both_axes(self) -> None:
+        # 旗を取り違えると、上下だけ反転させたつもりが左右にひっくり返る
         effect = _one("反転\n上下反転=1\n左右反転=0\n輝度反転=0\n色相反転=0\n透明度反転=0")
         assert effect.kind == "flip"
         assert effect.params["vertical"] is True
@@ -292,6 +293,7 @@ class TestTheLeftoverSettings:
         assert any("フィルタ: ミラー" in line for line in report.lines())
 
     def test_the_luminance_key_mode(self) -> None:
+        # 逆に読むと、抜ける所と残る所が入れ替わって絵が反転して見える
         effect = _one("ルミナンスキー\n基準輝度=2048\n輝度範囲=512\nモード=明るい部分を透過")
         assert effect.kind == "luminance_key"
         assert effect.params["invert"] is True
@@ -303,6 +305,8 @@ class TestTheLeftoverSettings:
         assert not any("縁取りの項目" in line for line in report.lines())
 
     def test_a_setting_in_use_is_still_recorded(self) -> None:
+        # 使っている設定まで数えるのをやめると、落とした所が記録から消えて
+        # 「写せたつもりで違う絵」に気付けなくなる
         _, report = _effects("縁取り\nサイズ=6\nぼかし=3\n縁色=ffffff")
         assert any("縁取りの項目: ぼかし" in line for line in report.lines())
 
