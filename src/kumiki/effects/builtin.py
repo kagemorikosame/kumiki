@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+from kumiki.effects.blending import BLEND_FUNCTIONS, BLEND_MODES
 from kumiki.effects.definition import EffectDefinition, registry
 from kumiki.effects.spec import CheckSpec, ColorSpec, SelectSpec, TrackSpec, ValueSpec
 
@@ -540,13 +541,16 @@ void main() {
 """)
 
 
-_GRADIENT = _shader("""
+_GRADIENT = _shader(
+    BLEND_FUNCTIONS
+    + """
 uniform float strength;
 uniform float center_x;
 uniform float center_y;
 uniform float angle;
 uniform float span;
 uniform int shape;
+uniform int blend;
 uniform vec4 start_color;
 uniform vec4 end_color;
 
@@ -575,9 +579,13 @@ void main() {
     vec4 ramp = mix(start_color, end_color, clamp(t, 0.0, 1.0));
     // 元の絵の不透明度はそのまま グラデーションは色だけを塗り替える
     float amount = clamp(strength * 0.01, 0.0, 1.0) * ramp.a;
-    frag_color = vec4(mix(base.rgb, ramp.rgb, amount), base.a);
+    // 合成の仕方は塗りと同じ関数を使う AviUtl のグラデーションは
+    // 加算や乗算で重ねる使い方が多く、通常だけだと配布物の見た目が出ない
+    vec3 painted = blend_colors(blend, base.rgb, ramp.rgb);
+    frag_color = vec4(mix(base.rgb, painted, amount), base.a);
 }
-""")
+"""
+)
 
 
 _FILL = _shader("""
@@ -784,6 +792,7 @@ def register_builtin_effects() -> None:
                 TrackSpec("span", "幅", 1, 4000, 100, step=1, unit="px"),
                 TrackSpec("center_x", "中心 X", -4000, 4000, 0, step=1, unit="px"),
                 TrackSpec("center_y", "中心 Y", -4000, 4000, 0, step=1, unit="px"),
+                SelectSpec("blend", "合成", BLEND_MODES, "normal"),
             ),
             fragment_shader=_GRADIENT,
         )
