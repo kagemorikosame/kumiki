@@ -138,7 +138,7 @@ def timer_text(values: dict[str, object]) -> str:
         value = start + (total - seconds) * rate
     else:
         value = start + seconds * rate
-    return format_time(max(value, 0.0), str(values.get("timer_format", "")))
+    return format_time(value, str(values.get("timer_format", "")))
 
 
 #: 時間の書式で 1 つの文字を並べられる数の上限 壊れたファイルの巨大な書式で固まらないため
@@ -151,7 +151,10 @@ def format_time(value: float, pattern: str) -> str:
     ``n`` だけは .NET に無いこちらの追加で、**60 で折り返さない通算の値**
     AviUtl のカウンターのように、ただ数を数えるものに使う（``s`` は分に繰り上がる）
     """
-    value = min(max(value, 0.0), 10.0**9)
+    # 負の値も出す AviUtl のカウンターは負の初めの値や数え下げを持てる
+    # 0 で止めると、下がっていくはずの数字が途中から動かなくなる
+    sign = "-" if value < 0.0 else ""
+    value = min(abs(value), 10.0**9)
     whole = int(value)
     parts = {
         "h": whole // 3600,
@@ -179,7 +182,7 @@ def format_time(value: float, pattern: str) -> str:
         else:
             out.append(letter * digits)
         index += run
-    return "".join(out)
+    return sign + "".join(out)
 
 
 def _draw_text(painter: QPainter, values: dict[str, object], width: int, height: int) -> None:

@@ -260,3 +260,17 @@ class TestWhatTheSecondReviewFound:
     def test_a_moving_counter_speed_is_recorded(self) -> None:
         _, report = _mapped("カウンター\n初期値=0\n速度=1,5,直線移動,0\nフォント名=MS UI Gothic")
         assert any("カウンターの動く速度" in line for line in report.lines())
+
+    def test_a_counter_can_go_below_zero(self) -> None:
+        # 0 で止めると、下がっていくはずの数字が途中から動かなくなる
+        assert format_time(-5.0, "n") == "-5"
+
+    def test_a_coordinate_that_is_not_finite_is_refused(self) -> None:
+        # NaN や無限大は描画の側で落ちる 受け取ると黙って別の形になる
+        _, report = _mapped("多角形\n色=ffffff\nライン幅=20\n座標=0,nan,130,75")
+        assert any("多角形の座標" in line for line in report.lines())
+
+    def test_too_few_corners_are_recorded_without_trimming(self) -> None:
+        # 頂点数 が座標より多いファイル 切り詰めないが、食い違いは残す
+        _, report = _mapped("多角形\n色=ffffff\nライン幅=20\n頂点数=5\n座標=0,0,10,0")
+        assert any("頂点数と座標の数が合わない" in line for line in report.lines())

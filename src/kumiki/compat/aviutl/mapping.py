@@ -753,24 +753,24 @@ def _polygon(entry: ExoEntry, log: CompatibilityReport) -> GeneratedSource:
     """
     _note_frozen(entry, ("ライン幅",), log)
     raw = [part.strip() for part in entry.params.get("座標", "").split(",") if part.strip()]
-    numbers = [_as_number(part) for part in raw]
     # 読めない値だけを捨てると、その後ろの x と y が入れ替わって別の形になる
-    # 組にできない並び（読めない値がある・奇数個）は、まるごと諦めて記録に残す
-    broken = any(value is None for value in numbers) or len(numbers) % 2 == 1
-    if broken or not numbers:
-        log.note_missing("多角形の座標（読めない）")
-        pairs: list[tuple[float, float]] = []
+    # 非有限（NaN や無限大）も同じ 描画の側で落ちて、黙って違う形が出る
+    numbers = [value for part in raw if (value := _as_number(part)) is not None]
+    usable = len(numbers) == len(raw) and len(numbers) % 2 == 0 and numbers
+    pairs: list[tuple[float, float]] = []
+    if usable:
+        pairs = [(numbers[index], numbers[index + 1]) for index in range(0, len(numbers), 2)]
     else:
-        pairs = [
-            (numbers[index], numbers[index + 1])  # type: ignore[misc]
-            for index in range(0, len(numbers), 2)
-        ]
+        # 組にできない並びは、まるごと諦めて記録に残す
+        log.note_missing("多角形の座標（読めない）")
 
     corners = round(entry.number("頂点数", float(len(pairs))))
-    if pairs and 0 < corners < len(pairs):
-        # 座標の方が多いファイル 頂点数のぶんだけ使う
+    if pairs and corners != len(pairs):
+        # 頂点数と座標の数が食い違うファイル 余分な点まで描くと形が変わるので、
+        # 頂点数が正でかつ少ないときだけそのぶんを使う どちらにしても記録に残す
         log.note_missing("多角形の頂点数と座標の数が合わない")
-        pairs = pairs[:corners]
+        if 0 < corners < len(pairs):
+            pairs = pairs[:corners]
 
     # Y は AviUtl が下向き正 こちらは上向き正なので符号を反転する
     points = ";".join(f"{x},{_flip(y)}" for x, y in pairs)
@@ -813,6 +813,7 @@ def _counter(entry: ExoEntry, log: CompatibilityReport) -> GeneratedSource:
         "font": entry.params.get("フォント名", "").strip(),
         "color": _color(entry.value("文字色", default="ffffff")),
         # ``s`` は 60 で分へ繰り上がる カウンターはただ数を数えるので通算の ``n``
+        # 負の初めの値や数え下げもそのまま出せる（:func:`format_time` が符号を付ける）
         "timer_format": "n",
         "timer_start": AnimatedValue(entry.number("初期値")),
         # 速度は 1 秒あたりの進み方 こちらは百分率で持つ
@@ -1324,9 +1325,11 @@ def _as_number(value: str) -> float | None:
     多角形の座標のように「読めない要素は落とす」場面があるので、0 では返さない
     """
     try:
-        return float(value)
+        number = float(value)
     except ValueError:
         return None
+    # NaN と無限大は数として扱わない 座標や大きさに入ると描画の側で落ちる
+    return number if math.isfinite(number) else None
 
 
 #: 0 秒 いちいち ``Fraction(0)`` と書かずに済ませる
