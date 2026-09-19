@@ -288,3 +288,8 @@ class TestWhatTheSecondReviewFound:
         # 座標を全部捨てたときも、頂点数の食い違いは残す
         _, report = _mapped("多角形\n色=ffffff\n頂点数=3\n座標=0,だめ")
         assert any("頂点数と座標の数が合わない" in line for line in report.lines())
+
+    def test_an_escaped_n_is_not_the_total_format(self) -> None:
+        # 逃がした（文字としての）n まで拾うと、時計の書式が 0 で止まらなくなる
+        values = {"_seconds": 0.0, "timer_start": -5.0, "timer_format": "s\\n"}
+        assert timer_text(values) == "0n"
