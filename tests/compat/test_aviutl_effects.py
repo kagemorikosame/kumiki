@@ -312,10 +312,19 @@ class TestTheLeftoverSettings:
 
     def test_a_zero_that_moves_is_still_in_use(self) -> None:
         # 0 から動く値を「使っていない」と数えると、動きを落としたことが記録から消える
+        # 逆に ``0,0,直線移動,0`` のような動かない値まで数えると、記録が埋まって
+        # 本当に埋めるべき穴が見えなくなる
         _, report = _effects("縁取り\nサイズ=6\nぼかし=0,10,直線移動,0\n縁色=ffffff")
         assert any("縁取りの項目: ぼかし" in line for line in report.lines())
 
     def test_a_zero_with_an_expression_is_still_in_use(self) -> None:
-        # 参照式は 0 から始まっても時間で変わる
+        # 参照式は 0 から始まっても時間で変わる ここで未使用と見ると、
+        # 写せていない ぼかし が記録から消えて、見た目の違いに気付けない
         _, report = _effects("縁取り\nサイズ=6\nぼかし=0,0,瞬間移動,8|time\n縁色=ffffff")
         assert any("縁取りの項目: ぼかし" in line for line in report.lines())
+
+    def test_a_named_move_that_does_not_move_is_off(self) -> None:
+        # 移動方法の名前が付いていても、値が動かなければ見た目は変わらない
+        # ここを使用中と数えると、記録が埋まって多い順の並びが役に立たなくなる
+        _, report = _effects("縁取り\nサイズ=6\nぼかし=0,0,直線移動,0\n縁色=ffffff")
+        assert not any("縁取りの項目: ぼかし" in line for line in report.lines())
