@@ -162,6 +162,10 @@ SHAPE = SourceDefinition(
         TrackSpec("line_length", "集中線の長さ", 0, 100, 70, unit="%"),
         TrackSpec("softness", "集中線のぼかし", 0, 100, 50, unit="%"),
         TrackSpec("center_gap", "集中線の真ん中の空き", 0, 4000, 0, step=1, unit="px"),
+        # AviUtl の集中線は画面いっぱい YMM4 のものは「幅」の円に収まる
+        # 空きの有無で分けると、空きを 0 にした AviUtl の集中線が
+        # 小さな円に縮んでしまうので、届く先は別の項目で持つ
+        CheckSpec("fill_frame", "集中線を画面いっぱいに", False),
         TrackSpec("flicker", "集中線の切り替え", 0, 240, 5, unit="回/秒"),
         TrackSpec("pos_x", "X", -4000, 4000, 0, step=1, unit="px"),
         TrackSpec("pos_y", "Y", -4000, 4000, 0, step=1, unit="px"),

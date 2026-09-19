@@ -843,6 +843,10 @@ def _concentration(
         kind="shape",
         params={
             "shape": "concentration",
+            # AviUtl の集中線は画面いっぱい 中心幅（真ん中の空き）が 0 でも同じ
+            # 空きの有無で描き方を変えると、空きを 0 にしたものだけが
+            # YMM4 の作り（大きさの円に収まる小さな絵）に落ちる
+            "fill_frame": True,
             # 濃さ 40 で 64 本・占有率 18%（実測）に合わせた係数
             # 太さは 2 乗 100% を超えると線が重なり、濃さ 160 で画面が埋まる
             "density": _mapped(density, lambda value: value * 1.6),

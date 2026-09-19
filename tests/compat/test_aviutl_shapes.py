@@ -109,6 +109,9 @@ class TestConcentration:
         assert source.kind == "shape"
         assert source.params["shape"] == "concentration"
         assert _value(source, "flicker") == 25.0
+        # AviUtl の集中線は中心幅が 0 でも画面いっぱい 空きの有無で描き方を
+        # 分けると、空きを 0 にしたものだけが小さな円に縮む
+        assert source.params["fill_frame"] is True
 
     def test_the_density_drives_both_the_count_and_the_width(self) -> None:
         # AviUtl2 に濃さ 40・80・160 を描かせて測ると、線の占める角度が

@@ -350,6 +350,8 @@ class TestWhatTheRealOutputFound:
         assert effect.params["color"] == (0.0, 0.0, 0.0, 1.0)
 
     def test_a_black_gradient_end_stays_black(self) -> None:
+        # 終了色が白へ化けると、暗く落ちていくはずのグラデーションが
+        # 明るい方へ伸びる 文字の下半分が白飛びして読めなくなる
         effect = _one(
             "グラデーション\n強さ=100.0\n角度=90.00\n幅=100\n形状=線形\n"
             "開始色=6c6c6c\n終了色=000000"
@@ -358,5 +360,7 @@ class TestWhatTheRealOutputFound:
 
     def test_a_hash_or_an_0x_prefix_is_still_dropped(self) -> None:
         # 飾りを 1 つずつ落とす作りにしたので、付いていても読めること
+        # 落とし損ねると色として読めず、白（読めない色の逃げ先）になる
+        # 緑の縁取りが白い縁になって、文字の周りだけ配色が変わる
         assert _one("縁取り\nサイズ=6\n縁色=#00ff00").params["color"] == (0.0, 1.0, 0.0, 1.0)
         assert _one("縁取り\nサイズ=6\n縁色=0x00ff00").params["color"] == (0.0, 1.0, 0.0, 1.0)

@@ -17,7 +17,11 @@ WIDTH, HEIGHT = 960, 540
 
 def _drawn(**params: object) -> np.ndarray:
     """黒い背景に重ねた明るさ 透けたぶんまで見たいので、不透明度を掛ける"""
-    values: dict[str, object] = {"shape": "concentration", "color": (1.0, 1.0, 1.0, 1.0)}
+    values: dict[str, object] = {
+        "shape": "concentration",
+        "color": (1.0, 1.0, 1.0, 1.0),
+        "fill_frame": True,
+    }
     values.update(params)
     image = render_source(GeneratedSource(kind="shape", params=values), WIDTH, HEIGHT)  # type: ignore[arg-type]
     assert image is not None
@@ -33,6 +37,7 @@ def _radius(image: np.ndarray) -> np.ndarray:
 
 @pytest.fixture(scope="module")
 def with_gap() -> np.ndarray:
+    """AviUtl の集中線 真ん中に半径 120 の空きを持つ"""
     return _drawn(
         center_gap=AnimatedValue(120.0),
         density=AnimatedValue(64.0),
@@ -75,10 +80,27 @@ def test_a_thicker_line_covers_more(with_gap: np.ndarray) -> None:
     assert (thick[ring] > 8.0).mean() > (with_gap[ring] > 8.0).mean() * 1.5
 
 
-def test_without_a_gap_it_stays_the_ymm4_shape() -> None:
-    # 空きを持たない（YMM4 から来た）ものは、大きさの円の中に収まったまま
+def test_a_thick_line_does_not_cut_into_the_gap() -> None:
+    """太い線でも空きへ食い込まない
+
+    内側を直線（弦）で閉じると、線が太いほど中心寄りに膨らむ
+    AviUtl の集中線で目立つのは真ん中の抜けなので、ここが崩れると一目で分かる
+    """
+    image = _drawn(
+        center_gap=AnimatedValue(200.0),
+        density=AnimatedValue(8.0),
+        line_thickness=AnimatedValue(400.0),
+        flicker=AnimatedValue(0.0),
+    )
+    inside = image[_radius(image) < 198.0]
+    assert inside.max() <= 8.0
+
+
+def test_without_fill_frame_it_stays_the_ymm4_shape() -> None:
+    # 画面いっぱいの印が無い（YMM4 から来た）ものは、大きさの円の中に収まったまま
     # ここが端まで届くようになると、YMM4 の絵が別物になる
     image = _drawn(
+        fill_frame=False,
         center_gap=AnimatedValue(0.0),
         width=AnimatedValue(200.0),
         density=AnimatedValue(64.0),

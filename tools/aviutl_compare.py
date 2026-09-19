@@ -53,8 +53,13 @@ from kumiki.compat.mapped import MappedObject  # noqa: E402
 WIDTH, HEIGHT, FPS = 1920, 1080, 60
 #: 比べる絵の大きさ 書き出しは圧縮されるので、縮めてならしてから比べる
 COMPARE_WIDTH, COMPARE_HEIGHT = 480, 270
-#: エイリアス 1 本あたりの枠（フレーム）
+#: 長さの書いていないエイリアスに当てる長さ（フレーム）
+#: 書いてあるものは**そのエイリアス自身の長さ**を使う（:func:`_own_length`）
 SLOT = 120
+
+#: 1 本に使う長さの上限（フレーム） 長さの書いていないエイリアスへ SLOT を当てる一方、
+#: 壊れたファイルが何万フレームを名乗っても書き出しが終わるようにする
+MAX_LENGTH = 1800
 #: 枠と枠の間に空ける黒 前のエイリアスの残りが次へ混ざらないように
 GAP = 12
 DEFAULT_WORK = ROOT / ".work" / "aviutl-compare"
@@ -90,6 +95,10 @@ class Case:
 
     name: str
     file: str
+    #: 元のファイルの**丸ごとの道**（表示用の name や file とは別に持つ）
+    #: 名前だけで引き当てると、別のフォルダに同じ名前のエイリアスがあったときに
+    #: 片方がもう片方を上書きし、AviUtl の絵と関係の無い中身を並べてしまう
+    source: str
     index: int
     start: int
     length: int
@@ -127,7 +136,10 @@ def _sections(text: str) -> list[list[str]]:
 def _own_length(head: list[str]) -> int:
     """``[Object]`` の ``frame=始まり,終わり`` から、そのエイリアス自身の長さを読む
 
-    書いていなければ SLOT 区間の長さが分からないときは短く切らない
+    **読めた長さはそのまま返す** 1 フレームでも伸ばさない 伸ばすと AviUtl 側だけが
+    長い区間になり、比べるフレームがこちらの区間の外へ出て空の絵と突き合わせる
+
+    書いていない・読めないときだけ SLOT を使う 長さが分からないので短く切れない
     """
     for line in head:
         key, _, value = line.partition("=")
@@ -138,7 +150,7 @@ def _own_length(head: list[str]) -> int:
             span = int(last) - int(first) + 1
         except ValueError:
             return SLOT
-        return span if span > 1 else SLOT
+        return min(span, MAX_LENGTH) if span >= 1 else SLOT
     return SLOT
 
 
@@ -163,14 +175,14 @@ def build_cases(files: list[Path]) -> tuple[list[Case], list[str]]:
             continue
         # 先頭は [Object]（区間と重ね順） 残りが中身とフィルタ
         #
-        # 長さはエイリアス自身が持つものに合わせる SLOT に伸ばすと、AviUtl 側だけが
-        # 長い区間になり、終わり際のフレームでこちらだけ何も無くなる
-        # 登場と退場の効き方も区間の長さで決まるので、揃えないと比べられない
-        length = min(SLOT, _own_length(blocks[0]))
+        # 長さはエイリアス自身が持つものに合わせる 揃えないと、長い方の端で
+        # 片側だけが空になって差が跳ね上がる（登場と退場の効き方も区間の長さで決まる）
+        length = _own_length(blocks[0])
         cases.append(
             Case(
                 name=path.stem,
                 file=path.name,
+                source=str(path),
                 index=len(cases),
                 start=cursor,
                 length=length,
@@ -233,6 +245,7 @@ def command_build(arguments: argparse.Namespace) -> int:
                     {
                         "name": case.name,
                         "file": case.file,
+                        "source": case.source,
                         "index": case.index,
                         "start": case.start,
                         "length": case.length,
@@ -303,7 +316,6 @@ def command_compare(arguments: argparse.Namespace) -> int:
         print(f"{video} がありません AviUtl2 で書き出してから走らせてください")
         return 1
 
-    by_name = {Path(item).stem: Path(item) for item in manifest["files"]}
     cases = manifest["cases"]
     if arguments.only:
         words = [word for word in arguments.only.split(",") if word]
@@ -323,9 +335,12 @@ def command_compare(arguments: argparse.Namespace) -> int:
     try:
         for raw in cases:
             case = Case(**raw)
-            source = by_name.get(case.name)
-            if source is None:
-                continue
+            # 並べたときのファイルをそのまま読む 名前で引き直すと、同じ名前の
+            # エイリアスが別のフォルダにあったときに違う中身と突き合わせる
+            source = Path(case.source)
+            if not source.exists():
+                print(f"{case.name}: {source} が見つかりません 並べ直してください")
+                return 1
             objects = [
                 item
                 for obj in load_exo(source).objects
@@ -342,7 +357,13 @@ def command_compare(arguments: argparse.Namespace) -> int:
             for frame in case.sample_frames():
                 reference = references.get(frame)
                 if reference is None:
-                    continue
+                    # 黙って飛ばすと、途中までしか書き出していない動画でも
+                    # 「残りは全部合っている」ように見える平均が出てしまう
+                    print(
+                        f"{case.name}: 書き出した動画にフレーム {frame} がありません"
+                        " 並べ直したプロジェクトを書き出してください"
+                    )
+                    return 1
                 ours = renderer.render(frame)
                 a, b = _shrink(reference), _shrink(ours)
                 difference = float(np.abs(a - b).mean())
