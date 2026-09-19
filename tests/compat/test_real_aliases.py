@@ -84,7 +84,7 @@ def test_the_text_survives(mapped: list[tuple[Path, MappedObject]]) -> None:
         for _, item in mapped
         if (source := item.clip.source) is not None
         and source.kind == "text"
-        and "timer_start" not in source.params
+        and "timer_format" not in source.params
     ]
     assert texts
     assert all(isinstance(text, str) and text for text in texts)

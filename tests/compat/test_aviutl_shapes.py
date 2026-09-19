@@ -14,6 +14,7 @@ from kumiki.compat.aviutl.report import CompatibilityReport
 from kumiki.compat.mapped import MappedObject
 from kumiki.core.model import AnimatedValue, GeneratedSource
 from kumiki.core.timebase import FrameRate
+from kumiki.engine.sources import format_time
 
 RATE = FrameRate(60)
 
@@ -175,12 +176,14 @@ class TestCustomObjects:
         assert source.params["closed"] is True
 
     def test_a_polygon_is_hollow_unless_told_otherwise(self) -> None:
+        # 中抜きの指定を落とすと、線だけのはずの多角形が塗りつぶされる
         source = _source(
             "多角形\n色=ffffff\nライン幅=20\n座標=0,-150,130,75,-130,75\n簡易塗り潰し=0"
         )
         assert source.params["fill_color"] == (0.0, 0.0, 0.0, 0.0)
 
     def test_a_filled_polygon_uses_its_colour(self) -> None:
+        # 塗り潰しの指定を落とすと、塗ってあるはずの中が透明になる
         source = _source(
             "多角形\n色=ff0000\nライン幅=20\n座標=0,-150,130,75,-130,75\n簡易塗り潰し=1"
         )
@@ -216,3 +219,44 @@ class TestCustomObjects:
         document = parse_exo(_object("ライン(移動軌跡)\nライン幅=16.0\n先端=48.0\n色=ffffff"))
         map_object(document.objects[0], RATE, report=report)
         assert any("ライン(移動軌跡)" in line for line in report.lines())
+
+
+class TestWhatTheSecondReviewFound:
+    def test_the_counter_does_not_wrap_at_a_minute(self) -> None:
+        # 書式 s は 60 で分へ繰り上がる カウンターは数を数えるだけなので、
+        # そのまま使うと 60 で 0 に戻り、100 のつもりが 40 と出る
+        source = _source("カウンター\n初期値=0\n速度=1\nフォント名=MS UI Gothic")
+        assert source.params["timer_format"] == "n"
+        assert format_time(100.0, "n") == "100"
+
+    def test_the_counter_keeps_its_decoration(self) -> None:
+        # 装飾タイプ を読まないと、縁取りのカウンターが素の文字になる
+        source = _source(
+            "カウンター\n初期値=0\n速度=1\n装飾タイプ=縁取り文字"
+            + "\n影・縁色=000000\nフォント名=MS UI Gothic"
+        )
+        assert "border_width" in source.params or "shadow_x" in source.params
+
+    def test_a_broken_coordinate_drops_the_whole_polygon(self) -> None:
+        # 読めない値だけを捨てると、その後ろの x と y が入れ替わって別の形になる
+        _, report = _mapped("多角形\n色=ffffff\nライン幅=20\n座標=0,だめ,130,75")
+        assert any("多角形の座標" in line for line in report.lines())
+
+    def test_an_odd_number_of_coordinates_is_refused(self) -> None:
+        # x と y の組にできない並び 1 つ足りないまま組むと全部ずれる
+        _, report = _mapped("多角形\n色=ffffff\nライン幅=20\n座標=0,-150,130")
+        assert any("多角形の座標" in line for line in report.lines())
+
+    def test_extra_coordinates_are_trimmed_to_the_corner_count(self) -> None:
+        # 頂点数 より座標が多いファイル 余分を描くと形が変わる
+        source = _source("多角形\n色=ffffff\nライン幅=20\n頂点数=2\n座標=0,0,10,0,20,0")
+        assert source.params["points"] == "0.0,-0.0;10.0,-0.0"
+
+    def test_a_moving_fan_angle_is_recorded(self) -> None:
+        # 動きを落とすと、開いていく扇が開いたまま止まる
+        _, report = _mapped("扇型\n中心角=0,270,直線移動,0\nサイズ=100\n色=ffffff")
+        assert any("扇型の動く中心角" in line for line in report.lines())
+
+    def test_a_moving_counter_speed_is_recorded(self) -> None:
+        _, report = _mapped("カウンター\n初期値=0\n速度=1,5,直線移動,0\nフォント名=MS UI Gothic")
+        assert any("カウンターの動く速度" in line for line in report.lines())

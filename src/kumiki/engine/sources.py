@@ -146,13 +146,18 @@ MAX_TIME_DIGITS = 9
 
 
 def format_time(value: float, pattern: str) -> str:
-    """.NET の時間の書式（``h`` ``m`` ``s`` ``f`` と ``\\`` の逃がし）で秒を文字にする"""
+    """.NET の時間の書式（``h`` ``m`` ``s`` ``f`` と ``\\`` の逃がし）で秒を文字にする
+
+    ``n`` だけは .NET に無いこちらの追加で、**60 で折り返さない通算の値**
+    AviUtl のカウンターのように、ただ数を数えるものに使う（``s`` は分に繰り上がる）
+    """
     value = min(max(value, 0.0), 10.0**9)
     whole = int(value)
     parts = {
         "h": whole // 3600,
         "m": (whole // 60) % 60,
         "s": whole % 60,
+        "n": whole,
     }
     out: list[str] = []
     index = 0
