@@ -150,3 +150,69 @@ class TestTheThingsReviewFound:
         # 値が同じでも式なら時間で変わる 記録しないと、大きさが止まったことに気付けない
         _, report = _mapped("図形\n図形の種類=円\nサイズ=100,100,瞬間移動,8|100+time\n色=ffffff")
         assert any("図形の動くサイズ" in line for line in report.lines())
+
+
+class TestCustomObjects:
+    """AviUtl2 の「カスタムオブジェクト」 効果ではなく中身として置かれる
+
+    どれも AviUtl2 に置かせたエイリアスから項目名を読み取った
+    """
+
+    def test_a_fan_keeps_its_angle(self) -> None:
+        # 中心角を落とすと、扇が必ず全円（360 度）になる
+        source = _source("扇型\n中心角=270.0\nサイズ=100.0\nライン幅=2000.0\n色=ffffff")
+        assert source.params["shape"] == "fan"
+        assert _value(source, "span") == 270.0
+        # ライン幅 2000 は図形より大きい 塗りつぶしとして扱う
+        assert source.params["outline_only"] is False
+
+    def test_a_polygon_becomes_a_line_through_its_points(self) -> None:
+        # 座標は x と y を並べて書く（Y は下が正） 反転を忘れると上下逆の形になる
+        source = _source("多角形\n色=ffffff\nライン幅=20\n頂点数=3\n座標=0,-150,130,75,-130,75")
+        assert source.params["shape"] == "polyline"
+        assert source.params["points"] == "0.0,150.0;130.0,-75.0;-130.0,-75.0"
+        # 閉じないと、最後の頂点から最初へ戻る線が引かれず開いた折れ線になる
+        assert source.params["closed"] is True
+
+    def test_a_polygon_is_hollow_unless_told_otherwise(self) -> None:
+        source = _source(
+            "多角形\n色=ffffff\nライン幅=20\n座標=0,-150,130,75,-130,75\n簡易塗り潰し=0"
+        )
+        assert source.params["fill_color"] == (0.0, 0.0, 0.0, 0.0)
+
+    def test_a_filled_polygon_uses_its_colour(self) -> None:
+        source = _source(
+            "多角形\n色=ff0000\nライン幅=20\n座標=0,-150,130,75,-130,75\n簡易塗り潰し=1"
+        )
+        assert source.params["fill_color"] == (1.0, 0.0, 0.0, 1.0)
+
+    def test_a_broken_polygon_is_recorded(self) -> None:
+        # 座標が読めないと線が 1 本も出ない 黙って空の図形を置くと気付けない
+        _, report = _mapped("多角形\n色=ffffff\nライン幅=20\n座標=")
+        assert any("多角形の座標" in line for line in report.lines())
+
+    def test_a_counter_becomes_a_timer(self) -> None:
+        source = _source(
+            "カウンター\n初期値=5.0\n速度=2.0\nサイズ=34.0"
+            + "\n表示形式=標準\nフォント名=MS UI Gothic\n文字色=ffffff"
+        )
+        assert source.kind == "text"
+        assert _value(source, "timer_start") == 5.0
+        # 速度は 1 秒あたりの進み方 こちらは百分率なので 100 倍する
+        assert _value(source, "timer_rate") == 200.0
+        assert source.params["font"] == "MS UI Gothic"
+
+    def test_an_unknown_counter_format_is_recorded(self) -> None:
+        # 書式を落とすと、時計のつもりの表示がただの秒数になる
+        _, report = _mapped(
+            "カウンター\n初期値=0\n速度=1\n表示形式=時分秒\nフォント名=MS UI Gothic"
+        )
+        assert any("表示形式" in line for line in report.lines())
+
+    def test_the_motion_trail_is_recorded(self) -> None:
+        # ライン(移動軌跡) は折れ線ではなく、動いた跡を描く別物
+        # 折れ線として写すと、まったく違う絵が出たまま気付けない
+        report = CompatibilityReport()
+        document = parse_exo(_object("ライン(移動軌跡)\nライン幅=16.0\n先端=48.0\n色=ffffff"))
+        map_object(document.objects[0], RATE, report=report)
+        assert any("ライン(移動軌跡)" in line for line in report.lines())

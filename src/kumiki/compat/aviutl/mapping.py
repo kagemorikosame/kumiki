@@ -570,6 +570,12 @@ def _content(
         return _figure(entry, log), "", "shape"
     if entry.name == "集中線":
         return _concentration(entry, points, log), "", "shape"
+    if entry.name == "扇型":
+        return _fan(entry, log), "", "shape"
+    if entry.name == "多角形":
+        return _polygon(entry, log), "", "shape"
+    if entry.name == "カウンター":
+        return _counter(entry, log), "", "text"
     if entry.name in ("動画ファイル", "画像ファイル", "音声ファイル"):
         return None, entry.params.get("file", ""), entry.name
 
@@ -695,6 +701,93 @@ def _figure(entry: ExoEntry, log: CompatibilityReport) -> GeneratedSource:
             "color": _color(entry.value("色", "color", default="ffffff")),
             "line_width": AnimatedValue(0.0 if filled else line),
             "outline_only": not filled,
+        },
+    )
+
+
+def _fan(entry: ExoEntry, log: CompatibilityReport) -> GeneratedSource:
+    """扇型 AviUtl2 のカスタムオブジェクト
+
+    項目は ``中心角`` ``サイズ`` ``ライン幅`` ``色`` AviUtl2 に置かせて読み取った
+    """
+    size = entry.number("サイズ", 100.0)
+    line = entry.number("ライン幅")
+    filled = line <= 0.0 or line >= min(_FILLED_LINE, size)
+    del log
+    return GeneratedSource(
+        kind="shape",
+        params={
+            "shape": "fan",
+            "span": AnimatedValue(entry.number("中心角", 360.0)),
+            "width": AnimatedValue(max(1.0, size)),
+            "height": AnimatedValue(max(1.0, size)),
+            "color": _color(entry.value("色", default="ffffff")),
+            "line_width": AnimatedValue(0.0 if filled else line),
+            "outline_only": not filled,
+        },
+    )
+
+
+def _polygon(entry: ExoEntry, log: CompatibilityReport) -> GeneratedSource:
+    """多角形 AviUtl2 のカスタムオブジェクト
+
+    頂点は ``座標=0,-150,130,75,-130,75`` と x と y を並べて書く（Y は下が正）
+    こちらの線の図形（``polyline``）は ``x,y;x,y`` なので組み直す
+    """
+    numbers = [
+        value
+        for part in entry.params.get("座標", "").split(",")
+        if (value := _as_number(part.strip())) is not None
+    ]
+    # Y は AviUtl が下向き正 こちらは上向き正なので符号を反転する
+    points = ";".join(
+        f"{numbers[index]},{-numbers[index + 1]}" for index in range(0, len(numbers) - 1, 2)
+    )
+    if not points:
+        log.note_missing("多角形の座標（読めない）")
+
+    repeats = entry.number("繰り返し描画数", 1.0)
+    if repeats != 1.0:
+        log.note_missing("多角形の繰り返し描画")
+
+    line = entry.number("ライン幅")
+    filled = entry.number("簡易塗り潰し") != 0.0
+    colour = _color(entry.value("色", default="ffffff"))
+    return GeneratedSource(
+        kind="shape",
+        params={
+            "shape": "polyline",
+            "points": points,
+            "closed": True,
+            "line_width": AnimatedValue(max(1.0, line)),
+            "color": colour,
+            # 簡易塗り潰し のときだけ中を塗る 既定は線だけ
+            "fill_color": colour if filled else (0.0, 0.0, 0.0, 0.0),
+        },
+    )
+
+
+def _counter(entry: ExoEntry, log: CompatibilityReport) -> GeneratedSource:
+    """カウンター AviUtl2 のカスタムオブジェクト 数を数えて出すテキスト
+
+    項目は ``初期値`` ``速度`` ``サイズ`` ``表示形式`` ``フォント名``
+    ``装飾タイプ`` ``文字色`` ``影・縁色``
+    """
+    style = entry.params.get("表示形式", "標準").strip()
+    if style != "標準":
+        # 書式（時分秒など）の書き方が分からないものは記録に残す
+        log.note_missing(f"カウンターの表示形式: {style}")
+    return GeneratedSource(
+        kind="text",
+        params={
+            "text": "",
+            "size": AnimatedValue(entry.number("サイズ", 34.0)),
+            "font": entry.params.get("フォント名", ""),
+            "color": _color(entry.value("文字色", default="ffffff")),
+            "timer_format": "s",
+            "timer_start": AnimatedValue(entry.number("初期値")),
+            # 速度は 1 秒あたりの進み方 こちらは百分率で持つ
+            "timer_rate": AnimatedValue(entry.number("速度", 1.0) * 100.0),
         },
     )
 
@@ -1194,11 +1287,15 @@ def _color(value: str) -> tuple[float, ...]:
     )
 
 
-def _as_number(value: str) -> float:
+def _as_number(value: str) -> float | None:
+    """数として読む 読めなければ ``None``
+
+    多角形の座標のように「読めない要素は落とす」場面があるので、0 では返さない
+    """
     try:
         return float(value)
     except ValueError:
-        return 0.0
+        return None
 
 
 #: 0 秒 いちいち ``Fraction(0)`` と書かずに済ませる
