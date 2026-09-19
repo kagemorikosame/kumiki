@@ -328,3 +328,9 @@ class TestTheLeftoverSettings:
         # ここを使用中と数えると、記録が埋まって多い順の並びが役に立たなくなる
         _, report = _effects("縁取り\nサイズ=6\nぼかし=0,0,直線移動,0\n縁色=ffffff")
         assert not any("縁取りの項目: ぼかし" in line for line in report.lines())
+
+    def test_an_easing_flag_alone_is_off(self) -> None:
+        # 加速や減速の旗が付いていても、値が動かなければ見た目は変わらない
+        # ここを使用中と数えると、直したばかりの多い順の並びがまた埋まる
+        _, report = _effects("縁取り\nサイズ=6\nぼかし=0,0,補間移動,3\n縁色=ffffff")
+        assert not any("縁取りの項目: ぼかし" in line for line in report.lines())

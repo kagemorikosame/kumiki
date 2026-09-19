@@ -951,12 +951,13 @@ def _is_off(value: str) -> bool:
     **動きが付いていれば 0 でも使っている** ``0,0,回転,4|360`` や
     ``0`` から始まる参照式は、時間が進むと 0 ではなくなる
     移動方法の名前だけでは見ない（``0,0,直線移動,0`` は名前が付いていても動かない）
+    加速と減速の旗も同じで、値が動かなければ見た目は変わらない
     """
     text = value.strip()
     if not text:
         return True
     motion = parse_motion(text)
-    if motion is None or motion.moves or motion.flags or motion.extra:
+    if motion is None or _varies(motion):
         return False
     return all(number == 0.0 for number in motion.values)
 
