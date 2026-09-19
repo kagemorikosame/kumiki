@@ -45,8 +45,25 @@ from kumiki.effects.spec import ParameterSpec, ParamInput, TrackSpec, ValueSpec
 
 __all__ = ["MappedObject", "map_exo", "map_object", "media_paths"]
 
-#: AviUtl の図形の種類（``type`` の番号）
+#: AviUtl1 の図形の種類（``type`` の番号）
 _FIGURES = ("ellipse", "rect", "triangle", "pentagon", "hexagon", "star", "background")
+
+#: AviUtl2 の図形の種類 **名前で書かれる**（``図形の種類=ハート``）
+#: AviUtl2 に図形を置いたエイリアスを作らせて読み取った
+#: ハート に当たる形はこちらに無いので、記録に残して矩形にする
+_FIGURE_NAMES: dict[str, str] = {
+    "背景": "background",
+    "円": "ellipse",
+    "四角形": "rect",
+    "三角形": "triangle",
+    "五角形": "pentagon",
+    "六角形": "hexagon",
+    "星型": "star",
+}
+
+#: 図形の線の太さがこれ以上なら塗りつぶし AviUtl2 の既定値がこの値
+#: そのまま線の太さとして渡すと、画面いっぱいの輪郭になる
+_FILLED_LINE = 4000.0
 
 #: 合成方法の番号
 _BLEND_MODES = (
@@ -548,7 +565,9 @@ def _content(entry: ExoEntry, log: CompatibilityReport) -> tuple[GeneratedSource
     if entry.name == "テキスト":
         return _text(entry, log), "", "text"
     if entry.name == "図形":
-        return _figure(entry), "", "shape"
+        return _figure(entry, log), "", "shape"
+    if entry.name == "集中線":
+        return _concentration(entry, log), "", "shape"
     if entry.name in ("動画ファイル", "画像ファイル", "音声ファイル"):
         return None, entry.params.get("file", ""), entry.name
 
@@ -627,20 +646,63 @@ def _decoration_of(entry: ExoEntry, size: float, log: CompatibilityReport) -> di
     return decoration_params(decoration, size, (colour[0], colour[1], colour[2], colour[3]))
 
 
-def _figure(entry: ExoEntry) -> GeneratedSource:
-    index = entry.integer("type")
+def _figure(entry: ExoEntry, log: CompatibilityReport) -> GeneratedSource:
+    """図形オブジェクト
+
+    世代で書き方が違う AviUtl1 は種類を番号（``type``）と ``color`` で書き、
+    AviUtl2 は名前（``図形の種類``）と ``色`` で書く 前者だけを読んでいたので、
+    **AviUtl2 の図形は種類も色も落ちて、白い円になっていた**
+    """
     size = entry.number("サイズ", 100.0)
     ratio = entry.number("縦横比", 0.0) / 100.0
     width = size * (1.0 - max(0.0, ratio))
     height = size * (1.0 - max(0.0, -ratio))
+
+    named = entry.params.get("図形の種類")
+    if named is not None:
+        shape = _FIGURE_NAMES.get(named.strip())
+        if shape is None:
+            log.note_missing(f"図形の種類: {named.strip()}")
+            shape = "rect"
+    else:
+        index = entry.integer("type")
+        shape = _FIGURES[index] if 0 <= index < len(_FIGURES) else "rect"
+
+    # 角を丸くする は矩形のときだけ意味がある
+    if shape == "rect" and entry.number("角を丸くする") != 0.0:
+        shape = "rounded"
+
+    # 線の太さが図形より大きければ塗りつぶし そのまま渡すと画面を覆う輪郭になる
+    line = entry.number("ライン幅")
+    filled = line >= min(_FILLED_LINE, max(width, height))
     return GeneratedSource(
         kind="shape",
         params={
-            "shape": _FIGURES[index] if 0 <= index < len(_FIGURES) else "rect",
+            "shape": shape,
             "width": AnimatedValue(max(1.0, width)),
             "height": AnimatedValue(max(1.0, height)),
-            "color": _color(entry.params.get("color", "ffffff")),
-            "line_width": AnimatedValue(entry.number("ライン幅")),
+            "color": _color(entry.value("色", "color", default="ffffff")),
+            "line_width": AnimatedValue(0.0 if filled else line),
+            "outline_only": not filled,
+        },
+    )
+
+
+def _concentration(entry: ExoEntry, log: CompatibilityReport) -> GeneratedSource:
+    """集中線 AviUtl2 ではカスタムオブジェクト（図形の仲間）
+
+    項目は ``濃さ`` ``速さ`` ``中心幅`` ``色`` AviUtl2 に置かせて読み取った
+    ``中心幅``（真ん中の空き）に当たる項目がこちらに無いので記録に残す
+    """
+    if entry.number("中心幅") != 0.0:
+        log.note_missing("集中線の中心幅（真ん中の空き）")
+    return GeneratedSource(
+        kind="shape",
+        params={
+            "shape": "concentration",
+            "density": AnimatedValue(entry.number("濃さ", 40.0)),
+            "flicker": AnimatedValue(entry.number("速さ", 25.0)),
+            "color": _color(entry.value("色", default="ffffff")),
         },
     )
 

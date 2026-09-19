@@ -87,12 +87,19 @@ def test_the_text_survives(mapped: list[tuple[Path, MappedObject]]) -> None:
 
 def test_the_fonts_survive(mapped: list[tuple[Path, MappedObject]]) -> None:
     # 配布物はフォント指定が肝 既定フォントに落ちていたら見た目が別物になる
-    named = [
+    #
+    # 数えるのはテキストのものだけ ファイルの数と比べると、図形や試験用の
+    # エイリアスを置いた時点で落ちる（フォントを持たないのが正しい姿なので）
+    texts = [
         item
         for _, item in mapped
-        if item.clip.source is not None and "font" in item.clip.source.params
+        if item.clip.source is not None and item.clip.source.kind == "text"
     ]
-    assert len(named) >= len(FILES) - 3  # 数本はフォント欄が空のものがある
+    named = [
+        item for item in texts if "font" in (item.clip.source.params if item.clip.source else {})
+    ]
+    assert texts
+    assert len(named) >= len(texts) - 3  # 数本はフォント欄が空のものがある
 
 
 def test_no_alias_collapses_to_a_single_frame(mapped: list[tuple[Path, MappedObject]]) -> None:
