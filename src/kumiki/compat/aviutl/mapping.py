@@ -102,6 +102,12 @@ _CONTENT_NAMES = frozenset(
     }
 )
 
+#: 碁盤の目の数を ``オブジェクト分割`` から受け取るエフェクト
+#:
+#: AviUtl は「分割してから 1 マスずつ動かす」2 段構えだが、こちらは動かす側が
+#: マスの数を持つ 分割だけのエフェクトを置いても絵が変わらず、設定の意味が薄い
+_SPLIT_EFFECTS = frozenset({"split_zoom", "split_rotate"})
+
 #: 位置と大きさを決める要素 エフェクトではなくクリップの配置として扱う
 _DRAW_NAMES = frozenset({"標準描画", "拡張描画"})
 
@@ -247,6 +253,25 @@ _PARAMS: dict[str, dict[str, _Param]] = {
         "減衰": _Param("falloff"),
         "境目調整": _Param("gap"),
     },
+    # 個別オブジェクトの拡大と回転 碁盤の目の数は オブジェクト分割 から拾う
+    # 中心は 1 マスの真ん中からのずれ Y は下が正なので向きを直す
+    "座標の拡大縮小(個別オブジェクト)": {
+        "拡大率": _Param("zoom"),
+        "中心X": _Param("center_x"),
+        "中心Y": _Param("center_y", _flip),
+    },
+    "座標の回転(個別オブジェクト)": {
+        "角度": _Param("angle"),
+        "中心X": _Param("center_x"),
+        "中心Y": _Param("center_y", _flip),
+    },
+    "ランダム配置": {
+        "数": _Param("count"),
+        "範囲": _Param("span"),
+        "回転": _Param("angle"),
+        "拡散": _Param("spread"),
+        "ランダム角度": _Param("random_angle"),
+    },
     # ディスプレイスメントマップ 変形X と 変形Y はずらす量 Y は下が正
     "ディスプレイスメントマップ": {
         "サイズ": _Param("size"),
@@ -383,6 +408,9 @@ _FILTERS: dict[str, str] = {
     "領域拡張": "expand_area",
     "ミラー": "mirror",
     "ディスプレイスメントマップ": "displacement_map",
+    "座標の拡大縮小(個別オブジェクト)": "split_zoom",
+    "座標の回転(個別オブジェクト)": "split_rotate",
+    "ランダム配置": "scatter",
     "モザイク": "mosaic",
     "マスク": "mask",
     "クリッピング": "crop",
@@ -503,6 +531,8 @@ def map_object(
     # 中間点はオブジェクトの持ち物 トラックバーの値はこの点の数だけ並ぶ
     points = obj.relative_points()
     placement: dict[str, AnimatedValue] | None = None
+    #: 直前の ``オブジェクト分割`` の碁盤の目の数（横, 縦）
+    cells: tuple[float, float] = (1.0, 1.0)
 
     for entry in obj.filters():
         if entry.name in _DRAW_NAMES:
@@ -517,8 +547,18 @@ def map_object(
             blend = _blend_of(entry, log)
             continue
 
+        if entry.name == "オブジェクト分割":
+            # 分割そのものは絵を変えない（AviUtl2 の実物でも分割だけの絵は元と同じ）
+            # 碁盤の目の数を覚えて、この後ろの「個別オブジェクトの…」へ渡す
+            cells = (entry.number("横分割数", 1.0), entry.number("縦分割数", 1.0))
+            continue
+
         effect = _filter(entry, points, log)
         if effect is not None:
+            if effect.kind in _SPLIT_EFFECTS:
+                effect = effect.with_param("columns", AnimatedValue(cells[0])).with_param(
+                    "rows", AnimatedValue(cells[1])
+                )
             effects.append(effect)
 
     # 位置・拡大・回転は変形エフェクトへ AviUtl では描画設定だが、こちらでは
