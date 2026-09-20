@@ -161,6 +161,35 @@ class TestColorRangeShift:
         after = paint((0.0, 0.0, 1.0), self._effect())
         assert after[2] > 200 and after[1] < 60
 
+    def test_the_same_hue_but_pale_is_left_alone(self, paint: Callable[..., np.ndarray]) -> None:
+        """色相が同じでも、彩度が範囲から外れていれば塗り替えない
+
+        彩度の範囲を 0..1 でなく 0..100 のまま比べると、しきい値が必ず上回って
+        彩度の縛りが消える そのときは、この薄い赤まで緑へ変わってしまう
+        """
+        # 彩度 0.25 の赤 変換前の色（彩度 1.0）との差 0.75 は範囲 38% の外
+        after = paint((1.0, 0.75, 0.75), self._effect())
+        assert after[0] > 200, "薄い赤が塗り替わっている"
+        assert after[1] < 220
+
+    def test_the_key_colour_is_fully_replaced_even_with_a_wide_edge(
+        self, paint: Callable[..., np.ndarray]
+    ) -> None:
+        """境界補正が範囲より大きくても、変換前の色そのものは残さない
+
+        境界を範囲の前後へ散らすと下限が負になり、差 0 の画素まで
+        塗り替えが中途半端になる（下限を 0 で止めていないと落ちる）
+        """
+        effect = registry.require("color_range_shift").create(
+            key_color=(1.0, 0.0, 0.0, 1.0),
+            to_color=(0.0, 1.0, 0.0, 1.0),
+            hue_range=16.0,
+            saturation_range=38.0,
+            feather=40.0,
+        )
+        after = paint((1.0, 0.0, 0.0), effect)
+        assert after[1] > 200 and after[0] < 60
+
 
 class TestFlash:
     def test_the_light_spills_outside_the_shape(self, gl: OffscreenGLContext) -> None:

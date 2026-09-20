@@ -205,13 +205,20 @@ void main() {
 
     float turn = abs(hsv.x - key.x);
     turn = min(turn, 1.0 - turn) * 360.0;   // 1 周でつながっているので近い側を見る
+
+    // 境界は範囲を挟んで前後へ散らす AviUtl2 の絵に合わせた形
+    // （外側だけで落とす形にすると、実測との差が 15 → 33 へ開いた）
+    //
+    // ただし**下限は 0 で止める** 境界補正が範囲より大きいと下限が負になり、
+    // 変換前の色そのもの（差 0）でさえ塗り替えが中途半端になる
     float edge = max(feather, 1e-4);
-    float near_hue = 1.0 - smoothstep(hue_range - edge, hue_range + edge, turn);
+    float near_hue = 1.0 - smoothstep(max(hue_range - edge, 0.0), hue_range + edge, turn);
     // 彩度は 0..1 で比べる 受け取った % をそのまま比べると、
     // しきい値が必ず上回って彩度の範囲が効かなくなる
     float sat_edge = saturation_range * 0.01;
+    float sat_slack = edge * 0.01;
     float near_sat = 1.0 - smoothstep(
-        sat_edge - edge * 0.01, sat_edge + edge * 0.01, abs(hsv.y - key.y)
+        max(sat_edge - sat_slack, 0.0), sat_edge + sat_slack, abs(hsv.y - key.y)
     );
 
     vec3 shifted = mix(rgb, to_srgb(to_color.rgb), near_hue * near_sat);
