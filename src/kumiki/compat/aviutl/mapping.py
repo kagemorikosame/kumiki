@@ -77,6 +77,16 @@ _BLEND_MODES = (
     "darken",
 )
 
+#: **読んだうえで捨てる**項目 記録にも残さない
+#:
+#: 落としても絵が変わらないと**実物で確かめた**ものだけを並べる
+#: 記録に残すと、本当に写せていない項目の並びがこれで埋まって役に立たなくなる
+_IGNORED: dict[str, frozenset[str]] = {
+    # 拡張色調補正の 色空間 AviUtl2 に YUV と RGB の両方を描かせたが、
+    # 出力は 1 バイトも違わなかった（輝度のゲインと彩度のゲインで確認）
+    "拡張色調補正": frozenset({"色空間"}),
+}
+
 #: 中身として扱う要素の名前 これ以外はフィルタ
 _CONTENT_NAMES = frozenset(
     {
@@ -959,7 +969,6 @@ _SELECT_PARAMS: dict[str, dict[str, tuple[str, dict[str, str]]]] = {
         "合成モード": ("blend", _BLEND_NAMES),
     },
     "マスク": {"種類": ("shape", {"矩形": "rect", "円": "ellipse", "楕円": "ellipse"})},
-    "拡張色調補正": {"色空間": ("space", {"YUV": "yuv", "RGB": "rgb"})},
     "ルミナンスキー": {
         # 暗い部分を透過 ＝ 明るい所が残る こちらの旗は「暗いところを残す」
         "モード": ("invert", {"暗い部分を透過": "", "明るい部分を透過": "1"}),
@@ -1170,7 +1179,7 @@ def _filter(entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport) 
     names = _PARAMS.get(entry.name, {})
     colours = _COLOR_PARAMS.get(entry.name, {})
     choices = _SELECT_PARAMS.get(entry.name, {})
-    handled: set[str] = set()
+    handled: set[str] = set(_IGNORED.get(entry.name, ()))
     for source_name, value in entry.params.items():
         target = names.get(source_name)
         if target is not None:

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from kumiki.effects.builtin import PRELUDE
 from kumiki.effects.definition import EffectDefinition, registry
-from kumiki.effects.spec import CheckSpec, ColorSpec, SelectSpec, TrackSpec
+from kumiki.effects.spec import CheckSpec, ColorSpec, TrackSpec
 
 __all__ = ["register_grading_effects"]
 
@@ -60,7 +60,8 @@ float apply_curve(float value, float gain, float gamma, float lift, float offset
 }
 """
 
-#: 色相・彩度と RGB の行き来
+#: 色相と彩度で色の近さを測るための行き来（特定色域変換だけが使う）
+#: 拡張色調補正は YUV で計算する AviUtl がそちらだから
 _HSV = """
 vec3 to_hsv(vec3 c) {
     float high = max(c.r, max(c.g, c.b));
@@ -192,8 +193,11 @@ uniform vec4 to_color;
 
 void main() {
     // 変換前の色に近い色だけを、変換後の色へ塗り替える
-    // 近さは色相の差と彩度の差で測る AviUtl の範囲は 0..255 の刻みなので、
-    // 呼ぶ側で度と割合へ直してから渡す
+    // 近さは色相の差と彩度の差で測る
+    //
+    // 色相の範囲と境界は **度** 彩度の範囲は **割合（%）**で受け取る
+    // AviUtl の 彩度範囲 は 0..255 の刻みなので、呼ぶ側で % へ直してある
+    // （色相の方は AviUtl も度 0..255 として換算すると範囲が広がりすぎる）
     vec4 base = texture(u_texture, v_uv);
     vec3 rgb = to_srgb(base.rgb);
     vec3 hsv = to_hsv(clamp(rgb, 0.0, 1.0));
@@ -203,8 +207,11 @@ void main() {
     turn = min(turn, 1.0 - turn) * 360.0;   // 1 周でつながっているので近い側を見る
     float edge = max(feather, 1e-4);
     float near_hue = 1.0 - smoothstep(hue_range - edge, hue_range + edge, turn);
+    // 彩度は 0..1 で比べる 受け取った % をそのまま比べると、
+    // しきい値が必ず上回って彩度の範囲が効かなくなる
+    float sat_edge = saturation_range * 0.01;
     float near_sat = 1.0 - smoothstep(
-        saturation_range - edge * 0.01, saturation_range + edge * 0.01, abs(hsv.y - key.y)
+        sat_edge - edge * 0.01, sat_edge + edge * 0.01, abs(hsv.y - key.y)
     );
 
     vec3 shifted = mix(rgb, to_srgb(to_color.rgb), near_hue * near_sat);
@@ -220,8 +227,6 @@ _FLASH = _shader(
     + _LUMA601
     + """
 uniform float strength;
-uniform float center_x;
-uniform float center_y;
 uniform vec4 light_color;
 uniform bool fixed_size;
 
@@ -261,14 +266,13 @@ void main() {
     // そちらを元の絵として使うと画面が灰色の靄だけになる
     //
     // 不透明度も上げる 上げないと、図形の外は透けたままで光が見えない
-    vec2 centre = vec2(center_x, -center_y) / u_size;
     vec2 step_ = vec2(0.0, span) / 24.0 / u_size;
     float sum = 0.0;
     float total = 0.0;
     for (int i = -48; i <= 48; ++i) {
         float far = float(i) / 24.0;
         float w = exp(-0.5 * far * far);
-        sum += texture(u_texture, v_uv - centre + step_ * float(i)).r * w;
+        sum += texture(u_texture, v_uv + step_ * float(i)).r * w;
         total += w;
     }
     float glow = sum / max(total, 1e-4);
@@ -282,10 +286,6 @@ void main() {
 }
 """
 )
-
-
-#: 色空間の選び方 AviUtl2 は YUV と RGB を持つ こちらは明るさの扱いが変わる
-_SPACES = (("yuv", "YUV"), ("rgb", "RGB"))
 
 
 def register_grading_effects() -> None:
@@ -317,7 +317,6 @@ def register_grading_effects() -> None:
                 TrackSpec("blue_lift", "青のリフト", -100, 100, 0, unit="%"),
                 TrackSpec("blue_offset", "青のオフセット", -100, 100, 0, unit="%"),
                 CheckSpec("clamped", "飽和する", True),
-                SelectSpec("space", "色空間", _SPACES, "yuv"),
             ),
             fragment_shader=_COLOR_GRADE,
         ),
@@ -327,8 +326,10 @@ def register_grading_effects() -> None:
             category="色",
             parameters=(
                 TrackSpec("strength", "強さ", 0, 100, 100, unit="%"),
-                ColorSpec("dark_color", "暗部色", (0.0, 0.0, 0.0, 1.0)),
-                ColorSpec("light_color", "明部色", (1.0, 1.0, 1.0, 1.0)),
+                # 透明度は持たない AviUtl の 暗部色 明部色 も色だけで、
+                # ここに透明度を置いても描くときに使い道が無い
+                ColorSpec("dark_color", "暗部色", (0.0, 0.0, 0.0, 1.0), with_alpha=False),
+                ColorSpec("light_color", "明部色", (1.0, 1.0, 1.0, 1.0), with_alpha=False),
             ),
             fragment_shader=_GRADIENT_MAP,
         ),
@@ -351,8 +352,9 @@ def register_grading_effects() -> None:
             category="装飾",
             parameters=(
                 TrackSpec("strength", "強さ", 0, 400, 100, unit="%"),
-                TrackSpec("center_x", "X", -4000, 4000, 0, step=1, unit="px"),
-                TrackSpec("center_y", "Y", -4000, 4000, 0, step=1, unit="px"),
+                # AviUtl の X と Y は置いていない 光が動くのではなく画面いっぱいの
+                # 薄い靄になる動きで、写すと差がかえって開いた（6.9 → 9.9）
+                # 写せていないことは :func:`_note_dropped` が記録に残す
                 ColorSpec("light_color", "光色", (1.0, 1.0, 1.0, 1.0)),
                 CheckSpec("fixed_size", "サイズ固定", False),
             ),

@@ -23,6 +23,7 @@ from kumiki.core.model import (
 from kumiki.core.timebase import FrameRate
 from kumiki.effects import registry
 from kumiki.effects.sources import SHAPE
+from kumiki.effects.spec import ParamInput
 from kumiki.engine.gpu import GLContextError, OffscreenGLContext
 from kumiki.engine.render import FrameRenderer
 
@@ -113,14 +114,14 @@ class TestColorGrade:
 
 
 class TestGradientMap:
-    def _effect(self, **params: object) -> Effect:
-        base: dict[str, object] = {
+    def _effect(self, **params: ParamInput) -> Effect:
+        base: dict[str, ParamInput] = {
             "strength": 100.0,
             "dark_color": (0.0, 0.0, 1.0, 1.0),
             "light_color": (1.0, 1.0, 0.0, 1.0),
         }
         base.update(params)
-        return registry.require("gradient_map").create(**base)  # type: ignore[arg-type]
+        return registry.require("gradient_map").create(**base)
 
     def test_dark_and_light_go_to_the_two_colours(self, paint: Callable[..., np.ndarray]) -> None:
         dark = paint((0.0, 0.0, 0.0), self._effect())
