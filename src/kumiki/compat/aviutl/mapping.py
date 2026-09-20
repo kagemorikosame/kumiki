@@ -1285,13 +1285,19 @@ def _note_dropped(entry: ExoEntry, handled: set[str], log: CompatibilityReport) 
 
     効果そのものを写せても、項目を落としていれば見た目は変わる（``震える`` の
     ``角度`` など） 黙って捨てると、写せたつもりのまま違う絵が出る
+
+    **選ぶ項目は 0 でも記録する** AviUtl1 世代は選択肢を名前ではなく番号で書くので、
+    ``ミラーの方向=0`` のような値が「使っていない」と見なされて消えていた
+    番号がどの選択肢かは実物で確かめていないため、既定値のまま黙って進むと
+    向きの違う絵が出たことに気付けない
     """
+    choices = _SELECT_PARAMS.get(entry.name, {})
     for source_name, value in entry.params.items():
         if source_name in handled:
             continue
         if source_name.startswith(_STRUCTURAL) or source_name.endswith(".hide"):
             continue
-        if _is_off(value):
+        if source_name not in choices and _is_off(value):
             continue
         log.note_missing(f"{entry.name}の項目: {source_name}")
 
