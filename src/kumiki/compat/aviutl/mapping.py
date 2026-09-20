@@ -234,6 +234,26 @@ _PARAMS: dict[str, dict[str, _Param]] = {
         "色相::オフセット": _Param("hue_offset"),
         "飽和する": _Param("clamped"),
     },
+    # 領域拡張 四方へ広げる量 絵は入れ物の真ん中に残るので、片側だけ広げるとずれる
+    "領域拡張": {
+        "上": _Param("top"),
+        "下": _Param("bottom"),
+        "左": _Param("left"),
+        "右": _Param("right"),
+    },
+    # ミラー 境目調整 は折り返す線を外へ動かす量（鏡像はその倍だけ離れる）
+    "ミラー": {
+        "透明度": _Param("opacity"),
+        "減衰": _Param("falloff"),
+        "境目調整": _Param("gap"),
+    },
+    # ディスプレイスメントマップ 変形X と 変形Y はずらす量 Y は下が正
+    "ディスプレイスメントマップ": {
+        "サイズ": _Param("size"),
+        "ぼかし": _Param("blur"),
+        "変形X": _Param("move_x"),
+        "変形Y": _Param("move_y", _flip),
+    },
     # 特定色域変換 色相まわりは**度** 彩度だけが 0..255 の刻み
     # AviUtl2 に 色相範囲 16 と 90 を描かせて、塗り替わる所の境目から読んだ
     # 0..255 の刻みとして 360/256 を掛けると、範囲 16 が 22 度に広がって
@@ -360,6 +380,9 @@ _FILTERS: dict[str, str] = {
     "グラデーションマップ": "gradient_map",
     "拡張色調補正": "color_grade",
     "特定色域変換": "color_range_shift",
+    "領域拡張": "expand_area",
+    "ミラー": "mirror",
+    "ディスプレイスメントマップ": "displacement_map",
     "モザイク": "mosaic",
     "マスク": "mask",
     "クリッピング": "crop",
@@ -969,6 +992,15 @@ _SELECT_PARAMS: dict[str, dict[str, tuple[str, dict[str, str]]]] = {
         "合成モード": ("blend", _BLEND_NAMES),
     },
     "マスク": {"種類": ("shape", {"矩形": "rect", "円": "ellipse", "楕円": "ellipse"})},
+    "ミラー": {
+        "ミラーの方向": ("side", {"下側": "bottom", "上側": "top", "左側": "left", "右側": "right"})
+    },
+    "ディスプレイスメントマップ": {
+        "マップの種類": (
+            "map_kind",
+            {"円": "circle", "四角": "rect", "横": "horizontal", "縦": "vertical"},
+        )
+    },
     "ルミナンスキー": {
         # 暗い部分を透過 ＝ 明るい所が残る こちらの旗は「暗いところを残す」
         "モード": ("invert", {"暗い部分を透過": "", "明るい部分を透過": "1"}),
@@ -1253,13 +1285,19 @@ def _note_dropped(entry: ExoEntry, handled: set[str], log: CompatibilityReport) 
 
     効果そのものを写せても、項目を落としていれば見た目は変わる（``震える`` の
     ``角度`` など） 黙って捨てると、写せたつもりのまま違う絵が出る
+
+    **選ぶ項目は 0 でも記録する** AviUtl1 世代は選択肢を名前ではなく番号で書くので、
+    ``ミラーの方向=0`` のような値が「使っていない」と見なされて消えていた
+    番号がどの選択肢かは実物で確かめていないため、既定値のまま黙って進むと
+    向きの違う絵が出たことに気付けない
     """
+    choices = _SELECT_PARAMS.get(entry.name, {})
     for source_name, value in entry.params.items():
         if source_name in handled:
             continue
         if source_name.startswith(_STRUCTURAL) or source_name.endswith(".hide"):
             continue
-        if _is_off(value):
+        if source_name not in choices and _is_off(value):
             continue
         log.note_missing(f"{entry.name}の項目: {source_name}")
 

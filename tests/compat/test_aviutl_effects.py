@@ -288,9 +288,16 @@ class TestTheLeftoverSettings:
     def test_the_mirror_filter_is_not_a_flip(self) -> None:
         # AviUtl の ミラー は鏡像を映す効果（透明度・減衰・境目調整・向きを持つ）
         # 反転として写すと、上下がひっくり返った別の絵になる
-        effects, report = _effects("ミラー\n透明度=0\n減衰=50\nミラーの方向=下側")
-        assert not effects
-        assert any("フィルタ: ミラー" in line for line in report.lines())
+        effect = _one("ミラー\n透明度=0\n減衰=50\n境目調整=0\nミラーの方向=下側")
+        assert effect.kind == "mirror"
+        assert effect.params["side"] == "bottom"
+        assert _value(effect, "falloff") == 50.0
+
+    def test_the_mirror_side_comes_from_the_name(self) -> None:
+        # AviUtl2 は向きを名前で書く（``ミラーの方向=右側``）
+        # 読み落とすと、右へ映すはずの鏡像が下に出る
+        effect = _one("ミラー\n透明度=0\n減衰=0\n境目調整=0\nミラーの方向=右側")
+        assert effect.params["side"] == "right"
 
     def test_the_luminance_key_mode(self) -> None:
         # 逆に読むと、抜ける所と残る所が入れ替わって絵が反転して見える
@@ -364,3 +371,21 @@ class TestWhatTheRealOutputFound:
         # 緑の縁取りが白い縁になって、文字の周りだけ配色が変わる
         assert _one("縁取り\nサイズ=6\n縁色=#00ff00").params["color"] == (0.0, 1.0, 0.0, 1.0)
         assert _one("縁取り\nサイズ=6\n縁色=0x00ff00").params["color"] == (0.0, 1.0, 0.0, 1.0)
+
+
+class TestSelectsWrittenAsNumbers:
+    """AviUtl1 世代は選択肢を名前ではなく番号で書く
+
+    番号がどの選択肢かは実物で確かめていない 既定値のまま黙って進むと、
+    向きや形の違う絵が出たことに気付けないので、必ず記録へ残す
+    """
+
+    def test_a_numeric_choice_is_recorded(self) -> None:
+        _, report = _effects("ミラー\n透明度=0\n減衰=0\n境目調整=0\nミラーの方向=0")
+        assert any("ミラーの項目: ミラーの方向" in line for line in report.lines())
+
+    def test_a_named_choice_is_not_recorded(self) -> None:
+        # 名前で書いてあれば読めているので、記録へ出してはいけない
+        # 出すと、本当に埋めるべき穴の並びがこれで埋まる
+        _, report = _effects("ミラー\n透明度=0\n減衰=0\n境目調整=0\nミラーの方向=右側")
+        assert not any("ミラーの方向" in line for line in report.lines())

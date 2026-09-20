@@ -43,6 +43,12 @@ class EffectDefinition:
     passes: int = 1
     #: 設定 UI での見出し分け 空なら並べるだけ
     groups: tuple[ParameterGroup, ...] = field(default_factory=tuple)
+    #: 絵の置かれた範囲（``u_object``）を広げるエフェクトの、上・下・左・右の項目名
+    #:
+    #: 領域拡張のように入れ物そのものを広げるものは、後ろに積んだエフェクト
+    #: （ミラーの折り返す線・角丸・中心基準の動き）も広げた後の範囲で動くべき
+    #: 印を付けないと、広げる前の範囲のまま後ろが動いて位置がずれる
+    expands_object: tuple[str, str, str, str] | None = None
 
     def __post_init__(self) -> None:
         if self.passes < 1:
