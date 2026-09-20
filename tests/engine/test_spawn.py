@@ -109,8 +109,9 @@ class TestScatter:
         assert (right - left) > 60
         assert (bottom - top) > 60
 
-    def test_one_copy_leaves_the_picture_whole(self, draw: Callable[..., np.ndarray]) -> None:
-        # 1 つなら写しは 1 枚 光る量が元とほぼ同じになる（位置はずれる）
-        plain = int(_lit(draw()).sum())
-        single = int(_lit(draw(self._scatter(count=1, span=0.0))).sum())
-        assert single == pytest.approx(plain, rel=0.05)
+    def test_one_copy_with_no_span_is_the_original(self, draw: Callable[..., np.ndarray]) -> None:
+        # 写しが 1 枚で範囲も 0 なら、元の絵がそのまま出る
+        # ここが変わるなら、撒く前に絵を動かしてしまっている
+        plain = draw()
+        single = draw(self._scatter(count=1, span=0.0))
+        assert int(np.abs(plain.astype(np.int16) - single.astype(np.int16)).max()) <= 2

@@ -65,8 +65,10 @@ void main() {
         float sn = sin(turn);
         vec2 local = pixel - centre - vec2(offset.x, -offset.y);
         vec2 source = centre + vec2(local.x * cs - local.y * sn, local.x * sn + local.y * cs);
-        // 手前に置いた写しほど上 後ろから重ねる
-        stacked = over(stacked, sample_pixel(source));
+        // 後から撒いた写しほど手前 AviUtl も並べた順に描く
+        // 引数を逆にすると最初の 1 枚がいつも手前になり、
+        // 透ける絵を撒いたときの重なり方が変わる
+        stacked = over(sample_pixel(source), stacked);
     }
     frag_color = stacked;
 }
