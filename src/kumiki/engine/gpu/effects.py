@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 
@@ -28,6 +29,9 @@ from kumiki.engine.gpu.glutil import (
 )
 
 __all__ = ["EffectProcessor", "srgb_to_linear"]
+
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -268,7 +272,10 @@ class EffectProcessor:
                     definition=definition,
                     program=Program(VERTEX_SHADER, definition.fragment_shader),
                 )
-            except ShaderError:
+            except ShaderError as error:
+                # 1 度だけ残す 黙って捨てると、エフェクトが何も起きないまま
+                # 「値の写し間違い」を探すことになる（実際に閃光で 1 度やった）
+                _log.warning("エフェクト %s のシェーダを組めなかった: %s", effect.kind, error)
                 compiled = None
 
         self._programs[effect.kind] = compiled

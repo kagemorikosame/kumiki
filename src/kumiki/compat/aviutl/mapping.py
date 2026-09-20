@@ -77,6 +77,16 @@ _BLEND_MODES = (
     "darken",
 )
 
+#: **読んだうえで捨てる**項目 記録にも残さない
+#:
+#: 落としても絵が変わらないと**実物で確かめた**ものだけを並べる
+#: 記録に残すと、本当に写せていない項目の並びがこれで埋まって役に立たなくなる
+_IGNORED: dict[str, frozenset[str]] = {
+    # 拡張色調補正の 色空間 AviUtl2 に YUV と RGB の両方を描かせたが、
+    # 出力は 1 バイトも違わなかった（輝度のゲインと彩度のゲインで確認）
+    "拡張色調補正": frozenset({"色空間"}),
+}
+
 #: 中身として扱う要素の名前 これ以外はフィルタ
 _CONTENT_NAMES = frozenset(
     {
@@ -128,6 +138,11 @@ def _turn(one: int, other: int) -> int:
 def _quarter(value: float) -> float:
     """90 度単位の回し方（0〜3）を角度へ"""
     return value * 90.0
+
+
+def _byte_percent(value: float) -> float:
+    """AviUtl の 0..255 の刻みを 0..100% へ"""
+    return value * 100.0 / 255.0
 
 
 #: フィルタのパラメータの対応 **AviUtl の効果名で引く**
@@ -185,6 +200,49 @@ _PARAMS: dict[str, dict[str, _Param]] = {
     },
     "シャープ": {"強さ": _Param("strength"), "範囲": _Param("radius")},
     "ノイズ": {"強さ": _Param("strength")},
+    # 閃光 X と Y は写さない 0 でなければ :func:`_note_dropped` が記録に残す
+    # AviUtl2 で X=300 Y=-200 を描かせると、光が動くのではなく画面いっぱいの
+    # 薄い靄になった 光のもとをずらして写すと、かえって差が開く（6.9 → 9.9）
+    "閃光": {
+        "強さ": _Param("strength"),
+        "サイズ固定": _Param("fixed_size"),
+    },
+    "グラデーションマップ": {"強さ": _Param("strength")},
+    # 拡張色調補正 1 つずつ動かした見本を AviUtl2 に描かせて意味を測った
+    # ゲインは倍率、オフセットは足し算、リフトは黒の持ち上げ、ガンマは冪
+    "拡張色調補正": {
+        "輝度::ゲイン": _Param("luma_gain"),
+        "輝度::ガンマ": _Param("luma_gamma"),
+        "輝度::リフト": _Param("luma_lift"),
+        "輝度::オフセット": _Param("luma_offset"),
+        "彩度::ゲイン": _Param("sat_gain"),
+        "彩度::ガンマ": _Param("sat_gamma"),
+        "彩度::リフト": _Param("sat_lift"),
+        "彩度::オフセット": _Param("sat_offset"),
+        "赤::ゲイン": _Param("red_gain"),
+        "赤::ガンマ": _Param("red_gamma"),
+        "赤::リフト": _Param("red_lift"),
+        "赤::オフセット": _Param("red_offset"),
+        "緑::ゲイン": _Param("green_gain"),
+        "緑::ガンマ": _Param("green_gamma"),
+        "緑::リフト": _Param("green_lift"),
+        "緑::オフセット": _Param("green_offset"),
+        "青::ゲイン": _Param("blue_gain"),
+        "青::ガンマ": _Param("blue_gamma"),
+        "青::リフト": _Param("blue_lift"),
+        "青::オフセット": _Param("blue_offset"),
+        "色相::オフセット": _Param("hue_offset"),
+        "飽和する": _Param("clamped"),
+    },
+    # 特定色域変換 色相まわりは**度** 彩度だけが 0..255 の刻み
+    # AviUtl2 に 色相範囲 16 と 90 を描かせて、塗り替わる所の境目から読んだ
+    # 0..255 の刻みとして 360/256 を掛けると、範囲 16 が 22 度に広がって
+    # 残るはずの色まで塗り替わる
+    "特定色域変換": {
+        "色相範囲": _Param("hue_range"),
+        "彩度範囲": _Param("saturation_range", _byte_percent),
+        "境界補正": _Param("feather"),
+    },
     "モザイク": {"サイズ": _Param("size")},
     "クリッピング": {
         "上": _Param("top"),
@@ -298,6 +356,10 @@ _FILTERS: dict[str, str] = {
     "ドロップシャドウ": "shadow",
     "シャープ": "sharpen",
     "ノイズ": "noise",
+    "閃光": "flash",
+    "グラデーションマップ": "gradient_map",
+    "拡張色調補正": "color_grade",
+    "特定色域変換": "color_range_shift",
     "モザイク": "mosaic",
     "マスク": "mask",
     "クリッピング": "crop",
@@ -882,6 +944,9 @@ _COLOR_PARAMS: dict[str, dict[str, str]] = {
     "グロー": {"光色": "tint"},
     "拡散光": {"光色": "tint"},
     "凸エッジ": {"光色": "color"},
+    "閃光": {"光色": "light_color"},
+    "グラデーションマップ": {"暗部色": "dark_color", "明部色": "light_color"},
+    "特定色域変換": {"変換前の色": "key_color", "変換後の色": "to_color"},
 }
 
 #: AviUtl2 の ``合成モード`` 番号ではなく表示名で入っている
@@ -1114,7 +1179,7 @@ def _filter(entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport) 
     names = _PARAMS.get(entry.name, {})
     colours = _COLOR_PARAMS.get(entry.name, {})
     choices = _SELECT_PARAMS.get(entry.name, {})
-    handled: set[str] = set()
+    handled: set[str] = set(_IGNORED.get(entry.name, ()))
     for source_name, value in entry.params.items():
         target = names.get(source_name)
         if target is not None:
