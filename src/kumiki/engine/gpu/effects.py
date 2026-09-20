@@ -305,7 +305,7 @@ class EffectProcessor:
 def _number(definition: EffectDefinition, effect: Effect, name: str, frame: int) -> float:
     """エフェクトの数の項目を 1 つ読む 読めなければ 0
 
-    値の通し方は :meth:`_EffectStack._set_parameters` と**同じにする**
+    値の通し方は :meth:`EffectProcessor._set_parameters` と**同じにする**
     （``spec.coerce`` を通し、壊れた数は既定へ戻す） 別の読み方をすると、
     シェーダへ渡る値と入れ物を広げる量が食い違い、後ろのエフェクトだけずれる
     """
