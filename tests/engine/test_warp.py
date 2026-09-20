@@ -181,3 +181,31 @@ class TestDisplacementMap:
         before = draw()
         # 四角の左端は マップ（半径 10）の外なので、そのまま残る
         assert _extent(after)[0] == pytest.approx(_extent(before)[0], abs=2)
+
+
+class TestTheExpandedBoxReachesLaterEffects:
+    """領域拡張のあとに積んだ効果は、**広げた後**の範囲で動く
+
+    AviUtl の 領域拡張 → ミラー は、広げたぶんだけ鏡像を離すための並べ方
+    広げる前の範囲のまま後ろが動くと、鏡像が絵に食い込む
+    """
+
+    def test_the_mirror_folds_at_the_expanded_edge(self, draw: Callable[..., np.ndarray]) -> None:
+        # 四方を同じだけ広げる 片側だけだと絵そのものもずれて、
+        # 折り返す線が動いたのか絵が動いたのか分からなくなる
+        mirror = registry.require("mirror").create(side="bottom")
+        expand = registry.require("expand_area").create(
+            top=20.0, bottom=20.0, left=20.0, right=20.0
+        )
+        plain = _extent(draw(mirror, width=30, height=30))
+        expanded = _extent(draw(expand, mirror, width=30, height=30))
+        assert expanded[3] > plain[3] + 10, "広げた後の縁で折り返していない"
+
+    def test_without_the_mark_nothing_moves(self, draw: Callable[..., np.ndarray]) -> None:
+        # 印を付けていない効果は範囲を触らない ここが動くなら、
+        # 全部のエフェクトが範囲を広げてしまっている
+        mirror = registry.require("mirror").create(side="bottom")
+        blur = registry.require("blur").create(radius=1.0)
+        assert _extent(draw(blur, mirror, width=30, height=30))[3] == pytest.approx(
+            _extent(draw(mirror, width=30, height=30))[3], abs=3
+        )

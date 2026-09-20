@@ -52,8 +52,11 @@ void main() {
     vec2 pixel = v_uv * u_size;
     vec4 base = texture(u_texture, v_uv);
 
-    // 折り返す線はオブジェクトの**枠**（u_object） 文字の墨の縁ではない
-    // AviUtl2 の絵でも、鏡像は文字の下ではなく枠の下から始まっていた
+    // 折り返す線は絵の置かれた範囲（u_object）の縁
+    //
+    // AviUtl の線はこれより 20px ほど外にある（文字の採寸の違い 実測で鏡像の
+    // 位置が 36px ずれる＝差 6.0） 絵の中身の範囲は角丸や中心基準の動きも
+    // 使っているので、ここだけのために意味を変えない
     //
     // 境目調整 は線をさらに外へ動かす 鏡像はその倍だけ離れる
     // （実測 40 で 80px 離れた）
@@ -104,19 +107,26 @@ uniform int map_kind;
 
 // 歪ませる元になる形 AviUtl の マップの種類 に当たる
 // 真ん中で 1、縁で 0 になる値を返す
+float edge_of(float far, float radius) {
+    // ぼかし 0 は本当にぼかさない 下限を 1px にすると、0 が 1px のぼかしになり
+    // 「ぼかさない」を選べなくなる
+    if (blur <= 0.0) {
+        return far <= radius ? 1.0 : 0.0;
+    }
+    return 1.0 - smoothstep(radius - blur, radius, far);
+}
+
 float map_at(vec2 offset, float radius) {
-    float soft = max(blur, 1.0);
     if (map_kind == 1) {        // 四角
-        float far = max(abs(offset.x), abs(offset.y));
-        return 1.0 - smoothstep(radius - soft, radius, far);
+        return edge_of(max(abs(offset.x), abs(offset.y)), radius);
     }
-    if (map_kind == 2) {        // 横
-        return 1.0 - smoothstep(radius - soft, radius, abs(offset.x));
+    if (map_kind == 2) {        // 横（横に伸びた帯 上下で切れる）
+        return edge_of(abs(offset.y), radius);
     }
-    if (map_kind == 3) {        // 縦
-        return 1.0 - smoothstep(radius - soft, radius, abs(offset.y));
+    if (map_kind == 3) {        // 縦（縦に伸びた帯 左右で切れる）
+        return edge_of(abs(offset.x), radius);
     }
-    return 1.0 - smoothstep(radius - soft, radius, length(offset));  // 円
+    return edge_of(length(offset), radius);  // 円
 }
 
 void main() {
@@ -137,6 +147,11 @@ void main() {
 _SIDES = (("bottom", "下側"), ("top", "上側"), ("left", "左側"), ("right", "右側"))
 
 #: ディスプレイスメントマップの形 AviUtl2 の ``マップの種類``
+#:
+#: **円だけが実物と突き合わせて確かめたもの** AviUtl2 に 四角・横・縦 を描かせて
+#: 比べたところ、**3 つとも 1 画素も違わず**、円との差も縁の 576 画素だけだった
+#: （この見本では形の違いが絵に出ない）
+#: そのため 四角・横・縦 の形はこちらの読み方で、実物の写しではない
 _MAP_KINDS = (("circle", "円"), ("rect", "四角"), ("horizontal", "横"), ("vertical", "縦"))
 
 
@@ -153,6 +168,7 @@ def register_warp_effects() -> None:
                 TrackSpec("right", "右", 0, 4000, 0, step=1, unit="px"),
             ),
             fragment_shader=_EXPAND,
+            expands_object=("top", "bottom", "left", "right"),
         ),
         EffectDefinition(
             kind="mirror",

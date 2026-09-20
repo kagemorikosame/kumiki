@@ -15,7 +15,7 @@ from dataclasses import dataclass
 
 from OpenGL import GL
 
-from kumiki.core.model import Effect, ParamValue
+from kumiki.core.model import AnimatedValue, Effect, ParamValue
 from kumiki.effects import EffectDefinition, registry
 from kumiki.effects.spec import CheckSpec, ColorSpec, SelectSpec, TrackSpec, ValueSpec
 from kumiki.engine.gpu.glutil import (
@@ -207,6 +207,26 @@ class EffectProcessor:
             self._quad.draw()
             self._front = 1 - self._front
 
+        self._grow_object(definition, effect, frame)
+
+    def _grow_object(self, definition: EffectDefinition, effect: Effect, frame: int) -> None:
+        """入れ物を広げるエフェクトの後で、絵の置かれた範囲を広げる
+
+        広げないと、後ろに積んだミラーや角丸が**広げる前の範囲**で動く
+        AviUtl の 領域拡張 → ミラー は、広げたぶんだけ鏡像が離れる並べ方
+        """
+        if definition.expands_object is None:
+            return
+        top, bottom, left, right = (
+            _number(definition, effect, name, frame) for name in definition.expands_object
+        )
+        self._object = (
+            self._object[0] - left,
+            self._object[1] - bottom,
+            self._object[2] + right,
+            self._object[3] + top,
+        )
+
     def _set_parameters(
         self, program: Program, definition: EffectDefinition, effect: Effect, frame: int
     ) -> None:
@@ -280,6 +300,19 @@ class EffectProcessor:
 
         self._programs[effect.kind] = compiled
         return compiled
+
+
+def _number(definition: EffectDefinition, effect: Effect, name: str, frame: int) -> float:
+    """エフェクトの数の項目を 1 つ読む 読めなければ 0"""
+    spec = definition.spec(name)
+    if spec is None:
+        return 0.0
+    value = effect.params.get(name, spec.default_value())
+    if isinstance(value, AnimatedValue):
+        return float(value.at(frame))
+    if isinstance(value, int | float):
+        return float(value)
+    return 0.0
 
 
 _BLIT_FRAGMENT = """
