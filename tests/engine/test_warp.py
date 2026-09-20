@@ -158,29 +158,48 @@ class TestDisplacementMap:
         base.update(params)
         return registry.require("displacement_map").create(**base)
 
-    def test_it_moves_what_is_inside_the_map(self, draw: Callable[..., np.ndarray]) -> None:
-        # マップの中だけ動く 外まで動かすと、ただの移動になる
-        before = _extent(draw())
-        after = _extent(draw(self._displace(move_x=30.0)))
-        assert after != before
+    def test_only_what_is_inside_the_map_moves(self, draw: Callable[..., np.ndarray]) -> None:
+        """マップの中だけが動き、外は**1 画素も**変わらない
 
-    def test_an_empty_map_changes_nothing(self, draw: Callable[..., np.ndarray]) -> None:
+        絵ぜんたいを動かす実装でも「絵が変わった」だけなら通ってしまうので、
+        中と外を別々に確かめる
+
+        下地は横に長い帯（160x20） 帯の上下の縁はマップ（直径 60）の中に、
+        左右の端は外にある 帯を**縦へ**ずらせば、中では縁が動いて差が出る
+        （横へずらしても、一様な帯は動いたことが絵に出ない）
+        """
+        before = draw(width=160, height=20)
+        after = draw(self._displace(size=60.0, blur=0.0, move_y=20.0), width=160, height=20)
+
+        rows, columns = np.mgrid[0:HEIGHT, 0:WIDTH]
+        # マップは絵の中身の真ん中（ここでは画面の真ん中）に置かれる
+        radius = np.hypot(columns - WIDTH / 2.0, rows - HEIGHT / 2.0)
+        outside = radius > 40.0
+        inside = radius < 25.0
+
+        difference = np.abs(after.astype(np.int16) - before.astype(np.int16)).max(axis=2)
+        assert int(difference[outside].max()) <= 2, "マップの外まで動いている"
+        assert int(difference[inside].max()) > 40, "マップの中が動いていない"
+
+    def test_a_map_with_no_movement_changes_nothing(self, draw: Callable[..., np.ndarray]) -> None:
         # ずらす量が 0 なら絵は変わらない ここが変わるならマップの中心がずれている
         plain = draw()
         still = draw(self._displace(move_x=0.0, move_y=0.0))
         assert int(np.abs(plain.astype(np.int16) - still.astype(np.int16)).max()) <= 2
 
-    def test_a_map_smaller_than_the_picture_leaves_the_edges(
-        self, draw: Callable[..., np.ndarray]
-    ) -> None:
-        """マップより外は動かない
+    def test_the_map_size_decides_how_much_moves(self, draw: Callable[..., np.ndarray]) -> None:
+        """マップを広げるほど、動く所が増える
 
-        大きさを無視して全体を動かすと、四角がまるごと移動してしまう
+        大きさを無視して全体を動かす実装だと、どちらも同じだけ動いてしまう
         """
-        after = draw(self._displace(size=20.0, move_x=40.0))
-        before = draw()
-        # 四角の左端は マップ（半径 10）の外なので、そのまま残る
-        assert _extent(after)[0] == pytest.approx(_extent(before)[0], abs=2)
+        before = draw(width=160, height=20)
+
+        def moved(size: float) -> int:
+            after = draw(self._displace(size=size, blur=0.0, move_y=20.0), width=160, height=20)
+            difference = np.abs(after.astype(np.int16) - before.astype(np.int16)).max(axis=2)
+            return int((difference > 8).sum())
+
+        assert moved(100.0) > moved(50.0) * 1.5
 
 
 class TestTheExpandedBoxReachesLaterEffects:
