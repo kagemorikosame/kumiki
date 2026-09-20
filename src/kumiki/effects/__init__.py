@@ -13,6 +13,7 @@ from kumiki.effects import motion as _motion
 from kumiki.effects import optics as _optics
 from kumiki.effects import paint as _paint
 from kumiki.effects import stylize as _stylize
+from kumiki.effects import warp as _warp
 from kumiki.effects.definition import EffectDefinition, EffectRegistry, registry
 from kumiki.effects.spec import (
     CheckSpec,
@@ -35,6 +36,7 @@ _stylize.register_stylize_effects()
 _paint.register_paint_effects()
 _optics.register_optics_effects()
 _grading.register_grading_effects()
+_warp.register_warp_effects()
 
 __all__ = [
     "CheckSpec",
