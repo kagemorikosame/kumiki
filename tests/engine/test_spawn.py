@@ -1,4 +1,4 @@
-"""絵を分けて別々に動かすエフェクトの効き方（AviUtl の分身まわり）
+"""写しを撒くエフェクトの効き方（AviUtl の ランダム配置）
 
 値の意味は AviUtl2 に見本を描かせて測った ここに並ぶ数はその実測から取ったもので、
 落ちたときに疑うのはこちらの実装の側
@@ -78,68 +78,6 @@ def _extent(image: np.ndarray) -> tuple[int, int, int, int]:
     if not len(rows):
         return (0, 0, 0, 0)
     return (int(columns.min()), int(columns.max()), int(rows.min()), int(rows.max()))
-
-
-class TestSplitZoom:
-    """個別オブジェクトの拡大 碁盤の目に切って、1 マスずつ縮める"""
-
-    def _zoom(self, **params: float) -> Effect:
-        return registry.require("split_zoom").create(**params)
-
-    def test_one_cell_means_the_whole_picture_shrinks(
-        self, draw: Callable[..., np.ndarray]
-    ) -> None:
-        # 分割していない（1x1）ときは、絵ぜんたいが 1 マス
-        before = _extent(draw())
-        after = _extent(draw(self._zoom(zoom=50.0, columns=1, rows=1)))
-        assert (after[1] - after[0]) == pytest.approx((before[1] - before[0]) * 0.5, abs=4)
-
-    def test_each_cell_shrinks_in_place(self, draw: Callable[..., np.ndarray]) -> None:
-        """マスごとに縮むので、**穴が開いて光る所が減る**
-
-        絵ぜんたいを縮める実装だと、光る所は減るが外の広がりも一緒に縮む
-        マスごとなら外の広がりは残り（端のマスが端に残る）、中に隙間ができる
-        """
-        plain = draw()
-        split = draw(self._zoom(zoom=50.0, columns=3, rows=3))
-        assert int(_lit(split).sum()) < int(_lit(plain).sum()) * 0.4, "縮んでいない"
-        # 3x3 に切ると端のマスは端に残る 外の広がりはほとんど変わらない
-        assert _extent(split)[0] - _extent(plain)[0] < (SQUARE // 3) // 2 + 4
-
-    def test_more_cells_leave_more_gaps(self, draw: Callable[..., np.ndarray]) -> None:
-        # マスの数を無視していると、どちらも同じ絵になる
-        coarse = draw(self._zoom(zoom=50.0, columns=2, rows=2))
-        fine = draw(self._zoom(zoom=50.0, columns=6, rows=6))
-        assert _extent(coarse) != _extent(fine) or int(_lit(coarse).sum()) != int(_lit(fine).sum())
-
-    def test_the_centre_shifts_by_what_is_left(self, draw: Callable[..., np.ndarray]) -> None:
-        """中心をずらすと、絵は ``ずらし x (1 - 拡大率)`` だけ動く
-
-        AviUtl2 で 中心X=100・拡大率 50 を描かせると絵が 50 ずれた
-        ずらしをそのまま位置の移動として使うと、倍の量だけ動く
-        """
-        middle = _extent(draw(self._zoom(zoom=50.0, columns=1, rows=1)))
-        moved = _extent(draw(self._zoom(zoom=50.0, columns=1, rows=1, center_x=40.0)))
-        assert moved[0] - middle[0] == pytest.approx(20, abs=4)
-
-    def test_full_zoom_changes_nothing(self, draw: Callable[..., np.ndarray]) -> None:
-        # 拡大率 100 は元のまま ここが変わるならマスの割り出しがずれている
-        plain = draw()
-        same = draw(self._zoom(zoom=100.0, columns=4, rows=4))
-        assert int(np.abs(plain.astype(np.int16) - same.astype(np.int16)).max()) <= 2
-
-
-class TestSplitRotate:
-    def test_each_cell_turns(self, draw: Callable[..., np.ndarray]) -> None:
-        # 1 マスずつ回すので、四角の角が削れて光る所が減る
-        plain = draw()
-        turned = draw(registry.require("split_rotate").create(angle=30.0, columns=3, rows=3))
-        assert int(_lit(turned).sum()) < int(_lit(plain).sum())
-
-    def test_no_angle_changes_nothing(self, draw: Callable[..., np.ndarray]) -> None:
-        plain = draw()
-        same = draw(registry.require("split_rotate").create(angle=0.0, columns=3, rows=3))
-        assert int(np.abs(plain.astype(np.int16) - same.astype(np.int16)).max()) <= 2
 
 
 class TestScatter:

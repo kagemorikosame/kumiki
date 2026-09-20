@@ -4,10 +4,11 @@
 測り方は ``tools/aviutl_compare.py`` の見本を作り、``田田田`` と並べた大きな文字に
 効果を積んで、どこがどう動いたかを読む
 
-AviUtl は ``オブジェクト分割`` で碁盤の目に切ってから、``座標の拡大縮小(個別
-オブジェクト)`` などで 1 マスずつ動かす 分割は単体では絵を変えない（実測でも
-分割だけの絵は元と同じ）ので、こちらは**マスの数を動かす側が持つ**
-写すときに分割の数を拾って渡す（:mod:`kumiki.compat.aviutl.mapping`）
+碁盤の目に切って 1 マスずつ動かすもの（``座標の拡大縮小(個別オブジェクト)`` と
+``座標の回転(個別オブジェクト)``）は、まだ写し方が分かっていない
+AviUtl2 の絵は**切った断片が中心へ詰まった塊**になるのに対し、
+マスの真ん中を軸に縮める読み方では断片が散ったままになる
+位置そのものも動いているらしく、測り直しが要る（GitHub の Issue で追う）
 
 シェーダはリニア空間・ストレートアルファで受け取り、同じ形で返す
 """
@@ -23,84 +24,6 @@ __all__ = ["register_spawn_effects"]
 
 def _shader(body: str) -> str:
     return PRELUDE + body
-
-
-#: 碁盤の目の 1 マスを割り出す ``columns`` ``rows`` は 1 以上
-_CELLS = """
-uniform float columns;
-uniform float rows;
-uniform float center_x;
-uniform float center_y;
-
-//: 絵の置かれた範囲を碁盤の目に切り、``pixel`` の入るマスの左下と大きさを返す
-void cell_of(vec2 pixel, out vec2 origin, out vec2 span) {
-    vec2 low = u_object.xy;
-    span = object_size() / vec2(max(floor(columns), 1.0), max(floor(rows), 1.0));
-    vec2 index = floor((pixel - low) / span);
-    origin = low + index * span;
-}
-"""
-
-
-_SPLIT_ZOOM = _shader(
-    _CELLS
-    + """
-uniform float zoom;
-
-void main() {
-    vec2 pixel = v_uv * u_size;
-    vec2 origin;
-    vec2 span;
-    cell_of(pixel, origin, span);
-
-    // 1 マスずつ、マスの真ん中を軸に縮める（拡大率 100 で元のまま）
-    // 中心X と 中心Y は軸のずらし 画素の Y は上が正
-    //
-    // AviUtl2 で 中心X=100 と 拡大率 50 を描かせると絵が 50 ずれた
-    // ＝ ずらした軸で縮めたぶん（100 x (1 - 0.5)）
-    float scale = max(zoom * 0.01, 1e-4);
-    vec2 pivot = origin + span * 0.5 + vec2(center_x, -center_y);
-    vec2 source = pivot + (pixel - pivot) / scale;
-
-    // 引く先が隣のマスへ出たら何も描かない
-    // 出た先をそのまま読むと、縮めた隙間に隣のマスの絵が覗く
-    if (any(lessThan(source, origin)) || any(greaterThan(source, origin + span))) {
-        frag_color = vec4(0.0);
-        return;
-    }
-    frag_color = sample_pixel(source);
-}
-"""
-)
-
-
-_SPLIT_ROTATE = _shader(
-    _CELLS
-    + """
-uniform float angle;
-
-void main() {
-    vec2 pixel = v_uv * u_size;
-    vec2 origin;
-    vec2 span;
-    cell_of(pixel, origin, span);
-
-    // 1 マスずつ、マスの真ん中を軸に回す
-    float turn = radians(-angle);      // 画面では時計回りが正
-    float cs = cos(turn);
-    float sn = sin(turn);
-    vec2 pivot = origin + span * 0.5 + vec2(center_x, -center_y);
-    vec2 offset = pixel - pivot;
-    vec2 source = pivot + vec2(offset.x * cs - offset.y * sn, offset.x * sn + offset.y * cs);
-
-    if (any(lessThan(source, origin)) || any(greaterThan(source, origin + span))) {
-        frag_color = vec4(0.0);
-        return;
-    }
-    frag_color = sample_pixel(source);
-}
-"""
-)
 
 
 _SCATTER = _shader("""
@@ -151,27 +74,7 @@ void main() {
 
 
 def register_spawn_effects() -> None:
-    cells = (
-        TrackSpec("columns", "横の分割数", 1, 256, 1, step=1),
-        TrackSpec("rows", "縦の分割数", 1, 256, 1, step=1),
-        TrackSpec("center_x", "中心 X", -4000, 4000, 0, step=1, unit="px"),
-        TrackSpec("center_y", "中心 Y", -4000, 4000, 0, step=1, unit="px"),
-    )
     definitions = (
-        EffectDefinition(
-            kind="split_zoom",
-            label="個別オブジェクトの拡大",
-            category="変形",
-            parameters=(TrackSpec("zoom", "拡大率", 0, 1000, 100, unit="%"), *cells),
-            fragment_shader=_SPLIT_ZOOM,
-        ),
-        EffectDefinition(
-            kind="split_rotate",
-            label="個別オブジェクトの回転",
-            category="変形",
-            parameters=(TrackSpec("angle", "角度", -3600, 3600, 0, unit="度"), *cells),
-            fragment_shader=_SPLIT_ROTATE,
-        ),
         EffectDefinition(
             kind="scatter",
             label="ランダム配置",
