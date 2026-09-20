@@ -115,3 +115,20 @@ class TestScatter:
         plain = draw()
         single = draw(self._scatter(count=1, span=0.0))
         assert int(np.abs(plain.astype(np.int16) - single.astype(np.int16)).max()) <= 2
+
+    def test_turning_does_not_move_the_copies(self, draw: Callable[..., np.ndarray]) -> None:
+        """回転しても写しは撒いた場所に留まる
+
+        引く側の計算なので、写しの中心（絵の真ん中を引く所）は回しても動かない
+        forward の式と取り違えると、写しが全体の中心のまわりを公転する
+        """
+
+        def middle(image: np.ndarray) -> tuple[float, float]:
+            rows, columns = np.where(_lit(image))
+            return (float(columns.mean()), float(rows.mean()))
+
+        flat = draw(self._scatter(count=1, span=200.0, angle=0.0), width=40, height=12)
+        turned = draw(self._scatter(count=1, span=200.0, angle=90.0), width=40, height=12)
+        assert middle(turned) == pytest.approx(middle(flat), abs=2)
+        # 回ってはいる 横長の帯が縦長になる
+        assert _extent(turned)[3] - _extent(turned)[2] > _extent(flat)[3] - _extent(flat)[2]

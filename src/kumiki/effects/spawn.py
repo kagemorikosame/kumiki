@@ -57,9 +57,12 @@ void main() {
         // 拡散 は真ん中から外へ寄せる量 0 なら一様に散らす
         offset *= 1.0 + spread * 0.01 * length(dice - 0.5) * 2.0;
 
+        // ランダム角度 の向きは**位置とは別の乱数**で決める
+        // 位置に使った dice.x を流用すると、右へ置いた写しほど一方向、
+        // 左へ置いた写しほど逆向きに傾いて、位置と角度が連動する
         float turn = radians(-angle);
         if (random_angle) {
-            turn = radians(-angle) * (dice.x * 2.0 - 1.0);
+            turn *= noise_at(float(i) + 512.0).x * 2.0 - 1.0;
         }
         float cs = cos(turn);
         float sn = sin(turn);
