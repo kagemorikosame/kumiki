@@ -594,7 +594,12 @@ void main() {
     // AviUtl2 に赤から青のグラデーションを描かせると真ん中が (117, 0, 122) で、
     // 符号化した値の中点（127 付近）に当たる リニアで混ぜると真ん中が 186 の
     // 明るいマゼンタになり、配布物の中間色が全部派手になる
+    //
+    // 端をなだらかにしてから混ぜる（smoothstep） AviUtl2 に黒から白の階調を
+    // 描かせて位置ごとの明るさを測ると、直線ではなく S 字だった
+    // 直線で混ぜると、帯の両端が濃くなりすぎて中ほどが薄い別の絵になる
     float along = clamp(t, 0.0, 1.0);
+    along = along * along * (3.0 - 2.0 * along);
     vec3 ramp_rgb = mix(to_srgb(start_color.rgb), to_srgb(end_color.rgb), along);
     float ramp_alpha = mix(start_color.a, end_color.a, along);
     // 元の絵の不透明度はそのまま グラデーションは色だけを塗り替える
