@@ -345,8 +345,10 @@ def register_grading_effects() -> None:
             label="特定色域変換",
             category="色",
             parameters=(
-                ColorSpec("key_color", "変換前の色", (1.0, 0.0, 0.0, 1.0)),
-                ColorSpec("to_color", "変換後の色", (1.0, 1.0, 1.0, 1.0)),
+                # 透明度は持たない 色の近さを測るのにも塗り替えるのにも使わないので、
+                # 置くと触っても何も起きないつまみになる（AviUtl の側も色だけ）
+                ColorSpec("key_color", "変換前の色", (1.0, 0.0, 0.0, 1.0), with_alpha=False),
+                ColorSpec("to_color", "変換後の色", (1.0, 1.0, 1.0, 1.0), with_alpha=False),
                 TrackSpec("hue_range", "色相の範囲", 0, 180, 22, unit="度"),
                 TrackSpec("saturation_range", "彩度の範囲", 0, 100, 38, unit="%"),
                 TrackSpec("feather", "境界の柔らかさ", 0, 100, 1, unit="度"),
