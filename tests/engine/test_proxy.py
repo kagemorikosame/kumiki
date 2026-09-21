@@ -378,6 +378,36 @@ class TestTheRendererUsesIt:
         finally:
             renderer.close()
 
+    def test_audio_first_media_still_uses_the_proxy(
+        self, sample_av: SampleMedia, shelf: ProxyStore, gl_context: OffscreenGLContext
+    ) -> None:
+        """音が先に入っている素材でも控えを使う
+
+        映像が 1 番から始まる素材では、クリップの既定の 0 が映像の番号と
+        一致しない 番号で比べるだけだと、控えがあるのに黙って使われない
+        （デコーダは番号が当たらなければ 1 本目の映像へ落ちるので、
+        絵は映るが遅いまま 気付きにくい）
+        """
+        probed = probe_media(sample_av.path)
+        # 映像が 1 番にある素材に見せかける（音が 0 番）
+        media = replace(probed, video_streams=(replace(probed.video_streams[0], index=1),))
+        project = Project.create(ProjectSettings(width=320, height=240, frame_rate=FrameRate(30)))
+        project = AddMedia(media).apply(project)
+        track = Track(kind=TrackKind.VIDEO, name="V1")
+        project = AddTrack(track).apply(project)
+        # stream_index は既定のまま（0）
+        project = AddClip(track.id, Clip(timeline_start=0, duration=60, media_id=media.id)).apply(
+            project
+        )
+
+        renderer = FrameRenderer(project, context=gl_context, proxies=shelf)
+        try:
+            renderer.render(0)
+            opened = [decoder.info for decoder in renderer._decoders.values()]
+        finally:
+            renderer.close()
+        assert opened and opened[0].height == 120, "控えがあるのに使っていない"
+
     def test_reopening_only_touches_the_named_media(
         self, sample_av: SampleMedia, shelf: ProxyStore, gl_context: OffscreenGLContext
     ) -> None:

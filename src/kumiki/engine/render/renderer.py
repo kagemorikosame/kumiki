@@ -1199,7 +1199,13 @@ class FrameRenderer:
             return media.path, stream_index
         # 控えに入っているのは**1 本目の映像**だけ 2 本目を指しているクリップに
         # 渡すと、別の絵が映る（素材によっては本編と副音声の絵が入れ替わる）
-        if stream_index != media.video_streams[0].index:
+        #
+        # どの映像を指しているかは :class:`VideoDecoder` と同じ読み方で決める
+        # 番号で比べるだけだと、音が先に入っている素材（映像が 1 番から始まる）で
+        # 既定の 0 が当たらず、控えがあるのに黙って使われない
+        first = media.video_streams[0]
+        chosen = next((s for s in media.video_streams if s.index == stream_index), first)
+        if chosen.index != first.index:
             return media.path, stream_index
         found = self._proxies.find(media)
         return (media.path, stream_index) if found is None else (found, None)
