@@ -247,6 +247,11 @@ _PARAMS: dict[str, dict[str, _Param]] = {
         "減衰": _Param("falloff"),
         "境目調整": _Param("gap"),
     },
+    "音声再生": {"音量": _Param("volume"), "左右": _Param("pan")},
+    "音量調整": {"音量": _Param("volume"), "左右": _Param("pan")},
+    "音量フェード": {"イン": _Param("fade_in"), "アウト": _Param("fade_out")},
+    # モノラル化の 比率 は **0 が元のまま** 逆に読むと既定でステレオが潰れる
+    "モノラル化": {"比率": _Param("ratio")},
     "ランダム配置": {
         "数": _Param("count"),
         "範囲": _Param("span"),
@@ -391,6 +396,13 @@ _FILTERS: dict[str, str] = {
     "ミラー": "mirror",
     "ディスプレイスメントマップ": "displacement_map",
     "ランダム配置": "scatter",
+    # 音声 AviUtl2 v2.1.6a の音声フィルタはこの 3 つだけ
+    # 音声再生 は音声オブジェクトの置き方（映像の 標準描画 に当たる）で、
+    # 項目が 音量調整 と同じなので同じエフェクトへ写す
+    "音声再生": "audio_volume",
+    "音量調整": "audio_volume",
+    "音量フェード": "audio_fade",
+    "モノラル化": "audio_monaural",
     "モザイク": "mosaic",
     "マスク": "mask",
     "クリッピング": "crop",

@@ -7,12 +7,22 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from kumiki.core.model import Effect, ParamValue
 from kumiki.effects.spec import ParameterGroup, ParameterSpec, ParamInput
 
 __all__ = ["EffectDefinition", "EffectRegistry", "registry"]
+
+
+#: 音を加工する関数の形 引数は サンプル・解いた値・時間まわりの手がかり
+#:
+#: サンプルと手がかりを :any:`Any` にしてあるのは、音の仕組み
+#: （:mod:`kumiki.effects.audio`）がこの定義を取り込むため
+#: 実体の型で書くと取り込みが輪になる
+AudioProcess = Callable[[Any, dict[str, float], Any], Any]
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +53,11 @@ class EffectDefinition:
     passes: int = 1
     #: 設定 UI での見出し分け 空なら並べるだけ
     groups: tuple[ParameterGroup, ...] = field(default_factory=tuple)
+    #: 音を加工する関数 映像のエフェクトはシェーダだが、音は GPU を通さない
+    #:
+    #: ``(サンプル, 解いた値, 時間まわりの手がかり) -> サンプル`` の形
+    #: これが入っていれば音のエフェクト、入っていなければ映像のエフェクト
+    audio_process: AudioProcess | None = None
     #: 絵の置かれた範囲（``u_object``）を広げるエフェクトの、上・下・左・右の項目名
     #:
     #: 領域拡張のように入れ物そのものを広げるものは、後ろに積んだエフェクト

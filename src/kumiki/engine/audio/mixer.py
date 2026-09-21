@@ -6,12 +6,25 @@
 
 from __future__ import annotations
 
+import math
 from collections import OrderedDict
+from collections.abc import Iterator
 
 import numpy as np
 
-from kumiki.core.model import Clip, MediaId, Project, Timeline, Track, TrackKind
+from kumiki.core.model import (
+    Clip,
+    MediaId,
+    ParamValue,
+    Project,
+    Timeline,
+    Track,
+    TrackKind,
+)
 from kumiki.core.timebase import FrameRate
+from kumiki.effects.audio import AudioContext
+from kumiki.effects.definition import registry
+from kumiki.effects.spec import TrackSpec
 from kumiki.engine.decode import AudioDecoder, ProbeError
 
 __all__ = ["AudioMixer"]
@@ -131,6 +144,9 @@ class AudioMixer:
             samples = self._read_clip(clip, begin - clip_start, end - begin, rate, depth)
             if samples is None:
                 continue
+            samples = _apply_effects(
+                clip, samples, begin - clip_start, self.sample_rate, clip_end - clip_start, rate
+            )
 
             offset = begin - start_sample
             out[offset : offset + len(samples)] += _apply_pan(samples * gain, float(pan))
@@ -210,6 +226,93 @@ class AudioMixer:
         return decoder
 
 
+def _apply_effects(
+    clip: Clip,
+    samples: np.ndarray,
+    offset: int,
+    sample_rate: int,
+    duration: int,
+    rate: FrameRate,
+) -> np.ndarray:
+    """クリップに積んだ音のエフェクトを、置いた順に掛ける
+
+    映像のエフェクトは飛ばす 同じクリップに映像と音の両方が積まれていても、
+    音の側だけを見る（AviUtl も音声オブジェクトに映像フィルタを積める）
+
+    動く値は**映像のフレームの切れ目で区切って**解く 塊の先頭で 1 度だけ解くと、
+    プレビューの細かい塊（1024 サンプル）がフレームの切れ目をまたいだときに、
+    音量の変わる時刻がずれて書き出しと合わなくなる
+    """
+    stack = [
+        (definition, effect)
+        for effect in clip.effects
+        if effect.enabled
+        and (definition := registry.get(effect.kind)) is not None
+        and definition.audio_process is not None
+    ]
+    if not stack:
+        return samples
+
+    out = np.empty_like(samples)
+    origin = _frame_to_sample(clip.timeline_start, rate, sample_rate)
+    for begin, end, frame in _frame_spans(
+        clip.timeline_start, origin + offset, len(samples), sample_rate, rate
+    ):
+        chunk = samples[begin:end]
+        for definition, effect in stack:
+            assert definition.audio_process is not None
+            values = {
+                spec.name: _as_number(spec, effect.params.get(spec.name), frame)
+                for spec in definition.parameters
+                if isinstance(spec, TrackSpec)
+            }
+            chunk = definition.audio_process(
+                chunk,
+                values,
+                AudioContext(offset=offset + begin, sample_rate=sample_rate, duration=duration),
+            )
+        out[begin:end] = chunk
+    return out
+
+
+def _frame_spans(
+    start_frame: int, offset: int, count: int, sample_rate: int, rate: FrameRate
+) -> Iterator[tuple[int, int, int]]:
+    """塊を映像のフレームごとに切り分ける ``(始まり, 終わり, フレーム)`` を返す
+
+    ``offset`` は**タイムラインの先頭から数えた**この塊の先頭のサンプル位置
+    切れ目はタイムラインの升目で決める 絵が切り替わる所と同じでなければ
+    意味が無く、クリップの先頭から数え直すと 29.97 fps のような比で
+    1 サンプルずれる（升目の幅は 1601 と 1602 が混ざるので、
+    クリップを置く場所によって最初の升の幅が変わる）
+
+    返すフレーム番号だけはクリップの先頭から数える 動く値のキーフレームが
+    そちら基準のため 始まりがフレームの途中でも、最初の切れ目までを 1 つとして返す
+    """
+    begin = 0
+    while begin < count:
+        frame = _sample_to_frame(offset + begin, rate, sample_rate)
+        boundary = _frame_to_sample(frame + 1, rate, sample_rate) - offset
+        end = min(max(boundary, begin + 1), count)
+        yield begin, end, frame - start_frame
+        begin = end
+
+
+def _as_number(spec: TrackSpec, value: ParamValue | None, frame: int) -> float:
+    """設定の値を数として読む
+
+    読み方は :meth:`EffectProcessor._set_parameters` と同じにする
+    仕様を通さずに読むと、壊れた値（古いファイルの文字など）が 0 になり、
+    既定が 100 の音量なら**クリップが丸ごと無音になる**
+
+    受け取るのは :class:`TrackSpec` だけ 数にならない仕様（選択・真偽）まで
+    黙って 0 として渡すと、既定値と違う値でエフェクトが走る
+    音のエフェクトが数以外の項目を持たないことは試験で見張る
+    """
+    number = spec.coerce(spec.default_value() if value is None else value).at(frame)
+    return float(number) if math.isfinite(number) else float(spec.default)
+
+
 def _frame_to_sample(frame: int, rate: FrameRate, sample_rate: int) -> int:
     """フレーム番号を、そのフレームが始まるサンプル番号へ
 
@@ -217,6 +320,19 @@ def _frame_to_sample(frame: int, rate: FrameRate, sample_rate: int) -> int:
     サンプルごとに走る ここは再生のたびに通るので、整数演算で済ませる
     """
     return frame * rate.den * sample_rate // rate.num
+
+
+def _sample_to_frame(sample: int, rate: FrameRate, sample_rate: int) -> int:
+    """サンプル番号を、それが属するフレーム番号へ（:func:`_frame_to_sample` の逆）
+
+    1 フレームあたりのサンプル数で割ると、29.97 fps のような割り切れない比で
+    :func:`_frame_to_sample` と食い違う（1 フレームは 1601.6 サンプルで、
+    フレーム 1 は切り捨てて 1601 から始まるのに 1601 / 1601.6 は 0 になる）
+    切れ目とフレーム番号がずれると、動く値の変わる時刻が 1 サンプル遅れる
+    そこで ``_frame_to_sample(f) <= sample`` を満たす最大の f を整数のまま出す
+    """
+    span = rate.den * sample_rate
+    return -((-(sample + 1) * rate.num) // span) - 1
 
 
 def _db_to_gain(db: float) -> float:

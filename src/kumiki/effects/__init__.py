@@ -7,6 +7,7 @@
 
 # 読み込んだ時点で標準エフェクトを一覧へ入れる 使う側が登録を忘れると、
 # プロジェクトを開いたときに全部「未知のエフェクト」になる
+from kumiki.effects import audio as _audio
 from kumiki.effects import builtin as _builtin
 from kumiki.effects import grading as _grading
 from kumiki.effects import motion as _motion
@@ -39,6 +40,7 @@ _optics.register_optics_effects()
 _grading.register_grading_effects()
 _warp.register_warp_effects()
 _spawn.register_spawn_effects()
+_audio.register_audio_effects()
 
 __all__ = [
     "CheckSpec",

@@ -133,6 +133,30 @@ class TestValidation:
         with pytest.raises(ProjectFileError, match="未知の補間方法"):
             project_from_dict(data)
 
+    def test_rejects_a_non_numeric_keyframe_that_would_crash_the_audio_mix(
+        self, rich_project: Project
+    ) -> None:
+        """キーフレームの値は**読み込みの時点で**数に限る
+
+        ここを通すと、数でない値が AnimatedValue に入ったまま描画や音の計算へ
+        流れ、math.isfinite の所で落ちる 水際で弾く
+        """
+        data = project_to_dict(rich_project)
+        clip = data["timeline"]["tracks"][0]["clips"][0]
+        clip["effects"][0]["params"]["radius"]["keyframes"][0]["value"] = "おおきめ"
+        with pytest.raises(ProjectFileError, match="数値ではない"):
+            project_from_dict(data)
+
+    def test_rejects_a_non_finite_keyframe_that_would_break_the_gl_values(
+        self, rich_project: Project
+    ) -> None:
+        # JSON の読み込みは NaN と Infinity を受けてしまう 通すと GL の値が壊れる
+        data = project_to_dict(rich_project)
+        clip = data["timeline"]["tracks"][0]["clips"][0]
+        clip["effects"][0]["params"]["radius"]["keyframes"][0]["value"] = float("nan")
+        with pytest.raises(ProjectFileError, match="有限の数ではない"):
+            project_from_dict(data)
+
     def test_rejects_malformed_fraction(self, rich_project: Project) -> None:
         data = project_to_dict(rich_project)
         data["settings"]["frame_rate"] = "さんじゅう"
