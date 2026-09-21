@@ -40,7 +40,12 @@ from kumiki.engine.cache.store import CacheStore
 from kumiki.engine.decode import VideoDecoder, probe_media
 from kumiki.engine.gpu import GLContextError, OffscreenGLContext
 from kumiki.engine.render import FrameRenderer
-from tests.media_fixtures import SampleMedia, decode_all_frames, make_rotated
+from tests.media_fixtures import (
+    SampleMedia,
+    decode_all_frames,
+    make_delayed,
+    make_rotated,
+)
 
 pytestmark = pytest.mark.skipif(not proxy_codecs(), reason="控えを作れるコーデックが無い")
 
@@ -416,6 +421,30 @@ class TestTheRendererUsesIt:
         assert opened and opened[0].height == sample_av.height, "壊れた控えを掴んだまま"
         assert image[:, :, :3].max() > 0, "何も映っていない"
         assert shelf.find(media) is None, "使えない控えが残っている 作り直せない"
+
+    def test_a_source_starting_after_zero_still_plays(
+        self, sample_av: SampleMedia, tmp_path: Path, gl_context: OffscreenGLContext
+    ) -> None:
+        """先頭フレームの時刻が 0 より後の素材でも映る
+
+        使える控えかどうかを時刻 0 の 1 枚で確かめているので、
+        そこが None になる素材があると**無事な素材まで捨てる**ことになる
+        （分割して書き出した素材は先頭が 0 より後ろにある）
+        """
+        late = make_delayed(tmp_path, "late.mp4", sample_av.path, 5.0)
+        store = ProxyStore(CacheStore(tmp_path), height=120)
+        project = self._project(late)
+        assert create_proxy(late, store.prepare(project.media[0]), height=120) is not None
+
+        renderer = FrameRenderer(project, context=gl_context, proxies=store)
+        try:
+            image = renderer.render(0)
+            opened = [decoder.info for decoder in renderer._decoders.values()]
+        finally:
+            renderer.close()
+        assert opened and opened[0].height == 120, "使える控えを捨てている"
+        assert image[:, :, :3].max() > 0, "何も映っていない"
+        assert store.find(project.media[0]) is not None, "使える控えを消している"
 
     def test_a_missing_proxy_falls_back_to_the_source(
         self, sample_av: SampleMedia, tmp_path: Path, gl_context: OffscreenGLContext

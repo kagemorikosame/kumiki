@@ -215,7 +215,7 @@ def _transcode(
         # **画素の側を回して**焼き込む 引き継がずに黙って写すと、スマホで撮った
         # 縦の映像が控えのときだけ横向きになる（デコーダは開いたファイルの
         # 印だけを見て回すため）
-        rotation = _rotation_of(source)
+        rotation = _rotation_of(source, stream.index)
         size = _target_size(stream, height, rotation)
         if size is None:
             return False
@@ -274,16 +274,20 @@ def _shrunk(frame: av.VideoFrame, size: tuple[int, int], rotation: int) -> av.Vi
     return turned.reformat(format="yuv420p")
 
 
-def _rotation_of(source: Path) -> int:
-    """素材に付いている回転角 読めなければ 0
+def _rotation_of(source: Path, stream_index: int) -> int:
+    """写すストリームに付いている回転角 読めなければ 0
 
     :func:`~kumiki.engine.decode.probe_media` と同じ所から読む 別の読み方を
-    すると、元の素材と控えで向きが食い違う
+    すると、元の素材と控えで向きが食い違う 写すストリームを指して読むのは、
+    1 本目とは別のストリームを控えにする日が来ても食い違わないようにするため
     """
     try:
         info = probe_media(source)
     except ProbeError:
         return 0
+    for stream in info.video_streams:
+        if stream.index == stream_index:
+            return stream.rotation
     return info.video_streams[0].rotation if info.video_streams else 0
 
 

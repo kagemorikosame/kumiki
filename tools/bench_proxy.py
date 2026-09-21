@@ -133,6 +133,14 @@ def main() -> int:
     parser.add_argument("--proxy-height", type=int, default=PROXY_HEIGHT)
     args = parser.parse_args()
 
+    frames = int(args.seconds * 30)
+    if frames < 2:
+        # 1 枚目は開く分を含むので測らない 2 枚目が無いと何も測れない
+        # 素材を作る前に見る 負の秒数では ffmpeg が先に失敗して、
+        # 「この環境では測れない」と区別が付かなくなる
+        print(f"--seconds が短すぎる 2 フレーム以上になる長さを指定する（{frames} フレーム）")
+        return 1
+
     if not proxy_codecs():
         print("控えを作れるコーデックが無い 測らずに終わる")
         return 0
@@ -150,11 +158,6 @@ def main() -> int:
         print(f"OpenGL コンテキストを作れない 測らずに終わる: {exc}")
         return 0
 
-    frames = int(args.seconds * 30)
-    if frames < 2:
-        # 1 枚目は開く分を含むので測らない 2 枚目が無いと何も測れない
-        print(f"--seconds が短すぎる 2 フレーム以上になる長さを指定する（{frames} フレーム）")
-        return 1
     project = _project(source, args.width, args.height, frames)
     store = ProxyStore(CacheStore(_base / "cache"), height=args.proxy_height)
     media = project.media[0]

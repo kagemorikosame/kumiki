@@ -116,6 +116,36 @@ def make_rotated(directory: Path, name: str, source: Path, degrees: int) -> Path
     return path
 
 
+def make_delayed(directory: Path, name: str, source: Path, seconds: float) -> Path:
+    """先頭フレームの時刻を後ろへずらした複製を作る 画素は触らない
+
+    タイムラインの途中から始まる素材（分割して書き出したもの等）はこの形
+    時刻 0 に絵が無いので、0 だけを見て素材の良し悪しを決めると取り違える
+    """
+    path = directory / name
+    if path.exists():
+        return path
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(source),
+            "-c",
+            "copy",
+            "-output_ts_offset",
+            str(seconds),
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return path
+
+
 def make_silent_gap(
     directory: Path, name: str, *, duration: float = 6.0, sample_rate: int = 48000
 ) -> Path:
