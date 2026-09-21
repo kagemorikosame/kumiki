@@ -213,19 +213,32 @@ def main() -> int:
             skips.append((time.perf_counter() - started) * 1000)
 
         # 再生 毎フレーム通る（いま出ている字幕を選び直す）
-        playback: list[float] = []
-        for frame in range(arguments.frames):
+        # 2 通り測る 続きを再生するとき（多くのフレームは同じ字幕のまま）と、
+        # 毎回ちがう字幕へ飛ぶとき（動画の端から端まで散らす）
+        # 前者だけだと、後ろの字幕ほど探すのに時間が掛かる作りに気付けない
+        # 後者だけだと、実際の再生より重く見える（選び直しが毎フレーム走る）
+        span = max(1, current.duration)
+        sequential: list[float] = []
+        for index in range(arguments.frames):
             started = time.perf_counter()
-            panel.set_frame(frame * 7)
+            panel.set_frame(index)
             application.processEvents()
-            playback.append((time.perf_counter() - started) * 1000)
+            sequential.append((time.perf_counter() - started) * 1000)
+
+        scattered: list[float] = []
+        for index in range(arguments.frames):
+            started = time.perf_counter()
+            panel.set_frame(index * span // max(1, arguments.frames))
+            application.processEvents()
+            scattered.append((time.perf_counter() - started) * 1000)
     finally:
         panel.close()
         analyzer.close()
 
     passed = _report("作り直し（字幕が変わったとき）", rebuilds, EDIT_BUDGET_MS)
     passed &= _report("素通り（字幕が変わらない編集）", skips, EDIT_BUDGET_MS)
-    passed &= _report("再生中の 1 フレーム", playback, FRAME_BUDGET_MS)
+    passed &= _report("再生中の 1 フレーム（続き）", sequential, FRAME_BUDGET_MS)
+    passed &= _report("再生中の 1 フレーム（飛び回る）", scattered, FRAME_BUDGET_MS)
     return 0 if passed else 1
 
 
