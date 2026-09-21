@@ -204,6 +204,8 @@ class TestTheZip:
         with pytest.raises(OSError):
             builder.make_zip(bundle, tmp_path / "out.zip")
         assert not (tmp_path / "out.zip").exists()
+        # 書きかけも残さない 100 MB ずつ溜まるうえ、手で配るときに紛れる
+        assert list(tmp_path.glob("*.writing")) == []
 
     def test_the_check_does_not_borrow_the_developers_path(self, builder: ModuleType) -> None:
         """確かめるときは開発機の PATH を使わない
@@ -282,3 +284,38 @@ class TestTheExportCheckUsesTheCpu:
         )
         with pytest.raises(RuntimeError, match="libx264"):
             selfcheck._export()
+
+
+class TestWithoutAConsole:
+    """窓だけの exe をパイプ無しで起動すると、標準出力が無い（``sys.stdout`` が None）
+
+    ダブルクリックやコマンドでそのまま打つとこうなる 書いても誰にも届かず、
+    自己診断を頼んだ人には何も起きないように見える
+    """
+
+    def test_the_result_is_shown_in_a_window(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from PySide6.QtWidgets import QMessageBox
+
+        shown: list[str] = []
+        monkeypatch.setattr(sys, "stdout", None)
+        monkeypatch.setattr(
+            "kumiki.selfcheck.run_self_check", lambda: [CheckResult("GL で描く", True, "描けた")]
+        )
+        monkeypatch.setattr(
+            QMessageBox, "information", lambda parent, title, text: shown.append(text)
+        )
+        assert main(["kumiki", SELF_CHECK_FLAG]) == 0
+        assert shown and "GL で描く" in shown[0]
+
+    def test_a_failure_is_shown_as_a_warning(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # 落ちた項目があるときは目立つ形で出す 情報の窓だと読み流される
+        from PySide6.QtWidgets import QMessageBox
+
+        warned: list[str] = []
+        monkeypatch.setattr(sys, "stdout", None)
+        monkeypatch.setattr(
+            "kumiki.selfcheck.run_self_check", lambda: [CheckResult("GL で描く", False, "x")]
+        )
+        monkeypatch.setattr(QMessageBox, "warning", lambda parent, title, text: warned.append(text))
+        assert main(["kumiki", SELF_CHECK_FLAG]) == 1
+        assert warned

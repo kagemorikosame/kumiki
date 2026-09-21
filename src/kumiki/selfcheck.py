@@ -40,7 +40,6 @@ class CheckResult:
     """1 項目の結果"""
 
     name: str
-    #: 動いたか
     ok: bool
     detail: str = ""
     #: 動かなくても困らない項目（音の出口が無い機械など） 合否に混ぜない
@@ -92,8 +91,29 @@ def format_results(results: list[CheckResult]) -> str:
 
 def main() -> int:
     results = run_self_check()
-    print(format_results(results), flush=True)
-    return 0 if all(result.ok or result.optional for result in results) else 1
+    text = format_results(results)
+    passed = all(result.ok or result.optional for result in results)
+    if sys.stdout is None:
+        # 窓だけの exe を、パイプを付けずに起動した（ダブルクリックや、コマンドで
+        # そのまま打った） 標準出力が無いので、書いても誰にも届かない
+        # 結果を窓で見せる パイプを付けたとき（``| more`` や組み立ての確認）は
+        # 標準出力がある
+        _show(text, passed)
+    else:
+        print(text, flush=True)
+    return 0 if passed else 1
+
+
+def _show(text: str, passed: bool) -> None:
+    """結果を窓で見せる Qt の項目が落ちていたら、見せる手段が無いので諦める"""
+    try:
+        from PySide6.QtWidgets import QApplication, QMessageBox
+    except ImportError:
+        return
+    if QApplication.instance() is None:
+        return
+    box = QMessageBox.information if passed else QMessageBox.warning
+    box(None, "Kumiki の自己診断", text)
 
 
 def _version() -> str:

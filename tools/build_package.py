@@ -75,7 +75,7 @@ AviUtl のスクリプト（.anm2 .obj2 など）は、この隣の {PORTABLE_SC
 置けば読み込まれます AviUtl2 が入っていれば、そちらの Script フォルダも読みます
 
 動かないときは、このフォルダでコマンドを開いて次を打つと、どの部品が
-動いていないかが 1 行ずつ出ます
+動いていないかが 1 行ずつ出ます（そのまま打つと、結果は窓で出ます）
 
     Kumiki.exe {SELF_CHECK_FLAG} | more
 
@@ -148,10 +148,16 @@ def make_zip(bundle: Path, target: Path) -> Path:
     """
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(target.name + ".writing")
-    with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for path in sorted(bundle.rglob("*")):
-            if path.is_file():
-                archive.write(path, Path(APP_NAME) / path.relative_to(bundle))
+    try:
+        with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for path in sorted(bundle.rglob("*")):
+                if path.is_file():
+                    archive.write(path, Path(APP_NAME) / path.relative_to(bundle))
+    except BaseException:
+        # 書きかけも残さない 名前が違うので完成品とは取り違えないが、
+        # 100 MB ずつ溜まるうえ、手で配るときに紛れる
+        temporary.unlink(missing_ok=True)
+        raise
     # 途中で止まった zip を完成品と取り違えないよう、書き終えてから名前を付ける
     temporary.replace(target)
     return target
