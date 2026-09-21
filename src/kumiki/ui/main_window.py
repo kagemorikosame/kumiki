@@ -176,8 +176,10 @@ class MainWindow(QMainWindow):
         #: その素材だけ元のファイルを読み続ける
         self._proxied: set[MediaId] = set()
         self._proxied_lock = threading.Lock()
-        #: 使えない控えを捨てて作り直しを頼んだ素材 2 度目は頼まない
-        self._rebuilt: set[MediaId] = set()
+        #: 使えない控えを捨てて作り直しを頼んだ控えの鍵 2 度目は頼まない
+        #: 素材ではなく**鍵**で覚える 鍵には控えの大きさと素材の更新時刻が
+        #: 入っているので、設定を変えたり素材を差し替えたりすれば作り直せる
+        self._rebuilt: set[str] = set()
         #: AI が結果を確認するための描画係 初めて求められたときに作る
         self._ai_renderer: FrameRenderer | None = None
         #: 編集しているシーン ``None`` ならメイン モデルではなく画面の状態なので
@@ -992,14 +994,16 @@ class MainWindow(QMainWindow):
         # そのあとずっと元の素材を読み続ける（置き場には何も無いままなので、
         # 次に開いたときも作られない）
         for media_id in self._preview.take_discarded():
-            if media_id in self._rebuilt:
+            media = self.view_project.find_media(media_id)
+            if media is None:
+                continue
+            key = self._proxies.store.key_for(media)
+            if key in self._rebuilt:
                 # 作り直した控えがまた使えなかった 頼み続けると、250ms ごとに
                 # 変換が走り続けて編集そのものが重くなる あきらめて元の素材で映す
                 continue
-            media = self.view_project.find_media(media_id)
-            if media is not None:
-                self._rebuilt.add(media_id)
-                self._request_proxy(media)
+            self._rebuilt.add(key)
+            self._request_proxy(media)
         if not self._analysis_dirty:
             return
         self._analysis_dirty = False

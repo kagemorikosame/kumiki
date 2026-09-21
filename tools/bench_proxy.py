@@ -203,13 +203,24 @@ def _report(label: str, times: list[float]) -> float:
     return p95
 
 
+def _layers(value: str) -> int:
+    """``--layers`` の受け取り 1 未満は断る
+
+    黙って 1 に丸めると、指定と違う重さの結果を指定どおりの見出しで出す
+    """
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"重ねる枚数は 1 以上: {value}")
+    return number
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--width", type=int, default=3840)
     parser.add_argument("--height", type=int, default=2160)
     parser.add_argument("--seconds", type=float, default=3.0)
     parser.add_argument("--proxy-height", type=int, default=PROXY_HEIGHT)
-    parser.add_argument("--layers", type=int, default=1, help="重ねる枚数")
+    parser.add_argument("--layers", type=_layers, default=1, help="重ねる枚数（1 以上）")
     parser.add_argument(
         "--effects", default="", help="積むエフェクト（コンマ区切り 例: blur,glow）"
     )

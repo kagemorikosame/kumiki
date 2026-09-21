@@ -277,6 +277,23 @@ class TestTheWindowFollowsThem:
         window._flush_analysis()
         assert asked == [media.id], "同じ素材を何度も作り直している"
 
+    def test_a_new_proxy_size_may_be_rebuilt_again(self, window: MainWindow) -> None:
+        """控えの大きさを変えたら、また作り直せる
+
+        素材で覚えると、1 度あきらめた素材は窓を閉じるまで元のまま
+        鍵で覚えれば、大きさを変えたときや素材を差し替えたときに作り直せる
+        """
+        media = _uhd_media()
+        window.execute(AddMedia(media))
+        asked: list[object] = []
+        window._proxies.request = lambda item, **kwargs: asked.append(item.id)  # type: ignore[method-assign]
+        window._preview.take_discarded = lambda: {media.id}  # type: ignore[method-assign]
+        window._flush_analysis()
+        window._apply_preferences(Preferences(proxy_height=720))
+        window._proxies.request = lambda item, **kwargs: asked.append(item.id)  # type: ignore[method-assign]
+        window._flush_analysis()
+        assert asked.count(media.id) == 2, "大きさを変えたのに作り直していない"
+
     def test_a_big_project_drops_the_preview_quality(self, window: MainWindow) -> None:
         """4K の素材を置いたら画質が下がる
 
