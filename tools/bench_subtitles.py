@@ -96,15 +96,15 @@ FRAME_BUDGET_MS = 1000 / 30
 EDIT_BUDGET_MS = 100.0
 
 
-def _project(segments: int, seconds: float) -> Project:
+def _project(segments: int, seconds: Fraction) -> Project:
     """字幕を ``segments`` 本持つ素材を 1 本置いたプロジェクト"""
-    # 分数のまま割る ミリ秒へ丸めてから割ると、短い素材に多くの字幕を
-    # 入れたときに間隔が 0 になり、全部が時刻 0 の字幕になる
-    step = Fraction(seconds).limit_denominator(1000) / max(1, segments)
+    # 分数のまま割る 丸めてから割ると、短い素材に多くの字幕を入れたときに
+    # 間隔が 0 になり、全部が時刻 0 の字幕になる
+    step = seconds / max(1, segments)
     media = MediaItem(
         path=Path("長い動画.mp4"),
-        # 秒は分数のまま持つ 整数へ丸めると、0.5 秒の素材が長さ 0 になる
-        duration=Fraction(seconds).limit_denominator(1000),
+        # 長さ・字幕の間隔・フレーム数は、どれも同じ 1 つの分数から出す
+        duration=seconds,
         video_streams=(
             VideoStreamInfo(
                 index=0,
@@ -173,15 +173,21 @@ def _positive(value: str) -> int:
     return number
 
 
-def _long_enough(value: str) -> float:
-    """2 フレーム以上になる長さ（秒）
+def _long_enough(value: str) -> Fraction:
+    """2 フレーム以上になる長さ（秒） **分数**で返す
 
     1 フレームだと、散らす測定が全部フレーム 0 になる パネルの再生位置は
     初めから 0 なので、2 回目から何もせずに戻り、字幕を選び直す所を
     通らないまま「速い」と出る
+
+    書かれた文字から分数を作る 浮動小数を経由すると 0.1 が 1/10 にならず、
+    長さ・字幕の間隔・フレーム数がそれぞれ別の値から出ることになる
     """
-    seconds = float(value)
-    if not math.isfinite(seconds) or math.ceil(seconds * 30) < 2:
+    try:
+        seconds = Fraction(value)
+    except (ValueError, ZeroDivisionError) as exc:
+        raise argparse.ArgumentTypeError(f"秒として読めない: {value}") from exc
+    if math.ceil(seconds * 30) < 2:
         raise argparse.ArgumentTypeError(f"2 フレーム以上になる長さを指定する: {value}")
     return seconds
 
@@ -203,7 +209,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--segments", type=_positive, default=2000, help="字幕の本数")
     parser.add_argument(
-        "--seconds", type=_long_enough, default=3600.0, help="素材の長さ（秒 2 フレーム以上）"
+        "--seconds",
+        type=_long_enough,
+        default=Fraction(3600),
+        help="素材の長さ（秒 2 フレーム以上）",
     )
     parser.add_argument("--repeats", type=_positive, default=5, help="作り直しを測る回数")
     parser.add_argument(
