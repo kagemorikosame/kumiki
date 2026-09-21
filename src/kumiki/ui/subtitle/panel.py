@@ -46,7 +46,7 @@ from kumiki.core.io import SUBTITLE_FILTER, save_subtitles
 from kumiki.core.jetcut import plan_cuts
 from kumiki.core.model import MediaId, MediaItem, Project, SegmentId, TranscriptSegment
 from kumiki.core.projection import project_clip
-from kumiki.core.timebase import format_timecode
+from kumiki.core.timebase import format_timecode, seconds_to_frame
 from kumiki.effects.sources import TEXT
 from kumiki.engine.audio.silence import SilenceOptions, detect_silence, keep_speech
 from kumiki.engine.cache import MediaAnalyzer
@@ -63,9 +63,11 @@ BURN_DEFAULTS = {"size": 48.0, "pos_y": -380.0, "border_width": 4.0}
 #: 時刻の列に足す余白（画素） 文字の幅ぴったりだと読みにくい
 TIME_COLUMN_PADDING = 24
 
-#: 時刻の列の幅を決める見本の長さ（フレーム） 1 時間ぶん
+#: 時刻の列の幅を決める見本の長さ（秒） 1 時間
 #: これより短い動画でも、この幅は空けておく 桁が増えるたびに列が動くと目が疲れる
-MIN_TIME_SAMPLE_FRAMES = 108_000
+#: フレーム数ではなく秒で持つ フレーム数だと、フレームレートによって
+#: 表す長さが変わってしまう（30fps の 10 万フレームは約 1 時間だが 60fps では 30 分）
+MIN_TIME_SAMPLE_SECONDS = 3600
 
 
 class SubtitlePanel(QWidget):
@@ -205,7 +207,8 @@ class SubtitlePanel(QWidget):
         2 桁ぶんの幅で切れる 実際の長さから決める（短いときは見本の方を使う
         短い動画で時刻の列が細くなりすぎると、桁が増えたときに毎回揺れる）
         """
-        longest = max(self._project.duration, MIN_TIME_SAMPLE_FRAMES)
+        least = seconds_to_frame(MIN_TIME_SAMPLE_SECONDS, self._project.rate)
+        longest = max(self._project.duration, least)
         sample = format_timecode(longest, self._project.rate)
         return self._table.fontMetrics().horizontalAdvance(sample) + TIME_COLUMN_PADDING
 
