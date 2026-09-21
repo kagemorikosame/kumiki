@@ -162,12 +162,27 @@ def _positive(value: str) -> int:
     return number
 
 
+def _at_least_two(value: str) -> int:
+    """2 以上の整数
+
+    1 だとどちらの再生の測定も ``set_frame(0)`` だけになる パネルの再生位置は
+    初めから 0 なので、同じ値を渡しても何もせずに戻る 字幕を選び直す所を
+    通らないまま「速い」と出る
+    """
+    number = int(value)
+    if number < 2:
+        raise argparse.ArgumentTypeError(f"2 以上を指定する: {value}")
+    return number
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--segments", type=_positive, default=2000, help="字幕の本数")
     parser.add_argument("--seconds", type=float, default=3600.0, help="素材の長さ（秒）")
     parser.add_argument("--repeats", type=_positive, default=5, help="作り直しを測る回数")
-    parser.add_argument("--frames", type=_positive, default=200, help="再生を測るフレーム数")
+    parser.add_argument(
+        "--frames", type=_at_least_two, default=200, help="再生を測るフレーム数（2 以上）"
+    )
     parser.add_argument("--scale", default="1", help="Qt の拡大率（1 / 1.5 / 2）")
     arguments = parser.parse_args()
 
