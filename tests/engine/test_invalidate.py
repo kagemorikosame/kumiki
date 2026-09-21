@@ -21,6 +21,7 @@ from kumiki.core.model import (
     Timeline,
     Track,
     TrackKind,
+    Transcript,
     VideoStreamInfo,
 )
 from kumiki.core.timebase import FrameRate
@@ -265,3 +266,39 @@ class TestTheScenes:
         result = changed_spans(before, after)
         assert result.contains(50), "シーンの中の素材差し替えが外へ届いていない"
         assert not result.contains(0)
+
+
+class TestWhatTheRendererDoesNotRead:
+    """:class:`MediaItem` は絵に関わらないものも持っている
+
+    丸ごと比べると、字幕を直すたびにその素材を使う所の先読みが全部消える
+    字幕を焼き込む使い方（1 時間の動画に 2000 本）では、貯める意味がなくなる
+    """
+
+    def test_a_transcript_does_not_touch_the_picture(self) -> None:
+        media = _media()
+        clip = _clip(0, 30, media_id=media.id)
+        before = replace(_project(clip), media=(media,))
+        after = replace(before, media=(media.with_transcript(Transcript(segments=())),))
+        assert not changed_spans(before, after), "字幕を直しただけで先読みが消える"
+
+    def test_a_display_name_does_not_touch_the_picture(self) -> None:
+        media = _media()
+        clip = _clip(0, 30, media_id=media.id)
+        before = replace(_project(clip), media=(media,))
+        after = replace(before, media=(replace(media, display_name="別名"),))
+        assert not changed_spans(before, after)
+
+    def test_a_transcript_inside_a_scene_does_not_reach_the_outside(self) -> None:
+        """シーンの中の素材でも同じ 外まで伝わると、まとめて消える"""
+        media = _media()
+        inner = Timeline(
+            rate=RATE,
+            tracks=(Track(kind=TrackKind.VIDEO, clips=(_clip(0, 30, media_id=media.id),)),),
+        )
+        scene = Scene(name="中身", timeline=inner)
+        before = replace(
+            _project(_clip(50, 30, scene_id=scene.id), scenes=(scene,)), media=(media,)
+        )
+        after = replace(before, media=(media.with_transcript(Transcript(segments=())),))
+        assert not changed_spans(before, after)

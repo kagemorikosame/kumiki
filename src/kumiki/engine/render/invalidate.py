@@ -16,6 +16,7 @@ from dataclasses import dataclass, replace
 from kumiki.core.model import (
     Clip,
     MediaId,
+    MediaItem,
     Project,
     SceneId,
     Timeline,
@@ -153,10 +154,24 @@ def _media_used(timeline: Timeline) -> set[MediaId]:
 
 
 def _changed_media(before: Project, after: Project) -> set[MediaId]:
-    """中身の変わった素材 差し替えと読み込み直しで絵が変わる"""
-    old = {item.id: item for item in before.media}
-    new = {item.id: item for item in after.media}
+    """**絵に関わる所**が変わった素材 差し替えと読み込み直しで絵が変わる
+
+    素材そのものを比べない :class:`MediaItem` は字幕の起こし結果や表示名も
+    持っていて、そちらはレンダラが読まない 丸ごと比べると、字幕を 1 文字
+    直すたびにその素材を使う所の先読みが全部消える（字幕を焼き込む使い方では、
+    貯める意味がなくなる）
+    """
+    old = {item.id: _picture_of(item) for item in before.media}
+    new = {item.id: _picture_of(item) for item in after.media}
     return {key for key in old.keys() | new.keys() if old.get(key) != new.get(key)}
+
+
+def _picture_of(media: MediaItem) -> tuple[object, ...]:
+    """その素材のうち、絵を決める所だけ
+
+    音の流れは混ぜる側の持ち物で、絵には出ない
+    """
+    return (media.path, media.duration, media.video_streams)
 
 
 def _changed_scenes(before: Project, after: Project, media: set[MediaId]) -> set[SceneId]:
