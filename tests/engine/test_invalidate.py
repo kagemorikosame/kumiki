@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from kumiki.core.model import (
+    AudioStreamInfo,
     Clip,
     Effect,
     MediaItem,
@@ -302,3 +303,27 @@ class TestWhatTheRendererDoesNotRead:
         )
         after = replace(before, media=(media.with_transcript(Transcript(segments=())),))
         assert not changed_spans(before, after)
+
+    def test_gaining_sound_on_a_still_does_touch_the_picture(self) -> None:
+        """長さ 0 の映像素材に音が付いたら、絵は変わる
+
+        is_still は音の有無でも変わり、レンダラはこれを見て
+        「常に先頭のコマを返す」へ切り替える 音だから絵に関係ない、とは言えない
+        """
+        still = replace(_media(), duration=Fraction(0))
+        clip = _clip(0, 30, media_id=still.id)
+        before = replace(_project(clip), media=(still,))
+        sounding = replace(
+            still,
+            audio_streams=(
+                AudioStreamInfo(
+                    index=1,
+                    sample_rate=48000,
+                    channels=2,
+                    time_base=Fraction(1, 48000),
+                    codec="aac",
+                ),
+            ),
+        )
+        after = replace(before, media=(sounding,))
+        assert changed_spans(before, after).contains(10)

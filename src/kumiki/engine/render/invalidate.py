@@ -169,9 +169,12 @@ def _changed_media(before: Project, after: Project) -> set[MediaId]:
 def _picture_of(media: MediaItem) -> tuple[object, ...]:
     """その素材のうち、絵を決める所だけ
 
-    音の流れは混ぜる側の持ち物で、絵には出ない
+    音の流れそのものは混ぜる側の持ち物で、絵には出ない ただし
+    :attr:`~kumiki.core.model.MediaItem.is_still` は音の有無でも変わり、
+    レンダラはこれを見て「常に先頭のコマを返す」へ切り替える
+    長さ 0 の映像素材に音が付いたかどうかで絵が変わるので、そこだけ拾う
     """
-    return (media.path, media.duration, media.video_streams)
+    return (media.path, media.duration, media.video_streams, media.is_still)
 
 
 def _changed_scenes(before: Project, after: Project, media: set[MediaId]) -> set[SceneId]:
