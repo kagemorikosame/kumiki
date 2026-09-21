@@ -308,3 +308,17 @@ class TestWhichOneGoesFirst:
             cache.set_playhead(10)
             assert cache.store(11, lambda surface: None) is not None
             assert cache.cached == {18, 11}, f"入れた順 {order} で結果が変わる"
+
+    def test_a_frame_as_far_ahead_as_one_behind_takes_its_place(self) -> None:
+        """同じ遠さなら、後ろの絵を追い出して前の絵を置く
+
+        置くかどうかを遠さだけで決めると、**捨てる 1 枚に選ばれている後ろの絵**を
+        追い出せない 捨てる側と置く側で、ものさしが食い違う
+        """
+        cache, _ = _cache(2)
+        cache.set_playhead(10)
+        _fill(cache, 6, 12)
+        cache.set_playhead(10)
+        # 6 は後ろへ 4（重み 2 倍で 8）、18 は前へ 8 遠さは同じ
+        assert cache.store(18, lambda surface: None) is not None
+        assert cache.cached == {12, 18}

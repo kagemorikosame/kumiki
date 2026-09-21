@@ -194,9 +194,12 @@ class FrameCache:
         if len(self._frames) < capacity:
             return self._allocate()
         worst = self._worst()
-        if self._cost(worst) <= self._cost(frame):
-            # 取ってある絵の方が近い 追い出してまで置く価値が無い
+        if self._rank(worst) <= self._rank(frame):
+            # 取ってある絵の方が値打ちがある 追い出してまで置く価値が無い
             # ここで無理に置くと、すぐ使う絵を捨てて遠い絵を貯めることになる
+            # **捨てる側と同じものさしで比べる** 遠さだけで比べると、
+            # 同じ遠さの後ろの絵が「捨てる 1 枚」に選ばれているのに、
+            # それを追い出して前の絵を置くことができない
             return None
         surface = self._frames.pop(worst)
         return surface
@@ -216,12 +219,16 @@ class FrameCache:
             return None
 
     def _worst(self) -> int:
-        """次に捨てる 1 枚
+        """次に捨てる 1 枚"""
+        return max(self._frames, key=self._rank)
+
+    def _rank(self, frame: int) -> tuple[int, bool]:
+        """捨てる順のものさし 大きいほど先に捨てる
 
         遠さが同じときは**後ろを先に捨てる** 遠さだけで比べると、同じ遠さの
         2 枚のうち先に入れた方が残り、捨てる順が入れた順で決まってしまう
         """
-        return max(self._frames, key=lambda frame: (self._cost(frame), frame < self._playhead))
+        return (self._cost(frame), frame < self._playhead)
 
     def _cost(self, frame: int) -> int:
         """再生ヘッドからの遠さ 大きいほど先に捨てる"""
