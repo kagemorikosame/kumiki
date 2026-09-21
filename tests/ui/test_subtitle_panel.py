@@ -17,9 +17,11 @@ from PySide6.QtWidgets import QApplication, QFileDialog
 from kumiki.core.commands import (
     AddClip,
     Command,
+    RenameProject,
     RippleCut,
     SetSegmentText,
     SetTranscript,
+    TrimClip,
 )
 from kumiki.core.model import MediaItem, Project, Transcript
 from kumiki.engine.audio.waveform import BASE_SAMPLES_PER_PEAK, PeakLevel, Waveform
@@ -121,6 +123,196 @@ class TestListing:
         item = widget._table.item(2, 0)
         assert item is not None
         assert item.text() == "—"
+
+
+class TestRebuilding:
+    """一覧の作り直しは**編集のたび**に通る 字幕が多いと、そこが重さになる"""
+
+    def test_it_skips_when_nothing_changed(
+        self, panel: tuple[SubtitlePanel, list[tuple[list[Command], str]]], placed: Project
+    ) -> None:
+        """中身が前と同じなら作り直さない
+
+        字幕 2000 本で 70ms 掛かる所 字幕に関係のない編集（プロジェクト名を
+        変えるなど）でそれを払うのは無駄 作り直していないことは、表の中身が
+        同じ物のままかどうかで見る
+        """
+        widget, _ = panel
+        before = widget._table.item(0, 1)
+        widget.set_project(RenameProject("別の名前").apply(placed))
+        assert widget._table.item(0, 1) is before, "作り直している"
+
+    def test_it_rebuilds_when_the_text_changes(
+        self,
+        panel: tuple[SubtitlePanel, list[tuple[list[Command], str]]],
+        placed: Project,
+        video_media: MediaItem,
+        transcript: Transcript,
+    ) -> None:
+        """字幕を直したら作り直す 飛ばすと、直した文字が画面に出ない"""
+        widget, _ = panel
+        from dataclasses import replace
+
+        first = transcript.segments[0]
+        edited = Transcript(
+            segments=(replace(first, text="書き直した字幕"), *transcript.segments[1:])
+        )
+        widget.set_project(SetTranscript(video_media.id, edited).apply(placed))
+        item = widget._table.item(0, 1)
+        assert item is not None
+        assert item.text() == "書き直した字幕"
+
+    def test_the_time_column_fits_a_long_timeline(
+        self, panel: tuple[SubtitlePanel, list[tuple[list[Command], str]]], placed: Project
+    ) -> None:
+        """長いタイムラインでも時刻が切れない
+
+        見本を決め打ちにすると、100 時間を超えた所で時が 3 桁になり、
+        2 桁ぶんの幅で切れる
+        """
+        widget, _ = panel
+        narrow = widget._table.horizontalHeader().sectionSize(0)
+        clip = placed.timeline.tracks[0].clips[0]
+        # 命令で伸ばす モデルを直に差し替えると、命令の側の決まりが変わっても
+        # この試験は気付かない
+        longer = TrimClip(clip.id, tail_delta=100 * 60 * 60 * 30).apply(placed)
+        widget.set_project(longer)
+        assert widget._table.horizontalHeader().sectionSize(0) > narrow, "幅が足りない"
+
+    def test_widening_the_time_column_reflows_the_rows(
+        self, panel: tuple[SubtitlePanel, list[tuple[list[Command], str]]]
+    ) -> None:
+        """時刻の列が広がったら、行の高さを取り直す
+
+        本文の列は残りを埋める作りなので、時刻が広がるとそのぶん狭くなり、
+        折り返しの行数が変わる 取り直さないと 2 行目が隠れて末尾が読めない
+
+        本文の列の合図は、画面に出ていないと飛ばないことがある
+        時刻の列（0 番）の合図でも取り直す ここを本文の列だけに絞ると、
+        長さが変わったときに折り返しが古いままになる
+        """
+        widget, _ = panel
+        asked: list[bool] = []
+        # 本物は画面の大きさを測るので、画面の無い試験では意味のある値にならない
+        # 呼ばれたかどうかだけが見たい
+        widget._table.resizeRowsToContents = lambda: asked.append(True)  # type: ignore[method-assign]
+        try:
+            widget._on_section_resized(0, 80, 200)
+            assert asked, "時刻の列の合図で取り直していない"
+
+            # 作り直しの最中は走らせない 1 行入れるたびに全部の行を測り直すと、
+            # 本数の 2 乗で遅くなる
+            asked.clear()
+            widget._updating = True
+            widget._on_section_resized(0, 200, 240)
+            widget._updating = False
+            assert not asked, "作り直しの最中に取り直している"
+        finally:
+            del widget._table.resizeRowsToContents
+
+    def test_an_unrelated_edit_measures_nothing(
+        self, panel: tuple[SubtitlePanel, list[tuple[list[Command], str]]], placed: Project
+    ) -> None:
+        """字幕に関係のない編集では、行の高さを測り直さない
+
+        時刻の幅は毎回入れ直すが、値が同じなら Qt は合図を出さない
+        ここが変わると、編集のたびに全部の行を測り直すことになる
+        """
+        widget, _ = panel
+        asked: list[bool] = []
+        # 本物は画面の大きさを測るので、画面の無い試験では意味のある値にならない
+        widget._table.resizeRowsToContents = lambda: asked.append(True)  # type: ignore[method-assign]
+        try:
+            widget.set_project(RenameProject("別の名前").apply(placed))
+        finally:
+            del widget._table.resizeRowsToContents
+        assert not asked, "関係のない編集で行を測り直している"
+
+    def test_the_rows_are_not_measured_before_they_are_replaced(
+        self, panel: tuple[SubtitlePanel, list[tuple[list[Command], str]]], placed: Project
+    ) -> None:
+        """これから捨てる行の高さを測り直さない
+
+        時刻の幅を先に変えると、古い行を測り直してから作り直すことになる
+        幅が変われば折り返しも変わるので、その測り直しは丸ごと無駄になる
+        """
+        widget, _ = panel
+        order: list[str] = []
+        # 呼ばれた順が見たいだけなので、本物は呼ばない（画面の無い試験では
+        # 測った高さに意味が無い）
+        widget._table.resizeRowsToContents = lambda: order.append("測り直し")  # type: ignore[method-assign]
+        original_set = widget._table.setItem
+
+        def spy(row: int, column: int, item: object) -> None:
+            order.append("入れ替え")
+            original_set(row, column, item)  # type: ignore[arg-type]
+
+        # 入れ替えの起きた時点を知りたい 本物も呼ぶので中身は普通に入る
+        widget._table.setItem = spy  # type: ignore[method-assign]
+        try:
+            clip = placed.timeline.tracks[0].clips[0]
+            widget.set_project(TrimClip(clip.id, tail_delta=100 * 60 * 60 * 30).apply(placed))
+        finally:
+            del widget._table.resizeRowsToContents
+            del widget._table.setItem
+        assert order, "何も起きていない"
+        assert order[0] == "入れ替え", f"入れ替えの前に測り直している: {order[:3]}"
+        assert order.count("測り直し") == 1, f"2 度測っている: {order.count('測り直し')} 回"
+
+    def test_the_table_recovers_if_filling_fails(
+        self,
+        panel: tuple[SubtitlePanel, list[tuple[list[Command], str]]],
+        placed: Project,
+        video_media: MediaItem,
+        transcript: Transcript,
+    ) -> None:
+        """中身を入れ替える途中で落ちても、表が固まったままにならない
+
+        描き直しを止めたまま戻さないと、以降なにも映らない
+        """
+        from dataclasses import replace
+
+        widget, _ = panel
+
+        def boom(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("わざと落とす")
+
+        # 作り直しが本当に走る変更にする（字幕を 1 本書き直す）
+        edited = Transcript(
+            segments=(replace(transcript.segments[0], text="別の字幕"), *transcript.segments[1:])
+        )
+        changed = SetTranscript(video_media.id, edited).apply(placed)
+        # 入れ替えの途中でわざと落とす 本物を落とす手立てが他に無い
+        widget._table.setItem = boom  # type: ignore[method-assign]
+        try:
+            with pytest.raises(RuntimeError):
+                widget.set_project(changed)
+        finally:
+            del widget._table.setItem
+        assert widget._table.updatesEnabled(), "描き直しが止まったまま"
+        assert not widget._updating, "作り直し中の印が残ったまま"
+
+        # 落ちたあとに同じものを渡したら、作り直す
+        # 印を先に立てていると素通りして、半端な表が残ったままになる
+        widget.set_project(changed)
+        item = widget._table.item(0, 1)
+        assert item is not None
+        assert item.text() == "別の字幕", "半端な表のまま作り直していない"
+
+    def test_the_time_column_does_not_measure_every_row(
+        self, panel: tuple[SubtitlePanel, list[tuple[list[Command], str]]]
+    ) -> None:
+        """時刻の列は**固定幅** 中身に合わせると本数の 2 乗で遅くなる
+
+        Qt は幅を中身に合わせるとき、1 行足すたびに全部の行を測り直す
+        字幕 2000 本では作り直しに 6 秒掛かっていた
+        """
+        from PySide6.QtWidgets import QHeaderView
+
+        widget, _ = panel
+        header = widget._table.horizontalHeader()
+        assert header.sectionResizeMode(0) == QHeaderView.ResizeMode.Fixed
+        assert header.sectionSize(0) > 0, "幅が 0 だと時刻が読めない"
 
 
 class TestEditing:
