@@ -151,6 +151,10 @@ def main() -> int:
         return 0
 
     frames = int(args.seconds * 30)
+    if frames < 2:
+        # 1 枚目は開く分を含むので測らない 2 枚目が無いと何も測れない
+        print(f"--seconds が短すぎる 2 フレーム以上になる長さを指定する（{frames} フレーム）")
+        return 1
     project = _project(source, args.width, args.height, frames)
     store = ProxyStore(CacheStore(_base / "cache"), height=args.proxy_height)
     media = project.media[0]

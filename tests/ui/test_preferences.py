@@ -200,6 +200,15 @@ class TestTheWindowFollowsThem:
         window._apply_preferences(Preferences(auto_quality_divisor=4))
         assert window._proxies is before
 
+    def test_turning_the_proxy_off_stops_the_running_work(self, window: MainWindow) -> None:
+        """切ったら、裏で走っている変換も止まる
+
+        止めないと、切ったのに変換が続いて CPU を食う（切った意味が無い）
+        """
+        before = window._proxies
+        window._apply_preferences(Preferences(use_proxy=False))
+        assert window._proxies is not before, "変換を止めていない"
+
     def test_changing_the_size_rebuilds_the_builder(self, window: MainWindow) -> None:
         # 大きさが変わると置き場の鍵が変わる 作り直さないと前の大きさのまま
         before = window._proxies

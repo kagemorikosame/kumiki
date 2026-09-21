@@ -393,6 +393,30 @@ class TestTheRendererUsesIt:
         finally:
             renderer.close()
 
+    def test_a_truncated_proxy_is_thrown_away(
+        self, sample_av: SampleMedia, shelf: ProxyStore, gl_context: OffscreenGLContext
+    ) -> None:
+        """**見出しは読めるのに 1 枚も出せない**控えは捨てる
+
+        開けるかどうかだけを見ていると、途中で切れたファイルを掴んだまま
+        そのクリップだけ白く残る 捨てておけば次の求めで作り直せる
+        """
+        project = self._project(sample_av.path)
+        media = project.media[0]
+        # 見出しだけ残して切り落とす（書いている途中で落ちたときの形）
+        whole = shelf.path_for(media).read_bytes()
+        shelf.path_for(media).write_bytes(whole[: len(whole) // 4])
+
+        renderer = FrameRenderer(project, context=gl_context, proxies=shelf)
+        try:
+            image = renderer.render(0)
+            opened = [decoder.info for decoder in renderer._decoders.values()]
+        finally:
+            renderer.close()
+        assert opened and opened[0].height == sample_av.height, "壊れた控えを掴んだまま"
+        assert image[:, :, :3].max() > 0, "何も映っていない"
+        assert shelf.find(media) is None, "使えない控えが残っている 作り直せない"
+
     def test_a_missing_proxy_falls_back_to_the_source(
         self, sample_av: SampleMedia, tmp_path: Path, gl_context: OffscreenGLContext
     ) -> None:

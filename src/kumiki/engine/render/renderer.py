@@ -1115,25 +1115,49 @@ class FrameRenderer:
         media = self._project.find_media(media_id)
         if media is None:
             return None
-        path, index = self._source_for(media, stream_index)
-        try:
-            decoder = VideoDecoder(path, index)
-        except ProbeError:
-            if path == media.path:
-                # オフライン素材や壊れたファイル ここで落とすと、1 本壊れただけで
-                # プロジェクト全体が開けなくなる そのクリップだけ映らない扱いにする
-                return None
-            # 控えが壊れていた（書きかけのまま落ちた等） 元の素材で開き直す
-            # ここで諦めると、控えが 1 本壊れただけでクリップが映らなくなる
-            try:
-                decoder = VideoDecoder(media.path, stream_index)
-            except ProbeError:
-                return None
+        decoder = self._open(media, stream_index)
+        if decoder is None:
+            return None
 
         self._decoders[key] = decoder
         while len(self._decoders) > MAX_OPEN_DECODERS:
             _, evicted = self._decoders.popitem(last=False)
             evicted.close()
+        return decoder
+
+    def _open(self, media: MediaItem, stream_index: int) -> VideoDecoder | None:
+        """素材を開く 控えが使えなければ捨てて、元の素材で開き直す
+
+        壊れた控えには 2 通りある 開けないもの（書きかけのまま落ちた等）と、
+        **見出しは読めるのに 1 枚も出せないもの**（途中で切れたファイル）
+        後者はそのまま掴むと、そのクリップだけ白いまま何も映らない
+        置き場から捨てておけば、次の求めで作り直せる
+        """
+        path, index = self._source_for(media, stream_index)
+        if path != media.path:
+            decoder = self._usable(path, index)
+            if decoder is not None:
+                return decoder
+            if self._proxies is not None:
+                self._proxies.discard(media)
+        return self._usable(media.path, stream_index)
+
+    def _usable(self, path: Path, stream_index: int | None) -> VideoDecoder | None:
+        """開けて、1 枚目を出せるなら返す
+
+        開けるかどうかだけでは足りない 見出しだけ正しいファイルを掴むと、
+        映らない理由が分からないまま残る 確かめるのは開いた 1 回だけで、
+        描くたびには走らない
+        """
+        try:
+            decoder = VideoDecoder(path, stream_index)
+        except ProbeError:
+            # オフライン素材や壊れたファイル ここで落とすと、1 本壊れただけで
+            # プロジェクト全体が開けなくなる そのクリップだけ映らない扱いにする
+            return None
+        if decoder.frame_at(Fraction(0)) is None:
+            decoder.close()
+            return None
         return decoder
 
     def set_proxies(self, proxies: ProxyStore | None) -> None:

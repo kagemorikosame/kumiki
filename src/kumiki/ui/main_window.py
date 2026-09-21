@@ -532,16 +532,19 @@ class MainWindow(QMainWindow):
         控えの大きさを変えたら別の鍵になるので、作り直しを頼む
         古い控えは残るが、掴むことはない（鍵に大きさを混ぜてある）
         """
-        # 作り直すのは大きさが変わったときだけ 置き場の鍵が変わるので作り直しが要る
+        # 作り直すのは大きさが変わったときと、控えを切ったとき
+        # 大きさは置き場の鍵が変わるため 切ったときは**走っている変換を止める**ため
+        # （切ったのに裏で変換が続くなら、切った意味が無い）
         # 何が変わっても作り直すと、画質の設定を触っただけで進行中の変換が止まる
         resized = preferences.proxy_height != self._preferences.proxy_height
+        stopped = self._preferences.use_proxy and not preferences.use_proxy
         self._preferences = preferences
         try:
             PreferenceStore().save(preferences)
         except OSError as exc:
             self.statusBar().showMessage(f"設定を保存できなかった: {exc}", 5000)
 
-        if resized:
+        if resized or stopped:
             self._proxies.close()
             self._proxies = ProxyBuilder(ProxyStore(height=preferences.proxy_height))
         self._preview.set_proxies(self._proxies.store if preferences.use_proxy else None)

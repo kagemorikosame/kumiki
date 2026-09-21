@@ -124,6 +124,14 @@ class ProxyStore:
             # 空のファイルは作りかけか失敗の跡 掴むと「映らない素材」になる
             return None
 
+    def discard(self, media: MediaItem) -> None:
+        """使えない控えを捨てる
+
+        残すと :meth:`find` が毎回それを返し、作り直す機会も無いまま
+        「その素材だけ映らない」が続く 捨てておけば次の求めで作り直せる
+        """
+        self.path_for(media).unlink(missing_ok=True)
+
     def prepare(self, media: MediaItem) -> Path:
         """書き込み先を用意して返す 親フォルダも作る"""
         return self._store.prepare(NAMESPACE, self.key_for(media), ".mp4")
