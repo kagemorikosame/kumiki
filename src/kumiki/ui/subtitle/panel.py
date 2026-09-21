@@ -177,10 +177,13 @@ class SubtitlePanel(QWidget):
 
     def set_project(self, project: Project) -> None:
         self._project = project
-        # 長さが変わると、時刻の桁も変わる 幅を取り直さないと切れる
-        self._table.horizontalHeader().resizeSection(0, self._time_column_width())
         self._reload_media()
         self._reload_rows()
+        # 長さが変わると、時刻の桁も変わる 幅を取り直さないと切れる
+        # 中身を入れ替えた**あと**に変える 先に変えると、これから捨てる行の
+        # 高さを測り直すことになる（幅が変われば折り返しも変わるので、
+        # そのあとの作り直しで結局もう一度測ることになる）
+        self._table.horizontalHeader().resizeSection(0, self._time_column_width())
 
     def set_frame(self, frame: int) -> None:
         """再生ヘッドの位置 いま出ている字幕を強調する"""

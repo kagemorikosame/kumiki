@@ -208,6 +208,33 @@ class TestRebuilding:
         finally:
             del widget._table.resizeRowsToContents
 
+    def test_the_rows_are_not_measured_before_they_are_replaced(
+        self, panel: tuple[SubtitlePanel, list[tuple[list[Command], str]]], placed: Project
+    ) -> None:
+        """これから捨てる行の高さを測り直さない
+
+        時刻の幅を先に変えると、古い行を測り直してから作り直すことになる
+        幅が変われば折り返しも変わるので、その測り直しは丸ごと無駄になる
+        """
+        widget, _ = panel
+        order: list[str] = []
+        widget._table.resizeRowsToContents = lambda: order.append("測り直し")  # type: ignore[method-assign]
+        original_set = widget._table.setItem
+
+        def spy(row: int, column: int, item: object) -> None:
+            order.append("入れ替え")
+            original_set(row, column, item)  # type: ignore[arg-type]
+
+        widget._table.setItem = spy  # type: ignore[method-assign]
+        try:
+            clip = placed.timeline.tracks[0].clips[0]
+            widget.set_project(TrimClip(clip.id, tail_delta=100 * 60 * 60 * 30).apply(placed))
+        finally:
+            del widget._table.resizeRowsToContents
+            del widget._table.setItem
+        assert order, "何も起きていない"
+        assert order[0] == "入れ替え", f"入れ替えの前に測り直している: {order[:3]}"
+
     def test_the_table_recovers_if_filling_fails(
         self,
         panel: tuple[SubtitlePanel, list[tuple[list[Command], str]]],
