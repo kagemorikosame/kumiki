@@ -24,11 +24,18 @@ from pathlib import Path
 from kumiki.compat.aviutl.exo import ExoParseError, load_exo
 from kumiki.compat.aviutl.mapping import map_object
 from kumiki.compat.aviutl.report import CompatibilityReport, global_report
-from kumiki.compat.mapped import MappedObject
+from kumiki.compat.mapped import MappedObject, fitted_effect, fitted_value
 from kumiki.compat.ymm4.template import Ymm4ParseError, load_template, map_template
 from kumiki.core.commands import AddClip, AddEffect, AddTrack, Command, RemoveEffect, SetSource
 from kumiki.core.commands.insert import DEFAULT_GENERATED_FRAMES
-from kumiki.core.model import Clip, GeneratedSource, Project, Track, TrackId, TrackKind
+from kumiki.core.model import (
+    Clip,
+    GeneratedSource,
+    Project,
+    Track,
+    TrackId,
+    TrackKind,
+)
 from kumiki.core.timebase import FrameRate
 
 __all__ = [
@@ -258,7 +265,11 @@ def restyle(objects: list[MappedObject], clip: Clip) -> list[Command]:
 
     effects_only = all(item.clip.source is None and not item.media_path for item in objects)
     if effects_only:
-        added = [effect for item in objects for effect in item.clip.effects]
+        added = [
+            fitted_effect(effect, item.clip.duration, clip.duration - 1)
+            for item in objects
+            for effect in item.clip.effects
+        ]
         if not added:
             return []
         return [AddEffect(clip.id, effect) for effect in added]
@@ -272,10 +283,11 @@ def restyle(objects: list[MappedObject], clip: Clip) -> list[Command]:
     if clip.source is None or clip.source.kind != "text":
         return []
 
+    span = template.clip.duration
     params = {
         **clip.source.params,
         **{
-            name: value
+            name: fitted_value(value, span, clip.duration - 1)
             for name, value in template.clip.source.params.items()
             if name not in _KEPT_ON_RESTYLE
         },
@@ -283,7 +295,10 @@ def restyle(objects: list[MappedObject], clip: Clip) -> list[Command]:
 
     commands: list[Command] = [SetSource(clip.id, GeneratedSource(kind="text", params=params))]
     commands.extend(RemoveEffect(clip.id, effect.id) for effect in clip.effects)
-    commands.extend(AddEffect(clip.id, effect) for effect in template.clip.effects)
+    commands.extend(
+        AddEffect(clip.id, fitted_effect(effect, span, clip.duration - 1))
+        for effect in template.clip.effects
+    )
     return commands
 
 

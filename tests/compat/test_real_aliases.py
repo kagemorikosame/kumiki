@@ -150,3 +150,70 @@ def test_every_middle_point_becomes_a_keyframe(
         if isinstance(value, AnimatedValue) and value.is_animated
     ]
     assert moving, "中間点のあるエイリアスに動く値が 1 つも無い"
+
+
+def test_a_real_moving_alias_survives_being_restyled(
+    mapped: list[tuple[Path, MappedObject]],
+) -> None:
+    """中間点を持つ**実物**を着せても、動きが残って尺に合う
+
+    合成した見本だけで確かめると、実物の書き方（中間点の数や移動方法の
+    並び）から外れていても気付けない
+    """
+    from kumiki.compat.aviutl.exo import load_exo as _load
+    from kumiki.compat.catalog import restyle
+    from kumiki.core.commands import AddEffect
+    from kumiki.core.model import AnimatedValue, Clip, GeneratedSource
+
+    with_points = [path for path in FILES if len(_load(path).objects[0].points) > 2]
+    moving = [
+        (path, item)
+        for path, item in mapped
+        if path in with_points and item.clip.source is not None and item.clip.source.kind == "text"
+    ]
+    if not moving:
+        pytest.skip("中間点を持つ文字の配布物が手元に無い")
+
+    checked = 0
+    for path, item in moving:
+        # 元より短いクリップへ着せる ここで動きが切れると、着地した見た目が出ない
+        target = Clip(
+            timeline_start=0,
+            duration=max(2, item.clip.duration // 3),
+            source=GeneratedSource(kind="text", params={"text": "自分で打った字幕"}),
+        )
+        added = [c for c in restyle([item], target) if isinstance(c, AddEffect)]
+        last = target.duration - 1
+        for command in added:
+            for name, value in command.effect.params.items():
+                if not isinstance(value, AnimatedValue) or not value.keyframes:
+                    continue
+                frames = [keyframe.frame for keyframe in value.keyframes]
+                assert frames == sorted(set(frames)), f"{path.name}: {name} の順が崩れた"
+                assert max(frames) <= last, f"{path.name}: {name} がクリップの外に出た"
+                assert max(frames) == last, f"{path.name}: {name} が終わりまで届かない"
+                checked += 1
+    assert checked, "動く値を持つ実物が 1 つも無い"
+
+
+def test_the_keyframes_start_at_the_clip_head(
+    mapped: list[tuple[Path, MappedObject]],
+) -> None:
+    """キーフレームは**クリップ先頭から**数える
+
+    エイリアスの ``frame=244,333,423`` はタイムライン上の位置 そのまま
+    キーフレームにすると、クリップの先頭では動かず 244 フレーム待ってから
+    動き出す 着せるときの尺合わせも 0 から数える前提で組んである
+    """
+    from kumiki.core.model import AnimatedValue
+
+    checked = 0
+    for path, item in mapped:
+        for effect in item.clip.effects:
+            for name, value in effect.params.items():
+                if not isinstance(value, AnimatedValue) or not value.keyframes:
+                    continue
+                assert value.keyframes[0].frame == 0, f"{path.name}: {name} が 0 から始まらない"
+                checked += 1
+    if not checked:
+        pytest.skip("動く値を持つ配布物が手元に無い")

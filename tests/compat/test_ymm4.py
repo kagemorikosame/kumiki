@@ -565,6 +565,62 @@ class TestGroups:
         assert mapped[0].kind == "effects"
         assert [e.kind for e in mapped[0].clip.effects] == ["transform"]
 
+    def test_an_effects_only_template_keeps_the_group_length(self) -> None:
+        """中身が無くても**入れ物の長さ**を残す
+
+        動く値のキーフレームはこの長さの上に並んでいる 1 にしてしまうと、
+        着せるときに尺を合わせられず、動きが着せた先の途中で止まる
+        """
+        group = group_item(Rotation=moving(0.0, 30.0), Length=300)
+        mapped = map_template([group], report=CompatibilityReport())
+        assert mapped[0].clip.duration == 300
+        # 長さを持っていないことは変わらない 置くときは既定の長さを使う
+        assert not mapped[0].has_span
+
+    def test_a_shorter_group_is_stretched_onto_the_content(self) -> None:
+        """入れ物と中身で長さが違うとき、動きを**中身の長さへ揃えて**移す
+
+        揃えずに移すと、入れ物の終わり（18）に置いた点が 300 フレームの
+        中身の先頭近くに残り、エフェクトの終わりの見た目が出ないまま止まる
+        手元の配布物 97 本のうち 6 本がこの形（例: 入れ物 18 中身 300）
+        """
+        group = group_item(Rotation=moving(0.0, 30.0), Length=18)
+        mapped = map_template([text_item(Length=300), group], report=CompatibilityReport())
+        assert len(mapped) == 1
+        transform = next(e for e in mapped[0].clip.effects if e.kind == "transform")
+        value = transform.params["rotation"]
+        assert isinstance(value, AnimatedValue)
+        assert [k.frame for k in value.keyframes] == [0, 300]
+
+    def test_a_content_without_a_length_borrows_the_group_length(self) -> None:
+        """中身が長さを持たないときは、**入れ物の長さ**を借りる
+
+        長さを 1 として揃えると 90 フレームの動きが 2 フレームに潰れ、
+        置くときに既定の長さまで伸ばされても動きは戻らない
+        """
+        content = text_item()
+        content.pop("Length")
+        group = group_item(Rotation=moving(0.0, 30.0), Length=90)
+        mapped = map_template([content, group], report=CompatibilityReport())
+        assert len(mapped) == 1
+        assert mapped[0].clip.duration == 90
+        assert mapped[0].has_span, "長さが分かったのに、置くときに既定の長さを使ってしまう"
+        transform = next(e for e in mapped[0].clip.effects if e.kind == "transform")
+        value = transform.params["rotation"]
+        assert isinstance(value, AnimatedValue)
+        assert [k.frame for k in value.keyframes] == [0, 90]
+
+    def test_groups_of_different_lengths_stay_apart(self) -> None:
+        """長さの違う入れ物は**別々に**返す
+
+        1 つにまとめると長さが 1 つしか持てず、短い方の動きが長い方の尺で
+        伸び縮みして、着せたときに違う時刻へ着く
+        """
+        short = group_item(Rotation=moving(0.0, 30.0), Length=60)
+        long = group_item(Zoom=moving(100.0, 200.0), Length=300)
+        mapped = map_template([short, long], report=CompatibilityReport())
+        assert sorted(item.clip.duration for item in mapped) == [60, 300]
+
     def test_a_group_with_nothing_to_give_produces_nothing(self) -> None:
         assert map_template([group_item()], report=CompatibilityReport()) == []
 

@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from kumiki.compat.aviutl.report import CompatibilityReport, global_report
-from kumiki.compat.mapped import MappedObject
+from kumiki.compat.mapped import MappedObject, fitted_effect
 from kumiki.compat.ymm4.brushes import BLEND_NAMES, brush_effect, is_solid
 from kumiki.compat.ymm4.decorations import map_decorations, map_video_effects, with_pivot
 from kumiki.compat.ymm4.effects import CenterPoint
@@ -261,9 +261,15 @@ def map_template(
 
     contents: list[MappedObject] = []
     grouped: list[Effect] = []
+    # 入れ物ごとの (長さ, エフェクト) 動く値のキーフレームはその入れ物の長さの
+    # 上に並んでいるので、中身の無いテンプレートでも長さを残す 1 にすると、
+    # 着せるときに尺を合わせられず、動きが着せた先の途中で止まる
+    containers: list[tuple[int, list[Effect]]] = []
     for item in items:
         if type_name(item) in _CONTAINER_ITEMS:
-            grouped.extend(_group_effects(item, log))
+            effects = _group_effects(item, log)
+            grouped.extend(effects)
+            containers.append((max(1, int(number(item.get("Length"), 1.0))), effects))
             continue
         mapped = _map_item(item, log)
         if mapped is not None:
@@ -272,19 +278,52 @@ def map_template(
     if not grouped:
         return contents
     if not contents:
-        # 中身のないテンプレート エフェクトだけを返す
+        # 中身のないテンプレート エフェクトだけを**入れ物ごとに**返す
+        # 1 つにまとめると、長さの違う入れ物が混ざったときに短い方の動きが
+        # 長い方の尺で伸び縮みする（着せる側は 1 つずつ尺を合わせる）
         return [
             MappedObject(
-                clip=Clip(timeline_start=0, duration=1, effects=tuple(grouped)),
+                clip=Clip(timeline_start=0, duration=length, effects=tuple(effects)),
                 layer=1,
                 kind="effects",
                 has_span=False,
             )
+            for length, effects in containers
+            if effects
         ]
-    return [
-        replace(item, clip=replace(item.clip, effects=(*item.clip.effects, *grouped)))
-        for item in contents
+    # 入れ物のエフェクトを中身へ移す 入れ物と中身で長さが違うことがあるので
+    # （手元の配布物 97 本のうち 6 本 例: 入れ物 18 中身 300）、動く値の時刻を
+    # 中身の長さへ揃えてから移す 揃えずに移すと、入れ物の終わりに置いた点が
+    # 中身の途中に残り、エフェクトの終わりの見た目が出ないまま止まる
+    return [_with_group_effects(item, containers) for item in contents]
+
+
+def _with_group_effects(
+    item: MappedObject, containers: list[tuple[int, list[Effect]]]
+) -> MappedObject:
+    """入れ物のエフェクトを 1 つの中身へ移す 動く値の時刻は中身の長さへ揃える
+
+    揃える先は中身の長さちょうど YMM4 は最後の点を長さの位置に置く
+
+    中身が長さを持っていないことがある（``レトロなカウントダウン3秒`` は
+    入れ物 90 に対して中身 1） そのまま 1 に揃えると 90 フレームの動きが
+    2 フレームに潰れ、置くときに既定の長さまで伸ばされても動きは戻らない
+    長さが分かるのは入れ物の側だけなので、そちらを中身の長さとして使う
+    """
+    span = max((length for length, _ in containers), default=1)
+    known = item.has_span or span <= 1
+    duration = item.clip.duration if known else span
+    moved = [
+        fitted_effect(effect, length, duration)
+        for length, effects in containers
+        for effect in effects
     ]
+    return replace(
+        item,
+        clip=replace(item.clip, duration=duration, effects=(*item.clip.effects, *moved)),
+        # 入れ物から長さを借りたなら、長さの分かるものとして扱う
+        has_span=item.has_span or not known,
+    )
 
 
 def _group_effects(item: dict[str, Any], log: CompatibilityReport) -> list[Effect]:
