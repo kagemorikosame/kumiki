@@ -143,8 +143,12 @@ class Preferences:
     #: 自動で落とすときの分母
     auto_quality_divisor: int = 2
     #: 手が止まっている間に、再生ヘッドの先を描いて取っておく
+    #: 既定は入 効果を積んだ所で再生が飛ぶのは、なぜ飛ぶのか分からない側の人ほど
+    #: 困る 貯めるのが重すぎる所は画面の側（ui/preview.py）で自分から止める
     prefetch: bool = True
     #: 先読みに使うメモリ（メガバイト）
+    #: 上限を置くのは、デコードと効果の側が使う GPU のメモリを残すため
+    #: 使い切ると、先読みではなくプレビューそのものが描けなくなる
     prefetch_budget_mb: int = 1024
 
     def prefetch_bytes(self) -> int:

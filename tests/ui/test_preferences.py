@@ -341,9 +341,15 @@ class TestThePrefetchSetting:
         assert Preferences(prefetch=False).prefetch_bytes() == 0
 
     def test_the_budget_is_in_bytes(self) -> None:
+        """MB とバイトの換算 間違えると 1024 倍ずれる
+
+        小さい方へずれれば 1 枚も置けず、大きい方へずれれば GPU のメモリを
+        使い切って、プレビューそのものが描けなくなる
+        """
         assert Preferences(prefetch_budget_mb=512).prefetch_bytes() == 512 * 1024 * 1024
 
     def test_it_comes_back(self, tmp_path: Path) -> None:
+        """保存して読み直しても同じ 落ちると、起動のたびに設定し直しになる"""
         store = PreferenceStore(tmp_path / "preferences.json")
         chosen = Preferences(prefetch=False, prefetch_budget_mb=2048)
         store.save(chosen)
@@ -370,6 +376,7 @@ class TestThePrefetchSetting:
         assert not isinstance(loaded.prefetch_budget_mb, float)
 
     def test_the_dialog_shows_what_is_set(self, qt_application: QApplication) -> None:
+        """画面が今の設定を映す 映らないと、開いて OK を押しただけで別の値になる"""
         del qt_application
         chosen = Preferences(prefetch=False, prefetch_budget_mb=4096)
         assert PreferencesDialog(chosen).preferences() == chosen
@@ -385,6 +392,7 @@ class TestThePrefetchSetting:
         assert Preferences().prefetch_budget_mb in [budget for _, budget in PREFETCH_BUDGETS]
 
     def test_turning_it_off_disables_the_budget(self, qt_application: QApplication) -> None:
+        """切ったらメモリの欄は押せなくなる 押せると、効くと思って触ってしまう"""
         del qt_application
         dialog = PreferencesDialog(Preferences())
         dialog._prefetch.setChecked(False)
@@ -402,6 +410,7 @@ class TestThePrefetchSetting:
             window.close()
 
     def test_the_window_passes_the_budget_on(self, qt_application: QApplication) -> None:
+        """選んだメモリが画面まで届く 届かないと、変えても貯まる量が変わらない"""
         del qt_application
         window = MainWindow(Project.create(), confirm_unsaved=False)
         try:

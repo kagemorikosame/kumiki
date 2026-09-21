@@ -113,7 +113,11 @@ class TestWhatDoesNotChangeThePicture:
         after = replace(before, timeline=before.timeline.replace_track(louder))
         assert not changed_spans(before, after)
 
-    def test_a_marker_does_not_touch_the_picture(self) -> None:
+    def test_the_work_area_does_not_touch_the_picture(self) -> None:
+        """書き出し範囲を変えても絵は変わらない
+
+        捨てる扱いにすると、範囲の端をつまんで動かすたびに貯めた絵が消える
+        """
         before = _project(_clip(0, 30))
         after = replace(before, timeline=replace(before.timeline, work_area=(0, 10)))
         assert not changed_spans(before, after)
