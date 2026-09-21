@@ -171,6 +171,19 @@ def _positive(value: str) -> int:
     return number
 
 
+def _long_enough(value: str) -> float:
+    """2 フレーム以上になる長さ（秒）
+
+    1 フレームだと、散らす測定が全部フレーム 0 になる パネルの再生位置は
+    初めから 0 なので、2 回目から何もせずに戻り、字幕を選び直す所を
+    通らないまま「速い」と出る
+    """
+    seconds = float(value)
+    if not math.isfinite(seconds) or math.ceil(seconds * 30) < 2:
+        raise argparse.ArgumentTypeError(f"2 フレーム以上になる長さを指定する: {value}")
+    return seconds
+
+
 def _at_least_two(value: str) -> int:
     """2 以上の整数
 
@@ -187,7 +200,9 @@ def _at_least_two(value: str) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--segments", type=_positive, default=2000, help="字幕の本数")
-    parser.add_argument("--seconds", type=float, default=3600.0, help="素材の長さ（秒）")
+    parser.add_argument(
+        "--seconds", type=_long_enough, default=3600.0, help="素材の長さ（秒 2 フレーム以上）"
+    )
     parser.add_argument("--repeats", type=_positive, default=5, help="作り直しを測る回数")
     parser.add_argument(
         "--frames", type=_at_least_two, default=200, help="再生を測るフレーム数（2 以上）"
