@@ -102,7 +102,7 @@ def _timeline_spans(
 
     spans: list[tuple[int, int]] = []
     for old, new in zip(old_tracks, new_tracks, strict=True):
-        if replace(old, clips=()) != replace(new, clips=()):
+        if _visual_track(old) != _visual_track(new):
             # トラック全体のフィルタなどが変わった 掛かるのはクリップのある所だけ
             spans.extend(_span(clip) for clip in (*old.clips, *new.clips))
             continue
@@ -130,6 +130,19 @@ def _clip_spans(before: Track, after: Track) -> list[tuple[int, int]]:
             continue
         spans.extend(_span(clip) for clip in (first, second) if clip is not None)
     return spans
+
+
+def _visual_track(track: Track) -> Track:
+    """見た目の都合と音の設定を外したトラック クリップは別に比べるので外す
+
+    名前・鍵・行の高さ・音量・定位はどれもレンダラが読まない
+    トラックに名前を付け直すたびに、その上のクリップの絵を全部捨てていた
+
+    **外すのはこれだけ** トラック全体のフィルタ（:attr:`Track.effects`）は
+    いまのレンダラが読んでいないが、比べる側に残す 読むようになったときに、
+    黙って古い絵が出る形にはしない
+    """
+    return replace(track, clips=(), name="", locked=False, height=0, volume_db=0.0, pan=0.0)
 
 
 def _visual(clip: Clip) -> Clip:
@@ -177,7 +190,7 @@ def _picture_of_timeline(timeline: Timeline) -> tuple[object, ...]:
     同じものを無視しているので、シーンだけ扱いが違うのはつじつまが合わない
     """
     return tuple(
-        (track.id, replace(track, clips=()), tuple(_visual(clip) for clip in track.clips))
+        (track.id, _visual_track(track), tuple(_visual(clip) for clip in track.clips))
         for track in timeline.active_tracks(TrackKind.VIDEO)
     )
 

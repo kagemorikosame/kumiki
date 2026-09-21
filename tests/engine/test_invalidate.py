@@ -187,6 +187,31 @@ class TestWhatChangesOnePlace:
         assert changed_spans(before, after).spans == ((0, 30), (100, 130))
 
 
+class TestWhatTheRendererDoesNotReadOnTracks:
+    def test_renaming_a_track_does_not_touch_the_picture(self) -> None:
+        """トラックの名前を変えても絵は変わらない
+
+        捨てる扱いにすると、名前を打ち直すたびにその上のクリップの絵が全部消える
+        """
+        before = _project(_clip(0, 30))
+        renamed = replace(before.timeline.tracks[0], name="人物")
+        after = replace(before, timeline=before.timeline.replace_track(renamed))
+        assert not changed_spans(before, after)
+
+    def test_the_row_height_does_not_touch_the_picture(self) -> None:
+        """タイムラインの行の高さは見た目の都合 絵には出ない"""
+        before = _project(_clip(0, 30))
+        taller = replace(before.timeline.tracks[0], height=120)
+        after = replace(before, timeline=before.timeline.replace_track(taller))
+        assert not changed_spans(before, after)
+
+    def test_locking_a_track_does_not_touch_the_picture(self) -> None:
+        before = _project(_clip(0, 30))
+        locked = replace(before.timeline.tracks[0], locked=True)
+        after = replace(before, timeline=before.timeline.replace_track(locked))
+        assert not changed_spans(before, after)
+
+
 class TestWhatTheRendererDoesNotReadOnClips:
     def test_grouping_does_not_touch_the_picture(self) -> None:
         """束ね直しても絵は変わらない レンダラは束ねを読まない
