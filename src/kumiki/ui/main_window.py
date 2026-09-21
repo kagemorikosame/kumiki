@@ -222,7 +222,10 @@ class MainWindow(QMainWindow):
         project = self._document.project
 
         self._preview = PreviewWidget(
-            project, self, proxies=self._proxies.store if self._preferences.use_proxy else None
+            project,
+            self,
+            proxies=self._proxies.store if self._preferences.use_proxy else None,
+            prefetch_bytes=self._preferences.prefetch_bytes(),
         )
         self._transport = TransportBar(project.rate, self)
         self._timeline = TimelineView(project, self._analyzer, self)
@@ -557,6 +560,7 @@ class MainWindow(QMainWindow):
             self._proxies.close()
             self._proxies = ProxyBuilder(ProxyStore(height=preferences.proxy_height))
         self._preview.set_proxies(self._proxies.store if preferences.use_proxy else None)
+        self._preview.set_prefetch_bytes(preferences.prefetch_bytes())
         for media in self.view_project.media:
             self._request_proxy(media)
         self._apply_auto_quality()
@@ -638,6 +642,12 @@ class MainWindow(QMainWindow):
 
         self._playback.frame_changed.connect(self._on_playback_frame)
         self._playback.state_changed.connect(self._transport.set_playing)
+        # 再生中は先読みを止める 同じ GPU を奪い合うと、いま出すべきコマが遅れる
+        self._playback.state_changed.connect(self._preview.set_playing)
+        # 先読みを止めたら伝える 黙って効かない状態にしない
+        self._preview.prefetch_stopped.connect(
+            lambda message: self.statusBar().showMessage(message, 5000)
+        )
         self._playback.failed.connect(lambda message: self.statusBar().showMessage(message, 5000))
 
     # --- コマンドの実行 ---

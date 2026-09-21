@@ -296,6 +296,18 @@ class Framebuffer:
         self._create()
 
     def _create(self) -> None:
+        """作れなかったら、途中まで取った GL 資源を返してから投げ直す
+
+        返さずに投げると、掴んだまま誰からも辿れないテクスチャが残る
+        メモリが足りなくて失敗したときに、そのぶんまで食い潰す
+        """
+        try:
+            self._build()
+        except Exception:
+            self.release()
+            raise
+
+    def _build(self) -> None:
         self.color = int(GL.glGenTextures(1))
         GL.glBindTexture(GL.GL_TEXTURE_2D, self.color)
         _set_sampling()

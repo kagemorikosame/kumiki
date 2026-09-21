@@ -20,6 +20,8 @@ from PySide6.QtWidgets import QMainWindow
 __all__ = [
     "AUTO_QUALITY_HEIGHT",
     "LAYOUT_VERSION",
+    "MAX_PREFETCH_MB",
+    "MIN_PREFETCH_MB",
     "PreferenceStore",
     "Preferences",
     "ShortcutStore",
@@ -113,6 +115,13 @@ def find_conflicts(bindings: dict[str, str]) -> dict[str, list[str]]:
 #: 1080p までは等倍で 60fps に入るので、落とす値打ちが無い
 AUTO_QUALITY_HEIGHT = 1081
 
+#: 先読みに使えるメモリの下限（MB） 1080p の 1 枚が 8MB なので、
+#: これより小さいと数えるほどしか置けない
+MIN_PREFETCH_MB = 128
+
+#: 上限（MB） 家庭用の GPU の載っているメモリを超えない所で止める
+MAX_PREFETCH_MB = 8192
+
 
 @dataclass(frozen=True, slots=True)
 class Preferences:
@@ -133,6 +142,24 @@ class Preferences:
     auto_quality: bool = True
     #: 自動で落とすときの分母
     auto_quality_divisor: int = 2
+    #: 手が止まっている間に、再生ヘッドの先を描いて取っておく
+    #: 既定は入 効果を積んだ所で再生が飛ぶのは、なぜ飛ぶのか分からない側の人ほど
+    #: 困る 貯めるのが重すぎる所は画面の側（ui/preview.py）で自分から止める
+    prefetch: bool = True
+    #: 先読みに使うメモリ（メガバイト）
+    #: 上限を置くのは、デコードと効果の側が使う GPU のメモリを残すため
+    #: 使い切ると、先読みではなくプレビューそのものが描けなくなる
+    prefetch_budget_mb: int = 1024
+
+    def prefetch_bytes(self) -> int:
+        """先読みに使えるバイト数 切ってあれば 0
+
+        0 を渡された側は「1 枚も置けない」と読んで、先読みそのものをやめる
+        入り切りの旗を下まで配らずに済む
+        """
+        if not self.prefetch:
+            return 0
+        return self.prefetch_budget_mb * 1024 * 1024
 
     def quality_for(self, height: int) -> int:
         """その高さの素材に対して、プレビューに使う分母
@@ -172,6 +199,8 @@ class PreferenceStore:
             auto_quality_divisor=_divisor(
                 data.get("auto_quality_divisor"), plain.auto_quality_divisor
             ),
+            prefetch=_flag(data.get("prefetch"), plain.prefetch),
+            prefetch_budget_mb=_budget(data.get("prefetch_budget_mb"), plain.prefetch_budget_mb),
         )
 
     def save(self, preferences: Preferences) -> None:
@@ -195,6 +224,17 @@ def _size(value: object, default: int) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         return default
     return value if 120 <= value <= 2160 else default
+
+
+def _budget(value: object, default: int) -> int:
+    """先読みに使うメモリ（MB） 極端な値は既定へ戻す
+
+    小さすぎると 1 枚も置けず、設定を入れたのに何も起きない
+    大きすぎると GPU のメモリを使い切り、デコードや効果の側が確保に失敗する
+    """
+    if not isinstance(value, int) or isinstance(value, bool):
+        return default
+    return value if MIN_PREFETCH_MB <= value <= MAX_PREFETCH_MB else default
 
 
 def _divisor(value: object, default: int) -> int:
