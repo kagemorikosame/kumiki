@@ -286,7 +286,7 @@ class PreviewWidget(QOpenGLWidget):
             return
 
         elapsed = (time.perf_counter() - started) * 1000
-        if elapsed > SLOW_FRAME_MS:
+        if elapsed >= SLOW_FRAME_MS:
             # 1 コマにこれだけ掛かるなら、貯まるまでずっと操作を受け付けられない
             # 次に再生ヘッドか中身が変わったら、また試す
             self._idle.stop()

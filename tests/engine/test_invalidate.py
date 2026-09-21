@@ -206,6 +206,11 @@ class TestWhatTheRendererDoesNotReadOnTracks:
         assert not changed_spans(before, after)
 
     def test_locking_a_track_does_not_touch_the_picture(self) -> None:
+        """鍵を掛けても絵は変わらない
+
+        捨てる扱いにすると、間違って動かさないよう鍵を掛け外しするたびに
+        その上のクリップの絵が消え、描き直しになる
+        """
         before = _project(_clip(0, 30))
         locked = replace(before.timeline.tracks[0], locked=True)
         after = replace(before, timeline=before.timeline.replace_track(locked))

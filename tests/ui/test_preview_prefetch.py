@@ -296,11 +296,15 @@ class TestWhenPrefetchingGoesWrong:
         """
         widget, stub = preview
         monkeypatch.setattr(widget, "context", lambda: object())
+        released: list[bool] = []
+        monkeypatch.setattr(widget, "doneCurrent", lambda: released.append(True))
         stopped: list[str] = []
         widget.prefetch_stopped.connect(stopped.append)
         widget.set_frame(3)
         widget._prefetch_step()
         assert stub.steps == [], "current でないのに描きに行っている"
+        # 取れていないのに戻すと、ほかが使っているコンテキストを外すことになる
+        assert released == [], "取れていないコンテキストを戻している"
         assert not widget._idle.isActive()
         assert stopped
 
