@@ -560,12 +560,8 @@ class MainWindow(QMainWindow):
     def _apply_auto_quality(self) -> None:
         """置いてある素材の大きさに合わせて、プレビューの画質を決める
 
-        測った結果（``tools/bench_proxy.py`` 3840x2160 を 3 枚重ねて blur と glow
-        95 パーセンタイル）控えだけでは 25.1ms、画質を落とすだけでは 60.0ms で、
-        どちらも 60fps の予算 16.7ms に入らない 両方で 15.7ms
-
-        1 枚だけなら元の素材でも 12.2ms で入る それでも大きさで決めるのは、
-        重ねた時点で入らなくなるため（3 枚で 62.5ms）落としたくない人は切れる
+        1 枚だけなら元の素材でも入る それでも大きさで決めるのは、重ねた時点で
+        入らなくなるため 測った値は :mod:`kumiki.engine.cache.proxy` の表を見る
         """
         tallest = max(
             (

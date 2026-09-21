@@ -112,10 +112,14 @@ def _project(
     実際のタイムラインは何枚も重なる そこを測らないと、軽い場合だけを見て
     「余裕がある」と決めることになる
     """
-    media = probe_media(source)
     project = Project.create(ProjectSettings(width=width, height=height, frame_rate=FrameRate(30)))
-    project = AddMedia(media).apply(project)
     for index in range(max(1, layers)):
+        # 層ごとに別の素材として登録する レンダラはデコーダを
+        # （素材, ストリーム）で使い回すので、同じ素材を重ねると
+        # デコードが 1 回で済んでしまい、重ねた分の重さが出ない
+        # （同じファイルでも probe のたびに別の素材として扱われる）
+        media = probe_media(source)
+        project = AddMedia(media).apply(project)
         track = Track(kind=TrackKind.VIDEO, name=f"V{index + 1}")
         project = AddTrack(track).apply(project)
         clip = Clip(
