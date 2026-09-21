@@ -337,6 +337,41 @@ class TestRestylingKeepsTheMotion:
         assert isinstance(value, AnimatedValue)
         assert [k.frame for k in value.keyframes] == [0, 59]
 
+    def test_the_ymm4_end_convention_does_not_shift_the_middle(self) -> None:
+        """YMM4 の終わりの決まりでも中間点が**1 フレームもずれない**
+
+        AviUtl は最後の点を長さ - 1 に置き（frame=0,89,179 で長さ 180）、
+        YMM4 は長さそのものに置く 分母を取り違えると、長さ 300 の
+        フレーム 240 が長さ 600 で 479 ではなく 481 へ移る
+        """
+        from kumiki.compat.mapped import MappedObject
+        from kumiki.core.model import Keyframe
+
+        transform = registry.require("transform").create(
+            rotation=AnimatedValue(
+                keyframes=(
+                    Keyframe(frame=0, value=0.0),
+                    Keyframe(frame=240, value=10.0),
+                    Keyframe(frame=300, value=30.0),
+                )
+            )
+        )
+        template = MappedObject(
+            clip=Clip(timeline_start=0, duration=300, effects=(transform,)),
+            layer=1,
+            kind="effects",
+            has_span=False,
+        )
+        clip = Clip(
+            timeline_start=0,
+            duration=600,
+            source=GeneratedSource(kind="text", params={"text": "字幕"}),
+        )
+        added = [c for c in restyle([template], clip) if isinstance(c, AddEffect)]
+        value = added[0].effect.params["rotation"]
+        assert isinstance(value, AnimatedValue)
+        assert [k.frame for k in value.keyframes] == [0, 479, 599]
+
     def test_the_clip_itself_is_not_resized(self, shelf: tuple[TemplateCatalog, Path]) -> None:
         # 動きを合わせるのであって、クリップの長さは今のまま
         catalog, _ = shelf

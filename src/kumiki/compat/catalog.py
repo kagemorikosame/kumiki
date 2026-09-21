@@ -308,8 +308,6 @@ def restyle(objects: list[MappedObject], clip: Clip) -> list[Command]:
 
 def _fitted_effect(effect: Effect, span: int, duration: int) -> Effect:
     """エフェクトの動く値を、着せる先の長さへ合わせた写し"""
-    if span == duration:
-        return effect
     return replace(
         effect,
         params={name: _fitted(value, span, duration) for name, value in effect.params.items()},
@@ -330,11 +328,18 @@ def _fitted(value: ParamValue, span: int, duration: int) -> ParamValue:
     """
     if not isinstance(value, AnimatedValue) or not value.keyframes:
         return value
-    if span <= 1 or duration <= 1 or span == duration:
+    if span <= 1 or duration <= 1:
         return value
 
+    # 終わりのフレームの決まりが 2 つある AviUtl は最後の点を span - 1 に置き
+    # （``frame=0,89,179`` で長さ 180）、YMM4 は span に置く（``Length`` そのもの）
+    # 取り違えると倍率の分母が 1 ずれ、中間点が 1 フレームずれた所へ移る
+    # 実際の最後の点が span まで届いていれば、そちらを終わりとして読む
+    source_last = max(span - 1, value.keyframes[-1].frame)
     last = duration - 1
-    scale = last / (span - 1)
+    if source_last <= 0 or source_last == last:
+        return value
+    scale = last / source_last
     moved: list[Keyframe] = []
     for keyframe in value.keyframes:
         frame = min(round(keyframe.frame * scale), last)
