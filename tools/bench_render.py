@@ -6,7 +6,7 @@ r"""1 フレームの合成の速さを測る
 性能目標「1080p のプレビューが 30fps」（1 フレーム 33.3ms 以内）と、
 深く入れ子にしたシーンや大量のクリップでどこまで持つかを見る 測らずに直さない、の測る側
 
-測るのは**プレビューと同じ道**（合成と画面への転送）``--readback`` を付けると
+測るのは**プレビューと同じ道**（合成と画面への転送） ``--readback`` を付けると
 書き出しと同じ道（GPU から CPU へ読み戻す）になる 4K ではこの読み戻しだけで
 30ms ほど掛かるので、混ぜるとプレビューの速さを見誤る
 
@@ -157,7 +157,7 @@ def measure(
     オフスクリーンの既定（0 番）だと大きさが環境任せになる
 
     ``readback`` を真にすると**書き出しと同じ道** 合成のあと GPU から CPU へ
-    読み戻す（``render``）プレビューはこの往復をしないので、既定に混ぜると
+    読み戻す（``render``） プレビューはこの往復をしないので、既定に混ぜると
     プレビューに無い時間まで数えることになる（4K 1 枚で 40.5ms と 11.3ms の違い）
 
     GL の命令は投げただけでは終わっていない 1 枚ごとに ``glFinish`` で
@@ -236,11 +236,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"OpenGL コンテキストを作れないので測れない: {error}")
         return 0
 
-    path_name = "書き出しと同じ道（読み戻しあり）" if arguments.readback else "プレビューと同じ道"
-    print(f"画面 {arguments.width}x{arguments.height} / 目標 {BUDGET_MS:.1f} ms / {path_name}")
+    if arguments.readback:
+        path_name = f"書き出しと同じ道（{arguments.width}x{arguments.height} を CPU へ読み戻す）"
+    else:
+        path_name = f"プレビューと同じ道（{PREVIEW_WIDTH}x{PREVIEW_HEIGHT} の画面へ出す）"
+    print(
+        f"プロジェクト {arguments.width}x{arguments.height} / 目標 {BUDGET_MS:.1f} ms / {path_name}"
+    )
     if arguments.readback:
         # 予算はプレビューのもの 書き出しは実時間で動く必要が無いので、
         # ここでの「予算超え」は速さの比べ方であって、不合格ではない
+        # 合否にも混ぜない 混ぜると、正常な測定で終了コードが 1 になる
         print("  （目標はプレビューの値 書き出しは実時間で動かなくてよい 比べるための表示）")
     passed = True
     try:
@@ -262,7 +268,8 @@ def main(argv: list[str] | None = None) -> int:
         )
     finally:
         context.release()
-    return 0 if passed else 1
+    # 読み戻しの道は比べるための表示 予算はプレビューのものなので合否に使わない
+    return 0 if passed or arguments.readback else 1
 
 
 if __name__ == "__main__":
