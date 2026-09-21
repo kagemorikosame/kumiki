@@ -57,14 +57,18 @@ from kumiki.engine.cache.proxy import (  # noqa: E402
 )
 from kumiki.engine.cache.store import CacheStore  # noqa: E402
 from kumiki.engine.decode import probe_media  # noqa: E402
-from kumiki.engine.gpu import GLContextError, OffscreenGLContext  # noqa: E402
+from kumiki.engine.gpu import (  # noqa: E402
+    Framebuffer,
+    GLContextError,
+    OffscreenGLContext,
+)
 from kumiki.engine.render import FrameRenderer, RenderQuality  # noqa: E402
 
 #: 60fps の 1 コマ（ミリ秒） 4K のプレビューの目標
 BUDGET_MS = 1000 / 60
 
 #: 画面へ出す先の大きさ プレビューの枠は画面の実寸で、素材の大きさではない
-PREVIEW_VIEWPORT = (0, 0, 1920, 1080)
+PREVIEW_WIDTH, PREVIEW_HEIGHT = 1920, 1080
 
 
 def _make_source(directory: Path, *, width: int, height: int, seconds: float) -> Path | None:
@@ -147,8 +151,11 @@ def _measure(
     測るのは**プレビューが通るのと同じ 2 つ** 合成（:meth:`compose`）と、
     その結果を画面へ出す所（:meth:`Compositor.present`）
     :meth:`render` は最後に GPU から CPU へ読み戻すので、プレビューには
-    無い時間まで数えることになる 出す先の大きさは 1920x1080（画面の実寸に
-    近い値 ここを 4K にすると、出す所だけで別の重さになる）
+    無い時間まで数えることになる
+
+    出す先は**自前で用意した 1920x1080 の描画先** 画面の実寸に近い値で、
+    素材の大きさではない オフスクリーンの既定の描画先（0 番）へ出すと、
+    その大きさが環境任せになり、転送の重さを測ったことにならない
 
     GL の命令は投げただけでは終わっていない 1 枚ごとに ``glFinish`` で
     終わりを待つ 待たないと、投げるのに掛かった時間を測るだけになる
@@ -158,17 +165,22 @@ def _measure(
     )
     try:
         with context:
-            # 最初の 1 枚はデコーダを開く分と、シェーダを組む分を含む 外す
-            renderer.compose(0)
-            renderer.compositor.present(0, PREVIEW_VIEWPORT)
-            GL.glFinish()
-            times: list[float] = []
-            for frame in range(1, frames):
-                start = time.perf_counter()
-                renderer.compose(frame)
-                renderer.compositor.present(0, PREVIEW_VIEWPORT)
+            screen = Framebuffer(PREVIEW_WIDTH, PREVIEW_HEIGHT, internal_format=GL.GL_RGBA8)
+            viewport = (0, 0, PREVIEW_WIDTH, PREVIEW_HEIGHT)
+            try:
+                # 最初の 1 枚はデコーダを開く分と、シェーダを組む分を含む 外す
+                renderer.compose(0)
+                renderer.compositor.present(screen.handle, viewport)
                 GL.glFinish()
-                times.append((time.perf_counter() - start) * 1000)
+                times: list[float] = []
+                for frame in range(1, frames):
+                    start = time.perf_counter()
+                    renderer.compose(frame)
+                    renderer.compositor.present(screen.handle, viewport)
+                    GL.glFinish()
+                    times.append((time.perf_counter() - start) * 1000)
+            finally:
+                screen.release()
         return times
     finally:
         renderer.close()
