@@ -155,41 +155,43 @@ def measure(
     測るのは既定で**プレビューと同じ道** 合成（``compose``）と、その結果を
     画面へ出す所（``present``）を測る 出す先は自前の 1920x1080 の描画先で、
     オフスクリーンの既定（0 番）だと大きさが環境任せになる
-
-    ``readback`` を真にすると**書き出しと同じ道** 合成のあと GPU から CPU へ
-    読み戻す（``render``） プレビューはこの往復をしないので、既定に混ぜると
-    プレビューに無い時間まで数えることになる（4K 1 枚で 40.5ms と 11.3ms の違い）
-
-    GL の命令は投げただけでは終わっていない 1 枚ごとに ``glFinish`` で
+    GL の命令は投げただけでは終わっていないので、1 枚ごとに ``glFinish`` で
     終わりを待つ 待たないと、投げるのに掛かった時間を測るだけになる
+
+    ``readback`` を真にすると**書き出しと同じ道** 書き出し
+    （:mod:`kumiki.engine.encode.exporter`）と同じく、1 枚ごとに
+    ``renderer.render`` を呼ぶ（中でコンテキストを取る） ``glFinish`` は
+    入れない ``glReadPixels`` が終わりを待つので、足すと二重に待つ形になり
+    実態より重く出る
     """
     renderer = FrameRenderer(project, context=context)
     times: list[float] = []
     try:
+        if readback:
+            for frame in range(frames + 1):
+                started = time.perf_counter()
+                # 書き出しと同じ呼び方 コンテキストは render の中で取る
+                renderer.render(frame % max(project.duration, 1))
+                elapsed = (time.perf_counter() - started) * 1000
+                if frame:
+                    times.append(elapsed)
+            return times
+
         with context:
-            screen = (
-                None
-                if readback
-                else Framebuffer(PREVIEW_WIDTH, PREVIEW_HEIGHT, internal_format=GL.GL_RGBA8)
-            )
+            screen = Framebuffer(PREVIEW_WIDTH, PREVIEW_HEIGHT, internal_format=GL.GL_RGBA8)
             try:
                 for frame in range(frames + 1):
-                    target = frame % max(project.duration, 1)
                     started = time.perf_counter()
-                    if screen is None:
-                        renderer.render(target)
-                    else:
-                        renderer.compose(target)
-                        renderer.compositor.present(
-                            screen.handle, (0, 0, PREVIEW_WIDTH, PREVIEW_HEIGHT)
-                        )
+                    renderer.compose(frame % max(project.duration, 1))
+                    renderer.compositor.present(
+                        screen.handle, (0, 0, PREVIEW_WIDTH, PREVIEW_HEIGHT)
+                    )
                     GL.glFinish()
                     elapsed = (time.perf_counter() - started) * 1000
                     if frame:
                         times.append(elapsed)
             finally:
-                if screen is not None:
-                    screen.release()
+                screen.release()
     finally:
         renderer.close()
     return times
