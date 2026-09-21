@@ -6,12 +6,13 @@
 
 from __future__ import annotations
 
+import math
 from collections import OrderedDict
+from collections.abc import Iterator
 
 import numpy as np
 
 from kumiki.core.model import (
-    AnimatedValue,
     Clip,
     MediaId,
     ParamValue,
@@ -23,6 +24,7 @@ from kumiki.core.model import (
 from kumiki.core.timebase import FrameRate
 from kumiki.effects.audio import AudioContext
 from kumiki.effects.definition import registry
+from kumiki.effects.spec import ParameterSpec, TrackSpec
 from kumiki.engine.decode import AudioDecoder, ProbeError
 
 __all__ = ["AudioMixer"]
@@ -237,35 +239,66 @@ def _apply_effects(
     映像のエフェクトは飛ばす 同じクリップに映像と音の両方が積まれていても、
     音の側だけを見る（AviUtl も音声オブジェクトに映像フィルタを積める）
 
-    値は**この塊の先頭のフレーム**で解く 塊の中で動く値は、フェードのように
-    位置で効き方が変わるものが自前で刻む
+    動く値は**映像のフレームの切れ目で区切って**解く 塊の先頭で 1 度だけ解くと、
+    プレビューの細かい塊（1024 サンプル）がフレームの切れ目をまたいだときに、
+    音量の変わる時刻がずれて書き出しと合わなくなる
     """
-    frame = int(offset / max(sample_rate, 1) * float(rate.fps))
-    for effect in clip.effects:
-        if not effect.enabled:
-            continue
-        definition = registry.get(effect.kind)
-        if definition is None or definition.audio_process is None:
-            continue
-        values = {
-            spec.name: _as_number(effect.params.get(spec.name, spec.default_value()), frame)
-            for spec in definition.parameters
-        }
-        samples = definition.audio_process(
-            samples, values, AudioContext(offset=offset, sample_rate=sample_rate, duration=duration)
-        )
-    return samples
+    stack = [
+        (definition, effect)
+        for effect in clip.effects
+        if effect.enabled
+        and (definition := registry.get(effect.kind)) is not None
+        and definition.audio_process is not None
+    ]
+    if not stack:
+        return samples
+
+    out = np.empty_like(samples)
+    for begin, end, frame in _frame_spans(offset, len(samples), sample_rate, rate):
+        chunk = samples[begin:end]
+        for definition, effect in stack:
+            assert definition.audio_process is not None
+            values = {
+                spec.name: _as_number(spec, effect.params.get(spec.name), frame)
+                for spec in definition.parameters
+            }
+            chunk = definition.audio_process(
+                chunk,
+                values,
+                AudioContext(offset=offset + begin, sample_rate=sample_rate, duration=duration),
+            )
+        out[begin:end] = chunk
+    return out
 
 
-def _as_number(value: ParamValue, frame: int) -> float:
-    """設定の値を数として読む 読めなければ 0"""
-    if isinstance(value, AnimatedValue):
-        return float(value.at(frame))
-    if isinstance(value, bool):
-        return float(value)
-    if isinstance(value, int | float):
-        return float(value)
-    return 0.0
+def _frame_spans(
+    offset: int, count: int, sample_rate: int, rate: FrameRate
+) -> Iterator[tuple[int, int, int]]:
+    """塊を映像のフレームごとに切り分ける ``(始まり, 終わり, フレーム)`` を返す
+
+    始まりがフレームの途中でも、最初の切れ目までを 1 つとして返す
+    """
+    per_frame = max(sample_rate * rate.den / rate.num, 1.0)
+    begin = 0
+    while begin < count:
+        frame = int((offset + begin) / per_frame)
+        boundary = int((frame + 1) * per_frame) - offset
+        end = min(max(boundary, begin + 1), count)
+        yield begin, end, frame
+        begin = end
+
+
+def _as_number(spec: ParameterSpec, value: ParamValue | None, frame: int) -> float:
+    """設定の値を数として読む
+
+    読み方は :meth:`EffectProcessor._set_parameters` と同じにする
+    仕様を通さずに読むと、壊れた値（古いファイルの文字など）が 0 になり、
+    既定が 100 の音量なら**クリップが丸ごと無音になる**
+    """
+    if not isinstance(spec, TrackSpec):
+        return 0.0
+    number = spec.coerce(spec.default_value() if value is None else value).at(frame)
+    return float(number) if math.isfinite(number) else float(spec.default)
 
 
 def _frame_to_sample(frame: int, rate: FrameRate, sample_rate: int) -> int:

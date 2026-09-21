@@ -19,8 +19,9 @@ __all__ = ["EffectDefinition", "EffectRegistry", "registry"]
 
 #: 音を加工する関数の形 引数は サンプル・解いた値・時間まわりの手がかり
 #:
-#: 型を文字で持つのは、音の仕組み（:mod:`kumiki.effects.audio`）が
-#: この定義を取り込むため 実体で書くと輪になる
+#: サンプルと手がかりを :any:`Any` にしてあるのは、音の仕組み
+#: （:mod:`kumiki.effects.audio`）がこの定義を取り込むため
+#: 実体の型で書くと取り込みが輪になる
 AudioProcess = Callable[[Any, dict[str, float], Any], Any]
 
 

@@ -12,7 +12,15 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from kumiki.core.model import Clip, Effect, Project, ProjectSettings, Track, TrackKind
+from kumiki.core.model import (
+    Clip,
+    Effect,
+    Interpolation,
+    Project,
+    ProjectSettings,
+    Track,
+    TrackKind,
+)
 from kumiki.core.timebase import FrameRate
 from kumiki.effects import registry
 from kumiki.effects.audio import AudioContext
@@ -145,19 +153,91 @@ class TestTheMixerAppliesThem:
         samples = _stereo(16)
         assert np.allclose(_apply_effects(clip, samples, 0, RATE, 16, FrameRate(30)), samples)
 
-    def test_the_effects_run_in_order(self) -> None:
+    def test_the_effects_run_in_the_order_they_are_stacked(self) -> None:
+        """置いた順に掛かる
+
+        同じエフェクトを 2 つ積むだけでは「両方走った」ことしか分からない
+        左右へ振ってからモノラル化すると両側が 0.5 になり、
+        順番が逆なら左が 0 のまま残る 見分けのつく組にする
+        """
         from kumiki.engine.audio.mixer import _apply_effects
 
-        clip = Clip(
-            timeline_start=0,
-            duration=30,
-            effects=(
-                registry.require("audio_volume").create(volume=50.0),
-                registry.require("audio_volume").create(volume=50.0),
-            ),
+        pan = registry.require("audio_volume").create(pan=100.0)
+        mono = registry.require("audio_monaural").create(ratio=100.0)
+
+        first = _apply_effects(
+            Clip(timeline_start=0, duration=30, effects=(pan, mono)),
+            _stereo(4),
+            0,
+            RATE,
+            4,
+            FrameRate(30),
         )
-        out = _apply_effects(clip, _stereo(4), 0, RATE, 4, FrameRate(30))
-        assert out[0, 0] == pytest.approx(0.25), "2 つ積んでも 1 つぶんしか掛かっていない"
+        assert first[0, 0] == pytest.approx(0.5)
+        assert first[0, 1] == pytest.approx(0.5)
+
+        second = _apply_effects(
+            Clip(timeline_start=0, duration=30, effects=(mono, pan)),
+            _stereo(4),
+            0,
+            RATE,
+            4,
+            FrameRate(30),
+        )
+        assert second[0, 0] == pytest.approx(0.0)
+        assert second[0, 1] == pytest.approx(1.0)
+
+    def test_a_broken_value_falls_back_to_the_default(self) -> None:
+        """読めない値は**既定値**へ戻す
+
+        0 にすると、既定が 100 の音量ではクリップが丸ごと無音になる
+        （古いファイルや壊れたファイルに文字が入っていることがある）
+        """
+        from dataclasses import replace as _replace
+
+        from kumiki.engine.audio.mixer import _apply_effects
+
+        broken = registry.require("audio_volume").create()
+        broken = _replace(broken, params={**broken.params, "volume": "でたらめ"})
+        out = _apply_effects(
+            Clip(timeline_start=0, duration=30, effects=(broken,)),
+            _stereo(4),
+            0,
+            RATE,
+            4,
+            FrameRate(30),
+        )
+        assert out[0, 0] == pytest.approx(1.0), "無音になっている"
+
+    def test_an_animated_value_changes_at_the_frame_boundary(self) -> None:
+        """動く値は**映像のフレームの切れ目**で変わる
+
+        塊の先頭で 1 度だけ解くと、プレビューの細かい塊がフレームを
+        またいだときに音量の変わる時刻がずれ、書き出しと合わなくなる
+        """
+        from kumiki.core.model import AnimatedValue, Keyframe
+        from kumiki.engine.audio.mixer import _apply_effects
+
+        # フレーム 0 では 100%、フレーム 1 から 0%
+        fading = registry.require("audio_volume").create(
+            volume=AnimatedValue(
+                keyframes=(
+                    Keyframe(frame=0, value=100.0, interpolation=Interpolation.HOLD),
+                    Keyframe(frame=1, value=0.0),
+                )
+            )
+        )
+        per_frame = RATE // 30
+        out = _apply_effects(
+            Clip(timeline_start=0, duration=30, effects=(fading,)),
+            _stereo(per_frame * 2),
+            0,
+            RATE,
+            per_frame * 2,
+            FrameRate(30),
+        )
+        assert out[0, 0] == pytest.approx(1.0), "1 フレーム目から下がっている"
+        assert out[per_frame + 1, 0] == pytest.approx(0.0), "2 フレーム目で下がっていない"
 
     def test_a_disabled_effect_is_skipped(self) -> None:
         from kumiki.engine.audio.mixer import _apply_effects
