@@ -28,7 +28,18 @@ from kumiki.compat.mapped import MappedObject
 from kumiki.compat.ymm4.template import Ymm4ParseError, load_template, map_template
 from kumiki.core.commands import AddClip, AddEffect, AddTrack, Command, RemoveEffect, SetSource
 from kumiki.core.commands.insert import DEFAULT_GENERATED_FRAMES
-from kumiki.core.model import Clip, GeneratedSource, Project, Track, TrackId, TrackKind
+from kumiki.core.model import (
+    AnimatedValue,
+    Clip,
+    Effect,
+    GeneratedSource,
+    Keyframe,
+    ParamValue,
+    Project,
+    Track,
+    TrackId,
+    TrackKind,
+)
 from kumiki.core.timebase import FrameRate
 
 __all__ = [
@@ -258,7 +269,11 @@ def restyle(objects: list[MappedObject], clip: Clip) -> list[Command]:
 
     effects_only = all(item.clip.source is None and not item.media_path for item in objects)
     if effects_only:
-        added = [effect for item in objects for effect in item.clip.effects]
+        added = [
+            _fitted_effect(effect, item.clip.duration, clip.duration)
+            for item in objects
+            for effect in item.clip.effects
+        ]
         if not added:
             return []
         return [AddEffect(clip.id, effect) for effect in added]
@@ -272,10 +287,11 @@ def restyle(objects: list[MappedObject], clip: Clip) -> list[Command]:
     if clip.source is None or clip.source.kind != "text":
         return []
 
+    span = template.clip.duration
     params = {
         **clip.source.params,
         **{
-            name: value
+            name: _fitted(value, span, clip.duration)
             for name, value in template.clip.source.params.items()
             if name not in _KEPT_ON_RESTYLE
         },
@@ -283,8 +299,55 @@ def restyle(objects: list[MappedObject], clip: Clip) -> list[Command]:
 
     commands: list[Command] = [SetSource(clip.id, GeneratedSource(kind="text", params=params))]
     commands.extend(RemoveEffect(clip.id, effect.id) for effect in clip.effects)
-    commands.extend(AddEffect(clip.id, effect) for effect in template.clip.effects)
+    commands.extend(
+        AddEffect(clip.id, _fitted_effect(effect, span, clip.duration))
+        for effect in template.clip.effects
+    )
     return commands
+
+
+def _fitted_effect(effect: Effect, span: int, duration: int) -> Effect:
+    """エフェクトの動く値を、着せる先の長さへ合わせた写し"""
+    if span == duration:
+        return effect
+    return replace(
+        effect,
+        params={name: _fitted(value, span, duration) for name, value in effect.params.items()},
+    )
+
+
+def _fitted(value: ParamValue, span: int, duration: int) -> ParamValue:
+    """動く値の時刻を、テンプレートの長さから着せる先の長さへ伸び縮みさせる
+
+    AviUtl の中間点は**そのエイリアス自身の長さに対する絶対フレーム**で書かれて
+    いる（``frame=244,333,423`` のように始まり・中間点・終わりが並ぶ）
+    そのまま写すと、180 フレームのテンプレートを 60 フレームの字幕に着せたときに
+    動きの 3 分の 1 で止まり、残りは静止する 着せるときは文字と長さを今のまま
+    残す決まりなので、動きの側を尺に合わせる
+
+    最初と最後の点がクリップの両端に来るように写す 端どうしを合わせないと、
+    テンプレートの終わりの見た目（着地した位置）が出ないまま終わる
+    """
+    if not isinstance(value, AnimatedValue) or not value.keyframes:
+        return value
+    if span <= 1 or duration <= 1 or span == duration:
+        return value
+
+    last = duration - 1
+    scale = last / (span - 1)
+    moved: list[Keyframe] = []
+    for keyframe in value.keyframes:
+        frame = min(round(keyframe.frame * scale), last)
+        if moved and frame <= moved[-1].frame:
+            # 縮めると同じフレームに重なる 同じ所に 2 つは置けないので 1 つずらす
+            frame = moved[-1].frame + 1
+        if frame > last:
+            # ずらす先が無いほど短い 途中の点を落としてでも**終わりの値**は残す
+            # 終わりを落とすと、着地した見た目にならないまま止まる
+            moved[-1] = replace(keyframe, frame=last)
+            continue
+        moved.append(replace(keyframe, frame=frame))
+    return replace(value, keyframes=tuple(moved))
 
 
 def _tracks_for(project: Project, layers: set[int], commands: list[Command]) -> dict[int, Track]:
