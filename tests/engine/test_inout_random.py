@@ -222,9 +222,17 @@ class TestBlink:
         クリップ先頭からのフレーム数で測ると、退場の頃には毎フレーム点いて
         絵が消えない 測るのは「終わりまでの残り」の側
         """
+        # 退場のあいだの並びをそのまま固定する 真ん中と最後だけを見る形にすると、
+        # 最後に一度消えるだけの実装（点滅しない）でも通ってしまう
+        #
+        # 入りの並びをひっくり返した形（進むほど点いている時間が減る）
         leaving = self._blink(interval=1.0, even=False, effect_in=False, effect_out=True)
-        assert _lit(draw(leaving, DURATION // 2)).any(), "真ん中で消えている"
-        assert not _lit(draw(leaving, DURATION - 1)).any(), "終わりで消えていない"
+        lit = "".join(
+            "#" if _lit(draw(leaving, frame)).any() else "." for frame in range(30, DURATION)
+        )
+        assert lit == "########.##.##.#.#..#..#......", lit
+        assert lit.count("#") > 5, "退場のあいだに点いていない"
+        assert lit.endswith("."), "終わりで消えていない"
 
 
 class TestRandomDirection:
