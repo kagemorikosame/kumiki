@@ -49,6 +49,21 @@ class PreviewWidget(QOpenGLWidget):
             self.doneCurrent()
         self.update()
 
+    def set_proxies(self, proxies: ProxyStore | None) -> None:
+        """控えの置き場を差し替える
+
+        開いているデコーダは元のファイルを掴んだままなので、開き直させる
+        （設定で切ったのに控えのままだと、切った意味が無い）
+        """
+        if proxies is self._proxies:
+            return
+        self._proxies = proxies
+        if self._renderer is not None:
+            self.makeCurrent()
+            self._renderer.set_proxies(proxies)
+            self.doneCurrent()
+        self.update()
+
     def set_frame(self, frame: int) -> None:
         frame = max(0, frame)
         if frame == self._frame:

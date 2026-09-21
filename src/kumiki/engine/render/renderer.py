@@ -1128,6 +1128,19 @@ class FrameRenderer:
             evicted.close()
         return decoder
 
+    def set_proxies(self, proxies: ProxyStore | None) -> None:
+        """控えの置き場を差し替える 開いているデコーダは閉じる
+
+        閉じないと、すでに開いているものは元のファイル（または古い控え）を
+        掴んだままになり、設定を変えても見た目が変わらない
+        """
+        if proxies is self._proxies:
+            return
+        self._proxies = proxies
+        for decoder in self._decoders.values():
+            decoder.close()
+        self._decoders.clear()
+
     def _source_for(self, media: MediaItem, stream_index: int) -> tuple[Path, int | None]:
         """実際に読むファイル 控えがあればそちら
 

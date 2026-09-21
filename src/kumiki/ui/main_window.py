@@ -81,7 +81,7 @@ from kumiki.core.model import (
 from kumiki.effects.sources import SHAPE, TEXT, TRANSITION
 from kumiki.engine.audio.waveform import Waveform
 from kumiki.engine.cache import MediaAnalyzer
-from kumiki.engine.cache.proxy import ProxyBuilder
+from kumiki.engine.cache.proxy import ProxyBuilder, ProxyStore
 from kumiki.engine.decode import ProbeError, probe_media
 from kumiki.engine.render import FrameRenderer, RenderQuality
 from kumiki.ui.chat import ChatPanel
@@ -97,7 +97,13 @@ from kumiki.ui.theme import Colors
 from kumiki.ui.timeline import TimelineView
 from kumiki.ui.timeline.view import HEIGHT_STEP
 from kumiki.ui.transport import TransportBar
-from kumiki.ui.workspace import LAYOUT_VERSION, ShortcutStore, Workspace
+from kumiki.ui.workspace import (
+    LAYOUT_VERSION,
+    Preferences,
+    PreferenceStore,
+    ShortcutStore,
+    Workspace,
+)
 
 __all__ = ["MainWindow"]
 
@@ -157,9 +163,11 @@ class MainWindow(QMainWindow):
             sample_rate=self._document.project.settings.sample_rate,
             channels=self._document.project.settings.channels,
         )
+        #: 本人の好みの設定 プロジェクトではなく本人に付く
+        self._preferences = PreferenceStore().load()
         #: プレビュー用の控えを作る係 **書き出しには渡さない**
         #: 渡すと、画面では気付かないまま低解像度の絵が最終出力に入る
-        self._proxies = ProxyBuilder()
+        self._proxies = ProxyBuilder(ProxyStore(height=self._preferences.proxy_height))
         self._analysis_dirty = False
         #: AI が結果を確認するための描画係 初めて求められたときに作る
         self._ai_renderer: FrameRenderer | None = None
@@ -195,7 +203,9 @@ class MainWindow(QMainWindow):
     def _build_widgets(self) -> None:
         project = self._document.project
 
-        self._preview = PreviewWidget(project, self, proxies=self._proxies.store)
+        self._preview = PreviewWidget(
+            project, self, proxies=self._proxies.store if self._preferences.use_proxy else None
+        )
         self._transport = TransportBar(project.rate, self)
         self._timeline = TimelineView(project, self._analyzer, self)
         self._media_pool = MediaPoolWidget(project, self)
@@ -450,6 +460,7 @@ class MainWindow(QMainWindow):
         view_menu.addSeparator()
         self._add(view_menu, "画面配置を初期に戻す", QKeySequence(), self.reset_layout)
         self._add(view_menu, "ショートカットの設定…", QKeySequence(), self.customize_shortcuts)
+        self._add(view_menu, "設定…", QKeySequence(), self.edit_preferences)
 
         playback_menu = self._menu("再生")
         self._add(playback_menu, "再生 / 停止", QKeySequence("Space"), self._playback.toggle)
@@ -496,6 +507,53 @@ class MainWindow(QMainWindow):
             ShortcutStore().save(overrides)
         except OSError as exc:
             self.statusBar().showMessage(f"ショートカットを保存できなかった: {exc}", 5000)
+
+    def edit_preferences(self) -> None:
+        """本人の好みの設定を変える"""
+        from kumiki.ui.preferences_dialog import PreferencesDialog
+
+        dialog = PreferencesDialog(self._preferences, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._apply_preferences(dialog.preferences())
+
+    def _apply_preferences(self, preferences: Preferences) -> None:
+        """設定を今の画面へ反映して保存する
+
+        控えの大きさを変えたら別の鍵になるので、作り直しを頼む
+        古い控えは残るが、掴むことはない（鍵に大きさを混ぜてある）
+        """
+        changed = preferences != self._preferences
+        self._preferences = preferences
+        try:
+            PreferenceStore().save(preferences)
+        except OSError as exc:
+            self.statusBar().showMessage(f"設定を保存できなかった: {exc}", 5000)
+
+        if changed:
+            self._proxies.close()
+            self._proxies = ProxyBuilder(ProxyStore(height=preferences.proxy_height))
+        self._preview.set_proxies(self._proxies.store if preferences.use_proxy else None)
+        for media in self.view_project.media:
+            self._request_proxy(media)
+        self._apply_auto_quality()
+
+    def _apply_auto_quality(self) -> None:
+        """置いてある素材の大きさに合わせて、プレビューの画質を決める
+
+        測った結果（``tools/bench_proxy.py`` 3840x2160 95 パーセンタイル）
+        控えだけでは 36.1ms、画質を落とすだけでは 19.2ms で、どちらも
+        60fps の予算 16.7ms に入らない 両方で 14.2ms
+        """
+        tallest = max(
+            (
+                stream.display_size[1]
+                for media in self.view_project.media
+                for stream in media.video_streams
+            ),
+            default=0,
+        )
+        self._transport.set_quality(self._preferences.quality_for(tallest))
 
     def reset_layout(self) -> None:
         self.restoreState(self._default_layout, LAYOUT_VERSION)
@@ -731,6 +789,9 @@ class MainWindow(QMainWindow):
         self._playback.set_project(project)
         self._transport.set_rate(project.rate)
         self._transport.set_duration(project.duration)
+        # 素材が増えたら画質を見直す 4K を 1 本置いた時点で重くなるので、
+        # 置いたあとに自分で下げてもらうのでは遅い
+        self._apply_auto_quality()
         self._update_history_actions()
         self._update_title()
         self.project_changed.emit(project)
@@ -789,7 +850,7 @@ class MainWindow(QMainWindow):
                 project = command.apply(project)
             commands.extend(batch)
             self._analyzer.request(media, on_ready=self._on_analysis_ready)
-            self._proxies.request(media, on_ready=self._on_proxy_ready)
+            self._request_proxy(media)
 
         if commands:
             self.execute_all(commands, f"素材を読み込み: {len(paths)} 件")
@@ -874,6 +935,16 @@ class MainWindow(QMainWindow):
         # 印だけ付けてメインスレッドのタイマーに描き直させる
         del media_id
         self._analysis_dirty = True
+
+    def _request_proxy(self, media: MediaItem) -> None:
+        """控えを作るよう頼む 設定で切っていれば何もしない
+
+        素材を読み込む道は何本もある（普通に開く・復元する・AviUtl から
+        取り込む・AI から） ここを 1 つにまとめておかないと、道ごとに
+        書き分けることになる
+        """
+        if self._preferences.use_proxy:
+            self._proxies.request(media, on_ready=self._on_proxy_ready)
 
     def _on_proxy_ready(self, media_id: MediaId) -> None:
         """控えができた ワーカースレッドから呼ばれる
@@ -1011,7 +1082,7 @@ class MainWindow(QMainWindow):
         self._seek(0)
         for media in project.media:
             self._analyzer.request(media, on_ready=self._on_analysis_ready)
-            self._proxies.request(media, on_ready=self._on_proxy_ready)
+            self._request_proxy(media)
 
     def save_project(self) -> bool:
         """保存する 保存できたら真 名前がまだ無ければ尋ねる"""
@@ -1175,7 +1246,7 @@ class MainWindow(QMainWindow):
         self._seek(0)
         for media in project.media:
             self._analyzer.request(media, on_ready=self._on_analysis_ready)
-            self._proxies.request(media, on_ready=self._on_proxy_ready)
+            self._request_proxy(media)
 
         self.autosave()
         if self._autosaved is project:
@@ -1248,7 +1319,7 @@ class MainWindow(QMainWindow):
                 continue
             self.execute(AddMedia(media))
             self._analyzer.request(media, on_ready=self._on_analysis_ready)
-            self._proxies.request(media, on_ready=self._on_proxy_ready)
+            self._request_proxy(media)
             found[raw] = media.id
         return found, missing
 
@@ -1417,7 +1488,7 @@ class MainWindow(QMainWindow):
 
     def analyze(self, media: MediaItem) -> None:
         self._analyzer.request(media, on_ready=self._on_analysis_ready)
-        self._proxies.request(media, on_ready=self._on_proxy_ready)
+        self._request_proxy(media)
 
     def waveform(self, media: MediaItem) -> Waveform | None:
         return self._analyzer.waveform(media)
