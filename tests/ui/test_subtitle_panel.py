@@ -193,6 +193,8 @@ class TestRebuilding:
         """
         widget, _ = panel
         asked: list[bool] = []
+        # 本物は画面の大きさを測るので、画面の無い試験では意味のある値にならない
+        # 呼ばれたかどうかだけが見たい
         widget._table.resizeRowsToContents = lambda: asked.append(True)  # type: ignore[method-assign]
         try:
             widget._on_section_resized(0, 80, 200)
@@ -218,6 +220,8 @@ class TestRebuilding:
         """
         widget, _ = panel
         order: list[str] = []
+        # 呼ばれた順が見たいだけなので、本物は呼ばない（画面の無い試験では
+        # 測った高さに意味が無い）
         widget._table.resizeRowsToContents = lambda: order.append("測り直し")  # type: ignore[method-assign]
         original_set = widget._table.setItem
 
@@ -225,6 +229,7 @@ class TestRebuilding:
             order.append("入れ替え")
             original_set(row, column, item)  # type: ignore[arg-type]
 
+        # 入れ替えの起きた時点を知りたい 本物も呼ぶので中身は普通に入る
         widget._table.setItem = spy  # type: ignore[method-assign]
         try:
             clip = placed.timeline.tracks[0].clips[0]
@@ -258,6 +263,7 @@ class TestRebuilding:
             segments=(replace(transcript.segments[0], text="別の字幕"), *transcript.segments[1:])
         )
         changed = SetTranscript(video_media.id, edited).apply(placed)
+        # 入れ替えの途中でわざと落とす 本物を落とす手立てが他に無い
         widget._table.setItem = boom  # type: ignore[method-assign]
         try:
             with pytest.raises(RuntimeError):

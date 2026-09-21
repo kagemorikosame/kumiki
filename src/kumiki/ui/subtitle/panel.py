@@ -150,7 +150,8 @@ class SubtitlePanel(QWidget):
         header.resizeSection(0, self._time_column_width())
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         # 幅が変われば折り返しの行数も変わる 高さを取り直さないと、2 行目が
-        # 隠れて本文の末尾が読めなくなる 本文の列だけを見る（時刻は変わらない）
+        # 隠れて本文の末尾が読めなくなる どの列でも取り直す（理由は
+        # :meth:`_on_section_resized` に書いた）
         header.sectionResized.connect(self._on_section_resized)
 
         self._empty = QLabel("音声を持つ素材を選んでください", self)
