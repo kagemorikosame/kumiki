@@ -261,14 +261,15 @@ def map_template(
 
     contents: list[MappedObject] = []
     grouped: list[Effect] = []
-    # 入れ物の長さ 動く値のキーフレームはこの長さの上に並んでいる
-    # 中身の無いテンプレートでも残しておく 1 にすると、着せるときに
-    # 尺を合わせられず、動きが着せた先の途中で止まる
-    span = 1
+    # 入れ物ごとの (長さ, エフェクト) 動く値のキーフレームはその入れ物の長さの
+    # 上に並んでいるので、中身の無いテンプレートでも長さを残す 1 にすると、
+    # 着せるときに尺を合わせられず、動きが着せた先の途中で止まる
+    containers: list[tuple[int, list[Effect]]] = []
     for item in items:
         if type_name(item) in _CONTAINER_ITEMS:
-            grouped.extend(_group_effects(item, log))
-            span = max(span, int(number(item.get("Length"), 1.0)))
+            effects = _group_effects(item, log)
+            grouped.extend(effects)
+            containers.append((max(1, int(number(item.get("Length"), 1.0))), effects))
             continue
         mapped = _map_item(item, log)
         if mapped is not None:
@@ -277,14 +278,18 @@ def map_template(
     if not grouped:
         return contents
     if not contents:
-        # 中身のないテンプレート エフェクトだけを返す
+        # 中身のないテンプレート エフェクトだけを**入れ物ごとに**返す
+        # 1 つにまとめると、長さの違う入れ物が混ざったときに短い方の動きが
+        # 長い方の尺で伸び縮みする（着せる側は 1 つずつ尺を合わせる）
         return [
             MappedObject(
-                clip=Clip(timeline_start=0, duration=span, effects=tuple(grouped)),
+                clip=Clip(timeline_start=0, duration=length, effects=tuple(effects)),
                 layer=1,
                 kind="effects",
                 has_span=False,
             )
+            for length, effects in containers
+            if effects
         ]
     return [
         replace(item, clip=replace(item.clip, effects=(*item.clip.effects, *grouped)))

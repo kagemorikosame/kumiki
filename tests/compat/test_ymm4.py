@@ -577,6 +577,17 @@ class TestGroups:
         # 長さを持っていないことは変わらない 置くときは既定の長さを使う
         assert not mapped[0].has_span
 
+    def test_groups_of_different_lengths_stay_apart(self) -> None:
+        """長さの違う入れ物は**別々に**返す
+
+        1 つにまとめると長さが 1 つしか持てず、短い方の動きが長い方の尺で
+        伸び縮みして、着せたときに違う時刻へ着く
+        """
+        short = group_item(Rotation=moving(0.0, 30.0), Length=60)
+        long = group_item(Zoom=moving(100.0, 200.0), Length=300)
+        mapped = map_template([short, long], report=CompatibilityReport())
+        assert sorted(item.clip.duration for item in mapped) == [60, 300]
+
     def test_a_group_with_nothing_to_give_produces_nothing(self) -> None:
         assert map_template([group_item()], report=CompatibilityReport()) == []
 
