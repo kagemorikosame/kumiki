@@ -11,13 +11,17 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QSettings
 from PySide6.QtWidgets import QMainWindow
 
 __all__ = [
+    "AUTO_QUALITY_HEIGHT",
     "LAYOUT_VERSION",
+    "PreferenceStore",
+    "Preferences",
     "ShortcutStore",
     "Workspace",
     "config_root",
@@ -103,3 +107,102 @@ def find_conflicts(bindings: dict[str, str]) -> dict[str, list[str]]:
         if key:
             owners.setdefault(key, []).append(action)
     return {key: actions for key, actions in owners.items() if len(actions) > 1}
+
+
+#: プレビューの画質を自動で落とし始める縦の画素数
+#: 1080p までは等倍で 60fps に入るので、落とす値打ちが無い
+AUTO_QUALITY_HEIGHT = 1081
+
+
+@dataclass(frozen=True, slots=True)
+class Preferences:
+    """本人の好みで変わる設定
+
+    プロジェクトではなく本人に付く 同じプロジェクトを別の機械で開いたときに、
+    その機械の速さに合った設定で開きたい（速い機械では等倍で見たい）
+
+    既定は「自動」 4K を置いた人が、なぜ重いのか分からないまま使うのを避ける
+    自動で画質が変わるのを嫌う人は、設定で止められる
+    """
+
+    #: プレビューで控え（プロキシ）を使う
+    use_proxy: bool = True
+    #: 控えの縦の画素数
+    proxy_height: int = 540
+    #: 画面より大きい素材を置いたら、プレビューの画質を自動で落とす
+    auto_quality: bool = True
+    #: 自動で落とすときの分母
+    auto_quality_divisor: int = 2
+
+    def quality_for(self, height: int) -> int:
+        """その高さの素材に対して、プレビューに使う分母
+
+        4K を 1 枚置いただけなら元の素材でも入るが、重ねた時点で外れる
+        効果を積むと控えだけでも足りず、画面の側も落として初めて入る
+        測った値は :mod:`kumiki.engine.cache.proxy` の表を見る
+        （同じ数を何か所にも書くと、測り直したときに片方だけ古くなる）
+        """
+        if not self.auto_quality or height < AUTO_QUALITY_HEIGHT:
+            return 1
+        return self.auto_quality_divisor
+
+
+class PreferenceStore:
+    """:class:`Preferences` の読み書き
+
+    壊れていても起動は止めない 既定のまま使えれば困らない
+    （ショートカットの保存と同じ考え方）
+    """
+
+    def __init__(self, path: Path | None = None) -> None:
+        self.path = path if path is not None else config_root() / "preferences.json"
+
+    def load(self) -> Preferences:
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return Preferences()
+        if not isinstance(data, dict):
+            return Preferences()
+        plain = Preferences()
+        return Preferences(
+            use_proxy=_flag(data.get("use_proxy"), plain.use_proxy),
+            proxy_height=_size(data.get("proxy_height"), plain.proxy_height),
+            auto_quality=_flag(data.get("auto_quality"), plain.auto_quality),
+            auto_quality_divisor=_divisor(
+                data.get("auto_quality_divisor"), plain.auto_quality_divisor
+            ),
+        )
+
+    def save(self, preferences: Preferences) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_name(self.path.name + ".writing")
+        temporary.write_text(
+            json.dumps(asdict(preferences), ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        temporary.replace(self.path)
+
+
+def _flag(value: object, default: bool) -> bool:
+    return value if isinstance(value, bool) else default
+
+
+def _size(value: object, default: int) -> int:
+    """控えの高さ 極端な値は既定へ戻す
+
+    0 や負だと控えが作れず、大きすぎると元の素材より重くなる
+    """
+    if not isinstance(value, int) or isinstance(value, bool):
+        return default
+    return value if 120 <= value <= 2160 else default
+
+
+def _divisor(value: object, default: int) -> int:
+    """画面の分母 1・2・4 だけ 半端な値は合成の大きさが端数になる
+
+    型も見る JSON は ``2.0`` と書けてしまい、``2.0 in (1, 2, 4)`` は真になる
+    小数のまま通すと、描画先の大きさが小数になって型の食い違いで落ちる
+    """
+    if not isinstance(value, int) or isinstance(value, bool):
+        return default
+    return value if value in (1, 2, 4) else default

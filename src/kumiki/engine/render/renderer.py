@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import math
 from collections import OrderedDict
+from collections.abc import Collection
 from dataclasses import dataclass, replace
 from fractions import Fraction
+from pathlib import Path
 
 import numpy as np
 from OpenGL import GL
@@ -23,6 +25,7 @@ from kumiki.core.model import (
     Effect,
     GeneratedSource,
     MediaId,
+    MediaItem,
     ParamValue,
     Project,
     Timeline,
@@ -31,6 +34,7 @@ from kumiki.core.model import (
 )
 from kumiki.core.timebase import FrameRate, seconds_to_frame
 from kumiki.effects.easing import ease
+from kumiki.engine.cache.proxy import ProxyStore
 from kumiki.engine.decode import ProbeError, VideoDecoder
 from kumiki.engine.gpu import (
     BlendMode,
@@ -196,9 +200,16 @@ class FrameRenderer:
         *,
         context: GLScope | None = None,
         quality: RenderQuality = FULL_QUALITY,
+        proxies: ProxyStore | None = None,
     ) -> None:
         self._project = project
         self._quality = quality
+        #: 使えないので捨てた控えの素材 作り直しを頼む側が拾う
+        self._discarded: set[MediaId] = set()
+        #: プレビュー用の控えの置き場 既定は使わない
+        #: **書き出しでは必ず None** 混ざると、画面では気付かないまま
+        #: 低解像度の絵が最終出力に入る
+        self._proxies = proxies
         self._owns_context = context is None
         self._context = context if context is not None else OffscreenGLContext()
 
@@ -1106,11 +1117,8 @@ class FrameRenderer:
         media = self._project.find_media(media_id)
         if media is None:
             return None
-        try:
-            decoder = VideoDecoder(media.path, stream_index)
-        except ProbeError:
-            # オフライン素材や壊れたファイル ここで落とすと、1 本壊れただけで
-            # プロジェクト全体が開けなくなる そのクリップだけ映らない扱いにする
+        decoder = self._open(media, stream_index)
+        if decoder is None:
             return None
 
         self._decoders[key] = decoder
@@ -1118,6 +1126,103 @@ class FrameRenderer:
             _, evicted = self._decoders.popitem(last=False)
             evicted.close()
         return decoder
+
+    def _open(self, media: MediaItem, stream_index: int) -> VideoDecoder | None:
+        """素材を開く 控えが使えなければ捨てて、元の素材で開き直す
+
+        壊れた控えには 2 通りある 開けないもの（書きかけのまま落ちた等）と、
+        **見出しは読めるのに 1 枚も出せないもの**（途中で切れたファイル）
+        後者はそのまま掴むと、そのクリップだけ白いまま何も映らない
+        置き場から捨てておけば、次の求めで作り直せる
+        """
+        path, index = self._source_for(media, stream_index)
+        if path != media.path:
+            decoder = self._usable(path, index)
+            if decoder is not None:
+                return decoder
+            if self._proxies is not None:
+                self._proxies.discard(media)
+                # 捨てただけでは作り直されない 控えを作る係へ伝える道が要る
+                # 伝えないと、その回だけでなく**そのあとずっと**元の素材を読む
+                self._discarded.add(media.id)
+        return self._usable(media.path, stream_index)
+
+    def _usable(self, path: Path, stream_index: int | None) -> VideoDecoder | None:
+        """開けて、1 枚目を出せるなら返す
+
+        開けるかどうかだけでは足りない 見出しだけ正しいファイルを掴むと、
+        映らない理由が分からないまま残る 確かめるのは開いた 1 回だけで、
+        描くたびには走らない
+
+        時刻 0 で確かめてよいのは、:meth:`VideoDecoder._decode_at` が
+        まだ 1 枚も読んでいないときに**読めた 1 枚目をそのまま採る**ため
+        先頭が 0 より後から始まる素材（切り出したもの）でも絵が返る
+        ここは ``test_a_source_starting_after_zero_still_plays`` で見張る
+        """
+        try:
+            decoder = VideoDecoder(path, stream_index)
+        except ProbeError:
+            # オフライン素材や壊れたファイル ここで落とすと、1 本壊れただけで
+            # プロジェクト全体が開けなくなる そのクリップだけ映らない扱いにする
+            return None
+        if decoder.frame_at(Fraction(0)) is None:
+            decoder.close()
+            return None
+        return decoder
+
+    def set_proxies(self, proxies: ProxyStore | None) -> None:
+        """控えの置き場を差し替える 開いているデコーダは閉じる
+
+        閉じないと、すでに開いているものは元のファイル（または古い控え）を
+        掴んだままになり、設定を変えても見た目が変わらない
+        """
+        if proxies is self._proxies:
+            return
+        self._proxies = proxies
+        self.reopen_sources()
+
+    def take_discarded(self) -> set[MediaId]:
+        """捨てた控えの素材を取り出して忘れる
+
+        呼ぶ側が作り直しを頼む 取り出した時点で忘れるので、同じ素材を
+        何度も作り直すことにはならない
+        """
+        found, self._discarded = self._discarded, set()
+        return found
+
+    def reopen_sources(self, media_ids: Collection[MediaId] | None = None) -> None:
+        """デコーダを閉じる 次に要るときに開き直す
+
+        控えができた直後に呼ぶ 開きっぱなしだと、先にプレビューした素材は
+        元のファイルを掴んだままになり、控えができても切り替わらない
+
+        ``media_ids`` を渡すと、その素材のぶんだけ閉じる 全部閉じると、
+        別の素材の控えができるたびに再生中のクリップまで開き直しと
+        シークが走り、素材の本数だけ再生が途切れる
+        """
+        for key in [k for k in self._decoders if media_ids is None or k[0] in media_ids]:
+            self._decoders.pop(key).close()
+
+    def _source_for(self, media: MediaItem, stream_index: int) -> tuple[Path, int | None]:
+        """実際に読むファイル 控えがあればそちら
+
+        控えは映像 1 本だけを持つので、元のストリーム番号は渡さない
+        渡すと、元では 3 本目だった番号を控えの中で探して見つからない
+        """
+        if self._proxies is None or not media.video_streams:
+            return media.path, stream_index
+        # 控えに入っているのは**1 本目の映像**だけ 2 本目を指しているクリップに
+        # 渡すと、別の絵が映る（素材によっては本編と副音声の絵が入れ替わる）
+        #
+        # どの映像を指しているかは :class:`VideoDecoder` と同じ読み方で決める
+        # 番号で比べるだけだと、音が先に入っている素材（映像が 1 番から始まる）で
+        # 既定の 0 が当たらず、控えがあるのに黙って使われない
+        first = media.video_streams[0]
+        chosen = next((s for s in media.video_streams if s.index == stream_index), first)
+        if chosen.index != first.index:
+            return media.path, stream_index
+        found = self._proxies.find(media)
+        return (media.path, stream_index) if found is None else (found, None)
 
     def _texture_for(self, key: str) -> Texture:
         texture = self._textures.get(key)

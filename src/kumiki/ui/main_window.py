@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import threading
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -81,6 +82,7 @@ from kumiki.core.model import (
 from kumiki.effects.sources import SHAPE, TEXT, TRANSITION
 from kumiki.engine.audio.waveform import Waveform
 from kumiki.engine.cache import MediaAnalyzer
+from kumiki.engine.cache.proxy import ProxyBuilder, ProxyStore
 from kumiki.engine.decode import ProbeError, probe_media
 from kumiki.engine.render import FrameRenderer, RenderQuality
 from kumiki.ui.chat import ChatPanel
@@ -96,7 +98,13 @@ from kumiki.ui.theme import Colors
 from kumiki.ui.timeline import TimelineView
 from kumiki.ui.timeline.view import HEIGHT_STEP
 from kumiki.ui.transport import TransportBar
-from kumiki.ui.workspace import LAYOUT_VERSION, ShortcutStore, Workspace
+from kumiki.ui.workspace import (
+    LAYOUT_VERSION,
+    Preferences,
+    PreferenceStore,
+    ShortcutStore,
+    Workspace,
+)
 
 __all__ = ["MainWindow"]
 
@@ -156,7 +164,22 @@ class MainWindow(QMainWindow):
             sample_rate=self._document.project.settings.sample_rate,
             channels=self._document.project.settings.channels,
         )
+        #: 本人の好みの設定 プロジェクトではなく本人に付く
+        self._preferences = PreferenceStore().load()
+        #: プレビュー用の控えを作る係 **書き出しには渡さない**
+        #: 渡すと、画面では気付かないまま低解像度の絵が最終出力に入る
+        self._proxies = ProxyBuilder(ProxyStore(height=self._preferences.proxy_height))
         self._analysis_dirty = False
+        #: 控えができた素材 次の間隔でこのぶんだけ開き直す
+        #: ワーカースレッドが足し、画面のスレッドが取り出すので錠で守る
+        #: 守らないと、取り出した直後に足されたぶんが次の回にも残らず、
+        #: その素材だけ元のファイルを読み続ける
+        self._proxied: set[MediaId] = set()
+        self._proxied_lock = threading.Lock()
+        #: 使えない控えを捨てて作り直しを頼んだ控えの鍵 2 度目は頼まない
+        #: 素材ではなく**鍵**で覚える 鍵には控えの大きさと素材の更新時刻が
+        #: 入っているので、設定を変えたり素材を差し替えたりすれば作り直せる
+        self._rebuilt: set[str] = set()
         #: AI が結果を確認するための描画係 初めて求められたときに作る
         self._ai_renderer: FrameRenderer | None = None
         #: 編集しているシーン ``None`` ならメイン モデルではなく画面の状態なので
@@ -184,6 +207,13 @@ class MainWindow(QMainWindow):
         self._workspace.restore(self)
         self._apply_shortcuts(ShortcutStore().load())
 
+        # 渡されたプロジェクトの素材にも効かせる コマンドラインや関連付けから
+        # 開く道はここを通るだけで、_on_project_changed を通らない
+        # 抜けると、4K のプロジェクトを開いても最初の 1 回だけ等倍のまま重い
+        for media in self.view_project.media:
+            self._request_proxy(media)
+        self._apply_auto_quality()
+
         self._update_title()
 
     # --- 組み立て ---
@@ -191,7 +221,9 @@ class MainWindow(QMainWindow):
     def _build_widgets(self) -> None:
         project = self._document.project
 
-        self._preview = PreviewWidget(project, self)
+        self._preview = PreviewWidget(
+            project, self, proxies=self._proxies.store if self._preferences.use_proxy else None
+        )
         self._transport = TransportBar(project.rate, self)
         self._timeline = TimelineView(project, self._analyzer, self)
         self._media_pool = MediaPoolWidget(project, self)
@@ -446,6 +478,7 @@ class MainWindow(QMainWindow):
         view_menu.addSeparator()
         self._add(view_menu, "画面配置を初期に戻す", QKeySequence(), self.reset_layout)
         self._add(view_menu, "ショートカットの設定…", QKeySequence(), self.customize_shortcuts)
+        self._add(view_menu, "設定…", QKeySequence(), self.edit_preferences)
 
         playback_menu = self._menu("再生")
         self._add(playback_menu, "再生 / 停止", QKeySequence("Space"), self._playback.toggle)
@@ -492,6 +525,57 @@ class MainWindow(QMainWindow):
             ShortcutStore().save(overrides)
         except OSError as exc:
             self.statusBar().showMessage(f"ショートカットを保存できなかった: {exc}", 5000)
+
+    def edit_preferences(self) -> None:
+        """本人の好みの設定を変える"""
+        from kumiki.ui.preferences_dialog import PreferencesDialog
+
+        dialog = PreferencesDialog(self._preferences, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._apply_preferences(dialog.preferences())
+
+    def _apply_preferences(self, preferences: Preferences) -> None:
+        """設定を今の画面へ反映して保存する
+
+        控えの大きさを変えたら別の鍵になるので、作り直しを頼む
+        古い控えは残るが、掴むことはない（鍵に大きさを混ぜてある）
+        """
+        # 作り直すのは大きさが変わったときと、控えを切ったとき
+        # 大きさは置き場の鍵が変わるため 切ったときは**走っている変換を止める**ため
+        # （切ったのに裏で変換が続くなら、切った意味が無い）
+        # 何が変わっても作り直すと、画質の設定を触っただけで進行中の変換が止まる
+        resized = preferences.proxy_height != self._preferences.proxy_height
+        stopped = self._preferences.use_proxy and not preferences.use_proxy
+        self._preferences = preferences
+        try:
+            PreferenceStore().save(preferences)
+        except OSError as exc:
+            self.statusBar().showMessage(f"設定を保存できなかった: {exc}", 5000)
+
+        if resized or stopped:
+            self._proxies.close()
+            self._proxies = ProxyBuilder(ProxyStore(height=preferences.proxy_height))
+        self._preview.set_proxies(self._proxies.store if preferences.use_proxy else None)
+        for media in self.view_project.media:
+            self._request_proxy(media)
+        self._apply_auto_quality()
+
+    def _apply_auto_quality(self) -> None:
+        """置いてある素材の大きさに合わせて、プレビューの画質を決める
+
+        1 枚だけなら元の素材でも入る それでも大きさで決めるのは、重ねた時点で
+        入らなくなるため 測った値は :mod:`kumiki.engine.cache.proxy` の表を見る
+        """
+        tallest = max(
+            (
+                stream.display_size[1]
+                for media in self.view_project.media
+                for stream in media.video_streams
+            ),
+            default=0,
+        )
+        self._transport.set_quality(self._preferences.quality_for(tallest))
 
     def reset_layout(self) -> None:
         self.restoreState(self._default_layout, LAYOUT_VERSION)
@@ -727,6 +811,9 @@ class MainWindow(QMainWindow):
         self._playback.set_project(project)
         self._transport.set_rate(project.rate)
         self._transport.set_duration(project.duration)
+        # 素材が増えたら画質を見直す 4K を 1 本置いた時点で重くなるので、
+        # 置いたあとに自分で下げてもらうのでは遅い
+        self._apply_auto_quality()
         self._update_history_actions()
         self._update_title()
         self.project_changed.emit(project)
@@ -785,6 +872,7 @@ class MainWindow(QMainWindow):
                 project = command.apply(project)
             commands.extend(batch)
             self._analyzer.request(media, on_ready=self._on_analysis_ready)
+            self._request_proxy(media)
 
         if commands:
             self.execute_all(commands, f"素材を読み込み: {len(paths)} 件")
@@ -855,6 +943,7 @@ class MainWindow(QMainWindow):
         self.execute(RemoveMedia(target))
         if self._document.project.find_media(target) is None:
             self._analyzer.forget(target)
+            self._proxies.forget(target)
 
     def _insert_media_by_id(self, media_id: str) -> None:
         project = self.view_project
@@ -869,10 +958,52 @@ class MainWindow(QMainWindow):
         del media_id
         self._analysis_dirty = True
 
+    def _request_proxy(self, media: MediaItem) -> None:
+        """控えを作るよう頼む 設定で切っていれば何もしない
+
+        素材を読み込む道は何本もある（普通に開く・復元する・AviUtl から
+        取り込む・AI から） ここを 1 つにまとめておかないと、道ごとに
+        書き分けることになる
+        """
+        if self._preferences.use_proxy:
+            self._proxies.request(media, on_ready=self._on_proxy_ready)
+
+    def _on_proxy_ready(self, media_id: MediaId) -> None:
+        """控えができた ワーカースレッドから呼ばれる
+
+        ウィジェットには触らず、どの素材かだけを覚える 次の間隔で、
+        その素材のデコーダを開き直させる（開いたままだと元のファイルを
+        掴み続けるので、描き直すだけでは控えに変わらない）
+        """
+        with self._proxied_lock:
+            self._proxied.add(media_id)
+
     def _flush_analysis(self) -> None:
         # AI から始めた起こしの様子も、ついでにここで拾う 専用のタイマーを
         # もう 1 本増やすほどの頻度ではない
         self._subtitles.poll_transcription()
+        # 控えができた 開きっぱなしのデコーダは元のファイルを掴んだままなので、
+        # 開き直させる（描き直すだけでは切り替わらない）
+        # できた素材のぶんだけにする 全部開き直すと、別の素材の控えが
+        # できるたびに再生中のクリップまでシークし直すことになる
+        with self._proxied_lock:
+            ready, self._proxied = self._proxied, set()
+        if ready:
+            self._preview.reload_sources(ready)
+        # 使えない控えを捨てた素材は、作り直しを頼む 頼まないと、その回だけでなく
+        # そのあとずっと元の素材を読み続ける（置き場には何も無いままなので、
+        # 次に開いたときも作られない）
+        for media_id in self._preview.take_discarded():
+            media = self.view_project.find_media(media_id)
+            if media is None:
+                continue
+            key = self._proxies.store.key_for(media)
+            if key in self._rebuilt:
+                # 作り直した控えがまた使えなかった 頼み続けると、250ms ごとに
+                # 変換が走り続けて編集そのものが重くなる あきらめて元の素材で映す
+                continue
+            self._rebuilt.add(key)
+            self._request_proxy(media)
         if not self._analysis_dirty:
             return
         self._analysis_dirty = False
@@ -996,6 +1127,7 @@ class MainWindow(QMainWindow):
         self._seek(0)
         for media in project.media:
             self._analyzer.request(media, on_ready=self._on_analysis_ready)
+            self._request_proxy(media)
 
     def save_project(self) -> bool:
         """保存する 保存できたら真 名前がまだ無ければ尋ねる"""
@@ -1159,6 +1291,7 @@ class MainWindow(QMainWindow):
         self._seek(0)
         for media in project.media:
             self._analyzer.request(media, on_ready=self._on_analysis_ready)
+            self._request_proxy(media)
 
         self.autosave()
         if self._autosaved is project:
@@ -1231,6 +1364,7 @@ class MainWindow(QMainWindow):
                 continue
             self.execute(AddMedia(media))
             self._analyzer.request(media, on_ready=self._on_analysis_ready)
+            self._request_proxy(media)
             found[raw] = media.id
         return found, missing
 
@@ -1399,6 +1533,7 @@ class MainWindow(QMainWindow):
 
     def analyze(self, media: MediaItem) -> None:
         self._analyzer.request(media, on_ready=self._on_analysis_ready)
+        self._request_proxy(media)
 
     def waveform(self, media: MediaItem) -> Waveform | None:
         return self._analyzer.waveform(media)
@@ -1437,5 +1572,6 @@ class MainWindow(QMainWindow):
             self._ai_renderer.close()
             self._ai_renderer = None
         self._analyzer.close()
+        self._proxies.close()
         self._preview.shutdown()
         super().closeEvent(event)

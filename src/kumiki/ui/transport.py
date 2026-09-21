@@ -92,6 +92,19 @@ class TransportBar(QWidget):
     def set_playing(self, playing: bool) -> None:
         self._play.setText("⏸" if playing else "▶")
 
+    def set_quality(self, divisor: int) -> None:
+        """画質の選びを外から合わせる 一覧に無い分母なら何もしない
+
+        選び直したときと同じ合図を出す 出さないと、表示だけ変わって
+        実際の描画が前の画質のままになる
+        """
+        index = self._quality.findData(divisor)
+        if index >= 0:
+            self._quality.setCurrentIndex(index)
+
+    def quality(self) -> int:
+        return int(self._quality.currentData())
+
     def _on_quality_changed(self, index: int) -> None:
         self.quality_changed.emit(RenderQuality(int(self._quality.itemData(index))))
 
