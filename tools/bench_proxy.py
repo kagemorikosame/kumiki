@@ -63,6 +63,9 @@ from kumiki.engine.render import FrameRenderer, RenderQuality  # noqa: E402
 #: 60fps の 1 コマ（ミリ秒） 4K のプレビューの目標
 BUDGET_MS = 1000 / 60
 
+#: 画面へ出す先の大きさ プレビューの枠は画面の実寸で、素材の大きさではない
+PREVIEW_VIEWPORT = (0, 0, 1920, 1080)
+
 
 def _make_source(directory: Path, *, width: int, height: int, seconds: float) -> Path | None:
     """測る用の素材を ffmpeg で作る 動きのある絵にして、圧縮で楽をさせない"""
@@ -135,11 +138,13 @@ def _measure(
     proxies: ProxyStore | None,
     divisor: int = 1,
 ) -> list[float]:
-    """1 フレームずつ合成して、かかった時間（ミリ秒）を返す
+    """1 フレームずつ描いて、かかった時間（ミリ秒）を返す
 
-    測るのは :meth:`FrameRenderer.compose` **プレビューが通るのはこちら**で、
-    合成結果を GPU に置いたまま画面へ出す :meth:`render` は最後に GPU から
-    CPU へ読み戻すので、プレビューには無い時間まで数えることになる
+    測るのは**プレビューが通るのと同じ 2 つ** 合成（:meth:`compose`）と、
+    その結果を画面へ出す所（:meth:`Compositor.present`）
+    :meth:`render` は最後に GPU から CPU へ読み戻すので、プレビューには
+    無い時間まで数えることになる 出す先の大きさは 1920x1080（画面の実寸に
+    近い値 ここを 4K にすると、出す所だけで別の重さになる）
 
     GL の命令は投げただけでは終わっていない 1 枚ごとに ``glFinish`` で
     終わりを待つ 待たないと、投げるのに掛かった時間を測るだけになる
@@ -151,16 +156,28 @@ def _measure(
         with context:
             # 最初の 1 枚はデコーダを開く分と、シェーダを組む分を含む 外す
             renderer.compose(0)
+            renderer.compositor.present(0, PREVIEW_VIEWPORT)
             GL.glFinish()
             times: list[float] = []
             for frame in range(1, frames):
                 start = time.perf_counter()
                 renderer.compose(frame)
+                renderer.compositor.present(0, PREVIEW_VIEWPORT)
                 GL.glFinish()
                 times.append((time.perf_counter() - start) * 1000)
         return times
     finally:
         renderer.close()
+
+
+def _detail(height: int, proxy_height: int, proxies: ProxyStore | None, divisor: int) -> int:
+    """その組で画面に残る、縦の画素の細かさ
+
+    読む元と描く先の**小さい方**で決まる 控えを使えば元がそこまで落ち、
+    画質を下げれば描く先がそこまで落ちる 細かい方がきれい
+    """
+    source = proxy_height if proxies is not None else height
+    return min(source, max(1, height // divisor))
 
 
 def _report(label: str, times: list[float]) -> float:
@@ -246,13 +263,18 @@ def main() -> int:
 
     # 控えだけでは足りない デコードは軽くなるが、合成は画面の大きさのまま
     # 画面の側も落とす RenderQuality と組で測る
-    # **きれいな順**に並べる 予算に入るものを上から選ぶ
-    combinations = (
-        ("元の素材 + 等倍", None, 1),
-        (f"控え {args.proxy_height}p + 等倍", store, 1),
-        ("元の素材 + 1/2", None, 2),
-        (f"控え {args.proxy_height}p + 1/2", store, 2),
-        (f"控え {args.proxy_height}p + 1/4", store, 4),
+    # きれいな順は**残る画素の細かさ**から出す 並べた順を手で決めると、
+    # 「控え 540p の等倍」を「元の素材の 1/2」より上に置くような取り違えが起きる
+    # （前者に残るのは 540 本、後者は 1080 本）
+    combinations = sorted(
+        (
+            ("元の素材 + 等倍", None, 1),
+            ("元の素材 + 1/2", None, 2),
+            (f"控え {args.proxy_height}p + 等倍", store, 1),
+            (f"控え {args.proxy_height}p + 1/2", store, 2),
+            (f"控え {args.proxy_height}p + 1/4", store, 4),
+        ),
+        key=lambda item: -_detail(args.height, args.proxy_height, item[1], item[2]),
     )
     try:
         results = [
