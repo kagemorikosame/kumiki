@@ -77,6 +77,9 @@ def _make_source(directory: Path, *, width: int, height: int, seconds: float) ->
         "yuv420p",
         str(path),
     ]
+    # 組み立てているのは固定の文字列と argparse が受けた数値、一時フォルダの中の
+    # パスだけで、外から来る文字列は混ざらない shell は通さない（list 渡し）
+    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
     if subprocess.run(command, check=False).returncode != 0:
         return None
     return path
