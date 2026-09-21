@@ -37,7 +37,10 @@ def main(argv: list[str] | None = None) -> int:
     if pip_args is not None:
         return run_pip(pip_args)
 
-    if SELF_CHECK_FLAG in arguments[1:]:
+    # 自己診断だけを頼まれたときに限る ほかの引数（プロジェクトの場所）と一緒に
+    # 渡されたら、開くつもりの起動として扱う 自己診断を優先すると、頼んだ
+    # プロジェクトが開かずに黙って終わる
+    if list(arguments[1:]) == [SELF_CHECK_FLAG]:
         from kumiki.selfcheck import main as self_check
 
         return self_check()

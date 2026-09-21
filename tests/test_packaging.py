@@ -138,6 +138,34 @@ class TestTheSelfCheck:
         monkeypatch.setattr("kumiki.selfcheck.run_self_check", lambda: [CheckResult("x", True)])
         assert main(["kumiki", SELF_CHECK_FLAG]) == 0
 
+    def test_a_project_with_the_flag_is_opened_not_checked(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """プロジェクトと一緒に渡されたら、自己診断ではなく開く起動として扱う
+
+        自己診断を優先すると、頼んだプロジェクトが開かずに黙って終わる
+        """
+        checked: list[bool] = []
+
+        def fake_check() -> int:
+            checked.append(True)
+            return 0
+
+        monkeypatch.setattr("kumiki.selfcheck.main", fake_check)
+
+        class ReachedTheWindowError(Exception):
+            """いつもの起動の最初の段まで来たら止める ここまで来れば開く起動"""
+
+        def stop() -> None:
+            raise ReachedTheWindowError
+
+        # main 自身が見ている名前を差し替える ほかの試験がモジュールを読み直すと、
+        # 「kumiki.app」という名前の先と、ここで握っている main の先が別物になる
+        monkeypatch.setitem(main.__globals__, "activate_runtime", stop)
+        with pytest.raises(ReachedTheWindowError):
+            main(["kumiki", "作品.kmk", SELF_CHECK_FLAG])
+        assert checked == []
+
     def test_a_missing_part_fails_the_whole(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """1 つでも動かなければ終了コード 1 組み立ての道具はこれを見て止まる"""
         monkeypatch.setattr(
