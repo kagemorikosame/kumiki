@@ -156,13 +156,30 @@ def _depends_on(clip: Clip, scenes: set[SceneId], media: set[MediaId]) -> bool:
 
 
 def _media_used(timeline: Timeline) -> set[MediaId]:
-    """そのタイムラインが読んでいる素材"""
+    """そのタイムラインが**絵のために**読んでいる素材
+
+    音のトラックは数えない 音だけに使っている素材を差し替えても絵は変わらない
+    """
     return {
         clip.media_id
-        for track in timeline.tracks
+        for track in timeline.active_tracks(TrackKind.VIDEO)
         for clip in track.clips
         if clip.media_id is not None
     }
+
+
+def _picture_of_timeline(timeline: Timeline) -> tuple[object, ...]:
+    """そのタイムラインのうち、絵を決める所だけ
+
+    シーンの中身が変わったかを見るのに使う タイムラインを丸ごと比べると、
+    シーンの中で音量を動かしたりクリップを束ね直したりしただけで、
+    そのシーンを置いた所の絵を全部捨てることになる メインのタイムラインでは
+    同じものを無視しているので、シーンだけ扱いが違うのはつじつまが合わない
+    """
+    return tuple(
+        (track.id, replace(track, clips=()), tuple(_visual(clip) for clip in track.clips))
+        for track in timeline.active_tracks(TrackKind.VIDEO)
+    )
 
 
 def _changed_media(before: Project, after: Project) -> set[MediaId]:
@@ -202,7 +219,11 @@ def _changed_scenes(before: Project, after: Project, media: set[MediaId]) -> set
     """
     old = {scene.id: scene.timeline for scene in before.scenes}
     new = {scene.id: scene.timeline for scene in after.scenes}
-    changed = {key for key in old.keys() | new.keys() if old.get(key) != new.get(key)}
+    pictures = ({k: _picture_of_timeline(t) for k, t in side.items()} for side in (old, new))
+    old_picture, new_picture = pictures
+    changed = {
+        key for key in old.keys() | new.keys() if old_picture.get(key) != new_picture.get(key)
+    }
     changed |= {
         scene_id
         for timelines in (old, new)

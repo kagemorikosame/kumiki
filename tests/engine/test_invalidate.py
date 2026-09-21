@@ -298,6 +298,37 @@ class TestTheScenes:
         assert result.contains(50), "シーンの中の素材差し替えが外へ届いていない"
         assert not result.contains(0)
 
+    def test_sound_inside_a_scene_does_not_reach_the_outside(self) -> None:
+        """シーンの中で音量を動かしても、外の絵は変わらない
+
+        タイムラインを丸ごと比べると、置いた所の絵を全部捨てることになる
+        メインのタイムラインでは同じものを無視しているので、扱いがそろわない
+        """
+        audio = Track(kind=TrackKind.AUDIO, clips=(_clip(0, 30),))
+        inner = Timeline(
+            rate=RATE,
+            tracks=(Track(kind=TrackKind.VIDEO, clips=(_clip(0, 30),)), audio),
+        )
+        before, scene = self._with_scene(inner)
+        louder = replace(scene, timeline=inner.replace_track(replace(audio, volume_db=6.0)))
+        after = replace(before, scenes=(louder,))
+        assert not changed_spans(before, after)
+
+    def test_grouping_inside_a_scene_does_not_reach_the_outside(self) -> None:
+        """束ね直しも同じ レンダラは束ねを読まない"""
+        clip = _clip(0, 30)
+        inner = Timeline(rate=RATE, tracks=(Track(kind=TrackKind.VIDEO, clips=(clip,)),))
+        before, scene = self._with_scene(inner)
+        regrouped = replace(
+            scene,
+            timeline=Timeline(
+                rate=RATE,
+                tracks=(replace(inner.tracks[0], clips=(replace(clip, group_id=new_group_id()),)),),
+            ),
+        )
+        after = replace(before, scenes=(regrouped,))
+        assert not changed_spans(before, after)
+
 
 class TestWhatTheRendererDoesNotRead:
     """:class:`MediaItem` は絵に関わらないものも持っている
