@@ -245,3 +245,23 @@ class TestWhenPrefetchingGoesWrong:
         widget.set_frame(3)
         widget._prefetch_step()
         assert widget._idle.isActive()
+
+    def test_a_context_failure_does_not_escape_either(
+        self, preview: tuple[PreviewWidget, StubCache], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """コンテキストを current にする所で落ちても同じ
+
+        描く所だけを守っても、その手前で落ちたら結局アプリが終わる
+        """
+        widget, _ = preview
+
+        def explode() -> None:
+            raise RuntimeError("コンテキストを current にできない")
+
+        monkeypatch.setattr(widget, "makeCurrent", explode)
+        stopped: list[str] = []
+        widget.prefetch_stopped.connect(stopped.append)
+        widget.set_frame(3)
+        widget._prefetch_step()
+        assert not widget._idle.isActive()
+        assert stopped

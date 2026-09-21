@@ -236,9 +236,16 @@ class PreviewWidget(QOpenGLWidget):
             self._idle.stop()
             return
         started = time.perf_counter()
-        self.makeCurrent()
         try:
-            filled = self._cache.step(self._frame)
+            # コンテキストを current にする所も中へ入れる ここで落ちたときに
+            # だけ外へ抜けるのでは、守ったことにならない
+            self.makeCurrent()
+            try:
+                filled = self._cache.step(self._frame)
+            finally:
+                # current にできたときだけ戻す できていないのに戻すと、
+                # ほかが使っているコンテキストを外すことになる
+                self.doneCurrent()
         except Exception as exc:
             # **先読みの失敗でプレビューを落とさない** ここは Qt のタイマーから
             # 呼ばれるので、投げるとイベントループの外まで抜けてアプリが終わる
@@ -246,8 +253,6 @@ class PreviewWidget(QOpenGLWidget):
             self._idle.stop()
             self.prefetch_stopped.emit(f"先読みを止めた: {exc}")
             return
-        finally:
-            self.doneCurrent()
 
         if not filled:
             self._idle.stop()
