@@ -10,8 +10,19 @@ from collections import OrderedDict
 
 import numpy as np
 
-from kumiki.core.model import Clip, MediaId, Project, Timeline, Track, TrackKind
+from kumiki.core.model import (
+    AnimatedValue,
+    Clip,
+    MediaId,
+    ParamValue,
+    Project,
+    Timeline,
+    Track,
+    TrackKind,
+)
 from kumiki.core.timebase import FrameRate
+from kumiki.effects.audio import AudioContext
+from kumiki.effects.definition import registry
 from kumiki.engine.decode import AudioDecoder, ProbeError
 
 __all__ = ["AudioMixer"]
@@ -131,6 +142,9 @@ class AudioMixer:
             samples = self._read_clip(clip, begin - clip_start, end - begin, rate, depth)
             if samples is None:
                 continue
+            samples = _apply_effects(
+                clip, samples, begin - clip_start, self.sample_rate, clip_end - clip_start, rate
+            )
 
             offset = begin - start_sample
             out[offset : offset + len(samples)] += _apply_pan(samples * gain, float(pan))
@@ -208,6 +222,50 @@ class AudioMixer:
             _, evicted = self._decoders.popitem(last=False)
             evicted.close()
         return decoder
+
+
+def _apply_effects(
+    clip: Clip,
+    samples: np.ndarray,
+    offset: int,
+    sample_rate: int,
+    duration: int,
+    rate: FrameRate,
+) -> np.ndarray:
+    """クリップに積んだ音のエフェクトを、置いた順に掛ける
+
+    映像のエフェクトは飛ばす 同じクリップに映像と音の両方が積まれていても、
+    音の側だけを見る（AviUtl も音声オブジェクトに映像フィルタを積める）
+
+    値は**この塊の先頭のフレーム**で解く 塊の中で動く値は、フェードのように
+    位置で効き方が変わるものが自前で刻む
+    """
+    frame = int(offset / max(sample_rate, 1) * float(rate.fps))
+    for effect in clip.effects:
+        if not effect.enabled:
+            continue
+        definition = registry.get(effect.kind)
+        if definition is None or definition.audio_process is None:
+            continue
+        values = {
+            spec.name: _as_number(effect.params.get(spec.name, spec.default_value()), frame)
+            for spec in definition.parameters
+        }
+        samples = definition.audio_process(
+            samples, values, AudioContext(offset=offset, sample_rate=sample_rate, duration=duration)
+        )
+    return samples
+
+
+def _as_number(value: ParamValue, frame: int) -> float:
+    """設定の値を数として読む 読めなければ 0"""
+    if isinstance(value, AnimatedValue):
+        return float(value.at(frame))
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, int | float):
+        return float(value)
+    return 0.0
 
 
 def _frame_to_sample(frame: int, rate: FrameRate, sample_rate: int) -> int:

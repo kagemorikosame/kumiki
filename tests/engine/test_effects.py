@@ -32,8 +32,14 @@ from kumiki.engine.sources import render_source
 
 
 def builtin_effects() -> tuple[EffectDefinition, ...]:
-    """GPU で動く自前のエフェクトだけ AviUtl スクリプトは Lua なので除く"""
-    return tuple(d for d in registry.all() if not d.kind.startswith("aviutl:"))
+    """GPU で動く自前のエフェクトだけ
+
+    AviUtl スクリプトは Lua なので除く 音のエフェクトも GPU を通さないので除く
+    （音は :attr:`EffectDefinition.audio_process` に関数を持ち、シェーダを持たない）
+    """
+    return tuple(
+        d for d in registry.all() if not d.kind.startswith("aviutl:") and d.audio_process is None
+    )
 
 
 WIDTH, HEIGHT = 200, 200
