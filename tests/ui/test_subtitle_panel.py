@@ -210,6 +210,24 @@ class TestRebuilding:
         finally:
             del widget._table.resizeRowsToContents
 
+    def test_an_unrelated_edit_measures_nothing(
+        self, panel: tuple[SubtitlePanel, list[tuple[list[Command], str]]], placed: Project
+    ) -> None:
+        """字幕に関係のない編集では、行の高さを測り直さない
+
+        時刻の幅は毎回入れ直すが、値が同じなら Qt は合図を出さない
+        ここが変わると、編集のたびに全部の行を測り直すことになる
+        """
+        widget, _ = panel
+        asked: list[bool] = []
+        # 本物は画面の大きさを測るので、画面の無い試験では意味のある値にならない
+        widget._table.resizeRowsToContents = lambda: asked.append(True)  # type: ignore[method-assign]
+        try:
+            widget.set_project(RenameProject("別の名前").apply(placed))
+        finally:
+            del widget._table.resizeRowsToContents
+        assert not asked, "関係のない編集で行を測り直している"
+
     def test_the_rows_are_not_measured_before_they_are_replaced(
         self, panel: tuple[SubtitlePanel, list[tuple[list[Command], str]]], placed: Project
     ) -> None:
