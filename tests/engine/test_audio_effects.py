@@ -270,6 +270,42 @@ class TestTheMixerAppliesThem:
         assert out[boundary - 1, 0] == pytest.approx(1.0), "切れ目の手前で下がっている"
         assert out[boundary, 0] == pytest.approx(0.0), "切れ目の 1 サンプル目が前のフレームのまま"
 
+    def test_the_boundary_follows_the_timeline_grid(self) -> None:
+        """切れ目は**タイムラインの升目**で決める クリップの先頭から数え直さない
+
+        29.97 fps の升目は 1601 と 1602 のサンプルが混ざる（1 フレームは
+        1601.6 サンプル） クリップの先頭から数え直すと、置いた場所によって
+        最初の升の幅が 1 サンプル狂い、音の変わる所が絵の切り替わる所とずれる
+        タイムラインのフレーム 4 は 6406 から、フレーム 5 は 8008 から始まるので、
+        ここに置いたクリップの最初の升は 1601 ではなく 1602 サンプル
+        """
+        from kumiki.core.model import AnimatedValue, Keyframe
+        from kumiki.engine.audio.mixer import _apply_effects, _frame_to_sample
+
+        rate = FrameRate(30000, 1001)
+        start = 4
+        width = _frame_to_sample(start + 1, rate, RATE) - _frame_to_sample(start, rate, RATE)
+        assert width == 1602, "測り直す ここは 48 kHz / 29.97 fps の実際の値"
+
+        fading = registry.require("audio_volume").create(
+            volume=AnimatedValue(
+                keyframes=(
+                    Keyframe(frame=0, value=100.0, interpolation=Interpolation.HOLD),
+                    Keyframe(frame=1, value=0.0),
+                )
+            )
+        )
+        out = _apply_effects(
+            Clip(timeline_start=start, duration=30, effects=(fading,)),
+            _stereo(width + 2),
+            0,
+            RATE,
+            width + 2,
+            rate,
+        )
+        assert out[width - 1, 0] == pytest.approx(1.0), "升の終わりより早く下がっている"
+        assert out[width, 0] == pytest.approx(0.0), "升をまたいでも下がっていない"
+
     def test_a_disabled_effect_is_skipped(self) -> None:
         from kumiki.engine.audio.mixer import _apply_effects
 

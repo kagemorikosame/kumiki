@@ -254,7 +254,10 @@ def _apply_effects(
         return samples
 
     out = np.empty_like(samples)
-    for begin, end, frame in _frame_spans(offset, len(samples), sample_rate, rate):
+    origin = _frame_to_sample(clip.timeline_start, rate, sample_rate)
+    for begin, end, frame in _frame_spans(
+        clip.timeline_start, origin + offset, len(samples), sample_rate, rate
+    ):
         chunk = samples[begin:end]
         for definition, effect in stack:
             assert definition.audio_process is not None
@@ -273,18 +276,25 @@ def _apply_effects(
 
 
 def _frame_spans(
-    offset: int, count: int, sample_rate: int, rate: FrameRate
+    start_frame: int, offset: int, count: int, sample_rate: int, rate: FrameRate
 ) -> Iterator[tuple[int, int, int]]:
     """塊を映像のフレームごとに切り分ける ``(始まり, 終わり, フレーム)`` を返す
 
-    始まりがフレームの途中でも、最初の切れ目までを 1 つとして返す
+    ``offset`` は**タイムラインの先頭から数えた**この塊の先頭のサンプル位置
+    切れ目はタイムラインの升目で決める 絵が切り替わる所と同じでなければ
+    意味が無く、クリップの先頭から数え直すと 29.97 fps のような比で
+    1 サンプルずれる（升目の幅は 1601 と 1602 が混ざるので、
+    クリップを置く場所によって最初の升の幅が変わる）
+
+    返すフレーム番号だけはクリップの先頭から数える 動く値のキーフレームが
+    そちら基準のため 始まりがフレームの途中でも、最初の切れ目までを 1 つとして返す
     """
     begin = 0
     while begin < count:
         frame = _sample_to_frame(offset + begin, rate, sample_rate)
         boundary = _frame_to_sample(frame + 1, rate, sample_rate) - offset
         end = min(max(boundary, begin + 1), count)
-        yield begin, end, frame
+        yield begin, end, frame - start_frame
         begin = end
 
 
