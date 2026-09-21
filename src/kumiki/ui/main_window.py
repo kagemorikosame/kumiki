@@ -81,6 +81,7 @@ from kumiki.core.model import (
 from kumiki.effects.sources import SHAPE, TEXT, TRANSITION
 from kumiki.engine.audio.waveform import Waveform
 from kumiki.engine.cache import MediaAnalyzer
+from kumiki.engine.cache.proxy import ProxyBuilder
 from kumiki.engine.decode import ProbeError, probe_media
 from kumiki.engine.render import FrameRenderer, RenderQuality
 from kumiki.ui.chat import ChatPanel
@@ -156,6 +157,9 @@ class MainWindow(QMainWindow):
             sample_rate=self._document.project.settings.sample_rate,
             channels=self._document.project.settings.channels,
         )
+        #: プレビュー用の控えを作る係 **書き出しには渡さない**
+        #: 渡すと、画面では気付かないまま低解像度の絵が最終出力に入る
+        self._proxies = ProxyBuilder()
         self._analysis_dirty = False
         #: AI が結果を確認するための描画係 初めて求められたときに作る
         self._ai_renderer: FrameRenderer | None = None
@@ -191,7 +195,7 @@ class MainWindow(QMainWindow):
     def _build_widgets(self) -> None:
         project = self._document.project
 
-        self._preview = PreviewWidget(project, self)
+        self._preview = PreviewWidget(project, self, proxies=self._proxies.store)
         self._transport = TransportBar(project.rate, self)
         self._timeline = TimelineView(project, self._analyzer, self)
         self._media_pool = MediaPoolWidget(project, self)
@@ -785,6 +789,7 @@ class MainWindow(QMainWindow):
                 project = command.apply(project)
             commands.extend(batch)
             self._analyzer.request(media, on_ready=self._on_analysis_ready)
+            self._proxies.request(media, on_ready=self._on_proxy_ready)
 
         if commands:
             self.execute_all(commands, f"素材を読み込み: {len(paths)} 件")
@@ -855,6 +860,7 @@ class MainWindow(QMainWindow):
         self.execute(RemoveMedia(target))
         if self._document.project.find_media(target) is None:
             self._analyzer.forget(target)
+            self._proxies.forget(target)
 
     def _insert_media_by_id(self, media_id: str) -> None:
         project = self.view_project
@@ -866,6 +872,15 @@ class MainWindow(QMainWindow):
     def _on_analysis_ready(self, media_id: MediaId) -> None:
         # ワーカースレッドから呼ばれる ここでウィジェットに触ると Qt が落ちるので、
         # 印だけ付けてメインスレッドのタイマーに描き直させる
+        del media_id
+        self._analysis_dirty = True
+
+    def _on_proxy_ready(self, media_id: MediaId) -> None:
+        """控えができた ワーカースレッドから呼ばれる
+
+        ウィジェットには触らず印だけ付ける 次の描き直しから控えを読む
+        （レンダラは開くたびに置き場を見るので、開き直しは要らない）
+        """
         del media_id
         self._analysis_dirty = True
 
@@ -996,6 +1011,7 @@ class MainWindow(QMainWindow):
         self._seek(0)
         for media in project.media:
             self._analyzer.request(media, on_ready=self._on_analysis_ready)
+            self._proxies.request(media, on_ready=self._on_proxy_ready)
 
     def save_project(self) -> bool:
         """保存する 保存できたら真 名前がまだ無ければ尋ねる"""
@@ -1159,6 +1175,7 @@ class MainWindow(QMainWindow):
         self._seek(0)
         for media in project.media:
             self._analyzer.request(media, on_ready=self._on_analysis_ready)
+            self._proxies.request(media, on_ready=self._on_proxy_ready)
 
         self.autosave()
         if self._autosaved is project:
@@ -1231,6 +1248,7 @@ class MainWindow(QMainWindow):
                 continue
             self.execute(AddMedia(media))
             self._analyzer.request(media, on_ready=self._on_analysis_ready)
+            self._proxies.request(media, on_ready=self._on_proxy_ready)
             found[raw] = media.id
         return found, missing
 
@@ -1399,6 +1417,7 @@ class MainWindow(QMainWindow):
 
     def analyze(self, media: MediaItem) -> None:
         self._analyzer.request(media, on_ready=self._on_analysis_ready)
+        self._proxies.request(media, on_ready=self._on_proxy_ready)
 
     def waveform(self, media: MediaItem) -> Waveform | None:
         return self._analyzer.waveform(media)
@@ -1437,5 +1456,6 @@ class MainWindow(QMainWindow):
             self._ai_renderer.close()
             self._ai_renderer = None
         self._analyzer.close()
+        self._proxies.close()
         self._preview.shutdown()
         super().closeEvent(event)

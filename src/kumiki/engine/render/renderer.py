@@ -10,6 +10,7 @@ import math
 from collections import OrderedDict
 from dataclasses import dataclass, replace
 from fractions import Fraction
+from pathlib import Path
 
 import numpy as np
 from OpenGL import GL
@@ -23,6 +24,7 @@ from kumiki.core.model import (
     Effect,
     GeneratedSource,
     MediaId,
+    MediaItem,
     ParamValue,
     Project,
     Timeline,
@@ -31,6 +33,7 @@ from kumiki.core.model import (
 )
 from kumiki.core.timebase import FrameRate, seconds_to_frame
 from kumiki.effects.easing import ease
+from kumiki.engine.cache.proxy import ProxyStore
 from kumiki.engine.decode import ProbeError, VideoDecoder
 from kumiki.engine.gpu import (
     BlendMode,
@@ -196,9 +199,14 @@ class FrameRenderer:
         *,
         context: GLScope | None = None,
         quality: RenderQuality = FULL_QUALITY,
+        proxies: ProxyStore | None = None,
     ) -> None:
         self._project = project
         self._quality = quality
+        #: プレビュー用の控えの置き場 既定は使わない
+        #: **書き出しでは必ず None** 混ざると、画面では気付かないまま
+        #: 低解像度の絵が最終出力に入る
+        self._proxies = proxies
         self._owns_context = context is None
         self._context = context if context is not None else OffscreenGLContext()
 
@@ -1106,8 +1114,9 @@ class FrameRenderer:
         media = self._project.find_media(media_id)
         if media is None:
             return None
+        path, index = self._source_for(media, stream_index)
         try:
-            decoder = VideoDecoder(media.path, stream_index)
+            decoder = VideoDecoder(path, index)
         except ProbeError:
             # オフライン素材や壊れたファイル ここで落とすと、1 本壊れただけで
             # プロジェクト全体が開けなくなる そのクリップだけ映らない扱いにする
@@ -1118,6 +1127,17 @@ class FrameRenderer:
             _, evicted = self._decoders.popitem(last=False)
             evicted.close()
         return decoder
+
+    def _source_for(self, media: MediaItem, stream_index: int) -> tuple[Path, int | None]:
+        """実際に読むファイル 控えがあればそちら
+
+        控えは映像 1 本だけを持つので、元のストリーム番号は渡さない
+        渡すと、元では 3 本目だった番号を控えの中で探して見つからない
+        """
+        if self._proxies is None:
+            return media.path, stream_index
+        found = self._proxies.find(media)
+        return (media.path, stream_index) if found is None else (found, None)
 
     def _texture_for(self, key: str) -> Texture:
         texture = self._textures.get(key)

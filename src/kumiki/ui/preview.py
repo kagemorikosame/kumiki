@@ -11,6 +11,7 @@ from PySide6.QtCore import Signal
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
 from kumiki.core.model import Project
+from kumiki.engine.cache.proxy import ProxyStore
 from kumiki.engine.gpu import CurrentGLContext
 from kumiki.engine.render import FULL_QUALITY, FrameRenderer, RenderQuality
 
@@ -23,12 +24,16 @@ class PreviewWidget(QOpenGLWidget):
     #: GL の準備ができた レンダラを使い始めてよい合図
     ready = Signal()
 
-    def __init__(self, project: Project, parent: object = None) -> None:
+    def __init__(
+        self, project: Project, parent: object = None, *, proxies: ProxyStore | None = None
+    ) -> None:
         super().__init__(parent)  # type: ignore[arg-type]
         self._project = project
         self._frame = 0
         self._quality = FULL_QUALITY
         self._renderer: FrameRenderer | None = None
+        #: プレビュー用の控えの置き場 **書き出しには渡さない**
+        self._proxies = proxies
         self.setMinimumSize(240, 135)
 
     @property
@@ -76,7 +81,10 @@ class PreviewWidget(QOpenGLWidget):
         # ここでは Qt がすでにコンテキストを current にしている 自前の
         # オフスクリーンコンテキストを使うと描画先を見失う
         self._renderer = FrameRenderer(
-            self._project, context=CurrentGLContext(), quality=self._quality
+            self._project,
+            context=CurrentGLContext(),
+            quality=self._quality,
+            proxies=self._proxies,
         )
         self.ready.emit()
 

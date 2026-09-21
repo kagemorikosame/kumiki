@@ -1,0 +1,357 @@
+"""プレビュー用の低解像度の控え（プロキシ）を作る
+
+4K の素材は、合成より**デコードの方が重い** 1 フレーム 34.6ms（60fps の予算は
+16.6ms）で、解像度を落として描く :class:`~kumiki.engine.render.RenderQuality`
+だけでは足りない 読む元のファイルそのものを小さくする
+
+控えを使うのは**プレビューだけ** 書き出しは必ず元の素材から読む 混ざると、
+画面では気付かないまま低解像度の絵が最終出力に入る
+
+鍵は解析キャッシュと同じ「パス + サイズ + 更新時刻」から作る 素材を差し替えたら
+別の鍵になるので、古い控えを掴むことはない
+"""
+
+from __future__ import annotations
+
+import os
+import threading
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from fractions import Fraction
+from pathlib import Path
+from typing import cast
+
+import av
+import av.container
+import av.error
+import av.video.stream
+
+from kumiki.core.model import MediaId, MediaItem
+from kumiki.engine.cache.store import CacheStore, media_key
+
+__all__ = [
+    "PROXY_HEIGHT",
+    "ProxyBuilder",
+    "ProxyStore",
+    "create_proxy",
+    "is_worth_proxying",
+    "proxy_codecs",
+]
+
+#: 控えの縦の画素数 1080p の素材なら作らない（下の :func:`is_worth_proxying` 参照）
+PROXY_HEIGHT = 540
+
+#: 控えを作る値打ちがある縦の画素数 これ以下なら元のまま読む方が速い
+#: 変換にかかる時間の方が、再生で取り返す時間より長くなる
+MIN_SOURCE_HEIGHT = 1081
+
+#: 控えの置き場（:class:`~kumiki.engine.cache.store.CacheStore` の名前空間）
+NAMESPACE = "proxy"
+
+#: 控えに使うコーデックの優先順 NVENC は CPU をほとんど使わないので、
+#: 変換しながら編集を続けられる 無い環境では CPU の libx264 へ落ちる
+CODEC_PREFERENCE = ("h264_nvenc", "h264_qsv", "libx264")
+
+
+def proxy_codecs() -> list[str]:
+    """この環境で控えを作れるコーデックを、優先順に返す"""
+    found: list[str] = []
+    for name in CODEC_PREFERENCE:
+        try:
+            av.codec.Codec(name, "w")
+        except Exception:
+            # 入っていないコーデックは Codec() が投げる 種類は環境によって違うので
+            # 名前で拾わない ここで落とすと、1 つ無いだけで控えが作れなくなる
+            continue
+        found.append(name)
+    return found
+
+
+def is_worth_proxying(media: MediaItem) -> bool:
+    """控えを作る値打ちがあるか
+
+    小さい素材まで変換すると、待たされるだけで速くならない
+    """
+    if not media.has_video or media.is_still:
+        return False
+    return any(stream.display_size[1] >= MIN_SOURCE_HEIGHT for stream in media.video_streams)
+
+
+class ProxyStore:
+    """素材ごとの控えを置く場所
+
+    :class:`~kumiki.engine.cache.store.CacheStore` の上に乗る 作るのは
+    :func:`create_proxy` で、こちらは「どこに置くか」と「あるか」だけを見る
+    """
+
+    def __init__(self, store: CacheStore | None = None, *, height: int = PROXY_HEIGHT) -> None:
+        self._store = store if store is not None else CacheStore()
+        self._height = height
+
+    @property
+    def height(self) -> int:
+        return self._height
+
+    def key_for(self, media: MediaItem) -> str:
+        # 縦の画素数を鍵に混ぜる 設定を変えたときに、前の大きさの控えを掴まない
+        return media_key(media.path, extra=f"proxy{self._height}")
+
+    def path_for(self, media: MediaItem) -> Path:
+        """控えの置き場 まだ無くてもパスは返す"""
+        return self._store.path_for(NAMESPACE, self.key_for(media), ".mp4")
+
+    def find(self, media: MediaItem) -> Path | None:
+        """使える控え 無ければ ``None``"""
+        path = self.path_for(media)
+        try:
+            return path if path.stat().st_size > 0 else None
+        except OSError:
+            # 空のファイルは作りかけか失敗の跡 掴むと「映らない素材」になる
+            return None
+
+    def prepare(self, media: MediaItem) -> Path:
+        """書き込み先を用意して返す 親フォルダも作る"""
+        return self._store.prepare(NAMESPACE, self.key_for(media), ".mp4")
+
+
+def create_proxy(
+    source: Path,
+    target: Path,
+    *,
+    height: int = PROXY_HEIGHT,
+    stream_index: int | None = None,
+    codec: str | None = None,
+    progress: Callable[[float], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+) -> Path | None:
+    """``source`` の映像を縮めて ``target`` へ書く 作れなければ ``None``
+
+    重い処理なのでバックグラウンドで呼ぶこと ``should_cancel`` が真を返したら
+    書きかけを消して ``None`` を返す
+
+    音は入れない プレビューの音は元の素材から混ぜるので、控えに入れても
+    使われないまま場所を取る
+
+    **時刻は元の素材と同じに保つ** 縮めるのは大きさだけで、フレームの並びも
+    長さも変えない ここがずれると、控えのときだけ絵が 1 フレーム早い/遅い
+    という、原因の分かりにくい不具合になる
+    """
+    names = [codec] if codec is not None else proxy_codecs()
+    if not names:
+        return None
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # 書きかけの名前を分けておく 同じ素材を 2 回読み込んでも取り合いにならず、
+    # 途中で落ちても壊れた控えが残らない
+    working = target.with_name(f"{target.name}.{os.getpid()}.{threading.get_ident()}.part")
+
+    for name in names:
+        try:
+            if _transcode(
+                source,
+                working,
+                height=height,
+                stream_index=stream_index,
+                codec=name,
+                progress=progress,
+                should_cancel=should_cancel,
+            ):
+                working.replace(target)
+                return target
+        except (av.error.FFmpegError, OSError, ValueError):
+            # このコーデックでは作れなかった 次の候補へ falls back するので、
+            # ここで投げると NVENC が使えない環境で控えが一切作れなくなる
+            pass
+        working.unlink(missing_ok=True)
+    return None
+
+
+def _transcode(
+    source: Path,
+    target: Path,
+    *,
+    height: int,
+    stream_index: int | None,
+    codec: str,
+    progress: Callable[[float], None] | None,
+    should_cancel: Callable[[], bool] | None,
+) -> bool:
+    """1 つのコーデックで変換を試す 終わりまで書けたら ``True``"""
+    with av.open(str(source)) as container:
+        streams = container.streams.video
+        if not streams:
+            return False
+        stream = (
+            streams[0]
+            if stream_index is None
+            else next((s for s in streams if s.index == stream_index), streams[0])
+        )
+        stream.thread_type = "AUTO"
+
+        size = _target_size(stream, height)
+        if size is None:
+            return False
+        width, scaled = size
+        rate = stream.average_rate or Fraction(30)
+        duration = _duration_of(container, stream)
+
+        # 書式を名前から当てさせない 書きかけの名前は ``.part`` で終わるので、
+        # 拡張子から当てる作りだと「書式が分からない」で落ちる
+        with av.open(str(target), mode="w", format="mp4") as output:
+            video = cast(
+                "av.video.stream.VideoStream", output.add_stream(codec, rate=Fraction(rate))
+            )
+            video.width = width
+            video.height = scaled
+            video.pix_fmt = "yuv420p"
+            # 控えは見るためだけのもの 画質より、小ささと変換の速さを取る
+            video.bit_rate = width * scaled * 4
+            video.time_base = stream.time_base
+
+            for frame in container.decode(stream):
+                if should_cancel is not None and should_cancel():
+                    return False
+                converted = frame.reformat(width=width, height=scaled, format="yuv420p")
+                # 元の時刻をそのまま持たせる 振り直すと、可変フレームレートの
+                # 素材で控えと元の絵がずれる
+                converted.pts = frame.pts
+                converted.time_base = frame.time_base
+                for packet in video.encode(converted):
+                    output.mux(packet)
+                if progress is not None and duration > 0 and frame.time is not None:
+                    progress(min(1.0, float(frame.time) / float(duration)))
+
+            for packet in video.encode():
+                output.mux(packet)
+
+    if progress is not None:
+        progress(1.0)
+    return True
+
+
+def _target_size(stream: av.video.stream.VideoStream, height: int) -> tuple[int, int] | None:
+    """縮めたあとの大きさ 縦横とも偶数にする（yuv420p が奇数を受けない）"""
+    source_width = stream.codec_context.width
+    source_height = stream.codec_context.height
+    if source_width <= 0 or source_height <= 0:
+        return None
+    scaled = min(height, source_height)
+    width = max(2, round(source_width * scaled / source_height))
+    return width - width % 2, max(2, scaled - scaled % 2)
+
+
+def _duration_of(
+    container: av.container.InputContainer, stream: av.video.stream.VideoStream
+) -> float:
+    """素材の長さ（秒） 進み具合を出すためだけに使う"""
+    if stream.duration is not None and stream.time_base is not None:
+        return float(stream.duration * stream.time_base)
+    if container.duration is not None:
+        return float(container.duration) / av.time_base
+    return 0.0
+
+
+class ProxyBuilder:
+    """控えをバックグラウンドで作る
+
+    変換は**同時に 1 本だけ**にする 何本も並べると CPU と GPU の符号化器を
+    取り合って、編集中のプレビューそのものが重くなる 控えは待てば済むが、
+    操作が重いのは待てない
+
+    :class:`~kumiki.engine.cache.analyzer.MediaAnalyzer` と同じ作りで、
+    取り消しは「鍵の集合」で持つ Future を辞書に入れ直す形にすると、
+    投入前に終わったものを消し損ねる
+    """
+
+    def __init__(self, store: ProxyStore | None = None, *, max_workers: int = 1) -> None:
+        self._store = store if store is not None else ProxyStore()
+        self._executor = ThreadPoolExecutor(
+            max_workers=max_workers, thread_name_prefix="kumiki-proxy"
+        )
+        self._lock = threading.Lock()
+        #: 作っている最中の進み具合 UI に出すために持つ
+        self._progress: dict[MediaId, float] = {}
+        self._running: set[MediaId] = set()
+        self._cancelled: set[MediaId] = set()
+        self._closed = False
+
+    @property
+    def store(self) -> ProxyStore:
+        return self._store
+
+    def progress(self, media_id: MediaId) -> float | None:
+        """作っている最中なら 0..1 それ以外は ``None``
+
+        描画のたびに呼ばれるので、ここでは決してブロックしない
+        """
+        with self._lock:
+            return self._progress.get(media_id)
+
+    def request(
+        self,
+        media: MediaItem,
+        *,
+        on_ready: Callable[[MediaId], None] | None = None,
+        on_progress: Callable[[MediaId], None] | None = None,
+    ) -> None:
+        """控えを作るよう予約する すでにあるもの・作っている最中のものは何もしない"""
+        if not is_worth_proxying(media) or self._store.find(media) is not None:
+            return
+
+        with self._lock:
+            if self._closed or media.id in self._running:
+                return
+            self._cancelled.discard(media.id)
+            self._running.add(media.id)
+            self._progress[media.id] = 0.0
+
+        def report(value: float) -> None:
+            with self._lock:
+                self._progress[media.id] = value
+            if on_progress is not None:
+                on_progress(media.id)
+
+        def cancelled() -> bool:
+            with self._lock:
+                return media.id in self._cancelled
+
+        def run() -> None:
+            made: Path | None = None
+            try:
+                made = create_proxy(
+                    media.path,
+                    self._store.prepare(media),
+                    height=self._store.height,
+                    progress=report,
+                    should_cancel=cancelled,
+                )
+            finally:
+                with self._lock:
+                    self._running.discard(media.id)
+                    self._cancelled.discard(media.id)
+                    self._progress.pop(media.id, None)
+            if made is not None and on_ready is not None:
+                on_ready(media.id)
+
+        with self._lock:
+            # close と同じロックの中で投げる 外で投げると、止めた直後の
+            # executor へ投げて RuntimeError になる
+            if self._closed:
+                self._running.discard(media.id)
+                self._progress.pop(media.id, None)
+                return
+            self._executor.submit(run)
+
+    def forget(self, media_id: MediaId) -> None:
+        """素材を外したときに、作りかけを止める"""
+        with self._lock:
+            if media_id in self._running:
+                self._cancelled.add(media_id)
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._cancelled.update(self._running)
+            self._executor.shutdown(wait=False, cancel_futures=True)

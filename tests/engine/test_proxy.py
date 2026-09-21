@@ -1,0 +1,396 @@
+"""プレビュー用の控え（プロキシ）
+
+控えは**見るためだけ**のもの 大きさだけを縮め、フレームの時刻と本数は
+元の素材と同じに保つ ここがずれると、プレビューのときだけ絵が前後にずれる
+という、原因の分かりにくい不具合になるので、時刻の一致を厳密に見る
+"""
+
+from __future__ import annotations
+
+import time
+from collections.abc import Iterator
+from dataclasses import replace
+from fractions import Fraction
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from kumiki.core.commands import AddClip, AddMedia, AddTrack
+from kumiki.core.model import (
+    Clip,
+    MediaId,
+    MediaItem,
+    Project,
+    ProjectSettings,
+    Track,
+    TrackKind,
+    VideoStreamInfo,
+)
+from kumiki.core.timebase import FrameRate
+from kumiki.engine.cache.proxy import (
+    MIN_SOURCE_HEIGHT,
+    ProxyBuilder,
+    ProxyStore,
+    create_proxy,
+    is_worth_proxying,
+    proxy_codecs,
+)
+from kumiki.engine.cache.store import CacheStore
+from kumiki.engine.decode import probe_media
+from kumiki.engine.gpu import GLContextError, OffscreenGLContext
+from kumiki.engine.render import FrameRenderer
+from tests.media_fixtures import SampleMedia, decode_all_frames
+
+pytestmark = pytest.mark.skipif(not proxy_codecs(), reason="控えを作れるコーデックが無い")
+
+
+@pytest.fixture(scope="module")
+def gl_context() -> Iterator[OffscreenGLContext]:
+    """オフスクリーンの GL コンテキスト 作れない環境ではテストを飛ばす"""
+    try:
+        context = OffscreenGLContext()
+    except GLContextError as exc:
+        pytest.skip(f"OpenGL コンテキストを作れない: {exc}")
+    yield context
+    context.release()
+
+
+def _media(path: Path, width: int, height: int, *, still: bool = False) -> MediaItem:
+    return MediaItem(
+        path=path,
+        duration=Fraction(0) if still else Fraction(2),
+        video_streams=(
+            VideoStreamInfo(
+                index=0,
+                width=width,
+                height=height,
+                frame_rate=FrameRate(30),
+                time_base=Fraction(1, 30),
+                codec="h264",
+                pixel_format="yuv420p",
+            ),
+        ),
+    )
+
+
+def _tall(path: Path) -> tuple[VideoStreamInfo, ...]:
+    """控えを作る値打ちがある大きさに見せかけたストリーム
+
+    4K の素材を試験のたびに作ると時間がかかりすぎる 判定に使うのは
+    高さだけなので、そこだけ差し替えて小さい素材で確かめる
+    """
+    return (
+        VideoStreamInfo(
+            index=0,
+            width=320,
+            height=MIN_SOURCE_HEIGHT,
+            frame_rate=FrameRate(30),
+            time_base=Fraction(1, 30),
+            codec="h264",
+            pixel_format="yuv420p",
+        ),
+    )
+
+
+class TestWhenItIsWorthIt:
+    """小さい素材まで変換すると、待たされるだけで速くならない"""
+
+    def test_a_4k_source_is_worth_it(self, tmp_path: Path) -> None:
+        assert is_worth_proxying(_media(tmp_path / "a.mp4", 3840, 2160))
+
+    def test_a_1080p_source_is_not(self, tmp_path: Path) -> None:
+        assert not is_worth_proxying(_media(tmp_path / "a.mp4", 1920, 1080))
+
+    def test_the_boundary_is_the_stated_height(self, tmp_path: Path) -> None:
+        # 境目を動かしたら、この 2 つのどちらかが落ちる
+        assert is_worth_proxying(_media(tmp_path / "a.mp4", 1920, MIN_SOURCE_HEIGHT))
+        assert not is_worth_proxying(_media(tmp_path / "a.mp4", 1920, MIN_SOURCE_HEIGHT - 1))
+
+    def test_a_still_is_not(self, tmp_path: Path) -> None:
+        # 静止画は 1 枚読むだけ 控えを作っても速くならない
+        assert not is_worth_proxying(_media(tmp_path / "a.png", 4000, 3000, still=True))
+
+    def test_audio_only_is_not(self, tmp_path: Path) -> None:
+        assert not is_worth_proxying(MediaItem(path=tmp_path / "a.wav", duration=Fraction(2)))
+
+
+class TestMakingOne:
+    def test_it_shrinks_the_picture(self, sample_av: SampleMedia, tmp_path: Path) -> None:
+        target = tmp_path / "proxy.mp4"
+        assert create_proxy(sample_av.path, target, height=120) == target
+        made = probe_media(target)
+        assert made.video_streams[0].height == 120
+        # 縦横比を保つ 崩すと、プレビューだけ伸びた絵になる
+        assert made.video_streams[0].width == 160
+
+    def test_the_frame_times_match_the_source(self, sample_av: SampleMedia, tmp_path: Path) -> None:
+        """フレームの時刻が元の素材と**1 つ残らず**同じ
+
+        時刻を振り直すと、可変フレームレートの素材で控えと元の絵がずれる
+        """
+        target = tmp_path / "proxy.mp4"
+        assert create_proxy(sample_av.path, target, height=120) is not None
+        source_times = [time for time, _ in decode_all_frames(sample_av.path)]
+        proxy_times = [time for time, _ in decode_all_frames(target)]
+        assert proxy_times == pytest.approx(source_times, abs=1e-6)
+
+    def test_a_fractional_rate_survives(self, sample_ntsc: SampleMedia, tmp_path: Path) -> None:
+        # 29.97 が 30 に丸まると、1 時間で 3 フレーム以上ずれる
+        target = tmp_path / "proxy.mp4"
+        assert create_proxy(sample_ntsc.path, target, height=120) is not None
+        assert probe_media(target).video_streams[0].frame_rate == FrameRate(30000, 1001)
+
+    def test_it_is_smaller_than_the_source(self, sample_av: SampleMedia, tmp_path: Path) -> None:
+        # 小さくならないなら、読む速さも変わらない
+        target = tmp_path / "proxy.mp4"
+        assert create_proxy(sample_av.path, target, height=120) is not None
+        assert target.stat().st_size < sample_av.path.stat().st_size
+
+    def test_it_has_no_sound(self, sample_av: SampleMedia, tmp_path: Path) -> None:
+        # 音は元の素材から混ぜる 控えに入れても使われないまま場所を取る
+        target = tmp_path / "proxy.mp4"
+        assert create_proxy(sample_av.path, target, height=120) is not None
+        assert not probe_media(target).has_audio
+
+    def test_a_taller_request_does_not_blow_it_up(
+        self, sample_av: SampleMedia, tmp_path: Path
+    ) -> None:
+        # 元より大きくしても重くなるだけ 元の大きさで止める
+        target = tmp_path / "proxy.mp4"
+        assert create_proxy(sample_av.path, target, height=2160) is not None
+        assert probe_media(target).video_streams[0].height == sample_av.height
+
+    def test_cancelling_leaves_nothing_behind(self, sample_av: SampleMedia, tmp_path: Path) -> None:
+        """途中でやめたら**ファイルを残さない**
+
+        書きかけを残すと、次に開いたときに「途中までしか映らない素材」を掴む
+        """
+        target = tmp_path / "proxy.mp4"
+        assert create_proxy(sample_av.path, target, height=120, should_cancel=lambda: True) is None
+        assert list(tmp_path.iterdir()) == []
+
+    def test_it_reports_progress(self, sample_av: SampleMedia, tmp_path: Path) -> None:
+        seen: list[float] = []
+        create_proxy(sample_av.path, tmp_path / "proxy.mp4", height=120, progress=seen.append)
+        assert seen and seen[-1] == 1.0
+        assert seen == sorted(seen), "進み具合が戻っている"
+
+    def test_a_broken_source_is_not_an_error(self, tmp_path: Path) -> None:
+        """壊れた素材で例外を投げない
+
+        投げると、1 本壊れただけで素材の読み込み全体が止まる
+        """
+        broken = tmp_path / "broken.mp4"
+        broken.write_text("これは動画ではない", encoding="utf-8")
+        assert create_proxy(broken, tmp_path / "proxy.mp4", height=120) is None
+
+
+class TestTheStore:
+    def test_it_is_absent_until_made(self, sample_av: SampleMedia, tmp_path: Path) -> None:
+        store = ProxyStore(CacheStore(tmp_path), height=120)
+        media = _media(sample_av.path, sample_av.width, sample_av.height)
+        assert store.find(media) is None
+        assert create_proxy(sample_av.path, store.prepare(media), height=120) is not None
+        assert store.find(media) == store.path_for(media)
+
+    def test_an_empty_file_is_not_used(self, sample_av: SampleMedia, tmp_path: Path) -> None:
+        """空のファイルは作りかけか失敗の跡 掴むと映らない素材になる"""
+        store = ProxyStore(CacheStore(tmp_path), height=120)
+        media = _media(sample_av.path, sample_av.width, sample_av.height)
+        store.prepare(media).touch()
+        assert store.find(media) is None
+
+    def test_a_different_height_is_a_different_key(
+        self, sample_av: SampleMedia, tmp_path: Path
+    ) -> None:
+        # 設定を変えたときに、前の大きさの控えを掴まない
+        media = _media(sample_av.path, sample_av.width, sample_av.height)
+        small = ProxyStore(CacheStore(tmp_path), height=120)
+        large = ProxyStore(CacheStore(tmp_path), height=360)
+        assert small.key_for(media) != large.key_for(media)
+
+    def test_a_changed_source_is_a_different_key(
+        self, sample_av: SampleMedia, tmp_path: Path
+    ) -> None:
+        """素材を差し替えたら別の鍵 古い控えを掴むと、差し替えが反映されない"""
+        copy = tmp_path / "copy.mp4"
+        copy.write_bytes(sample_av.path.read_bytes())
+        store = ProxyStore(CacheStore(tmp_path), height=120)
+        before = store.key_for(_media(copy, sample_av.width, sample_av.height))
+        copy.write_bytes(sample_av.path.read_bytes() + b"\0")
+        assert store.key_for(_media(copy, sample_av.width, sample_av.height)) != before
+
+
+class TestTheRendererUsesIt:
+    """控えはプレビューだけ 書き出しは必ず元の素材から読む"""
+
+    def _project(self, media_path: Path) -> Project:
+        media = probe_media(media_path)
+        project = Project.create(ProjectSettings(width=320, height=240, frame_rate=FrameRate(30)))
+        project = AddMedia(media).apply(project)
+        track = Track(kind=TrackKind.VIDEO, name="V1")
+        project = AddTrack(track).apply(project)
+        return AddClip(track.id, Clip(timeline_start=0, duration=60, media_id=media.id)).apply(
+            project
+        )
+
+    @pytest.fixture
+    def shelf(self, sample_av: SampleMedia, tmp_path: Path) -> ProxyStore:
+        """控えを 1 本作った置き場"""
+        store = ProxyStore(CacheStore(tmp_path), height=120)
+        media = probe_media(sample_av.path)
+        assert create_proxy(sample_av.path, store.prepare(media), height=120) is not None
+        return store
+
+    def test_it_reads_the_proxy(
+        self, sample_av: SampleMedia, shelf: ProxyStore, gl_context: OffscreenGLContext
+    ) -> None:
+        """控えがあれば、そちらを開く
+
+        ここが元の素材のままなら、控えを作った意味が無い
+        """
+        renderer = FrameRenderer(self._project(sample_av.path), context=gl_context, proxies=shelf)
+        try:
+            renderer.render(0)
+            opened = [decoder.info for decoder in renderer._decoders.values()]
+        finally:
+            renderer.close()
+        assert opened and opened[0].height == 120
+
+    def test_without_a_store_it_reads_the_source(
+        self, sample_av: SampleMedia, gl_context: OffscreenGLContext
+    ) -> None:
+        """控えを渡さないときは元の素材 書き出しがこの道を通る
+
+        既定で控えを使うと、低解像度の絵が黙って最終出力に入る
+        """
+        renderer = FrameRenderer(self._project(sample_av.path), context=gl_context)
+        try:
+            renderer.render(0)
+            opened = [decoder.info for decoder in renderer._decoders.values()]
+        finally:
+            renderer.close()
+        assert opened and opened[0].height == sample_av.height
+
+    def test_the_picture_is_in_the_same_place(
+        self, sample_av: SampleMedia, shelf: ProxyStore, gl_context: OffscreenGLContext
+    ) -> None:
+        """控えでも絵の位置と大きさは変わらない
+
+        縮めた絵をそのまま貼ると、画面の隅に小さく映る
+        """
+        project = self._project(sample_av.path)
+        plain = FrameRenderer(project, context=gl_context)
+        try:
+            expected = plain.render(0)
+        finally:
+            plain.close()
+        cheap = FrameRenderer(project, context=gl_context, proxies=shelf)
+        try:
+            actual = cheap.render(0)
+        finally:
+            cheap.close()
+
+        assert actual.shape == expected.shape
+        # 細部は粗くなるが、絵としては同じもの 位置がずれれば平均の差が跳ね上がる
+        difference = float(
+            np.abs(actual[:, :, :3].astype(np.int16) - expected[:, :, :3].astype(np.int16)).mean()
+        )
+        assert difference < 24, f"絵が変わっている 平均の差 {difference:.1f}"
+
+    def test_a_missing_proxy_falls_back_to_the_source(
+        self, sample_av: SampleMedia, tmp_path: Path, gl_context: OffscreenGLContext
+    ) -> None:
+        # まだ作れていない素材は元のまま映る 映らなくなるのが一番まずい
+        empty = ProxyStore(CacheStore(tmp_path / "空"), height=120)
+        renderer = FrameRenderer(self._project(sample_av.path), context=gl_context, proxies=empty)
+        try:
+            renderer.render(0)
+            opened = [decoder.info for decoder in renderer._decoders.values()]
+        finally:
+            renderer.close()
+        assert opened and opened[0].height == sample_av.height
+
+
+class TestBuildingInTheBackground:
+    """控えは裏で作る UI を止めると、素材を置いた瞬間に固まる"""
+
+    def _wait(self, builder: ProxyBuilder, ready: list[MediaId], seconds: float = 60.0) -> None:
+        limit = time.monotonic() + seconds
+        while not ready and time.monotonic() < limit:
+            time.sleep(0.02)
+
+    def test_it_makes_one(self, sample_av: SampleMedia, tmp_path: Path) -> None:
+        store = ProxyStore(CacheStore(tmp_path), height=120)
+        builder = ProxyBuilder(store)
+        media = replace(probe_media(sample_av.path), video_streams=_tall(sample_av.path))
+        ready: list[MediaId] = []
+        try:
+            builder.request(media, on_ready=ready.append)
+            self._wait(builder, ready)
+        finally:
+            builder.close()
+        assert ready == [media.id]
+        assert store.find(media) is not None
+
+    def test_a_small_source_is_left_alone(self, sample_av: SampleMedia, tmp_path: Path) -> None:
+        """1080p 以下は作らない 待たされるだけで速くならない"""
+        store = ProxyStore(CacheStore(tmp_path), height=120)
+        builder = ProxyBuilder(store)
+        media = probe_media(sample_av.path)
+        try:
+            builder.request(media)
+            assert builder.progress(media.id) is None
+        finally:
+            builder.close()
+        assert store.find(media) is None
+
+    def test_asking_twice_makes_one(self, sample_av: SampleMedia, tmp_path: Path) -> None:
+        # 2 本走ると、同じ場所を 2 つの変換が取り合う
+        store = ProxyStore(CacheStore(tmp_path), height=120)
+        builder = ProxyBuilder(store)
+        media = replace(probe_media(sample_av.path), video_streams=_tall(sample_av.path))
+        ready: list[MediaId] = []
+        try:
+            builder.request(media, on_ready=ready.append)
+            builder.request(media, on_ready=ready.append)
+            self._wait(builder, ready)
+            time.sleep(0.2)
+        finally:
+            builder.close()
+        assert ready == [media.id], "同じ素材の変換が 2 本走った"
+
+    def test_it_reports_progress_while_running(
+        self, sample_av: SampleMedia, tmp_path: Path
+    ) -> None:
+        store = ProxyStore(CacheStore(tmp_path), height=120)
+        builder = ProxyBuilder(store)
+        media = replace(probe_media(sample_av.path), video_streams=_tall(sample_av.path))
+        seen: list[float] = []
+        ready: list[MediaId] = []
+        try:
+            builder.request(
+                media,
+                on_ready=ready.append,
+                on_progress=lambda media_id: seen.append(builder.progress(media_id) or -1.0),
+            )
+            self._wait(builder, ready)
+        finally:
+            builder.close()
+        assert seen and max(seen) == 1.0
+        # 終わったら進み具合は消える 残すと、UI が作り続けているように見える
+        assert builder.progress(media.id) is None
+
+    def test_closing_does_not_raise(self, sample_av: SampleMedia, tmp_path: Path) -> None:
+        """止めたあとに頼んでも落ちない
+
+        窓を閉じる途中に素材を外すと、この順で呼ばれる
+        """
+        builder = ProxyBuilder(ProxyStore(CacheStore(tmp_path), height=120))
+        media = replace(probe_media(sample_av.path), video_streams=_tall(sample_av.path))
+        builder.close()
+        builder.close()
+        builder.request(media)
+        builder.forget(media.id)
+        assert builder.progress(media.id) is None
