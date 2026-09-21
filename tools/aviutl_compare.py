@@ -415,7 +415,16 @@ def command_compare(arguments: argparse.Namespace) -> int:
 #: 乱数で絵が決まる中身と効果 線や粒の向きが毎回変わるので、
 #: 1 枚ずつ引き比べても差は縮まらない 値の意味は別に測って確かめる
 RANDOM_SHAPES = frozenset({"concentration"})
-RANDOM_EFFECTS = frozenset({"noise", "particles", "crash", "scatter"})
+RANDOM_EFFECTS = frozenset({"noise", "particles", "crash", "scatter", "inout_random_direction"})
+
+#: 設定しだいで乱数になる効果 値を見ないと決まらない
+#:
+#: 一律に乱数として外すと、決まった動きをする設定（点滅の間隔を一定にする、
+#: 落ちる遅れを 0 にする）まで比べられなくなる
+RANDOM_WHEN: dict[str, str] = {
+    # 落ちながら登場 間隔 が 0 でなければ落ち始めが乱数で遅れる
+    "inout_fall": "interval",
+}
 
 #: 乱数のものに付ける印 平均から外すかどうかの判定にも使う
 RANDOM_NOTE = "乱数（1 枚ずつは比べない）"
@@ -427,9 +436,30 @@ def _is_random(objects: list[MappedObject]) -> bool:
         source = item.clip.source
         if source is not None and str(source.params.get("shape", "")) in RANDOM_SHAPES:
             return True
-        if any(effect.kind in RANDOM_EFFECTS for effect in item.clip.effects):
-            return True
+        for effect in item.clip.effects:
+            if effect.kind in RANDOM_EFFECTS:
+                return True
+            name = RANDOM_WHEN.get(effect.kind)
+            if name is not None and _randomising(effect.params.get(name)):
+                return True
     return False
+
+
+def _randomising(value: object) -> bool:
+    """その値が「乱数で決める」側か
+
+    チェックは**外れているとき**が乱数（点滅の「一定にする」）
+    数は 0 でなければ乱数（落ちる遅れの幅）
+
+    動く値は**キーフレームまで見る** 先頭が 0 でも途中で 0 でなくなれば、
+    そのフレームは乱数で絵が決まる static だけを見ると、動く遅れを持つ
+    見本が「決まった動き」に紛れ込んで、平均に乱数の差が混ざる
+    """
+    if isinstance(value, bool):
+        return not value
+    numbers = [getattr(value, "static", value)]
+    numbers.extend(keyframe.value for keyframe in getattr(value, "keyframes", ()))
+    return any(isinstance(n, int | float) and float(n) != 0.0 for n in numbers)
 
 
 def _write_report(

@@ -1030,6 +1030,9 @@ _APPEARANCE: dict[str, str] = {
     "起き上がって登場": "inout_getup",
     "弾んで登場": "inout_jump",
     "何処からともなく登場": "inout_blur",
+    "ランダム方向から登場": "inout_random_direction",
+    "ランダム間隔で落ちながら登場": "inout_fall",
+    "点滅して登場": "inout_blink",
 }
 
 #: ``ワイプの種類`` の対応 付属の絵は式で作ってある（[[互換性の穴]]）
@@ -1118,6 +1121,26 @@ def _appearance_extras(
             log.note_missing("画面外から登場の数（何回も出入りする）")
         if entry.number("ランダム方向") != 0.0:
             log.note_missing("画面外から登場のランダム方向")
+        return
+
+    if entry.name == "ランダム方向から登場":
+        # 回転 は飛んでくるあいだに回る周の数 ライト は明るさの足し算
+        # AviUtl2 に描かせると、ライト 30 のとき途中の明るさが 238 → 190 と落ちた
+        _put_raw(definition, params, "spin", entry, "回転", points, log)
+        _put_raw(definition, params, "light", entry, "ライト", points, log)
+        return
+
+    if entry.name == "ランダム間隔で落ちながら登場":
+        # 距離 は落ち始めの高さ 間隔 は落ち始めが遅れる幅（秒）
+        # 遅れ 0・距離 200・加減速なしの見本で、真っ直ぐ落ちて濃くなった
+        _put_raw(definition, params, "distance_", entry, "距離", points, log)
+        _put_raw(definition, params, "interval", entry, "間隔", points, log)
+        return
+
+    if entry.name == "点滅して登場":
+        # 点滅間隔 はフレーム数 一定にする を外すと区切りごとに長さが揺れる
+        _put_raw(definition, params, "interval", entry, "点滅間隔", points, log)
+        params["even"] = entry.number("点滅間隔を一定にする") != 0.0
         return
 
     if entry.name == "拡大縮小して登場":

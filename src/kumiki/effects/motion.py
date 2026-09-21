@@ -795,12 +795,173 @@ def _in_out_specs() -> tuple[CheckSpec | TrackSpec | SelectSpec, ...]:
     )
 
 
+#: ランダムな向きから飛んでくる 向きは ``seed`` で決まる（毎フレームは変えない）
+_INOUT_RANDOM_DIRECTION = _shader(
+    """
+uniform int seed;
+uniform float spin;
+uniform float light;
+"""
+    + _IN_OUT
+    + """
+void main() {
+    // 隠れているあいだは画面の外 進むにつれて元の場所へ戻る
+    //
+    // AviUtl2 に描かせると、時間の半ばではまだ画面の隅にいて、
+    // 時間が終わる頃にちょうど元の場所へ収まっていた
+    float hidden = hidden_amount();
+    float turn = hash(vec2(float(seed) * 7.1, 3.3)) * 6.2831853;
+    vec2 away = vec2(cos(turn), sin(turn)) * length(u_size) * hidden;
+
+    // 回転 は飛んでくるあいだに回る**周**の数 着いたら 0 周（元の向き）
+    float spun = radians(-spin * 360.0 * hidden);
+    float cs = cos(spun);
+    float sn = sin(spun);
+    vec2 centre = object_center();
+    vec2 local = v_uv * u_size - centre - away;
+    vec4 color = sample_pixel(centre + vec2(local.x * cs - local.y * sn,
+                                            local.x * sn + local.y * cs));
+
+    // ライト は飛んでいるあいだの明るさの足し算（実測で 明 238 → 190 と変わった）
+    frag_color = vec4(clamp(color.rgb + light * 0.01 * hidden, 0.0, 1.0), color.a);
+}
+"""
+)
+
+
+#: 上から落ちてきて濃くなる 落ち始めは ``interval`` 秒までの遅れが乗る
+_INOUT_FALL = _shader(
+    """
+uniform int seed;
+uniform float interval;
+uniform float distance_;
+"""
+    + _IN_OUT
+    + """
+void main() {
+    // 遅れ 0・距離 200・加減速なしの見本で、10 フレーム目が 134px 上、
+    // 20 フレーム目が 67px 上、30 フレーム目で元の位置だった（＝直線で落ちる）
+    // 同時に濃さも 118 → 205 → 239 と上がる
+    // 登場と退場の両方を見る 登場側にだけ遅れが乗る
+    // hidden_amount() をそのまま使えないのは、遅れを足した時間で測るため
+    // 退場を見落とすと、クリップの終わりで絵が残り続ける
+    float span = max(effect_time, 0.0001);
+    float wait_ = hash(vec2(float(seed) * 3.7, 9.1)) * max(interval, 0.0);
+    float hidden = 0.0;
+    if (effect_in) hidden = max(hidden, 1.0 - ease((u_time - wait_) / span, easing, easing_mode));
+    if (effect_out) {
+        hidden = max(hidden, ease((u_time - (u_duration - span)) / span, easing, easing_mode));
+    }
+    float along = 1.0 - clamp(hidden, 0.0, 1.0);
+
+    // **上から**落ちてくる 画素の Y は上が正なので、引く先を下へずらすと
+    // 絵は上に見える 符号を逆にすると下から浮き上がってくる別の動きになる
+    // （AviUtl2 の実物は 距離 200 で 200px 上から降りてきた）
+    vec4 color = sample_pixel(v_uv * u_size - vec2(0.0, distance_ * (1.0 - along)));
+    frag_color = vec4(color.rgb, color.a * along);
+}
+"""
+)
+
+
+#: 点いたり消えたりしながら現れる
+_INOUT_BLINK = _shader(
+    """
+uniform float interval;
+uniform bool even;
+"""
+    + _IN_OUT
+    + """
+void main() {
+    // 半端な濃さは通らない 実測でも見えるときは元の明るさのまま（239）で、
+    // 見えないときは何も無い 薄く出す作りにすると、点滅ではなく溶け込みになる
+    float hidden = hidden_amount();
+    vec4 color = sample_pixel(v_uv * u_size);
+    if (hidden <= 0.0) {
+        frag_color = color;
+        return;
+    }
+
+    // AviUtl2 の実物を 1 フレームずつ読むと、どちらも**乱数ではなかった**
+    //
+    // 一定にする を付けたとき（点滅間隔 5）
+    //     .....#####.....#####.....#####
+    //     間隔のぶん消えて、間隔のぶん点く（進み具合に関係なく同じ）
+    //
+    // 外したとき（点滅間隔 1）
+    //     ..........#....#..#..#..#.#.#.#.##.##.####.######
+    //     進むほど点いている時間が増える 50 フレーム目までに点いた数は 20 で、
+    //     「点いている割合 ＝ 進み具合」を積み上げた量（f^2 / 2T）と一致する
+    float step_ = max(interval, 1.0);
+    if (even) {
+        frag_color = mod(floor(u_frame / step_), 2.0) > 0.5 ? color : vec4(0.0);
+        return;
+    }
+
+    // 積み上げた量が整数をまたぐフレームだけ点ける
+    // 点滅間隔 を大きくすると、またぐ回数が減って 1 回が長くなる
+    //
+    // 測るのは「登場が始まってからの経過」と「終わりまでの残り」の**短い方**
+    // クリップ先頭からのフレーム数で測ると、退場の頃には毎フレーム境界をまたいで
+    // 点きっぱなしになり、退場しても絵が消えない
+    float span_frames = max(effect_time * max(u_fps, 1.0), 1.0);
+    float total = max(u_duration * max(u_fps, 1.0), 1.0);
+    float when = effect_in ? u_frame : span_frames;
+    if (effect_out) when = min(when, total - u_frame);
+    when = max(when, 0.0);
+
+    // 数えるのは**次のフレームまで**の積み上げ 現在までで測ると、
+    // 実物より 1 フレーム遅れて点き始める
+    float scale = 2.0 * span_frames * step_;
+    float now = (when + 1.0) * (when + 1.0) / scale;
+    float before = when * when / scale;
+    frag_color = floor(now) != floor(before) ? color : vec4(0.0);
+}
+"""
+)
+
+
 def register_motion_effects() -> None:
     """動きのエフェクトを一覧へ登録する 何度呼んでも 1 回だけ"""
     if "random_move" in registry:
         return
 
     definitions = (
+        EffectDefinition(
+            kind="inout_random_direction",
+            label="ランダム方向から登場",
+            category="登場・退場",
+            parameters=(
+                *_in_out_specs(),
+                TrackSpec("spin", "回転", -100, 100, 0, unit="周"),
+                TrackSpec("light", "ライト", -100, 100, 0, unit="%"),
+                _seed(),
+            ),
+            fragment_shader=_INOUT_RANDOM_DIRECTION,
+        ),
+        EffectDefinition(
+            kind="inout_fall",
+            label="ランダム間隔で落ちながら登場",
+            category="登場・退場",
+            parameters=(
+                *_in_out_specs(),
+                TrackSpec("distance_", "距離", -8000, 8000, 400, step=1, unit="px"),
+                TrackSpec("interval", "間隔", 0, 60, 0, unit="秒"),
+                _seed(),
+            ),
+            fragment_shader=_INOUT_FALL,
+        ),
+        EffectDefinition(
+            kind="inout_blink",
+            label="点滅して登場",
+            category="登場・退場",
+            parameters=(
+                *_in_out_specs(),
+                TrackSpec("interval", "点滅間隔", 1, 240, 1, step=1, unit="フレーム"),
+                CheckSpec("even", "点滅間隔を一定にする", False),
+            ),
+            fragment_shader=_INOUT_BLINK,
+        ),
         EffectDefinition(
             kind="random_move",
             label="ランダム移動",
