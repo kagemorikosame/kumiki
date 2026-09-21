@@ -16,6 +16,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import kumiki.engine.cache.proxy as proxy_module
 from kumiki.core.commands import AddClip, AddMedia, AddTrack
 from kumiki.core.model import (
     Clip,
@@ -198,6 +199,33 @@ class TestMakingOne:
         target = tmp_path / "proxy.mp4"
         assert create_proxy(sample_av.path, target, height=120, should_cancel=lambda: True) is None
         assert list(tmp_path.iterdir()) == []
+
+    def test_cancelling_stops_before_the_next_codec(
+        self, sample_av: SampleMedia, tmp_path: Path
+    ) -> None:
+        """やめると言われたら、次の候補を試さない
+
+        試すと候補の数だけ変換を始め直すので、止めたのに止まらないように見える
+        （素材を外したときや窓を閉じるときの効きが悪くなる）
+        """
+        tried: list[str] = []
+        original = proxy_module._transcode
+
+        def counting(*args: object, **kwargs: object) -> bool:
+            tried.append(str(kwargs.get("codec")))
+            return bool(original(*args, **kwargs))  # type: ignore[arg-type]
+
+        proxy_module._transcode = counting
+        try:
+            assert (
+                create_proxy(
+                    sample_av.path, tmp_path / "proxy.mp4", height=120, should_cancel=lambda: True
+                )
+                is None
+            )
+        finally:
+            proxy_module._transcode = original
+        assert len(tried) == 1, f"やめたのに {len(tried)} 個の候補を試した: {tried}"
 
     def test_it_reports_progress(self, sample_av: SampleMedia, tmp_path: Path) -> None:
         seen: list[float] = []

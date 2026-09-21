@@ -208,6 +208,10 @@ def create_proxy(
             # NVENC が使えない環境で控えが一切作れなくなる
             pass
         working.unlink(missing_ok=True)
+        if should_cancel is not None and should_cancel():
+            # やめると言われている 次の候補を試さない 試すと、候補の数だけ
+            # 変換を始め直すことになり、止めたのに止まらないように見える
+            return None
     return None
 
 
