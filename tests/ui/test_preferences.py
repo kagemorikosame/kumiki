@@ -384,8 +384,12 @@ class TestThePrefetchSetting:
     def test_an_unknown_budget_is_kept(self, qt_application: QApplication) -> None:
         """設定ファイルへ手で書いた予算も残る 開いて閉じただけで減らさない"""
         del qt_application
-        dialog = PreferencesDialog(Preferences(prefetch_budget_mb=8192))
-        assert dialog.preferences().prefetch_budget_mb == 8192
+        unknown = 8192
+        # 一覧に入っていないことを先に押さえる 後から選択肢へ足されると、
+        # この試験は「一覧にある値を選び直せる」だけの中身になって気づけない
+        assert unknown not in [budget for _, budget in PREFETCH_BUDGETS]
+        dialog = PreferencesDialog(Preferences(prefetch_budget_mb=unknown))
+        assert dialog.preferences().prefetch_budget_mb == unknown
 
     def test_the_budget_choices_include_the_default(self) -> None:
         # 既定が一覧に無いと、設定を開いて閉じただけで値が変わる
