@@ -60,6 +60,10 @@ __all__ = ["SubtitlePanel"]
 BURN_DEFAULTS = {"size": 48.0, "pos_y": -380.0, "border_width": 4.0}
 
 
+#: 時刻の列に足す余白（画素） 文字の幅ぴったりだと読みにくい
+TIME_COLUMN_PADDING = 24
+
+
 class SubtitlePanel(QWidget):
     """素材ごとの字幕の一覧と編集"""
 
@@ -80,6 +84,8 @@ class SubtitlePanel(QWidget):
         self._frame = 0
         #: 表示中の行に対応する字幕 行番号から引く
         self._rows: list[tuple[SegmentId, int, int]] = []
+        #: 一覧を作ったときの中身の印 同じなら作り直さない
+        self._signature: tuple[object, ...] | None = None
         self._updating = False
         #: 起こしの実行係 バックエンドの読み込みは重いので、初めて使うときに作る
         self._service: TranscriptionService | None = None
@@ -131,11 +137,15 @@ class SubtitlePanel(QWidget):
         self._table.setWordWrap(True)
 
         header = self._table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        # 時刻の幅は**固定**にする 中身に合わせると、1 行足すたびに Qt が
+        # 全部の行を測り直すので、字幕 2000 本では作り直しに 6 秒かかっていた
+        # 時刻は桁数の決まった文字列なので、見本の幅を 1 度測れば足りる
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        header.resizeSection(0, self._time_column_width())
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         # 幅が変われば折り返しの行数も変わる 高さを取り直さないと、2 行目が
-        # 隠れて本文の末尾が読めなくなる
-        header.sectionResized.connect(lambda *_: self._table.resizeRowsToContents())
+        # 隠れて本文の末尾が読めなくなる 本文の列だけを見る（時刻は変わらない）
+        header.sectionResized.connect(self._on_section_resized)
 
         self._empty = QLabel("音声を持つ素材を選んでください", self)
         self._empty.setStyleSheet(f"color: {Colors.TEXT_MUTED.name()}; padding: 8px;")
@@ -182,6 +192,20 @@ class SubtitlePanel(QWidget):
 
     # --- 一覧 ---
 
+    def _time_column_width(self) -> int:
+        """時刻の列の幅 見本のタイムコードを 1 度測って決める"""
+        sample = format_timecode(359_999, self._project.rate)
+        return self._table.fontMetrics().horizontalAdvance(sample) + TIME_COLUMN_PADDING
+
+    def _on_section_resized(self, index: int, _old: int, _new: int) -> None:
+        """列の幅が変わったら、折り返しに合わせて行の高さを取り直す
+
+        本文の列だけを見る 時刻の列は幅が変わらないうえ、作り直しの最中に
+        呼ばれると 1 行ごとに全部の行を測り直すことになる
+        """
+        if index == 1 and not self._updating:
+            self._table.resizeRowsToContents()
+
     def _reload_media(self) -> None:
         """素材の選択欄を作り直す 選択は ID で復元する"""
         candidates = [item for item in self._project.media if item.has_audio]
@@ -224,17 +248,49 @@ class SubtitlePanel(QWidget):
             return ()
         return media.transcript.segments
 
+    def _rows_signature(self) -> tuple[object, ...]:
+        """一覧の中身が変わったかを見るための印
+
+        字幕そのものと、それがタイムラインのどこに出るかで決まる
+        モデルは作り替えでしか変わらないので、字幕の一覧は同じものかどうかを
+        ``id`` で見れば足りる（中身を突き合わせると本数ぶんの手間が掛かる）
+        """
+        media = self._current_media()
+        if media is None:
+            return (None,)
+        clips = tuple(
+            (str(clip.id), clip.timeline_start, clip.duration, clip.source_in, clip.speed)
+            for track in self._project.timeline.tracks
+            for clip in track.clips
+            if clip.media_id == media.id
+        )
+        return (str(media.id), id(media.transcript), self._project.rate, clips)
+
     def _reload_rows(self) -> None:
         """一覧を作り直す
 
         時刻はタイムライン上の位置 同じ素材を 2 回置いていれば最初の 1 回の
         位置を出す 編集の入口としてはそれで足り、2 か所の時刻を並べても迷う
+
+        中身が前と同じなら作り直さない 編集のたびに呼ばれる所で、字幕が
+        2000 本あると作り直しだけで 70ms 掛かる 字幕に関係のない編集
+        （クリップの色を変えるなど）でそれを払うのは無駄
         """
+        signature = self._rows_signature()
+        if signature == self._signature and self._table.rowCount() == len(self._segments()):
+            return
+        self._signature = signature
         media = self._current_media()
         segments = self._segments()
         placement = self._placement(media) if media is not None else {}
 
         self._updating = True
+        # 描き直しを止めてから中身を入れ替える 途中の状態を描くと、
+        # 1 行ごとに並べ直しが走って本数の 2 乗で遅くなる
+        self._table.setUpdatesEnabled(False)
+        # いったん空にしてから伸ばす 置き換えると、古い中身を捨てる手間が
+        # 1 行ずつ掛かる
+        self._table.setRowCount(0)
         self._table.setRowCount(len(segments))
         self._rows = []
         for row, segment in enumerate(segments):
@@ -250,6 +306,7 @@ class SubtitlePanel(QWidget):
                 time_item.setToolTip("いまのタイムラインには出ていません")
             self._table.setItem(row, 0, time_item)
             self._table.setItem(row, 1, QTableWidgetItem(segment.text))
+        self._table.setUpdatesEnabled(True)
         self._updating = False
 
         self._table.resizeRowsToContents()

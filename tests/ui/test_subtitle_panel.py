@@ -17,6 +17,7 @@ from PySide6.QtWidgets import QApplication, QFileDialog
 from kumiki.core.commands import (
     AddClip,
     Command,
+    RenameProject,
     RippleCut,
     SetSegmentText,
     SetTranscript,
@@ -121,6 +122,59 @@ class TestListing:
         item = widget._table.item(2, 0)
         assert item is not None
         assert item.text() == "—"
+
+
+class TestRebuilding:
+    """一覧の作り直しは**編集のたび**に通る 字幕が多いと、そこが重さになる"""
+
+    def test_it_skips_when_nothing_changed(
+        self, panel: tuple[SubtitlePanel, list[tuple[list[Command], str]]], placed: Project
+    ) -> None:
+        """中身が前と同じなら作り直さない
+
+        字幕 2000 本で 70ms 掛かる所 字幕に関係のない編集（プロジェクト名を
+        変えるなど）でそれを払うのは無駄 作り直していないことは、表の中身が
+        同じ物のままかどうかで見る
+        """
+        widget, _ = panel
+        before = widget._table.item(0, 1)
+        widget.set_project(RenameProject("別の名前").apply(placed))
+        assert widget._table.item(0, 1) is before, "作り直している"
+
+    def test_it_rebuilds_when_the_text_changes(
+        self,
+        panel: tuple[SubtitlePanel, list[tuple[list[Command], str]]],
+        placed: Project,
+        video_media: MediaItem,
+        transcript: Transcript,
+    ) -> None:
+        """字幕を直したら作り直す 飛ばすと、直した文字が画面に出ない"""
+        widget, _ = panel
+        from dataclasses import replace
+
+        first = transcript.segments[0]
+        edited = Transcript(
+            segments=(replace(first, text="書き直した字幕"), *transcript.segments[1:])
+        )
+        widget.set_project(SetTranscript(video_media.id, edited).apply(placed))
+        item = widget._table.item(0, 1)
+        assert item is not None
+        assert item.text() == "書き直した字幕"
+
+    def test_the_time_column_does_not_measure_every_row(
+        self, panel: tuple[SubtitlePanel, list[tuple[list[Command], str]]]
+    ) -> None:
+        """時刻の列は**固定幅** 中身に合わせると本数の 2 乗で遅くなる
+
+        Qt は幅を中身に合わせるとき、1 行足すたびに全部の行を測り直す
+        字幕 2000 本では作り直しに 6 秒掛かっていた
+        """
+        from PySide6.QtWidgets import QHeaderView
+
+        widget, _ = panel
+        header = widget._table.horizontalHeader()
+        assert header.sectionResizeMode(0) == QHeaderView.ResizeMode.Fixed
+        assert header.sectionSize(0) > 0, "幅が 0 だと時刻が読めない"
 
 
 class TestEditing:
