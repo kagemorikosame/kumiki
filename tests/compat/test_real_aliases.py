@@ -194,3 +194,26 @@ def test_a_real_moving_alias_survives_being_restyled(
                 assert max(frames) == last, f"{path.name}: {name} が終わりまで届かない"
                 checked += 1
     assert checked, "動く値を持つ実物が 1 つも無い"
+
+
+def test_the_keyframes_start_at_the_clip_head(
+    mapped: list[tuple[Path, MappedObject]],
+) -> None:
+    """キーフレームは**クリップ先頭から**数える
+
+    エイリアスの ``frame=244,333,423`` はタイムライン上の位置 そのまま
+    キーフレームにすると、クリップの先頭では動かず 244 フレーム待ってから
+    動き出す 着せるときの尺合わせも 0 から数える前提で組んである
+    """
+    from kumiki.core.model import AnimatedValue
+
+    checked = 0
+    for path, item in mapped:
+        for effect in item.clip.effects:
+            for name, value in effect.params.items():
+                if not isinstance(value, AnimatedValue) or not value.keyframes:
+                    continue
+                assert value.keyframes[0].frame == 0, f"{path.name}: {name} が 0 から始まらない"
+                checked += 1
+    if not checked:
+        pytest.skip("動く値を持つ配布物が手元に無い")
