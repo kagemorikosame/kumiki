@@ -11,6 +11,7 @@ import time
 from collections.abc import Collection
 
 from PySide6.QtCore import QTimer, Signal
+from PySide6.QtGui import QOpenGLContext
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
 from kumiki.core.model import MediaId, Project
@@ -240,6 +241,13 @@ class PreviewWidget(QOpenGLWidget):
             # コンテキストを current にする所も中へ入れる ここで落ちたときに
             # だけ外へ抜けるのでは、守ったことにならない
             self.makeCurrent()
+            if QOpenGLContext.currentContext() is not self.context():
+                # **戻り値では分からない** makeCurrent は何も返さず、窓が隠れている
+                # ときや端末が休んだ後は current にならないまま戻る
+                # そのまま GL を触ると、別のコンテキストへ描くことになる
+                self._idle.stop()
+                self.prefetch_stopped.emit("GL を使えないので先読みを止めた")
+                return
             try:
                 filled = self._cache.step(self._frame)
             finally:

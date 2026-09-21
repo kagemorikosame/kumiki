@@ -265,3 +265,21 @@ class TestWhenPrefetchingGoesWrong:
         widget._prefetch_step()
         assert not widget._idle.isActive()
         assert stopped
+
+    def test_a_context_that_did_not_become_current_stops_it(
+        self, preview: tuple[PreviewWidget, StubCache], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """current にならなくても makeCurrent は黙って戻る
+
+        戻り値では分からないので、実際に current かどうかを見る 見ないと、
+        窓が隠れている間に別のコンテキストへ描きに行く
+        """
+        widget, stub = preview
+        monkeypatch.setattr(widget, "context", lambda: object())
+        stopped: list[str] = []
+        widget.prefetch_stopped.connect(stopped.append)
+        widget.set_frame(3)
+        widget._prefetch_step()
+        assert stub.steps == [], "current でないのに描きに行っている"
+        assert not widget._idle.isActive()
+        assert stopped
