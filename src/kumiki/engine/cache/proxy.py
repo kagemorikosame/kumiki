@@ -192,7 +192,7 @@ def create_proxy(
 
     for name in names:
         try:
-            if _transcode(
+            made = _transcode(
                 source,
                 working,
                 height=height,
@@ -200,7 +200,11 @@ def create_proxy(
                 codec=name,
                 progress=progress,
                 should_cancel=should_cancel,
-            ) and _has_a_frame(working):
+            ) and _has_a_frame(working)
+            # 最後の 1 枚を書いたあとにやめると言われることがある 置かずに捨てる
+            # 置くと、素材を外したり控えを切ったりしたのに控えが残り、
+            # 「止めたはずなのに使われている」ことになる
+            if made and (should_cancel is None or not should_cancel()):
                 working.replace(target)
                 return target
         except (av.error.FFmpegError, OSError, ValueError):

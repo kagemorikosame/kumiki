@@ -200,6 +200,53 @@ class TestMakingOne:
         assert create_proxy(sample_av.path, target, height=120, should_cancel=lambda: True) is None
         assert list(tmp_path.iterdir()) == []
 
+    def test_cancelling_after_the_last_frame_still_discards(
+        self, sample_av: SampleMedia, tmp_path: Path
+    ) -> None:
+        """最後の 1 枚を書いたあとにやめても、控えを置かない
+
+        置くと、素材を外したり控えを切ったりしたのに控えが残り、
+        「止めたはずなのに使われている」ことになる
+        """
+        stopped = False
+        original = proxy_module._transcode
+
+        def then_stop(
+            source: Path,
+            target: Path,
+            *,
+            height: int,
+            stream_index: int | None,
+            codec: str,
+            progress: Callable[[float], None] | None,
+            should_cancel: Callable[[], bool] | None,
+        ) -> bool:
+            """変換を終わらせてから、やめると言う 狙った隙間を必ず通る"""
+            nonlocal stopped
+            result = original(
+                source,
+                target,
+                height=height,
+                stream_index=stream_index,
+                codec=codec,
+                progress=progress,
+                should_cancel=should_cancel,
+            )
+            stopped = True
+            return result
+
+        proxy_module._transcode = then_stop
+        target = tmp_path / "proxy.mp4"
+        try:
+            assert (
+                create_proxy(sample_av.path, target, height=120, should_cancel=lambda: stopped)
+                is None
+            )
+        finally:
+            proxy_module._transcode = original
+        assert not target.exists(), "やめたのに控えを置いている"
+        assert list(tmp_path.iterdir()) == [], "書きかけが残っている"
+
     def test_cancelling_stops_before_the_next_codec(
         self, sample_av: SampleMedia, tmp_path: Path
     ) -> None:
