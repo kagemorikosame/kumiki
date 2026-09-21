@@ -219,7 +219,6 @@ class FrameCache:
             return None
 
     def _worst(self) -> int:
-        """次に捨てる 1 枚"""
         return max(self._frames, key=self._rank)
 
     def _rank(self, frame: int) -> tuple[int, bool]:
