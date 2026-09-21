@@ -218,7 +218,6 @@ class TestTheMixerAppliesThem:
         from kumiki.core.model import AnimatedValue, Keyframe
         from kumiki.engine.audio.mixer import _apply_effects
 
-        # フレーム 0 では 100%、フレーム 1 から 0%
         fading = registry.require("audio_volume").create(
             volume=AnimatedValue(
                 keyframes=(
@@ -239,6 +238,38 @@ class TestTheMixerAppliesThem:
         assert out[0, 0] == pytest.approx(1.0), "1 フレーム目から下がっている"
         assert out[per_frame + 1, 0] == pytest.approx(0.0), "2 フレーム目で下がっていない"
 
+    def test_the_boundary_is_exact_at_a_fractional_rate(self) -> None:
+        """29.97 fps でも切れ目が**1 サンプルもずれない**
+
+        1 フレームを小数のサンプル数で持って割ると、フレーム 1 は
+        切り捨てて 1601 サンプル目から始まるのに 1601 / 1601.6 は 0 になり、
+        先頭の 1 サンプルだけ前のフレームの音量で鳴る
+        """
+        from kumiki.core.model import AnimatedValue, Keyframe
+        from kumiki.engine.audio.mixer import _apply_effects, _frame_to_sample
+
+        rate = FrameRate(30000, 1001)
+        fading = registry.require("audio_volume").create(
+            volume=AnimatedValue(
+                keyframes=(
+                    Keyframe(frame=0, value=100.0, interpolation=Interpolation.HOLD),
+                    Keyframe(frame=1, value=0.0),
+                )
+            )
+        )
+        boundary = _frame_to_sample(1, rate, RATE)
+        assert boundary == 1601, "測り直す ここは 48 kHz / 29.97 fps の実際の値"
+        out = _apply_effects(
+            Clip(timeline_start=0, duration=30, effects=(fading,)),
+            _stereo(boundary + 2),
+            0,
+            RATE,
+            boundary + 2,
+            rate,
+        )
+        assert out[boundary - 1, 0] == pytest.approx(1.0), "切れ目の手前で下がっている"
+        assert out[boundary, 0] == pytest.approx(0.0), "切れ目の 1 サンプル目が前のフレームのまま"
+
     def test_a_disabled_effect_is_skipped(self) -> None:
         from kumiki.engine.audio.mixer import _apply_effects
 
@@ -246,3 +277,16 @@ class TestTheMixerAppliesThem:
         clip = Clip(timeline_start=0, duration=30, effects=(muted,))
         samples = _stereo(4)
         assert np.allclose(_apply_effects(clip, samples, 0, RATE, 4, FrameRate(30)), samples)
+
+
+def test_the_audio_effects_only_take_numbers() -> None:
+    """音のエフェクトの項目は :class:`TrackSpec` だけ
+
+    ミキサは数にならない仕様を values へ入れない（0 を渡すと既定値と違う値で
+    走るため） 数以外の項目を足すなら、先にミキサの読み方を決める
+    """
+    for definition in registry.all():
+        if definition.audio_process is None:
+            continue
+        for spec in definition.parameters:
+            assert isinstance(spec, TrackSpec), f"{definition.kind}: {spec.name} が数でない"

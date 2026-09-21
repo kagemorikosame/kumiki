@@ -24,7 +24,7 @@ from kumiki.core.model import (
 from kumiki.core.timebase import FrameRate
 from kumiki.effects.audio import AudioContext
 from kumiki.effects.definition import registry
-from kumiki.effects.spec import ParameterSpec, TrackSpec
+from kumiki.effects.spec import TrackSpec
 from kumiki.engine.decode import AudioDecoder, ProbeError
 
 __all__ = ["AudioMixer"]
@@ -261,6 +261,7 @@ def _apply_effects(
             values = {
                 spec.name: _as_number(spec, effect.params.get(spec.name), frame)
                 for spec in definition.parameters
+                if isinstance(spec, TrackSpec)
             }
             chunk = definition.audio_process(
                 chunk,
@@ -278,25 +279,26 @@ def _frame_spans(
 
     始まりがフレームの途中でも、最初の切れ目までを 1 つとして返す
     """
-    per_frame = max(sample_rate * rate.den / rate.num, 1.0)
     begin = 0
     while begin < count:
-        frame = int((offset + begin) / per_frame)
-        boundary = int((frame + 1) * per_frame) - offset
+        frame = _sample_to_frame(offset + begin, rate, sample_rate)
+        boundary = _frame_to_sample(frame + 1, rate, sample_rate) - offset
         end = min(max(boundary, begin + 1), count)
         yield begin, end, frame
         begin = end
 
 
-def _as_number(spec: ParameterSpec, value: ParamValue | None, frame: int) -> float:
+def _as_number(spec: TrackSpec, value: ParamValue | None, frame: int) -> float:
     """設定の値を数として読む
 
     読み方は :meth:`EffectProcessor._set_parameters` と同じにする
     仕様を通さずに読むと、壊れた値（古いファイルの文字など）が 0 になり、
     既定が 100 の音量なら**クリップが丸ごと無音になる**
+
+    受け取るのは :class:`TrackSpec` だけ 数にならない仕様（選択・真偽）まで
+    黙って 0 として渡すと、既定値と違う値でエフェクトが走る
+    音のエフェクトが数以外の項目を持たないことは試験で見張る
     """
-    if not isinstance(spec, TrackSpec):
-        return 0.0
     number = spec.coerce(spec.default_value() if value is None else value).at(frame)
     return float(number) if math.isfinite(number) else float(spec.default)
 
@@ -308,6 +310,19 @@ def _frame_to_sample(frame: int, rate: FrameRate, sample_rate: int) -> int:
     サンプルごとに走る ここは再生のたびに通るので、整数演算で済ませる
     """
     return frame * rate.den * sample_rate // rate.num
+
+
+def _sample_to_frame(sample: int, rate: FrameRate, sample_rate: int) -> int:
+    """サンプル番号を、それが属するフレーム番号へ（:func:`_frame_to_sample` の逆）
+
+    1 フレームあたりのサンプル数で割ると、29.97 fps のような割り切れない比で
+    :func:`_frame_to_sample` と食い違う（1 フレームは 1601.6 サンプルで、
+    フレーム 1 は切り捨てて 1601 から始まるのに 1601 / 1601.6 は 0 になる）
+    切れ目とフレーム番号がずれると、動く値の変わる時刻が 1 サンプル遅れる
+    そこで ``_frame_to_sample(f) <= sample`` を満たす最大の f を整数のまま出す
+    """
+    span = rate.den * sample_rate
+    return -((-(sample + 1) * rate.num) // span) - 1
 
 
 def _db_to_gain(db: float) -> float:
