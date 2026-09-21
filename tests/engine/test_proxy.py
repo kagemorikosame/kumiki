@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
@@ -211,9 +211,28 @@ class TestMakingOne:
         tried: list[str] = []
         original = proxy_module._transcode
 
-        def counting(*args: object, **kwargs: object) -> bool:
-            tried.append(str(kwargs.get("codec")))
-            return bool(original(*args, **kwargs))  # type: ignore[arg-type]
+        # 本物と同じ形で受ける 省略して型の検査を外すと、本物の引数が
+        # 変わったときにここが気付かず、素通りする試験になる
+        def counting(
+            source: Path,
+            target: Path,
+            *,
+            height: int,
+            stream_index: int | None,
+            codec: str,
+            progress: Callable[[float], None] | None,
+            should_cancel: Callable[[], bool] | None,
+        ) -> bool:
+            tried.append(codec)
+            return original(
+                source,
+                target,
+                height=height,
+                stream_index=stream_index,
+                codec=codec,
+                progress=progress,
+                should_cancel=should_cancel,
+            )
 
         proxy_module._transcode = counting
         try:
