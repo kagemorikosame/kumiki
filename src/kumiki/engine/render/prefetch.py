@@ -267,7 +267,14 @@ class PreviewCache:
     def enabled(self) -> bool:
         return self._cache.capacity > 0
 
-    def set_budget(self, budget_bytes: int) -> None:
+    def set_budget(self, budget_bytes: int, playhead: int) -> None:
+        """使えるメモリを変える
+
+        ``playhead`` は、減らすときにどこを残すかの基準 渡さずに任せると、
+        最後に描いた位置が基準になる 設定を変えるまでの間に再生ヘッドが
+        動いていれば、そこから遠い絵として**いま見ている辺り**を捨てる
+        """
+        self._cache.set_playhead(playhead)
         self._cache.set_budget(budget_bytes)
 
     def invalidate(self, invalidation: Invalidation) -> int:

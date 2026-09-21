@@ -47,6 +47,7 @@ class StubCache:
         self.thrown: list[Invalidation] = []
         self.steps: list[int] = []
         self.budget: int | None = None
+        self.budget_playhead: int | None = None
 
     def invalidate(self, invalidation: Invalidation) -> int:
         self.thrown.append(invalidation)
@@ -56,8 +57,9 @@ class StubCache:
         self.steps.append(playhead)
         return False
 
-    def set_budget(self, budget_bytes: int) -> None:
+    def set_budget(self, budget_bytes: int, playhead: int) -> None:
         self.budget = budget_bytes
+        self.budget_playhead = playhead
 
     def release(self) -> None:
         pass
@@ -317,3 +319,17 @@ class TestTheQueuedTick:
         widget.set_playing(True)
         widget._prefetch_step()
         assert stub.steps == []
+
+    def test_it_hands_over_where_the_playhead_is(
+        self, preview: tuple[PreviewWidget, StubCache]
+    ) -> None:
+        """減らすときは、いま見ている位置を基準に捨てる
+
+        渡さないと最後に描いた位置が基準になり、その間に再生ヘッドが動いていれば
+        いま見ている辺りを「遠い絵」として捨てる
+        """
+        widget, stub = preview
+        widget.set_frame(120)
+        widget.set_prefetch_bytes(256 * 1024 * 1024)
+        widget._prefetch_step()
+        assert stub.budget_playhead == 120

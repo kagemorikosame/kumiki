@@ -224,7 +224,7 @@ class PreviewWidget(QOpenGLWidget):
         if self._pending_budget is None or self._cache is None:
             return
         budget, self._pending_budget = self._pending_budget, None
-        self._cache.set_budget(budget)
+        self._cache.set_budget(budget, self._frame)
         # 0 から増やしたときは、ここで初めて先読みできるようになる
         self._restart_prefetch()
 
