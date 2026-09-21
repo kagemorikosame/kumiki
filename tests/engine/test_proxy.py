@@ -696,7 +696,7 @@ class TestBuildingInTheBackground:
             release.wait(30.0)
             return target
 
-        proxy_module.create_proxy = blocking  # type: ignore[assignment]
+        proxy_module.create_proxy = blocking
         store = ProxyStore(CacheStore(tmp_path), height=120)
         builder = ProxyBuilder(store)
         media = replace(probe_media(sample_av.path), video_streams=_tall(sample_av.path))
@@ -712,7 +712,7 @@ class TestBuildingInTheBackground:
             time.sleep(0.3)
         finally:
             release.set()
-            proxy_module.create_proxy = original  # type: ignore[assignment]
+            proxy_module.create_proxy = original
         assert ready == [], "止めたのに、できたと伝えている"
 
     def test_closing_does_not_raise(self, sample_av: SampleMedia, tmp_path: Path) -> None:
