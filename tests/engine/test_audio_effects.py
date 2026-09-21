@@ -107,6 +107,17 @@ class TestFade:
         out = _run("audio_fade", _stereo(100), offset=RATE, duration=RATE * 4, fade_in=1.0)
         assert out[0, 0] == pytest.approx(1.0, abs=0.01)
 
+    def test_a_long_clip_keeps_the_fade_smooth(self) -> None:
+        """長いクリップでもフェードが**階段状にならない**
+
+        位置を float32 で持つと 1677 万サンプル（48 kHz で 6 分弱）を超えた所から
+        1 サンプル単位を表せなくなり、隣り合うサンプルの音量が同じ値になる
+        （5 分を超える曲では普通に起きる）
+        """
+        total = 30_000_000
+        out = _run("audio_fade", _stereo(4), offset=total - 10_000, duration=total, fade_out=1.0)
+        assert len(np.unique(out[:, 0])) == 4, "隣り合うサンプルの音量が同じになっている"
+
     def test_no_fade_changes_nothing(self) -> None:
         plain = _stereo(8)
         assert np.allclose(_run("audio_fade", plain, duration=8), plain)

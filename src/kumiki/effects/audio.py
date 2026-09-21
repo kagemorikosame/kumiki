@@ -57,15 +57,17 @@ def _fade(samples: np.ndarray, values: dict[str, float], context: AudioContext) 
     rate = max(context.sample_rate, 1)
     fade_in = max(values.get("fade_in", 0.0), 0.0) * rate
     fade_out = max(values.get("fade_out", 0.0), 0.0) * rate
-    index = np.arange(len(samples), dtype=np.float32) + context.offset
+    # 位置は整数で持つ float32 だと 1677 万（48 kHz で 6 分弱）を超えた辺りから
+    # 1 サンプル単位を表せなくなり、長いクリップでフェードが階段状になる
+    index = np.arange(len(samples), dtype=np.int64) + context.offset
 
-    gain = np.ones(len(samples), dtype=np.float32)
+    gain = np.ones(len(samples), dtype=np.float64)
     if fade_in > 0.0:
         gain = np.minimum(gain, index / fade_in)
     if fade_out > 0.0:
-        left = float(context.duration) - index
+        left = context.duration - index
         gain = np.minimum(gain, left / fade_out)
-    return samples * np.clip(gain, 0.0, 1.0)[:, None]
+    return samples * np.clip(gain, 0.0, 1.0).astype(np.float32)[:, None]
 
 
 def _monaural(samples: np.ndarray, values: dict[str, float], context: AudioContext) -> np.ndarray:
