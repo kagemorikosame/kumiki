@@ -278,6 +278,10 @@ def main() -> int:
         # 後者だけだと、実際の再生より重く見える（選び直しが毎フレーム走る）
         span = max(1, current.duration)
         sequential: list[float] = []
+        # 測る前に別のフレームへ動かしておく パネルの再生位置は初めから 0 なので、
+        # そのまま 0 を渡すと何もせずに戻り、1 枚目が測るものの無い標本になる
+        panel.set_frame(span - 1)
+        application.processEvents()
         for index in range(arguments.frames):
             started = time.perf_counter()
             panel.set_frame(index)
