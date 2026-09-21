@@ -1137,6 +1137,14 @@ class FrameRenderer:
         if proxies is self._proxies:
             return
         self._proxies = proxies
+        self.reopen_sources()
+
+    def reopen_sources(self) -> None:
+        """開いているデコーダを閉じる 次に要るときに開き直す
+
+        控えができた直後に呼ぶ 開きっぱなしだと、先にプレビューした素材は
+        元のファイルを掴んだままになり、控えができても切り替わらない
+        """
         for decoder in self._decoders.values():
             decoder.close()
         self._decoders.clear()
@@ -1147,7 +1155,11 @@ class FrameRenderer:
         控えは映像 1 本だけを持つので、元のストリーム番号は渡さない
         渡すと、元では 3 本目だった番号を控えの中で探して見つからない
         """
-        if self._proxies is None:
+        if self._proxies is None or not media.video_streams:
+            return media.path, stream_index
+        # 控えに入っているのは**1 本目の映像**だけ 2 本目を指しているクリップに
+        # 渡すと、別の絵が映る（素材によっては本編と副音声の絵が入れ替わる）
+        if stream_index != media.video_streams[0].index:
             return media.path, stream_index
         found = self._proxies.find(media)
         return (media.path, stream_index) if found is None else (found, None)

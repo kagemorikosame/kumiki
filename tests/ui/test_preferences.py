@@ -95,6 +95,18 @@ class TestSaving:
         assert loaded.proxy_height == 720, "読める項目まで捨てている"
         assert loaded.auto_quality_divisor == 2, "半端な分母を受けている"
 
+    def test_a_float_divisor_falls_back(self, tmp_path: Path) -> None:
+        """JSON の ``2.0`` を受けない
+
+        ``2.0 in (1, 2, 4)`` は真になる 小数のまま通すと、描画先の大きさが
+        小数になって型の食い違いで落ちる
+        """
+        path = tmp_path / "preferences.json"
+        path.write_text('{"auto_quality_divisor": 2.0}', encoding="utf-8")
+        loaded = PreferenceStore(path).load()
+        assert isinstance(loaded.auto_quality_divisor, int)
+        assert not isinstance(loaded.auto_quality_divisor, float)
+
     def test_an_absurd_height_falls_back(self, tmp_path: Path) -> None:
         """0 や巨大な値を受けない
 
@@ -162,6 +174,20 @@ class TestTheWindowFollowsThem:
         # 大きさを変えても届かないなら、設定が効いていない
         window._apply_preferences(Preferences(proxy_height=720))
         assert window._proxies.store.height == 720
+
+    def test_a_finished_proxy_makes_the_preview_reopen(self, window: MainWindow) -> None:
+        """控えができたら素材を開き直す
+
+        描き直すだけでは切り替わらない 先にプレビューした素材は、
+        レンダラが元のファイルを掴んだまま（控えを作った意味が無くなる）
+        """
+        asked: list[bool] = []
+        window._preview.reload_sources = lambda: asked.append(True)  # type: ignore[method-assign]
+        window._on_proxy_ready(_uhd_media().id)
+        assert window._proxy_dirty, "控えができた印が付いていない"
+        window._flush_analysis()
+        assert asked == [True]
+        assert not window._proxy_dirty, "印が残ると、毎回開き直して再生が途切れる"
 
     def test_a_big_project_drops_the_preview_quality(self, window: MainWindow) -> None:
         """4K の素材を置いたら画質が下がる

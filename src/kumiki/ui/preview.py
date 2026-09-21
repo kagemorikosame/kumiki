@@ -64,6 +64,19 @@ class PreviewWidget(QOpenGLWidget):
             self.doneCurrent()
         self.update()
 
+    def reload_sources(self) -> None:
+        """素材を開き直させる 控えができた直後に呼ぶ
+
+        描き直すだけでは切り替わらない 先にプレビューした素材は、
+        レンダラが元のファイルを掴んだままになっている
+        """
+        if self._renderer is None:
+            return
+        self.makeCurrent()
+        self._renderer.reopen_sources()
+        self.doneCurrent()
+        self.update()
+
     def set_frame(self, frame: int) -> None:
         frame = max(0, frame)
         if frame == self._frame:

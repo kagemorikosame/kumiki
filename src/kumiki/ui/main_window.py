@@ -169,6 +169,8 @@ class MainWindow(QMainWindow):
         #: 渡すと、画面では気付かないまま低解像度の絵が最終出力に入る
         self._proxies = ProxyBuilder(ProxyStore(height=self._preferences.proxy_height))
         self._analysis_dirty = False
+        #: 控えができた 次の間隔で素材を開き直す
+        self._proxy_dirty = False
         #: AI が結果を確認するための描画係 初めて求められたときに作る
         self._ai_renderer: FrameRenderer | None = None
         #: 編集しているシーン ``None`` ならメイン モデルではなく画面の状態なので
@@ -953,12 +955,17 @@ class MainWindow(QMainWindow):
         （レンダラは開くたびに置き場を見るので、開き直しは要らない）
         """
         del media_id
-        self._analysis_dirty = True
+        self._proxy_dirty = True
 
     def _flush_analysis(self) -> None:
         # AI から始めた起こしの様子も、ついでにここで拾う 専用のタイマーを
         # もう 1 本増やすほどの頻度ではない
         self._subtitles.poll_transcription()
+        if self._proxy_dirty:
+            # 控えができた 開きっぱなしのデコーダは元のファイルを掴んだままなので、
+            # 開き直させる（描き直すだけでは切り替わらない）
+            self._proxy_dirty = False
+            self._preview.reload_sources()
         if not self._analysis_dirty:
             return
         self._analysis_dirty = False

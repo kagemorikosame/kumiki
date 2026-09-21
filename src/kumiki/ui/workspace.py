@@ -197,5 +197,11 @@ def _size(value: object, default: int) -> int:
 
 
 def _divisor(value: object, default: int) -> int:
-    # 画面の分母 1・2・4 だけ 半端な値は合成の大きさが端数になる
+    """画面の分母 1・2・4 だけ 半端な値は合成の大きさが端数になる
+
+    型も見る JSON は ``2.0`` と書けてしまい、``2.0 in (1, 2, 4)`` は真になる
+    小数のまま通すと、描画先の大きさが小数になって型の食い違いで落ちる
+    """
+    if not isinstance(value, int) or isinstance(value, bool):
+        return default
     return value if value in (1, 2, 4) else default

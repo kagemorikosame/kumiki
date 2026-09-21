@@ -322,6 +322,9 @@ class ProxyBuilder:
                     media.path,
                     self._store.prepare(media),
                     height=self._store.height,
+                    # 1 本目の映像だけを控えにする 読む側（レンダラ）も
+                    # 1 本目を指すクリップにしか渡さない
+                    stream_index=media.video_streams[0].index if media.video_streams else None,
                     progress=report,
                     should_cancel=cancelled,
                 )

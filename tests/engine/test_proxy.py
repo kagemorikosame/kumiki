@@ -299,6 +299,60 @@ class TestTheRendererUsesIt:
         )
         assert difference < 24, f"絵が変わっている 平均の差 {difference:.1f}"
 
+    def test_a_second_video_stream_reads_the_source(
+        self, sample_av: SampleMedia, shelf: ProxyStore, gl_context: OffscreenGLContext
+    ) -> None:
+        """控えに入っているのは**1 本目の映像**だけ
+
+        2 本目を指しているクリップに渡すと、別の絵が映る
+        """
+        project = self._project(sample_av.path)
+        media = project.media[0]
+        # 2 本目があることにする 実際に 2 本入った素材を作らなくても、
+        # 「1 本目でなければ渡さない」判断はこれで確かめられる
+        second = replace(media.video_streams[0], index=media.video_streams[0].index + 1)
+        project = replace(
+            project,
+            media=(replace(media, video_streams=(media.video_streams[0], second)),),
+        )
+        track = project.timeline.tracks[0]
+        clip = replace(track.clips[0], stream_index=second.index)
+        project = replace(
+            project,
+            timeline=replace(
+                project.timeline,
+                tracks=(replace(track, clips=(clip,)),),
+            ),
+        )
+        renderer = FrameRenderer(project, context=gl_context, proxies=shelf)
+        try:
+            renderer.render(0)
+            opened = [decoder.info for decoder in renderer._decoders.values()]
+        finally:
+            renderer.close()
+        assert opened and opened[0].height == sample_av.height
+
+    def test_reopening_picks_up_a_new_proxy(
+        self, sample_av: SampleMedia, tmp_path: Path, gl_context: OffscreenGLContext
+    ) -> None:
+        """あとからできた控えに切り替わる
+
+        先にプレビューした素材はデコーダを掴んだままなので、開き直させないと
+        控えができても元の素材を読み続ける
+        """
+        store = ProxyStore(CacheStore(tmp_path), height=120)
+        project = self._project(sample_av.path)
+        renderer = FrameRenderer(project, context=gl_context, proxies=store)
+        try:
+            renderer.render(0)
+            assert [d.info.height for d in renderer._decoders.values()] == [sample_av.height]
+            assert create_proxy(sample_av.path, store.prepare(project.media[0]), height=120)
+            renderer.reopen_sources()
+            renderer.render(1)
+            assert [d.info.height for d in renderer._decoders.values()] == [120]
+        finally:
+            renderer.close()
+
     def test_a_missing_proxy_falls_back_to_the_source(
         self, sample_av: SampleMedia, tmp_path: Path, gl_context: OffscreenGLContext
     ) -> None:
