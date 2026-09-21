@@ -248,6 +248,20 @@ class TestTheWindowFollowsThem:
         assert asked == [{media_id}], "できた素材のぶんだけ開き直していない"
         assert not window._proxied, "残ると、毎回開き直して再生が途切れる"
 
+    def test_a_discarded_proxy_is_asked_for_again(self, window: MainWindow) -> None:
+        """使えない控えを捨てたら、作り直しを頼む
+
+        頼まないと、その回だけでなく**そのあとずっと**元の素材を読み続ける
+        （置き場には何も無いままなので、次に開いたときも作られない）
+        """
+        media = _uhd_media()
+        window.execute(AddMedia(media))
+        asked: list[object] = []
+        window._proxies.request = lambda item, **kwargs: asked.append(item.id)  # type: ignore[method-assign]
+        window._preview.take_discarded = lambda: {media.id}  # type: ignore[method-assign]
+        window._flush_analysis()
+        assert asked == [media.id], "作り直しを頼んでいない"
+
     def test_a_big_project_drops_the_preview_quality(self, window: MainWindow) -> None:
         """4K の素材を置いたら画質が下がる
 

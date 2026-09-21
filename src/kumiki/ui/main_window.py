@@ -986,6 +986,13 @@ class MainWindow(QMainWindow):
             ready, self._proxied = self._proxied, set()
         if ready:
             self._preview.reload_sources(ready)
+        # 使えない控えを捨てた素材は、作り直しを頼む 頼まないと、その回だけでなく
+        # そのあとずっと元の素材を読み続ける（置き場には何も無いままなので、
+        # 次に開いたときも作られない）
+        for media_id in self._preview.take_discarded():
+            media = self.view_project.find_media(media_id)
+            if media is not None:
+                self._request_proxy(media)
         if not self._analysis_dirty:
             return
         self._analysis_dirty = False

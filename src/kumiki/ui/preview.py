@@ -66,6 +66,10 @@ class PreviewWidget(QOpenGLWidget):
             self.doneCurrent()
         self.update()
 
+    def take_discarded(self) -> set[MediaId]:
+        """レンダラが捨てた控えの素材 呼ぶ側が作り直しを頼む"""
+        return self._renderer.take_discarded() if self._renderer is not None else set()
+
     def reload_sources(self, media_ids: Collection[MediaId] | None = None) -> None:
         """素材を開き直させる 控えができた直後に呼ぶ
 

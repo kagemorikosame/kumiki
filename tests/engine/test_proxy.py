@@ -446,11 +446,14 @@ class TestTheRendererUsesIt:
         try:
             image = renderer.render(0)
             opened = [decoder.info for decoder in renderer._decoders.values()]
+            discarded = renderer.take_discarded()
+            assert renderer.take_discarded() == set(), "取り出したのに覚えたまま"
         finally:
             renderer.close()
         assert opened and opened[0].height == sample_av.height, "壊れた控えを掴んだまま"
         assert image[:, :, :3].max() > 0, "何も映っていない"
         assert shelf.find(media) is None, "使えない控えが残っている 作り直せない"
+        assert discarded == {media.id}, "捨てたことを伝えていない 作り直しが頼まれない"
 
     def test_a_source_starting_after_zero_still_plays(
         self, sample_av: SampleMedia, tmp_path: Path, gl_context: OffscreenGLContext

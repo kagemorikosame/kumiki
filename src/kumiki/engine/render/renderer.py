@@ -204,6 +204,8 @@ class FrameRenderer:
     ) -> None:
         self._project = project
         self._quality = quality
+        #: 使えないので捨てた控えの素材 作り直しを頼む側が拾う
+        self._discarded: set[MediaId] = set()
         #: プレビュー用の控えの置き場 既定は使わない
         #: **書き出しでは必ず None** 混ざると、画面では気付かないまま
         #: 低解像度の絵が最終出力に入る
@@ -1140,6 +1142,9 @@ class FrameRenderer:
                 return decoder
             if self._proxies is not None:
                 self._proxies.discard(media)
+                # 捨てただけでは作り直されない 控えを作る係へ伝える道が要る
+                # 伝えないと、その回だけでなく**そのあとずっと**元の素材を読む
+                self._discarded.add(media.id)
         return self._usable(media.path, stream_index)
 
     def _usable(self, path: Path, stream_index: int | None) -> VideoDecoder | None:
@@ -1175,6 +1180,15 @@ class FrameRenderer:
             return
         self._proxies = proxies
         self.reopen_sources()
+
+    def take_discarded(self) -> set[MediaId]:
+        """捨てた控えの素材を取り出して忘れる
+
+        呼ぶ側が作り直しを頼む 取り出した時点で忘れるので、同じ素材を
+        何度も作り直すことにはならない
+        """
+        found, self._discarded = self._discarded, set()
+        return found
 
     def reopen_sources(self, media_ids: Collection[MediaId] | None = None) -> None:
         """デコーダを閉じる 次に要るときに開き直す
