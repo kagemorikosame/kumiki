@@ -164,7 +164,7 @@ def _positive(value: str) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--segments", type=int, default=2000, help="字幕の本数")
+    parser.add_argument("--segments", type=_positive, default=2000, help="字幕の本数")
     parser.add_argument("--seconds", type=float, default=3600.0, help="素材の長さ（秒）")
     parser.add_argument("--repeats", type=_positive, default=5, help="作り直しを測る回数")
     parser.add_argument("--frames", type=_positive, default=200, help="再生を測るフレーム数")
@@ -226,9 +226,12 @@ def main() -> int:
             sequential.append((time.perf_counter() - started) * 1000)
 
         scattered: list[float] = []
+        # 最後は終端のフレームにする 割る数を 1 つ減らさないと終端へ届かず、
+        # 一番遠い字幕（探すのに一番時間が掛かる）を測らないまま終わる
+        last = max(1, arguments.frames - 1)
         for index in range(arguments.frames):
             started = time.perf_counter()
-            panel.set_frame(index * span // max(1, arguments.frames))
+            panel.set_frame(index * (span - 1) // last)
             application.processEvents()
             scattered.append((time.perf_counter() - started) * 1000)
     finally:

@@ -291,7 +291,9 @@ class SubtitlePanel(QWidget):
         signature = self._rows_signature()
         if signature == self._signature and self._table.rowCount() == len(self._segments()):
             return
-        self._signature = signature
+        # 印は**作り終えてから**立てる 途中で落ちたのに立てると、同じ
+        # プロジェクトを開き直しても作り直さず、半端な表が残ったままになる
+        self._signature = None
         media = self._current_media()
         segments = self._segments()
         placement = self._placement(media) if media is not None else {}
@@ -323,6 +325,7 @@ class SubtitlePanel(QWidget):
         finally:
             self._table.setUpdatesEnabled(True)
             self._updating = False
+        self._signature = signature
 
         self._table.resizeRowsToContents()
         self._update_actions()

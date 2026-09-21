@@ -21,6 +21,7 @@ from kumiki.core.commands import (
     RippleCut,
     SetSegmentText,
     SetTranscript,
+    TrimClip,
 )
 from kumiki.core.model import MediaItem, Project, Transcript
 from kumiki.engine.audio.waveform import BASE_SAMPLES_PER_PEAK, PeakLevel, Waveform
@@ -169,16 +170,13 @@ class TestRebuilding:
         見本を決め打ちにすると、100 時間を超えた所で時が 3 桁になり、
         2 桁ぶんの幅で切れる
         """
-        from dataclasses import replace
-
         widget, _ = panel
         narrow = widget._table.horizontalHeader().sectionSize(0)
-        long_clip = replace(placed.timeline.tracks[0].clips[0], duration=100 * 60 * 60 * 30)
-        widget.set_project(
-            placed.with_timeline(
-                placed.timeline.replace_track(placed.timeline.tracks[0].with_clips((long_clip,)))
-            )
-        )
+        clip = placed.timeline.tracks[0].clips[0]
+        # 命令で伸ばす モデルを直に差し替えると、命令の側の決まりが変わっても
+        # この試験は気付かない
+        longer = TrimClip(clip.id, tail_delta=100 * 60 * 60 * 30).apply(placed)
+        widget.set_project(longer)
         assert widget._table.horizontalHeader().sectionSize(0) > narrow, "幅が足りない"
 
     def test_the_table_recovers_if_filling_fails(
@@ -212,6 +210,13 @@ class TestRebuilding:
             del widget._table.setItem
         assert widget._table.updatesEnabled(), "描き直しが止まったまま"
         assert not widget._updating, "作り直し中の印が残ったまま"
+
+        # 落ちたあとに同じものを渡したら、作り直す
+        # 印を先に立てていると素通りして、半端な表が残ったままになる
+        widget.set_project(changed)
+        item = widget._table.item(0, 1)
+        assert item is not None
+        assert item.text() == "別の字幕", "半端な表のまま作り直していない"
 
     def test_the_time_column_does_not_measure_every_row(
         self, panel: tuple[SubtitlePanel, list[tuple[list[Command], str]]]
