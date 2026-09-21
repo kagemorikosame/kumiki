@@ -63,6 +63,10 @@ BURN_DEFAULTS = {"size": 48.0, "pos_y": -380.0, "border_width": 4.0}
 #: 時刻の列に足す余白（画素） 文字の幅ぴったりだと読みにくい
 TIME_COLUMN_PADDING = 24
 
+#: 時刻の列の幅を決める見本の長さ（フレーム） 1 時間ぶん
+#: これより短い動画でも、この幅は空けておく 桁が増えるたびに列が動くと目が疲れる
+MIN_TIME_SAMPLE_FRAMES = 108_000
+
 
 class SubtitlePanel(QWidget):
     """素材ごとの字幕の一覧と編集"""
@@ -171,6 +175,8 @@ class SubtitlePanel(QWidget):
 
     def set_project(self, project: Project) -> None:
         self._project = project
+        # 長さが変わると、時刻の桁も変わる 幅を取り直さないと切れる
+        self._table.horizontalHeader().resizeSection(0, self._time_column_width())
         self._reload_media()
         self._reload_rows()
 
@@ -193,8 +199,14 @@ class SubtitlePanel(QWidget):
     # --- 一覧 ---
 
     def _time_column_width(self) -> int:
-        """時刻の列の幅 見本のタイムコードを 1 度測って決める"""
-        sample = format_timecode(359_999, self._project.rate)
+        """時刻の列の幅 一番長くなるタイムコードを測って決める
+
+        見本を決め打ちにすると、100 時間を超えるタイムラインで時が 3 桁になり、
+        2 桁ぶんの幅で切れる 実際の長さから決める（短いときは見本の方を使う
+        短い動画で時刻の列が細くなりすぎると、桁が増えたときに毎回揺れる）
+        """
+        longest = max(self._project.duration, MIN_TIME_SAMPLE_FRAMES)
+        sample = format_timecode(longest, self._project.rate)
         return self._table.fontMetrics().horizontalAdvance(sample) + TIME_COLUMN_PADDING
 
     def _on_section_resized(self, index: int, _old: int, _new: int) -> None:
@@ -287,27 +299,30 @@ class SubtitlePanel(QWidget):
         self._updating = True
         # 描き直しを止めてから中身を入れ替える 途中の状態を描くと、
         # 1 行ごとに並べ直しが走って本数の 2 乗で遅くなる
+        # 途中で落ちても必ず戻す 戻し損ねると、表が固まったまま何も映らない
         self._table.setUpdatesEnabled(False)
-        # いったん空にしてから伸ばす 置き換えると、古い中身を捨てる手間が
-        # 1 行ずつ掛かる
-        self._table.setRowCount(0)
-        self._table.setRowCount(len(segments))
-        self._rows = []
-        for row, segment in enumerate(segments):
-            start, end = placement.get(segment.id, (-1, -1))
-            self._rows.append((segment.id, start, end))
+        try:
+            # いったん空にしてから伸ばす 置き換えると、古い中身を捨てる手間が
+            # 1 行ずつ掛かる
+            self._table.setRowCount(0)
+            self._table.setRowCount(len(segments))
+            self._rows = []
+            for row, segment in enumerate(segments):
+                start, end = placement.get(segment.id, (-1, -1))
+                self._rows.append((segment.id, start, end))
 
-            when = format_timecode(start, self._project.rate) if start >= 0 else "—"
-            time_item = QTableWidgetItem(when)
-            time_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-            if start < 0:
-                # タイムラインに出ていない字幕 素材を切った先で使われていない範囲
-                time_item.setForeground(Colors.TEXT_MUTED)
-                time_item.setToolTip("いまのタイムラインには出ていません")
-            self._table.setItem(row, 0, time_item)
-            self._table.setItem(row, 1, QTableWidgetItem(segment.text))
-        self._table.setUpdatesEnabled(True)
-        self._updating = False
+                when = format_timecode(start, self._project.rate) if start >= 0 else "—"
+                time_item = QTableWidgetItem(when)
+                time_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                if start < 0:
+                    # タイムラインに出ていない字幕 素材を切った先で使われていない範囲
+                    time_item.setForeground(Colors.TEXT_MUTED)
+                    time_item.setToolTip("いまのタイムラインには出ていません")
+                self._table.setItem(row, 0, time_item)
+                self._table.setItem(row, 1, QTableWidgetItem(segment.text))
+        finally:
+            self._table.setUpdatesEnabled(True)
+            self._updating = False
 
         self._table.resizeRowsToContents()
         self._update_actions()

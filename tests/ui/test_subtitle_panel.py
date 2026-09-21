@@ -161,6 +161,58 @@ class TestRebuilding:
         assert item is not None
         assert item.text() == "書き直した字幕"
 
+    def test_the_time_column_fits_a_long_timeline(
+        self, panel: tuple[SubtitlePanel, list[tuple[list[Command], str]]], placed: Project
+    ) -> None:
+        """長いタイムラインでも時刻が切れない
+
+        見本を決め打ちにすると、100 時間を超えた所で時が 3 桁になり、
+        2 桁ぶんの幅で切れる
+        """
+        from dataclasses import replace
+
+        widget, _ = panel
+        narrow = widget._table.horizontalHeader().sectionSize(0)
+        long_clip = replace(placed.timeline.tracks[0].clips[0], duration=100 * 60 * 60 * 30)
+        widget.set_project(
+            placed.with_timeline(
+                placed.timeline.replace_track(placed.timeline.tracks[0].with_clips((long_clip,)))
+            )
+        )
+        assert widget._table.horizontalHeader().sectionSize(0) > narrow, "幅が足りない"
+
+    def test_the_table_recovers_if_filling_fails(
+        self,
+        panel: tuple[SubtitlePanel, list[tuple[list[Command], str]]],
+        placed: Project,
+        video_media: MediaItem,
+        transcript: Transcript,
+    ) -> None:
+        """中身を入れ替える途中で落ちても、表が固まったままにならない
+
+        描き直しを止めたまま戻さないと、以降なにも映らない
+        """
+        from dataclasses import replace
+
+        widget, _ = panel
+
+        def boom(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("わざと落とす")
+
+        # 作り直しが本当に走る変更にする（字幕を 1 本書き直す）
+        edited = Transcript(
+            segments=(replace(transcript.segments[0], text="別の字幕"), *transcript.segments[1:])
+        )
+        changed = SetTranscript(video_media.id, edited).apply(placed)
+        widget._table.setItem = boom  # type: ignore[method-assign]
+        try:
+            with pytest.raises(RuntimeError):
+                widget.set_project(changed)
+        finally:
+            del widget._table.setItem
+        assert widget._table.updatesEnabled(), "描き直しが止まったまま"
+        assert not widget._updating, "作り直し中の印が残ったまま"
+
     def test_the_time_column_does_not_measure_every_row(
         self, panel: tuple[SubtitlePanel, list[tuple[list[Command], str]]]
     ) -> None:

@@ -21,6 +21,7 @@ import statistics
 import sys
 import tempfile
 import time
+from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
 
@@ -36,19 +37,36 @@ os.environ["LOCALAPPDATA"] = str(_base / "local")
 # 画面を開かない 測るのは描き直しの計算で、実際の画面への転送ではない
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+
 #: 拡大率は QApplication を作る前に決める あとから変えても効かない
-_scale = next(
-    (value.split("=", 1)[1] for value in sys.argv[1:] if value.startswith("--scale=")),
-    None,
-)
-if _scale is None and "--scale" in sys.argv:
-    _scale = sys.argv[sys.argv.index("--scale") + 1]
+def _early_scale(argv: list[str]) -> str | None:
+    """``--scale`` の値を argparse より先に読む 値が無ければ ``None``
+
+    拡大率は ``QApplication`` を作る前に環境変数で決める あとから変えても効かない
+    書き方が壊れていてもここでは何も言わない argparse に任せた方が、
+    使い方の案内がそろう
+    """
+    for index, value in enumerate(argv):
+        if value.startswith("--scale="):
+            return value.split("=", 1)[1]
+        if value == "--scale" and index + 1 < len(argv):
+            return argv[index + 1]
+    return None
+
+
+_scale = _early_scale(sys.argv[1:])
 if _scale is not None:
     os.environ["QT_SCALE_FACTOR"] = _scale
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from kumiki.core.commands import AddClip, AddMedia, AddTrack  # noqa: E402
+from kumiki.core.commands import (  # noqa: E402
+    AddClip,
+    AddMedia,
+    AddTrack,
+    RenameProject,
+    SetTranscript,
+)
 from kumiki.core.model import (  # noqa: E402
     AudioStreamInfo,
     Clip,
@@ -114,9 +132,20 @@ def _project(segments: int, seconds: float) -> Project:
     return AddClip(track.id, clip).apply(project)
 
 
+def _percentile95(times: list[float]) -> float:
+    """95 パーセンタイル 標本の外側へ外挿しない（inclusive）
+
+    番号で取り出す形（``ordered[int(len * 0.95)]``）だと、標本が 5 個のときに
+    一番大きい値を選ぶ 外れ値 1 つで予算超えと出てしまう
+    """
+    if len(times) < 2:
+        return max(times)
+    return statistics.quantiles(times, n=20, method="inclusive")[18]
+
+
 def _report(name: str, times: list[float], budget: float) -> bool:
     ordered = sorted(times)
-    p95 = ordered[min(len(ordered) - 1, int(len(ordered) * 0.95))]
+    p95 = _percentile95(ordered)
     ok = p95 <= budget
     print(
         f"  {'○' if ok else '×'} {name:<28} 中央 {statistics.median(ordered):7.2f} ms  "
@@ -125,12 +154,20 @@ def _report(name: str, times: list[float], budget: float) -> bool:
     return ok
 
 
+def _positive(value: str) -> int:
+    """1 以上の整数 0 を受けると測るものが無いまま結果を出そうとして落ちる"""
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"1 以上を指定する: {value}")
+    return number
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--segments", type=int, default=2000, help="字幕の本数")
     parser.add_argument("--seconds", type=float, default=3600.0, help="素材の長さ（秒）")
-    parser.add_argument("--repeats", type=int, default=5, help="作り直しを測る回数")
-    parser.add_argument("--frames", type=int, default=200, help="再生を測るフレーム数")
+    parser.add_argument("--repeats", type=_positive, default=5, help="作り直しを測る回数")
+    parser.add_argument("--frames", type=_positive, default=200, help="再生を測るフレーム数")
     parser.add_argument("--scale", default="1", help="Qt の拡大率（1 / 1.5 / 2）")
     arguments = parser.parse_args()
 
@@ -145,22 +182,33 @@ def main() -> int:
     panel.show()
     try:
         # 作り直し 字幕かクリップが変わったときに通る
+        # **本物の編集**で変える 字幕を 1 本書き直す（SetTranscript）
+        # 印を手で消して作り直させると、実際の編集では通らない道を測ることになる
+        media = project.media[0]
+        transcript = media.transcript
+        assert transcript is not None
         rebuilds: list[float] = []
+        current = project
         for index in range(arguments.repeats):
-            # 毎回ちがうプロジェクトにする 同じものだと作り直しを飛ばすので、
-            # ここでは一番重い場合（本当に作り直す）を測ることにならない
-            renamed = project.renamed(f"測定 {index}")
-            panel._signature = None
+            edited = Transcript(
+                segments=(
+                    replace(transcript.segments[0], text=f"書き直した {index}"),
+                    *transcript.segments[1:],
+                )
+            )
+            current = SetTranscript(media.id, edited).apply(current)
             started = time.perf_counter()
-            panel.set_project(renamed)
+            panel.set_project(current)
             application.processEvents()
             rebuilds.append((time.perf_counter() - started) * 1000)
 
         # 変わっていないときの素通り 編集のたびに通る所
+        # 字幕に関係のない編集（プロジェクト名を変える）を**本物の命令**で行う
         skips: list[float] = []
-        for _ in range(arguments.repeats):
+        for index in range(arguments.repeats):
+            current = RenameProject(f"測定 {index}").apply(current)
             started = time.perf_counter()
-            panel.set_project(project)
+            panel.set_project(current)
             application.processEvents()
             skips.append((time.perf_counter() - started) * 1000)
 
