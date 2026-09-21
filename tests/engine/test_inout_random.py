@@ -209,10 +209,22 @@ class TestBlink:
         **乱数ではなく決まった並び**で点く時間が伸びていく
         一定の点滅のままにすると、最後まで同じ割合でちらつく
         """
+        # AviUtl2 に 時間 1.0・点滅間隔 1 を描かせた 30 フレームぶんの並び
+        # （60fps の実物を読んだものと同じ式から出る 30fps ぶん）
+        # 回数だけを数える形にすると、別の並びや乱数でも通ってしまう
         blink = self._blink(interval=1.0, even=False)
-        early = sum(bool(_lit(draw(blink, frame)).any()) for frame in range(0, 15))
-        late = sum(bool(_lit(draw(blink, frame)).any()) for frame in range(15, 30))
-        assert late > early * 2, "進んでも点いている時間が増えない"
+        lit = "".join("#" if _lit(draw(blink, frame)).any() else "." for frame in range(0, 30))
+        assert lit == ".......#..#..#.#.##.##.#######", lit
+
+    def test_the_blink_leaves_on_the_way_out(self, draw: Callable[..., np.ndarray]) -> None:
+        """退場でも点滅しながら消える
+
+        クリップ先頭からのフレーム数で測ると、退場の頃には毎フレーム点いて
+        絵が消えない 測るのは「終わりまでの残り」の側
+        """
+        leaving = self._blink(interval=1.0, even=False, effect_in=False, effect_out=True)
+        assert _lit(draw(leaving, DURATION // 2)).any(), "真ん中で消えている"
+        assert not _lit(draw(leaving, DURATION - 1)).any(), "終わりで消えていない"
 
 
 class TestRandomDirection:

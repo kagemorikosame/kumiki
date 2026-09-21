@@ -900,12 +900,21 @@ void main() {
 
     // 積み上げた量が整数をまたぐフレームだけ点ける
     // 点滅間隔 を大きくすると、またぐ回数が減って 1 回が長くなる
+    //
+    // 測るのは「登場が始まってからの経過」と「終わりまでの残り」の**短い方**
+    // クリップ先頭からのフレーム数で測ると、退場の頃には毎フレーム境界をまたいで
+    // 点きっぱなしになり、退場しても絵が消えない
     float span_frames = max(effect_time * max(u_fps, 1.0), 1.0);
-    float scale = 2.0 * span_frames * step_;
+    float total = max(u_duration * max(u_fps, 1.0), 1.0);
+    float when = effect_in ? u_frame : span_frames;
+    if (effect_out) when = min(when, total - u_frame);
+    when = max(when, 0.0);
+
     // 数えるのは**次のフレームまで**の積み上げ 現在までで測ると、
     // 実物より 1 フレーム遅れて点き始める
-    float now = (u_frame + 1.0) * (u_frame + 1.0) / scale;
-    float before = u_frame * u_frame / scale;
+    float scale = 2.0 * span_frames * step_;
+    float now = (when + 1.0) * (when + 1.0) / scale;
+    float before = when * when / scale;
     frag_color = floor(now) != floor(before) ? color : vec4(0.0);
 }
 """
