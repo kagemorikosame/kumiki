@@ -257,6 +257,7 @@ class TestRebuilding:
             del widget._table.setItem
         assert order, "何も起きていない"
         assert order[0] == "入れ替え", f"入れ替えの前に測り直している: {order[:3]}"
+        assert order.count("測り直し") == 1, f"2 度測っている: {order.count('測り直し')} 回"
 
     def test_the_table_recovers_if_filling_fails(
         self,

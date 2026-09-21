@@ -180,11 +180,6 @@ class SubtitlePanel(QWidget):
         self._project = project
         self._reload_media()
         self._reload_rows()
-        # 長さが変わると、時刻の桁も変わる 幅を取り直さないと切れる
-        # 中身を入れ替えた**あと**に変える 先に変えると、これから捨てる行の
-        # 高さを測り直すことになる（幅が変われば折り返しも変わるので、
-        # そのあとの作り直しで結局もう一度測ることになる）
-        self._table.horizontalHeader().resizeSection(0, self._time_column_width())
 
     def set_frame(self, frame: int) -> None:
         """再生ヘッドの位置 いま出ている字幕を強調する"""
@@ -302,6 +297,9 @@ class SubtitlePanel(QWidget):
         """
         signature = self._rows_signature()
         if signature == self._signature and self._table.rowCount() == len(self._segments()):
+            # 中身は同じ 幅だけ入れ直す 長さが変わって桁が増えていれば、
+            # ここで合図が飛んで折り返しを取り直す（変わっていなければ何も起きない）
+            self._table.horizontalHeader().resizeSection(0, self._time_column_width())
             return
         # 印は**作り終えてから**立てる 途中で落ちたのに立てると、同じ
         # プロジェクトを開き直しても作り直さず、半端な表が残ったままになる
@@ -316,6 +314,10 @@ class SubtitlePanel(QWidget):
         # 途中で落ちても必ず戻す 戻し損ねると、表が固まったまま何も映らない
         self._table.setUpdatesEnabled(False)
         try:
+            # 幅は中身を入れ替える**前**に決める ここで変えても、作り直しの
+            # 最中なので合図は無視される 最後に 1 度だけ取り直せば足りる
+            # （あとから変えると、入れ替え直後の取り直しと合わせて 2 度測る）
+            self._table.horizontalHeader().resizeSection(0, self._time_column_width())
             # いったん空にしてから伸ばす 置き換えると、古い中身を捨てる手間が
             # 1 行ずつ掛かる
             self._table.setRowCount(0)
