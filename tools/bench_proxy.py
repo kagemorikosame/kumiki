@@ -50,6 +50,7 @@ from kumiki.core.model import (  # noqa: E402
 from kumiki.core.timebase import FrameRate  # noqa: E402
 from kumiki.effects.definition import registry  # noqa: E402
 from kumiki.engine.cache.proxy import (  # noqa: E402
+    BUDGET_MS,
     PROXY_HEIGHT,
     ProxyStore,
     create_proxy,
@@ -63,9 +64,6 @@ from kumiki.engine.gpu import (  # noqa: E402
     OffscreenGLContext,
 )
 from kumiki.engine.render import FrameRenderer, RenderQuality  # noqa: E402
-
-#: 60fps の 1 コマ（ミリ秒） 4K のプレビューの目標
-BUDGET_MS = 1000 / 60
 
 #: 画面へ出す先の大きさ プレビューの枠は画面の実寸で、素材の大きさではない
 PREVIEW_WIDTH, PREVIEW_HEIGHT = 1920, 1080

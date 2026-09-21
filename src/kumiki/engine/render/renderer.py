@@ -1148,6 +1148,11 @@ class FrameRenderer:
         開けるかどうかだけでは足りない 見出しだけ正しいファイルを掴むと、
         映らない理由が分からないまま残る 確かめるのは開いた 1 回だけで、
         描くたびには走らない
+
+        時刻 0 で確かめてよいのは、:meth:`VideoDecoder._decode_at` が
+        まだ 1 枚も読んでいないときに**読めた 1 枚目をそのまま採る**ため
+        先頭が 0 より後から始まる素材（切り出したもの）でも絵が返る
+        ここは ``test_a_source_starting_after_zero_still_plays`` で見張る
         """
         try:
             decoder = VideoDecoder(path, stream_index)
