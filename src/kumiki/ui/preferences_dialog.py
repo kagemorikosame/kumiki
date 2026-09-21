@@ -159,13 +159,17 @@ class PreferencesDialog(QDialog):
 
     @staticmethod
     def _select(box: QComboBox, value: int) -> None:
-        """その値の項目を選ぶ 一覧に無ければ先頭のまま
+        """その値の項目を選ぶ 一覧に無ければ、その値の項目を足してから選ぶ
 
         設定ファイルを手で書き換えた人が、一覧に無い値を入れていることがある
+        先頭のままにすると、設定を開いて OK を押しただけで**黙って別の値に
+        置き換わる** 触っていない項目が変わるのは、壊したのと同じ
         """
         index = box.findData(value)
-        if index >= 0:
-            box.setCurrentIndex(index)
+        if index < 0:
+            box.addItem(f"{value}（設定ファイルの値）", value)
+            index = box.findData(value)
+        box.setCurrentIndex(index)
 
     def preferences(self) -> Preferences:
         """画面で選ばれた設定"""

@@ -269,7 +269,7 @@ def _layers(value: str) -> int:
     return number
 
 
-def _report_prefetch(project: Project, frames: int, args: argparse.Namespace) -> None:
+def _report_prefetch(project: Project, frames: int) -> None:
     """先読みの測り方と結果を出す 合否には混ぜない
 
     ここで測るのは「貯まっていれば出せる」ことで、貯めるのが間に合うかは
@@ -395,7 +395,7 @@ def main() -> int:
         context.release()
 
     if args.prefetch:
-        _report_prefetch(project, frames, args)
+        _report_prefetch(project, frames)
 
     within = [item for item in results if item[2] <= BUDGET_MS]
     if not within:

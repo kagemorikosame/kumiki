@@ -143,11 +143,14 @@ class TestTheDialog:
         # 既定が一覧に無いと、設定を開いて閉じただけで値が変わる
         assert Preferences().proxy_height in [height for _, height in PROXY_HEIGHTS]
 
-    def test_an_unknown_height_is_left_alone(self, qt_application: QApplication) -> None:
-        """一覧に無い値でも落ちない 設定ファイルを手で書き換えた人がいる"""
+    def test_an_unknown_height_is_kept(self, qt_application: QApplication) -> None:
+        """一覧に無い値でも落ちず、**そのまま残る**
+
+        先頭へ倒すと、設定を開いて OK を押しただけで触っていない項目が変わる
+        """
         del qt_application
         dialog = PreferencesDialog(Preferences(proxy_height=1000))
-        assert dialog.preferences().proxy_height in [height for _, height in PROXY_HEIGHTS]
+        assert dialog.preferences().proxy_height == 1000
 
     def test_the_numbers_come_from_the_measured_table(self, dialog: PreferencesDialog) -> None:
         """画面に出す数は**控えの側の定数**から取る
@@ -370,6 +373,12 @@ class TestThePrefetchSetting:
         del qt_application
         chosen = Preferences(prefetch=False, prefetch_budget_mb=4096)
         assert PreferencesDialog(chosen).preferences() == chosen
+
+    def test_an_unknown_budget_is_kept(self, qt_application: QApplication) -> None:
+        """設定ファイルへ手で書いた予算も残る 開いて閉じただけで減らさない"""
+        del qt_application
+        dialog = PreferencesDialog(Preferences(prefetch_budget_mb=8192))
+        assert dialog.preferences().prefetch_budget_mb == 8192
 
     def test_the_budget_choices_include_the_default(self) -> None:
         # 既定が一覧に無いと、設定を開いて閉じただけで値が変わる
