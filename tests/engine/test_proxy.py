@@ -205,6 +205,25 @@ class TestMakingOne:
         assert seen and seen[-1] == 1.0
         assert seen == sorted(seen), "進み具合が戻っている"
 
+    def test_an_empty_result_is_not_kept(self, sample_av: SampleMedia, tmp_path: Path) -> None:
+        """1 枚も出せない控えは置かない
+
+        映像の見出しはあるのに復号できない素材では、変換そのものは成功して
+        中身の無い控えができる 置くと、描く側が捨てて作り直しを頼み、
+        また同じものができる、の繰り返しになる
+        """
+        import kumiki.engine.cache.proxy as proxy_module
+
+        target = tmp_path / "proxy.mp4"
+        original = proxy_module._has_a_frame
+        proxy_module._has_a_frame = lambda path: False
+        try:
+            assert create_proxy(sample_av.path, target, height=120) is None
+        finally:
+            proxy_module._has_a_frame = original
+        assert not target.exists(), "使えない控えを置いている"
+        assert list(tmp_path.iterdir()) == [], "書きかけが残っている"
+
     def test_a_broken_source_is_not_an_error(self, tmp_path: Path) -> None:
         """壊れた素材で例外を投げない
 

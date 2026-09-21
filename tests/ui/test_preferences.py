@@ -262,6 +262,21 @@ class TestTheWindowFollowsThem:
         window._flush_analysis()
         assert asked == [media.id], "作り直しを頼んでいない"
 
+    def test_a_proxy_is_rebuilt_only_once(self, window: MainWindow) -> None:
+        """作り直しは**1 度だけ**
+
+        作り直した控えがまた使えないと、頼み続けて 250ms ごとに変換が走り、
+        編集そのものが重くなる あきらめて元の素材で映す
+        """
+        media = _uhd_media()
+        window.execute(AddMedia(media))
+        asked: list[object] = []
+        window._proxies.request = lambda item, **kwargs: asked.append(item.id)  # type: ignore[method-assign]
+        window._preview.take_discarded = lambda: {media.id}  # type: ignore[method-assign]
+        window._flush_analysis()
+        window._flush_analysis()
+        assert asked == [media.id], "同じ素材を何度も作り直している"
+
     def test_a_big_project_drops_the_preview_quality(self, window: MainWindow) -> None:
         """4K の素材を置いたら画質が下がる
 

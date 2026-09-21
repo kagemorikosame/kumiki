@@ -55,7 +55,7 @@ import numpy as np
 
 from kumiki.core.model import MediaId, MediaItem
 from kumiki.engine.cache.store import CacheStore, media_key
-from kumiki.engine.decode import ProbeError, probe_media
+from kumiki.engine.decode import ProbeError, VideoDecoder, probe_media
 
 __all__ = [
     "PROXY_HEIGHT",
@@ -200,7 +200,7 @@ def create_proxy(
                 codec=name,
                 progress=progress,
                 should_cancel=should_cancel,
-            ):
+            ) and _has_a_frame(working):
                 working.replace(target)
                 return target
         except (av.error.FFmpegError, OSError, ValueError):
@@ -209,6 +209,20 @@ def create_proxy(
             pass
         working.unlink(missing_ok=True)
     return None
+
+
+def _has_a_frame(path: Path) -> bool:
+    """作った控えが 1 枚でも出せるか
+
+    映像の見出しはあるのに 1 枚も復号できない素材では、変換そのものは
+    成功して**中身の無い控え**ができる 置いてしまうと、描く側が捨てて
+    作り直しを頼み、また同じものができる、の繰り返しになる ここで止める
+    """
+    try:
+        with VideoDecoder(path) as decoder:
+            return decoder.frame_at(Fraction(0)) is not None
+    except ProbeError:
+        return False
 
 
 def _transcode(
