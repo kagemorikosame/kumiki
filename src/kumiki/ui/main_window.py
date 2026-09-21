@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import threading
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -170,7 +171,11 @@ class MainWindow(QMainWindow):
         self._proxies = ProxyBuilder(ProxyStore(height=self._preferences.proxy_height))
         self._analysis_dirty = False
         #: 控えができた素材 次の間隔でこのぶんだけ開き直す
+        #: ワーカースレッドが足し、画面のスレッドが取り出すので錠で守る
+        #: 守らないと、取り出した直後に足されたぶんが次の回にも残らず、
+        #: その素材だけ元のファイルを読み続ける
         self._proxied: set[MediaId] = set()
+        self._proxied_lock = threading.Lock()
         #: AI が結果を確認するための描画係 初めて求められたときに作る
         self._ai_renderer: FrameRenderer | None = None
         #: 編集しているシーン ``None`` ならメイン モデルではなく画面の状態なので
@@ -967,18 +972,20 @@ class MainWindow(QMainWindow):
         その素材のデコーダを開き直させる（開いたままだと元のファイルを
         掴み続けるので、描き直すだけでは控えに変わらない）
         """
-        self._proxied.add(media_id)
+        with self._proxied_lock:
+            self._proxied.add(media_id)
 
     def _flush_analysis(self) -> None:
         # AI から始めた起こしの様子も、ついでにここで拾う 専用のタイマーを
         # もう 1 本増やすほどの頻度ではない
         self._subtitles.poll_transcription()
-        if self._proxied:
-            # 控えができた 開きっぱなしのデコーダは元のファイルを掴んだままなので、
-            # 開き直させる（描き直すだけでは切り替わらない）
-            # できた素材のぶんだけにする 全部開き直すと、別の素材の控えが
-            # できるたびに再生中のクリップまでシークし直すことになる
+        # 控えができた 開きっぱなしのデコーダは元のファイルを掴んだままなので、
+        # 開き直させる（描き直すだけでは切り替わらない）
+        # できた素材のぶんだけにする 全部開き直すと、別の素材の控えが
+        # できるたびに再生中のクリップまでシークし直すことになる
+        with self._proxied_lock:
             ready, self._proxied = self._proxied, set()
+        if ready:
             self._preview.reload_sources(ready)
         if not self._analysis_dirty:
             return

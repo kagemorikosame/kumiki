@@ -1169,7 +1169,6 @@ class FrameRenderer:
         if proxies is self._proxies:
             return
         self._proxies = proxies
-        # 置き場そのものが変わった 全部開き直す
         self.reopen_sources()
 
     def reopen_sources(self, media_ids: Collection[MediaId] | None = None) -> None:

@@ -329,11 +329,11 @@ class ProxyBuilder:
     投入前に終わったものを消し損ねる
     """
 
-    def __init__(self, store: ProxyStore | None = None, *, max_workers: int = 1) -> None:
+    def __init__(self, store: ProxyStore | None = None) -> None:
         self._store = store if store is not None else ProxyStore()
-        self._executor = ThreadPoolExecutor(
-            max_workers=max_workers, thread_name_prefix="kumiki-proxy"
-        )
+        # 本数は外から変えられないようにする 増やせる形にすると、
+        # 「同時に 1 本だけ」という約束が呼ぶ側の都合で破れる
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="kumiki-proxy")
         self._lock = threading.Lock()
         #: 作っている最中の進み具合 UI に出すために持つ
         self._progress: dict[MediaId, float] = {}
