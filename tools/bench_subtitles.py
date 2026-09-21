@@ -98,7 +98,9 @@ EDIT_BUDGET_MS = 100.0
 
 def _project(segments: int, seconds: float) -> Project:
     """字幕を ``segments`` 本持つ素材を 1 本置いたプロジェクト"""
-    step = Fraction(int(seconds * 1000), max(1, segments)) / 1000
+    # 分数のまま割る ミリ秒へ丸めてから割ると、短い素材に多くの字幕を
+    # 入れたときに間隔が 0 になり、全部が時刻 0 の字幕になる
+    step = Fraction(seconds).limit_denominator(1000) / max(1, segments)
     media = MediaItem(
         path=Path("長い動画.mp4"),
         # 秒は分数のまま持つ 整数へ丸めると、0.5 秒の素材が長さ 0 になる
