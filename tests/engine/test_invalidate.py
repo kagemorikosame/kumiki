@@ -25,6 +25,7 @@ from kumiki.core.model import (
     Transcript,
     VideoStreamInfo,
 )
+from kumiki.core.model.ids import new_group_id
 from kumiki.core.timebase import FrameRate
 from kumiki.engine.render import Invalidation, changed_spans
 
@@ -180,6 +181,31 @@ class TestWhatChangesOnePlace:
         filtered = replace(before.timeline.tracks[0], effects=(Effect(kind="blur"),))
         after = replace(before, timeline=before.timeline.replace_track(filtered))
         assert changed_spans(before, after).spans == ((0, 30), (100, 130))
+
+
+class TestWhatTheRendererDoesNotReadOnClips:
+    def test_grouping_does_not_touch_the_picture(self) -> None:
+        """束ね直しても絵は変わらない レンダラは束ねを読まない
+
+        並べ終えた後にまとめて束ねる使い方で、貯めた絵が全部消えていた
+        """
+        clip = _clip(0, 30)
+        before = _project(clip)
+        after = _project(replace(clip, group_id=new_group_id()))
+        assert not changed_spans(before, after)
+
+    def test_linking_does_not_touch_the_picture(self) -> None:
+        clip = _clip(0, 30)
+        before = _project(clip)
+        after = _project(replace(clip, link_group=new_group_id()))
+        assert not changed_spans(before, after)
+
+    def test_turning_a_clip_off_still_does(self) -> None:
+        # 外しすぎていないことの裏 表示の切り替えは絵に出る
+        clip = _clip(0, 30)
+        before = _project(clip)
+        after = _project(replace(clip, enabled=False))
+        assert changed_spans(before, after).contains(0)
 
 
 class TestTheMedia:

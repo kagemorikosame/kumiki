@@ -233,7 +233,9 @@ class PreviewWidget(QOpenGLWidget):
         描けなくなったら止める 止めないと、貯まりきった後も空き時間の
         たびに「次はどれか」を数え続ける
         """
-        if self._cache is None:
+        if self._playing or self._cache is None:
+            # タイマーを止めても、すでに積まれた合図は届く 再生が始まった後に
+            # 1 コマ描くと、出す側と GL を奪い合う
             self._idle.stop()
             return
         started = time.perf_counter()

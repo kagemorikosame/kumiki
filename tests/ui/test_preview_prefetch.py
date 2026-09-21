@@ -283,3 +283,19 @@ class TestWhenPrefetchingGoesWrong:
         assert stub.steps == [], "current でないのに描きに行っている"
         assert not widget._idle.isActive()
         assert stopped
+
+
+class TestTheQueuedTick:
+    def test_a_tick_that_arrives_after_playback_starts_does_nothing(
+        self, preview: tuple[PreviewWidget, StubCache]
+    ) -> None:
+        """止めた後に届いた合図で描かない
+
+        タイマーを止めても、すでに積まれた合図は届く そこで 1 コマ描くと、
+        いま出すべきコマと GL を奪い合う
+        """
+        widget, stub = preview
+        widget.set_frame(3)
+        widget.set_playing(True)
+        widget._prefetch_step()
+        assert stub.steps == []

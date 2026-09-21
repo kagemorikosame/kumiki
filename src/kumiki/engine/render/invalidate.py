@@ -126,10 +126,22 @@ def _clip_spans(before: Track, after: Track) -> list[tuple[int, int]]:
     spans: list[tuple[int, int]] = []
     for clip_id in old.keys() | new.keys():
         first, second = old.get(clip_id), new.get(clip_id)
-        if first == second:
+        if first is not None and second is not None and _visual(first) == _visual(second):
             continue
         spans.extend(_span(clip) for clip in (first, second) if clip is not None)
     return spans
+
+
+def _visual(clip: Clip) -> Clip:
+    """束ねとリンクを外したクリップ 絵が同じかどうかを比べるため
+
+    どちらもレンダラが読まない 束ね直すたびに貯めた絵を捨てると、
+    並べ終えた後の整理でプレビューが作り直しになる
+
+    **外すのはこの 2 つだけ** 新しく足した項目は比べる側に入る（絵に出ないと
+    分かってから外す）捨てそこなうより、捨てすぎる方がまだ直しやすい
+    """
+    return replace(clip, link_group=None, group_id=None)
 
 
 def _span(clip: Clip) -> tuple[int, int]:
