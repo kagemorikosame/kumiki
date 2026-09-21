@@ -261,9 +261,14 @@ def map_template(
 
     contents: list[MappedObject] = []
     grouped: list[Effect] = []
+    # 入れ物の長さ 動く値のキーフレームはこの長さの上に並んでいる
+    # 中身の無いテンプレートでも残しておく 1 にすると、着せるときに
+    # 尺を合わせられず、動きが着せた先の途中で止まる
+    span = 1
     for item in items:
         if type_name(item) in _CONTAINER_ITEMS:
             grouped.extend(_group_effects(item, log))
+            span = max(span, int(number(item.get("Length"), 1.0)))
             continue
         mapped = _map_item(item, log)
         if mapped is not None:
@@ -275,7 +280,7 @@ def map_template(
         # 中身のないテンプレート エフェクトだけを返す
         return [
             MappedObject(
-                clip=Clip(timeline_start=0, duration=1, effects=tuple(grouped)),
+                clip=Clip(timeline_start=0, duration=span, effects=tuple(grouped)),
                 layer=1,
                 kind="effects",
                 has_span=False,

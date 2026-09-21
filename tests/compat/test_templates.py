@@ -307,6 +307,36 @@ class TestRestylingKeepsTheMotion:
         assert moved[0] == (0, 0.0)
         assert moved[-1] == (1, 300.0)
 
+    def test_an_effects_only_template_is_fitted_too(self) -> None:
+        """エフェクトだけのテンプレート（YMM4 のアニメーション効果）も尺に合わせる
+
+        入れ物の長さを捨てていると尺合わせができず、300 フレーム向けの動きが
+        60 フレームのクリップの 5 分の 1 で止まる
+        """
+        from kumiki.compat.mapped import MappedObject
+        from kumiki.core.model import Keyframe
+
+        transform = registry.require("transform").create(
+            rotation=AnimatedValue(
+                keyframes=(Keyframe(frame=0, value=0.0), Keyframe(frame=299, value=30.0))
+            )
+        )
+        template = MappedObject(
+            clip=Clip(timeline_start=0, duration=300, effects=(transform,)),
+            layer=1,
+            kind="effects",
+            has_span=False,
+        )
+        clip = Clip(
+            timeline_start=0,
+            duration=60,
+            source=GeneratedSource(kind="text", params={"text": "字幕"}),
+        )
+        added = [c for c in restyle([template], clip) if isinstance(c, AddEffect)]
+        value = added[0].effect.params["rotation"]
+        assert isinstance(value, AnimatedValue)
+        assert [k.frame for k in value.keyframes] == [0, 59]
+
     def test_the_clip_itself_is_not_resized(self, shelf: tuple[TemplateCatalog, Path]) -> None:
         # 動きを合わせるのであって、クリップの長さは今のまま
         catalog, _ = shelf

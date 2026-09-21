@@ -565,6 +565,18 @@ class TestGroups:
         assert mapped[0].kind == "effects"
         assert [e.kind for e in mapped[0].clip.effects] == ["transform"]
 
+    def test_an_effects_only_template_keeps_the_group_length(self) -> None:
+        """中身が無くても**入れ物の長さ**を残す
+
+        動く値のキーフレームはこの長さの上に並んでいる 1 にしてしまうと、
+        着せるときに尺を合わせられず、動きが着せた先の途中で止まる
+        """
+        group = group_item(Rotation=moving(0.0, 30.0), Length=300)
+        mapped = map_template([group], report=CompatibilityReport())
+        assert mapped[0].clip.duration == 300
+        # 長さを持っていないことは変わらない 置くときは既定の長さを使う
+        assert not mapped[0].has_span
+
     def test_a_group_with_nothing_to_give_produces_nothing(self) -> None:
         assert map_template([group_item()], report=CompatibilityReport()) == []
 
