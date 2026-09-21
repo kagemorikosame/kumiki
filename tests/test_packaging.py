@@ -266,3 +266,19 @@ class TestTheEditorCheckLeavesNoTrace:
         with _isolated_user_folders():
             assert os.environ["APPDATA"] != before["APPDATA"]
         assert {name: os.environ.get(name) for name in USER_FOLDER_VARIABLES} == before
+
+
+class TestTheExportCheckUsesTheCpu:
+    def test_without_libx264_it_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """CPU の符号化器が無ければ落とす GPU の符号化器へ逃げない
+
+        逃げると、GPU の符号化器がある開発機では通り、無い機械では書き出せない
+        zip を「動いた」として配ることになる
+        """
+        from kumiki import selfcheck
+
+        monkeypatch.setattr(
+            "kumiki.engine.encode.available_video_codecs", lambda: ["h264_nvenc", "h264_qsv"]
+        )
+        with pytest.raises(RuntimeError, match="libx264"):
+            selfcheck._export()

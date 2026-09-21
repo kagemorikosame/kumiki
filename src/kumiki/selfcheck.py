@@ -27,6 +27,9 @@ from pathlib import Path
 
 __all__ = ["CheckResult", "format_results", "run_self_check"]
 
+#: 書き出しを確かめる符号化器 どの機械にもある CPU のもの
+CPU_CODEC = "libx264"
+
 #: 見本を描く大きさ 小さくてよい 動くかどうかだけを見る
 #: 偶数にする h.264 は幅も高さも偶数でないと符号化できない
 SAMPLE_SIZE = 64
@@ -100,13 +103,20 @@ def _version() -> str:
     return f"{__version__}（{frozen} Python {sys.version.split()[0]}）"
 
 
+#: 自己診断のあいだ生かしておく Qt のアプリケーション
+#: 作っただけで持っておかないと、Python の側の参照が切れた時点で壊され、
+#: 後の項目（編集画面・GL）がアプリケーション無しで動くことになる
+_application: object = None
+
+
 def _qt() -> str:
     from PySide6.QtCore import qVersion
     from PySide6.QtWidgets import QApplication
 
+    global _application
     # 画面は出さないが、GL のコンテキストは QGuiApplication が無いと作れない
     if QApplication.instance() is None:
-        QApplication([sys.argv[0] if sys.argv else "kumiki"])
+        _application = QApplication([sys.argv[0] if sys.argv else "kumiki"])
     return f"Qt {qVersion()}"
 
 
@@ -223,13 +233,20 @@ def _export() -> str:
         # 合成・音の混ぜ・mux のどこかで足りないものを見逃す
         # 符号化器は CPU のものを使う 機械ごとに有無が違う GPU の符号化器で
         # 確かめると、同じ zip が機械によって通ったり落ちたりする
-        cpu = "libx264" if "libx264" in codecs else codecs[-1]
-        export_project(project, ExportSettings(path=target, video_codec=cpu))
+        # CPU の符号化器は libx264 しかない（VIDEO_CODEC_PREFERENCE） 無ければ、
+        # GPU の符号化器が無い機械で書き出せないということなので、落とす
+        if CPU_CODEC not in codecs:
+            raise RuntimeError(
+                f"CPU の符号化器 {CPU_CODEC} が無い（GPU の符号化器が無い機械で書き出せない）"
+            )
+        export_project(project, ExportSettings(path=target, video_codec=CPU_CODEC))
         with av.open(str(target)) as container:
             frames = sum(1 for _ in container.decode(video=0))
     if frames < 1:
         raise RuntimeError("書き出した動画から 1 コマも読めない")
-    return f"{cpu} で書き出して {frames} コマ読み戻せた（使える符号化器: {', '.join(codecs)}）"
+    return (
+        f"{CPU_CODEC} で書き出して {frames} コマ読み戻せた（使える符号化器: {', '.join(codecs)}）"
+    )
 
 
 def _lua() -> str:

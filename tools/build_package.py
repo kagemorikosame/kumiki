@@ -224,6 +224,11 @@ def write_sample_wheel(folder: Path) -> Path:
 
 
 def _run(executable: Path, arguments: list[str], folder: str) -> subprocess.CompletedProcess[str]:
+    """展開した exe を走らせる
+
+    渡すのは、この道具が展開した exe の場所と、この道具の中で決めた引数だけ
+    外から来た文字列は混ざらず、shell も通さない（引数は並びのまま渡す）
+    """
     return subprocess.run(
         [str(executable), *arguments],
         cwd=folder,
