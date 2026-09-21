@@ -16,14 +16,31 @@ from kumiki.asr import activate_runtime
 from kumiki.core.io import ProjectFileError, load_project
 from kumiki.engine.gpu import preferred_surface_format
 from kumiki.resources import ICON_FILE, path_to
+from kumiki.runtime import pip_arguments, run_pip
 from kumiki.ui.main_window import MainWindow
 from kumiki.ui.theme import STYLE_SHEET
 
-__all__ = ["main"]
+__all__ = ["SELF_CHECK_FLAG", "main"]
+
+
+#: 画面を出さずに、同梱した部品が動くかだけを確かめる
+SELF_CHECK_FLAG = "--self-check"
 
 
 def main(argv: list[str] | None = None) -> int:
     arguments = sys.argv if argv is None else argv
+
+    # 配布版は自分自身が pip の代わりになる 導入ボタンは ``sys.executable -m pip`` を
+    # 呼ぶが、配布版の sys.executable はこの exe なので、ここで受けないと
+    # 導入するつもりで Kumiki がもう 1 つ起動する
+    pip_args = pip_arguments(arguments)
+    if pip_args is not None:
+        return run_pip(pip_args)
+
+    if SELF_CHECK_FLAG in arguments[1:]:
+        from kumiki.selfcheck import main as self_check
+
+        return self_check()
 
     # ソフト内から導入した字幕起こしの実行環境を import できるようにする
     # 通常の実行では何もしない（パッケージ版のためだけの手当て）

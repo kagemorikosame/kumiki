@@ -30,9 +30,11 @@ from kumiki.compat.aviutl.control import ScriptHeader, ScriptSection, split_scri
 from kumiki.compat.aviutl.encoding import read_text
 from kumiki.compat.aviutl.report import CompatibilityReport, global_report
 from kumiki.effects.definition import EffectDefinition, registry
+from kumiki.runtime import app_dir
 
 __all__ = [
     "KIND_LABELS",
+    "PORTABLE_SCRIPTS_DIR",
     "SCRIPT_SUFFIXES",
     "ScriptCatalog",
     "ScriptEntry",
@@ -40,6 +42,10 @@ __all__ = [
     "script_catalog",
     "set_script_catalog",
 ]
+
+#: 配った zip で、``Kumiki.exe`` の隣に置くスクリプト置き場の名前
+#: パッケージを作る側（tools/build_package.py）も同じ名前で空のフォルダを作る
+PORTABLE_SCRIPTS_DIR = "scripts"
 
 #: 読み込む拡張子と、その種類
 SCRIPT_SUFFIXES: dict[str, str] = {
@@ -108,8 +114,15 @@ def default_script_roots() -> tuple[Path, ...]:
 
     アプリ自身のフォルダに加えて、AviUtl2 が入っていればその ``Script`` も見る
     すでに持っている資産を、わざわざコピーしなくても使えるようにするため
+
+    配った zip では **``Kumiki.exe`` の隣の ``scripts``** を先頭に置く
+    zip を展開した人が最初に目にする場所で、「ここへ置けば読まれる」が
+    説明なしで伝わる ``%APPDATA%`` は隠しフォルダなので、そこだけだと見つけられない
     """
     roots: list[Path] = []
+    beside = app_dir()
+    if beside is not None:
+        roots.append(beside / PORTABLE_SCRIPTS_DIR)
     appdata = os.environ.get("APPDATA")
     if appdata:
         roots.append(Path(appdata) / "Kumiki" / "scripts")
