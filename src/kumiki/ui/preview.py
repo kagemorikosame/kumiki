@@ -7,10 +7,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
+
 from PySide6.QtCore import Signal
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
-from kumiki.core.model import Project
+from kumiki.core.model import MediaId, Project
 from kumiki.engine.cache.proxy import ProxyStore
 from kumiki.engine.gpu import CurrentGLContext
 from kumiki.engine.render import FULL_QUALITY, FrameRenderer, RenderQuality
@@ -64,16 +66,18 @@ class PreviewWidget(QOpenGLWidget):
             self.doneCurrent()
         self.update()
 
-    def reload_sources(self) -> None:
+    def reload_sources(self, media_ids: Collection[MediaId] | None = None) -> None:
         """素材を開き直させる 控えができた直後に呼ぶ
 
         描き直すだけでは切り替わらない 先にプレビューした素材は、
         レンダラが元のファイルを掴んだままになっている
+
+        ``media_ids`` を渡すと、その素材のぶんだけ開き直す
         """
         if self._renderer is None:
             return
         self.makeCurrent()
-        self._renderer.reopen_sources()
+        self._renderer.reopen_sources(media_ids)
         self.doneCurrent()
         self.update()
 

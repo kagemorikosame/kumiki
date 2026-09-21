@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 from collections import OrderedDict
+from collections.abc import Collection
 from dataclasses import dataclass, replace
 from fractions import Fraction
 from pathlib import Path
@@ -1144,17 +1145,21 @@ class FrameRenderer:
         if proxies is self._proxies:
             return
         self._proxies = proxies
+        # 置き場そのものが変わった 全部開き直す
         self.reopen_sources()
 
-    def reopen_sources(self) -> None:
-        """開いているデコーダを閉じる 次に要るときに開き直す
+    def reopen_sources(self, media_ids: Collection[MediaId] | None = None) -> None:
+        """デコーダを閉じる 次に要るときに開き直す
 
         控えができた直後に呼ぶ 開きっぱなしだと、先にプレビューした素材は
         元のファイルを掴んだままになり、控えができても切り替わらない
+
+        ``media_ids`` を渡すと、その素材のぶんだけ閉じる 全部閉じると、
+        別の素材の控えができるたびに再生中のクリップまで開き直しと
+        シークが走り、素材の本数だけ再生が途切れる
         """
-        for decoder in self._decoders.values():
-            decoder.close()
-        self._decoders.clear()
+        for key in [k for k in self._decoders if media_ids is None or k[0] in media_ids]:
+            self._decoders.pop(key).close()
 
     def _source_for(self, media: MediaItem, stream_index: int) -> tuple[Path, int | None]:
         """実際に読むファイル 控えがあればそちら

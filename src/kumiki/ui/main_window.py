@@ -169,8 +169,8 @@ class MainWindow(QMainWindow):
         #: 渡すと、画面では気付かないまま低解像度の絵が最終出力に入る
         self._proxies = ProxyBuilder(ProxyStore(height=self._preferences.proxy_height))
         self._analysis_dirty = False
-        #: 控えができた 次の間隔で素材を開き直す
-        self._proxy_dirty = False
+        #: 控えができた素材 次の間隔でこのぶんだけ開き直す
+        self._proxied: set[MediaId] = set()
         #: AI が結果を確認するための描画係 初めて求められたときに作る
         self._ai_renderer: FrameRenderer | None = None
         #: 編集しているシーン ``None`` ならメイン モデルではなく画面の状態なので
@@ -960,21 +960,23 @@ class MainWindow(QMainWindow):
     def _on_proxy_ready(self, media_id: MediaId) -> None:
         """控えができた ワーカースレッドから呼ばれる
 
-        ウィジェットには触らず印だけ付ける 次の描き直しから控えを読む
-        （レンダラは開くたびに置き場を見るので、開き直しは要らない）
+        ウィジェットには触らず、どの素材かだけを覚える 次の間隔で、
+        その素材のデコーダを開き直させる（開いたままだと元のファイルを
+        掴み続けるので、描き直すだけでは控えに変わらない）
         """
-        del media_id
-        self._proxy_dirty = True
+        self._proxied.add(media_id)
 
     def _flush_analysis(self) -> None:
         # AI から始めた起こしの様子も、ついでにここで拾う 専用のタイマーを
         # もう 1 本増やすほどの頻度ではない
         self._subtitles.poll_transcription()
-        if self._proxy_dirty:
+        if self._proxied:
             # 控えができた 開きっぱなしのデコーダは元のファイルを掴んだままなので、
             # 開き直させる（描き直すだけでは切り替わらない）
-            self._proxy_dirty = False
-            self._preview.reload_sources()
+            # できた素材のぶんだけにする 全部開き直すと、別の素材の控えが
+            # できるたびに再生中のクリップまでシークし直すことになる
+            ready, self._proxied = self._proxied, set()
+            self._preview.reload_sources(ready)
         if not self._analysis_dirty:
             return
         self._analysis_dirty = False

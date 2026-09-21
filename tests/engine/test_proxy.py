@@ -330,24 +330,20 @@ class TestTheRendererUsesIt:
 
         2 本目を指しているクリップに渡すと、別の絵が映る
         """
-        project = self._project(sample_av.path)
-        media = project.media[0]
-        # 2 本目があることにする 実際に 2 本入った素材を作らなくても、
-        # 「1 本目でなければ渡さない」判断はこれで確かめられる
-        second = replace(media.video_streams[0], index=media.video_streams[0].index + 1)
-        project = replace(
-            project,
-            media=(replace(media, video_streams=(media.video_streams[0], second)),),
-        )
-        track = project.timeline.tracks[0]
-        clip = replace(track.clips[0], stream_index=second.index)
-        project = replace(
-            project,
-            timeline=replace(
-                project.timeline,
-                tracks=(replace(track, clips=(clip,)),),
-            ),
-        )
+        probed = probe_media(sample_av.path)
+        first = probed.video_streams[0]
+        # 映像が 2 本ある素材 実際に 2 本入ったファイルを作らなくても、
+        # 「1 本目でなければ渡さない」判断はこの形で確かめられる
+        second = replace(first, index=first.index + 1)
+        media = replace(probed, video_streams=(first, second))
+
+        project = Project.create(ProjectSettings(width=320, height=240, frame_rate=FrameRate(30)))
+        project = AddMedia(media).apply(project)
+        track = Track(kind=TrackKind.VIDEO, name="V1")
+        project = AddTrack(track).apply(project)
+        clip = Clip(timeline_start=0, duration=60, media_id=media.id, stream_index=second.index)
+        project = AddClip(track.id, clip).apply(project)
+
         renderer = FrameRenderer(project, context=gl_context, proxies=shelf)
         try:
             renderer.render(0)
@@ -374,6 +370,26 @@ class TestTheRendererUsesIt:
             renderer.reopen_sources()
             renderer.render(1)
             assert [d.info.height for d in renderer._decoders.values()] == [120]
+        finally:
+            renderer.close()
+
+    def test_reopening_only_touches_the_named_media(
+        self, sample_av: SampleMedia, shelf: ProxyStore, gl_context: OffscreenGLContext
+    ) -> None:
+        """名指しした素材のデコーダだけ閉じる
+
+        全部閉じると、別の素材の控えができるたびに再生中のクリップまで
+        開き直しとシークが走り、素材の本数だけ再生が途切れる
+        """
+        project = self._project(sample_av.path)
+        renderer = FrameRenderer(project, context=gl_context, proxies=shelf)
+        try:
+            renderer.render(0)
+            assert renderer._decoders, "前提が崩れている デコーダが開いていない"
+            renderer.reopen_sources([MediaId("ほかの素材")])
+            assert renderer._decoders, "関係の無い素材まで閉じている"
+            renderer.reopen_sources([project.media[0].id])
+            assert not renderer._decoders, "名指しした素材が閉じていない"
         finally:
             renderer.close()
 

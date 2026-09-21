@@ -212,13 +212,18 @@ class TestTheWindowFollowsThem:
         描き直すだけでは切り替わらない 先にプレビューした素材は、
         レンダラが元のファイルを掴んだまま（控えを作った意味が無くなる）
         """
-        asked: list[bool] = []
-        window._preview.reload_sources = lambda: asked.append(True)  # type: ignore[method-assign]
-        window._on_proxy_ready(_uhd_media().id)
-        assert window._proxy_dirty, "控えができた印が付いていない"
+        asked: list[object] = []
+        # 差し替えるのは、GL コンテキストの無い試験で本物を呼べないため
+        # （中で makeCurrent を呼ぶ）呼ばれたかどうかだけが見たい
+        window._preview.reload_sources = (  # type: ignore[method-assign]
+            lambda media_ids=None: asked.append(media_ids)
+        )
+        media_id = _uhd_media().id
+        window._on_proxy_ready(media_id)
+        assert window._proxied == {media_id}, "控えができた素材を覚えていない"
         window._flush_analysis()
-        assert asked == [True]
-        assert not window._proxy_dirty, "印が残ると、毎回開き直して再生が途切れる"
+        assert asked == [{media_id}], "できた素材のぶんだけ開き直していない"
+        assert not window._proxied, "残ると、毎回開き直して再生が途切れる"
 
     def test_a_big_project_drops_the_preview_quality(self, window: MainWindow) -> None:
         """4K の素材を置いたら画質が下がる
