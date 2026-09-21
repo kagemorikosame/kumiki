@@ -6,6 +6,10 @@ r"""1 フレームの合成の速さを測る
 性能目標「1080p のプレビューが 30fps」（1 フレーム 33.3ms 以内）と、
 深く入れ子にしたシーンや大量のクリップでどこまで持つかを見る 測らずに直さない、の測る側
 
+測るのは**プレビューと同じ道**（合成と画面への転送） ``--readback`` を付けると
+書き出しと同じ道（GPU から CPU へ読み戻す）になる 4K ではこの読み戻しだけで
+30ms ほど掛かるので、混ぜるとプレビューの速さを見誤る
+
 GPU が無い環境では作れないので、何も測らずに終わる（終了コード 0）
 """
 
@@ -27,6 +31,8 @@ if isinstance(sys.stdout, io.TextIOWrapper):
 _base = Path(tempfile.mkdtemp(prefix="kumiki-bench-"))
 os.environ["APPDATA"] = str(_base / "roaming")
 os.environ["LOCALAPPDATA"] = str(_base / "local")
+
+from OpenGL import GL  # noqa: E402
 
 from kumiki.core.commands import (  # noqa: E402
     AddClip,
@@ -50,11 +56,18 @@ from kumiki.core.model import (  # noqa: E402
 from kumiki.core.timebase import FrameRate  # noqa: E402
 from kumiki.effects.definition import registry  # noqa: E402
 from kumiki.effects.sources import TEXT  # noqa: E402
-from kumiki.engine.gpu import GLContextError, OffscreenGLContext  # noqa: E402
+from kumiki.engine.gpu import (  # noqa: E402
+    Framebuffer,
+    GLContextError,
+    OffscreenGLContext,
+)
 from kumiki.engine.render import FrameRenderer  # noqa: E402
 
 #: 30fps の 1 コマ（ミリ秒） プレビューの目標
 BUDGET_MS = 1000 / 30
+
+#: 画面へ出す先の大きさ プレビューの枠は画面の実寸で、素材の大きさではない
+PREVIEW_WIDTH, PREVIEW_HEIGHT = 1920, 1080
 
 
 def _shape(colour: tuple[float, float, float, float], size: float) -> GeneratedSource:
@@ -134,27 +147,70 @@ def text_project(settings: ProjectSettings, count: int, length: int) -> Project:
     return project
 
 
-def measure(project: Project, context: OffscreenGLContext, frames: int) -> list[float]:
-    """1 フレームを合成する時間（ミリ秒） 1 回目は温まっていないので捨てる"""
+def measure(
+    project: Project, context: OffscreenGLContext, frames: int, *, readback: bool = False
+) -> list[float]:
+    """1 フレームにかかる時間（ミリ秒） 1 回目は温まっていないので捨てる
+
+    測るのは既定で**プレビューと同じ道** 合成（``compose``）と、その結果を
+    画面へ出す所（``present``）を測る 出す先は自前の 1920x1080 の描画先で、
+    オフスクリーンの既定（0 番）だと大きさが環境任せになる
+    GL の命令は投げただけでは終わっていないので、1 枚ごとに ``glFinish`` で
+    終わりを待つ 待たないと、投げるのに掛かった時間を測るだけになる
+
+    ``readback`` を真にすると**書き出しと同じ道** 書き出し
+    （:mod:`kumiki.engine.encode.exporter`）と同じく、1 枚ごとに
+    ``renderer.render`` を呼ぶ（中でコンテキストを取る） ``glFinish`` は
+    入れない ``glReadPixels`` が終わりを待つので、足すと二重に待つ形になり
+    実態より重く出る
+    """
     renderer = FrameRenderer(project, context=context)
     times: list[float] = []
     try:
-        for frame in range(frames + 1):
-            started = time.perf_counter()
-            with context:
-                # 読み出しまで測る GPU は非同期なので、compose だけだと命令を積んだ時間になる
+        if readback:
+            for frame in range(frames + 1):
+                started = time.perf_counter()
+                # 書き出しと同じ呼び方 コンテキストは render の中で取る
                 renderer.render(frame % max(project.duration, 1))
-            elapsed = (time.perf_counter() - started) * 1000
-            if frame:
-                times.append(elapsed)
+                elapsed = (time.perf_counter() - started) * 1000
+                if frame:
+                    times.append(elapsed)
+            return times
+
+        with context:
+            screen = Framebuffer(PREVIEW_WIDTH, PREVIEW_HEIGHT, internal_format=GL.GL_RGBA8)
+            try:
+                for frame in range(frames + 1):
+                    started = time.perf_counter()
+                    renderer.compose(frame % max(project.duration, 1))
+                    renderer.compositor.present(
+                        screen.handle, (0, 0, PREVIEW_WIDTH, PREVIEW_HEIGHT)
+                    )
+                    GL.glFinish()
+                    elapsed = (time.perf_counter() - started) * 1000
+                    if frame:
+                        times.append(elapsed)
+            finally:
+                screen.release()
     finally:
         renderer.close()
     return times
 
 
+def percentile95(times: list[float]) -> float:
+    """95 パーセンタイル 標本の外側へ外挿しない（inclusive）
+
+    既定の exclusive は、標本が少ないと一番大きい値より外へ出た数を返す
+    ここは 20 回前後の測定なので、実際には出ていない値を予算と比べることになる
+    """
+    if len(times) < 2:
+        return max(times)
+    return statistics.quantiles(times, n=20, method="inclusive")[18]
+
+
 def report(name: str, times: list[float]) -> bool:
     worst = max(times)
-    p95 = statistics.quantiles(times, n=20)[18] if len(times) >= 20 else worst
+    p95 = percentile95(times)
     ok = p95 <= BUDGET_MS
     print(
         f"{name:<24} 中央 {statistics.median(times):7.2f} ms  95% {p95:7.2f} ms  "
@@ -172,6 +228,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--effects", type=int, default=2, help="1 クリップのエフェクト数")
     parser.add_argument("--texts", type=int, default=20, help="重ねるテキストの数")
     parser.add_argument("--frames", type=int, default=20, help="測るフレーム数")
+    parser.add_argument(
+        "--readback",
+        action="store_true",
+        help="書き出しと同じ道（GPU から CPU へ読み戻す）を測る 既定はプレビューと同じ道",
+    )
     arguments = parser.parse_args(argv)
 
     for name in ("width", "height", "depth", "tracks", "effects", "texts", "frames"):
@@ -188,24 +249,40 @@ def main(argv: list[str] | None = None) -> int:
         print(f"OpenGL コンテキストを作れないので測れない: {error}")
         return 0
 
-    print(f"画面 {arguments.width}x{arguments.height} / 目標 {BUDGET_MS:.1f} ms")
+    if arguments.readback:
+        path_name = f"書き出しと同じ道（{arguments.width}x{arguments.height} を CPU へ読み戻す）"
+    else:
+        path_name = f"プレビューと同じ道（{PREVIEW_WIDTH}x{PREVIEW_HEIGHT} の画面へ出す）"
+    print(
+        f"プロジェクト {arguments.width}x{arguments.height} / 目標 {BUDGET_MS:.1f} ms / {path_name}"
+    )
+    if arguments.readback:
+        # 予算はプレビューのもの 書き出しは実時間で動く必要が無いので、
+        # ここでの「予算超え」は速さの比べ方であって、不合格ではない
+        # 合否にも混ぜない 混ぜると、正常な測定で終了コードが 1 になる
+        print("  （目標はプレビューの値 書き出しは実時間で動かなくてよい 比べるための表示）")
     passed = True
     try:
         for depth in range(1, arguments.depth + 1):
             project = nested_project(settings, depth, length)
-            passed &= report(f"シーン {depth} 段", measure(project, context, arguments.frames))
+            passed &= report(
+                f"シーン {depth} 段",
+                measure(project, context, arguments.frames, readback=arguments.readback),
+            )
         project = busy_project(settings, arguments.tracks, arguments.effects, length)
         passed &= report(
             f"{arguments.tracks} 本 × エフェクト {arguments.effects}",
-            measure(project, context, arguments.frames),
+            measure(project, context, arguments.frames, readback=arguments.readback),
         )
         project = text_project(settings, arguments.texts, length)
         passed &= report(
-            f"テキスト {arguments.texts} 本", measure(project, context, arguments.frames)
+            f"テキスト {arguments.texts} 本",
+            measure(project, context, arguments.frames, readback=arguments.readback),
         )
     finally:
         context.release()
-    return 0 if passed else 1
+    # 読み戻しの道は比べるための表示 予算はプレビューのものなので合否に使わない
+    return 0 if passed or arguments.readback else 1
 
 
 if __name__ == "__main__":
