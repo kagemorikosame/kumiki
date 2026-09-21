@@ -121,8 +121,22 @@ class TestFall:
         # 落ちながら濃くなる 実測でも 118 → 205 → 239 と上がった
         early = draw(self._fall(), 5)
         late = draw(self._fall(), 25)
-        # 明るさは色の側で見る 不透明度まで一緒に見ると、どちらも 255 で並ぶ
+        # 見るのは**黒へ重ねた後**の色 シェーダが触るのは不透明度だけなので、
+        # 重ねる前の色を見ても差が出ない（どちらも白のまま）
         assert int(early[..., :3][_lit(early)].max()) < int(late[..., :3][_lit(late)].max())
+
+    def test_it_rises_away_on_the_way_out(self, draw: Callable[..., np.ndarray]) -> None:
+        """退場でも動いて消える
+
+        登場だけを見て退場の進み具合を無視すると、クリップの終わりで
+        絵が元の位置に残り続ける（見送るはずの所でずっと出たまま）
+        """
+        leaving = self._fall(effect_in=False, effect_out=True)
+        settled = _middle(draw(leaving, DURATION // 2))
+        assert settled is not None
+        # 終わりの 1 フレーム前では、上へ戻りながら薄くなっている
+        last = draw(leaving, DURATION - 1)
+        assert not _lit(last).any() or (_middle(last) or 0) < settled - 10
 
     def test_a_delay_holds_it_back(self, draw: Callable[..., np.ndarray]) -> None:
         # 間隔 を入れると落ち始めが遅れる 遅れが効かないと同じ絵になる
@@ -149,7 +163,7 @@ class TestBlink:
         return registry.require("inout_blink").create(**base)
 
     def test_it_turns_on_and_off(self, draw: Callable[..., np.ndarray]) -> None:
-        # 登場のあいだに点いている絵と消えている絵の両方が出る
+        # 点滅しないまま出ると、ただのカットインになる
         seen = {bool(_lit(draw(self._blink(), frame)).any()) for frame in range(0, 30)}
         assert seen == {True, False}, "点滅していない"
 
@@ -210,7 +224,19 @@ class TestRandomDirection:
         assert len(middles) > 1
 
     def test_the_light_brightens_the_flight(self, draw: Callable[..., np.ndarray]) -> None:
-        # ライト は飛んでいるあいだの明るさの足し算 着いたら効かない
-        plain = draw(self._fly(light=0.0), DURATION - 1)
-        lit_up = draw(self._fly(light=80.0), DURATION - 1)
-        assert int(np.abs(plain.astype(np.int16) - lit_up.astype(np.int16)).max()) <= 2
+        """ライト は**飛んでいるあいだ**の明るさの足し算 着いたら効かない
+
+        着いた後だけを見ると、ライトを外した実装でも通ってしまう
+        （着いた後は効かないのが正しい姿なので、差が出ないのが当たり前）
+        """
+        # 飛んでいる途中（登場の半ば）で明るさが変わること
+        flying_plain = draw(self._fly(light=0.0), 20)
+        flying_lit = draw(self._fly(light=80.0), 20)
+        plain_top = int(flying_plain[..., :3].max())
+        lit_top = int(flying_lit[..., :3].max())
+        assert lit_top > plain_top or plain_top == 255, "飛んでいるあいだに効いていない"
+
+        # 着いた後は差が出ない
+        landed_plain = draw(self._fly(light=0.0), DURATION - 1)
+        landed_lit = draw(self._fly(light=80.0), DURATION - 1)
+        assert int(np.abs(landed_plain.astype(np.int16) - landed_lit.astype(np.int16)).max()) <= 2

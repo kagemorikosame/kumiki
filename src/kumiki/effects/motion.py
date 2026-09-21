@@ -813,7 +813,7 @@ void main() {
     float turn = hash(vec2(float(seed) * 7.1, 3.3)) * 6.2831853;
     vec2 away = vec2(cos(turn), sin(turn)) * length(u_size) * hidden;
 
-    // 回転 は飛んでくるあいだに回る量（度） 着いたら 0 度
+    // 回転 は飛んでくるあいだに回る**周**の数 着いたら 0 周（元の向き）
     float spun = radians(-spin * 360.0 * hidden);
     float cs = cos(spun);
     float sn = sin(spun);
@@ -842,10 +842,17 @@ void main() {
     // 遅れ 0・距離 200・加減速なしの見本で、10 フレーム目が 134px 上、
     // 20 フレーム目が 67px 上、30 フレーム目で元の位置だった（＝直線で落ちる）
     // 同時に濃さも 118 → 205 → 239 と上がる
+    // 登場と退場の両方を見る 登場側にだけ遅れが乗る
+    // hidden_amount() をそのまま使えないのは、遅れを足した時間で測るため
+    // 退場を見落とすと、クリップの終わりで絵が残り続ける
     float span = max(effect_time, 0.0001);
     float wait_ = hash(vec2(float(seed) * 3.7, 9.1)) * max(interval, 0.0);
-    float along = clamp(ease((u_time - wait_) / span, easing, easing_mode), 0.0, 1.0);
-    if (!effect_in) along = 1.0;
+    float hidden = 0.0;
+    if (effect_in) hidden = max(hidden, 1.0 - ease((u_time - wait_) / span, easing, easing_mode));
+    if (effect_out) {
+        hidden = max(hidden, ease((u_time - (u_duration - span)) / span, easing, easing_mode));
+    }
+    float along = 1.0 - clamp(hidden, 0.0, 1.0);
 
     // **上から**落ちてくる 画素の Y は上が正なので、引く先を下へずらすと
     // 絵は上に見える 符号を逆にすると下から浮き上がってくる別の動きになる

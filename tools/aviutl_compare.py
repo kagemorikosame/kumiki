@@ -452,11 +452,16 @@ def _randomising(value: object) -> bool:
 
     チェックは**外れているとき**が乱数（点滅の「一定にする」）
     数は 0 でなければ乱数（落ちる遅れの幅）
+
+    動く値は**キーフレームまで見る** 先頭が 0 でも途中で 0 でなくなれば、
+    そのフレームは乱数で絵が決まる static だけを見ると、動く遅れを持つ
+    見本が「決まった動き」に紛れ込んで、平均に乱数の差が混ざる
     """
     if isinstance(value, bool):
         return not value
-    number = getattr(value, "static", value)
-    return isinstance(number, int | float) and float(number) != 0.0
+    numbers = [getattr(value, "static", value)]
+    numbers.extend(keyframe.value for keyframe in getattr(value, "keyframes", ()))
+    return any(isinstance(n, int | float) and float(n) != 0.0 for n in numbers)
 
 
 def _write_report(
