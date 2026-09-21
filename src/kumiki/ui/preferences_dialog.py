@@ -18,6 +18,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from kumiki.engine.cache.proxy import (
+    BUDGET_MS,
+    MEASURED_ONE_LAYER_MS,
+    MEASURED_THREE_LAYERS_MS,
+)
 from kumiki.ui.workspace import Preferences
 
 __all__ = ["PROXY_HEIGHTS", "QUALITY_DIVISORS", "PreferencesDialog"]
@@ -74,11 +79,15 @@ class PreferencesDialog(QDialog):
 
         # 測った値をそのまま置く 「なんとなく軽くなる」ではなく、
         # どの組が 60fps に入るのかを見て選べるようにする
+        # 数は控えの側（kumiki.engine.cache.proxy）から取る ここへ直に書くと、
+        # 測り直したときに画面の側だけ古くなる
+        plain, proxied, both = MEASURED_THREE_LAYERS_MS
         note = QLabel(
-            "4K を 3 枚重ねたときの実測（1 コマ 16.7ms が 60fps の目安）\n"
-            "元のまま 32.6ms ／ 控えを使う 14.9ms ／ さらに画質を下げる 13.4ms\n"
+            f"4K を 3 枚重ねたときの実測（1 コマ {BUDGET_MS:.1f}ms が 60fps の目安）\n"
+            f"元のまま {plain}ms ／ 控えを使う {proxied}ms ／ さらに画質を下げる {both}ms\n"
             "効果を積むと控えだけでは足りず、画質下げと組にして入る"
-            "（4K を 1 枚置いただけなら、元のままでも 11.3ms で収まる）",
+            f"（4K を 1 枚置いただけなら、元のままでも {MEASURED_ONE_LAYER_MS}ms で収まる）\n"
+            "この機械で測るには tools\\bench_proxy.py",
             self,
         )
         note.setWordWrap(True)

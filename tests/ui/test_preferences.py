@@ -11,7 +11,7 @@ from fractions import Fraction
 from pathlib import Path
 
 import pytest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel
 
 from kumiki.core.commands import AddMedia
 from kumiki.core.model import MediaItem, Project, VideoStreamInfo
@@ -138,6 +138,19 @@ class TestTheDialog:
         del qt_application
         dialog = PreferencesDialog(Preferences(proxy_height=1000))
         assert dialog.preferences().proxy_height in [height for _, height in PROXY_HEIGHTS]
+
+    def test_the_numbers_come_from_the_measured_table(self, dialog: PreferencesDialog) -> None:
+        """画面に出す数は**控えの側の定数**から取る
+
+        画面へ直に書くと、測り直したときにここだけ古いまま残り、
+        使う人が古い数を見て設定を選ぶことになる
+        """
+        from kumiki.engine.cache.proxy import MEASURED_ONE_LAYER_MS, MEASURED_THREE_LAYERS_MS
+
+        shown = dialog.findChildren(QLabel)
+        text = " ".join(label.text() for label in shown)
+        for value in (*MEASURED_THREE_LAYERS_MS, MEASURED_ONE_LAYER_MS):
+            assert f"{value}ms" in text, f"{value}ms が画面に出ていない"
 
     def test_turning_off_the_proxy_disables_its_size(self, dialog: PreferencesDialog) -> None:
         # 使わない設定が押せると、効いていると思って触ってしまう
