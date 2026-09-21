@@ -24,17 +24,13 @@ from pathlib import Path
 from kumiki.compat.aviutl.exo import ExoParseError, load_exo
 from kumiki.compat.aviutl.mapping import map_object
 from kumiki.compat.aviutl.report import CompatibilityReport, global_report
-from kumiki.compat.mapped import MappedObject
+from kumiki.compat.mapped import MappedObject, fitted_effect, fitted_value
 from kumiki.compat.ymm4.template import Ymm4ParseError, load_template, map_template
 from kumiki.core.commands import AddClip, AddEffect, AddTrack, Command, RemoveEffect, SetSource
 from kumiki.core.commands.insert import DEFAULT_GENERATED_FRAMES
 from kumiki.core.model import (
-    AnimatedValue,
     Clip,
-    Effect,
     GeneratedSource,
-    Keyframe,
-    ParamValue,
     Project,
     Track,
     TrackId,
@@ -270,7 +266,7 @@ def restyle(objects: list[MappedObject], clip: Clip) -> list[Command]:
     effects_only = all(item.clip.source is None and not item.media_path for item in objects)
     if effects_only:
         added = [
-            _fitted_effect(effect, item.clip.duration, clip.duration)
+            fitted_effect(effect, item.clip.duration, clip.duration - 1)
             for item in objects
             for effect in item.clip.effects
         ]
@@ -291,7 +287,7 @@ def restyle(objects: list[MappedObject], clip: Clip) -> list[Command]:
     params = {
         **clip.source.params,
         **{
-            name: _fitted(value, span, clip.duration)
+            name: fitted_value(value, span, clip.duration - 1)
             for name, value in template.clip.source.params.items()
             if name not in _KEPT_ON_RESTYLE
         },
@@ -300,62 +296,10 @@ def restyle(objects: list[MappedObject], clip: Clip) -> list[Command]:
     commands: list[Command] = [SetSource(clip.id, GeneratedSource(kind="text", params=params))]
     commands.extend(RemoveEffect(clip.id, effect.id) for effect in clip.effects)
     commands.extend(
-        AddEffect(clip.id, _fitted_effect(effect, span, clip.duration))
+        AddEffect(clip.id, fitted_effect(effect, span, clip.duration - 1))
         for effect in template.clip.effects
     )
     return commands
-
-
-def _fitted_effect(effect: Effect, span: int, duration: int) -> Effect:
-    """エフェクトの動く値を、着せる先の長さへ合わせた写し"""
-    return replace(
-        effect,
-        params={name: _fitted(value, span, duration) for name, value in effect.params.items()},
-    )
-
-
-def _fitted(value: ParamValue, span: int, duration: int) -> ParamValue:
-    """動く値の時刻を、テンプレートの長さから着せる先の長さへ伸び縮みさせる
-
-    AviUtl の中間点は**そのエイリアス自身の長さに対する絶対フレーム**で書かれて
-    いる（``frame=244,333,423`` のように始まり・中間点・終わりが並ぶ）
-    そのまま写すと、180 フレームのテンプレートを 60 フレームの字幕に着せたときに
-    動きの 3 分の 1 で止まり、残りは静止する 着せるときは文字と長さを今のまま
-    残す決まりなので、動きの側を尺に合わせる
-
-    最初と最後の点がクリップの両端に来るように写す 端どうしを合わせないと、
-    テンプレートの終わりの見た目（着地した位置）が出ないまま終わる
-    """
-    if not isinstance(value, AnimatedValue) or not value.keyframes:
-        return value
-    if duration <= 1:
-        # 1 フレームのクリップ 動く余地が無いので終わりの値だけを残す
-        # そのまま返すと、クリップの外に出たキーフレームが残ったままになり、
-        # 唯一のフレームではテンプレートの**始まり**の値が出る
-        return replace(value, keyframes=(replace(value.keyframes[-1], frame=0),))
-
-    # 終わりのフレームの決まりが 2 つある AviUtl は最後の点を span - 1 に置き
-    # （``frame=0,89,179`` で長さ 180）、YMM4 は span に置く（``Length`` そのもの）
-    # 取り違えると倍率の分母が 1 ずれ、中間点が 1 フレームずれた所へ移る
-    # 実際の最後の点が span まで届いていれば、そちらを終わりとして読む
-    source_last = max(span - 1, value.keyframes[-1].frame)
-    last = duration - 1
-    if source_last <= 0 or source_last == last:
-        return value
-    scale = last / source_last
-    moved: list[Keyframe] = []
-    for keyframe in value.keyframes:
-        frame = min(round(keyframe.frame * scale), last)
-        if moved and frame <= moved[-1].frame:
-            # 縮めると同じフレームに重なる 同じ所に 2 つは置けないので 1 つずらす
-            frame = moved[-1].frame + 1
-        if frame > last:
-            # ずらす先が無いほど短い 途中の点を落としてでも**終わりの値**は残す
-            # 終わりを落とすと、着地した見た目にならないまま止まる
-            moved[-1] = replace(keyframe, frame=last)
-            continue
-        moved.append(replace(keyframe, frame=frame))
-    return replace(value, keyframes=tuple(moved))
 
 
 def _tracks_for(project: Project, layers: set[int], commands: list[Command]) -> dict[int, Track]:

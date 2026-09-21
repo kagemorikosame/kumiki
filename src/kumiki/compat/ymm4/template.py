@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from kumiki.compat.aviutl.report import CompatibilityReport, global_report
-from kumiki.compat.mapped import MappedObject
+from kumiki.compat.mapped import MappedObject, fitted_effect
 from kumiki.compat.ymm4.brushes import BLEND_NAMES, brush_effect, is_solid
 from kumiki.compat.ymm4.decorations import map_decorations, map_video_effects, with_pivot
 from kumiki.compat.ymm4.effects import CenterPoint
@@ -291,8 +291,26 @@ def map_template(
             for length, effects in containers
             if effects
         ]
+    # 入れ物のエフェクトを中身へ移す 入れ物と中身で長さが違うことがあるので
+    # （手元の配布物 97 本のうち 6 本 例: 入れ物 18 中身 300）、動く値の時刻を
+    # 中身の長さへ揃えてから移す 揃えずに移すと、入れ物の終わりに置いた点が
+    # 中身の途中に残り、エフェクトの終わりの見た目が出ないまま止まる
+    # YMM4 は最後の点を長さそのものに置くので、揃える先も長さちょうど
     return [
-        replace(item, clip=replace(item.clip, effects=(*item.clip.effects, *grouped)))
+        replace(
+            item,
+            clip=replace(
+                item.clip,
+                effects=(
+                    *item.clip.effects,
+                    *(
+                        fitted_effect(effect, length, item.clip.duration)
+                        for length, effects in containers
+                        for effect in effects
+                    ),
+                ),
+            ),
+        )
         for item in contents
     ]
 

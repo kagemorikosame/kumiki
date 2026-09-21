@@ -577,6 +577,21 @@ class TestGroups:
         # 長さを持っていないことは変わらない 置くときは既定の長さを使う
         assert not mapped[0].has_span
 
+    def test_a_shorter_group_is_stretched_onto_the_content(self) -> None:
+        """入れ物と中身で長さが違うとき、動きを**中身の長さへ揃えて**移す
+
+        揃えずに移すと、入れ物の終わり（18）に置いた点が 300 フレームの
+        中身の先頭近くに残り、エフェクトの終わりの見た目が出ないまま止まる
+        手元の配布物 97 本のうち 6 本がこの形（例: 入れ物 18 中身 300）
+        """
+        group = group_item(Rotation=moving(0.0, 30.0), Length=18)
+        mapped = map_template([text_item(Length=300), group], report=CompatibilityReport())
+        assert len(mapped) == 1
+        transform = next(e for e in mapped[0].clip.effects if e.kind == "transform")
+        value = transform.params["rotation"]
+        assert isinstance(value, AnimatedValue)
+        assert [k.frame for k in value.keyframes] == [0, 300]
+
     def test_groups_of_different_lengths_stay_apart(self) -> None:
         """長さの違う入れ物は**別々に**返す
 
