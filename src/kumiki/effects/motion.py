@@ -867,7 +867,6 @@ void main() {
 #: 点いたり消えたりしながら現れる
 _INOUT_BLINK = _shader(
     """
-uniform int seed;
 uniform float interval;
 uniform bool even;
 """
@@ -883,11 +882,31 @@ void main() {
         return;
     }
 
-    // 点滅間隔 はフレーム数 一定にする を外すと、区切りごとに長さが揺れる
+    // AviUtl2 の実物を 1 フレームずつ読むと、どちらも**乱数ではなかった**
+    //
+    // 一定にする を付けたとき（点滅間隔 5）
+    //     .....#####.....#####.....#####
+    //     間隔のぶん消えて、間隔のぶん点く（進み具合に関係なく同じ）
+    //
+    // 外したとき（点滅間隔 1）
+    //     ..........#....#..#..#..#.#.#.#.##.##.####.######
+    //     進むほど点いている時間が増える 50 フレーム目までに点いた数は 20 で、
+    //     「点いている割合 ＝ 進み具合」を積み上げた量（f^2 / 2T）と一致する
     float step_ = max(interval, 1.0);
-    float tick = floor(u_frame / step_);
-    float lit = even ? mod(tick, 2.0) : step(hidden, hash(vec2(tick + float(seed) * 5.3, 1.7)));
-    frag_color = lit > 0.5 ? color : vec4(0.0);
+    if (even) {
+        frag_color = mod(floor(u_frame / step_), 2.0) > 0.5 ? color : vec4(0.0);
+        return;
+    }
+
+    // 積み上げた量が整数をまたぐフレームだけ点ける
+    // 点滅間隔 を大きくすると、またぐ回数が減って 1 回が長くなる
+    float span_frames = max(effect_time * max(u_fps, 1.0), 1.0);
+    float scale = 2.0 * span_frames * step_;
+    // 数えるのは**次のフレームまで**の積み上げ 現在までで測ると、
+    // 実物より 1 フレーム遅れて点き始める
+    float now = (u_frame + 1.0) * (u_frame + 1.0) / scale;
+    float before = u_frame * u_frame / scale;
+    frag_color = floor(now) != floor(before) ? color : vec4(0.0);
 }
 """
 )
@@ -931,7 +950,6 @@ def register_motion_effects() -> None:
                 *_in_out_specs(),
                 TrackSpec("interval", "点滅間隔", 1, 240, 1, step=1, unit="フレーム"),
                 CheckSpec("even", "点滅間隔を一定にする", False),
-                _seed(),
             ),
             fragment_shader=_INOUT_BLINK,
         ),

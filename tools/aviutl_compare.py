@@ -424,8 +424,6 @@ RANDOM_EFFECTS = frozenset({"noise", "particles", "crash", "scatter", "inout_ran
 RANDOM_WHEN: dict[str, str] = {
     # 落ちながら登場 間隔 が 0 でなければ落ち始めが乱数で遅れる
     "inout_fall": "interval",
-    # 点滅して登場 一定にする を外すと区切りの長さが乱数で揺れる
-    "inout_blink": "even",
 }
 
 #: 乱数のものに付ける印 平均から外すかどうかの判定にも使う

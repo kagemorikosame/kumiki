@@ -190,10 +190,29 @@ class TestBlink:
                 assert int(image[_lit(image)].max()) == pytest.approx(top, abs=3)
 
     def test_an_even_interval_repeats(self, draw: Callable[..., np.ndarray]) -> None:
-        # 一定にする を付けると、間隔ごとにきっちり入れ替わる
+        """一定にする を付けると、間隔ごとにきっちり入れ替わる
+
+        AviUtl2 の実物（点滅間隔 5）も ``.....#####.....#####`` と、
+        進み具合に関係なく同じ長さで切り替わっていた
+        """
         lit = [bool(_lit(draw(self._blink(interval=5.0), frame)).any()) for frame in range(0, 20)]
         assert lit[0:5] == lit[10:15]
         assert lit[0:5] != lit[5:10]
+
+    def test_without_the_even_flag_the_lit_time_grows(
+        self, draw: Callable[..., np.ndarray]
+    ) -> None:
+        """一定にする を外すと、進むほど点いている時間が増える
+
+        AviUtl2 の実物（点滅間隔 1）は
+        ``..........#....#..#..#..#.#.#.#.##.##.####.######`` と、
+        **乱数ではなく決まった並び**で点く時間が伸びていく
+        一定の点滅のままにすると、最後まで同じ割合でちらつく
+        """
+        blink = self._blink(interval=1.0, even=False)
+        early = sum(bool(_lit(draw(blink, frame)).any()) for frame in range(0, 15))
+        late = sum(bool(_lit(draw(blink, frame)).any()) for frame in range(15, 30))
+        assert late > early * 2, "進んでも点いている時間が増えない"
 
 
 class TestRandomDirection:
