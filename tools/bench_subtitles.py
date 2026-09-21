@@ -210,6 +210,15 @@ def main() -> int:
     parser.add_argument("--scale", default="1", help="Qt の拡大率（1 / 1.5 / 2）")
     arguments = parser.parse_args()
 
+    # 素材より多くのフレームは測れない 続きの測定は終わりを越えた所を測り、
+    # 散らす測定は同じフレームを繰り返す（パネルは同じ値だと何もせずに戻るので、
+    # 測るものの無い標本が混ざって実際より速く出る）
+    # 秒と枚数は別々に見ても足りない ここで両方そろってから見る
+    available = math.ceil(arguments.seconds * 30)
+    if arguments.frames > available:
+        print(f"--frames が素材より多い 素材は {available} フレーム: {arguments.frames}")
+        return 1
+
     application = QApplication.instance() or QApplication([])
     ratio = os.environ.get("QT_SCALE_FACTOR", "1")
     print(f"字幕 {arguments.segments} 本 / 拡大率 {ratio} 倍")
