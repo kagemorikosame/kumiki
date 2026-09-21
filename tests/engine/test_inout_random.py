@@ -47,9 +47,11 @@ def gl() -> Iterator[OffscreenGLContext]:
 def draw(gl: OffscreenGLContext) -> Callable[..., np.ndarray]:
     """真ん中の白い四角へ登場の効果を掛け、``frame`` の絵を返す"""
 
-    def run(effect: Effect, frame: int) -> np.ndarray:
+    def run(effect: Effect, frame: int, grey: float = 1.0) -> np.ndarray:
+        # ``grey`` は下地の明るさ 明るさの足し算を見るときは 255 で
+        # 頭打ちにならないよう、白ではなく灰色を使う
         source: GeneratedSource = SHAPE.create(
-            shape="rect", width=60, height=20, color=(1.0, 1.0, 1.0, 1.0)
+            shape="rect", width=60, height=20, color=(grey, grey, grey, 1.0)
         )
         project = Project.create(
             ProjectSettings(width=WIDTH, height=HEIGHT, frame_rate=FrameRate(30))
@@ -134,9 +136,12 @@ class TestFall:
         leaving = self._fall(effect_in=False, effect_out=True)
         settled = _middle(draw(leaving, DURATION // 2))
         assert settled is not None
-        # 終わりの 1 フレーム前では、上へ戻りながら薄くなっている
-        last = draw(leaving, DURATION - 1)
-        assert not _lit(last).any() or (_middle(last) or 0) < settled - 10
+
+        # 退場の半ば まだ見えていて、かつ上へ戻っていること
+        # 「消えていれば通す」形にすると、薄くなるだけで動かない実装でも通る
+        halfway = draw(leaving, DURATION - DURATION // 4)
+        assert _lit(halfway).any(), "退場の半ばで消えている"
+        assert (_middle(halfway) or 0) < settled - 5, "上へ戻っていない"
 
     def test_a_delay_holds_it_back(self, draw: Callable[..., np.ndarray]) -> None:
         # 間隔 を入れると落ち始めが遅れる 遅れが効かないと同じ絵になる
@@ -229,12 +234,11 @@ class TestRandomDirection:
         着いた後だけを見ると、ライトを外した実装でも通ってしまう
         （着いた後は効かないのが正しい姿なので、差が出ないのが当たり前）
         """
-        # 飛んでいる途中（登場の半ば）で明るさが変わること
-        flying_plain = draw(self._fly(light=0.0), 20)
-        flying_lit = draw(self._fly(light=80.0), 20)
-        plain_top = int(flying_plain[..., :3].max())
-        lit_top = int(flying_lit[..., :3].max())
-        assert lit_top > plain_top or plain_top == 255, "飛んでいるあいだに効いていない"
+        # 下地は灰色 白だと 255 で頭打ちになり、足しても増えないので
+        # ライトを外した実装でも通ってしまう
+        flying_plain = int(draw(self._fly(light=0.0), 20, grey=0.3)[..., :3].max())
+        flying_lit = int(draw(self._fly(light=80.0), 20, grey=0.3)[..., :3].max())
+        assert flying_lit > flying_plain + 10, "飛んでいるあいだに効いていない"
 
         # 着いた後は差が出ない
         landed_plain = draw(self._fly(light=0.0), DURATION - 1)
