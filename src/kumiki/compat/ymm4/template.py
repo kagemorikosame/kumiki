@@ -295,24 +295,35 @@ def map_template(
     # （手元の配布物 97 本のうち 6 本 例: 入れ物 18 中身 300）、動く値の時刻を
     # 中身の長さへ揃えてから移す 揃えずに移すと、入れ物の終わりに置いた点が
     # 中身の途中に残り、エフェクトの終わりの見た目が出ないまま止まる
-    # YMM4 は最後の点を長さそのものに置くので、揃える先も長さちょうど
-    return [
-        replace(
-            item,
-            clip=replace(
-                item.clip,
-                effects=(
-                    *item.clip.effects,
-                    *(
-                        fitted_effect(effect, length, item.clip.duration)
-                        for length, effects in containers
-                        for effect in effects
-                    ),
-                ),
-            ),
-        )
-        for item in contents
+    return [_with_group_effects(item, containers) for item in contents]
+
+
+def _with_group_effects(
+    item: MappedObject, containers: list[tuple[int, list[Effect]]]
+) -> MappedObject:
+    """入れ物のエフェクトを 1 つの中身へ移す 動く値の時刻は中身の長さへ揃える
+
+    揃える先は中身の長さちょうど YMM4 は最後の点を長さの位置に置く
+
+    中身が長さを持っていないことがある（``レトロなカウントダウン3秒`` は
+    入れ物 90 に対して中身 1） そのまま 1 に揃えると 90 フレームの動きが
+    2 フレームに潰れ、置くときに既定の長さまで伸ばされても動きは戻らない
+    長さが分かるのは入れ物の側だけなので、そちらを中身の長さとして使う
+    """
+    span = max((length for length, _ in containers), default=1)
+    known = item.has_span or span <= 1
+    duration = item.clip.duration if known else span
+    moved = [
+        fitted_effect(effect, length, duration)
+        for length, effects in containers
+        for effect in effects
     ]
+    return replace(
+        item,
+        clip=replace(item.clip, duration=duration, effects=(*item.clip.effects, *moved)),
+        # 入れ物から長さを借りたなら、長さの分かるものとして扱う
+        has_span=item.has_span or not known,
+    )
 
 
 def _group_effects(item: dict[str, Any], log: CompatibilityReport) -> list[Effect]:

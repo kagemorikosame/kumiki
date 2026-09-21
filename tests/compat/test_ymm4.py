@@ -592,6 +592,24 @@ class TestGroups:
         assert isinstance(value, AnimatedValue)
         assert [k.frame for k in value.keyframes] == [0, 300]
 
+    def test_a_content_without_a_length_borrows_the_group_length(self) -> None:
+        """中身が長さを持たないときは、**入れ物の長さ**を借りる
+
+        長さを 1 として揃えると 90 フレームの動きが 2 フレームに潰れ、
+        置くときに既定の長さまで伸ばされても動きは戻らない
+        """
+        content = text_item()
+        content.pop("Length")
+        group = group_item(Rotation=moving(0.0, 30.0), Length=90)
+        mapped = map_template([content, group], report=CompatibilityReport())
+        assert len(mapped) == 1
+        assert mapped[0].clip.duration == 90
+        assert mapped[0].has_span, "長さが分かったのに、置くときに既定の長さを使ってしまう"
+        transform = next(e for e in mapped[0].clip.effects if e.kind == "transform")
+        value = transform.params["rotation"]
+        assert isinstance(value, AnimatedValue)
+        assert [k.frame for k in value.keyframes] == [0, 90]
+
     def test_groups_of_different_lengths_stay_apart(self) -> None:
         """長さの違う入れ物は**別々に**返す
 
