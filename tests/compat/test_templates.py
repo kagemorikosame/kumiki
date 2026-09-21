@@ -372,6 +372,17 @@ class TestRestylingKeepsTheMotion:
         assert isinstance(value, AnimatedValue)
         assert [k.frame for k in value.keyframes] == [0, 479, 599]
 
+    def test_a_one_frame_clip_shows_the_end_of_the_motion(
+        self, shelf: tuple[TemplateCatalog, Path]
+    ) -> None:
+        """1 フレームのクリップには**終わりの値**が出る
+
+        そのまま写すと、クリップの外に出たキーフレームが残ったままになり、
+        唯一のフレームではテンプレートの始まり（横位置 0）が出る
+        """
+        moved = self.moving(shelf, 1)
+        assert moved == [(0, 300.0)]
+
     def test_the_clip_itself_is_not_resized(self, shelf: tuple[TemplateCatalog, Path]) -> None:
         # 動きを合わせるのであって、クリップの長さは今のまま
         catalog, _ = shelf

@@ -328,8 +328,11 @@ def _fitted(value: ParamValue, span: int, duration: int) -> ParamValue:
     """
     if not isinstance(value, AnimatedValue) or not value.keyframes:
         return value
-    if span <= 1 or duration <= 1:
-        return value
+    if duration <= 1:
+        # 1 フレームのクリップ 動く余地が無いので終わりの値だけを残す
+        # そのまま返すと、クリップの外に出たキーフレームが残ったままになり、
+        # 唯一のフレームではテンプレートの**始まり**の値が出る
+        return replace(value, keyframes=(replace(value.keyframes[-1], frame=0),))
 
     # 終わりのフレームの決まりが 2 つある AviUtl は最後の点を span - 1 に置き
     # （``frame=0,89,179`` で長さ 180）、YMM4 は span に置く（``Length`` そのもの）
