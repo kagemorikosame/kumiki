@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import replace
@@ -674,6 +675,45 @@ class TestBuildingInTheBackground:
         assert seen and max(seen) == 1.0
         # 終わったら進み具合は消える 残すと、UI が作り続けているように見える
         assert builder.progress(media.id) is None
+
+    def test_closing_while_running_does_not_report_ready(
+        self, sample_av: SampleMedia, tmp_path: Path
+    ) -> None:
+        """止めたあとに変換が終わっても、できたとは伝えない
+
+        伝えると、窓を閉じている最中や控えを切った直後に「控えができた」と
+        して描き直しが走る
+
+        変換の中身は差し替える 本物を使うと、走り始める前に止まるか
+        止める前に終わるかが機械の速さ次第になり、狙った隙間を通らない
+        """
+        started = threading.Event()
+        release = threading.Event()
+        original = proxy_module.create_proxy
+
+        def blocking(source: Path, target: Path, **kwargs: object) -> Path:
+            started.set()
+            release.wait(30.0)
+            return target
+
+        proxy_module.create_proxy = blocking  # type: ignore[assignment]
+        store = ProxyStore(CacheStore(tmp_path), height=120)
+        builder = ProxyBuilder(store)
+        media = replace(probe_media(sample_av.path), video_streams=_tall(sample_av.path))
+        ready: list[MediaId] = []
+        try:
+            builder.request(media, on_ready=ready.append)
+            assert started.wait(30.0), "変換が始まらない"
+            builder.close()
+            release.set()
+            limit = time.monotonic() + 30.0
+            while builder.progress(media.id) is not None and time.monotonic() < limit:
+                time.sleep(0.02)
+            time.sleep(0.3)
+        finally:
+            release.set()
+            proxy_module.create_proxy = original  # type: ignore[assignment]
+        assert ready == [], "止めたのに、できたと伝えている"
 
     def test_closing_does_not_raise(self, sample_av: SampleMedia, tmp_path: Path) -> None:
         """止めたあとに頼んでも落ちない

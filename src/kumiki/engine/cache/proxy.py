@@ -431,6 +431,9 @@ class ProxyBuilder:
 
         def run() -> None:
             made: Path | None = None
+            # 止められていたかどうかを、消す前に控えておく 消してから見ると
+            # 分からなくなり、閉じたあとに「控えができた」と伝えてしまう
+            stopped = False
             try:
                 made = create_proxy(
                     media.path,
@@ -444,10 +447,13 @@ class ProxyBuilder:
                 )
             finally:
                 with self._lock:
+                    stopped = self._closed or media.id in self._cancelled
                     self._running.discard(media.id)
                     self._cancelled.discard(media.id)
                     self._progress.pop(media.id, None)
-            if made is not None and on_ready is not None:
+            # 止められていたなら伝えない 伝えると、窓を閉じている最中や
+            # 控えを切った直後に「控えができた」として描き直しが走る
+            if made is not None and not stopped and on_ready is not None:
                 on_ready(media.id)
 
         with self._lock:
