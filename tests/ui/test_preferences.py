@@ -175,6 +175,37 @@ class TestTheWindowFollowsThem:
         window._apply_preferences(Preferences(proxy_height=720))
         assert window._proxies.store.height == 720
 
+    def test_opening_a_big_project_drops_the_quality_at_once(
+        self, qt_application: QApplication
+    ) -> None:
+        """**開いた時点で**効かせる
+
+        コマンドラインや関連付けから開く道は _on_project_changed を通らない
+        抜けると、4K のプロジェクトを開いても最初の 1 回だけ等倍のまま重い
+        """
+        del qt_application
+        project = AddMedia(_uhd_media()).apply(Project.create())
+        window = MainWindow(project, confirm_unsaved=False)
+        try:
+            assert window._transport.quality() == 2
+        finally:
+            window.close()
+
+    def test_changing_only_the_quality_keeps_the_builder(self, window: MainWindow) -> None:
+        """画質だけを変えたときは、控えを作る係を作り直さない
+
+        作り直すと、進行中の変換が止まって最初からになる
+        """
+        before = window._proxies
+        window._apply_preferences(Preferences(auto_quality_divisor=4))
+        assert window._proxies is before
+
+    def test_changing_the_size_rebuilds_the_builder(self, window: MainWindow) -> None:
+        # 大きさが変わると置き場の鍵が変わる 作り直さないと前の大きさのまま
+        before = window._proxies
+        window._apply_preferences(Preferences(proxy_height=720))
+        assert window._proxies is not before
+
     def test_a_finished_proxy_makes_the_preview_reopen(self, window: MainWindow) -> None:
         """控えができたら素材を開き直す
 

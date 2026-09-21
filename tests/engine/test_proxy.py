@@ -37,10 +37,10 @@ from kumiki.engine.cache.proxy import (
     proxy_codecs,
 )
 from kumiki.engine.cache.store import CacheStore
-from kumiki.engine.decode import probe_media
+from kumiki.engine.decode import VideoDecoder, probe_media
 from kumiki.engine.gpu import GLContextError, OffscreenGLContext
 from kumiki.engine.render import FrameRenderer
-from tests.media_fixtures import SampleMedia, decode_all_frames
+from tests.media_fixtures import SampleMedia, decode_all_frames, make_rotated
 
 pytestmark = pytest.mark.skipif(not proxy_codecs(), reason="控えを作れるコーデックが無い")
 
@@ -160,6 +160,30 @@ class TestMakingOne:
         target = tmp_path / "proxy.mp4"
         assert create_proxy(sample_av.path, target, height=2160) is not None
         assert probe_media(target).video_streams[0].height == sample_av.height
+
+    def test_a_rotated_source_keeps_its_direction(
+        self, sample_av: SampleMedia, tmp_path: Path
+    ) -> None:
+        """回転の印が付いた素材でも、向きと縦横が変わらない
+
+        印はコンテナに付いていて控えへは引き継がれない 画素を回さずに写すと、
+        スマホで撮った縦の映像が控えのときだけ横向きになる
+        （デコーダは開いたファイルの印だけを見て回すため）
+        """
+        turned = make_rotated(tmp_path, "turned.mp4", sample_av.path, 90)
+        target = tmp_path / "proxy.mp4"
+        assert create_proxy(turned, target, height=120) is not None
+
+        # 元の素材をデコーダに通したときの見た目（印のぶん回った後）
+        source_frame = VideoDecoder(turned).frame_at(Fraction(0))
+        proxy_frame = VideoDecoder(target).frame_at(Fraction(0))
+        assert source_frame is not None and proxy_frame is not None
+        expected = source_frame.shape[:2]
+        actual = proxy_frame.shape[:2]
+        assert actual[0] / actual[1] == pytest.approx(expected[0] / expected[1], abs=0.02), (
+            f"縦横比が変わっている 元 {expected} 控え {actual}"
+        )
+        assert actual[0] == 120, f"見た目の高さが指定と違う {actual}"
 
     def test_cancelling_leaves_nothing_behind(self, sample_av: SampleMedia, tmp_path: Path) -> None:
         """途中でやめたら**ファイルを残さない**

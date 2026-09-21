@@ -198,6 +198,13 @@ class MainWindow(QMainWindow):
         self._workspace.restore(self)
         self._apply_shortcuts(ShortcutStore().load())
 
+        # 渡されたプロジェクトの素材にも効かせる コマンドラインや関連付けから
+        # 開く道はここを通るだけで、_on_project_changed を通らない
+        # 抜けると、4K のプロジェクトを開いても最初の 1 回だけ等倍のまま重い
+        for media in self.view_project.media:
+            self._request_proxy(media)
+        self._apply_auto_quality()
+
         self._update_title()
 
     # --- 組み立て ---
@@ -525,14 +532,16 @@ class MainWindow(QMainWindow):
         控えの大きさを変えたら別の鍵になるので、作り直しを頼む
         古い控えは残るが、掴むことはない（鍵に大きさを混ぜてある）
         """
-        changed = preferences != self._preferences
+        # 作り直すのは大きさが変わったときだけ 置き場の鍵が変わるので作り直しが要る
+        # 何が変わっても作り直すと、画質の設定を触っただけで進行中の変換が止まる
+        resized = preferences.proxy_height != self._preferences.proxy_height
         self._preferences = preferences
         try:
             PreferenceStore().save(preferences)
         except OSError as exc:
             self.statusBar().showMessage(f"設定を保存できなかった: {exc}", 5000)
 
-        if changed:
+        if resized:
             self._proxies.close()
             self._proxies = ProxyBuilder(ProxyStore(height=preferences.proxy_height))
         self._preview.set_proxies(self._proxies.store if preferences.use_proxy else None)

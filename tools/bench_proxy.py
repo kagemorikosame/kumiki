@@ -12,6 +12,7 @@ ffmpeg が無いか GPU が使えない環境では、何も測らずに終わ�
 from __future__ import annotations
 
 import argparse
+import atexit
 import io
 import os
 import shutil
@@ -29,6 +30,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 # 開発者本人の設定やキャッシュに触らない
 _base = Path(tempfile.mkdtemp(prefix="kumiki-proxy-bench-"))
+# 終わったら捨てる 4K の素材と控えを置くので、回すたびに残すと GB 単位で溜まる
+atexit.register(shutil.rmtree, _base, True)
 os.environ["APPDATA"] = str(_base / "roaming")
 os.environ["LOCALAPPDATA"] = str(_base / "local")
 

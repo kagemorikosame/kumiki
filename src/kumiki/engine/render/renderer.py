@@ -1118,9 +1118,16 @@ class FrameRenderer:
         try:
             decoder = VideoDecoder(path, index)
         except ProbeError:
-            # オフライン素材や壊れたファイル ここで落とすと、1 本壊れただけで
-            # プロジェクト全体が開けなくなる そのクリップだけ映らない扱いにする
-            return None
+            if path == media.path:
+                # オフライン素材や壊れたファイル ここで落とすと、1 本壊れただけで
+                # プロジェクト全体が開けなくなる そのクリップだけ映らない扱いにする
+                return None
+            # 控えが壊れていた（書きかけのまま落ちた等） 元の素材で開き直す
+            # ここで諦めると、控えが 1 本壊れただけでクリップが映らなくなる
+            try:
+                decoder = VideoDecoder(media.path, stream_index)
+            except ProbeError:
+                return None
 
         self._decoders[key] = decoder
         while len(self._decoders) > MAX_OPEN_DECODERS:

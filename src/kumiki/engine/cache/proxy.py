@@ -1,8 +1,21 @@
 """プレビュー用の低解像度の控え（プロキシ）を作る
 
-4K の素材は、合成より**デコードの方が重い** 1 フレーム 34.6ms（60fps の予算は
-16.6ms）で、解像度を落として描く :class:`~kumiki.engine.render.RenderQuality`
-だけでは足りない 読む元のファイルそのものを小さくする
+4K の素材はプレビューが 60fps（1 フレーム 16.7ms）に入らない 読む元のファイルを
+小さくして、デコードの分を軽くする
+
+**控えだけでは足りない** 測った値（``tools/bench_proxy.py`` 3840x2160 の
+95 パーセンタイル）は
+
+===================== ========
+元の素材 + 等倍        40.5ms
+元の素材 + 1/2         19.2ms
+控え 540p + 等倍       36.1ms
+控え 540p + 1/2        14.2ms
+===================== ========
+
+控えにしても 40.5 → 36.1ms にしか下がらない 合成が画面の大きさのままだから
+描く側を落とす :class:`~kumiki.engine.render.RenderQuality` と**組にして**初めて
+予算に入る どちらか片方では足りない
 
 控えを使うのは**プレビューだけ** 書き出しは必ず元の素材から読む 混ざると、
 画面では気付かないまま低解像度の絵が最終出力に入る
@@ -25,9 +38,11 @@ import av
 import av.container
 import av.error
 import av.video.stream
+import numpy as np
 
 from kumiki.core.model import MediaId, MediaItem
 from kumiki.engine.cache.store import CacheStore, media_key
+from kumiki.engine.decode import ProbeError, probe_media
 
 __all__ = [
     "PROXY_HEIGHT",
@@ -159,8 +174,8 @@ def create_proxy(
                 working.replace(target)
                 return target
         except (av.error.FFmpegError, OSError, ValueError):
-            # このコーデックでは作れなかった 次の候補へ falls back するので、
-            # ここで投げると NVENC が使えない環境で控えが一切作れなくなる
+            # このコーデックでは作れなかった 次の候補へ移るので、ここで投げると
+            # NVENC が使えない環境で控えが一切作れなくなる
             pass
         working.unlink(missing_ok=True)
     return None
@@ -188,10 +203,17 @@ def _transcode(
         )
         stream.thread_type = "AUTO"
 
-        size = _target_size(stream, height)
+        # 回転の印はコンテナに付いている 控えへは引き継がれないので、
+        # **画素の側を回して**焼き込む 引き継がずに黙って写すと、スマホで撮った
+        # 縦の映像が控えのときだけ横向きになる（デコーダは開いたファイルの
+        # 印だけを見て回すため）
+        rotation = _rotation_of(source)
+        size = _target_size(stream, height, rotation)
         if size is None:
             return False
         width, scaled = size
+        # 回す前の大きさ 90 度と 270 度では縦横が入れ替わる
+        before = (scaled, width) if rotation in (90, 270) else (width, scaled)
         rate = stream.average_rate or Fraction(30)
         duration = _duration_of(container, stream)
 
@@ -211,7 +233,7 @@ def _transcode(
             for frame in container.decode(stream):
                 if should_cancel is not None and should_cancel():
                     return False
-                converted = frame.reformat(width=width, height=scaled, format="yuv420p")
+                converted = _shrunk(frame, before, rotation)
                 # 元の時刻をそのまま持たせる 振り直すと、可変フレームレートの
                 # 素材で控えと元の絵がずれる
                 converted.pts = frame.pts
@@ -229,12 +251,48 @@ def _transcode(
     return True
 
 
-def _target_size(stream: av.video.stream.VideoStream, height: int) -> tuple[int, int] | None:
-    """縮めたあとの大きさ 縦横とも偶数にする（yuv420p が奇数を受けない）"""
+def _shrunk(frame: av.VideoFrame, size: tuple[int, int], rotation: int) -> av.VideoFrame:
+    """縮めて、必要なら回した 1 枚
+
+    回すのはここだけ 控えを作るときの 1 回で済み、再生のたびには走らない
+    """
+    converted = frame.reformat(width=size[0], height=size[1], format="yuv420p")
+    if rotation == 0:
+        return converted
+    # 回すのは色の並びが素直な rgb24 で yuv420p のまま回すと、
+    # 色差の面が半分の大きさなので縦横がずれる
+    image = np.rot90(converted.to_ndarray(format="rgb24"), k=-rotation // 90)
+    turned = av.VideoFrame.from_ndarray(np.ascontiguousarray(image), format="rgb24")
+    return turned.reformat(format="yuv420p")
+
+
+def _rotation_of(source: Path) -> int:
+    """素材に付いている回転角 読めなければ 0
+
+    :func:`~kumiki.engine.decode.probe_media` と同じ所から読む 別の読み方を
+    すると、元の素材と控えで向きが食い違う
+    """
+    try:
+        info = probe_media(source)
+    except ProbeError:
+        return 0
+    return info.video_streams[0].rotation if info.video_streams else 0
+
+
+def _target_size(
+    stream: av.video.stream.VideoStream, height: int, rotation: int = 0
+) -> tuple[int, int] | None:
+    """縮めたあとの**見た目の**大きさ 縦横とも偶数にする（yuv420p が奇数を受けない）
+
+    90 度と 270 度の素材は、縦横が入れ替わった側が見た目の大きさ
+    こちらで縮めないと、縦の映像の控えだけ小さすぎる/大きすぎることになる
+    """
     source_width = stream.codec_context.width
     source_height = stream.codec_context.height
     if source_width <= 0 or source_height <= 0:
         return None
+    if rotation in (90, 270):
+        source_width, source_height = source_height, source_width
     scaled = min(height, source_height)
     width = max(2, round(source_width * scaled / source_height))
     return width - width % 2, max(2, scaled - scaled % 2)
