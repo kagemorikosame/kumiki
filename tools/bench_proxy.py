@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import atexit
 import io
+import math
 import os
 import shutil
 import statistics
@@ -135,6 +136,12 @@ def main() -> int:
     parser.add_argument("--seconds", type=float, default=3.0)
     parser.add_argument("--proxy-height", type=int, default=PROXY_HEIGHT)
     args = parser.parse_args()
+
+    if not math.isfinite(args.seconds):
+        # nan と inf は int() が投げる 例外で終わると、測れない環境の
+        # 素通り（終了コード 0）と区別が付かない
+        print(f"--seconds が数ではない: {args.seconds}")
+        return 1
 
     frames = int(args.seconds * 30)
     if frames < 2:
