@@ -84,6 +84,16 @@ class TestSaving:
         path.write_text("これは JSON ではない", encoding="utf-8")
         assert PreferenceStore(path).load() == Preferences()
 
+    def test_broken_bytes_do_not_stop_the_start(self, tmp_path: Path) -> None:
+        """UTF-8 として読めないファイルでも起動は止めない
+
+        UnicodeDecodeError は ValueError の仲間なので、いまの受け方で捕まる
+        受け方を狭めたら、設定ファイルが壊れた人の起動が止まる
+        """
+        path = tmp_path / "preferences.json"
+        path.write_bytes(bytes([0xFF, 0xFE]) + b"not utf-8" * 4)
+        assert PreferenceStore(path).load() == Preferences()
+
     def test_a_wrong_type_falls_back_per_item(self, tmp_path: Path) -> None:
         """項目ごとに既定へ戻す 1 つ壊れただけで全部を捨てない"""
         path = tmp_path / "preferences.json"
