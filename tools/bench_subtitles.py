@@ -15,8 +15,11 @@ Qt の拡大は ``QT_SCALE_FACTOR`` で真似できるので、倍率を変え�
 from __future__ import annotations
 
 import argparse
+import atexit
 import io
+import math
 import os
+import shutil
 import statistics
 import sys
 import tempfile
@@ -32,6 +35,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 # 開発者本人の設定に触らない
 _base = Path(tempfile.mkdtemp(prefix="kumiki-subtitle-bench-"))
+# 終わったら捨てる 残すと、回すたびに空の設定フォルダが溜まる
+atexit.register(shutil.rmtree, _base, True)
 os.environ["APPDATA"] = str(_base / "roaming")
 os.environ["LOCALAPPDATA"] = str(_base / "local")
 # 画面を開かない 測るのは描き直しの計算で、実際の画面への転送ではない
@@ -96,7 +101,8 @@ def _project(segments: int, seconds: float) -> Project:
     step = Fraction(int(seconds * 1000), max(1, segments)) / 1000
     media = MediaItem(
         path=Path("長い動画.mp4"),
-        duration=Fraction(int(seconds)),
+        # 秒は分数のまま持つ 整数へ丸めると、0.5 秒の素材が長さ 0 になる
+        duration=Fraction(seconds).limit_denominator(1000),
         video_streams=(
             VideoStreamInfo(
                 index=0,
@@ -128,7 +134,10 @@ def _project(segments: int, seconds: float) -> Project:
     project = AddMedia(media).apply(project)
     track = Track(kind=TrackKind.VIDEO, name="V1")
     project = AddTrack(track).apply(project)
-    clip = Clip(timeline_start=0, duration=int(seconds * 30), media_id=media.id)
+    # 長さはフレーム数 端数は切り上げる 切り捨てると、最後の字幕が
+    # タイムラインからはみ出して「出ていない」扱いになる
+    frames = max(1, math.ceil(seconds * 30))
+    clip = Clip(timeline_start=0, duration=frames, media_id=media.id)
     return AddClip(track.id, clip).apply(project)
 
 
