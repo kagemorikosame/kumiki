@@ -653,26 +653,67 @@ class Compositor:
         ``letterbox`` が真なら、``viewport`` の中で縦横比を保って収める
         プレビュー枠の形が映像と違っても歪まない
         """
+        target = self._fit(viewport, letterbox)
+        if target is None:
+            return
+        self._clear_for(framebuffer, viewport)
+        self._resolve(framebuffer, target)
+
+    def show(
+        self,
+        texture: int,
+        framebuffer: int,
+        viewport: tuple[int, int, int, int],
+        *,
+        letterbox: bool = True,
+    ) -> None:
+        """**すでに sRGB へ符号化された絵**を、そのまま出す
+
+        先読みして取っておいた絵を画面へ出すための入口 :meth:`present` は
+        リニアの合成結果を符号化しながら出すので、符号化済みの絵に使うと
+        2 回掛かって白っぽくなる
+
+        置き方（余白の付け方）は :meth:`present` と同じにする 違うと、
+        先読みが当たったコマだけ絵の位置がずれる
+        """
+        target = self._fit(viewport, letterbox)
+        if target is None:
+            return
+        self._clear_for(framebuffer, viewport)
+        GL.glViewport(*target)
+        self._program.use()
+        self._program.set_bool("u_premultiplied", False)
+        self._program.set_vec4("u_rect", FULL_RECT)
+        self._program.set_bool("u_flip", False)
+        self._program.set_float("u_opacity", 1.0)
+        self._program.set_mat3("u_transform", IDENTITY)
+        self._program.bind_texture("u_texture", texture)
+        self._quad.draw()
+
+    def _fit(
+        self, viewport: tuple[int, int, int, int], letterbox: bool
+    ) -> tuple[int, int, int, int] | None:
+        """出す先の矩形 幅か高さが無ければ ``None``（描く場所が無い）"""
         x, y, width, height = viewport
         if width <= 0 or height <= 0:
-            return
+            return None
+        if not letterbox:
+            return viewport
+        placed = fit_placement(self.width, self.height, width, height)
+        return (
+            x + int(placed.left),
+            y + int(placed.top),
+            max(1, int(placed.width)),
+            max(1, int(placed.height)),
+        )
 
-        target = viewport
-        if letterbox:
-            placed = fit_placement(self.width, self.height, width, height)
-            target = (
-                x + int(placed.left),
-                y + int(placed.top),
-                max(1, int(placed.width)),
-                max(1, int(placed.height)),
-            )
-
+    def _clear_for(self, framebuffer: int, viewport: tuple[int, int, int, int]) -> None:
+        """出す先を黒で塗る 余白に前のコマが残らないようにする"""
         GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, framebuffer)
-        GL.glViewport(x, y, width, height)
+        GL.glViewport(*viewport)
         GL.glDisable(GL.GL_BLEND)
         GL.glClearColor(0.0, 0.0, 0.0, 1.0)
         GL.glClear(GL.GL_COLOR_BUFFER_BIT)
-        self._resolve(framebuffer, target)
 
     def release(self) -> None:
         self._canvas.release()

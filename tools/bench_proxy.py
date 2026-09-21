@@ -64,6 +64,7 @@ from kumiki.engine.gpu import (  # noqa: E402
     OffscreenGLContext,
 )
 from kumiki.engine.render import FrameRenderer, RenderQuality  # noqa: E402
+from kumiki.engine.render.prefetch import BYTES_PER_FRAME_PIXEL, PreviewCache  # noqa: E402
 
 #: 画面へ出す先の大きさ プレビューの枠は画面の実寸で、素材の大きさではない
 PREVIEW_WIDTH, PREVIEW_HEIGHT = 1920, 1080
@@ -184,6 +185,60 @@ def _measure(
         renderer.close()
 
 
+def _measure_prefetch(
+    project: Project,
+    context: OffscreenGLContext,
+    frames: int,
+    proxies: ProxyStore | None,
+    divisor: int = 1,
+) -> tuple[list[float], list[float]]:
+    """先読みの 2 つを測る 貯めるのに掛かる時間と、貯まった絵を出す時間
+
+    貯める方は合成に**取っておく先への転送**が乗る 出す方は転送だけで、
+    その絵がどれだけ重かったかに関係なく同じ 先読みの値打ちはここにある
+
+    予算は測る枚数がちょうど入るだけ取る 足りないと遠い絵から捨て始め、
+    「貯めたのに出すときには無い」を測ることになる
+    """
+    renderer = FrameRenderer(
+        project, context=context, quality=RenderQuality(divisor), proxies=proxies
+    )
+    try:
+        with context:
+            width, height = renderer.size
+            cache = PreviewCache(
+                renderer, budget_bytes=width * height * BYTES_PER_FRAME_PIXEL * frames
+            )
+            screen = Framebuffer(PREVIEW_WIDTH, PREVIEW_HEIGHT, internal_format=GL.GL_RGBA8)
+            viewport = (0, 0, PREVIEW_WIDTH, PREVIEW_HEIGHT)
+            try:
+                # 最初の 1 枚はデコーダを開く分と、シェーダを組む分を含む 外す
+                cache.step(0)
+                GL.glFinish()
+                filling: list[float] = []
+                for frame in range(1, frames):
+                    start = time.perf_counter()
+                    cache.step(frame)
+                    GL.glFinish()
+                    filling.append((time.perf_counter() - start) * 1000)
+
+                showing: list[float] = []
+                for frame in range(1, frames):
+                    start = time.perf_counter()
+                    hit = cache.draw(frame, screen.handle, viewport)
+                    GL.glFinish()
+                    showing.append((time.perf_counter() - start) * 1000)
+                    if not hit:
+                        # 当たらなかった＝その場で描いている 出す時間ではない
+                        raise RuntimeError(f"{frame} コマ目が貯まっていない")
+            finally:
+                cache.release()
+                screen.release()
+        return filling, showing
+    finally:
+        renderer.close()
+
+
 def _detail(height: int, proxy_height: int, proxies: ProxyStore | None, divisor: int) -> int:
     """その組で画面に残る、縦の画素の細かさ
 
@@ -214,6 +269,31 @@ def _layers(value: str) -> int:
     return number
 
 
+def _report_prefetch(project: Project, frames: int, args: argparse.Namespace) -> None:
+    """先読みの測り方と結果を出す 合否には混ぜない
+
+    ここで測るのは「貯まっていれば出せる」ことで、貯めるのが間に合うかは
+    素材と機械による 合否に混ぜると、貯め終わるまで待てば必ず通ってしまう
+    """
+    try:
+        context = OffscreenGLContext()
+    except GLContextError as exc:
+        print(f"  先読みを測れない: {exc}")
+        return
+    try:
+        filling, showing = _measure_prefetch(project, context, frames, None, 1)
+    except RuntimeError as exc:
+        print(f"  先読みを測れない: {exc}")
+        return
+    finally:
+        context.release()
+    print("  先読み（元の素材 + 等倍 合否には混ぜない）")
+    _report("  貯める 1 枚", filling)
+    _report("  出す 1 枚", showing)
+    total = sum(filling) / 1000
+    print(f"    {frames} 枚（{frames / 30:.1f} 秒ぶん）貯めるのに {total:.1f} 秒")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--width", type=int, default=3840)
@@ -223,6 +303,11 @@ def main() -> int:
     parser.add_argument("--layers", type=_layers, default=1, help="重ねる枚数（1 以上）")
     parser.add_argument(
         "--effects", default="", help="積むエフェクト（コンマ区切り 例: blur,glow）"
+    )
+    parser.add_argument(
+        "--prefetch",
+        action="store_true",
+        help="先読み（#29）も測る 貯めるのに掛かる時間と、貯まった絵を出す時間",
     )
     args = parser.parse_args()
 
@@ -308,6 +393,9 @@ def main() -> int:
         ]
     finally:
         context.release()
+
+    if args.prefetch:
+        _report_prefetch(project, frames, args)
 
     within = [item for item in results if item[2] <= BUDGET_MS]
     if not within:

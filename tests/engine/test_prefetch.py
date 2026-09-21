@@ -1,0 +1,261 @@
+"""先読み（バックグラウンドレンダリング）
+
+置き場の入れ替えは、外から見ても分からない所で効く 遠い絵を追い出すつもりで
+すぐ使う絵を捨てていても、画面は正しく出続ける（作り直されるだけ）ので
+気づけない 何を残して何を捨てたかを直に確かめる
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+import pytest
+
+from kumiki.engine.gpu import ShaderError
+from kumiki.engine.render import FrameCache, Invalidation
+from kumiki.engine.render.prefetch import CacheSurface
+
+#: 1 枚ぶんの予算（1920x1080 の RGBA8）
+ONE_FRAME = 1920 * 1080 * 4
+
+
+@dataclass
+class FakeSurface:
+    """GL を持たない描画先 何回描かれたか・手放されたかを覚える"""
+
+    width: int
+    height: int
+    handle: int = 0
+    color: int = 0
+    released: bool = False
+    drawn: list[int] = field(default_factory=list)
+
+    def release(self) -> None:
+        self.released = True
+
+
+class Factory:
+    """作った描画先を覚えておく係 使い回されているかを見る"""
+
+    def __init__(self) -> None:
+        self.made: list[FakeSurface] = []
+
+    def __call__(self, width: int, height: int) -> CacheSurface:
+        surface = FakeSurface(width, height)
+        self.made.append(surface)
+        return surface
+
+
+def _cache(frames: int, *, factory: Factory | None = None) -> tuple[FrameCache, Factory]:
+    made = factory if factory is not None else Factory()
+    cache = FrameCache(1920, 1080, budget_bytes=ONE_FRAME * frames, surface=made)
+    return cache, made
+
+
+def _fill(cache: FrameCache, *frames: int) -> None:
+    for frame in frames:
+        cache.store(frame, lambda surface: None)
+
+
+class TestHowManyFit:
+    def test_the_budget_decides_the_count(self) -> None:
+        cache, _ = _cache(4)
+        assert cache.capacity == 4
+
+    def test_a_budget_too_small_holds_nothing(self) -> None:
+        """1 枚も入らない予算では先読みしない
+
+        1 枚だけ置くと、再生ヘッドが動くたびにその 1 枚を作り直して捨てる
+        """
+        cache = FrameCache(1920, 1080, budget_bytes=ONE_FRAME - 1, surface=Factory())
+        assert cache.capacity == 0
+        assert cache.store(0, lambda surface: None) is None
+
+    def test_a_smaller_picture_fits_more(self) -> None:
+        # 画質を下げれば同じメモリで長く貯まる 設定の説明はこの関係に基づく
+        cache = FrameCache(960, 540, budget_bytes=ONE_FRAME, surface=Factory())
+        assert cache.capacity == 4
+
+
+class TestKeepingWhatIsNear:
+    def test_a_stored_frame_comes_back(self) -> None:
+        cache, _ = _cache(4)
+        surface = cache.store(7, lambda target: None)
+        assert surface is not None
+        assert cache.get(7) is surface
+
+    def test_the_far_frame_goes_first(self) -> None:
+        """いっぱいになったら、再生ヘッドから遠い絵を捨てる
+
+        古い順で捨てると、再生ヘッドのすぐ先に貯めたばかりの絵を、さらに先を
+        貯めるために捨てることになる
+        """
+        cache, _ = _cache(3)
+        cache.set_playhead(0)
+        _fill(cache, 0, 1, 50)
+        cache.set_playhead(0)
+        _fill(cache, 2)
+        assert cache.cached == {0, 1, 2}
+
+    def test_a_frame_farther_than_everything_is_not_stored(self) -> None:
+        """近い絵を追い出してまで遠い絵は置かない
+
+        置いてしまうと、すぐ使う所を捨てて誰も見ない先を貯め続ける
+        """
+        cache, _ = _cache(2)
+        cache.set_playhead(0)
+        _fill(cache, 0, 1)
+        assert cache.store(99, lambda surface: None) is None
+        assert cache.cached == {0, 1}
+
+    def test_behind_goes_before_ahead_at_the_same_distance(self) -> None:
+        """同じ距離なら後ろから捨てる 再生は前へ進む"""
+        cache, _ = _cache(2)
+        cache.set_playhead(10)
+        _fill(cache, 5, 15)
+        cache.set_playhead(10)
+        assert cache.store(16, lambda surface: None) is not None
+        assert cache.cached == {15, 16}
+
+    def test_the_freed_surface_is_used_again(self) -> None:
+        """捨てた枠は作り直さずに使い回す 毎回作ると確保と解放で時間を食う"""
+        cache, factory = _cache(2)
+        cache.set_playhead(0)
+        _fill(cache, 0, 1)
+        cache.invalidate(Invalidation.over([(0, 1)]))
+        _fill(cache, 2)
+        assert len(factory.made) == 2
+
+
+class TestWhenDrawingFails:
+    def test_nothing_is_kept(self) -> None:
+        """途中で落ちた絵は残さない
+
+        残すと、その位置だけ壊れた絵が出たまま直らない（次からは当たってしまう）
+        """
+        cache, _ = _cache(2)
+
+        def explode(surface: CacheSurface) -> None:
+            raise RuntimeError("描けない")
+
+        with pytest.raises(RuntimeError):
+            cache.store(3, explode)
+        assert cache.cached == frozenset()
+
+    def test_the_surface_comes_back_for_the_next_try(self) -> None:
+        cache, factory = _cache(2)
+
+        def explode(surface: CacheSurface) -> None:
+            raise RuntimeError("描けない")
+
+        with pytest.raises(RuntimeError):
+            cache.store(3, explode)
+        _fill(cache, 3)
+        assert len(factory.made) == 1
+
+
+class TestThrowingAway:
+    def test_only_the_changed_range_goes(self) -> None:
+        """変わった範囲だけ捨てる 先読みの値打ちはここ"""
+        cache, _ = _cache(5)
+        _fill(cache, 0, 1, 10, 11)
+        assert cache.invalidate(Invalidation.over([(10, 12)])) == 2
+        assert cache.cached == {0, 1}
+
+    def test_everything_goes_when_asked(self) -> None:
+        cache, _ = _cache(5)
+        _fill(cache, 0, 1, 10)
+        assert cache.invalidate(Invalidation.all()) == 3
+        assert cache.cached == frozenset()
+
+    def test_nothing_to_throw_away_touches_nothing(self) -> None:
+        cache, _ = _cache(5)
+        _fill(cache, 0, 1)
+        assert cache.invalidate(Invalidation.nothing()) == 0
+        assert cache.cached == {0, 1}
+
+    def test_a_new_size_lets_go_of_the_surfaces(self) -> None:
+        """大きさが変われば取ってある絵は使えない 枠ごと手放す
+
+        使い回すと、次に何枚持てるかの勘定が合わなくなる
+        """
+        cache, factory = _cache(2)
+        _fill(cache, 0, 1)
+        cache.resize(960, 540)
+        assert cache.cached == frozenset()
+        assert all(surface.released for surface in factory.made)
+
+    def test_the_same_size_keeps_them(self) -> None:
+        # 毎コマ呼ばれる所なので、同じ大きさなら何もしない
+        cache, _ = _cache(2)
+        _fill(cache, 0, 1)
+        cache.resize(1920, 1080)
+        assert cache.cached == {0, 1}
+
+
+class TestChangingTheBudget:
+    def test_shrinking_drops_the_far_ones(self) -> None:
+        cache, _ = _cache(4)
+        cache.set_playhead(0)
+        _fill(cache, 0, 1, 2, 3)
+        cache.set_budget(ONE_FRAME * 2)
+        assert cache.cached == {0, 1}
+
+    def test_turning_it_off_drops_all(self) -> None:
+        """切ったら本当に空にする 残すと、切ったのにメモリを持ったままになる"""
+        cache, factory = _cache(4)
+        _fill(cache, 0, 1)
+        cache.set_budget(0)
+        assert cache.cached == frozenset()
+        assert cache.capacity == 0
+        assert all(surface.released for surface in factory.made)
+
+    def test_growing_keeps_what_is_there(self) -> None:
+        cache, _ = _cache(2)
+        _fill(cache, 0, 1)
+        cache.set_budget(ONE_FRAME * 4)
+        assert cache.cached == {0, 1}
+        assert cache.capacity == 4
+
+
+class TestWhenTheGpuRunsOut:
+    """予算は「使っていい上限」であって「必ず取れる量」ではない
+
+    載っているメモリの少ない機械では、途中で確保できなくなる そこで投げると、
+    先読みの都合でプレビューそのものが落ちる
+    """
+
+    class Stingy(Factory):
+        """``limit`` 枚までしか作れない描画先の工場"""
+
+        def __init__(self, limit: int) -> None:
+            super().__init__()
+            self.limit = limit
+
+        def __call__(self, width: int, height: int) -> CacheSurface:
+            if len(self.made) >= self.limit:
+                raise ShaderError("フレームバッファを構成できない")
+            return super().__call__(width, height)
+
+    def test_it_stops_at_what_it_could_take(self) -> None:
+        cache, _ = _cache(8, factory=self.Stingy(3))
+        _fill(cache, 0, 1, 2, 3)
+        assert cache.cached == {0, 1, 2}
+        assert cache.capacity == 3
+
+    def test_it_keeps_serving_what_it_has(self) -> None:
+        """取れなくなっても、取ってある絵は出せる"""
+        cache, _ = _cache(8, factory=self.Stingy(2))
+        _fill(cache, 0, 1, 2)
+        assert cache.get(0) is not None
+
+    def test_changing_the_budget_tries_again(self) -> None:
+        """設定を変えたら上限は忘れる ほかのアプリが掴んでいただけのことがある"""
+        stingy = self.Stingy(1)
+        cache, _ = _cache(8, factory=stingy)
+        _fill(cache, 0, 1)
+        assert cache.capacity == 1
+        stingy.limit = 4
+        cache.set_budget(ONE_FRAME * 8)
+        _fill(cache, 1, 2)
+        assert cache.cached == {0, 1, 2}
