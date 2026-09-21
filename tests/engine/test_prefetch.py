@@ -10,12 +10,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import pytest
+from OpenGL.error import GLError
 
 from kumiki.engine.gpu import ShaderError
 from kumiki.engine.render import FrameCache, Invalidation
 from kumiki.engine.render.prefetch import CacheSurface
 
-#: 1 枚ぶんの予算（1920x1080 の RGBA8）
+#: 予算を「何枚ぶん」で書くための単位 枚数で書かないと、遠い絵を捨てる所の
+#: 試験が「この予算なら何枚入るのか」を数える所から始まってしまう
 ONE_FRAME = 1920 * 1080 * 4
 
 
@@ -259,3 +261,50 @@ class TestWhenTheGpuRunsOut:
         cache.set_budget(ONE_FRAME * 8)
         _fill(cache, 1, 2)
         assert cache.cached == {0, 1, 2}
+
+    def test_a_raw_gl_error_is_also_a_shortage(self) -> None:
+        """GL の生のエラーでも同じ扱い
+
+        フレームバッファが組めない形で返るとは限らない 確保そのものが
+        GLError になることもあり、拾い分けるとそちらだけ画面まで抜ける
+        """
+
+        class Failing(Factory):
+            def __call__(self, width: int, height: int) -> CacheSurface:
+                raise GLError(err=1285)
+
+        cache, _ = _cache(4, factory=Failing())
+        _fill(cache, 0)
+        assert cache.cached == frozenset()
+        assert cache.capacity == 0
+
+    def test_emptying_the_cache_lets_it_try_again(self) -> None:
+        """空にしたら上限は忘れる ほかのアプリが掴んでいただけのことがある
+
+        忘れないと、一度足りなかった機械では次の編集からも先読みが効かない
+        """
+        stingy = self.Stingy(1)
+        cache, _ = _cache(4, factory=stingy)
+        _fill(cache, 0, 1)
+        assert cache.capacity == 1
+        stingy.limit = 4
+        cache.clear()
+        _fill(cache, 0, 1, 2)
+        assert cache.cached == {0, 1, 2}
+
+
+class TestWhichOneGoesFirst:
+    def test_the_tie_does_not_depend_on_the_order_they_went_in(self) -> None:
+        """同じ遠さなら、入れた順に関係なく後ろを捨てる
+
+        遠さだけで比べると Python の max は先に入れた方を選ぶので、
+        入れる順で捨てるものが変わる
+        """
+        # 再生ヘッド 10 に対し、6 は後ろへ 4（重み 2 倍で 8）、18 は前へ 8 同じ遠さ
+        for order in ((6, 18), (18, 6)):
+            cache, _ = _cache(2)
+            cache.set_playhead(10)
+            _fill(cache, *order)
+            cache.set_playhead(10)
+            assert cache.store(11, lambda surface: None) is not None
+            assert cache.cached == {18, 11}, f"入れた順 {order} で結果が変わる"

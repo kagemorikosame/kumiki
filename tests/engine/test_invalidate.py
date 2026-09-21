@@ -247,3 +247,21 @@ class TestTheScenes:
         result = changed_spans(before, after)
         assert result.contains(50)
         assert not result.contains(0)
+
+    def test_replacing_a_source_used_inside_a_scene_reaches_the_outside(self) -> None:
+        """シーンの中で使っている素材を差し替えても、外の絵は変わる
+
+        中のクリップは素材を ID で指しているので、差し替えてもシーンの
+        タイムラインは同じまま 見落とすと、外へ置いた所だけ古い絵が残る
+        """
+        media = _media()
+        inner = Timeline(
+            rate=RATE,
+            tracks=(Track(kind=TrackKind.VIDEO, clips=(_clip(0, 30, media_id=media.id),)),),
+        )
+        before, _ = self._with_scene(inner)
+        before = replace(before, media=(media,))
+        after = replace(before, media=(replace(media, path=Path("b.mp4")),))
+        result = changed_spans(before, after)
+        assert result.contains(50), "シーンの中の素材差し替えが外へ届いていない"
+        assert not result.contains(0)

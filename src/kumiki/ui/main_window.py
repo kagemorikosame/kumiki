@@ -644,6 +644,10 @@ class MainWindow(QMainWindow):
         self._playback.state_changed.connect(self._transport.set_playing)
         # 再生中は先読みを止める 同じ GPU を奪い合うと、いま出すべきコマが遅れる
         self._playback.state_changed.connect(self._preview.set_playing)
+        # 先読みを止めたら伝える 黙って効かない状態にしない
+        self._preview.prefetch_stopped.connect(
+            lambda message: self.statusBar().showMessage(message, 5000)
+        )
         self._playback.failed.connect(lambda message: self.statusBar().showMessage(message, 5000))
 
     # --- コマンドの実行 ---

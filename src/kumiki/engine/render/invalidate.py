@@ -83,8 +83,8 @@ def changed_spans(before: Project, after: Project) -> Invalidation:
         # 同じフレーム番号が別の時刻を指すようになる 絵は全部変わる
         return Invalidation.all()
 
-    scenes = _changed_scenes(before, after)
     media = _changed_media(before, after)
+    scenes = _changed_scenes(before, after, media)
     return _timeline_spans(before.timeline, after.timeline, scenes, media)
 
 
@@ -107,7 +107,9 @@ def _timeline_spans(
             continue
         spans.extend(_clip_spans(old, new))
 
-    for track in new_tracks:
+    # 変更前と変更後の**両方**を見る 素材やシーンを消しながらクリップを動かす編集では、
+    # 動かす前の場所が変更後のトラックには残っていない
+    for track in (*old_tracks, *new_tracks):
         spans.extend(_span(clip) for clip in track.clips if _depends_on(clip, scenes, media))
 
     return Invalidation.over(spans)
@@ -140,6 +142,16 @@ def _depends_on(clip: Clip, scenes: set[SceneId], media: set[MediaId]) -> bool:
     return clip.media_id is not None and clip.media_id in media
 
 
+def _media_used(timeline: Timeline) -> set[MediaId]:
+    """そのタイムラインが読んでいる素材"""
+    return {
+        clip.media_id
+        for track in timeline.tracks
+        for clip in track.clips
+        if clip.media_id is not None
+    }
+
+
 def _changed_media(before: Project, after: Project) -> set[MediaId]:
     """中身の変わった素材 差し替えと読み込み直しで絵が変わる"""
     old = {item.id: item for item in before.media}
@@ -147,23 +159,34 @@ def _changed_media(before: Project, after: Project) -> set[MediaId]:
     return {key for key in old.keys() | new.keys() if old.get(key) != new.get(key)}
 
 
-def _changed_scenes(before: Project, after: Project) -> set[SceneId]:
+def _changed_scenes(before: Project, after: Project, media: set[MediaId]) -> set[SceneId]:
     """中身の変わったシーン 入れ子で参照しているシーンも変わったとみなす
 
     シーンの中の 1 フレームが、外では何フレーム目に出るかは、置いたクリップの
     速度と開始位置で決まる そこまで追わず、**そのシーンを置いたクリップ全体**を
     捨てる シーンは繰り返し使う部品で、編集の頻度が低い
+
+    **素材の差し替えも中身の変化として数える** シーンの中のクリップは素材を
+    ID で指しているので、差し替えてもタイムラインは同じまま それを見落とすと、
+    シーンの中で使っている素材を差し替えたときに、外へ置いた所だけ古い絵が残る
     """
     old = {scene.id: scene.timeline for scene in before.scenes}
     new = {scene.id: scene.timeline for scene in after.scenes}
     changed = {key for key in old.keys() | new.keys() if old.get(key) != new.get(key)}
+    changed |= {
+        scene_id
+        for timelines in (old, new)
+        for scene_id, timeline in timelines.items()
+        if _media_used(timeline) & media
+    }
 
     # 変わったシーンを置いているシーンも、外から見れば変わっている
     # 数えきるまで繰り返す（シーンの入れ子は循環しないことがモデル側で保証されている）
     while True:
         spread = {
             scene_id
-            for scene_id, timeline in new.items()
+            for timelines in (old, new)
+            for scene_id, timeline in timelines.items()
             if scene_id not in changed and timeline.scene_references() & changed
         }
         if not spread:

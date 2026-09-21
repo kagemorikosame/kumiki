@@ -17,7 +17,7 @@ from kumiki.core.commands import AddClip, AddTrack
 from kumiki.core.model import Clip, MediaId, Project, Track, TrackKind
 from kumiki.engine.cache.proxy import ProxyStore
 from kumiki.engine.render import Invalidation
-from kumiki.ui.preview import PreviewWidget
+from kumiki.ui.preview import SLOW_FRAME_MS, PreviewWidget
 
 
 class StubRenderer:
@@ -190,3 +190,58 @@ class TestTheBudget:
         widget, stub = preview
         widget.set_prefetch_bytes(widget._prefetch_bytes)
         assert stub.budget is None
+
+
+class TestWhenPrefetchingGoesWrong:
+    """先読みは無くても絵は出る 先読みの都合でアプリを落とさない"""
+
+    def test_a_failure_does_not_escape_the_timer(
+        self, preview: tuple[PreviewWidget, StubCache], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """描けなくても投げ返さない
+
+        ここは Qt のタイマーから呼ばれる 投げるとイベントループの外まで抜け、
+        編集中のプロジェクトごとアプリが終わる
+        """
+        widget, stub = preview
+
+        def explode(playhead: int) -> bool:
+            raise RuntimeError("デコーダが開けない")
+
+        monkeypatch.setattr(stub, "step", explode)
+        stopped: list[str] = []
+        widget.prefetch_stopped.connect(stopped.append)
+        widget.set_frame(3)
+        widget._prefetch_step()
+        assert not widget._idle.isActive()
+        assert stopped and "デコーダが開けない" in stopped[0]
+
+    def test_a_slow_frame_stops_it(
+        self, preview: tuple[PreviewWidget, StubCache], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """1 コマに掛かりすぎるなら貯めるのをやめる
+
+        描いているのは編集画面と同じ GL コンテキストなので、その間は操作を
+        受け付けられない 2 秒掛かる素材で貯め続けると、ずっと固まって見える
+        """
+        widget, stub = preview
+        ticks = iter([0.0, (SLOW_FRAME_MS + 1) / 1000])
+        monkeypatch.setattr("kumiki.ui.preview.time.perf_counter", lambda: next(ticks))
+        monkeypatch.setattr(stub, "step", lambda playhead: True)
+        stopped: list[str] = []
+        widget.prefetch_stopped.connect(stopped.append)
+        widget.set_frame(3)
+        widget._prefetch_step()
+        assert not widget._idle.isActive()
+        assert stopped, "止めたことを伝えていない"
+
+    def test_a_quick_frame_keeps_going(
+        self, preview: tuple[PreviewWidget, StubCache], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        widget, stub = preview
+        ticks = iter([0.0, 0.001])
+        monkeypatch.setattr("kumiki.ui.preview.time.perf_counter", lambda: next(ticks))
+        monkeypatch.setattr(stub, "step", lambda playhead: True)
+        widget.set_frame(3)
+        widget._prefetch_step()
+        assert widget._idle.isActive()

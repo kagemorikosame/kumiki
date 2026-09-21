@@ -17,6 +17,7 @@ from collections.abc import Callable, Iterable
 from typing import Protocol
 
 from OpenGL import GL
+from OpenGL.error import GLError
 
 from kumiki.engine.gpu import Framebuffer, ShaderError
 from kumiki.engine.render.invalidate import Invalidation
@@ -142,6 +143,12 @@ class FrameCache:
         return len(dropped)
 
     def clear(self) -> None:
+        """取ってある絵を捨てる 枠は使い回すので手放さない
+
+        取れなかった上限も忘れる 空にしたということは、次に確保するときには
+        メモリが空いているかもしれない（ほかのアプリが掴んでいただけのことがある）
+        """
+        self._ceiling = None
         self._recycle(list(self._frames))
 
     def resize(self, width: int, height: int) -> None:
@@ -171,6 +178,7 @@ class FrameCache:
 
     def release(self) -> None:
         """GL 資源を手放す コンテキストが current な所で呼ぶこと"""
+        self._ceiling = None
         self._release(self._frames.values())
         self._release(self._free)
         self._frames = {}
@@ -201,12 +209,19 @@ class FrameCache:
         """
         try:
             return self._make(self._width, self._height)
-        except ShaderError:
+        except (ShaderError, GLError):
+            # GPU のメモリが足りない フレームバッファが組めない形で返ることも、
+            # 確保そのものが GL のエラーになることもある どちらも同じ扱い
             self._ceiling = len(self._frames)
             return None
 
     def _worst(self) -> int:
-        return max(self._frames, key=self._cost)
+        """次に捨てる 1 枚
+
+        遠さが同じときは**後ろを先に捨てる** 遠さだけで比べると、同じ遠さの
+        2 枚のうち先に入れた方が残り、捨てる順が入れた順で決まってしまう
+        """
+        return max(self._frames, key=lambda frame: (self._cost(frame), frame < self._playhead))
 
     def _cost(self, frame: int) -> int:
         """再生ヘッドからの遠さ 大きいほど先に捨てる"""

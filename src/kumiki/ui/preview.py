@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Collection
 
 from PySide6.QtCore import QTimer, Signal
@@ -24,7 +25,15 @@ from kumiki.engine.render import (
     changed_spans,
 )
 
-__all__ = ["PreviewWidget"]
+__all__ = ["SLOW_FRAME_MS", "PreviewWidget"]
+
+#: 先読みの 1 コマにこれ以上掛かるなら、先読みそのものをやめる（ミリ秒）
+#:
+#: 描いているのは編集画面と同じ GL コンテキストなので、1 コマ描く間は
+#: 操作を受け付けられない 重すぎる素材（動画を 20 本重ねて効果を積むと
+#: 1 コマ 2 秒 測った値は kumiki.engine.cache.proxy）では、貯まる値打ちより
+#: 固まる方が大きい 0.2 秒は、押してから反応するまでに引っかかりを感じ始める辺り
+SLOW_FRAME_MS = 200.0
 
 
 class PreviewWidget(QOpenGLWidget):
@@ -32,6 +41,8 @@ class PreviewWidget(QOpenGLWidget):
 
     #: GL の準備ができた レンダラを使い始めてよい合図
     ready = Signal()
+    #: 先読みをやめた 引数は理由 画面へ出して、黙って効かない状態を避ける
+    prefetch_stopped = Signal(str)
 
     def __init__(
         self,
@@ -224,9 +235,27 @@ class PreviewWidget(QOpenGLWidget):
         if self._cache is None:
             self._idle.stop()
             return
+        started = time.perf_counter()
         self.makeCurrent()
         try:
-            if not self._cache.step(self._frame):
-                self._idle.stop()
+            filled = self._cache.step(self._frame)
+        except Exception as exc:
+            # **先読みの失敗でプレビューを落とさない** ここは Qt のタイマーから
+            # 呼ばれるので、投げるとイベントループの外まで抜けてアプリが終わる
+            # 先読みは無くても絵は出る 止めて、理由を伝えるに留める
+            self._idle.stop()
+            self.prefetch_stopped.emit(f"先読みを止めた: {exc}")
+            return
         finally:
             self.doneCurrent()
+
+        if not filled:
+            self._idle.stop()
+            return
+
+        elapsed = (time.perf_counter() - started) * 1000
+        if elapsed > SLOW_FRAME_MS:
+            # 1 コマにこれだけ掛かるなら、貯まるまでずっと操作を受け付けられない
+            # 次に再生ヘッドか中身が変わったら、また試す
+            self._idle.stop()
+            self.prefetch_stopped.emit(f"1 コマ {elapsed / 1000:.1f} 秒掛かるので先読みを止めた")
