@@ -178,10 +178,28 @@ class TestWhatItThrowsAway:
 
 
 class TestTheBudget:
-    def test_it_reaches_the_cache(self, preview: tuple[PreviewWidget, StubCache]) -> None:
+    def test_it_reaches_the_cache_when_gl_is_usable(
+        self, preview: tuple[PreviewWidget, StubCache]
+    ) -> None:
+        """選んだメモリは、GL を確実に使える所まで持ち越してから渡す
+
+        減らすと置き場は描画先を手放す（GL を触る）ので、設定の窓から
+        戻ってきたその場で渡すと、current でないまま解放しに行くことがある
+        """
         widget, stub = preview
         widget.set_prefetch_bytes(512 * 1024 * 1024)
-        assert stub.budget == 512 * 1024 * 1024
+        assert stub.budget is None, "その場で GL を触りに行っている"
+        widget._prefetch_step()
+        assert stub.budget == 512 * 1024 * 1024, "持ち越したまま渡していない"
+
+    def test_it_is_handed_over_only_once(self, preview: tuple[PreviewWidget, StubCache]) -> None:
+        # 毎コマ渡すと、置き場が余分な入れ替えを繰り返す
+        widget, stub = preview
+        widget.set_prefetch_bytes(512 * 1024 * 1024)
+        widget._prefetch_step()
+        stub.budget = None
+        widget._prefetch_step()
+        assert stub.budget is None
 
     def test_the_same_budget_changes_nothing(
         self, preview: tuple[PreviewWidget, StubCache]

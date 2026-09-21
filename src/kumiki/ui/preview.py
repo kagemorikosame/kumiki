@@ -63,6 +63,8 @@ class PreviewWidget(QOpenGLWidget):
         #: 先読みに使えるバイト数 0 なら先読みしない
         self._prefetch_bytes = max(0, prefetch_bytes)
         self._cache: PreviewCache | None = None
+        #: まだ置き場へ渡していないメモリの量 GL を確実に使える所で渡す
+        self._pending_budget: int | None = None
         #: 手が空いたら 1 コマずつ描く 間隔 0 は「ほかにすることが無くなったら」
         #: という意味で、入力の処理より後になる 待ち時間を入れると、貯まるまでが
         #: 枚数 × その待ち時間ぶん延びる
@@ -148,15 +150,18 @@ class PreviewWidget(QOpenGLWidget):
         self._restart_prefetch()
 
     def set_prefetch_bytes(self, prefetch_bytes: int) -> None:
-        """先読みに使えるメモリを変える 0 で止める"""
+        """先読みに使えるメモリを変える 0 で止める
+
+        その場では渡さない 減らすと置き場は描画先を手放すので GL を触るが、
+        設定の窓から戻ってきた所が GL を使える状態とは限らない
+        描く直前（:meth:`paintGL` と先読みの 1 コマ）まで持ち越す
+        """
         prefetch_bytes = max(0, prefetch_bytes)
         if prefetch_bytes == self._prefetch_bytes:
             return
         self._prefetch_bytes = prefetch_bytes
-        if self._cache is not None:
-            self.makeCurrent()
-            self._cache.set_budget(prefetch_bytes)
-            self.doneCurrent()
+        self._pending_budget = prefetch_bytes
+        self.update()
         self._restart_prefetch()
 
     def set_playing(self, playing: bool) -> None:
@@ -206,11 +211,22 @@ class PreviewWidget(QOpenGLWidget):
         width = max(1, int(self.width() * ratio))
         height = max(1, int(self.height() * ratio))
 
+        # Qt はここでコンテキストを current にしている 持ち越した設定を当てる
+        self._apply_pending()
         if self._cache is not None and self._cache.enabled:
             self._cache.draw(self._frame, self.defaultFramebufferObject(), (0, 0, width, height))
             return
         self._renderer.compose(self._frame)
         self._renderer.compositor.present(self.defaultFramebufferObject(), (0, 0, width, height))
+
+    def _apply_pending(self) -> None:
+        """持ち越していた設定を置き場へ渡す **コンテキストが current な所で呼ぶこと**"""
+        if self._pending_budget is None or self._cache is None:
+            return
+        budget, self._pending_budget = self._pending_budget, None
+        self._cache.set_budget(budget)
+        # 0 から増やしたときは、ここで初めて先読みできるようになる
+        self._restart_prefetch()
 
     def _invalidate(self, invalidation: Invalidation) -> None:
         """変わった範囲の先読みを捨てる コンテキストが current な所で呼ぶこと"""
@@ -251,6 +267,7 @@ class PreviewWidget(QOpenGLWidget):
                 self.prefetch_stopped.emit("GL を使えないので先読みを止めた")
                 return
             try:
+                self._apply_pending()
                 filled = self._cache.step(self._frame)
             finally:
                 # current にできたときだけ戻す できていないのに戻すと、
