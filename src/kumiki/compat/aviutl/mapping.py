@@ -247,6 +247,13 @@ _PARAMS: dict[str, dict[str, _Param]] = {
         "減衰": _Param("falloff"),
         "境目調整": _Param("gap"),
     },
+    "ランダム配置": {
+        "数": _Param("count"),
+        "範囲": _Param("span"),
+        "回転": _Param("angle"),
+        "拡散": _Param("spread"),
+        "ランダム角度": _Param("random_angle"),
+    },
     # ディスプレイスメントマップ 変形X と 変形Y はずらす量 Y は下が正
     "ディスプレイスメントマップ": {
         "サイズ": _Param("size"),
@@ -383,6 +390,7 @@ _FILTERS: dict[str, str] = {
     "領域拡張": "expand_area",
     "ミラー": "mirror",
     "ディスプレイスメントマップ": "displacement_map",
+    "ランダム配置": "scatter",
     "モザイク": "mosaic",
     "マスク": "mask",
     "クリッピング": "crop",

@@ -415,7 +415,7 @@ def command_compare(arguments: argparse.Namespace) -> int:
 #: 乱数で絵が決まる中身と効果 線や粒の向きが毎回変わるので、
 #: 1 枚ずつ引き比べても差は縮まらない 値の意味は別に測って確かめる
 RANDOM_SHAPES = frozenset({"concentration"})
-RANDOM_EFFECTS = frozenset({"noise", "particles", "crash"})
+RANDOM_EFFECTS = frozenset({"noise", "particles", "crash", "scatter"})
 
 #: 乱数のものに付ける印 平均から外すかどうかの判定にも使う
 RANDOM_NOTE = "乱数（1 枚ずつは比べない）"
