@@ -36,9 +36,19 @@ atexit.register(shutil.rmtree, _base, True)
 os.environ["APPDATA"] = str(_base / "roaming")
 os.environ["LOCALAPPDATA"] = str(_base / "local")
 
+from OpenGL import GL  # noqa: E402
+
 from kumiki.core.commands import AddClip, AddMedia, AddTrack  # noqa: E402
-from kumiki.core.model import Clip, Project, ProjectSettings, Track, TrackKind  # noqa: E402
+from kumiki.core.model import (  # noqa: E402
+    AnimatedValue,
+    Clip,
+    Project,
+    ProjectSettings,
+    Track,
+    TrackKind,
+)
 from kumiki.core.timebase import FrameRate  # noqa: E402
+from kumiki.effects.definition import registry  # noqa: E402
 from kumiki.engine.cache.proxy import (  # noqa: E402
     PROXY_HEIGHT,
     ProxyStore,
@@ -59,8 +69,6 @@ def _make_source(directory: Path, *, width: int, height: int, seconds: float) ->
     path = directory / f"{width}x{height}.mp4"
     if path.exists():
         return path
-    if shutil.which("ffmpeg") is None:
-        return None
     command = [
         "ffmpeg",
         "-hide_banner",
@@ -86,14 +94,38 @@ def _make_source(directory: Path, *, width: int, height: int, seconds: float) ->
     return path
 
 
-def _project(source: Path, width: int, height: int, frames: int) -> Project:
+def _project(
+    source: Path,
+    width: int,
+    height: int,
+    frames: int,
+    *,
+    layers: int = 1,
+    effects: tuple[str, ...] = (),
+) -> Project:
+    """測る対象のプロジェクト
+
+    重ねる枚数と積むエフェクトを変えられる 1 枚だけの絵は一番軽い場合で、
+    実際のタイムラインは何枚も重なる そこを測らないと、軽い場合だけを見て
+    「余裕がある」と決めることになる
+    """
     media = probe_media(source)
     project = Project.create(ProjectSettings(width=width, height=height, frame_rate=FrameRate(30)))
     project = AddMedia(media).apply(project)
-    track = Track(kind=TrackKind.VIDEO, name="V1")
-    project = AddTrack(track).apply(project)
-    clip = Clip(timeline_start=0, duration=frames, media_id=media.id)
-    return AddClip(track.id, clip).apply(project)
+    for index in range(max(1, layers)):
+        track = Track(kind=TrackKind.VIDEO, name=f"V{index + 1}")
+        project = AddTrack(track).apply(project)
+        clip = Clip(
+            timeline_start=0,
+            duration=frames,
+            media_id=media.id,
+            # 重ねた下の絵も描かせる 不透明のままだと、上の 1 枚で隠れた分を
+            # 飛ばす作りになったときに重ねた意味が無くなる
+            opacity=AnimatedValue(70.0),
+            effects=tuple(registry.require(name).create() for name in effects),
+        )
+        project = AddClip(track.id, clip).apply(project)
+    return project
 
 
 def _measure(
@@ -103,18 +135,29 @@ def _measure(
     proxies: ProxyStore | None,
     divisor: int = 1,
 ) -> list[float]:
-    """1 フレームずつ描いて、かかった時間（ミリ秒）を返す"""
+    """1 フレームずつ合成して、かかった時間（ミリ秒）を返す
+
+    測るのは :meth:`FrameRenderer.compose` **プレビューが通るのはこちら**で、
+    合成結果を GPU に置いたまま画面へ出す :meth:`render` は最後に GPU から
+    CPU へ読み戻すので、プレビューには無い時間まで数えることになる
+
+    GL の命令は投げただけでは終わっていない 1 枚ごとに ``glFinish`` で
+    終わりを待つ 待たないと、投げるのに掛かった時間を測るだけになる
+    """
     renderer = FrameRenderer(
         project, context=context, quality=RenderQuality(divisor), proxies=proxies
     )
     try:
-        # 最初の 1 枚はデコーダを開く分を含む 測る対象から外す
-        renderer.render(0)
-        times: list[float] = []
-        for frame in range(1, frames):
-            start = time.perf_counter()
-            renderer.render(frame)
-            times.append((time.perf_counter() - start) * 1000)
+        with context:
+            # 最初の 1 枚はデコーダを開く分と、シェーダを組む分を含む 外す
+            renderer.compose(0)
+            GL.glFinish()
+            times: list[float] = []
+            for frame in range(1, frames):
+                start = time.perf_counter()
+                renderer.compose(frame)
+                GL.glFinish()
+                times.append((time.perf_counter() - start) * 1000)
         return times
     finally:
         renderer.close()
@@ -135,6 +178,10 @@ def main() -> int:
     parser.add_argument("--height", type=int, default=2160)
     parser.add_argument("--seconds", type=float, default=3.0)
     parser.add_argument("--proxy-height", type=int, default=PROXY_HEIGHT)
+    parser.add_argument("--layers", type=int, default=1, help="重ねる枚数")
+    parser.add_argument(
+        "--effects", default="", help="積むエフェクト（コンマ区切り 例: blur,glow）"
+    )
     args = parser.parse_args()
 
     if not math.isfinite(args.seconds):
@@ -157,10 +204,15 @@ def main() -> int:
 
     directory = _base / "素材"
     directory.mkdir(parents=True, exist_ok=True)
-    source = _make_source(directory, width=args.width, height=args.height, seconds=args.seconds)
-    if source is None:
+    if shutil.which("ffmpeg") is None:
         print("ffmpeg が無い 測らずに終わる")
         return 0
+    source = _make_source(directory, width=args.width, height=args.height, seconds=args.seconds)
+    if source is None:
+        # 作れないのは環境の都合ではなく、指定か ffmpeg の側の問題
+        # 素通り（終了コード 0）にすると、測れていないのに通ったように見える
+        print(f"測る素材を作れなかった {args.width}x{args.height} {args.seconds} 秒")
+        return 1
 
     try:
         context = OffscreenGLContext()
@@ -168,11 +220,21 @@ def main() -> int:
         print(f"OpenGL コンテキストを作れない 測らずに終わる: {exc}")
         return 0
 
-    project = _project(source, args.width, args.height, frames)
+    effects = tuple(name for name in args.effects.split(",") if name)
+    try:
+        project = _project(
+            source, args.width, args.height, frames, layers=args.layers, effects=effects
+        )
+    except KeyError as exc:
+        print(f"知らないエフェクト: {exc}")
+        context.release()
+        return 1
     store = ProxyStore(CacheStore(_base / "cache"), height=args.proxy_height)
     media = project.media[0]
 
-    print(f"{args.width}x{args.height} を {frames} フレーム 予算 {BUDGET_MS:.1f}ms")
+    piled = f" {args.layers} 枚重ね" if args.layers > 1 else ""
+    stacked = f" + {'/'.join(effects)}" if effects else ""
+    print(f"{args.width}x{args.height}{piled}{stacked} を {frames} フレーム 予算 {BUDGET_MS:.1f}ms")
     started = time.perf_counter()
     made = create_proxy(source, store.prepare(media), height=args.proxy_height)
     building = time.perf_counter() - started
@@ -184,34 +246,32 @@ def main() -> int:
 
     # 控えだけでは足りない デコードは軽くなるが、合成は画面の大きさのまま
     # 画面の側も落とす RenderQuality と組で測る
+    # **きれいな順**に並べる 予算に入るものを上から選ぶ
     combinations = (
         ("元の素材 + 等倍", None, 1),
-        ("元の素材 + 1/2", None, 2),
         (f"控え {args.proxy_height}p + 等倍", store, 1),
+        ("元の素材 + 1/2", None, 2),
         (f"控え {args.proxy_height}p + 1/2", store, 2),
         (f"控え {args.proxy_height}p + 1/4", store, 4),
     )
     try:
         results = [
-            (label, _report(label, _measure(project, context, frames, proxies, divisor)))
+            (label, divisor, _report(label, _measure(project, context, frames, proxies, divisor)))
             for label, proxies, divisor in combinations
         ]
     finally:
         context.release()
 
-    best = min(results, key=lambda item: item[1])
-    if best[1] > BUDGET_MS:
-        print(f"  どの組でも予算に入らない 一番速いのは {best[0]}（{best[1]:.1f}ms）")
+    within = [item for item in results if item[2] <= BUDGET_MS]
+    if not within:
+        fastest = min(results, key=lambda item: item[2])
+        print(f"  どの組でも予算に入らない 一番速いのは {fastest[0]}（{fastest[2]:.1f}ms）")
         return 1
-    print(f"  予算に入る一番重い組: {_cheapest(results)}")
+    # きれいな順は**並べた順**で決める 掛かった時間から推し量ると、
+    # ばらついたときに粗い組を「一番きれい」と呼ぶことになる
+    label, _, value = within[0]
+    print(f"  予算に入る一番きれいな組: {label}（{value:.1f}ms）")
     return 0
-
-
-def _cheapest(results: list[tuple[str, float]]) -> str:
-    """予算に収まるもののうち、**一番きれいな**（＝一番遅い）組"""
-    within = [item for item in results if item[1] <= BUDGET_MS]
-    label, value = max(within, key=lambda item: item[1])
-    return f"{label}（{value:.1f}ms）"
 
 
 if __name__ == "__main__":

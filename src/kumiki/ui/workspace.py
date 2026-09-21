@@ -137,9 +137,13 @@ class Preferences:
     def quality_for(self, height: int) -> int:
         """その高さの素材に対して、プレビューに使う分母
 
-        測った結果（``tools/bench_proxy.py`` 3840x2160 95 パーセンタイル）
-        控えだけでは 36.1ms で 60fps の予算 16.7ms に入らない
-        画面を半分にするだけでも 19.2ms で入らない **両方で 14.2ms**
+        測った結果（``tools/bench_proxy.py`` 3840x2160 を 3 枚重ねて blur と glow
+        95 パーセンタイル）控えだけでは 23.7ms で 60fps の予算 16.7ms に入らない
+        画面を半分にするだけでは 59.5ms でほとんど効かない **両方で 14.8ms**
+
+        4K を 1 枚置いただけなら元の素材でも 11.3ms で入る それでも既定で
+        落とすのは、重ねた時点で入らなくなるため（3 枚で 62.0ms）
+        落としたくない人は設定で切れる
         """
         if not self.auto_quality or height < AUTO_QUALITY_HEIGHT:
             return 1

@@ -47,8 +47,9 @@ class TestTheAutomaticQuality:
     def test_a_big_source_drops(self) -> None:
         """4K では落とす
 
-        実測（tools/bench_proxy.py 95 パーセンタイル）等倍では控えを使っても
-        36.1ms で、60fps の予算 16.7ms に入らない 1/2 と組で 14.2ms
+        実測（tools/bench_proxy.py 3 枚重ね + blur/glow 95 パーセンタイル）
+        等倍では控えを使っても 23.7ms で、60fps の予算 16.7ms に入らない
+        1/2 と組で 14.8ms 1 枚だけなら元の素材でも入るが、重ねた時点で外れる
         """
         assert Preferences().quality_for(2160) == 2
 
