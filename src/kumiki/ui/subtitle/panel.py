@@ -212,13 +212,18 @@ class SubtitlePanel(QWidget):
         sample = format_timecode(longest, self._project.rate)
         return self._table.fontMetrics().horizontalAdvance(sample) + TIME_COLUMN_PADDING
 
-    def _on_section_resized(self, index: int, _old: int, _new: int) -> None:
+    def _on_section_resized(self, _index: int, _old: int, _new: int) -> None:
         """列の幅が変わったら、折り返しに合わせて行の高さを取り直す
 
-        本文の列だけを見る 時刻の列は幅が変わらないうえ、作り直しの最中に
-        呼ばれると 1 行ごとに全部の行を測り直すことになる
+        どの列でも取り直す 本文の列は残りを埋める作りなので、時刻の列が
+        広がればそのぶん狭くなり、折り返しの行数が変わる 本文の列の合図が
+        いつも飛ぶとは限らない（画面に出ていないときは飛ばない）ので、
+        時刻の列の合図も受ける
+
+        作り直しの最中は走らせない 1 行入れるたびに全部の行を測り直すと、
+        本数の 2 乗で遅くなる（入れ終えてから 1 度だけ取り直す）
         """
-        if index == 1 and not self._updating:
+        if not self._updating:
             self._table.resizeRowsToContents()
 
     def _reload_media(self) -> None:

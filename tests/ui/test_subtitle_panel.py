@@ -179,6 +179,35 @@ class TestRebuilding:
         widget.set_project(longer)
         assert widget._table.horizontalHeader().sectionSize(0) > narrow, "幅が足りない"
 
+    def test_widening_the_time_column_reflows_the_rows(
+        self, panel: tuple[SubtitlePanel, list[tuple[list[Command], str]]]
+    ) -> None:
+        """時刻の列が広がったら、行の高さを取り直す
+
+        本文の列は残りを埋める作りなので、時刻が広がるとそのぶん狭くなり、
+        折り返しの行数が変わる 取り直さないと 2 行目が隠れて末尾が読めない
+
+        本文の列の合図は、画面に出ていないと飛ばないことがある
+        時刻の列（0 番）の合図でも取り直す ここを本文の列だけに絞ると、
+        長さが変わったときに折り返しが古いままになる
+        """
+        widget, _ = panel
+        asked: list[bool] = []
+        widget._table.resizeRowsToContents = lambda: asked.append(True)  # type: ignore[method-assign]
+        try:
+            widget._on_section_resized(0, 80, 200)
+            assert asked, "時刻の列の合図で取り直していない"
+
+            # 作り直しの最中は走らせない 1 行入れるたびに全部の行を測り直すと、
+            # 本数の 2 乗で遅くなる
+            asked.clear()
+            widget._updating = True
+            widget._on_section_resized(0, 200, 240)
+            widget._updating = False
+            assert not asked, "作り直しの最中に取り直している"
+        finally:
+            del widget._table.resizeRowsToContents
+
     def test_the_table_recovers_if_filling_fails(
         self,
         panel: tuple[SubtitlePanel, list[tuple[list[Command], str]]],
