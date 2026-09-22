@@ -48,6 +48,7 @@ from sashimono.core.commands import (
     RemoveMedia,
     RemoveScene,
     RenameScene,
+    SetBlending,
     SetResolution,
     insert_generated,
     insert_media,
@@ -1236,16 +1237,22 @@ class MainWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
     def edit_settings(self) -> None:
-        """プロジェクト設定を開く いまは解像度だけ変えられる"""
+        """プロジェクト設定を開く 解像度と重ね合わせの方法を変えられる"""
         from sashimono.ui.project_settings_dialog import ProjectSettingsDialog
 
         settings = self._document.project.settings
         dialog = ProjectSettingsDialog(settings, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        width, height = dialog.resolution()
-        if (width, height) != settings.resolution:
-            self.execute(SetResolution(width, height))
+        chosen = dialog.settings()
+        commands: list[Command] = []
+        if chosen.resolution != settings.resolution:
+            commands.append(SetResolution(chosen.width, chosen.height))
+        if chosen.blending != settings.blending:
+            commands.append(SetBlending(chosen.blending))
+        # 1 回の OK で変えたものは 1 回の取り消しで戻す 分けると、取り消しの途中で
+        # 解像度だけ戻った、見たことのない組み合わせを通る
+        self.execute_all(commands, "プロジェクト設定を変更")
 
     # --- 退避と復元 ---
 

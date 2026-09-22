@@ -1,4 +1,4 @@
-"""プロジェクト設定（解像度） 新規作成のときはフレームレートも"""
+"""プロジェクト設定（解像度と重ね合わせの方法） 新規作成のときはフレームレートも"""
 
 from __future__ import annotations
 
@@ -18,10 +18,22 @@ from PySide6.QtWidgets import (
 )
 
 from sashimono.core.commands.edit import MAX_RESOLUTION, MIN_RESOLUTION
-from sashimono.core.model import ProjectSettings
+from sashimono.core.model import Blending, ProjectSettings
 from sashimono.core.timebase import FrameRate
 
-__all__ = ["FRAME_RATE_PRESETS", "RESOLUTION_PRESETS", "ProjectSettingsDialog"]
+__all__ = [
+    "BLENDING_CHOICES",
+    "FRAME_RATE_PRESETS",
+    "RESOLUTION_PRESETS",
+    "ProjectSettingsDialog",
+]
+
+#: 重ね合わせの方法 表示名には、どちらを選ぶと何が起きるかを測った値で書く
+#: （黒の上に不透明度 50% の白を重ねたときの明るさ 0〜255）
+BLENDING_CHOICES: tuple[tuple[str, str], ...] = (
+    (Blending.SRGB, "sRGB（AviUtl・YMM4 と同じ 黒に 50% の白で 128）"),
+    (Blending.LINEAR, "リニア（光の量で混ぜる 黒に 50% の白で 188）"),
+)
 
 #: 選べるフレームレート 分数のものは分数のまま持つ 29.97 を小数で持つと、
 #: 1 時間で 3 フレーム以上ずれる（:meth:`FrameRate.from_decimal` を参照）
@@ -93,6 +105,20 @@ class ProjectSettingsDialog(QDialog):
             rate = QLabel(f"{settings.frame_rate} fps（作成後は変えられません）", self)
             rate.setEnabled(False)
 
+        self._blending = QComboBox(self)
+        for value, label in BLENDING_CHOICES:
+            self._blending.addItem(label, value)
+        values = [value for value, _ in BLENDING_CHOICES]
+        if settings.blending in values:
+            self._blending.setCurrentIndex(values.index(settings.blending))
+        # 半透明の文字・影・フェードの明るさがすべて変わる 何が変わるのかを選ぶ所で言う
+        self._blending.setToolTip(
+            "半透明の絵を重ねるときに、どの値で混ぜるか\n"
+            "AviUtl や YMM4 の素材を使うなら sRGB（同じ明るさになる）\n"
+            "リニアは物理的に正しい混ぜ方で、半透明の所やフェードの途中が明るく出る\n"
+            "この設定ができる前に保存したプロジェクトはリニアで開く"
+        )
+
         self._warning = QLabel(self)
         self._warning.setStyleSheet("color: #e07a5f;")
 
@@ -100,6 +126,7 @@ class ProjectSettingsDialog(QDialog):
         form.addRow("解像度", self._preset)
         form.addRow("", size_row)
         form.addRow("フレームレート", rate)
+        form.addRow("重ね合わせ", self._blending)
 
         self._buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, self
@@ -128,7 +155,8 @@ class ProjectSettingsDialog(QDialog):
             if self._rate is not None
             else self._base.frame_rate
         )
-        return replace(self._base, width=width, height=height, frame_rate=rate)
+        blending = str(self._blending.currentData())
+        return replace(self._base, width=width, height=height, frame_rate=rate, blending=blending)
 
     def _spin(self, value: int) -> QSpinBox:
         spin = QSpinBox(self)

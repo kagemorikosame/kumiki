@@ -11,6 +11,7 @@ from dataclasses import dataclass, replace
 
 from sashimono.core.commands.base import Command
 from sashimono.core.model import (
+    Blending,
     Clip,
     ClipId,
     GroupId,
@@ -38,6 +39,7 @@ __all__ = [
     "RemoveTrack",
     "RenameProject",
     "RippleCut",
+    "SetBlending",
     "SetResolution",
     "SetTrackHeights",
     "SetTrackState",
@@ -625,6 +627,28 @@ class SetResolution(Command):
             if value % 2:
                 raise ValueError(f"{name}の画素数は偶数にしてください（書き出せないため）: {value}")
         settings = replace(project.settings, width=self.width, height=self.height)
+        return replace(project, settings=settings)
+
+
+@dataclass(frozen=True, slots=True)
+class SetBlending(Command):
+    """半透明の重ね合わせの方法（:class:`~sashimono.core.model.Blending`）を変える
+
+    プロジェクトの設定として持つ 作品の見た目そのものなので、同じ作品を別の機械で
+    開いても同じ絵にならなければならない（本人の好み ``Preferences`` とは混ぜない）
+    """
+
+    blending: str
+
+    @property
+    def label(self) -> str:
+        name = "sRGB" if self.blending == Blending.SRGB else "リニア"
+        return f"重ね合わせを変更: {name}"
+
+    def apply(self, project: Project) -> Project:
+        if self.blending not in Blending.ALL:
+            raise ValueError(f"重ね合わせの方法が不正: {self.blending!r}")
+        settings = replace(project.settings, blending=self.blending)
         return replace(project, settings=settings)
 
 

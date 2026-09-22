@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 from sashimono.core.model import (
+    Blending,
     Clip,
     Effect,
     GeneratedSource,
@@ -202,8 +203,12 @@ class TestFlash:
         source: GeneratedSource = SHAPE.create(
             shape="ellipse", width=30, height=30, color=(1.0, 1.0, 1.0, 1.0)
         )
+        # 広がり方を見る試験で、重ね合わせの方法とは関係ない しきい値はリニアで混ぜたときの
+        # 明るさで決めてある（sRGB で混ぜると、薄い光の裾は同じ量でも暗く出る）
         project = Project.create(
-            ProjectSettings(width=WIDTH, height=HEIGHT, frame_rate=FrameRate(30))
+            ProjectSettings(
+                width=WIDTH, height=HEIGHT, frame_rate=FrameRate(30), blending=Blending.LINEAR
+            )
         )
         track = Track(
             kind=TrackKind.VIDEO,
