@@ -153,6 +153,64 @@ class TestKaleidoscope:
         assert self._lit_at(image, 12, -64)
         assert not self._lit_at(image, -12, -64)
 
+    @pytest.mark.parametrize("corners", [4, 6, 8, 10, 12])
+    def test_the_axis_is_read_at_the_equilateral_scale(
+        self, draw: Callable[..., np.ndarray], corners: int
+    ) -> None:
+        """真下 d の画素は、元の絵の真下 d·cos 30/cos(180/角数) を読む
+
+        鏡の三角を辺 長さ の正三角形へ引き伸ばして読むので、角数 4 は 1.22 倍先、
+        8 は 0.94 倍、12 は 0.90 倍の所を読む 角数 6 は 1 倍で今までと変わらない
+        四角の下端（読む中心から 60 下）の 2.5px 手前を読む画素は光り、2.5px 先を読む
+        画素は光らない 角数によらず 1 倍で読むと、角数 6 以外はどちらかが外れる
+        AviUtl2 の角数 4 では中心の田が 0.8 倍に縮み、縮めないと差が 10.4 だった
+        （角数 8 と 10 は書き出しで確かめていない 同じ式の続きとして固定しておく）
+        """
+        scale = math.cos(math.pi / 6) / math.cos(math.pi / corners)
+        edge = SQUARE / 2
+        image = draw(
+            _kaleidoscope(span=100.0, repeats=1.0, corners=float(corners), clip_outside=True)
+        )
+        # 画素の中心は整数の位置から 0.5 下にある
+        assert self._lit_at(image, 0, -round((edge - 2.5) / scale - 0.5))
+        assert not self._lit_at(image, 0, -round((edge + 2.5) / scale - 0.5))
+
+    def test_four_corners_read_the_wedge_narrowed_across_the_axis(
+        self, draw: Callable[..., np.ndarray]
+    ) -> None:
+        """角数 4 の三角は、横を 1/(2 sin 45)（0.71 倍）に縮めて読む
+
+        読む中心を四角の右端の 20px 手前へずらす (-24, -40) の画素は左右を返して
+        右 17 を読むので四角の中 横を縮めないと右 24 を読んで四角の外になる
+        """
+        image = draw(
+            _kaleidoscope(
+                span=80.0, repeats=1.0, corners=4.0, center_x=SQUARE / 2 - 20, clip_outside=True
+            )
+        )
+        assert self._lit_at(image, -24, -40)
+
+    def test_twelve_corners_fold_beyond_the_base_as_six(
+        self, draw: Callable[..., np.ndarray]
+    ) -> None:
+        """角数 12 でも、中心の多角形の外は角数 6 の三角として底辺で折り返す
+
+        長さ 60 の三角の底辺は、正三角形へ引き伸ばすと中心から 52 真下 70 の画素は
+        引き伸ばして 62.8、底辺で返して 41.2 を読む 角数 12 の三角のまま返すと 45.9 を読む
+        読む中心を四角の下端の 43.5px 上に置くと、前者だけが四角の中で光る
+        AviUtl2 の角数 12 は外の頂点に 6 枚の三角が集まり、12 枚で返すと差が 12.3 だった
+        """
+        image = draw(
+            _kaleidoscope(
+                span=60.0,
+                repeats=2.0,
+                corners=12.0,
+                center_y=-(SQUARE / 2 - 43.5),
+                clip_outside=True,
+            )
+        )
+        assert self._lit_at(image, 0, -70)
+
     def test_a_positive_angle_turns_the_picture_clockwise(
         self, draw: Callable[..., np.ndarray]
     ) -> None:
