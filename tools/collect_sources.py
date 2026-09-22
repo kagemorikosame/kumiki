@@ -272,7 +272,9 @@ def _is_archive(response: IO[bytes]) -> bool:
     # ボット避けの画面は 200 で HTML を返す 届いたと数えると、HTML を添付して配る
     headers = getattr(response, "headers", None)
     kind = headers.get("Content-Type", "") if headers is not None else ""
-    return "text/html" not in kind
+    # 型の名前は大文字小文字を区別しない（RFC 9110） ``Text/HTML`` や XHTML も同じ画面
+    media_type = kind.partition(";")[0].strip().lower()
+    return media_type not in {"text/html", "application/xhtml+xml"}
 
 
 def check_urls(sources: Iterable[Source], *, opener: Opener = _open) -> list[str]:
@@ -335,6 +337,9 @@ def download(
             and previous.get("sha256") == existing
         ):
             return existing
+        # 使い回せない物は先に消す 落とし直しが途中で失敗したとき、合わないと分かった
+        # 物が完成品の名前のまま残り、次にフォルダを丸ごと添付すると一緒に配る
+        target.unlink()
     partial = target.with_name(target.name + ".part")
     try:
         with opener(_request(source.url)) as response, partial.open("wb") as stream:

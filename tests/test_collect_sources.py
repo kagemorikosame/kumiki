@@ -53,6 +53,8 @@ class _Handler(BaseHTTPRequestHandler):
             payload, kind = ARCHIVE, "application/x-gzip"
         elif self.path == "/page":
             payload, kind = PAGE, "text/html; charset=utf-8"
+        elif self.path == "/xhtml":
+            payload, kind = PAGE, "Application/XHTML+XML; charset=utf-8"
         else:
             self.send_response(404)
             self.end_headers()
@@ -136,6 +138,25 @@ class TestCollect:
         # ボット避けの画面は 200 で返る 数えると HTML をソースとして添付する
         with pytest.raises(RuntimeError, match="HTML"):
             tool.download(_source(tool, f"{server}/page"), tmp_path)
+        assert list(tmp_path.iterdir()) == []
+
+    def test_an_xhtml_page_in_any_case_is_refused(
+        self, tool: ModuleType, server: str, tmp_path: Path
+    ) -> None:
+        # 型の名前は大文字小文字を区別しない 小文字の text/html だけを見ると素通りする
+        with pytest.raises(RuntimeError, match="HTML"):
+            tool.download(_source(tool, f"{server}/xhtml"), tmp_path)
+
+    def test_a_rejected_archive_does_not_survive_a_failed_refetch(
+        self, tool: ModuleType, server: str, tmp_path: Path
+    ) -> None:
+        """公開値と合わない物は、落とし直しに失敗しても残さない
+
+        残すと完成品の名前のまま、次にフォルダを丸ごと添付したときに一緒に配る
+        """
+        (tmp_path / "sample-1.0.tar.gz").write_bytes(b"old")
+        with pytest.raises(RuntimeError, match="sha256"):
+            tool.download(_source(tool, f"{server}/archive", "0" * 64), tmp_path)
         assert list(tmp_path.iterdir()) == []
 
     def test_a_finished_archive_is_not_fetched_again(
