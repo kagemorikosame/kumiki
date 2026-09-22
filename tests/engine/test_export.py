@@ -205,6 +205,24 @@ class TestExport:
         # やり直しの前に音やコマを進めていたら、頭が欠けたり音がずれたりする
         assert frames == 3
 
+    def test_falls_back_when_the_stream_cannot_be_added(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        forget_probes: None,
+        ready_project: Project,
+        tmp_path: Path,
+    ) -> None:
+        """開く前の add_stream で断られても、次の候補で書き出す
+
+        入っていない名前やコンテナが受けないコーデックは、開くより前にここで断られる
+        拾わないと、指定なしの書き出しでも libx264 まで落ちずに失敗する
+        """
+        monkeypatch.setattr(exporter, "_open_encoder", lambda name: None)
+        monkeypatch.setattr(exporter, "VIDEO_CODEC_PREFERENCE", ("no_such_encoder", "libx264"))
+        output = tmp_path / "out.mp4"
+        export_project(ready_project, ExportSettings(path=output, frame_range=(0, 3)))
+        assert _encoder_of(output) == "libx264"
+
     def test_a_chosen_codec_that_does_not_open_is_an_export_error(
         self, ready_project: Project, tmp_path: Path
     ) -> None:

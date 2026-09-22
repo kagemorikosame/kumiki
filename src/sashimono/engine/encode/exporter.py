@@ -110,7 +110,12 @@ def _opens(name: str) -> bool:
 
 
 def _open_encoder(name: str) -> None:
-    """``name`` のエンコーダを、書き出しと同じ画素形式で開いてみる 開けなければ投げる"""
+    """``name`` のエンコーダを yuv420p で開いてみる 開けなければ投げる
+
+    画素形式は :attr:`ExportSettings.pixel_format` の既定と同じ yuv420p に固定する
+    答えはコーデックごとに 1 つだけ覚えるので、書き出しごとの設定には追従できない
+    別の画素形式で開けないときは、コーデックを指定しない書き出しなら始めた時点で次の候補へ移る
+    """
     # create は種類の union を返す 映像の属性を触るので、ここで型を確定させる
     context = cast("av.video.codeccontext.VideoCodecContext", av.CodecContext.create(name, "w"))
     context.width, context.height = _PROBE_SIZE
@@ -226,11 +231,15 @@ def _encode(
         raise ExportError(f"出力ファイルを開けない: {settings.path} ({exc})") from exc
 
     with container:
+        # 入っていない名前やコンテナが受けないコーデックは、開く前のここで断られる
+        # 開けないときと同じく次の候補へ移れるようにする 素の例外のまま出すと、
+        # 指定なしの書き出しでも libx264 まで落ちずに失敗する
+        try:
+            stream = container.add_stream(codec, rate=Fraction(rate.num, rate.den))
+        except (av.error.FFmpegError, ValueError) as exc:
+            raise _EncoderOpenError(f"映像のエンコーダ {codec} を使えない ({exc})") from exc
         # add_stream は種類の union を返す 以降は映像として扱うので、ここで型を確定させる
-        video = cast(
-            "av.video.stream.VideoStream",
-            container.add_stream(codec, rate=Fraction(rate.num, rate.den)),
-        )
+        video = cast("av.video.stream.VideoStream", stream)
         video.width = width
         video.height = height
         video.pix_fmt = settings.pixel_format
