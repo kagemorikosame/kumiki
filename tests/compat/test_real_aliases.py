@@ -217,3 +217,34 @@ def test_the_keyframes_start_at_the_clip_head(
                 checked += 1
     if not checked:
         pytest.skip("動く値を持つ配布物が手元に無い")
+
+
+#: 素材ファイルを読み込む中身 音声波形表示も自分のファイルの音を描く
+MEDIA_CONTENTS = frozenset({"動画ファイル", "画像ファイル", "音声ファイル", "音声波形表示"})
+
+
+def test_every_media_file_lands_in_the_media_list() -> None:
+    """素材を読み込むオブジェクトは、どれもパスが素材一覧に載り、クリップと結び付く
+
+    AviUtl2 は ``ファイル=`` と書くのに ``file=`` だけを見ていたので、AviUtl2 に
+    作らせた音声ファイルのエイリアスは素材一覧に載らなかった 選ぶのは中身の名前だけで、
+    項目名は決め打ちしない（書き方がまた変わっても、この試験は空振りせずに落ちる）
+    """
+    from sashimono.compat.aviutl.mapping import media_paths
+
+    rate = FrameRate(30)
+    checked = 0
+    for path in FILES:
+        exo = load_exo(path)
+        wanted = [obj for obj in exo.objects if obj.content and obj.content.name in MEDIA_CONTENTS]
+        if not wanted:
+            continue
+        listed = media_paths(exo)
+        for obj in wanted:
+            item = map_object(obj, rate, report=CompatibilityReport())
+            assert item is not None, path.name
+            assert item.media_path, f"{path.name}: 素材のパスを読めない"
+            assert item.media_path in listed, f"{path.name}: {item.media_path!r} が一覧に無い"
+            checked += 1
+    if not checked:
+        pytest.skip("素材を読み込む実物が手元に無い")
