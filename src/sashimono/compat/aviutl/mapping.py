@@ -604,7 +604,7 @@ def map_object(
         effect = _filter(entry, points, log)
         if effect is not None and effect.kind == "split_pieces":
             effect = replace(effect, params={**effect.params, **grid})
-            merged = _merge_pieces(effects[-1], effect) if effects else None
+            merged = _merge_pieces(effects[-1], effect, log) if effects else None
             if merged is not None:
                 effects[-1] = merged
                 continue
@@ -673,29 +673,102 @@ def _split_grid(
     return grid
 
 
-def _merge_pieces(previous: Effect, effect: Effect) -> Effect | None:
+def _merge_pieces(previous: Effect, effect: Effect, log: CompatibilityReport) -> Effect | None:
     """続けて積んだ 個別オブジェクト の拡大と回転を 1 つにまとめる
 
     2 つ目の効果は、1 つ目で動いた後のマスを動かす こちらのエフェクトは
     分けた升目の位置から動かすので、別々に並べると 2 つ目が元の升目を基準に
-    読み直してしまう 軸が同じなら拡大と回転は順番を入れ替えても同じ所へ行くので、
-    片方が拡大だけ、もう片方が回転だけのときに限って 1 つへ畳む
+    読み直し、動いた後の断片が欠けたり元の場所に残ったりする
+
+    値が動かなければ、マスの真ん中の行き先は「拡大・回転 + 平行移動」の 1 つの式に
+    畳める（軸の違う変形や、拡大どうしが続いても同じ） 値が動くときは、軸が同じで
+    片方が拡大だけ・もう片方が回転だけの組に限って畳む（順番を入れ替えても同じ所へ行く）
+    それ以外は畳めないので、分けて並べたうえで記録に残す
     """
     if previous.kind != "split_pieces":
         return None
-    keys = ("columns", "rows", "center_x", "center_y")
-    if any(previous.params.get(key) != effect.params.get(key) for key in keys):
+    if any(previous.params.get(key) != effect.params.get(key) for key in ("columns", "rows")):
         return None
+    first, second = _piece_stage(previous), _piece_stage(effect)
+    if first is not None and second is not None:
+        return replace(previous, params={**previous.params, **_compose(first, second)})
+    same = ("center_x", "center_y", "offset_x", "offset_y")
     unit = {"scale": AnimatedValue(100.0), "angle": AnimatedValue(0.0)}
     params = dict(previous.params)
+    merged = all(previous.params.get(key) == effect.params.get(key) for key in same)
     for name, idle in unit.items():
         mine, theirs = previous.params.get(name), effect.params.get(name)
         if theirs is None or theirs == idle:
             continue
         if mine != idle:
-            return None
+            merged = False
         params[name] = theirs
-    return replace(previous, params=params)
+    if merged:
+        return replace(previous, params=params)
+    log.note_missing("個別オブジェクトの効果を、動く値で続けて積んだもの")
+    return None
+
+
+#: 分けたマスを動かす 1 段 拡大率（倍）・時計回りの角度（度）・軸・ずらし（画素 Y は上が正）
+_Stage = tuple[float, float, tuple[float, float], tuple[float, float]]
+
+
+def _piece_stage(effect: Effect) -> _Stage | None:
+    """動かない値だけでできていれば、その段の式を返す"""
+    numbers: dict[str, float] = {}
+    for name, idle in (
+        ("scale", 100.0),
+        ("angle", 0.0),
+        ("center_x", 0.0),
+        ("center_y", 0.0),
+        ("offset_x", 0.0),
+        ("offset_y", 0.0),
+    ):
+        value = effect.params.get(name, AnimatedValue(idle))
+        if not isinstance(value, AnimatedValue) or value.is_animated:
+            return None
+        numbers[name] = value.static
+    return (
+        numbers["scale"] / 100.0,
+        numbers["angle"],
+        (numbers["center_x"], numbers["center_y"]),
+        (numbers["offset_x"], numbers["offset_y"]),
+    )
+
+
+def _compose(first: _Stage, second: _Stage) -> dict[str, ParamValue]:
+    """2 段を続けたものを、軸をオブジェクトの中心に置いた 1 段で表す
+
+    1 段は ``c → P + s·R(θ)(c − P) + d``（R は時計回り） 続けると
+    ``c → s₂s₁·R(θ₂+θ₁)·c + b`` になり、``b = A₂b₁ + b₂``（``bₖ = Pₖ − AₖPₖ + dₖ``）
+    """
+
+    def linear(stage: _Stage) -> tuple[tuple[float, float, float, float], tuple[float, float]]:
+        scale, angle, (px, py), (dx, dy) = stage
+        turn = math.radians(angle)
+        # Y が上向きの座標で時計回りに回す行列
+        a, b, c, d = (
+            scale * math.cos(turn),
+            scale * math.sin(turn),
+            -scale * math.sin(turn),
+            scale * math.cos(turn),
+        )
+        return (a, b, c, d), (px - (a * px + b * py) + dx, py - (c * px + d * py) + dy)
+
+    _, shift1 = linear(first)
+    (a, b, c, d), shift2 = linear(second)
+    offset = (
+        a * shift1[0] + b * shift1[1] + shift2[0],
+        c * shift1[0] + d * shift1[1] + shift2[1],
+    )
+    return {
+        "scale": AnimatedValue(first[0] * second[0] * 100.0),
+        "angle": AnimatedValue(first[1] + second[1]),
+        "center_x": AnimatedValue(0.0),
+        "center_y": AnimatedValue(0.0),
+        "offset_x": AnimatedValue(offset[0]),
+        "offset_y": AnimatedValue(offset[1]),
+    }
 
 
 #: 変形エフェクトへ写す描画設定と、その既定値（既定のままなら変形を足さない）

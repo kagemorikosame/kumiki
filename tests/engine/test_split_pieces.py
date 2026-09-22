@@ -136,6 +136,19 @@ class TestSplitPieces:
         moved = draw(_pieces(scale=50.0, angle=30.0))
         assert int(np.abs(plain.astype(np.int16) - moved.astype(np.int16)).max()) <= 2
 
+    def test_the_shift_moves_every_piece(self, draw: Callable[..., np.ndarray]) -> None:
+        """ずらし は拡大・回転の後で全部のマスを同じだけ動かす
+
+        軸の違う変形を続けて積んだものを 1 つにまとめたときの形（中心X 100 で 50%、
+        続けて 90 度 → 50%・90 度・ずらし (0, -50)） 3x1 の断片は立ったまま、
+        中心から下へ 30・50・70 の所に縦に並ぶ ずらしを無視すると上下に割れて並ぶ
+        """
+        left, right, top, bottom = _extent(
+            draw(_pieces(columns=3.0, rows=1.0, scale=50.0, angle=90.0, offset_y=-50.0))
+        )
+        assert (left, right) == (-20, 20)
+        assert (top, bottom) == (10, 90)
+
     def test_the_centre_shifts_the_pieces(self, draw: Callable[..., np.ndarray]) -> None:
         # 実測 中心X 100 で 50% にすると、絵は 100 x (1 - 0.5) = 50 だけずれた
         base = _extent(draw(_pieces(columns=3.0, rows=1.0, scale=50.0)))

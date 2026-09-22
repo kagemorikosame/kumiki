@@ -102,6 +102,7 @@ class TestSplitPieces:
         assert not report.lines()
 
     def test_the_angle_is_carried(self) -> None:
+        # 角度を写し損ねると、分割片の位置が回らず元の並びのまま出る
         (effect,), _ = _effects(
             "オブジェクト分割\n横分割数=2\n縦分割数=1",
             "座標の回転(個別オブジェクト)\n角度=90.0\n中心X=0.0\n中心Y=0.0",
@@ -129,18 +130,56 @@ class TestSplitPieces:
         assert _value(effects[0], "scale") == 50.0
         assert _value(effects[0], "angle") == 30.0
 
-    def test_different_centres_stay_apart(self) -> None:
-        # 軸が違うと入れ替えられないので、まとめずに順に掛ける
-        effects, _ = _effects(
+    def test_different_centres_become_one_with_a_shift(self) -> None:
+        """軸の違う拡大と回転も 1 つにまとまり、残りの平行移動は ずらし へ入る
+
+        別々に並べると、2 つ目が拡大の後ではなく元の升目を読み直し、断片が欠ける
+        中心X 100 で 50% にすると c → 0.5c + (50, 0)、続けて時計回りに 90 度回すと
+        c → 0.5·R(90)c + (0, -50)（Y は上が正）
+        """
+        effects, report = _effects(
             "オブジェクト分割\n横分割数=3\n縦分割数=3",
             "座標の拡大縮小(個別オブジェクト)\n拡大率=50.0\n中心X=100.0\n中心Y=0.0",
+            "座標の回転(個別オブジェクト)\n角度=90.0\n中心X=0.0\n中心Y=0.0",
+        )
+        assert [effect.kind for effect in effects] == ["split_pieces"]
+        assert _value(effects[0], "scale") == pytest.approx(50.0)
+        assert _value(effects[0], "angle") == pytest.approx(90.0)
+        assert _value(effects[0], "offset_x") == pytest.approx(0.0, abs=1e-9)
+        assert _value(effects[0], "offset_y") == pytest.approx(-50.0)
+        assert not report.lines()
+
+    def test_two_zooms_about_different_centres(self) -> None:
+        # 200%（中心X 100）の後に 50%（中心 0）なら大きさは元に戻り、左へ 50 ずれるだけ
+        # 別々に並べると 2 つ目が元の升目を縮めてしまい、断片が中心へ寄る
+        (effect,), _ = _effects(
+            "オブジェクト分割\n横分割数=3\n縦分割数=1",
+            "座標の拡大縮小(個別オブジェクト)\n拡大率=200.0\n中心X=100.0\n中心Y=0.0",
+            "座標の拡大縮小(個別オブジェクト)\n拡大率=50.0\n中心X=0.0\n中心Y=0.0",
+        )
+        assert _value(effect, "scale") == pytest.approx(100.0)
+        assert _value(effect, "offset_x") == pytest.approx(-50.0)
+
+    def test_moving_values_that_cannot_merge_are_recorded(self) -> None:
+        # 動く値で軸が違うと 1 つの式に畳めない 並べて描くしかないので、記録に残す
+        effects, report = _effects(
+            "オブジェクト分割\n横分割数=3\n縦分割数=3",
+            "座標の拡大縮小(個別オブジェクト)\n拡大率=50,100,直線移動,0\n中心X=100.0\n中心Y=0.0",
             "座標の回転(個別オブジェクト)\n角度=30.0\n中心X=0.0\n中心Y=0.0",
         )
         assert len(effects) == 2
+        assert any("動く値で続けて積んだ" in line for line in report.lines())
 
 
 def _real_probes() -> list[Path]:
-    names = ("sashimono_p[56]_k_*.object", "sashimono_p[56]_s_*.object")
+    # 見本は旧名の頭で保存してある 番号を 1 つずつ書くのは、改名の道具が
+    # ``kumiki_p5_`` の形だけを旧名のまま残すため（``p[56]`` と書くと書き換えられた）
+    names = (
+        "kumiki_p5_k_*.object",
+        "kumiki_p6_k_*.object",
+        "kumiki_p5_s_*.object",
+        "kumiki_p6_s_*.object",
+    )
     return sorted(path for name in names for path in PROBES.glob(name))
 
 

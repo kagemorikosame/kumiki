@@ -85,6 +85,8 @@ uniform float scale;
 uniform float angle;
 uniform float center_x;
 uniform float center_y;
+uniform float offset_x;
+uniform float offset_y;
 
 void main() {
     vec2 pixel = v_uv * u_size;
@@ -105,7 +107,10 @@ void main() {
 
     // 画素がどのマスから来たかは、マスの真ん中を戻した位置の近くにしか無い
     // 全部のマスを回すと 64x64 に分けたときに 1 画素 4096 回読むことになる
-    vec2 guess = pivot + back * (pixel - pivot);
+    // ずらし は全部のマスを同じだけ動かす 軸の違う拡大と回転を続けて積んだものを
+    // 1 つにまとめると、拡大・回転のほかに平行移動が残る（写す側の _merge_pieces）
+    vec2 shift = vec2(offset_x, offset_y);
+    vec2 guess = pivot + back * (pixel - shift - pivot);
     float reach = length(cell) * 0.5 / s + 1.0;
     ivec2 first = ivec2(clamp(floor((guess - reach - low) / cell), vec2(0.0), counts - 1.0));
     ivec2 last = ivec2(clamp(floor((guess + reach - low) / cell), vec2(0.0), counts - 1.0));
@@ -119,7 +124,7 @@ void main() {
         for (int column = last.x; column >= first.x; --column) {
             vec2 corner = low + vec2(column, row) * cell;
             vec2 middle = corner + cell * 0.5;
-            vec2 source = pixel - (pivot + move * (middle - pivot) - middle);
+            vec2 source = pixel - (pivot + move * (middle - pivot) + shift - middle);
             vec2 inside = source - corner;
             if (inside.x < 0.0 || inside.y < 0.0 || inside.x >= cell.x || inside.y >= cell.y) {
                 continue;
@@ -162,6 +167,8 @@ def register_spawn_effects() -> None:
                 TrackSpec("angle", "位置の回転", -3600, 3600, 0, unit="度"),
                 TrackSpec("center_x", "中心 X", -4000, 4000, 0, step=1, unit="px"),
                 TrackSpec("center_y", "中心 Y", -4000, 4000, 0, step=1, unit="px"),
+                TrackSpec("offset_x", "ずらし X", -8000, 8000, 0, step=1, unit="px"),
+                TrackSpec("offset_y", "ずらし Y", -8000, 8000, 0, step=1, unit="px"),
             ),
             fragment_shader=_PIECES,
         ),
