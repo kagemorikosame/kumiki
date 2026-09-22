@@ -51,6 +51,7 @@ from kumiki.engine.gpu import (
     fit_placement,
 )
 from kumiki.engine.gpu.projection import project
+from kumiki.engine.render.invalidate import image_paths
 from kumiki.engine.render.scripts import (
     ScriptStage,
     requested_effects,
@@ -339,6 +340,11 @@ class FrameRenderer:
             # 残しておくと素材を置いた後も空の絵を使い回す
             for clip_id in [cid for cid, (key, _) in self._generated.items() if _hears(key)]:
                 del self._generated[clip_id]
+
+        # 使われなくなったエフェクトの画像を GPU から手放す 手放さないと、模様を
+        # 差し替えるたびに前の画像が閉じるまで残り、長く編集するほどメモリを食う
+        with self._context:
+            self._effects.retain_images(image_paths(project))
 
     def set_quality(self, quality: RenderQuality) -> None:
         self._quality = quality
@@ -1388,6 +1394,15 @@ class FrameRenderer:
         """
         found, self._discarded = self._discarded, set()
         return found
+
+    def stale_images(self) -> frozenset[str]:
+        """エフェクトが読む画像のうち、前に読んだときから書き換わったもののパス
+
+        プロジェクトは同じままなので、編集の差分からは分からない 呼ぶ側が
+        :func:`~kumiki.engine.render.image_spans` でその画像を使う範囲を出し、
+        先読みした絵を捨てる GL は触らない
+        """
+        return self._effects.stale_images()
 
     def reopen_sources(self, media_ids: Collection[MediaId] | None = None) -> None:
         """デコーダを閉じる 次に要るときに開き直す

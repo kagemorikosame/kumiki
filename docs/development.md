@@ -200,6 +200,9 @@ AviUtl / YMM4 の読み込みは、**実際に配布されているファイル�
 〔互換〕→〔互換性レポート…〕で一覧できる
 
 **配布物そのものはリポジトリに入れない** 作者ごとに再配布の条件が違う
+（例外は `licenses/` の使用許諾の全文と写し 配る zip に一緒に入れなければならない
+物で、どれも原文のまま写してよいと書かれている 取得元と版は `THIRD_PARTY_NOTICES.md`、
+GNU の全文は FSF の配る物と sha256 が同じことを試験で確かめている）
 `tests/fixtures/ymm4` に置けばテストが拾い、無ければ飛ばす
 
 ### 値の意味は本体に描かせて読む
@@ -423,3 +426,79 @@ YMM4 互換を、実配布の .ymmt に合わせて書き直す
 
 依存が何も入っていない機械（VC++ ランタイムなど Windows 側の部品も無い）での
 確認は、開発機ではできない 配る前に 1 度、別の機械かクリーンな環境で確かめる
+
+### 使用許諾（配る zip は GPL の条件で配る）
+
+Kumiki 本体のソースは MIT PyAV の wheel に入っている FFmpeg は組み込みの表記が
+「LGPL version 3 or later」だが、同じ wheel に GPL の libx264 と libx265 が入っていて、
+CPU での書き出しは libx264 を使う **zip は全体として GPL の条件で配る** と決めた
+（Issue #32） 本体の MIT は GPL と両立するので、ソースは MIT のまま
+
+- 部品ごとの使用許諾とソースの入手先は `THIRD_PARTY_NOTICES.md` に手で書く
+  zip には `THIRD_PARTY_NOTICES.txt` として入る
+- GNU の使用許諾の全文は `licenses/` に置く（どの包みも dist-info に持っていないため）
+- PyAV の wheel の DLL（FFmpeg・x264・x265 ほか）と LuaJIT も写しを持っていないので、
+  上流から積んだのと同じ版の写しを取ってきて `licenses/<部品>-<版>/` に置いてある
+  版と取得元は `THIRD_PARTY_NOTICES.md` の表に書く PyAV を上げたら、pyav-ffmpeg の
+  組み立て設定（`scripts/pkg.py`）で版を確かめて取り直す
+- Python の包みの使用許諾は、組み立てのたびに dist-info から `licenses\<名前>-<版>\` へ写す
+  **包みの名前は決め打ちにしない** 組み立ての記録（PyInstaller の TOC）から、積んだ
+  ファイル 1 つずつの出どころを辿って数える PyInstaller は入っていれば拾うので、組み立てる
+  機械が変わると積む包みも変わる
+- 次のどれかがあると、zip を作る前に止まる
+  - 出どころの分からないファイル（どの包みでも、Kumiki のソースでも、Python 本体でもない）
+  - 使用許諾の写しが見つからない包み（写しを持たない包みは `WITHOUT_LICENSE_FILES` で名指しする
+    その前に `THIRD_PARTY_NOTICES.md` へ書く）
+  - `THIRD_PARTY_NOTICES.md` の一覧に無い包み
+- 使わない Qt の部品（PDF を絵として読むプラグインと Qt6Pdf、仮想キーボードと
+  それが読む Qt6Quick・Qt6Qml）は組み立てたあとに外す（`UNUSED_QT_PARTS`） 外した物を
+  残った DLL が読んでいないかは、組み立てのたびに DLL の import 表で確かめる
+  外すと zip が 8 MB 小さくなり、qtwebengine（580 MB）などのソースを添付しなくてよくなる
+- wheel の中の DLL（`av.libs`）と LuaJIT は、`NATIVE_LICENSES` でリポジトリの写しと
+  結び付ける 表に無い DLL が増えたら止まる
+- 包みの版は一覧の表の版と突き合わせる 依存は下限だけで指定しているので、新しい版が
+  入ったら一覧を直すまで zip を作らない
+- `--skip-build` でも、組み立ての記録に無いファイル（手で足した DLL など）がフォルダに
+  あれば止まる
+- zip から確かめる段では、使用許諾の一覧と写しが組み立てたときと同じ中身か（sha256）を見る
+- 組み立てる間は `PATH` を Windows の分にする 開発機の `PATH` にある
+  Git for Windows の OpenSSL が、Qt の通信部品のためとして積まれていた
+- zip から確かめる段でも、一覧と全文が入っているかを見る
+- Qt は LGPL-3.0 で使う onedir で組み立てるので Qt の DLL は別のファイルのまま残り、
+  使う人が差し替えられる 1 つの exe へまとめる形（onefile）に変えるときは、これを考え直す
+
+### リリースにソースを添付する
+
+GPL と LGPL の部品（FFmpeg・x264・x265・LAME・libiconv・Qt・PySide6）は、配る側が
+対応するソースを渡せる状態を保たなければならない 上流の置き場は消えたり移ったりするので、
+**zip と同じ GitHub Release に、積んだのと同じ版のソースを添付する**
+
+```
+.venv\Scripts\python.exe tools\collect_sources.py --check
+.venv\Scripts\python.exe tools\collect_sources.py
+gh release upload <タグ> dist\Kumiki-<版>-windows-x64.zip dist\sources\*
+```
+
+- `--check` は入手先に届くかだけを見る（中身は落とさない） 落とすと 100 MB ほど
+- Qt のソースは、組み立てたフォルダ（`dist\Kumiki`）に積んだ Qt のファイルが属する
+  モジュールの分だけ落とす（`QT_FILE_MODULES`） 先に `tools/build_package.py` を走らせる
+  どのモジュールの物か分からない Qt のファイルがあれば止まる
+- 落とすと `dist\sources` にアーカイブと `sources-SHA256SUMS.txt` `sources-manifest.json`
+  （取得元・版・sha256）ができる 上流が sha256 を公開している物は照合し、合わなければ止まる
+- 版は `tools/collect_sources.py` に手で書いてある 入っている PyAV（の FFmpeg）と PySide6 の
+  版と食い違うと落とす前に止まる 上げたら一覧と `THIRD_PARTY_NOTICES.md` を一緒に直す
+- x264 の本家（code.videolan.org）は道具からの取得をボット避けの画面で断るので、同じ
+  コミットを持つ GitHub の写しから落とす
+
+### 色の範囲
+
+扱うのは **SDR の sRGB / Rec.709 だけ** HDR と広色域は今後の課題（Issue #32 で決めた）
+新しく色を扱う処理を足すときも、この範囲を前提にしてよい 範囲の外の素材を正しく
+扱うふりはしない
+
+### 自動更新の署名鍵
+
+自動更新（Issue #36）は β の間は保留 署名鍵も β の間は作らない
+作るときは **GitHub Actions の Secrets にだけ置き、組み立てる手元の機械には置かない**
+（Issue #32 で決めた） 手元に置くと、その機械が乗っ取られたときに偽の更新へ署名できる
+署名は Actions の中で行い、鍵をファイルとして書き出さない

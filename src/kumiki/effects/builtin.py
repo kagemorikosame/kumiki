@@ -12,7 +12,15 @@ from __future__ import annotations
 
 from kumiki.effects.blending import BLEND_FUNCTIONS, BLEND_MODES
 from kumiki.effects.definition import EffectDefinition, registry
-from kumiki.effects.spec import CheckSpec, ColorSpec, SelectSpec, TrackSpec, ValueSpec
+from kumiki.effects.spec import (
+    IMAGE_FILTER,
+    CheckSpec,
+    ColorSpec,
+    FileSpec,
+    SelectSpec,
+    TrackSpec,
+    ValueSpec,
+)
 
 __all__ = ["PRELUDE", "register_builtin_effects"]
 
@@ -151,6 +159,19 @@ vec4 blur1d(sampler2D tex, vec2 uv, vec2 direction, float radius) {
 // 0..1 の擬似乱数
 float hash(vec2 p) {
     return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+}
+
+// エフェクトが読む画像（FileSpec の texture）の 1 点 p は画像の左上を原点とする
+// 画素（Y は下が正） 画像は上の行から積んであるので、そのまま割れば UV になる
+// loop が偽なら画像の外は透明 真なら敷き詰める（AviUtl2 の ループ画像）
+vec4 image_pixel(sampler2D image, vec2 size, vec2 p, bool loop) {
+    vec2 uv = p / max(size, vec2(1.0));
+    if (loop) {
+        uv = fract(uv);
+    } else if (uv.x < 0.0 || uv.y < 0.0 || uv.x >= 1.0 || uv.y >= 1.0) {
+        return vec4(0.0);
+    }
+    return texture(image, uv);
 }
 """
 
@@ -388,6 +409,21 @@ void main() {
 _BORDER = _shader("""
 uniform float width;
 uniform vec4 color;
+uniform sampler2D pattern;
+uniform vec2 pattern_size;
+
+// 縁の色 模様の画像があれば色の代わりにそれで塗る
+//
+// 模様は**縁の分だけ広げた範囲の左上**から敷き詰める AviUtl2 に 200x200 の
+// 4 色の画像で、200 の四角形へ縁 10 と 30 を描かせると、起点は 850 と 830
+// （四角形の左端 860 から縁の太さぶん外）だった 中央を起点にする画像合成とは違う
+// 縁色は模様に混ざらない 縁色を赤にしても、縁は模様の色のままだった
+vec4 edge_color() {
+    if (pattern_size.x < 1.0 || pattern_size.y < 1.0) return color;
+    vec2 origin = vec2(u_object.x - width, u_object.w + width);
+    vec2 pixel = v_uv * u_size;
+    return image_pixel(pattern, pattern_size, vec2(pixel.x - origin.x, origin.y - pixel.y), true);
+}
 
 void main() {
     vec4 base = texture(u_texture, v_uv);
@@ -408,10 +444,76 @@ void main() {
     }
 
     // 縁の上に元の絵を重ねる（over 合成）
-    vec4 edge = vec4(color.rgb, color.a * coverage);
+    vec4 paint = edge_color();
+    vec4 edge = vec4(paint.rgb, paint.a * coverage);
     vec3 rgb = base.rgb * base.a + edge.rgb * edge.a * (1.0 - base.a);
     float alpha = base.a + edge.a * (1.0 - base.a);
     frag_color = unpremul(vec4(rgb, alpha));
+}
+""")
+
+
+_IMAGE_BLEND = _shader("""
+uniform sampler2D image_file;
+uniform vec2 image_file_size;
+uniform float offset_x;
+uniform float offset_y;
+uniform float zoom;
+uniform int blend;
+uniform bool loop;
+
+void main() {
+    vec4 base = texture(u_texture, v_uv);
+    // 画像が無い・読めないときは何もしない 絵を消すと、ファイルを
+    // 動かしただけで文字が見えなくなり、何が起きたか分からない
+    if (image_file_size.x < 1.0 || image_file_size.y < 1.0) {
+        frag_color = base;
+        return;
+    }
+
+    // 画像の**中心**を絵の中心に合わせ、X と Y でずらす
+    // AviUtl2 に 200x200 の 4 色の画像を合成させると、ループ画像を切ったときに
+    // 画像が文字の真ん中に 1 枚だけ出た ずらす量は画面の画素のまま（拡大率で
+    // 縮まない） X=50 Y=30 拡大率 50 で、色の変わり目がちょうど 50 と 30 動いた
+    vec2 screen = v_uv * u_size;
+    vec2 pixel = screen - object_center() - vec2(offset_x, offset_y);
+    pixel /= max(zoom, 0.0001) * 0.01;
+    vec2 p = vec2(pixel.x, -pixel.y) + image_file_size * 0.5;
+    vec4 picture = image_pixel(image_file, image_file_size, p, loop);
+
+    // 合成モードの番号は AviUtl2 の一覧と同じ並び（SelectSpec の並びとも同じ）
+    // 0 前方から合成 1 後方から合成 2 色情報を上書き
+    // 3 輝度をアルファ値として上書き 4 輝度をアルファ値として乗算
+    // 入れ物（絵の置かれた四角）の外には何も出さない こちらのテキストは画面と
+    // 同じ大きさの絵で届くので、ここで切らないと画像が画面いっぱいに広がる
+    bool inside = screen.x >= u_object.x && screen.x <= u_object.z
+        && screen.y >= u_object.y && screen.y <= u_object.w;
+    if (blend != 2 && blend != 4 && !inside) {
+        frag_color = base;
+        return;
+    }
+    if (blend == 0 || blend == 1) {
+        // 画像は入れ物の四角いっぱいに出る（文字の形では切り抜かない）
+        // AviUtl2 では、文字の枠 551x180 が画像で塗られ、前方は文字の上へ、
+        // 後方は文字の下へ画像が来た
+        frag_color = blend == 0 ? over(picture, base) : over(base, picture);
+        return;
+    }
+    if (blend == 3 || blend == 4) {
+        // 画像の明るさ（Rec.601、符号化した値で測る）を濃さにする 色は絵のまま
+        // AviUtl2 で白い文字に 4 色の画像を掛けると、赤 74・緑 150・青 29 の灰色
+        // （0.299・0.587・0.114 倍）、半透明（128）の白は 128 になった
+        vec3 encoded = mix(picture.rgb * 12.92,
+                           1.055 * pow(clamp(picture.rgb, 0.0, 1.0), vec3(1.0 / 2.4)) - 0.055,
+                           step(0.0031308, picture.rgb));
+        float luma = dot(encoded, vec3(0.299, 0.587, 0.114)) * picture.a;
+        frag_color = vec4(base.rgb, blend == 4 ? base.a * luma : luma);
+        return;
+    }
+    // 色情報を上書き 色は画像のもの、濃さは絵と画像の掛け算
+    // AviUtl2 では、ループ画像を切ったときに画像の外の文字が消え、
+    // 半透明（128）の白の所は黒の上で灰色（128）になった
+    frag_color = vec4(picture.rgb, base.a * picture.a);
 }
 """)
 
@@ -803,6 +905,7 @@ def register_builtin_effects() -> None:
             parameters=(
                 TrackSpec("width", "太さ", 0, 32, 4, unit="px"),
                 ColorSpec("color", "色", (1.0, 1.0, 1.0, 1.0)),
+                FileSpec("pattern", "模様の画像", filter=IMAGE_FILTER, texture=True),
             ),
             fragment_shader=_BORDER,
         )
@@ -947,6 +1050,35 @@ def register_builtin_effects() -> None:
                 CheckSpec("invert", "反転", False),
             ),
             fragment_shader=_MASK,
+        )
+    )
+
+    registry.register(
+        EffectDefinition(
+            kind="image_blend",
+            label="画像合成",
+            category="合成",
+            parameters=(
+                FileSpec("image_file", "画像", filter=IMAGE_FILTER, texture=True),
+                TrackSpec("offset_x", "X", -4000, 4000, 0, step=1, unit="px"),
+                TrackSpec("offset_y", "Y", -4000, 4000, 0, step=1, unit="px"),
+                TrackSpec("zoom", "拡大率", 0, 1000, 100, unit="%"),
+                # 並びは AviUtl2 v2.1.6a の一覧と同じ シェーダはこの番号で分ける
+                SelectSpec(
+                    "blend",
+                    "合成",
+                    (
+                        ("front", "前方から合成"),
+                        ("back", "後方から合成"),
+                        ("overwrite", "色情報を上書き"),
+                        ("luma_alpha", "輝度をアルファ値として上書き"),
+                        ("luma_multiply", "輝度をアルファ値として乗算"),
+                    ),
+                    "overwrite",
+                ),
+                CheckSpec("loop", "画像を敷き詰める", True),
+            ),
+            fragment_shader=_IMAGE_BLEND,
         )
     )
 
