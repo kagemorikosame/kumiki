@@ -295,6 +295,35 @@ def test_audio_avoids_a_busy_or_locked_audio_track(files: tuple[Path, Path]) -> 
     assert tracks[2].clips[0].media_id == project.media[0].id
 
 
+def test_overlapping_sounds_of_one_layer_get_separate_tracks(files: tuple[Path, Path]) -> None:
+    """同じレイヤーで時間の重なる音は、別々の音声トラックへ置く
+
+    レイヤーごとに 1 本へまとめると、2 つ目の ``AddClip`` が重なりで断られ、
+    素材の登録を含む配置全体が取り消される
+    """
+    _, effect = files
+    sounds = [
+        media_object(effect, "音声ファイル", layer=4, start=0),
+        media_object(effect, "音声ファイル", layer=4, start=10),
+    ]
+    project = put(sounds, Project.create(), FakeProbe())
+
+    tracks = list(project.timeline.audio_tracks())
+    assert [len(track.clips) for track in tracks] == [1, 1]
+
+
+def test_audio_avoids_a_muted_audio_track(files: tuple[Path, Path]) -> None:
+    # ミュートされたトラックへ置くと、置けたと出るのに再生にも書き出しにも入らない
+    _, effect = files
+    muted = Track(kind=TrackKind.AUDIO, name="A1", muted=True)
+    project = AddTrack(muted).apply(Project.create())
+    project = put([media_object(effect, "音声ファイル", layer=4)], project, FakeProbe())
+
+    tracks = list(project.timeline.audio_tracks())
+    assert [len(track.clips) for track in tracks] == [0, 1]
+    assert not tracks[1].muted
+
+
 def test_audio_uses_an_existing_track_when_it_is_free_there(files: tuple[Path, Path]) -> None:
     # 置く範囲の外にだけ音がある音声トラックは使ってよい 範囲を見ずに断ると、
     # 使える音声トラックがあるのに置くたびに新しいトラックが増える

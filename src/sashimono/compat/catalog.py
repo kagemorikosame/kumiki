@@ -364,10 +364,7 @@ def place(
         if track_id is not None or not seen
         else _tracks_for(project, {item.layer for item in seen}, commands)
     )
-    spans: dict[int, list[Clip]] = {}
-    for item in heard:
-        spans.setdefault(item.layer, []).append(timed(item))
-    sound_tracks = _sound_tracks_for(project, spans, commands)
+    sound_tracks = _sound_tracks_for(project, [(item, timed(item)) for item in heard], commands)
 
     for item in objects:
         placed = timed(item)
@@ -382,7 +379,7 @@ def place(
                 source_in=item.scene_offset * project.rate.frame_duration,
             )
         if _is_sound(item, known):
-            target = sound_tracks[item.layer].id
+            target = sound_tracks[id(item)].id
         else:
             target = track_id if track_id is not None else tracks[item.layer].id
         commands.append(AddClip(target, placed))
@@ -410,43 +407,45 @@ def _is_sound(item: MappedObject, known: Mapping[str, MediaItem]) -> bool:
 
 
 def _sound_tracks_for(
-    project: Project, spans: dict[int, list[Clip]], commands: list[Command]
+    project: Project, sounds: list[tuple[MappedObject, Clip]], commands: list[Command]
 ) -> dict[int, Track]:
-    """音声を置く音声トラック 元のレイヤーの低い順に、空いている所を上から探す
+    """音声を置く音声トラック（``id(元のオブジェクト)`` → トラック）
 
+    元のレイヤーの低い順に、1 つずつ空いている音声トラックを上から探す
     映像と違い、レイヤー番号をそのままトラックの番号にしない YMM4 は映像と音声を
     同じレイヤーの並びに置くので、10 段目の効果音のために音声トラックを 10 本作ることになる
 
-    すでにある音声トラックは、ロックされておらず置く範囲が空いているときだけ使う
-    ほかの音と重なる所やロックされたトラックへ置くと ``AddClip`` が断り、1 回の Undo に
-    まとめた配置が画像も素材の登録も含めて全部取り消される 空きが無ければ新しく作る
+    使うのは、ロックもミュートもされておらず、置く範囲がほかの音（元からある音と、
+    今回先に割り当てた音の両方）と重ならないトラックだけ 重なる所やロックされた
+    トラックへ置くと ``AddClip`` が断り、1 回の Undo にまとめた配置が画像も素材の登録も
+    含めて全部取り消される ミュートされたトラックでは置けても鳴らない
+    空きが無ければ新しく作る
     """
-    free = [track for track in project.timeline.audio_tracks() if not track.locked]
-    tracks: dict[int, Track] = {}
+    pool: list[tuple[Track, list[Clip]]] = [
+        (track, list(track.clips))
+        for track in project.timeline.audio_tracks()
+        if not track.locked and not track.muted
+    ]
     count = len(list(project.timeline.audio_tracks()))
-    for layer in sorted(spans):
-        clips = spans[layer]
-        chosen = next(
+    chosen: dict[int, Track] = {}
+    for item, clip in sorted(sounds, key=lambda pair: (pair[0].layer, pair[1].timeline_start)):
+        start, end = clip.timeline_start, clip.timeline_end
+        slot = next(
             (
-                track
-                for track in free
-                if not any(
-                    old.overlaps(new.timeline_start, new.timeline_end)
-                    for old in track.clips
-                    for new in clips
-                )
+                (track, used)
+                for track, used in pool
+                if not any(other.overlaps(start, end) for other in used)
             ),
             None,
         )
-        if chosen is not None:
-            # 1 本に 1 つのレイヤーだけ 別のレイヤーの音と同じ時刻に重なりうる
-            free.remove(chosen)
-        else:
+        if slot is None:
             count += 1
-            chosen = Track(kind=TrackKind.AUDIO, name=f"A{count}")
-            commands.append(AddTrack(chosen))
-        tracks[layer] = chosen
-    return tracks
+            slot = (Track(kind=TrackKind.AUDIO, name=f"A{count}"), [])
+            commands.append(AddTrack(slot[0]))
+            pool.append(slot)
+        slot[1].append(clip)
+        chosen[id(item)] = slot[0]
+    return chosen
 
 
 def _scene_for(
