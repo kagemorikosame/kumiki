@@ -112,3 +112,7 @@ PR には 4 つの AI（CodeRabbit・Copilot・Sourcery・Qodo）がレビュー
 
 MIT です PR を送った時点で、その内容が MIT で配布されることに同意したものと
 します
+
+配る zip は、同梱の部品（libx264・libx265）が GPL なので全体として GPL の条件で配ります
+新しい依存を足すと zip に積む部品が変わるので、`THIRD_PARTY_NOTICES.md` にも足してください
+（足していないと `tools/build_package.py` が zip を作る前に止まります）
