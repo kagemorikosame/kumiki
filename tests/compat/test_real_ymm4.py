@@ -115,7 +115,7 @@ def test_effect_only_templates_can_be_worn(loaded: Loaded) -> None:
     effects_only = [
         objects
         for _, objects in loaded
-        if objects and all(item.clip.source is None and not item.media_path for item in objects)
+        if objects and not any(item.has_picture for item in objects)
     ]
     assert effects_only, "エフェクトだけのテンプレートが 1 つも無い"
 
@@ -135,7 +135,7 @@ def test_effect_only_templates_are_not_placed(loaded: Loaded) -> None:
     effects_only = [
         objects
         for _, objects in loaded
-        if objects and all(item.clip.source is None and not item.media_path for item in objects)
+        if objects and not any(item.has_picture for item in objects)
     ]
     assert place(effects_only[0], Project.create()) == []
 

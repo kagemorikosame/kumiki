@@ -27,6 +27,7 @@ from typing import Any
 import pytest
 
 from kumiki.compat.aviutl.report import CompatibilityReport
+from kumiki.compat.catalog import place, restyle
 from kumiki.compat.ymm4.decorations import map_decorations, map_video_effects
 from kumiki.compat.ymm4.template import Ymm4ParseError, load_template, map_template
 from kumiki.compat.ymm4.values import (
@@ -38,7 +39,8 @@ from kumiki.compat.ymm4.values import (
     number,
     type_name,
 )
-from kumiki.core.model import AnimatedValue, Interpolation
+from kumiki.core.commands import SetSource
+from kumiki.core.model import AnimatedValue, Clip, GeneratedSource, Interpolation, Project
 
 #: 実物と同じ書き方のブラシ
 BRUSH = {
@@ -98,6 +100,11 @@ def text_item(**fields: Any) -> dict[str, Any]:
 
 
 def group_item(**fields: Any) -> dict[str, Any]:
+    """実物の ``GroupItem`` と同じ形 既定では :func:`text_item`（レイヤー 4）を範囲に含む
+
+    グループが掛かるのは**自分より大きい番号**のレイヤー（YMM4 の画面では下の段）
+    実物の配布物はどれもこの並び
+    """
     base: dict[str, Any] = {
         "$type": "YukkuriMovieMaker.Project.Items.GroupItem, YukkuriMovieMaker",
         "GroupRange": 1,
@@ -109,7 +116,38 @@ def group_item(**fields: Any) -> dict[str, Any]:
         "Blend": "Normal",
         "VideoEffects": [],
         "Frame": 0,
-        "Layer": 5,
+        "Layer": 3,
+        "KeyFrames": {"Frames": [], "Count": 0},
+        "Length": 300,
+    }
+    base.update(fields)
+    return base
+
+
+def shape_item(**fields: Any) -> dict[str, Any]:
+    """実物の ``ShapeItem`` と同じ形 四角"""
+    base: dict[str, Any] = {
+        "$type": "YukkuriMovieMaker.Project.Items.ShapeItem, YukkuriMovieMaker",
+        "ShapeType2": "YukkuriMovieMaker.Shape.QuadrilateralShapePlugin, YukkuriMovieMaker",
+        "ShapeParameter": {
+            "$type": "YukkuriMovieMaker.Project.Items.RectangleShapeParameter, YukkuriMovieMaker",
+            "SizeMode": "WidthHeight",
+            "Size": still(100.0),
+            "AspectRate": still(0.0),
+            "Width": still(200.0),
+            "Height": still(100.0),
+            "StrokeThickness": still(10000.0),
+            "Brush": BRUSH,
+        },
+        "X": still(0.0),
+        "Y": still(0.0),
+        "Opacity": still(100.0),
+        "Zoom": still(100.0),
+        "Rotation": still(0.0),
+        "Blend": "Normal",
+        "VideoEffects": [],
+        "Frame": 0,
+        "Layer": 4,
         "KeyFrames": {"Frames": [], "Count": 0},
         "Length": 300,
     }
@@ -623,6 +661,222 @@ class TestGroups:
 
     def test_a_group_with_nothing_to_give_produces_nothing(self) -> None:
         assert map_template([group_item()], report=CompatibilityReport()) == []
+
+    def test_an_item_outside_the_range_gets_nothing_from_the_group(self) -> None:
+        """グループのエフェクトは ``GroupRange`` の段の中身にだけ掛かる
+
+        全部へ配ると、リボンのテロップ（配布物）の文字が範囲の外なのに吹き出しの
+        登場の動きをもう 1 度受け、自分の動きと合わせて倍の距離を飛んでくる
+        """
+        group = group_item(Layer=0, GroupRange=2, VideoEffects=[outline(6.0)])
+        inside = shape_item(Layer=2)
+        outside = text_item(Layer=3)
+        mapped = map_template([group, inside, outside], report=CompatibilityReport())
+        kinds = {item.kind: [e.kind for e in item.clip.effects] for item in mapped}
+        assert kinds == {"shape": ["border"], "text": []}
+
+
+class TestCompositeGroups:
+    """「合成する」（``IsComposite``）グループ 範囲の中身を 1 枚の絵にしてから掛ける"""
+
+    def test_the_members_are_gathered_into_one_picture(self) -> None:
+        """合成するグループは、範囲の中身を子に持つ 1 つのオブジェクトになる
+
+        中身を 1 つずつ置くと、グループの反転や拡大が中身ごとの中心で掛かる
+        SFっぽい吹き出し（配布物）は、反転と縮小が画面の中心で掛かって吹き出しが
+        画面の左へ寄る絵だった
+        """
+        group = group_item(Layer=0, GroupRange=2, IsComposite=True, IsInverted=True)
+        mapped = map_template(
+            [group, shape_item(Layer=1), text_item(Layer=2)], report=CompatibilityReport()
+        )
+        assert len(mapped) == 1
+        scene = mapped[0]
+        assert scene.kind == "scene"
+        assert scene.has_picture
+        assert sorted(child.kind for child in scene.children) == ["shape", "text"]
+        assert [e.kind for e in scene.clip.effects] == ["flip"]
+
+    def test_the_group_effects_are_not_copied_onto_each_member(self) -> None:
+        # 移すと縁取りが中身 1 つずつの外側に付き、重なった所に内側の線が出る
+        group = group_item(Layer=0, GroupRange=2, IsComposite=True, VideoEffects=[outline(6.0)])
+        mapped = map_template(
+            [group, shape_item(Layer=1), shape_item(Layer=2)], report=CompatibilityReport()
+        )
+        assert [e.kind for e in mapped[0].clip.effects] == ["border"]
+        assert all(child.clip.effects == () for child in mapped[0].children)
+
+    def test_the_members_are_placed_relative_to_the_group(self) -> None:
+        """中身の段と時刻はグループからの相対になる
+
+        そのままの段で置くと、シーンの下の段が空のトラックで埋まる 時刻をずらさないと、
+        グループが 30 フレーム目から始まるとき中身がシーンの中で 30 フレーム遅れて出る
+        """
+        group = group_item(Layer=2, GroupRange=3, IsComposite=True, Frame=30, Length=100)
+        member = shape_item(Layer=4, Frame=40, Length=50)
+        scene = map_template([group, member], report=CompatibilityReport())[0]
+        assert (scene.layer, scene.clip.timeline_start, scene.clip.duration) == (3, 30, 100)
+        child = scene.children[0]
+        assert (child.layer, child.clip.timeline_start) == (2, 10)
+
+    def test_opacity_blend_and_clipping_go_to_the_picture(self) -> None:
+        # どれもまとめた絵に掛かる 捨てると、半透明の吹き出しが不透明のまま出る
+        group = group_item(
+            Layer=0,
+            GroupRange=1,
+            IsComposite=True,
+            Opacity=still(40.0),
+            Blend="Multiply",
+            IsClippingWithObjectAbove=True,
+        )
+        clip = map_template([group, shape_item(Layer=1)], report=CompatibilityReport())[0].clip
+        assert clip.opacity.at(0) == pytest.approx(0.4)
+        assert clip.blend_mode == "multiply"
+        assert clip.clip_to_below
+
+    def test_an_item_above_the_range_stays_outside(self) -> None:
+        group = group_item(Layer=0, GroupRange=1, IsComposite=True)
+        mapped = map_template(
+            [group, shape_item(Layer=1), text_item(Layer=2)], report=CompatibilityReport()
+        )
+        assert sorted(item.kind for item in mapped) == ["scene", "text"]
+
+    def test_an_empty_composite_group_adds_no_scene(self) -> None:
+        """範囲に中身の無い合成するグループは、何も置かない
+
+        ペイントトランジション（配布物）は「この範囲に次の場面を置いてください」という
+        空の枠を持つ 空のシーンを置くと、何も映らないトラックとシーンが増えるだけ
+        """
+        group = group_item(Layer=5, GroupRange=3, IsComposite=True)
+        mapped = map_template([shape_item(Layer=0), group], report=CompatibilityReport())
+        assert [item.kind for item in mapped] == ["shape"]
+
+    def test_a_group_inside_a_composite_group_works_inside_the_picture(self) -> None:
+        """合成するグループの中の合成しないグループは、まとめた絵の中で中身へ配る
+
+        リボンのテロップ（配布物）の形 内側のグループの縁取りが外へ漏れると、
+        まとめた絵の外側にもう 1 本縁取りが付く
+        """
+        outer = group_item(Layer=0, GroupRange=3, IsComposite=True)
+        inner = group_item(Layer=1, GroupRange=1, VideoEffects=[outline(6.0)])
+        mapped = map_template(
+            [outer, inner, shape_item(Layer=2), shape_item(Layer=3)],
+            report=CompatibilityReport(),
+        )
+        assert len(mapped) == 1
+        assert mapped[0].clip.effects == ()
+        effects = sorted(len(child.clip.effects) for child in mapped[0].children)
+        assert effects == [0, 1]
+
+    def test_a_nested_composite_group_becomes_a_scene_inside_the_scene(self) -> None:
+        outer = group_item(Layer=0, GroupRange=3, IsComposite=True)
+        inner = group_item(Layer=1, GroupRange=2, IsComposite=True, IsInverted=True)
+        mapped = map_template(
+            [outer, inner, shape_item(Layer=2), shape_item(Layer=3)],
+            report=CompatibilityReport(),
+        )
+        assert [child.kind for child in mapped[0].children] == ["scene"]
+        assert len(mapped[0].children[0].children) == 2
+
+    def test_placing_puts_the_members_into_a_scene(self) -> None:
+        """置くと、中身はシーンの中へ、グループはそのシーンのクリップとして置かれる
+
+        グループのエフェクトはシーンのクリップが持つ 中身を平らに置くと、まとめた絵に
+        掛けるはずの反転が掛からないまま、中身だけが並ぶ
+        """
+        group = group_item(Layer=0, GroupRange=2, IsComposite=True, IsInverted=True, Frame=30)
+        objects = map_template(
+            [group, shape_item(Layer=1, Frame=30), text_item(Layer=2, Frame=45)],
+            report=CompatibilityReport(),
+        )
+        project = Project.create()
+        for command in place(objects, project, at_frame=100):
+            project = command.apply(project)
+
+        assert len(project.scenes) == 1
+        scene = project.scenes[0]
+        placed = [clip for track in project.timeline.tracks for clip in track.clips]
+        assert len(placed) == 1
+        assert placed[0].scene_id == scene.id
+        assert placed[0].timeline_start == 100
+        assert [e.kind for e in placed[0].effects] == ["flip"]
+        inside = sorted(
+            (clip.timeline_start, clip.source.kind if clip.source else "")
+            for track in scene.timeline.tracks
+            for clip in track.clips
+        )
+        # 遅れて出る中身は、シーンの中でも同じだけ遅れる
+        assert inside == [(0, "shape"), (15, "text")]
+
+    def test_restyling_finds_the_text_inside_the_picture(self) -> None:
+        # 吹き出しの字幕テンプレートは文字がまとめた絵の中にある 上だけを見ると
+        # 「文字の無いテンプレート」として着せられなくなる
+        group = group_item(Layer=0, GroupRange=2, IsComposite=True)
+        objects = map_template(
+            [group, shape_item(Layer=1), text_item(Layer=2, Text="見本")],
+            report=CompatibilityReport(),
+        )
+        clip = Clip(
+            timeline_start=0,
+            duration=60,
+            source=GeneratedSource(kind="text", params={"text": "自分の字幕"}),
+        )
+        commands = restyle(objects, clip)
+        sources = [command for command in commands if isinstance(command, SetSource)]
+        assert len(sources) == 1
+        restyled = sources[0].source
+        assert restyled is not None
+        assert restyled.params["text"] == "自分の字幕"
+
+    @pytest.mark.usefixtures("gpu")
+    def test_the_outline_goes_around_the_whole_picture(self) -> None:
+        """縁取りは重ねた絵の外側にだけ付く
+
+        白い四角 2 つを横にずらして重ね、グループに赤い縁取りを掛ける 中身 1 つずつに
+        配ると、上の四角の縁が下の四角の上に赤い線として出る（リボンのテロップの
+        吹き出しの中に線が走る）
+        """
+        from kumiki.core.model import ProjectSettings
+        from kumiki.core.timebase import FrameRate
+        from kumiki.engine.render import FrameRenderer
+
+        red = outline(10.0)
+        red["StrokeBrush"] = {
+            "Type": BRUSH["Type"],
+            "Parameter": {
+                "$type": "YukkuriMovieMaker.Plugin.Brush.SolidColorBrushParameter, "
+                "YukkuriMovieMaker",
+                "Color": "#FFFF0000",
+            },
+        }
+        group = group_item(Layer=0, GroupRange=2, IsComposite=True, VideoEffects=[red], Length=30)
+        lower = shape_item(Layer=1, X=still(-50.0), Length=30)
+        upper = shape_item(Layer=2, X=still(50.0), Length=30)
+        objects = map_template([group, lower, upper], report=CompatibilityReport())
+        project = Project.create(ProjectSettings(width=1920, height=1080, frame_rate=FrameRate(30)))
+        for command in place(objects, project):
+            project = command.apply(project)
+        renderer = FrameRenderer(project)
+        try:
+            image = renderer.render(10)
+        finally:
+            renderer.close()
+        # 上の四角の左の縁（画面の 910）のすぐ外は、下の四角の中
+        red_part, green_part, _ = (int(v) for v in image[540, 905, :3])
+        assert red_part > 200
+        assert green_part > 200, "重なった所に縁取りの線が出た 縁取りが中身ごとに掛かっている"
+        # 絵全体の外側にはちゃんと縁取りが付く（下の四角の左の縁は画面の 810）
+        outside = image[540, 805, :3]
+        assert int(outside[0]) > 200
+        assert int(outside[1]) < 60
+
+    def test_another_composite_center_is_recorded(self) -> None:
+        # 手元の配布物は画面の中心だけ ほかの中心は確かめていないので、黙って画面の
+        # 中心で掛けずに記録へ残す
+        report = CompatibilityReport()
+        group = group_item(Layer=0, IsComposite=True, CompositeCenter="ItemCenter")
+        map_template([group, shape_item(Layer=1)], report=report)
+        assert any("ItemCenter" in line for line in report.lines())
 
 
 class TestPlacement:

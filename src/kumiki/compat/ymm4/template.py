@@ -249,57 +249,220 @@ def map_template(
     """アイテムの列をクリップへ 写せなかったものは飛ばす
 
     ``GroupItem`` は中身を持たない入れ物で、まとめた相手に掛かるエフェクトを
-    持っている こちらのモデルに入れ子は無いので、**同じテンプレートの中身へ
-    エフェクトを移して**平らにする
+    持っている 掛かる相手は、グループのレイヤーのすぐ上から ``GroupRange`` 段
+    まで 掛け方は「合成する」（``IsComposite``）で 2 通りに分かれる
 
-    手元の配布物はどれも「中身 1 つ + グループ 1 つ」の形（``GroupRange`` は 1）
-    だったので、この移し方でずれない 中身が無いテンプレート
-    （``アニメーション効果/振り子`` のようなもの）は**エフェクトだけ**の
-    結果になり、既にあるクリップへ着せて使う
+    * 合成しない — 範囲の中身 1 つずつにエフェクトを掛ける こちらのモデルに
+      入れ子は無いので、**中身へエフェクトを移して**平らにする
+    * 合成する — 範囲の中身を 1 枚の絵に重ねてから、その絵にエフェクト・反転・
+      拡大・不透明度・合成モード・クリッピングを掛ける こちらでは中身を
+      シーンにまとめ、グループをそのシーンのクリップとして置く
+      （:attr:`MappedObject.children`）
+
+    中身が無いテンプレート（``アニメーション効果/振り子`` のようなもの）は
+    **エフェクトだけ**の結果になり、既にあるクリップへ着せて使う
     """
     log = report if report is not None else global_report
+    return _map_items(list(items), log)
 
-    contents: list[MappedObject] = []
+
+def _map_items(items: list[dict[str, Any]], log: CompatibilityReport) -> list[MappedObject]:
+    composites, consumed = _composite_groups(items, log)
+
+    contents: list[tuple[int, MappedObject]] = []
     grouped: list[Effect] = []
-    # 入れ物ごとの (長さ, エフェクト) 動く値のキーフレームはその入れ物の長さの
-    # 上に並んでいるので、中身の無いテンプレートでも長さを残す 1 にすると、
-    # 着せるときに尺を合わせられず、動きが着せた先の途中で止まる
-    containers: list[tuple[int, list[Effect]]] = []
+    # 入れ物ごとの (レイヤー, 範囲, 長さ, エフェクト) 動く値のキーフレームはその
+    # 入れ物の長さの上に並んでいるので、中身の無いテンプレートでも長さを残す
+    # 1 にすると、着せるときに尺を合わせられず、動きが着せた先の途中で止まる
+    containers: list[_Container] = []
     for item in items:
+        if id(item) in consumed:
+            continue
+        scene = composites.get(id(item))
+        if scene is not None:
+            contents.append((_layer_of(item), scene))
+            continue
         if type_name(item) in _CONTAINER_ITEMS:
             effects = _group_effects(item, log)
             grouped.extend(effects)
-            containers.append((max(1, int(number(item.get("Length"), 1.0))), effects))
+            containers.append(
+                _Container(
+                    layer=_layer_of(item),
+                    reach=_reach_of(item),
+                    length=max(1, int(number(item.get("Length"), 1.0))),
+                    effects=effects,
+                )
+            )
             continue
         mapped = _map_item(item, log)
         if mapped is not None:
-            contents.append(mapped)
+            contents.append((_layer_of(item), mapped))
 
     if not grouped:
-        return contents
+        return [mapped for _, mapped in contents]
     if not contents:
         # 中身のないテンプレート エフェクトだけを**入れ物ごとに**返す
         # 1 つにまとめると、長さの違う入れ物が混ざったときに短い方の動きが
         # 長い方の尺で伸び縮みする（着せる側は 1 つずつ尺を合わせる）
         return [
             MappedObject(
-                clip=Clip(timeline_start=0, duration=length, effects=tuple(effects)),
+                clip=Clip(
+                    timeline_start=0,
+                    duration=container.length,
+                    effects=tuple(container.effects),
+                ),
                 layer=1,
                 kind="effects",
                 has_span=False,
             )
-            for length, effects in containers
-            if effects
+            for container in containers
+            if container.effects
         ]
     # 入れ物のエフェクトを中身へ移す 入れ物と中身で長さが違うことがあるので
     # （手元の配布物 97 本のうち 6 本 例: 入れ物 18 中身 300）、動く値の時刻を
     # 中身の長さへ揃えてから移す 揃えずに移すと、入れ物の終わりに置いた点が
     # 中身の途中に残り、エフェクトの終わりの見た目が出ないまま止まる
-    return [_with_group_effects(item, containers) for item in contents]
+    #
+    # 移すのは中身を範囲に含む入れ物のものだけ 全部へ配ると、リボンのテロップの
+    # 文字（範囲の外）に吹き出しの登場の動きが 2 回掛かり、倍の距離を飛んでくる
+    return [
+        _with_group_effects(
+            item,
+            [container for container in containers if container.covers(layer)],
+            span=max((container.length for container in containers), default=1),
+        )
+        for layer, item in contents
+    ]
+
+
+@dataclass(frozen=True, slots=True)
+class _Container:
+    """合成しないグループ 範囲の中身へエフェクトを配る"""
+
+    layer: int
+    #: 掛かる段の数 ``None`` は上の段すべて
+    reach: int | None
+    length: int
+    effects: list[Effect]
+
+    def covers(self, layer: int) -> bool:
+        return layer > self.layer and (self.reach is None or layer <= self.layer + self.reach)
+
+
+def _layer_of(item: dict[str, Any]) -> int:
+    return int(number(item.get("Layer"), 0.0))
+
+
+def _reach_of(item: dict[str, Any]) -> int | None:
+    """グループが掛かる段の数
+
+    ``GroupRange`` を持たないグループは、映像エフェクトのテンプレートを包んだ入れ物
+    （:func:`_effect_template_of`）と、それだけを書き出した配布物（あおもや式の
+    アニメーション効果 18 本）だけだった どれもレイヤーも持たず、着せる先の段が
+    決まっていないので、上の段すべてに掛かるものとして読む 1 段とすると、
+    比べる道具が下地を置いた段によっては何にも掛からなくなる
+    """
+    if "GroupRange" not in item:
+        return None
+    return max(1, int(number(item.get("GroupRange"), 1.0)))
+
+
+def _composite_groups(
+    items: list[dict[str, Any]], log: CompatibilityReport
+) -> tuple[dict[int, MappedObject], set[int]]:
+    """合成するグループと、その範囲の中身を 1 つのまとめた絵にする
+
+    返すのは「グループの ``id`` → まとめた絵」と、まとめた絵の中へ入った中身の ``id``
+    入れ子のグループは、外側（下の段）から順にまとめる 内側のグループは中身と一緒に
+    外側の絵の中へ入り、そこでもう一度この関数を通る
+
+    範囲に中身が 1 つも無い合成するグループは、ふつうの入れ物として残す
+    （ペイントトランジションの「この範囲内に次の場面を置いてください」という空の枠）
+    空のシーンを置いても何も映らず、トラックとシーンが増えるだけになる
+    """
+    made: dict[int, MappedObject] = {}
+    consumed: set[int] = set()
+    for group in sorted(
+        (item for item in items if _is_composite(item)),
+        key=_layer_of,
+    ):
+        if id(group) in consumed:
+            continue
+        reach = _reach_of(group)
+        low = _layer_of(group)
+        members = [
+            item
+            for item in items
+            if item is not group
+            and id(item) not in consumed
+            and _layer_of(item) > low
+            and (reach is None or _layer_of(item) <= low + reach)
+        ]
+        scene = _composite(group, members, log)
+        if scene is None:
+            continue
+        made[id(group)] = scene
+        consumed.update(id(item) for item in members)
+    return made, consumed
+
+
+def _is_composite(item: dict[str, Any]) -> bool:
+    return type_name(item) in _CONTAINER_ITEMS and item.get("IsComposite") is True
+
+
+def _composite(
+    group: dict[str, Any], members: list[dict[str, Any]], log: CompatibilityReport
+) -> MappedObject | None:
+    """合成するグループ 1 つを、中身をまとめたシーンのクリップへ
+
+    中身のレイヤーと時刻はグループからの相対へ直す シーンのトラックは 1 から
+    始まるので、グループのすぐ上の段が 1 本目になる
+
+    グループ自身の反転・拡大・回転・エフェクトは、まとめた絵（画面の大きさ）に
+    掛かるので、画面の中心を軸に効く YMM4 の書き出しと比べて確かめた
+    （吹き出し風ワイプの縁取りと影と登場の動きを 1 枚に掛けると、真ん中の
+    フレームの差が 2.6 から 0.7 へ、リボンのテロップの入りが 8.4 から 4.8 へ下がる）
+    """
+    center = str(group.get("CompositeCenter") or "ScreenCenter")
+    if center != "ScreenCenter":
+        log.note_missing(f"YMM4 のグループの合成の中心: {center}")
+    start = int(number(group.get("Frame"), 0.0))
+    base = _layer_of(group) + 1
+    rebased = [
+        {
+            **item,
+            "Layer": _layer_of(item) - base,
+            "Frame": int(number(item.get("Frame"), 0.0)) - start,
+        }
+        for item in members
+    ]
+    children = tuple(_map_items(rebased, log))
+    if not any(child.has_picture for child in children):
+        return None
+
+    length = max(1, int(number(group.get("Length"), 1.0)))
+    keyframes = group.get("KeyFrames")
+    remark = str(group.get("Remark") or "").strip().splitlines()
+    return MappedObject(
+        clip=Clip(
+            timeline_start=max(0, start),
+            duration=length,
+            effects=tuple(_group_effects(group, log)),
+            opacity=animated(
+                group.get("Opacity"), 100.0, length=length, keyframes=keyframes, scale=0.01
+            ),
+            blend_mode=_blend_of(group, log),
+            clip_to_below=group.get("IsClippingWithObjectAbove") is True,
+        ),
+        layer=max(1, base),
+        kind="scene",
+        children=children,
+        label=remark[0] if remark else "合成したグループ",
+    )
 
 
 def _with_group_effects(
-    item: MappedObject, containers: list[tuple[int, list[Effect]]]
+    item: MappedObject, containers: list[_Container], *, span: int
 ) -> MappedObject:
     """入れ物のエフェクトを 1 つの中身へ移す 動く値の時刻は中身の長さへ揃える
 
@@ -309,14 +472,15 @@ def _with_group_effects(
     入れ物 90 に対して中身 1） そのまま 1 に揃えると 90 フレームの動きが
     2 フレームに潰れ、置くときに既定の長さまで伸ばされても動きは戻らない
     長さが分かるのは入れ物の側だけなので、そちらを中身の長さとして使う
+    ``span`` は、範囲に入っていない入れ物も含めた一番長い入れ物の長さ 中身の長さを
+    借りるのは範囲と関係なく、テンプレート全体の尺を決めるため
     """
-    span = max((length for length, _ in containers), default=1)
     known = item.has_span or span <= 1
     duration = item.clip.duration if known else span
     moved = [
-        fitted_effect(effect, length, duration)
-        for length, effects in containers
-        for effect in effects
+        fitted_effect(effect, container.length, duration)
+        for container in containers
+        for effect in container.effects
     ]
     return replace(
         item,
