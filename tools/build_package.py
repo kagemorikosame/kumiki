@@ -153,13 +153,15 @@ def make_zip(bundle: Path, target: Path) -> Path:
             for path in sorted(bundle.rglob("*")):
                 if path.is_file():
                     archive.write(path, Path(APP_NAME) / path.relative_to(bundle))
+        # 途中で止まった zip を完成品と取り違えないよう、書き終えてから名前を付ける
+        # 名前を付ける所も後始末の中に入れる 前の zip を開いたままだと Windows は
+        # 置き換えを断り、書き終えた 100 MB がそのまま残る
+        temporary.replace(target)
     except BaseException:
         # 書きかけも残さない 名前が違うので完成品とは取り違えないが、
         # 100 MB ずつ溜まるうえ、手で配るときに紛れる
         temporary.unlink(missing_ok=True)
         raise
-    # 途中で止まった zip を完成品と取り違えないよう、書き終えてから名前を付ける
-    temporary.replace(target)
     return target
 
 
@@ -235,7 +237,8 @@ def _run(executable: Path, arguments: list[str], folder: str) -> subprocess.Comp
     渡すのは、この道具が展開した exe の場所と、この道具の中で決めた引数だけ
     外から来た文字列は混ざらず、shell も通さない（引数は並びのまま渡す）
     """
-    return subprocess.run(
+    # 監査済み 引数の出どころは上のとおりで、外から来た文字列は混ざらない
+    return subprocess.run(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
         [str(executable), *arguments],
         cwd=folder,
         env=minimal_environment(os.environ),

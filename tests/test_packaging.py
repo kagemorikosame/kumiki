@@ -235,6 +235,29 @@ class TestTheZip:
         # 書きかけも残さない 100 MB ずつ溜まるうえ、手で配るときに紛れる
         assert list(tmp_path.glob("*.writing")) == []
 
+    def test_a_failed_rename_leaves_nothing_behind(
+        self, builder: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """書き終えても、名前を付けられなければ書いた物を残さない
+
+        前の zip を開いたままだと Windows は置き換えを断る そこで残すと、
+        書き終えた 100 MB がそのまま溜まる 前の完成品には触れない
+        """
+        bundle = tmp_path / "bundle"
+        bundle.mkdir()
+        (bundle / "Kumiki.exe").write_bytes(b"MZ")
+        target = tmp_path / "out.zip"
+        target.write_bytes(b"previous")
+
+        def locked(self: Path, other: Path) -> Path:
+            raise PermissionError("使用中")
+
+        monkeypatch.setattr(Path, "replace", locked)
+        with pytest.raises(PermissionError):
+            builder.make_zip(bundle, target)
+        assert list(tmp_path.glob("*.writing")) == []
+        assert target.read_bytes() == b"previous", "前の完成品を壊している"
+
     def test_the_check_does_not_borrow_the_developers_path(self, builder: ModuleType) -> None:
         """確かめるときは開発機の PATH を使わない
 
