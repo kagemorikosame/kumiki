@@ -111,3 +111,7 @@ class TestTheYellowPlate:
             native.set_enabled(True)
         plate = np.all(np.abs(image - YELLOW) <= 2, axis=2)
         assert plate.sum() == 0
+        # 文字は出ていること 板が無いだけでなく、真っ黒な絵でも上の確かめは通ってしまう
+        # （DLL を読まないとスクリプトは失敗し、そのオブジェクトは素通しで出る）
+        text = (image.sum(axis=2) > 30) & (image.sum(axis=2) < 150)
+        assert text.sum() > 1_000, "板どころか文字まで消えている"
