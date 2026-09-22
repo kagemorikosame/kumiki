@@ -60,11 +60,16 @@ _FIGURES = ("ellipse", "rect", "triangle", "pentagon", "hexagon", "star", "backg
 #: AviUtl2 の図形の種類 **名前で書かれる**（``図形の種類=ハート``）
 #: AviUtl2 に図形を置いたエイリアスを作らせて読み取った
 #: ハート に当たる形はこちらに無いので、記録に残して矩形にする
+#:
+#: 三角形は**円に内接する形**（頂点が上） AviUtl2 に描かせて測ると、サイズ 400 で
+#: 頂点が中心の 200 上・底辺が 100 下・底辺の幅 346 だった（縦横比 ±50 でも同じ形を
+#: 縦か横に縮めただけ） 四角に合わせた三角形で写すと、底辺が 100 下へはみ出して
+#: 幅も 54 広がる
 _FIGURE_NAMES: dict[str, str] = {
     "背景": "background",
     "円": "ellipse",
     "四角形": "rect",
-    "三角形": "triangle",
+    "三角形": "inscribed_triangle",
     "五角形": "pentagon",
     "六角形": "hexagon",
     "星型": "star",
@@ -499,6 +504,10 @@ _FILTERS: dict[str, str] = {
 _SPLIT = "オブジェクト分割"
 
 
+#: 素材ファイルを読み込む中身の名前
+_MEDIA_NAMES = ("動画ファイル", "画像ファイル", "音声ファイル")
+
+
 def media_paths(exo: ExoFile) -> tuple[str, ...]:
     """このファイルが参照している素材のパス
 
@@ -508,19 +517,25 @@ def media_paths(exo: ExoFile) -> tuple[str, ...]:
     found: list[str] = []
     for obj in exo.objects:
         content = obj.content
-        if content is None:
+        # 音声波形表示も自分の ``ファイル`` の音を描く 素材として読み込ませないと、
+        # 別の機械へ持っていったときに探し直せない
+        if content is None or content.name not in (*_MEDIA_NAMES, "音声波形表示"):
             continue
-        if content.name in ("動画ファイル", "画像ファイル", "音声ファイル"):
-            path = content.params.get("file", "")
-            if path and path not in found:
-                found.append(path)
-        elif content.name == "音声波形表示":
-            # 波形は自分の ``ファイル`` の音を描く 素材として読み込ませないと、
-            # 別の機械へ持っていったときに探し直せない
-            path = content.value("ファイル", "file").strip()
-            if path and path not in found:
-                found.append(path)
+        path = _media_file(content)
+        if path and path not in found:
+            found.append(path)
     return tuple(found)
+
+
+def _media_file(entry: ExoEntry) -> str:
+    """中身が読み込む素材ファイルのパス
+
+    AviUtl2 は ``ファイル=``、AviUtl1 は ``file=`` と書く（AviUtl2 v2.1.6a に動画・画像・
+    音声ファイルを置いて保存させ、3 つとも ``ファイル=`` だと確かめた） ``file`` だけを
+    見ていたので、AviUtl2 の素材は素材一覧にもクリップにも載らず、中身の無い
+    クリップになっていた
+    """
+    return entry.value("ファイル", "file").strip()
 
 
 def map_exo(
@@ -897,10 +912,10 @@ def _content(
     if entry.name == "星":
         return _star_field(entry, points, log), "", "shape"
     if entry.name == "音声波形表示":
-        path = entry.value("ファイル", "file").strip()
+        path = _media_file(entry)
         return _waveform(entry, path, points, log), path, "shape"
-    if entry.name in ("動画ファイル", "画像ファイル", "音声ファイル"):
-        return None, entry.params.get("file", ""), entry.name
+    if entry.name in _MEDIA_NAMES:
+        return None, _media_file(entry), entry.name
 
     if entry.name not in _CONTENT_NAMES:
         log.note_missing(f"オブジェクト: {entry.name}")

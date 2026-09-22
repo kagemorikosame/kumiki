@@ -6,6 +6,7 @@ AviUtl1 と AviUtl2 で書き方が違う AviUtl2 に置かせたエイリアス
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
 from sashimono.compat.aviutl.exo import parse_exo
@@ -14,7 +15,7 @@ from sashimono.compat.aviutl.report import CompatibilityReport
 from sashimono.compat.mapped import MappedObject
 from sashimono.core.model import AnimatedValue, GeneratedSource
 from sashimono.core.timebase import FrameRate
-from sashimono.engine.sources import format_time, timer_text
+from sashimono.engine.sources import format_time, render_source, timer_text
 
 RATE = FrameRate(60)
 
@@ -56,7 +57,7 @@ class TestTheSecondGeneration:
             ("背景", "background"),
             ("円", "ellipse"),
             ("四角形", "rect"),
-            ("三角形", "triangle"),
+            ("三角形", "inscribed_triangle"),
             ("五角形", "pentagon"),
             ("六角形", "hexagon"),
             ("星型", "star"),
@@ -93,6 +94,60 @@ class TestTheSecondGeneration:
         assert item.clip.source is not None
         assert item.clip.source.params["shape"] == "rect"
         assert any("図形の種類: ハート" in line for line in report.lines())
+
+
+def _bounds(body: str) -> tuple[int, int, int, int, int]:
+    """1920x1080 に描いた図形の塗られた範囲 画面の中心から測る
+
+    返すのは 上端・下端（下が正の画素）・下端の行の左端・右端・塗られた画素の数
+    """
+    image = render_source(_source(body), 1920, 1080)
+    assert image is not None
+    mask = image[:, :, 3] > 128
+    rows, _ = np.nonzero(mask)
+    bottom = int(rows.max())
+    base = np.nonzero(mask[bottom])[0]
+    return (
+        int(rows.min()) - 540,
+        bottom - 540,
+        int(base.min()) - 960,
+        int(base.max()) - 960,
+        int(mask.sum()),
+    )
+
+
+class TestTheTriangle:
+    """AviUtl2 の三角形は円に内接する形
+
+    ``kumiki_p8_tri_*`` を AviUtl2 v2.1.6a に 1920x1080 で書き出させて、
+    白く塗られた範囲を画素で測った値と比べる
+    """
+
+    @pytest.mark.parametrize(
+        ("size", "ratio", "expected"),
+        [
+            # 頂点が中心の 200 上・底辺が 100 下・底辺の幅 346（半径 200 の円に内接）
+            (400, "0.00", (-199, 99, -173, 172, 51955)),
+            (200, "0.00", (-99, 49, -86, 85, 12981)),
+            # 縦横比は同じ形を横か縦に縮めるだけ 頂点と中心の位置は変わらない
+            (400, "50.00", (-198, 99, -86, 85, 25972)),
+            (400, "-50.00", (-100, 49, -173, 172, 25985)),
+        ],
+    )
+    def test_it_matches_what_aviutl2_draws(
+        self, size: int, ratio: str, expected: tuple[int, int, int, int, int]
+    ) -> None:
+        # 四角に合わせた三角形で写すと、サイズ 400 で底辺が 100 下へはみ出し、
+        # 幅も 54 広がって面積が 1.5 倍になる
+        top, bottom, left, right, area = _bounds(
+            f"図形\n図形の種類=三角形\nサイズ={size}\n縦横比={ratio}\n色=ffffff\nライン幅=4000"
+        )
+        assert abs(top - expected[0]) <= 2
+        assert abs(bottom - expected[1]) <= 2
+        assert abs(left - expected[2]) <= 2
+        assert abs(right - expected[3]) <= 2
+        # 面積は圧縮で縁がにじむ分だけずれる 1% に収まれば同じ形
+        assert abs(area - expected[4]) <= expected[4] * 0.01
 
 
 class TestTheFirstGeneration:

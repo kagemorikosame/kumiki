@@ -10,9 +10,10 @@ import pytest
 
 from sashimono.compat.aviutl.encoding import encode_utf16_hex
 from sashimono.compat.aviutl.exo import parse_exo
-from sashimono.compat.aviutl.mapping import MappedObject, map_exo, map_object
+from sashimono.compat.aviutl.mapping import MappedObject, map_exo, map_object, media_paths
 from sashimono.compat.aviutl.report import CompatibilityReport
-from sashimono.core.model import Project, ProjectSettings
+from sashimono.core.commands import AddClip
+from sashimono.core.model import MediaId, Project, ProjectSettings
 from sashimono.core.timebase import FrameRate
 
 RATE = FrameRate(30)
@@ -193,3 +194,64 @@ class TestWholeFile:
         project = Project.create(ProjectSettings(frame_rate=RATE))
         empty = "[exedit]\nwidth=1920\nheight=1080\n"
         assert map_exo(parse_exo(empty), project, report=CompatibilityReport()) == []
+
+
+#: 素材のパス 区切りは逆斜線（AviUtl は Windows のパスをそのまま書く）
+MEDIA_PATH = "C:\\素材\\素材.mp4"
+
+#: AviUtl2 v2.1.6a が書く素材オブジェクトの項目 ``{path}`` 以外は本体が既定値で埋めたまま
+#: 3 つとも道は ``ファイル=`` で、項目の並びと他の項目は種類ごとに違う
+SECOND_GENERATION_MEDIA = {
+    "動画ファイル": (
+        "再生位置=0.000,0.000,再生範囲,0\n再生速度=100.00\nファイル={path}\n"
+        "トラック=0\nループ再生=0\n音声付き=0\nYUV=\nfps調整=0\n"
+    ),
+    "画像ファイル": (
+        "ファイル={path}\n表示番号=0,0,再生範囲,0\n再生速度=100.00\nループ再生=0\n連番ファイル=0\n"
+    ),
+    "音声ファイル": (
+        "再生位置=0.000,10.000,再生範囲,0\n再生速度=100.00\nファイル={path}\n"
+        "トラック=0\nループ再生=0\n"
+    ),
+}
+
+MEDIA_NAMES = tuple(SECOND_GENERATION_MEDIA)
+
+
+def second_generation(name: str, path: str) -> str:
+    """AviUtl2 が書く形の素材オブジェクト"""
+    body = SECOND_GENERATION_MEDIA[name].replace("{path}", path)
+    return f"[Object]\nframe=0,59\n[Object.0]\neffect.name={name}\n{body}"
+
+
+class TestMediaFiles:
+    """素材のパスは AviUtl2 では ``ファイル=``、AviUtl1 では ``file=``"""
+
+    @pytest.mark.parametrize("name", MEDIA_NAMES)
+    def test_the_second_generation_path_is_listed(self, name: str) -> None:
+        # ``file`` だけを見ていたので、AviUtl2 の素材は素材一覧に 1 本も載らなかった
+        exo = parse_exo(second_generation(name, MEDIA_PATH))
+        assert media_paths(exo) == (MEDIA_PATH,)
+
+    @pytest.mark.parametrize("name", MEDIA_NAMES)
+    def test_the_second_generation_clip_knows_its_file(self, name: str) -> None:
+        # 読めないとクリップが素材と結び付かず、中身の無いクリップになる
+        exo = parse_exo(second_generation(name, MEDIA_PATH))
+        mapped = map_object(exo.objects[0], RATE, report=CompatibilityReport())
+        assert mapped is not None
+        assert mapped.media_path == MEDIA_PATH
+
+    @pytest.mark.parametrize("name", MEDIA_NAMES)
+    def test_the_first_generation_path_is_still_listed(self, name: str) -> None:
+        # AviUtl1 の ``.exo`` は ``file=`` と書く こちらを落とすと古い作品の素材が消える
+        exo = parse_exo(build(f"_name={name}\nfile={MEDIA_PATH}"))
+        assert media_paths(exo) == (MEDIA_PATH,)
+
+    def test_the_placed_clip_points_at_the_loaded_media(self) -> None:
+        # 素材一覧に載っても、置いたクリップが同じパスで引けなければ絵が出ない
+        exo = parse_exo(second_generation("動画ファイル", MEDIA_PATH))
+        project = Project.create(ProjectSettings(frame_rate=RATE))
+        media = MediaId("m1")
+        commands = map_exo(exo, project, media={MEDIA_PATH: media}, report=CompatibilityReport())
+        placed = [command.clip for command in commands if isinstance(command, AddClip)]
+        assert [clip.media_id for clip in placed] == [media]
