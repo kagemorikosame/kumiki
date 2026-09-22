@@ -11,17 +11,28 @@ from fractions import Fraction
 from pathlib import Path
 
 import av
+import av.error
 import pytest
+from av.video.reformatter import ColorPrimaries, ColorRange, ColorTrc
 
 from kumiki.core.commands import Document, insert_media
 from kumiki.core.model import Project, ProjectSettings
 from kumiki.core.timebase import FrameRate
-from kumiki.engine.decode import probe_media
+from kumiki.engine.decode import VideoDecoder, probe_media
 from kumiki.engine.encode import (
     ExportError,
     ExportSettings,
     available_video_codecs,
     export_project,
+)
+from tests.color_bars import (
+    AVCOL_SPC_BT709,
+    BT709_YUV,
+    COLORS,
+    assert_close,
+    bars,
+    rgb_at_bars,
+    yuv_at_bars,
 )
 from tests.media_fixtures import SampleMedia, make_sample
 
@@ -192,3 +203,71 @@ class TestRoundTrip:
         with AudioDecoder(output, sample_rate=48000) as decoder:
             samples = decoder.read_seconds(Fraction(1, 4), Fraction(1, 2))
         assert float(abs(samples).max()) > 0.005, "書き出したファイルが無音"
+
+
+@pytest.fixture
+def bars_project(tmp_path: Path) -> Project:
+    """原色と灰色の帯の静止画を 1 枚置いたプロジェクト 行列の違いがいちばん大きく出る"""
+    still = tmp_path / "bars.png"
+    image = av.VideoFrame.from_ndarray(bars(320, 240), format="rgb24")
+    with av.open(str(still), mode="w", format="image2") as container:
+        stream = container.add_stream("png")
+        stream.width = 320
+        stream.height = 240
+        stream.pix_fmt = "rgb24"
+        container.mux(stream.encode(image))
+        container.mux(stream.encode(None))
+
+    document = Document(
+        Project.create(ProjectSettings(width=320, height=240, frame_rate=FrameRate(30)))
+    )
+    for command in insert_media(document.project, probe_media(still)):
+        document.execute(command)
+    return document.project
+
+
+class TestColor:
+    """書き出しの色は BT.709 / limited で、同じ値のタグが付く（#61）
+
+    直す前は swscale の既定の BT.601 で変換し、タグも無かった 赤の Y が 63 ではなく 81 に
+    なり、再生側は行列を推測で読むしかなかった
+    """
+
+    @pytest.mark.parametrize("codec", ["libx264", "h264_nvenc", "h264_qsv"])
+    def test_values_and_tags_are_bt709(
+        self, codec: str, bars_project: Project, tmp_path: Path
+    ) -> None:
+        if codec not in available_video_codecs():
+            pytest.skip(f"{codec} が使えない")
+        output = tmp_path / f"{codec}.mp4"
+        try:
+            export_project(
+                bars_project, ExportSettings(path=output, video_codec=codec, frame_range=(0, 3))
+            )
+        except av.error.FFmpegError as exc:
+            # QSV はコーデックとしては入っていても、Intel の GPU が無い機械では開けない
+            pytest.skip(f"{codec} を開けない: {exc}")
+
+        with av.open(str(output)) as container:
+            stream = container.streams.video[0]
+            context = stream.codec_context
+            # 開き直して読むのは、コンテナとビットストリームに残ったタグ
+            assert context.color_primaries == ColorPrimaries.BT709
+            assert context.color_trc == ColorTrc.BT709
+            assert context.colorspace == AVCOL_SPC_BT709
+            assert context.color_range == ColorRange.MPEG
+            frame = next(container.decode(stream))
+        # ハードウェアのエンコーダは非可逆なので少し幅を持たせる BT.601 との差は 10 以上ある
+        assert_close(yuv_at_bars(frame), BT709_YUV, tolerance=3)
+
+    def test_colors_survive_a_round_trip(self, bars_project: Project, tmp_path: Path) -> None:
+        # 書いたタグどおりに読み直せば、元の色へ戻る
+        output = tmp_path / "again.mp4"
+        export_project(
+            bars_project,
+            ExportSettings(path=output, video_codec="libx264", frame_range=(0, 3)),
+        )
+        with VideoDecoder(output) as decoder:
+            image = decoder.frame_at(Fraction(0))
+        assert image is not None
+        assert_close(rgb_at_bars(image), COLORS, tolerance=4)

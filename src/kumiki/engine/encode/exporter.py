@@ -24,6 +24,7 @@ import numpy as np
 
 from kumiki.core.model import Project, TrackKind
 from kumiki.engine.audio import AudioMixer
+from kumiki.engine.colorspace import tag_bt709, to_bt709
 from kumiki.engine.gpu import OffscreenGLContext
 from kumiki.engine.render import FULL_QUALITY, FrameRenderer
 
@@ -140,6 +141,9 @@ def _encode(
         video.width = width
         video.height = height
         video.pix_fmt = settings.pixel_format
+        # 付けないと再生側が行列を推測する HD なら BT.709 と当てる再生ソフトが多いが、
+        # ブラウザや編集ソフトの一部は BT.601 で読み、書いた値と違う色になる
+        tag_bt709(video)
         if settings.video_bitrate:
             video.bit_rate = settings.video_bitrate
         if settings.options:
@@ -179,7 +183,7 @@ def _encode(
             frame = av.video.frame.VideoFrame.from_ndarray(
                 np.ascontiguousarray(image[:, :, :3]), format="rgb24"
             )
-            frame = frame.reformat(format=settings.pixel_format)
+            frame = to_bt709(frame, settings.pixel_format)
             frame.pts = index
             frame.time_base = frame_time_base
             container.mux(video.encode(frame))
