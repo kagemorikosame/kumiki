@@ -41,7 +41,7 @@ from kumiki.core.model import (
 )
 from kumiki.core.timebase import FrameRate
 from kumiki.effects.definition import EffectDefinition, registry
-from kumiki.effects.spec import ParameterSpec, ParamInput, TrackSpec, ValueSpec
+from kumiki.effects.spec import ColorSpec, ParameterSpec, ParamInput, TrackSpec, ValueSpec
 
 __all__ = ["MappedObject", "map_exo", "map_object", "media_paths"]
 
@@ -662,6 +662,17 @@ def _spec_value(
         return animated_value(
             raw, points=points, log=log, label=label, convert=adjust, default=spec.default
         )
+    if isinstance(spec, ColorSpec):
+        # エイリアスの色は ``ffd400`` のような 16 進の文字 そのまま渡すと
+        # ``coerce`` が色として読めず、既定の色（多くは黒）へ落ちる
+        # テレビ字幕の板が黒の上に黒で描かれ、何も出ていないように見えていた
+        parsed = _hex_color(raw)
+        if parsed is None:
+            # 読めない色は、そのスクリプトが決めた既定の色にして記録する
+            # 白へ倒すと、既定が白でない色欄（板の色など）の見た目が変わる
+            log.note_missing(f"AviUtl の色として読めない値: {label}")
+            return spec.default_value()
+        return parsed
     return raw
 
 
@@ -1496,13 +1507,23 @@ def _color(value: str) -> tuple[float, ...]:
     削るので、``000000``（黒）が空文字になって「読めない色」＝白へ落ちる
     黒は縁取りと影の既定色なので、配布物のほとんどが白く塗り潰される
     """
+    parsed = _hex_color(value)
+    return parsed if parsed is not None else (1.0, 1.0, 1.0, 1.0)
+
+
+def _hex_color(value: str) -> tuple[float, ...] | None:
+    """``ffffff`` の形の色を 0..1 の組へ 読めなければ ``None``
+
+    読めないときにどの色へ倒すかは、呼ぶ側が決める（組み込みのフィルタは白、
+    スクリプトの色欄はそのスクリプトが決めた既定の色）
+    """
     text = value.strip().removeprefix("#")
     for prefix in ("0x", "0X"):
         text = text.removeprefix(prefix)
     try:
         number = int(text, 16)
     except ValueError:
-        return (1.0, 1.0, 1.0, 1.0)
+        return None
     return (
         ((number >> 16) & 0xFF) / 255.0,
         ((number >> 8) & 0xFF) / 255.0,

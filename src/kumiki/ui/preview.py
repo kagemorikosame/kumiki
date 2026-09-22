@@ -149,6 +149,18 @@ class PreviewWidget(QOpenGLWidget):
         self.update()
         self._restart_prefetch()
 
+    def refresh_all(self) -> None:
+        """取ってある絵を全部捨てて描き直す 絵の出方を変える設定を切り替えたとき
+
+        中身（プロジェクト）は同じなので、編集の差分からは捨てる範囲が出てこない
+        """
+        if self._renderer is not None:
+            self.makeCurrent()
+            self._invalidate(Invalidation.all())
+            self.doneCurrent()
+        self.update()
+        self._restart_prefetch()
+
     def set_prefetch_bytes(self, prefetch_bytes: int) -> None:
         """先読みに使えるメモリを変える 0 で止める
 

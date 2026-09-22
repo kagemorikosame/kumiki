@@ -167,16 +167,16 @@ class TestModules:
         runtime.run('obj.ox = require("共通").value', target)
         assert target.ox == 7.0
 
-    def test_a_native_module_is_refused_with_a_reason(self, tmp_path: Path) -> None:
-        # AviUtl2 の .mod2 は中身が DLL のことがある 黙って nil を返すと
-        # 「なぜか動かない」で終わる
+    def test_an_unusable_native_module_is_refused_with_a_reason(self, tmp_path: Path) -> None:
+        # AviUtl2 の .mod2 は中身が DLL のことがある 読めない物（64bit の Windows の
+        # DLL でない）で黙って nil を返すと「なぜか動かない」で終わる
         (tmp_path / "ネイティブ.mod2").write_bytes(b"MZ\x90\x00" + b"\x00" * 64)
         report = CompatibilityReport()
         runtime = LuaScriptRuntime(report=report, instruction_limit=200_000)
         runtime.set_roots((tmp_path,))
 
         runtime.run('local m = obj.module("ネイティブ")', state())
-        assert any("native" in line for line in report.lines())
+        assert any("ネイティブ" in line and "DLL" in line for line in report.lines())
 
     def test_modules_outside_the_script_folder_are_refused(self, tmp_path: Path) -> None:
         # 任意のパスを開けると、読み込んだだけでディスクを読まれうる

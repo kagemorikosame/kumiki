@@ -22,6 +22,8 @@ from typing import Any
 
 import numpy as np
 
+from kumiki.compat.aviutl import raster
+from kumiki.compat.aviutl.native import PixelData
 from kumiki.compat.aviutl.report import CompatibilityReport, global_report
 
 __all__ = ["DrawCall", "EffectRequest", "ObjApi", "ObjectState"]
@@ -269,6 +271,7 @@ class ObjApi:
         script: str = "",
         render_source: Any = None,
         load_module: Any = None,
+        load_script_module: Any = None,
     ) -> None:
         self.state = state
         self._report = report if report is not None else global_report
@@ -277,6 +280,8 @@ class ObjApi:
         self._render_source = render_source
         #: 共通処理のファイルを読む関数 ランタイムが渡す
         self._load_module = load_module
+        #: ``obj.module`` の実体（``.mod2`` を読む） 無ければ ``require`` と同じ物を使う
+        self._load_script_module = load_script_module or load_module
         self._random = random.Random(0)
 
     # --- 値の読み書き ---
@@ -338,6 +343,9 @@ class ObjApi:
     ) -> None:
         """いまの画像を 1 回描く 引数を省くと現在の値を使う"""
         state = self.state
+        if self._drawing_to_tempbuffer():
+            self._draw_to_tempbuffer(x, y, z, zoom, alpha, rx, ry, rz)
+            return
         call = state.snapshot()
         if x is not None:
             call.x = _as_float(x)
@@ -367,9 +375,29 @@ class ObjApi:
         位置以外の描画パラメータ（回転・拡大）は掛けない 四隅そのものが形を
         決めるので、掛けると二重に変形する
         """
+        if args and _is_table(args[0]):
+            self._drawpoly_table(args[0], args[1:])
+            return
         values = [_as_float(value) for value in args]
         if len(values) < 12:
             self._report.note_missing("obj.drawpoly（四隅が足りない）")
+            return
+
+        if self._drawing_to_tempbuffer():
+            corners = [(values[i], values[i + 1]) for i in range(0, 12, 3)]
+            rest = values[12:]
+            uvs = None
+            if len(rest) >= 8:
+                # 数を並べる形の u, v は画素（表の形は 0〜1） 仮想バッファへは 0〜1 で渡す
+                image = self.state.image
+                uvs = [
+                    (rest[i] / max(1, image.shape[1]), rest[i + 1] / max(1, image.shape[0]))
+                    for i in range(0, 8, 2)
+                ]
+                rest = rest[8:]
+            alpha = rest[0] if rest else 1.0
+            full = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+            self._fill_quad(corners, uvs or full, None, alpha)
             return
 
         state = self.state
@@ -397,12 +425,149 @@ class ObjApi:
         call.alpha = state.alpha * alpha
         state.draws.append(call)
 
+    # --- 仮想バッファ ---
+
+    def _drawing_to_tempbuffer(self) -> bool:
+        return str(self.state.options.get("drawtarget", "framebuffer")) == "tempbuffer"
+
+    def _tempbuffer(self) -> np.ndarray:
+        """描く先の仮想バッファ まだ無ければ画面の大きさで作る
+
+        仕様書では大きさを省くと「初期化しない」 前に作った物が無いときは、
+        何も描かれていない画面と同じ大きさの透明な物として扱う
+        """
+        state = self.state
+        buffer = state.buffers.get("tmp")
+        if buffer is None:
+            buffer = np.zeros((state.screen_h, state.screen_w, 4), dtype=np.uint8)
+            state.buffers["tmp"] = buffer
+        return buffer
+
+    def _draw_to_tempbuffer(self, *values: float | None) -> None:
+        """``obj.draw`` を仮想バッファへ 座標は引数のまま（オブジェクトの位置は使わない）
+
+        **オブジェクトの透明度（``obj.alpha``）も掛けない** 仕様書は「オブジェクトの
+        持っている座標等の設定は反映せず」とする 仮想バッファへ描いてから
+        ``obj.load("tempbuffer")`` で読み戻す形（テレビ字幕もこれ）では、読み戻した
+        絵を最後に描くときに ``obj.alpha`` が掛かる ここでも掛けると 2 回掛かり、
+        透明度 50% が 25% になる 掛けるのは引数で渡された透明度だけ
+        """
+        x, y, _z, zoom, alpha, rx, ry, rz = values
+        if any(value not in (None, 0, 0.0) for value in (rx, ry, rz)) or (
+            zoom is not None and _as_float(zoom) != 1.0
+        ):
+            # 回したり拡げたりして仮想バッファへ描くのは、まだ写していない
+            # 黙って等倍で描くと、形の違う絵ができても気づけない
+            self._report.note_missing("obj.draw（仮想バッファへ、回転か拡大つき）")
+            return
+        raster.draw_image(
+            self._tempbuffer(),
+            self.state.image,
+            _as_float(x) if x is not None else 0.0,
+            _as_float(y) if y is not None else 0.0,
+            _as_float(alpha) if alpha is not None else 1.0,
+        )
+
+    def _drawpoly_table(self, table: Any, rest: tuple[Any, ...]) -> None:
+        """``obj.drawpoly({表}[, 頂点の数, 透明度])`` 頂点の表を並べた形
+
+        仕様書（lua.txt）の 2 つの形のうち、頂点を 1 つずつ表にした形
+        （``{x,y,z,u,v}`` か ``{x,y,z,r,g,b,a}``）を扱う 四隅の数を並べた表
+        （``{x0,y0,z0,…}``）は、中の表の長さで見分けて記録に残す
+        """
+        vertices = [_table_values(item) for item in _table_items(table)]
+        if not vertices:
+            return
+        width = len(vertices[0])
+        if width not in (5, 7) or any(len(vertex) != width for vertex in vertices):
+            self._report.note_missing(f"obj.drawpoly（表の形 {width} 個ずつ）")
+            return
+        count = int(_as_float(rest[0])) if rest else 4
+        alpha = _as_float(rest[1]) if len(rest) > 1 else 1.0
+        if count not in (3, 4) or len(vertices) % count != 0:
+            self._report.note_missing(f"obj.drawpoly（面の頂点の数 {count}）")
+            return
+        if not self._drawing_to_tempbuffer():
+            # 画面へ直に描く方は、四角形を 1 つずつ今までの描画へ渡す
+            # 三角形と頂点の色は、画面へ描く側がまだ持っていない
+            if count != 4 or width != 5:
+                self._report.note_missing("obj.drawpoly（画面へ、三角形か頂点の色）")
+                return
+            for face in range(0, len(vertices), 4):
+                self._drawpoly_quad_to_screen(vertices[face : face + 4], alpha)
+            return
+        for face in range(0, len(vertices), count):
+            points = vertices[face : face + count]
+            corners = [(vertex[0], vertex[1]) for vertex in points]
+            if width == 5:
+                self._fill_polygon(corners, [(v[3], v[4]) for v in points], None, alpha)
+            else:
+                colors = [(v[3], v[4], v[5], v[6]) for v in points]
+                self._fill_polygon(corners, None, colors, alpha)
+
+    def _drawpoly_quad_to_screen(self, vertices: list[list[float]], alpha: float) -> None:
+        state = self.state
+        image = state.image
+        call = state.snapshot()
+        call.quad = tuple(
+            (vertex[0] + state.ox, vertex[1] + state.oy, vertex[2] + state.oz)
+            for vertex in vertices
+        )
+        # 表の形の u, v は 0〜1 今までの描画は画素で受ける
+        call.uv = tuple(
+            (vertex[3] * image.shape[1], vertex[4] * image.shape[0]) for vertex in vertices
+        )
+        call.alpha = state.alpha * alpha
+        state.draws.append(call)
+
+    def _fill_polygon(
+        self,
+        corners: list[tuple[float, float]],
+        uvs: list[tuple[float, float]] | None,
+        colors: list[tuple[float, float, float, float]] | None,
+        alpha: float,
+    ) -> None:
+        if len(corners) == 4:
+            self._fill_quad(corners, uvs, colors, alpha)
+            return
+        raster.draw_triangle(
+            self._tempbuffer(),
+            tuple(corners),
+            texture=self.state.image,
+            uvs=tuple(uvs) if uvs is not None else None,
+            colors=tuple(colors) if colors is not None else None,
+            alpha=alpha,
+        )
+
+    def _fill_quad(
+        self,
+        corners: list[tuple[float, float]],
+        uvs: list[tuple[float, float]] | None,
+        colors: list[tuple[float, float, float, float]] | None,
+        alpha: float,
+    ) -> None:
+        """四角形を 2 つの三角形に分けて描く（0-1-2 と 0-2-3）"""
+        for first, second, third in ((0, 1, 2), (0, 2, 3)):
+            raster.draw_triangle(
+                self._tempbuffer(),
+                (corners[first], corners[second], corners[third]),
+                texture=self.state.image,
+                uvs=(uvs[first], uvs[second], uvs[third]) if uvs is not None else None,
+                colors=(colors[first], colors[second], colors[third])
+                if colors is not None
+                else None,
+                alpha=alpha,
+            )
+
     def lua_effect(self, *args: Any) -> None:
         """フィルタを積む ``obj.effect("ぼかし", "範囲", 20)``"""
         if not args:
             self._report.note_missing("obj.effect（引数なし）")
             return
         original = str(args[0])
+        if original == OFFSCREEN_EFFECT:
+            self._offscreen()
+            return
         kind = EFFECT_NAMES.get(original)
         if kind is None:
             self._report.note_missing(f"obj.effect({original})")
@@ -412,6 +577,17 @@ class ObjApi:
         for index in range(1, len(args) - 1, 2):
             params[str(args[index])] = _as_param(args[index + 1])
         self.state.effects.append(EffectRequest(kind=kind, params=params, original=original))
+
+    def _offscreen(self) -> None:
+        """``obj.effect("オフスクリーン描画")``
+
+        それまでに積んだ効果を絵へ焼き込む物 **積んだ効果が無いときは絵が
+        変わらない**（配布物のテレビ字幕は、文字の直後にこれを呼んでいて、この形しか
+        確かめていない） 積んだ効果があるときの焼き込みはまだ写していないので、
+        黙って素通しにせず記録に残す
+        """
+        if self.state.effects:
+            self._report.note_missing("obj.effect(オフスクリーン描画)（先に積んだ効果の焼き込み）")
 
     def lua_filter(self, *args: Any) -> None:
         del args
@@ -458,7 +634,7 @@ class ObjApi:
                     f'obj.load("figure") の大きさ {int(size)}（上限で切った）'
                 )
             width = height = max(1, min(int(size), MAX_FIGURE_SIZE))
-        self.state.image = self._render_source(
+        canvas = self._render_source(
             "shape",
             {
                 "shape": figure,
@@ -471,6 +647,12 @@ class ObjApi:
             max(width, state.screen_w),
             max(height, state.screen_h),
         )
+        # 図形の大きさちょうどの絵にする 描く側は画面の大きさの真ん中に描いて返す
+        # 画面の大きさのまま持つと ``obj.w`` が画面の幅になり、図形を 0〜1 で
+        # 貼るスクリプト（テレビ字幕の板）が、ほとんど透明な所を貼って板が消える
+        top = max(0, (canvas.shape[0] - height) // 2)
+        left = max(0, (canvas.shape[1] - width) // 2)
+        self.state.image = np.ascontiguousarray(canvas[top : top + height, left : left + width])
 
     def _load_text(self, args: tuple[Any, ...]) -> None:
         """``obj.load("text", 本文)`` 書体は :meth:`lua_setfont` の指定に従う"""
@@ -582,19 +764,55 @@ class ObjApi:
         if _inside(image, target) and _inside(image, origin):
             image[target] = image[origin]
 
-    def lua_getpixeldata(self, *args: Any) -> Any:
-        """画像全体を読む 返すのは ``(データ, 幅, 高さ)``
+    def lua_getpixeldata(self, target: str = "object", order: str = "rgba") -> Any:
+        """画像を読む 返すのは ``(データ, 幅, 高さ)``
 
-        Lua 側で生のポインタとして扱う想定の API なので、そのままでは使えない
-        幅と高さだけは意味があるので返し、データの扱いは記録に残す
+        仕様書（lua.txt）どおり、データはスクリプトモジュール（DLL）へ渡すための物で、
+        Lua からは中身を読めない こちらでも中身の見えない値として渡す
         """
-        del args
-        self._report.note_missing("obj.getpixeldata")
-        return (None, self.state.width, self.state.height)
+        image = self._pixel_source(str(target))
+        if image is None:
+            return (None, 0, 0)
+        pixels = image[..., [2, 1, 0, 3]] if str(order).lower() == "bgra" else image
+        data = PixelData(pixels.copy(), "bgra" if str(order).lower() == "bgra" else "rgba")
+        return (data, data.width, data.height)
 
-    def lua_putpixeldata(self, *args: Any) -> None:
-        del args
-        self._report.note_missing("obj.putpixeldata")
+    def lua_putpixeldata(
+        self, target: str = "object", data: Any = None, width: Any = 0, height: Any = 0, *rest: Any
+    ) -> None:
+        """画像を書く ``obj.getpixeldata`` で受けたデータ（DLL が書き換えた物）を戻す"""
+        if not isinstance(data, PixelData):
+            self._report.note_missing("obj.putpixeldata（getpixeldata で受けた以外のデータ）")
+            return
+        w, h = int(_as_float(width)), int(_as_float(height))
+        if (w, h) != (data.width, data.height):
+            # 大きさを変えて書くと、別の並びとして読むことになり絵が崩れる
+            self._report.note_missing("obj.putpixeldata（受けたときと違う大きさ）")
+            return
+        order = str(rest[0]).lower() if rest else data.order
+        pixels = data.pixels[..., [2, 1, 0, 3]] if order == "bgra" else data.pixels
+        name = str(target)
+        key = _buffer_name(name)
+        if key == "obj":
+            self.state.image = np.ascontiguousarray(pixels.copy())
+            self.state.image_shared = False
+        elif key == "tmp" or key.startswith("cache:"):
+            self.state.buffers[key] = np.ascontiguousarray(pixels.copy())
+        else:
+            self._report.note_missing(f'obj.putpixeldata("{name}")')
+
+    def _pixel_source(self, target: str) -> np.ndarray | None:
+        key = _buffer_name(target)
+        if key == "obj":
+            return self.state.image
+        if key == "tmp" or key.startswith("cache:"):
+            stored = self.state.buffers.get(key)
+            if stored is None:
+                self._report.note_missing(f'obj.getpixeldata("{target}")（まだ無いバッファ）')
+            return stored
+        # フレームバッファ（それまでに描いた画面）は、スクリプトの中からは見えない
+        self._report.note_missing(f'obj.getpixeldata("{target}")')
+        return None
 
     def lua_pixeloption(self, *args: Any) -> None:
         del args
@@ -605,6 +823,22 @@ class ObjApi:
     def lua_setoption(self, name: str = "", *values: Any) -> None:
         key = str(name)
         self.state.options[key] = values[0] if values else True
+        if key == "drawtarget" and values and str(values[0]) == "tempbuffer" and len(values) >= 3:
+            # 大きさを渡されたら、その大きさの透明な物で作り直す（仕様書どおり）
+            asked = (_as_float(values[1]), _as_float(values[2]))
+            if not all(math.isfinite(value) for value in asked):
+                self._report.note_missing("obj.setoption（仮想バッファの大きさが数ではない）")
+                return
+            width = max(1, min(int(asked[0]), MAX_FIGURE_SIZE))
+            height = max(1, min(int(asked[1]), MAX_FIGURE_SIZE))
+            if (width, height) != (int(asked[0]), int(asked[1])):
+                # 大きさはスクリプトが決める そのまま作ると 1 回で数 GB になりうるので
+                # 上限で切るが、黙って切ると指定どおりに描けたように見える
+                self._report.note_missing(
+                    f"obj.setoption（仮想バッファの大きさ {int(asked[0])}x{int(asked[1])} を"
+                    f" {width}x{height} に切った）"
+                )
+            self.state.buffers["tmp"] = np.zeros((height, width, 4), dtype=np.uint8)
         if key not in ("drawtarget", "blend", "focus_mode", "culling", "billboard"):
             self._report.note_missing(f'obj.setoption("{key}")')
 
@@ -704,10 +938,10 @@ class ObjApi:
         本体の 1 行目で落ちるので、ここが通ることの意味は大きい
         """
         del args
-        if self._load_module is None:
+        if self._load_script_module is None:
             self._report.note_missing("obj.module")
             return None
-        return self._load_module(str(name))
+        return self._load_script_module(str(name))
 
     def lua_multiobject(self, *args: Any) -> None:
         del args
@@ -719,6 +953,40 @@ MAX_FIGURE_SIZE = 4096
 
 #: 名前付きバッファの数の上限 AviUtl の配布スクリプトが使うのは tmp と数個の cache だけ
 MAX_BUFFERS = 16
+
+
+#: それまでに積んだ効果を絵へ焼き込むフィルタの名前
+OFFSCREEN_EFFECT = "オフスクリーン描画"
+
+
+def _is_table(value: Any) -> bool:
+    """Lua の表か Lua から来た値は、表なら ``items`` を持つ"""
+    return not isinstance(value, str | bytes) and callable(getattr(value, "items", None))
+
+
+def _table_items(table: Any) -> list[Any]:
+    """配列として並んだ中身（1 から途切れずに続く所）"""
+    items: list[Any] = []
+    index = 1
+    while True:
+        value = table[index] if _has(table, index) else None
+        if value is None:
+            return items
+        items.append(value)
+        index += 1
+
+
+def _has(table: Any, key: Any) -> bool:
+    try:
+        return table[key] is not None
+    except (KeyError, IndexError, TypeError):
+        return False
+
+
+def _table_values(value: Any) -> list[float]:
+    if not _is_table(value):
+        return []
+    return [_as_float(item) for item in _table_items(value)]
 
 
 def _buffer_name(name: str) -> str:
