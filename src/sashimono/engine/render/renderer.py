@@ -34,7 +34,7 @@ from sashimono.core.model import (
 )
 from sashimono.core.timebase import FrameRate, seconds_to_frame
 from sashimono.effects.easing import ease
-from sashimono.engine.audio_shapes import SPECTRUM_WINDOW
+from sashimono.engine.audio_shapes import spectrum_window
 from sashimono.engine.cache.proxy import ProxyStore
 from sashimono.engine.decode import AudioDecoder, ProbeError, VideoDecoder
 from sashimono.engine.gpu import (
@@ -1196,7 +1196,7 @@ class FrameRenderer:
     ) -> tuple[np.ndarray, int] | None:
         """音声波形が描く音と、そのレート 1 チャンネルで、今の時刻から
 
-        線は横幅ぶん、スペクトラムは頭の ``SPECTRUM_WINDOW`` を使う
+        線は横幅ぶん、スペクトラムは頭の :func:`spectrum_window` ぶんを使う
         サンプルはプロジェクトの音のレート（AviUtl2 は 44.1kHz の書き出しで 1 画素
         1 サンプルだった） クリップの外（頭より前・終わりより先）は 0 実物も最後の
         フレームでは、終わりから先が平らな線になっていた（素材の続きを読むと、そこに音が出る）
@@ -1228,7 +1228,7 @@ class FrameRenderer:
             wide = 800.0
         # 描く大きさの上限より多くは読まない 壊れた横幅で何億サンプルも読んで止まらないように
         span = max(1, round(min(wide, float(MAX_CANVAS)))) if math.isfinite(wide) else 800
-        count = max(span, SPECTRUM_WINDOW)
+        count = max(span, spectrum_window(sample_rate))
         speed = float(clip.speed)
         # 読み始めは時刻の少し前 デコーダはシークした所からリサンプラを作り直すので、
         # 読み始めの位置で同じ時刻のサンプルが僅かに変わる（この曲で振幅 0.01〜0.05）

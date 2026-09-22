@@ -844,8 +844,8 @@ def _draw_waveform(
     """音声波形（AviUtl2 の ``音声波形表示``） 音はレンダラが ``_audio`` に入れて渡す
 
     音はフレームの時刻から届く 線はそこから横幅ぶん、スペクトラムは頭の
-    ``SPECTRUM_WINDOW`` サンプルを使う 音が無ければ何も描かない 実物も、再生範囲が
-    0 秒の見本では何も出さなかった
+    :func:`~sashimono.engine.audio_shapes.spectrum_window` ぶんを使う
+    音が無ければ何も描かない 実物も、再生範囲が 0 秒の見本では何も出さなかった
     """
     audio = values.get("_audio")
     if not isinstance(audio, np.ndarray) or audio.size <= 1:

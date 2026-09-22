@@ -35,6 +35,7 @@ from sashimono.engine.audio_shapes import (
     cell_mask,
     spectrum_cells,
     spectrum_levels,
+    spectrum_window,
 )
 from sashimono.engine.gpu import GLContextError, OffscreenGLContext
 from sashimono.engine.render import FrameRenderer
@@ -156,6 +157,26 @@ class TestSpectrum:
         audio[:SPECTRUM_WINDOW] = 0.0
         assert spectrum_levels(audio, 64, rate, 100.0).max() == 0.0
         assert spectrum_levels(np.roll(audio, -SPECTRUM_WINDOW), 64, rate, 100.0).max() > 0.05
+
+    def test_the_window_is_the_same_time_at_48khz(self) -> None:
+        # 窓を 735 サンプルのまま使うと、48kHz では 15.3 ミリ秒で切れる 800 サンプル目
+        # （16.7 ミリ秒の終わり際）で鳴り始めた音が、44.1kHz の同じ時刻の音と違って棒に出ない
+        assert spectrum_window(44100) == 735
+        assert spectrum_window(48000) == 800
+        rate = 48000
+        time = np.arange(1024) / rate
+        audio = 0.5 * np.sin(2 * np.pi * 1000.0 * time)
+        audio[:770] = 0.0
+        assert spectrum_levels(audio, 64, rate, 100.0).max() > 0.001
+
+    def test_a_tone_is_as_tall_at_any_rate(self) -> None:
+        # 周波数の刻みを 44.1kHz と同じにしないと、帯に入る周波数の数が変わって棒の高さが変わる
+        levels = []
+        for rate in (44100, 48000):
+            time = np.arange(spectrum_window(rate)) / rate
+            tone = 0.5 * np.sin(2 * np.pi * 1000.0 * time)
+            levels.append(spectrum_levels(tone, 16, rate, 100.0).max())
+        assert levels[1] == pytest.approx(levels[0], rel=0.05)
 
 
 class TestMirror:

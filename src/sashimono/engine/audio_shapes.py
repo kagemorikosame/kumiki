@@ -23,6 +23,7 @@ __all__ = [
     "cell_mask",
     "spectrum_cells",
     "spectrum_levels",
+    "spectrum_window",
     "waveform_cells",
     "waveform_points",
 ]
@@ -39,11 +40,28 @@ WAVEFORM_LINE = 2.0
 #: 棒を出していた 窓を振った当てはめでは、この窓が 4 つの見本（800 列・16 列・64x32・
 #: 32x40）のどれでも一番よく合った（相関 0.77〜0.84 → 0.85〜0.88）
 #: 30fps のプロジェクトで窓が 1 フレームぶん（1470）に伸びるかは測っていないので、数で持つ
+#: 数は 44.1kHz でのもの 他のレートでは :func:`spectrum_window` で同じ時間（16.7 ミリ秒）に直す
+#: サンプルの数のまま使うと、48kHz では 15.3 ミリ秒で窓が切れ、同じ音でも棒が変わる
 SPECTRUM_WINDOW = 735
 
-#: スペクトラムの FFT の大きさ 窓の後ろを 0 で埋めて伸ばす
+#: スペクトラムの FFT の大きさ（44.1kHz でのもの） 窓の後ろを 0 で埋めて伸ばす
 #: 1024 では低い音の帯が粗くなり、16 列の見本で相関が 0.88 から 0.84 へ落ちた
+#: 他のレートでも周波数の刻み（21.5Hz）が変わらないよう、窓と同じ割合で伸ばす
+#: 刻みが変わると、帯に入る周波数の数が変わり、同じ音の棒の高さが変わる
 SPECTRUM_SIZE = 2048
+
+#: ``SPECTRUM_WINDOW`` と ``SPECTRUM_SIZE`` を測ったレート
+_MEASURED_RATE = 44100
+
+
+def spectrum_window(sample_rate: int) -> int:
+    """このレートでスペクトラムが読むサンプルの数（44.1kHz の 735 と同じ時間）"""
+    return max(2, round(SPECTRUM_WINDOW * max(sample_rate, 1) / _MEASURED_RATE))
+
+
+def _spectrum_size(sample_rate: int) -> int:
+    return max(2, round(SPECTRUM_SIZE * max(sample_rate, 1) / _MEASURED_RATE))
+
 
 #: スペクトラムの横軸の周波数（Hz） 左端から右端まで対数で並ぶ
 #: 範囲を 20〜120Hz と 4k〜22kHz で振ると 45〜14000 が少しだけ良かった（相関で 0.01 未満）
@@ -84,22 +102,24 @@ def spectrum_levels(
 ) -> np.ndarray:
     """列ごとのスペクトラムの高さ（描く高さに対する割合 1 を超えることもある）
 
-    ``samples`` はフレームの時刻からの音 頭の ``SPECTRUM_WINDOW`` 個を読み、足りなければ
+    ``samples`` はフレームの時刻からの音 頭の :func:`spectrum_window` 個を読み、足りなければ
     無音として扱う 列は周波数を対数で等分した帯で、帯に入る周波数の振幅を 2 乗して
     足した平方根を読む 帯に 1 本も入らない狭い帯（低い音の細かい列）は、真ん中の周波数の
     振幅を隣どうしから直線で補う 真ん中だけを読むと、16 列のような粗い帯で山を取りこぼし、
     棒が低く出た（相関 0.66 → 0.84）
     """
     count = max(1, columns)
-    window = np.asarray(samples[:SPECTRUM_WINDOW], dtype=np.float64)
+    length = spectrum_window(sample_rate)
+    size = _spectrum_size(sample_rate)
+    window = np.asarray(samples[:length], dtype=np.float64)
     if len(window) < 2:
         return np.zeros(count)
-    padded = np.zeros(SPECTRUM_SIZE)
+    padded = np.zeros(size)
     padded[: len(window)] = window
     # 割るのは読んだ数ではなく窓の長さ 終わり際で音が短く切れても、同じ音量の音が
     # 同じ高さに出るように（短い方で割ると、切れた所だけ棒が伸びる）
-    amplitude = np.abs(np.fft.rfft(padded)) / SPECTRUM_WINDOW * (volume / 100.0)
-    frequencies = np.fft.rfftfreq(SPECTRUM_SIZE, 1.0 / max(sample_rate, 1))
+    amplitude = np.abs(np.fft.rfft(padded)) / length * (volume / 100.0)
+    frequencies = np.fft.rfftfreq(size, 1.0 / max(sample_rate, 1))
     ratio = SPECTRUM_HIGH / SPECTRUM_LOW
     edges = SPECTRUM_LOW * ratio ** (np.arange(count + 1) / count)
     centres = SPECTRUM_LOW * ratio ** ((np.arange(count) + 0.5) / count)
