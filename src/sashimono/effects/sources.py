@@ -213,6 +213,8 @@ SHAPE = SourceDefinition(
         TrackSpec("wave_volume", "音声波形の音量", 0, 500, 100, unit="%"),
         # 周波数ごとの大きさを下から塗る（AviUtl2 の スペクトラム表示）
         CheckSpec("wave_spectrum", "音声波形をスペクトラムにする", False),
+        # スペクトラムの棒を上下の真ん中に置く（AviUtl2 の ミラー表示） 線には効かない
+        CheckSpec("wave_mirror", "音声波形のスペクトラムを上下の真ん中に置く", False),
         # 0 なら 1 画素ずつ 数を決めると、その升目の数の絵に描いてから引き伸ばす
         TrackSpec("wave_columns", "音声波形の横の升目", 0, 4000, 0, step=1),
         TrackSpec("wave_rows", "音声波形の縦の升目", 0, 4000, 0, step=1),

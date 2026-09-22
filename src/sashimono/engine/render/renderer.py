@@ -34,7 +34,7 @@ from sashimono.core.model import (
 )
 from sashimono.core.timebase import FrameRate, seconds_to_frame
 from sashimono.effects.easing import ease
-from sashimono.engine.audio_shapes import SPECTRUM_SIZE, WAVEFORM_LEAD
+from sashimono.engine.audio_shapes import SPECTRUM_WINDOW
 from sashimono.engine.cache.proxy import ProxyStore
 from sashimono.engine.decode import AudioDecoder, ProbeError, VideoDecoder
 from sashimono.engine.gpu import (
@@ -1190,9 +1190,9 @@ class FrameRenderer:
     def _waveform_audio(
         self, clip: Clip, source: GeneratedSource, local_frame: int, rate: FrameRate
     ) -> tuple[np.ndarray, int] | None:
-        """音声波形が描く音と、そのレート 1 チャンネルで、今の時刻の ``WAVEFORM_LEAD`` 前から
+        """音声波形が描く音と、そのレート 1 チャンネルで、今の時刻から
 
-        線は今の時刻から横幅ぶん、スペクトラムはその前後 ``SPECTRUM_SIZE`` を使う
+        線は横幅ぶん、スペクトラムは頭の ``SPECTRUM_WINDOW`` を使う
         サンプルはプロジェクトの音のレート（AviUtl2 は 44.1kHz の書き出しで 1 画素
         1 サンプルだった） クリップの外（頭より前・終わりより先）は 0 実物も最後の
         フレームでは、終わりから先が平らな線になっていた（素材の続きを読むと、そこに音が出る）
@@ -1224,20 +1224,20 @@ class FrameRenderer:
             wide = 800.0
         # 描く大きさの上限より多くは読まない 壊れた横幅で何億サンプルも読んで止まらないように
         span = max(1, round(min(wide, float(MAX_CANVAS)))) if math.isfinite(wide) else 800
-        count = WAVEFORM_LEAD + max(span, SPECTRUM_SIZE - WAVEFORM_LEAD)
+        count = max(span, SPECTRUM_WINDOW)
         speed = float(clip.speed)
-        first = int(seconds * sample_rate) - int(WAVEFORM_LEAD * speed)
+        first = int(seconds * sample_rate)
         raw = decoder.read(first, int(np.ceil(count * speed)) + 1)
         # float32 のまま平均する 既定の float64 にすると、毎フレーム型を変えて配列を作り直す
         mono = raw.mean(axis=1, dtype=np.float32) if raw.ndim == 2 else raw
         # 速く回すと 1 画素に何サンプルも入る 間引いて 1 画素 1 サンプルに合わせる
         picked = (np.arange(count) * speed).astype(int).clip(0, max(len(mono) - 1, 0))
         samples = mono[picked].astype(np.float32) if len(mono) else np.zeros(count, np.float32)
-        # 今の時刻からの位置（サンプル） クリップの頭より前と終わりより先を 0 にする
-        offset = np.arange(count) - WAVEFORM_LEAD
-        before = float(local_frame * rate.frame_duration * sample_rate)
+        # 今の時刻からの位置（サンプル） クリップの終わりより先を 0 にする
+        # 窓は今の時刻から先だけを見るので、クリップの頭より前は読まない
+        offset = np.arange(count)
         after = float((clip.duration - local_frame) * rate.frame_duration * sample_rate)
-        samples[(offset < -before) | (offset >= round(after))] = 0.0
+        samples[offset >= round(after)] = 0.0
         if remaining is not None:
             samples[offset >= int(np.ceil(float(remaining)))] = 0.0
         return samples, sample_rate
