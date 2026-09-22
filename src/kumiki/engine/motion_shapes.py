@@ -252,10 +252,14 @@ def trail(
     half = line_width / 2.0
     step = max(half * interval / 50.0, min_step, 1.0)
     if paths is None:
+        # 引数と同じ名前の関数を中で定義し直すと、型の検査が別のものとして扱えない
+        # 別の名前で作ってから入れる
         whole = path if path is not None else trail_path(position, max(total, frame))
 
-        def paths(_frames: int) -> TrailPath:
+        def whole_path(_frames: int) -> TrailPath:
             return whole
+
+        paths = whole_path
 
     last_frame = min(math.ceil(max(total, 0.0)), MAX_TRAIL_FRAMES)
     path = paths(min(max(math.ceil(frame), 0), last_frame))
