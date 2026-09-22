@@ -172,6 +172,7 @@ def breakdown(
         # 最後に 1 回だけ 1 枚あたりの段ではないので、別の行として出す
         "吐き出し": [],
     }
+    closed = False
     try:
         stream = container.add_stream(codec, rate=Fraction(30, 1))
         video = stream
@@ -208,12 +209,18 @@ def breakdown(
         # （NVENC など）では、最後の数枚のエンコードと mux がここに寄る
         # 数えないと「エンコード」と「mux」と「合計」が実際より短く出る
         # 1 枚ごとの段とは混ぜない 混ぜると、その段の中央値が 1 回だけの値で動く
+        # 閉じる所（MP4 なら moov の書き出し）まで数える ここも書き出しの一部で、
+        # 抜くと長い動画ほど合計が実際より短く出る
         started = time.perf_counter()
         packets = video.encode(None)
         container.mux(packets)
+        container.close()
+        closed = True
         times["吐き出し"].append((time.perf_counter() - started) * 1000)
     finally:
-        container.close()
+        # 途中で投げたときだけ閉じる 上で閉じた後にもう 1 度閉じない
+        if not closed:
+            container.close()
         renderer.close()
     return times
 
