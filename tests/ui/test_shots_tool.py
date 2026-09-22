@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import time
 from pathlib import Path
 from types import ModuleType
 
 import pytest
-from PySide6.QtWidgets import QApplication, QTreeWidget
+from PySide6.QtWidgets import QApplication, QTreeWidget, QWidget
 
 from sashimono.compat.catalog import TemplateCatalog
 from tests.media_fixtures import ffmpeg_available
@@ -99,6 +100,27 @@ class TestChoosingTemplates:
         chosen = shots._choose(entries, shots.PREFERRED_ALIAS, shots._has_text)
         assert chosen is not None
         assert chosen.name == "あ"
+
+
+class TestSettling:
+    def test_it_really_waits(
+        self, shots: ModuleType, qt_application: QApplication, tmp_path: Path
+    ) -> None:
+        """撮る前の待ちが、本当に時間を使っていること
+
+        ``processEvents`` に時間を渡しても、処理するイベントが尽きれば
+        すぐ戻る 待っているつもりで待っていないと、解析の反映（250ms ごと）を
+        1 度も通さないまま撮り、波形とサムネイルの無いタイムラインが写る
+        """
+        del tmp_path, qt_application
+        widget = QWidget()
+        rounds = 6
+        started = time.monotonic()
+        shots.settle(widget, rounds=rounds)
+        elapsed = (time.monotonic() - started) * 1000
+
+        # 端数で落ちないよう 8 割で見る 待っていなければ 1 ミリ秒も経たない
+        assert elapsed >= rounds * shots.SETTLE_MS * 0.8
 
 
 class TestSampleScript:

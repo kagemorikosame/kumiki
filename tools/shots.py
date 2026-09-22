@@ -33,7 +33,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from PySide6.QtCore import QEvent, QEventLoop, QPoint, QRect, Qt
+from PySide6.QtCore import QEvent, QEventLoop, QPoint, QRect, Qt, QTimer
 from PySide6.QtGui import QIcon, QImage, QPainter, QSurfaceFormat
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtWidgets import (
@@ -260,7 +260,13 @@ def settle(widget: QWidget, rounds: int = SETTLE_ROUNDS) -> None:
     確実に 1 度は通すため 回数だけだと一瞬で回り切って何も届かない
     """
     for _ in range(rounds):
-        QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, SETTLE_MS)
+        # **本当に時間を進める** ``processEvents`` に時間を渡しても、処理する
+        # イベントが尽きた時点で戻ってくる それだと 40 回が一瞬で回り切り、
+        # 解析の反映（250ms ごと）を 1 度も通さないまま撮ることになる
+        # （波形とサムネイルの無いタイムラインが写る）
+        loop = QEventLoop()
+        QTimer.singleShot(SETTLE_MS, loop.quit)
+        loop.exec()
     # 捨てる約束になったウィジェットを本当に捨てる 画面配置を戻すと Qt は古い
     # タブの帯を deleteLater で捨てるが、その始末は「そのイベントループを抜けた
     # とき」に行われる ここは自前で回しているだけで抜けないので、捨てられていない
@@ -509,12 +515,33 @@ def shot_ai(context: Context) -> QImage:
         window.import_media([sample_media(context)])
         settle(window)
         window.show_chat()
-        for box in window.findChildren(QPlainTextEdit):
-            if not box.isReadOnly() and box.isVisible():
-                box.setPlainText("冒頭 1 秒を切って 画面下に黄色いテロップを 3 秒入れて")
-                break
+        settle(window, rounds=4)
+        box = _chat_input(window)
+        if box is None:
+            # 実行環境（Claude Agent SDK と Claude Code 本体）が無いと、パネルは
+            # 入力欄を閉じて「環境を導入」の案内を出す 撮る機械によって別の絵に
+            # なるので、揃っていない機械では今ある写真を残す
+            raise ShotSkippedError("AI の実行環境が入っていない（入力欄が使えない）")
+        box.setPlainText("冒頭 1 秒を切って 画面下に黄色いテロップを 3 秒入れて")
         settle(window)
         return take_editor_shot(window)
+
+
+def _chat_input(window: QWidget) -> QPlainTextEdit | None:
+    """AI パネルの入力欄 使える状態のものだけを返す"""
+    from sashimono.ui.chat import ChatPanel
+
+    panel = window.findChild(ChatPanel)
+    if panel is None:
+        return None
+    return next(
+        (
+            box
+            for box in panel.findChildren(QPlainTextEdit)
+            if not box.isReadOnly() and box.isVisible() and box.isEnabled()
+        ),
+        None,
+    )
 
 
 def shot_aviutl(context: Context) -> QImage:
