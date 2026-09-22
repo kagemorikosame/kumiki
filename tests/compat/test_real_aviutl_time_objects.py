@@ -1,8 +1,8 @@
 """AviUtl2 本体が書き出した絵と、移動軌跡・星空を突き合わせる
 
 ``tools/aviutl_compare.py`` で並べて AviUtl2 v2.1.6a に書き出させた ``.work/aviutl-p5`` と
-``.work/aviutl-p6-time``（1920x1080 60fps）を読む 配布物の絵が入るのでリポジトリには
-入れていない 無ければ飛ばす
+``.work/aviutl-p6-time`` ``.work/aviutl-p6-wave``（1920x1080 60fps）を読む
+配布物の絵が入るのでリポジトリには入れていない 無ければ飛ばす
 
 移動軌跡は 1 枚ずつ比べる 星空は置き場所が乱数なので、粒の数・流れる向き・速さを比べる
 """
@@ -27,7 +27,7 @@ WORKS = Path(__file__).resolve().parents[2] / ".work"
 
 def _case(name: str) -> tuple[Path, dict[str, object]]:
     """見本の名前から、書き出した動画のある作業フォルダと並べた位置を引く 無ければ飛ばす"""
-    for work in (WORKS / "aviutl-p5", WORKS / "aviutl-p6-time"):
+    for work in (WORKS / "aviutl-p5", WORKS / "aviutl-p6-time", WORKS / "aviutl-p6-wave"):
         manifest = work / "manifest.json"
         if not (manifest.exists() and (work / "aviutl.mp4").exists()):
             continue
@@ -211,6 +211,59 @@ def test_the_waveform_follows_the_sound() -> None:
             correlation = float(np.corrcoef(ours_y, theirs_y)[0, 1])
             assert correlation > 0.95, offset
             assert float(np.abs(ours_y - theirs_y).mean()) < 4.0, offset
+    finally:
+        renderer.close()
+        context.release()
+
+
+def _shrunk(image: np.ndarray) -> np.ndarray:
+    """比べる道具と同じく 480x270 へ面積の平均で縮める 圧縮の揺れをならすため"""
+    rgb = image[:, :, :3].astype(np.float64)
+    return rgb.reshape(270, 4, 480, 4, 3).mean(axis=(1, 3))
+
+
+@pytest.mark.parametrize(
+    ("name", "limit"),
+    [
+        # 升目（縦 16・横 16・両方とスペース 4）とスペクトラム（細かいものと 16 本の棒）
+        # 升目を読まずに細い線で描いていた頃は、それぞれ 5.6・2.8・6.2・4.2・6.6 まで開いた
+        ("kumiki_p6_wave_v16", 2.5),
+        ("kumiki_p6_wave_h16", 1.5),
+        ("kumiki_p6_wave_h16_v16_space4", 2.5),
+        ("kumiki_p6_wave_spec_plain", 2.5),
+        ("kumiki_p6_wave_spec_h16", 3.5),
+    ],
+)
+def test_the_waveform_modes_match_aviutl(name: str, limit: float) -> None:
+    if not BGM.exists():
+        pytest.skip("音声波形表示の見本が描く音が無い")
+    from kumiki.core.commands import AddClip, AddTrack
+    from kumiki.core.model import Project, ProjectSettings, Track, TrackKind
+    from kumiki.engine.gpu import GLContextError, OffscreenGLContext
+    from kumiki.engine.render import FrameRenderer
+
+    offsets = [3, 40, 76]
+    reference = _reference(name, offsets)
+    _, case = _case(name)
+    item = map_object(
+        load_exo(Path(str(case["source"]))).objects[0], FrameRate(60), report=CompatibilityReport()
+    )
+    assert item is not None
+    try:
+        context = OffscreenGLContext()
+    except GLContextError as exc:
+        pytest.skip(f"OpenGL コンテキストを作れない: {exc}")
+    settings = ProjectSettings(width=1920, height=1080, frame_rate=FrameRate(60), sample_rate=44100)
+    project = Project.create(settings)
+    track = Track(kind=TrackKind.VIDEO, name="V1")
+    project = AddTrack(track).apply(project)
+    project = AddClip(track.id, item.clip).apply(project)
+    renderer = FrameRenderer(project, context=context)
+    try:
+        for offset in offsets:
+            ours = _shrunk(renderer.render(offset))
+            theirs = _shrunk(reference[offset])
+            assert float(np.abs(ours - theirs).mean()) < limit, offset
     finally:
         renderer.close()
         context.release()

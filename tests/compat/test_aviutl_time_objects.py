@@ -186,7 +186,37 @@ class TestWaveform:
         assert item.clip.source.params["audio_end_ms"] == 10000
         assert item.clip.source_in == 10
 
-    def test_the_modes_not_yet_drawn_are_recorded(self) -> None:
-        # 升目とスペクトラムはまだ描き分けられない 線で代えたことを黙らない
-        _, report = _mapped(WAVE.replace("スペクトラム表示=0", "スペクトラム表示=1"))
-        assert any("スペクトラム表示" in entry for entry in report.missing)
+    def test_the_grid_and_the_spectrum_are_read(self) -> None:
+        # 読まないと、升目やスペクトラムの見本が細い線で描かれる
+        item, report = _mapped(
+            WAVE.replace("スペクトラム表示=0", "スペクトラム表示=1")
+            .replace("横解像度=0", "横解像度=16")
+            .replace("縦解像度=0", "縦解像度=32")
+            .replace("横スペース=0", "横スペース=4")
+            .replace("縦スペース=0", "縦スペース=2")
+        )
+        source = item.clip.source
+        assert source is not None
+        assert source.params["wave_spectrum"] is True
+        assert _static(source.params["wave_columns"]) == 16.0
+        assert _static(source.params["wave_rows"]) == 32.0
+        assert _static(source.params["wave_gap_x"]) == 4.0
+        assert _static(source.params["wave_gap_y"]) == 2.0
+        assert not report.missing
+
+    def test_the_preset_name_changes_nothing(self) -> None:
+        # ファイルに Type1〜5 と書いた 5 本は、既定と同じ絵だった 記録に並べると、
+        # 本当に写せていない項目が埋もれる
+        _, report = _mapped(WAVE.replace("波形のプリセット=", "波形のプリセット=Type3"))
+        assert not report.missing
+
+    def test_a_mirrored_line_is_the_plain_line(self) -> None:
+        # 線のミラー表示は実物で絵が変わらなかった スペクトラムと組むとまだ分からない
+        _, plain = _mapped(WAVE.replace("ミラー表示=0", "ミラー表示=1"))
+        assert not plain.missing
+        _, spectrum = _mapped(
+            WAVE.replace("ミラー表示=0", "ミラー表示=1").replace(
+                "スペクトラム表示=0", "スペクトラム表示=1"
+            )
+        )
+        assert any("ミラー表示" in entry for entry in spectrum.missing)

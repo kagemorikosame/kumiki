@@ -30,9 +30,18 @@ from PySide6.QtGui import (
 
 from kumiki.core.model import AnimatedValue, GeneratedSource, ParamValue
 from kumiki.effects.sources import SourceDefinition, source_registry
+from kumiki.engine.audio_shapes import (
+    SPECTRUM_SIZE,
+    WAVEFORM_LEAD,
+    WAVEFORM_LINE,
+    cell_mask,
+    spectrum_levels,
+    waveform_cells,
+    waveform_points,
+)
 from kumiki.engine.motion_shapes import star_field, trail
 
-__all__ = ["render_source"]
+__all__ = ["render_source", "waveform_points"]
 
 #: 縦の基準ごとに、指定した位置より上へ出す割合 ``下`` なら全部が上に出る
 _VERTICAL_SHARE = {"top": 0.0, "middle": 0.5, "bottom": 1.0}
@@ -47,13 +56,15 @@ def render_source(
     fps: float = 30.0,
     duration: int = 0,
     audio: np.ndarray | None = None,
+    audio_rate: int = 44100,
 ) -> np.ndarray | None:
     """生成オブジェクトを描いて配列で返す 未知の種類なら ``None``
 
     ``fps`` は時間で変わる図形（タイマー・集中線）がフレームを秒へ直すのに使う
     ``duration`` はクリップの長さ（フレーム） 移動軌跡が先端の向きを決めるときに、
     クリップの終わりより先の動きを見ないために使う 分からなければ 0
-    ``audio`` は音声波形が描く音（今の時刻からの 1 チャンネルのサンプル）
+    ``audio`` は音声波形が描く音（今の時刻の ``WAVEFORM_LEAD`` サンプル前からの
+    1 チャンネルのサンプル） ``audio_rate`` はそのレート（スペクトラムの周波数に使う）
     音を読むのはレンダラの仕事 ここは渡された数を線にするだけ
     """
     definition = source_registry.get(source.kind)
@@ -68,6 +79,7 @@ def render_source(
     # 移動軌跡は、今の値ではなく**動きそのもの**（過去の位置）を読む
     values["_motion"] = _motion_of(definition, source.params)
     values["_audio"] = audio
+    values["_audio_rate"] = audio_rate
     image = QImage(width, height, QImage.Format.Format_RGBA8888)
     image.fill(Qt.GlobalColor.transparent)
 
@@ -787,25 +799,6 @@ def _draw_motion_trail(
     painter.fillPath(transform.map(path), colour)
 
 
-#: 音声波形の線の太さ（画素） AviUtl2 の無音の所は、中心の下 2 行がちょうど塗られていた
-WAVEFORM_LINE = 2.0
-
-
-def waveform_points(samples: np.ndarray, width: float, height: float, volume: float) -> np.ndarray:
-    """音声波形の線の点 画面の座標（中心から、Y は下が正）で ``(点の数, 2)``
-
-    1 画素に 1 サンプル 振幅 1 で高さの半分まで振れ、**正の値が下へ出る**
-    （AviUtl2 の絵を素材のサンプルと突き合わせると、下向きを正として相関 0.99 だった
-    上向きに描くと相関が -0.99 になり、波形が上下逆さまに出る）
-    線は太さ 2 で中心の下 1 画素へずらして引く（無音の線が中心の下 2 行に乗る実物に合わせる）
-    幅より多いサンプルは捨てる 描く範囲の外へ線がはみ出さないように
-    """
-    count = min(len(samples), max(0, round(width)))
-    x = -width / 2.0 + np.arange(count) + 0.5
-    y = WAVEFORM_LINE / 2.0 + samples[:count] * (volume / 100.0) * height / 2.0
-    return np.stack([x, y], axis=1)
-
-
 def _draw_waveform(
     painter: QPainter,
     values: dict[str, object],
@@ -816,12 +809,62 @@ def _draw_waveform(
 ) -> None:
     """音声波形（AviUtl2 の ``音声波形表示``） 音はレンダラが ``_audio`` に入れて渡す
 
-    音が無ければ何も描かない 実物も、再生範囲が 0 秒の見本では何も出さなかった
+    音は ``WAVEFORM_LEAD`` サンプル前から届く 線はフレームの時刻から、スペクトラムは
+    その前後の窓を使う 音が無ければ何も描かない 実物も、再生範囲が 0 秒の見本では
+    何も出さなかった
     """
-    samples = values.get("_audio")
-    if not isinstance(samples, np.ndarray) or samples.size < 2:
+    audio = values.get("_audio")
+    if not isinstance(audio, np.ndarray) or audio.size <= WAVEFORM_LEAD + 1:
         return
-    points = waveform_points(samples, width, height, _number(values, "wave_volume", 100.0))
+    volume = _number(values, "wave_volume", 100.0)
+    columns = round(_number(values, "wave_columns", 0.0))
+    rows = round(_number(values, "wave_rows", 0.0))
+    spectrum = bool(values.get("wave_spectrum", False))
+    body = audio[WAVEFORM_LEAD:]
+    if columns <= 0 and rows <= 0 and not spectrum:
+        # 升目を持たない線は、にじませて細く引く 升目の絵と同じ道を通すと、
+        # 斜めの所がぎざぎざになる（実物の線は縁がにじんでいる）
+        _draw_waveform_line(painter, values, body, centre_x, centre_y, width, height, volume)
+        return
+
+    box_w, box_h = max(1, round(width)), max(1, round(height))
+    grid_w = columns if columns > 0 else box_w
+    grid_h = rows if rows > 0 else box_h
+    if spectrum:
+        rate = round(_number(values, "_audio_rate", 44100.0))
+        levels = spectrum_levels(audio[:SPECTRUM_SIZE], grid_w, rate, volume) * grid_h
+        # 下から塗る 升の真ん中まで届いた升を塗る
+        from_bottom = grid_h - np.arange(grid_h)[:, None] - 0.5
+        lit = from_bottom < levels[None, :]
+    else:
+        lit = waveform_cells(body, grid_w, grid_h, volume)
+    mask = cell_mask(
+        lit,
+        box_w,
+        box_h,
+        _number(values, "wave_gap_x", 0.0),
+        _number(values, "wave_gap_y", 0.0),
+    )
+    if not mask.any():
+        return
+    colour = _color(values.get("color"))
+    pixels = np.zeros((box_h, box_w, 4), dtype=np.uint8)
+    pixels[mask] = (colour.red(), colour.green(), colour.blue(), colour.alpha())
+    image = QImage(pixels.tobytes(), box_w, box_h, QImage.Format.Format_RGBA8888).copy()
+    painter.drawImage(QPointF(centre_x - box_w / 2.0, centre_y - box_h / 2.0), image)
+
+
+def _draw_waveform_line(
+    painter: QPainter,
+    values: dict[str, object],
+    samples: np.ndarray,
+    centre_x: float,
+    centre_y: float,
+    width: float,
+    height: float,
+    volume: float,
+) -> None:
+    points = waveform_points(samples, width, height, volume)
     if len(points) < 2:
         return
     line = QPolygonF([QPointF(centre_x + x, centre_y + y) for x, y in points])

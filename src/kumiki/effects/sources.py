@@ -211,6 +211,13 @@ SHAPE = SourceDefinition(
         # クリップが素材を持てばそちらを使い、無ければこの道の音を読む
         TextSpec("audio_path", "音声波形の音声ファイル", "", multiline=False),
         TrackSpec("wave_volume", "音声波形の音量", 0, 500, 100, unit="%"),
+        # 周波数ごとの大きさを下から塗る（AviUtl2 の スペクトラム表示）
+        CheckSpec("wave_spectrum", "音声波形をスペクトラムにする", False),
+        # 0 なら 1 画素ずつ 数を決めると、その升目の数の絵に描いてから引き伸ばす
+        TrackSpec("wave_columns", "音声波形の横の升目", 0, 4000, 0, step=1),
+        TrackSpec("wave_rows", "音声波形の縦の升目", 0, 4000, 0, step=1),
+        TrackSpec("wave_gap_x", "音声波形の升目の横のすき間", 0, 100, 0, unit="%"),
+        TrackSpec("wave_gap_y", "音声波形の升目の縦のすき間", 0, 100, 0, unit="%"),
         # 素材のこのミリ秒より先は描かない（AviUtl の 再生範囲 の終わり） 負なら素材の終わりまで
         # 整数しか持てない項目なのでミリ秒 秒で持つと 80.448 秒が 80 秒に切れる
         ValueSpec(

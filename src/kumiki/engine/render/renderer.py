@@ -34,6 +34,7 @@ from kumiki.core.model import (
 )
 from kumiki.core.timebase import FrameRate, seconds_to_frame
 from kumiki.effects.easing import ease
+from kumiki.engine.audio_shapes import SPECTRUM_SIZE, WAVEFORM_LEAD
 from kumiki.engine.cache.proxy import ProxyStore
 from kumiki.engine.decode import AudioDecoder, ProbeError, VideoDecoder
 from kumiki.engine.gpu import (
@@ -1075,46 +1076,48 @@ class FrameRenderer:
 
     def _waveform_audio(
         self, clip: Clip, source: GeneratedSource, local_frame: int, rate: FrameRate
-    ) -> np.ndarray | None:
-        """音声波形が描く音 今の時刻から、横幅ぶんのサンプルを 1 チャンネルで
+    ) -> tuple[np.ndarray, int] | None:
+        """音声波形が描く音と、そのレート 1 チャンネルで、今の時刻の ``WAVEFORM_LEAD`` 前から
 
+        線は今の時刻から横幅ぶん、スペクトラムはその前後 ``SPECTRUM_SIZE`` を使う
         サンプルはプロジェクトの音のレート（AviUtl2 は 44.1kHz の書き出しで 1 画素
-        1 サンプルだった） クリップの終わりより先は 0 実物も最後のフレームでは、
-        終わりから先が平らな線になっていた（素材の続きを読むと、そこに音が出る）
+        1 サンプルだった） クリップの外（頭より前・終わりより先）は 0 実物も最後の
+        フレームでは、終わりから先が平らな線になっていた（素材の続きを読むと、そこに音が出る）
         """
         if source.kind != "shape" or source.params.get("shape") != "waveform":
             return None
         decoder = self._audio_decoder_for(clip, source)
         if decoder is None:
             return None
-        width = source.params.get("width")
-        count = max(1, round(width.at(local_frame) if isinstance(width, AnimatedValue) else 800))
         sample_rate = decoder.sample_rate
         seconds = clip.source_in + local_frame * rate.frame_duration * clip.speed
-        start = int(seconds * sample_rate)
-        speed = float(clip.speed)
-        needed = max(1, int(np.ceil(count * speed)))
-        raw = decoder.read(start, needed)
-        mono = raw.mean(axis=1) if raw.ndim == 2 else raw
-        if needed != count:
-            # 速く回すと 1 画素に何サンプルも入る 間引いて横幅に合わせる
-            mono = mono[(np.arange(count) * speed).astype(int).clip(0, len(mono) - 1)]
-        # クリップの終わり（この窓の頭から何サンプル先か）より後ろを 0 にする
-        left = (clip.duration - local_frame) * rate.frame_duration * sample_rate
-        cut = max(0, round(float(left)))
-        mono = mono.astype(np.float32).copy()
-        mono[cut:] = 0.0
         end_ms = source.params.get("audio_end_ms")
+        remaining: Fraction | None = None
         if isinstance(end_ms, int) and not isinstance(end_ms, bool) and end_ms >= 0:
-            # 読む範囲の終わりより先の素材は描かない（AviUtl の 再生範囲）
             remaining = (Fraction(end_ms, 1000) - seconds) * sample_rate / clip.speed
             if remaining <= 0:
-                # 範囲をもう過ぎている 実物は平らな線も出さず、何も描かなかった
-                # （再生位置を 10,10 にした見本が 81 フレームとも真っ黒）
+                # 読む範囲（AviUtl の 再生範囲）をもう過ぎている 実物は平らな線も出さず、
+                # 何も描かなかった（再生位置を 10,10 にした見本が 81 フレームとも真っ黒）
                 return None
-            mono[int(np.ceil(float(remaining))) :] = 0.0
-        result: np.ndarray = mono
-        return result
+
+        width = source.params.get("width")
+        span = max(1, round(width.at(local_frame) if isinstance(width, AnimatedValue) else 800))
+        count = WAVEFORM_LEAD + max(span, SPECTRUM_SIZE - WAVEFORM_LEAD)
+        speed = float(clip.speed)
+        first = int(seconds * sample_rate) - int(WAVEFORM_LEAD * speed)
+        raw = decoder.read(first, int(np.ceil(count * speed)) + 1)
+        mono = raw.mean(axis=1) if raw.ndim == 2 else raw
+        # 速く回すと 1 画素に何サンプルも入る 間引いて 1 画素 1 サンプルに合わせる
+        picked = (np.arange(count) * speed).astype(int).clip(0, max(len(mono) - 1, 0))
+        samples = mono[picked].astype(np.float32) if len(mono) else np.zeros(count, np.float32)
+        # 今の時刻からの位置（サンプル） クリップの頭より前と終わりより先を 0 にする
+        offset = np.arange(count) - WAVEFORM_LEAD
+        before = float(local_frame * rate.frame_duration * sample_rate)
+        after = float((clip.duration - local_frame) * rate.frame_duration * sample_rate)
+        samples[(offset < -before) | (offset >= round(after))] = 0.0
+        if remaining is not None:
+            samples[offset >= int(np.ceil(float(remaining)))] = 0.0
+        return samples, sample_rate
 
     def _audio_decoder_for(self, clip: Clip, source: GeneratedSource) -> AudioDecoder | None:
         """音声波形の音を読む係 素材を持つクリップならその素材、無ければ設定の道"""
@@ -1198,7 +1201,7 @@ class FrameRenderer:
         cached = self._generated.get(clip.id)
         if cached is not None and cached[0] == key:
             return cached[1]
-        audio = self._waveform_audio(clip, source, local_frame, rate)
+        heard = self._waveform_audio(clip, source, local_frame, rate)
         image = render_source(
             source,
             width,
@@ -1206,7 +1209,8 @@ class FrameRenderer:
             frame=local_frame,
             fps=float(rate.fps),
             duration=clip.duration,
-            audio=audio,
+            audio=heard[0] if heard is not None else None,
+            audio_rate=heard[1] if heard is not None else 44100,
         )
         if image is not None:
             # 入れ替えのときは減らない 先に捨てると、関係ないクリップの絵が消える

@@ -28,6 +28,12 @@ from kumiki.core.model import (
     TrackKind,
 )
 from kumiki.core.timebase import FrameRate
+from kumiki.engine.audio_shapes import (
+    SPECTRUM_SIZE,
+    WAVEFORM_LEAD,
+    cell_mask,
+    spectrum_levels,
+)
 from kumiki.engine.gpu import GLContextError, OffscreenGLContext
 from kumiki.engine.render import FrameRenderer
 from kumiki.engine.sources import render_source, waveform_points
@@ -70,7 +76,9 @@ def _source(**extra: object) -> GeneratedSource:
 
 def test_silence_is_a_flat_line_below_the_centre() -> None:
     # 無音の所は中心の下 2 行（実物の絵のまま）
-    image = render_source(_source(), WIDTH, HEIGHT, audio=np.zeros(400, dtype=np.float32))
+    image = render_source(
+        _source(), WIDTH, HEIGHT, audio=np.zeros(WAVEFORM_LEAD + 400, dtype=np.float32)
+    )
     assert image is not None
     assert list(_lit_rows(image, WIDTH // 2)) == [0, 1]
     # 横幅の外には出ない
@@ -82,6 +90,55 @@ def test_nothing_is_drawn_without_sound() -> None:
     image = render_source(_source(), WIDTH, HEIGHT)
     assert image is not None
     assert image[:, :, 3].max() == 0
+
+
+class TestGrid:
+    def test_cells_fill_the_box_with_gaps_at_the_edges(self) -> None:
+        # 横 16 升・スペース 4 は、幅 50 の升の境目に 2 画素のすき間（実物のまま）
+        mask = cell_mask(np.ones((16, 16), dtype=bool), 800, 400, 4.0, 4.0)
+        row = mask[12]
+        assert not row[49] and not row[50]
+        assert row[48] and row[51]
+        # 縦は高さ 25 の升に 1 画素
+        assert int((~mask[:, 25]).sum()) == 16
+
+    def test_a_coarse_grid_draws_the_line_two_cells_thick(self) -> None:
+        # 縦 16 升では、無音の線が中心をまたぐ 2 升に乗る（高さ 200 なら 1 升 12.5 画素）
+        source = _source(wave_rows=AnimatedValue(16.0))
+        audio = np.zeros(WAVEFORM_LEAD + 400, dtype=np.float32)
+        image = render_source(source, WIDTH, HEIGHT, audio=audio)
+        assert image is not None
+        rows = _lit_rows(image, WIDTH // 2)
+        assert rows.min() == pytest.approx(-12.5, abs=1.0)
+        assert rows.max() == pytest.approx(11.5, abs=1.0)
+
+
+class TestSpectrum:
+    def test_a_tone_rises_at_its_frequency(self) -> None:
+        # 横軸は 40Hz〜20kHz の対数 1kHz の音なら左から 0.51 の所が一番高い
+        rate = 44100
+        time = np.arange(SPECTRUM_SIZE) / rate
+        levels = spectrum_levels(np.sin(2 * np.pi * 1000.0 * time), 800, rate, 100.0)
+        peak = int(np.argmax(levels))
+        assert peak / 800 == pytest.approx(np.log(1000 / 40) / np.log(20000 / 40), abs=0.01)
+
+    def test_silence_draws_nothing(self) -> None:
+        # 実物も音の無い頭の 25 フレームは何も出さなかった
+        source = _source(wave_spectrum=True)
+        audio = np.zeros(WAVEFORM_LEAD + SPECTRUM_SIZE, dtype=np.float32)
+        image = render_source(source, WIDTH, HEIGHT, audio=audio)
+        assert image is not None
+        assert image[:, :, 3].max() == 0
+
+    def test_bars_grow_from_the_bottom(self) -> None:
+        # 下の辺から上へ塗る 中心から塗ると、実物の絵の上半分に棒が出る
+        rate = 44100
+        time = np.arange(WAVEFORM_LEAD + SPECTRUM_SIZE) / rate
+        audio = (0.5 * np.sin(2 * np.pi * 200.0 * time)).astype(np.float32)
+        image = render_source(_source(wave_spectrum=True), WIDTH, HEIGHT, audio=audio)
+        assert image is not None
+        lit = np.nonzero(image[:, :, 3].max(axis=1) > 128)[0] - HEIGHT // 2
+        assert lit.max() == pytest.approx(99, abs=1)
 
 
 @pytest.fixture(scope="module")
