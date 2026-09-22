@@ -1,11 +1,18 @@
 """GPU での映像合成
 
-色は必ずリニア空間で扱う 素材は sRGB で符号化されているので、テクスチャを
-``GL_SRGB8_ALPHA8`` で作ってサンプリング時に自動でリニアへ戻し、合成を
-``RGBA16F`` のフレームバッファ上で行い、最後に sRGB へ符号化して出す
+素材は sRGB で符号化されているので、テクスチャを ``GL_SRGB8_ALPHA8`` で作って
+サンプリング時に自動でリニアへ戻す 合成は ``RGBA16F`` のフレームバッファ上で行い、
+最後に sRGB へ符号化して出す
 
-符号化されたままの値を足し引きすると、半透明の重ねやフェードが暗く沈む
-これは「なんとなく違う」ではなく明確に間違いなので、最初からリニアで通す
+キャンバスに溜める値は、重ね合わせの方法（Issue #65）で 2 通りある
+
+- リニア（``encoded=False``） 光の量で混ぜる 半透明の所が明るく出る
+- sRGB（``encoded=True``） 描く直前に符号化し、符号化した値のまま混ぜる AviUtl2 と
+  YMM4 がこちらで、黒の上に 50% の白を重ねると 128 になる（リニアでは 188）
+
+どちらでも、描く絵（テクスチャやエフェクトの結果）はリニアで渡す 事前乗算で渡す絵
+（``premultiplied=True``）は合成先のキャンバスかその写しで、同じ方法の値が入っている
+ものとして扱う エフェクトはどちらでもリニアで動く（:class:`EffectProcessor`）
 """
 
 from __future__ import annotations
@@ -40,7 +47,19 @@ __all__ = [
 ]
 
 
-_FRAGMENT_SHADER = """
+#: リニアと sRGB の行き来 IEC 61966-2-1 の定義そのまま
+_SRGB_FUNCTIONS = """
+vec3 srgb_encode(vec3 c) {
+    c = clamp(c, 0.0, 1.0);
+    return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+vec3 srgb_decode(vec3 c) {
+    return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
+}
+"""
+
+_FRAGMENT_SHADER = (
+    """
 #version 430 core
 in vec2 v_uv;
 out vec4 frag_color;
@@ -48,31 +67,40 @@ uniform sampler2D u_texture;
 uniform float u_opacity;
 // 事前乗算アルファで溜まった絵（入れ子のシーンのキャンバス）を渡すとき
 uniform bool u_premultiplied;
+// キャンバスが sRGB で符号化した値を溜めているか（重ね合わせを sRGB で行う）
+uniform bool u_encoded;
+"""
+    + _SRGB_FUNCTIONS
+    + """
 void main() {
     // sRGB テクスチャなので、この時点で値はリニア
     vec4 color = texture(u_texture, v_uv);
     if (u_premultiplied && color.a > 0.0001) color.rgb /= color.a;
+    // 事前乗算の絵はキャンバスの写しで、もう符号化されている もう 1 度掛けると白っぽく浮く
+    if (u_encoded && !u_premultiplied) color.rgb = srgb_encode(color.rgb);
     frag_color = vec4(color.rgb, color.a * u_opacity);
 }
 """
+)
 
-_RESOLVE_FRAGMENT_SHADER = """
+_RESOLVE_FRAGMENT_SHADER = (
+    """
 #version 430 core
 in vec2 v_uv;
 out vec4 frag_color;
 uniform sampler2D u_texture;
-
-// リニアから sRGB への符号化 IEC 61966-2-1 の定義そのまま
-float encode(float c) {
-    c = clamp(c, 0.0, 1.0);
-    return c <= 0.0031308 ? c * 12.92 : 1.055 * pow(c, 1.0 / 2.4) - 0.055;
-}
-
+uniform bool u_encoded;
+"""
+    + _SRGB_FUNCTIONS
+    + """
 void main() {
     vec4 color = texture(u_texture, v_uv);
-    frag_color = vec4(encode(color.r), encode(color.g), encode(color.b), color.a);
+    // sRGB で混ぜたキャンバスは符号化済み ここで掛けると 2 回になって明るく飛ぶ
+    vec3 rgb = u_encoded ? clamp(color.rgb, 0.0, 1.0) : srgb_encode(color.rgb);
+    frag_color = vec4(rgb, color.a);
 }
 """
+)
 
 
 #: 1 色で塗る 背景を敷くときに使う（色は事前乗算で渡す）
@@ -104,19 +132,15 @@ uniform vec2 u_canvas;
 uniform float u_opacity;
 uniform int u_mode;
 uniform bool u_premultiplied;
-
-vec3 srgb_encode(vec3 c) {
-    c = clamp(c, 0.0, 1.0);
-    return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
-}
-vec3 srgb_decode(vec3 c) {
-    return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
-}
+uniform bool u_encoded;
 """
+    + _SRGB_FUNCTIONS
     + BLEND_FUNCTIONS
     + """
 // 混ぜる式は符号化した値（sRGB）で計算する AviUtl も YMM4 もそうしている
+// sRGB で重ねるキャンバスでは、下の絵も上の絵ももう符号化されている
 vec3 blend(vec3 below, vec3 above) {
+    if (u_encoded) return blend_colors(u_mode - 100, below, above);
     vec3 mixed = blend_colors(u_mode - 100, srgb_encode(below), srgb_encode(above));
     return srgb_decode(mixed);
 }
@@ -124,6 +148,7 @@ vec3 blend(vec3 below, vec3 above) {
 void main() {
     vec4 source = texture(u_texture, v_uv);
     if (u_premultiplied && source.a > 0.0001) source.rgb /= source.a;
+    if (u_encoded && !u_premultiplied) source.rgb = srgb_encode(source.rgb);
     float above_alpha = clamp(source.a * u_opacity, 0.0, 1.0);
     vec4 backdrop = texture(u_backdrop, gl_FragCoord.xy / u_canvas);
     float below_alpha = backdrop.a;
@@ -132,9 +157,15 @@ void main() {
     if (u_mode == 300) {
         // 黒の上に置いた絵どうしを、符号化した値のまま混ぜる（YMM4 の場面切り替えのフェード）
         // 結果は黒を含んだ色なので不透明で書く
+        float amount = clamp(u_opacity, 0.0, 1.0);
+        float upper_alpha = clamp(source.a, 0.0, 1.0);
+        if (u_encoded) {
+            frag_color = vec4(mix(below * below_alpha, source.rgb * upper_alpha, amount), 1.0);
+            return;
+        }
         vec3 lower = srgb_encode(below) * below_alpha;
-        vec3 upper = srgb_encode(source.rgb) * clamp(source.a, 0.0, 1.0);
-        frag_color = vec4(srgb_decode(mix(lower, upper, clamp(u_opacity, 0.0, 1.0))), 1.0);
+        vec3 upper = srgb_encode(source.rgb) * upper_alpha;
+        frag_color = vec4(srgb_decode(mix(lower, upper, amount)), 1.0);
         return;
     }
 
@@ -212,6 +243,14 @@ class BlendMode:
     #: 黒の上に置いた 2 枚の絵を sRGB の値で混ぜる 不透明度が混ぜる割合 選べる合成ではなく、
     #: 場面切り替えのフェードでレンダラが使う
     SRGB_MIX = "srgb_mix"
+
+
+def _encode(value: float) -> float:
+    """リニアの 0..1 を sRGB へ シェーダの ``srgb_encode`` と同じ式"""
+    value = min(max(value, 0.0), 1.0)
+    if value <= 0.0031308:
+        return value * 12.92
+    return float(1.055 * value ** (1.0 / 2.4) - 0.055)
 
 
 #: シェーダで混ぜる合成と、シェーダに渡す番号
@@ -406,9 +445,13 @@ class Compositor:
     コンテキスト上で行う必要がある
     """
 
-    def __init__(self, width: int, height: int) -> None:
+    def __init__(self, width: int, height: int, *, encoded: bool = False) -> None:
         if width <= 0 or height <= 0:
             raise ValueError(f"解像度が不正: {width}x{height}")
+        #: 真なら sRGB で符号化した値のまま重ねる（AviUtl2 と YMM4 の混ぜ方）
+        #: 描いている途中で切り替えると、溜まった値の意味が食い違う 切り替えは
+        #: :meth:`begin` の前に行う
+        self.encoded = encoded
 
         self._program = Program(VERTEX_SHADER, _FRAGMENT_SHADER)
         self._blend_program = Program(VERTEX_SHADER, _BLEND_FRAGMENT_SHADER)
@@ -447,11 +490,12 @@ class Compositor:
 
     @property
     def canvas(self) -> Framebuffer:
-        """合成途中の絵（リニア、事前乗算アルファ）
+        """合成途中の絵（事前乗算アルファ :attr:`encoded` なら sRGB、でなければリニア）
 
         YMM4 の ``FrameBufferItem`` のように、それまでに重ねた絵を素材として
         使うときに読む 読んだものを同じキャンバスへ描くときは、先に別の
-        バッファへ写すこと
+        バッファへ写すこと エフェクトへ渡すときは、値の種類を
+        :attr:`EffectProcessor.canvas_encoded` で伝える
         """
         return self._canvas
 
@@ -474,14 +518,14 @@ class Compositor:
         self._fill_program.use()
         self._fill_program.set_vec4("u_rect", FULL_RECT)
         self._fill_program.set_bool("u_flip", False)
-        red, green, blue, alpha = color
+        red, green, blue, alpha = self._canvas_color(color)
         self._fill_program.set_vec4("u_color", (red * alpha, green * alpha, blue * alpha, alpha))
         self._quad.draw()
         self._set_blend(BlendMode.NORMAL)
 
     def begin(self, background: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0)) -> None:
         """合成を始める 背景色はリニア値で指定する"""
-        self._canvas.bind(clear=background)
+        self._canvas.bind(clear=self._canvas_color(background))
         GL.glEnable(GL.GL_BLEND)
         self._set_blend(BlendMode.NORMAL)
 
@@ -600,6 +644,7 @@ class Compositor:
             GL.glEnable(GL.GL_BLEND)
             self._set_blend(blend)
             plain.use()
+            plain.set_bool("u_encoded", self.encoded)
             return plain
 
         GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, self._canvas.handle)
@@ -619,6 +664,7 @@ class Compositor:
         self._canvas.bind()
         GL.glDisable(GL.GL_BLEND)
         shaded.use()
+        shaded.set_bool("u_encoded", self.encoded)
         shaded.set_int("u_mode", mode)
         shaded.set_vec2("u_canvas", (float(self.width), float(self.height)))
         shaded.bind_texture("u_backdrop", self._backdrop.color, unit=1)
@@ -683,6 +729,8 @@ class Compositor:
         GL.glViewport(*target)
         self._program.use()
         self._program.set_bool("u_premultiplied", False)
+        # 符号化済みの絵なので、sRGB で重ねるキャンバスのときも符号化しない
+        self._program.set_bool("u_encoded", False)
         self._program.set_vec4("u_rect", FULL_RECT)
         self._program.set_bool("u_flip", False)
         self._program.set_float("u_opacity", 1.0)
@@ -738,12 +786,22 @@ class Compositor:
         source, destination = _BLEND_FUNCS.get(mode, _BLEND_FUNCS[BlendMode.NORMAL])
         GL.glBlendFuncSeparate(source, destination, GL.GL_ONE, GL.GL_ONE_MINUS_SRC_ALPHA)
 
+    def _canvas_color(
+        self, color: tuple[float, float, float, float]
+    ) -> tuple[float, float, float, float]:
+        """リニアで指定された色を、キャンバスに溜める値へ直す"""
+        if not self.encoded:
+            return color
+        red, green, blue, alpha = color
+        return (_encode(red), _encode(green), _encode(blue), alpha)
+
     def _resolve(self, framebuffer: int, viewport: tuple[int, int, int, int]) -> None:
-        """リニアの合成結果を sRGB へ符号化して ``framebuffer`` へ描く"""
+        """合成結果を sRGB で符号化した値にして ``framebuffer`` へ描く"""
         GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, framebuffer)
         GL.glViewport(*viewport)
         GL.glDisable(GL.GL_BLEND)
         self._resolve_program.use()
+        self._resolve_program.set_bool("u_encoded", self.encoded)
         self._resolve_program.set_vec4("u_rect", FULL_RECT)
         self._resolve_program.set_bool("u_flip", False)
         self._resolve_program.bind_texture("u_texture", self._canvas.color)

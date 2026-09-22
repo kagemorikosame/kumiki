@@ -339,7 +339,11 @@ def command_compare(arguments: argparse.Namespace) -> int:
     # 音のレートは並べたプロジェクトの見出し（audio.rate=44100）と合わせる 音声波形は
     # 1 画素 1 サンプルなので、レートが違うと同じ横幅に入る時間が変わる
     settings = ProjectSettings(
-        width=WIDTH, height=HEIGHT, frame_rate=FrameRate(FPS), sample_rate=AUDIO_RATE
+        width=WIDTH,
+        height=HEIGHT,
+        frame_rate=FrameRate(FPS),
+        sample_rate=AUDIO_RATE,
+        blending=arguments.blending,
     )
     images = work / "images"
     images.mkdir(exist_ok=True)
@@ -523,6 +527,11 @@ def main() -> int:
     comparer = subparsers.add_parser("compare", help="書き出した動画と比べる")
     comparer.add_argument("--only", default="", help="名前にこの語を含むものだけ カンマ区切り")
     comparer.add_argument("--top", type=int, default=20, help="差の大きい順に何件出すか")
+    # 既定は新しく作るプロジェクトと同じ sRGB（AviUtl2 の混ぜ方） リニアを選べば、
+    # 設定ができる前に保存したプロジェクトの見え方で比べられる
+    comparer.add_argument(
+        "--blending", choices=("srgb", "linear"), default="srgb", help="半透明の重ね合わせ"
+    )
     comparer.set_defaults(func=command_compare)
 
     arguments = parser.parse_args()

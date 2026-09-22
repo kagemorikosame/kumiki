@@ -20,6 +20,7 @@ from sashimono.compat.aviutl.embedded import has_embedded
 from sashimono.compat.aviutl.report import global_report
 from sashimono.core.model import (
     AnimatedValue,
+    Blending,
     Clip,
     ClipId,
     Effect,
@@ -319,9 +320,10 @@ class FrameRenderer:
 
         width, height = quality.apply(*project.settings.resolution)
         with self._context:
-            self._compositor = Compositor(width, height)
+            self._compositor = Compositor(width, height, encoded=self._encoded)
             # エフェクト処理は合成と同じ全画面四角形を使い回す
             self._effects = EffectProcessor(width, height, self._compositor.quad)
+            self._effects.canvas_encoded = self._encoded
         #: 素材ごとのデコーダ 最近使ったものを残す
         self._decoders: OrderedDict[tuple[MediaId, int], VideoDecoder] = OrderedDict()
         #: トラックごとの転送用テクスチャ 毎フレーム作り直すと確保と解放で時間を食う
@@ -367,6 +369,12 @@ class FrameRenderer:
 
         if project.settings.resolution != previous.settings.resolution:
             self._resize(*self._quality.apply(*project.settings.resolution))
+        if project.settings.blending != previous.settings.blending:
+            # 入れ子や切り抜きの合成先も同じ方法にそろえる 1 つでも残ると、そこで
+            # 符号化した値とリニアの値が混ざり、入れ子のシーンだけ明るさが変わる
+            for compositor in (self._compositor, *self._nested.values(), *self._layers.values()):
+                compositor.encoded = self._encoded
+            self._effects.canvas_encoded = self._encoded
 
         alive = {m.id for m in project.media}
         for key in [k for k in self._decoders if k[0] not in alive]:
@@ -402,6 +410,11 @@ class FrameRenderer:
         with self._context:
             self._compositor.resize(width, height)
             self._effects.resize(width, height)
+
+    @property
+    def _encoded(self) -> bool:
+        """sRGB で符号化した値のまま重ねるか（プロジェクトの重ね合わせの設定）"""
+        return self._project.settings.blending == Blending.SRGB
 
     @property
     def compositor(self) -> Compositor:
@@ -790,7 +803,7 @@ class FrameRenderer:
         key = (role, depth)
         layer = self._layers.get(key)
         if layer is None:
-            layer = Compositor(width, height)
+            layer = Compositor(width, height, encoded=self._encoded)
             self._layers[key] = layer
         layer.resize(width, height)
         return layer
@@ -902,7 +915,7 @@ class FrameRenderer:
         width, height = self._compositor.width, self._compositor.height
         nested = self._nested.get(depth + 1)
         if nested is None:
-            nested = Compositor(width, height)
+            nested = Compositor(width, height, encoded=self._encoded)
             self._nested[depth + 1] = nested
         nested.resize(width, height)
 

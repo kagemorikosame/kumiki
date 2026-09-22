@@ -32,7 +32,7 @@ from sashimono.core.model.ids import (
     new_track_id,
 )
 from sashimono.core.model.media import AudioStreamInfo, MediaItem, VideoStreamInfo
-from sashimono.core.model.project import Project, ProjectSettings, Scene
+from sashimono.core.model.project import Blending, Project, ProjectSettings, Scene
 from sashimono.core.model.timeline import (
     Clip,
     GeneratedSource,
@@ -46,6 +46,7 @@ from sashimono.core.model.transcript import Transcript, TranscriptSegment, Word
 __all__ = [
     "AnimatedValue",
     "AudioStreamInfo",
+    "Blending",
     "Clip",
     "ClipId",
     "Effect",
