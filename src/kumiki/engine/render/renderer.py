@@ -50,6 +50,7 @@ from kumiki.engine.gpu import (
     fit_placement,
 )
 from kumiki.engine.gpu.projection import project
+from kumiki.engine.render.invalidate import image_paths
 from kumiki.engine.render.scripts import (
     ScriptStage,
     requested_effects,
@@ -257,6 +258,11 @@ class FrameRenderer:
         alive = {m.id for m in project.media}
         for key in [k for k in self._decoders if k[0] not in alive]:
             self._decoders.pop(key).close()
+
+        # 使われなくなったエフェクトの画像を GPU から手放す 手放さないと、模様を
+        # 差し替えるたびに前の画像が閉じるまで残り、長く編集するほどメモリを食う
+        with self._context:
+            self._effects.retain_images(image_paths(project))
 
     def set_quality(self, quality: RenderQuality) -> None:
         self._quality = quality

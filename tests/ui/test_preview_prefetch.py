@@ -185,13 +185,14 @@ class TestWhatItThrowsAway:
         widget.reload_sources()
         assert [thrown.everything for thrown in stub.thrown] == [True]
 
-    def test_a_rewritten_effect_image_throws_the_clips_that_read_it(
+    def test_a_rewritten_image_drops_stale_frames_but_keeps_unrelated_prefetch(
         self, preview: tuple[PreviewWidget, StubCache]
     ) -> None:
         """画像を別のソフトで描き直しても、プロジェクトは変わらない
 
         編集の差分では気付けないので、見張りが書き換わりを拾って捨てる
-        捨てないと、先読みした所だけ古い模様のまま残る
+        捨てないと、先読みした所だけ古い模様のまま残る 画像を読まないクリップ
+        まで捨てると、描き直すたびに先読みが消えて貯まらない
         """
         widget, stub = preview
         project, near, _ = _project()

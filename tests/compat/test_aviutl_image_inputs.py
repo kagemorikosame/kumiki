@@ -119,6 +119,12 @@ class TestImageBlend:
         assert any("静止画でない" in line for line in lines), lines
         assert any("ループ再生" in line for line in lines), lines
 
+    def test_looping_playback_on_a_filter_without_images_stays_recorded(self) -> None:
+        # 画像を読まないフィルタの ループ再生 まで写せたことにすると、
+        # 写していない項目が記録から消える
+        _, report = _mapped("effect.name=ぼかし\n範囲=5\nループ再生=1")
+        assert any("ループ再生" in line for line in report.lines()), report.lines()
+
     def test_an_empty_image_is_not_recorded(self) -> None:
         # AviUtl2 が既定で入れる 画像= のまま 何も読まないので写せていない物は無い
         _, report = _mapped(_blend_block(""))

@@ -1361,9 +1361,11 @@ def _check_images(
     写せたことにする 動画は先頭のコマしか使わないので、そのときは項目ごと記録に残る
     """
     movie = False
+    images = False
     for spec in definition.parameters:
         if not (isinstance(spec, FileSpec) and spec.texture):
             continue
+        images = True
         path = params.get(spec.name)
         if not isinstance(path, str) or not path:
             continue
@@ -1372,7 +1374,9 @@ def _check_images(
             log.note_missing(f"{entry.name}の画像が静止画でない（先頭のコマだけ使う）")
         if not Path(path).is_file():
             log.note_missing(f"{entry.name}の画像が見つからない")
-    if not movie:
+    # 画像を読まないエフェクトでは写せたことにしない（ほかのフィルタの同じ名前の
+    # 項目が、写していないのに記録から消える）
+    if images and not movie:
         handled.add("ループ再生")
 
 

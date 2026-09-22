@@ -38,6 +38,7 @@ from kumiki.engine.decode.probe import STILL_SUFFIXES
 from kumiki.engine.gpu import GLContextError, OffscreenGLContext
 from kumiki.engine.gpu.images import EffectImages
 from kumiki.engine.render import FrameRenderer, image_spans
+from kumiki.engine.render.invalidate import image_paths
 
 WIDTH, HEIGHT = 200, 200
 RATE = FrameRate(30)
@@ -269,14 +270,45 @@ class TestBlendModes:
         assert white > green > red > blue > 0
 
     def test_luma_alpha_sets_the_alpha_even_where_the_object_was_see_through(
-        self, draw: Callable[..., np.ndarray], tmp_path: Path
+        self, gl: OffscreenGLContext, tmp_path: Path
     ) -> None:
-        # 輝度をアルファ値として上書き 乗算と違い、元の濃さは見ない 円の中で
-        # 同じ明るさになれば、乗算との違いは元が透けていた所にだけ出る
+        # 輝度をアルファ値として上書き 乗算と違い、元の濃さは見ない 円の中は
+        # 乗算と同じ絵になり、違いは元が透けていた所（入れ物の角）にだけ出る
+        # 乗算と同じ作りに崩れると、角の下の灰色がそのまま透けて見える
+        #
+        # 透けていた所の色は AviUtl2 で確かめていない（黒の上でしか描かせて
+        # いない） いまはこちらの透明な画素の色（黒）が、その濃さで出る
         picture = solid(tmp_path / "白.png", WHITE)
-        multiplied = draw(disc(), (blend(picture, blend="luma_multiply"),))
-        overwritten = draw(disc(), (blend(picture, blend="luma_alpha"),))
+        grey = SHAPE.create(shape="rect", width=200, height=200, color=(0.5, 0.5, 0.5, 1.0))
+
+        def render(mode: str) -> np.ndarray:
+            project = Project.create(ProjectSettings(width=WIDTH, height=HEIGHT, frame_rate=RATE))
+            below = Track(
+                kind=TrackKind.VIDEO, clips=(Clip(timeline_start=0, duration=30, source=grey),)
+            )
+            above = Track(
+                kind=TrackKind.VIDEO,
+                clips=(
+                    Clip(
+                        timeline_start=0,
+                        duration=30,
+                        source=disc(),
+                        effects=(blend(picture, blend=mode),),
+                    ),
+                ),
+            )
+            project = project.with_timeline(Timeline(rate=RATE, tracks=(below, above)))
+            renderer = FrameRenderer(project, context=gl)
+            try:
+                return renderer.render(0)
+            finally:
+                renderer.close()
+
+        multiplied = render("luma_multiply")
+        overwritten = render("luma_alpha")
         assert np.array_equal(multiplied[100, 100], overwritten[100, 100])
+        assert colour_at(multiplied, 55, 55).startswith("その他"), "乗算で角の下が見えない"
+        assert colour_at(overwritten, 55, 55) == "黒", "上書きで角が透けたまま"
 
 
 class TestGradientMapPattern:
@@ -446,6 +478,21 @@ class TestTheImageStore:
             images.get(path)
         assert sum("見つからない" in record.getMessage() for record in caplog.records) == 2
 
+    def test_images_no_longer_used_are_let_go(self, tmp_path: Path) -> None:
+        # 模様を差し替えるたびに前の画像を GPU に残すと、長く編集するほどメモリを食う
+        old = solid(tmp_path / "前.png", RED)
+        new = solid(tmp_path / "後.png", GREEN)
+        images = _images(_Reader())
+        first = images.get(str(old))
+        second = images.get(str(new))
+        images.retain({str(new)})
+        assert isinstance(first, _FakeTexture) and first.released
+        assert isinstance(second, _FakeTexture) and not second.released
+        # 見張りも外れる 使われていない画像を 1 秒おきに見に行かない
+        solid(old, BLUE)
+        _touch_later(old)
+        assert images.stale() == frozenset()
+
     def test_an_unreadable_file_is_not_an_error(self, tmp_path: Path) -> None:
         # 壊れた画像 1 枚でプレビューも書き出しも止めない
         path = tmp_path / "壊れた.png"
@@ -512,6 +559,53 @@ class TestWhatToRedraw:
         border = registry.require("border").create(pattern="a.png")
         clip = Clip(timeline_start=5, duration=10, after_effects=(border,))
         assert image_spans(_project(clip), {"a.png"}).spans == ((5, 15),)
+
+    def test_every_image_the_project_reads_is_kept(self) -> None:
+        # シーンの中と場面切り替えの後の場面も数える 漏らすと、使っている画像を
+        # 手放して毎回読み直すことになる
+        inner = Timeline(
+            rate=RATE, tracks=(Track(kind=TrackKind.VIDEO, clips=(self._clip(0, "中.png"),)),)
+        )
+        scene = Scene(name="中身", timeline=inner)
+        after = Clip(
+            timeline_start=40,
+            duration=5,
+            after_effects=(registry.require("border").create(pattern="後.png"),),
+        )
+        track = Track(
+            kind=TrackKind.VIDEO,
+            clips=(
+                self._clip(0, "表.png"),
+                Clip(timeline_start=20, duration=5, scene_id=scene.id),
+                after,
+            ),
+        )
+        project = Project(
+            settings=ProjectSettings(width=WIDTH, height=HEIGHT, frame_rate=RATE),
+            timeline=Timeline(rate=RATE, tracks=(track,)),
+            scenes=(scene,),
+        )
+        assert image_paths(project) == {"表.png", "中.png", "後.png"}
+
+    def test_a_renderer_forgets_images_the_project_dropped(
+        self, gl: OffscreenGLContext, tmp_path: Path
+    ) -> None:
+        # 編集で使われなくなった画像は、レンダラを閉じるまで待たずに手放す
+        path = solid(tmp_path / "塗り.png", RED)
+        with_image = _project(
+            Clip(timeline_start=0, duration=30, source=white_square(), effects=(blend(path),))
+        )
+        renderer = FrameRenderer(with_image, context=gl)
+        try:
+            renderer.render(0)
+            renderer.set_project(
+                _project(Clip(timeline_start=0, duration=30, source=white_square()))
+            )
+            solid(path, GREEN)
+            _touch_later(path)
+            assert renderer.stale_images() == frozenset(), "使わない画像を持ち続けている"
+        finally:
+            renderer.close()
 
     def test_nothing_changed_drops_nothing(self) -> None:
         project = _project(self._clip(0, "a.png"))

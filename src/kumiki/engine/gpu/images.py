@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -120,6 +120,22 @@ class EffectImages:
                 changed.add(path)
                 self._reported[path] = current
         return frozenset(changed)
+
+    def retain(self, keep: Collection[str]) -> None:
+        """``keep`` に無い画像を GPU から手放し、忘れる
+
+        持ったままにすると、模様を差し替えるたびに前の画像が GPU に残り、
+        長く編集するほどメモリを食う 手がかり（:meth:`stale` 用）も一緒に忘れる
+        使われなくなった画像で描いた先読みの絵は、その編集の差分でもう
+        捨てられているので、見張り続ける必要が無い また使われたら読み直す
+        """
+        wanted = set(keep)
+        for path in [path for path in self._entries if path not in wanted]:
+            entry = self._entries.pop(path)
+            if entry.texture is not None:
+                entry.texture.release()
+            self._reported.pop(path, None)
+            self._warned.discard(path)
 
     def release(self) -> None:
         for entry in self._entries.values():

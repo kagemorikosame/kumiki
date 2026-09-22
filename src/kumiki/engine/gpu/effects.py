@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Collection
 from dataclasses import dataclass
 
 from OpenGL import GL
@@ -294,6 +295,10 @@ class EffectProcessor:
         program.bind_texture(spec.name, texture.handle, unit=unit)
         program.set_vec2(f"{spec.name}_size", (float(texture.width), float(texture.height)))
         return unit + 1
+
+    def retain_images(self, keep: Collection[str]) -> None:
+        """``keep`` に無い画像を GPU から手放す GL が current な所で呼ぶこと"""
+        self._images.retain(keep)
 
     def stale_images(self) -> frozenset[str]:
         """前に読んだときから書き換わった画像のパス GL は触らない"""

@@ -25,7 +25,7 @@ from kumiki.core.model import (
 )
 from kumiki.effects import FileSpec, registry
 
-__all__ = ["Invalidation", "changed_spans", "image_spans"]
+__all__ = ["Invalidation", "changed_spans", "image_paths", "image_spans"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -299,7 +299,12 @@ def _timeline_reads(timeline: Timeline, paths: frozenset[str]) -> bool:
 
 
 def _reads_image(clip: Clip, paths: frozenset[str]) -> bool:
-    """そのクリップのエフェクトが ``paths`` のどれかを画像として読むか
+    """そのクリップのエフェクトが ``paths`` のどれかを画像として読むか"""
+    return not _images_of(clip).isdisjoint(paths)
+
+
+def _images_of(clip: Clip) -> set[str]:
+    """そのクリップのエフェクトが画像として読むパス
 
     切ってあるエフェクトも数える 捨てすぎても作り直すだけで済むが、
     切り替えの途中で見落とすと古い絵が残る
@@ -307,15 +312,28 @@ def _reads_image(clip: Clip, paths: frozenset[str]) -> bool:
     場面切り替えの後の場面に掛けるエフェクト（``after_effects``）も見る
     前の場面だけを見ると、後の場面の模様を描き直しても古い絵が残る
     """
+    found: set[str] = set()
     for effect in (*clip.effects, *clip.after_effects):
         definition = registry.get(effect.kind)
         if definition is None:
             continue
         for spec in definition.parameters:
-            if (
-                isinstance(spec, FileSpec)
-                and spec.texture
-                and effect.params.get(spec.name) in paths
-            ):
-                return True
-    return False
+            value = effect.params.get(spec.name)
+            if isinstance(spec, FileSpec) and spec.texture and isinstance(value, str) and value:
+                found.add(value)
+    return found
+
+
+def image_paths(project: Project) -> frozenset[str]:
+    """プロジェクトのどこか（シーンの中も）で、エフェクトが画像として読むパス
+
+    これに無い画像は GPU から手放してよい 見えないトラックの物も残す
+    トラックを表示へ戻すたびに読み直すことになる
+    """
+    return frozenset(
+        path
+        for timeline in (project.timeline, *(scene.timeline for scene in project.scenes))
+        for track in timeline.tracks
+        for clip in track.clips
+        for path in _images_of(clip)
+    )
