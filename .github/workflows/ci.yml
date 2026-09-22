@@ -37,13 +37,12 @@ jobs:
 
       - uses: astral-sh/setup-uv@v10.2.0
         with:
-          # 解いた依存と展開したホイールを持ち越す pip の cache はダウンロードだけで、
-          # 解決と展開は毎回やり直していた（1 分近く）
-          enable-cache: true
-          cache-dependency-glob: pyproject.toml
-          cache-suffix: py${{ matrix.python }}
+          # uv の控えは持ち越さない 測ると読み戻しに 10〜13 秒かかり、入れる時間は
+          # 24 秒から 20 秒にしか縮まなかった（持ち越さない方が 6 秒速い）
+          enable-cache: false
 
       - name: 依存を入れる
+        # pip は解決と展開に毎回 1 分近くかかっていた uv は同じことを 20 秒ほどで済ませる
         # setup-python の Python へ入れる 検証の手順は素の python を呼ぶので、uv の
         # 仮想環境に入れると別の Python から見えなくなる
         run: uv pip install --python "${{ steps.python.outputs.python-path }}" -e ".[dev]"
