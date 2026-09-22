@@ -147,6 +147,38 @@ class TestCollect:
         tool.download(source, tmp_path)
         assert _Handler.requests == []
 
+    def test_an_unpinned_archive_is_reused_only_as_recorded(
+        self, tool: ModuleType, server: str, tmp_path: Path
+    ) -> None:
+        """公開値の無い物は、前の manifest に同じ取得元と sha256 で残っているときだけ使い回す
+
+        名前だけで使い回すと、取得元を変えたときに前の中身を新しい取得元の物として記録する
+        """
+        (tmp_path / "sample-1.0.tar.gz").write_bytes(ARCHIVE)
+        tool.collect([_source(tool, f"{server}/archive")], tmp_path)
+        assert [path for _, path in _Handler.requests] == ["/archive"], (
+            "manifest が無いのに使い回した"
+        )
+
+        _Handler.requests.clear()
+        tool.collect([_source(tool, f"{server}/archive")], tmp_path)
+        assert _Handler.requests == [], "記録どおりの物を落とし直した"
+
+        # 取得元が変わったら落とし直す
+        tool.collect([_source(tool, f"{server}/nohead")], tmp_path)
+        assert [path for _, path in _Handler.requests] == ["/nohead"]
+
+    def test_leftovers_are_removed(self, tool: ModuleType, server: str, tmp_path: Path) -> None:
+        """一覧に無い物（前の版のソース）はフォルダから消す
+
+        残すと、フォルダを丸ごと Release へ添付したときに古いソースまで配る
+        """
+        (tmp_path / "old-0.9.tar.gz").write_bytes(b"old")
+        tool.collect([_source(tool, f"{server}/archive")], tmp_path)
+        assert sorted(path.name for path in tmp_path.iterdir()) == sorted(
+            ["sample-1.0.tar.gz", tool.SUMS_NAME, tool.MANIFEST_NAME]
+        )
+
     def test_a_stale_archive_is_fetched_again(
         self, tool: ModuleType, server: str, tmp_path: Path
     ) -> None:
@@ -247,6 +279,17 @@ class TestTheList:
         names = {source.name.split()[0] for source in tool.SOURCES}
         assert {"FFmpeg", "pyav-ffmpeg", "x264", "x265", "LAME", "libiconv", "Qt"} <= names
         assert any(source.name.startswith("PySide6") for source in tool.SOURCES)
+
+    def test_every_source_is_fetched_over_https(self, tool: ModuleType) -> None:
+        # http だと転送の途中で差し替えられても気付けない（公開値で照合できない物もある）
+        assert all(source.url.startswith("https://") for source in tool.SOURCES)
+
+    def test_the_qt_folder_follows_the_version(self, tool: ModuleType) -> None:
+        # Qt の置き場は major.minor のフォルダの下 版を上げてここだけ古いと取得先が壊れる
+        series = ".".join(tool.QT_VERSION.split(".")[:2])
+        for source in tool.SOURCES:
+            if source.qt_module is not None:
+                assert f"/qt/{series}/{tool.QT_VERSION}/" in source.url
 
     def test_file_names_do_not_collide(self, tool: ModuleType) -> None:
         # 名前がぶつかると、後から落とした物が前の物を黙って上書きする

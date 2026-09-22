@@ -102,7 +102,7 @@ libiconv・winpthreads・zlib は、組み立てに使った MSYS2 の MinGW か
 | pyav-ffmpeg（組み立ての手順と FFmpeg・LAME・libvpx への差分） | 8.1.2-1 | https://github.com/PyAV-Org/pyav-ffmpeg/archive/refs/tags/8.1.2-1.tar.gz |
 | x264 | b35605ace3ddf7c1a5d67a2eb553f034aef41d55 | https://github.com/mirror/x264/archive/b35605ace3ddf7c1a5d67a2eb553f034aef41d55.tar.gz |
 | x265 | 4.2 | https://bitbucket.org/multicoreware/x265_git/downloads/x265_4.2.tar.gz |
-| LAME | 3.100 | http://deb.debian.org/debian/pool/main/l/lame/lame_3.100.orig.tar.gz |
+| LAME | 3.100 | https://deb.debian.org/debian/pool/main/l/lame/lame_3.100.orig.tar.gz |
 | libiconv | 1.19 | https://ftp.gnu.org/pub/gnu/libiconv/libiconv-1.19.tar.gz |
 | Qt（積んだ Qt のファイルが属するモジュールだけ いまは qtbase・qtsvg・qtimageformats・qttranslations） | 6.11.2 | https://download.qt.io/official_releases/qt/6.11/6.11.2/submodules/ |
 | PySide6 / shiboken6 | 6.11.2 | https://download.qt.io/official_releases/QtForPython/pyside6/PySide6-6.11.2-src/ |

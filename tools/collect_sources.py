@@ -18,6 +18,7 @@ zip は GPL の条件で配る（THIRD_PARTY_NOTICES.md） GPL と LGPL は、�
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import io
 import json
@@ -40,7 +41,9 @@ FFMPEG_VERSION = "8.1.2"
 QT_VERSION = "6.11.2"
 #: tools/build_package.py が組み立てるフォルダの名前 積んだ Qt をここから数える
 BUNDLE_NAME = "Kumiki"
-_QT = f"https://download.qt.io/official_releases/qt/6.11/{QT_VERSION}/submodules"
+#: Qt の置き場は major.minor のフォルダの下にある 版から作り、上げたときの直し忘れを防ぐ
+_QT_SERIES = ".".join(QT_VERSION.split(".")[:2])
+_QT = f"https://download.qt.io/official_releases/qt/{_QT_SERIES}/{QT_VERSION}/submodules"
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,7 +160,7 @@ SOURCES: tuple[Source, ...] = (
     Source(
         "LAME",
         "3.100",
-        "http://deb.debian.org/debian/pool/main/l/lame/lame_3.100.orig.tar.gz",
+        "https://deb.debian.org/debian/pool/main/l/lame/lame_3.100.orig.tar.gz",
         "ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e",
         "LGPL-2.0-or-later",
         "lame_3.100.orig.tar.gz",
@@ -305,18 +308,32 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def download(source: Source, folder: Path, *, opener: Opener = _open) -> str:
+def download(
+    source: Source,
+    folder: Path,
+    *,
+    opener: Opener = _open,
+    previous: dict[str, object] | None = None,
+) -> str:
     """1 つ落として sha256 を返す 照合できる物は照合し、合わなければ消して止まる
 
-    前に落とし終えた物が残っていれば落とし直さない qtwebengine は 500 MB を超えるので、
-    1 つ落ちたあとに全部やり直すと時間が掛かる 最後まで書けて照合も通った物にしか
-    本来の名前を付けないので、残っている物は完成品と見てよい 公開値と合わない物だけ
-    落とし直す
+    前に落とし終えた物が残っていれば落とし直さない 1 つ落ちたあとに全部やり直すと
+    時間が掛かる 使い回すのは、公開値と合う物か、前の manifest（``previous``）に
+    同じ取得元・版・sha256 で記録された物だけ 名前が同じというだけで使い回すと、
+    取得元を変えたときに前の中身を新しい取得元の物として記録する
     """
     target = folder / source.filename
     if target.exists():
         existing = _sha256(target)
-        if source.sha256 is None or existing == source.sha256:
+        if source.sha256 is not None and existing == source.sha256:
+            return existing
+        if (
+            source.sha256 is None
+            and previous is not None
+            and previous.get("url") == source.url
+            and previous.get("version") == source.version
+            and previous.get("sha256") == existing
+        ):
             return existing
     partial = target.with_name(target.name + ".part")
     try:
@@ -341,10 +358,18 @@ def download(source: Source, folder: Path, *, opener: Opener = _open) -> str:
 def collect(sources: Sequence[Source], folder: Path, *, opener: Opener = _open) -> Path:
     """全部落とし、sha256 の一覧と manifest を書く 戻り値は manifest の場所"""
     folder.mkdir(parents=True, exist_ok=True)
+    manifest = folder / MANIFEST_NAME
+    previous: dict[str, dict[str, object]] = {}
+    if manifest.exists():
+        with contextlib.suppress(ValueError, TypeError, AttributeError):
+            previous = {
+                str(entry["file"]): entry
+                for entry in json.loads(manifest.read_text(encoding="utf-8"))
+            }
     entries = []
     for source in sources:
         print(f"落とす: {source.name} {source.version}")
-        digest = download(source, folder, opener=opener)
+        digest = download(source, folder, opener=opener, previous=previous.get(source.filename))
         entries.append(
             {
                 "name": source.name,
@@ -361,8 +386,13 @@ def collect(sources: Sequence[Source], folder: Path, *, opener: Opener = _open) 
     (folder / SUMS_NAME).write_text(
         "".join(f"{entry['sha256']}  {entry['file']}\n" for entry in entries), encoding="utf-8"
     )
-    manifest = folder / MANIFEST_NAME
     manifest.write_text(json.dumps(entries, ensure_ascii=False, indent=2), encoding="utf-8")
+    # 今回の一覧に無い物（前の版のソースなど）は消す 残すと、フォルダを丸ごと Release へ
+    # 添付したときに、manifest に載っていない古いソースまで一緒に配る
+    keep = {source.filename for source in sources} | {SUMS_NAME, MANIFEST_NAME}
+    for path in folder.iterdir():
+        if path.is_file() and path.name not in keep:
+            path.unlink()
     return manifest
 
 
