@@ -11,13 +11,21 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Collection
 from dataclasses import dataclass
 
 from OpenGL import GL
 
 from kumiki.core.model import Effect, ParamValue
 from kumiki.effects import EffectDefinition, registry
-from kumiki.effects.spec import CheckSpec, ColorSpec, SelectSpec, TrackSpec, ValueSpec
+from kumiki.effects.spec import (
+    CheckSpec,
+    ColorSpec,
+    FileSpec,
+    SelectSpec,
+    TrackSpec,
+    ValueSpec,
+)
 from kumiki.engine.gpu.glutil import (
     FULL_RECT,
     VERTEX_SHADER,
@@ -27,6 +35,7 @@ from kumiki.engine.gpu.glutil import (
     ShaderError,
     Texture,
 )
+from kumiki.engine.gpu.images import EffectImages
 
 __all__ = ["EffectProcessor", "srgb_to_linear"]
 
@@ -69,6 +78,8 @@ class EffectProcessor:
         self._source = Framebuffer(width, height)
         self._blit = Program(VERTEX_SHADER, _BLIT_FRAGMENT)
         self._programs: dict[str, _Compiled | None] = {}
+        #: エフェクトが読む画像（画像合成の絵、縁取りの模様）
+        self._images = EffectImages()
         self._front = 0
         self._object: tuple[float, float, float, float] = (0.0, 0.0, float(width), float(height))
         self._duration = 0
@@ -152,6 +163,7 @@ class EffectProcessor:
             if compiled is not None:
                 compiled.program.release()
         self._programs.clear()
+        self._images.release()
         self._blit.release()
 
     # --- 内部 ---
@@ -235,7 +247,10 @@ class EffectProcessor:
         値は仕様の型へ寄せてから渡す ファイルから読んだ値は型までしか確かめて
         いないので、数のはずの所に文字が、整数の所に 32 ビットを超える数が入りうる
         そのまま渡すと GL の呼び出しが例外を投げ、プレビューも書き出しも止まる
+
+        画像は 2 番のユニットから順に繋ぐ 0 と 1 は ``u_texture`` と ``u_source``
         """
+        unit = 2
         for spec in definition.parameters:
             value: ParamValue | None = effect.params.get(spec.name)
             if value is None:
@@ -264,6 +279,30 @@ class EffectProcessor:
                 program.set_bool(spec.name, spec.coerce(value))
             elif isinstance(spec, ValueSpec):
                 program.set_int(spec.name, spec.coerce(value))
+            elif isinstance(spec, FileSpec) and spec.texture:
+                unit = self._bind_image(program, spec, spec.coerce(value), unit)
+
+    def _bind_image(self, program: Program, spec: FileSpec, path: str, unit: int) -> int:
+        """画像を次の空いたテクスチャユニットへ繋ぐ 次に使うユニットを返す
+
+        大きさは**毎回**渡す uniform の値はプログラムに残るので、画像を外した
+        クリップが、前に描いた別のクリップの大きさを引き継いで空の画像を読む
+        """
+        texture = self._images.get(path)
+        if texture is None:
+            program.set_vec2(f"{spec.name}_size", (0.0, 0.0))
+            return unit
+        program.bind_texture(spec.name, texture.handle, unit=unit)
+        program.set_vec2(f"{spec.name}_size", (float(texture.width), float(texture.height)))
+        return unit + 1
+
+    def retain_images(self, keep: Collection[str]) -> None:
+        """``keep`` に無い画像を GPU から手放す GL が current な所で呼ぶこと"""
+        self._images.retain(keep)
+
+    def stale_images(self) -> frozenset[str]:
+        """前に読んだときから書き換わった画像のパス GL は触らない"""
+        return self._images.stale()
 
     def _copy(self, source: Framebuffer, target: Framebuffer) -> None:
         target.bind(clear=(0.0, 0.0, 0.0, 0.0))
