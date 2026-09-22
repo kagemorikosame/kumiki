@@ -402,6 +402,10 @@ def _is_sound(item: MappedObject, known: Mapping[str, MediaItem]) -> bool:
     見つからなければ種類の名前で決める 素材の無い音声を映像トラックへ置くと、
     あとで素材を足しても映像トラックでは鳴らない
     """
+    # 音も持つ動画は映像トラックへ置くだけで、音声のクリップは作っていない
+    # （こちらの素材の読み込み :func:`insert_media` は映像と音声へ分けてリンクする）
+    # YMM4 の動画アイテムは配布物 230 本で 1 度も使われておらず、実物で確かめるまでは
+    # 分ける側へ寄せない 形式の推測で書くと外れる（Issue #89）
     linked = _media_of(item, known)
     if linked is not None:
         return not (linked.has_video or linked.is_still)
