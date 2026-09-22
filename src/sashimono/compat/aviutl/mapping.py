@@ -667,6 +667,9 @@ def _split_grid(
             label=f"{_SPLIT}の{source_name}",
             default=1.0,
         )
+    # 横と縦の数のほかに使われている項目があれば記録する 黙って捨てると、
+    # 写せたつもりのまま違う絵が出る（ほかのフィルタと同じ扱い）
+    _note_dropped(entry, {"横分割数", "縦分割数"}, log)
     return grid
 
 

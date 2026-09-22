@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 
 from sashimono.core.model import (
+    AnimatedValue,
     Clip,
     Effect,
     GeneratedSource,
@@ -185,6 +186,14 @@ class TestKaleidoscope:
         stretched = _lit(draw(_kaleidoscope(**wide))).sum()
         clipped = _lit(draw(_kaleidoscope(**wide, clip_outside=True))).sum()
         assert stretched > clipped * 1.2
+
+    def test_two_corners_still_draw(self, draw: Callable[..., np.ndarray]) -> None:
+        # 読み込んだ値は範囲へ収めずにシェーダへ届く 角数 2 をそのまま使うと
+        # 範囲の内接円の半径が 0 になり、画面が真っ黒になる
+        effect = _kaleidoscope(span=20.0, repeats=2.0)
+        effect = Effect(kind=effect.kind, params={**effect.params, "corners": AnimatedValue(2.0)})
+        width, height = _size(draw(effect))
+        assert width > 0 and height > 0
 
     def test_nothing_outside_the_area_is_drawn(self, draw: Callable[..., np.ndarray]) -> None:
         # 範囲の外は元の絵も残らない（実測 長さ 50 で、はみ出た田の字が消えた）

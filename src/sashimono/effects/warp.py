@@ -172,7 +172,9 @@ void main() {
     vec2 p = v_uv * u_size - origin;
 
     // 角数は偶数に丸める 鏡を交互に返して 1 周させるので、奇数では継ぎ目が合わない
-    float n = max(2.0, floor(corners * 0.5 + 0.5) * 2.0);
+    // 下限を 4 にする 2 だと三角の頂角が 180 度になり、範囲の内接円の半径が 0 で何も描けない
+    // （AviUtl2 で 2 を描かせた見本はまだ無い 設定 UI も 4 からにしてある）
+    float n = max(4.0, floor(corners * 0.5 + 0.5) * 2.0);
     float half_ = PI / n;
     float length_ = max(span, 1.0);
     // 覆う範囲は、鏡の三角を 繰り返し回数 + 1 段ぶん並べた正多角形
@@ -294,7 +296,7 @@ def register_warp_effects() -> None:
                 TrackSpec("center_y", "中心 Y", -4000, 4000, 0, step=1, unit="px"),
                 TrackSpec("span", "長さ", 1, 4000, 100, step=1, unit="px"),
                 TrackSpec("angle", "回転", -3600, 3600, 0, unit="度"),
-                TrackSpec("corners", "角数", 2, 64, 6, step=2),
+                TrackSpec("corners", "角数", 4, 64, 6, step=2),
                 TrackSpec("repeats", "繰り返し回数", 1, 32, 1, step=1),
                 TrackSpec("fixed_size", "固定サイズ", 0, 8000, 0, step=1, unit="px"),
                 CheckSpec("circle_mask", "円形マスク", False),

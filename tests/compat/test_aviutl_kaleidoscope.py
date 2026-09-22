@@ -79,6 +79,14 @@ class TestSplitPieces:
         assert effects == []
         assert not report.lines()
 
+    def test_other_split_items_are_recorded(self) -> None:
+        # 横と縦の数のほかに使われている項目は記録へ出す 黙って捨てると、
+        # 写せたつもりのまま違う絵が出たことに気付けない 0 の項目は使っていないので出さない
+        _, report = _effects("オブジェクト分割\n横分割数=3\n縦分割数=3\n間隔=12\n遅延=0")
+        lines = report.lines()
+        assert any("オブジェクト分割の項目: 間隔" in line for line in lines)
+        assert not any("遅延" in line or "分割数" in line for line in lines)
+
     def test_the_grid_goes_to_the_piece_effect(self) -> None:
         # 分け方を渡し損ねると 1 マスのままになり、拡大しても何も動かない
         (effect,), report = _effects(

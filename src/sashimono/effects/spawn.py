@@ -111,9 +111,12 @@ void main() {
     ivec2 last = ivec2(clamp(floor((guess + reach - low) / cell), vec2(0.0), counts - 1.0));
 
     vec4 stacked = vec4(0.0);
-    // 上の段から順に置き、後のマスほど手前 AviUtl も分けた順に描く
-    for (int row = last.y; row >= first.y; --row) {
-        for (int column = first.x; column <= last.x; ++column) {
+    // AviUtl は上の段の左から分けた順に描き、後のマスほど手前に来る
+    // ここでは手前（下の段の右）から奥へ読み、下に敷いていく
+    // 手前から読めば、重なりが不透明になった所で奥のマスを読まずに済む
+    // （縮めて断片が重なるほど、1 画素で読むマスが増える）
+    for (int row = first.y; row <= last.y; ++row) {
+        for (int column = last.x; column >= first.x; --column) {
             vec2 corner = low + vec2(column, row) * cell;
             vec2 middle = corner + cell * 0.5;
             vec2 source = pixel - (pivot + move * (middle - pivot) - middle);
@@ -121,7 +124,11 @@ void main() {
             if (inside.x < 0.0 || inside.y < 0.0 || inside.x >= cell.x || inside.y >= cell.y) {
                 continue;
             }
-            stacked = over(sample_pixel(source), stacked);
+            stacked = over(stacked, sample_pixel(source));
+            if (stacked.a >= 0.999) {
+                frag_color = stacked;
+                return;
+            }
         }
     }
     frag_color = stacked;
