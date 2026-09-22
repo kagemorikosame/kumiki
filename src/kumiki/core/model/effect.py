@@ -86,8 +86,11 @@ class AnimatedValue:
     def is_animated(self) -> bool:
         return len(self.keyframes) > 0
 
-    def at(self, frame: int) -> float:
+    def at(self, frame: float) -> float:
         """クリップ先頭から ``frame`` 番目での値
+
+        フレームの間（小数）も引ける 移動軌跡は半フレームずつ前後を見て、
+        先端の向きを決める（整数に丸めると、速い動きで向きが 1 フレーム遅れる）
 
         最初のキーフレームより前、最後のキーフレームより後では、それぞれ端の値で
         頭打ちになる（外挿しない） 外挿すると、クリップをトリムしただけで
@@ -112,7 +115,7 @@ class AnimatedValue:
         eased = _ease(progress, left.interpolation, left.control_points)
         return left.value + (right.value - left.value) * eased
 
-    def _surrounding(self, frame: int) -> tuple[Keyframe, Keyframe]:
+    def _surrounding(self, frame: float) -> tuple[Keyframe, Keyframe]:
         """``frame`` を挟む 2 つのキーフレームを返す"""
         # キーフレーム数は多くても数十なので線形探索で十分 ここが重くなったら
         # bisect に置き換える

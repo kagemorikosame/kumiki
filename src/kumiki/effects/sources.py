@@ -111,6 +111,18 @@ TEXT = SourceDefinition(
 )
 
 
+#: 移動軌跡の先端と星空の粒に使える形 AviUtl の図形（``obj.load("figure")``）に当たる
+#: 三角形は円に内接する形 AviUtl2 の先端を測ると、大きさ 48 で高さ 36・底辺 41 だった
+_FIGURE_CHOICES = (
+    ("ellipse", "円"),
+    ("rect", "四角形"),
+    ("inscribed_triangle", "三角形"),
+    ("pentagon", "五角形"),
+    ("hexagon", "六角形"),
+    ("star", "星型"),
+)
+
+
 SHAPE = SourceDefinition(
     kind="shape",
     label="図形",
@@ -133,6 +145,9 @@ SHAPE = SourceDefinition(
                 ("superformula", "スーパーフォーミュラ"),
                 ("polyline", "線"),
                 ("concentration", "集中線"),
+                ("motion_trail", "移動軌跡"),
+                ("starfield", "星空"),
+                ("waveform", "音声波形"),
             ),
             "rect",
         ),
@@ -167,6 +182,51 @@ SHAPE = SourceDefinition(
         # 小さな円に縮んでしまうので、届く先は別の項目で持つ
         CheckSpec("fill_frame", "集中線を画面いっぱいに", False),
         TrackSpec("flicker", "集中線の切り替え", 0, 240, 5, unit="回/秒"),
+        # 移動軌跡（AviUtl2 の ``ライン(移動軌跡)``） X と Y の動きをたどって線を引く
+        # 線は ``線の太さ`` の円を一定の間隔で押して作る 間隔を広げると点線になる
+        TrackSpec("trail_interval", "軌跡の点の間隔", 0, 1000, 10, unit="%"),
+        TrackSpec("trail_min_step", "軌跡の点の最小間隔", 0, 1000, 2, step=1, unit="px"),
+        TrackSpec("trail_core", "軌跡の点の大きさ", 0, 100, 100, unit="%"),
+        TrackSpec("trail_band", "軌跡の点をつなぐ帯の太さ", 0, 100, 0, unit="%"),
+        # 0 なら動きの時刻どおり 正の値なら、1 フレームにその画素ずつ道をたどって伸びる
+        TrackSpec(
+            "trail_speed", "軌跡の伸びる速さ（0 で動きどおり）", 0, 100, 0, unit="px/フレーム"
+        ),
+        TrackSpec("trail_head_size", "軌跡の先端の大きさ", 0, 500, 48, step=1, unit="px"),
+        TrackSpec("trail_head_angle", "軌跡の先端の角度", 0, 360, 0, unit="度"),
+        # 50% で図形の中心が今の位置に来る 大きいほど進む向きへ出る
+        TrackSpec("trail_head_offset", "軌跡の先端の位置", -500, 500, 70, unit="%"),
+        SelectSpec("trail_head_shape", "軌跡の先端の形", _FIGURE_CHOICES, "inscribed_triangle"),
+        # 星空（AviUtl2 の ``星``） 粒が奥から手前へ流れてくる
+        TrackSpec("star_count", "星の数", 1, 5000, 1500, step=1),
+        # 負にすると手前から奥へ流れる
+        TrackSpec("star_speed", "星の速さ", -50, 50, 6, step=0.1),
+        TrackSpec("star_spread", "星の広がり", 0, 50, 12, step=0.1),
+        TrackSpec("star_depth", "星の奥行き", 0, 50, 20, step=0.1),
+        TrackSpec("star_size", "星の大きさ", 1, 100, 30, step=1, unit="px"),
+        SelectSpec("star_shape", "星の形", _FIGURE_CHOICES, "ellipse"),
+        TrackSpec("star_fade_in", "星のフェードイン", 0, 10, 0.15, step=0.01, unit="秒"),
+        TrackSpec("star_fade_out", "星のフェードアウト", 0, 10, 0.15, step=0.01, unit="秒"),
+        # 音声波形（AviUtl2 の ``音声波形表示``） 素材の音を今の時刻から 1 画素 1 サンプルで描く
+        # クリップが素材を持てばそちらを使い、無ければこの道の音を読む
+        TextSpec("audio_path", "音声波形の音声ファイル", "", multiline=False),
+        TrackSpec("wave_volume", "音声波形の音量", 0, 500, 100, unit="%"),
+        # 周波数ごとの大きさを下から塗る（AviUtl2 の スペクトラム表示）
+        CheckSpec("wave_spectrum", "音声波形をスペクトラムにする", False),
+        # 0 なら 1 画素ずつ 数を決めると、その升目の数の絵に描いてから引き伸ばす
+        TrackSpec("wave_columns", "音声波形の横の升目", 0, 4000, 0, step=1),
+        TrackSpec("wave_rows", "音声波形の縦の升目", 0, 4000, 0, step=1),
+        TrackSpec("wave_gap_x", "音声波形の升目の横のすき間", 0, 100, 0, unit="%"),
+        TrackSpec("wave_gap_y", "音声波形の升目の縦のすき間", 0, 100, 0, unit="%"),
+        # 素材のこのミリ秒より先は描かない（AviUtl の 再生範囲 の終わり） 負なら素材の終わりまで
+        # 整数しか持てない項目なのでミリ秒 秒で持つと 80.448 秒が 80 秒に切れる
+        ValueSpec(
+            "audio_end_ms",
+            "音声波形を読む終わり（ミリ秒 負で最後まで）",
+            -1,
+            minimum=-1,
+            maximum=10**10,
+        ),
         TrackSpec("pos_x", "X", -4000, 4000, 0, step=1, unit="px"),
         TrackSpec("pos_y", "Y", -4000, 4000, 0, step=1, unit="px"),
         TrackSpec("rotation", "回転", -3600, 3600, 0, unit="度"),
