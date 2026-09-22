@@ -56,12 +56,12 @@ MAX_PIPELINE_DEPTH = 8
 #: 合成 / 読み戻し / 色変換 / エンコード + mux の順（NVENC・NVIDIA GPU）
 #: 前の 2 つは GPU の側で、後ろの 2 つが別スレッドへ逃がせる分
 #: 測り直すときは tools\bench_export.py
-MEASURED_EXPORT_MS = (17.0, 7.4, 6.1, 0.8)
+MEASURED_EXPORT_MS = (14.6, 7.4, 6.0, 0.8)
 
 #: 同じ素材を書き出し切ったときの 1 枚あたりの実測（ミリ秒） 1 枚ずつ / 2 枚先まで
-#: 内訳の差（6.9ms）ほど縮まないのは、色変換の前半（画素を PyAV へ写す所）が
+#: 内訳の差（6.8ms）ほど縮まないのは、色変換の前半（画素を PyAV へ写す所）が
 #: GIL を握ったままで、合成の側の Python の処理と取り合うため
-MEASURED_EXPORT_TOTAL_MS = (41.5, 38.0)
+MEASURED_EXPORT_TOTAL_MS = (38.7, 37.1)
 
 #: 優先順に並べた映像コーデック 前にあるものから、使えるものを選ぶ
 #: NVENC は CPU をほとんど使わないので、長尺でも編集を続けながら書き出せる

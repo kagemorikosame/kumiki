@@ -31,9 +31,9 @@ import statistics
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from fractions import Fraction
 from pathlib import Path
 
@@ -125,7 +125,9 @@ def _project(sources: list[Path], width: int, height: int, frames: int) -> Proje
             media_id=media.id,
             # 重ねた下の絵も描かせる 不透明のままだと、隠れた分を飛ばす作りに
             # なったときに重ねた意味が無くなる
-            opacity=AnimatedValue(70.0),
+            # 不透明度は 0.0 から 1.0 で、合成側が範囲へ丸める 70.0 と書くと
+            # 1.0 に丸められて不透明のままになり、重ねた意味が消える
+            opacity=AnimatedValue(0.7),
         )
         project = AddClip(track.id, clip).apply(project)
     return project
@@ -167,6 +169,8 @@ def breakdown(
         "色変換": [],
         "エンコード": [],
         "mux": [],
+        # 最後に 1 回だけ 1 枚あたりの段ではないので、別の行として出す
+        "吐き出し": [],
     }
     try:
         stream = container.add_stream(codec, rate=Fraction(30, 1))
@@ -200,7 +204,14 @@ def breakdown(
                 times["色変換"].append((converted - read) * 1000)
                 times["エンコード"].append((encoded - converted) * 1000)
                 times["mux"].append((muxed - encoded) * 1000)
-        container.mux(video.encode(None))
+        # 溜まっている分の吐き出しも数える エンコーダが数枚遅れて出す作り
+        # （NVENC など）では、最後の数枚のエンコードと mux がここに寄る
+        # 数えないと「エンコード」と「mux」と「合計」が実際より短く出る
+        # 1 枚ごとの段とは混ぜない 混ぜると、その段の中央値が 1 回だけの値で動く
+        started = time.perf_counter()
+        packets = video.encode(None)
+        container.mux(packets)
+        times["吐き出し"].append((time.perf_counter() - started) * 1000)
     finally:
         container.close()
         renderer.close()
@@ -247,6 +258,11 @@ def gil_release(sources: list[Path], frames: int) -> None:
     その場合、レイヤーごとの並列デコードは効かないので入れない
     """
     print("\nPyAV のデコードが GIL を解放するか（別々の素材を同じ枚数だけデコードする）")
+    if len(sources) < 2:
+        # 1 本だとスレッドも 1 本で、並べる相手がいない 倍率は必ず 1 前後になり、
+        # 解放しているかどうかの答えにならない 出すと嘘になるので測らない
+        print("  素材が 1 本なので並べる相手がいない（--layers 2 以上で測る）")
+        return
 
     def decode_one(path: Path) -> None:
         with VideoDecoder(path) as decoder:
@@ -258,12 +274,12 @@ def gil_release(sources: list[Path], frames: int) -> None:
         decode_one(path)
     serial = (time.perf_counter() - started) * 1000
 
-    threads = [threading.Thread(target=decode_one, args=(path,)) for path in sources]
     started = time.perf_counter()
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
+    # join() はスレッドの中の例外を投げ直さない デコードに失敗しても気付かず、
+    # 中途半端な時間から倍率を出して判定まで表示してしまう result() で投げ直させる
+    with ThreadPoolExecutor(max_workers=len(sources)) as pool:
+        for future in [pool.submit(decode_one, path) for path in sources]:
+            future.result()
     parallel = (time.perf_counter() - started) * 1000
 
     speedup = serial / parallel if parallel else 0.0
@@ -275,11 +291,16 @@ def gil_release(sources: list[Path], frames: int) -> None:
 
 
 def _frames_of(path: Path, limit: int) -> list[np.ndarray]:
+    """書き出したファイルのフレーム ``limit`` を 1 枚超えた所で止める
+
+    ちょうど ``limit`` 枚で止めると、全部のファイルが同じだけ足りなくても
+    同じだけ多くても「同じ絵」と出てしまう 1 枚多く読んで枚数まで比べる
+    """
     frames: list[np.ndarray] = []
     with av.open(str(path)) as container:
         for frame in container.decode(video=0):
             frames.append(frame.to_ndarray(format="rgb24"))
-            if len(frames) >= limit:
+            if len(frames) > limit:
                 break
     return frames
 
@@ -302,14 +323,17 @@ def compare_pipeline(
         export_project(project, settings)
         elapsed = (time.perf_counter() - started) * 1000
         produced = _frames_of(path, frames)
-        if reference is None:
+        if len(produced) != frames:
+            # 頼んだ枚数で出ていない 絵を比べる前にここで出す
+            # 全部同じだけ欠けていると、絵の比べ方では「同じ」に見えてしまう
+            same = f"**{len(produced)} 枚しか出ていない（頼んだのは {frames} 枚）**"
+        elif reference is None:
             reference = produced
             same = "基準"
         else:
             same = (
                 "同じ絵"
-                if len(produced) == len(reference)
-                and all(np.array_equal(a, b) for a, b in zip(produced, reference, strict=True))
+                if all(np.array_equal(a, b) for a, b in zip(produced, reference, strict=True))
                 else "**絵が違う**"
             )
         label = "直列" if depth == 0 else f"深さ {depth}"
