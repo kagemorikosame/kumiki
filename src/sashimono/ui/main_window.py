@@ -1428,7 +1428,9 @@ class MainWindow(QMainWindow):
             if not commands:
                 self.statusBar().showMessage("テキストのクリップにしか適用できません", 5000)
                 return
-            self.execute_all(commands, "テンプレートを適用")
+            if not self.execute_all(commands, "テンプレートを適用"):
+                # 断られた理由は execute_all がステータスバーに出している 上書きしない
+                return
             self.statusBar().showMessage("テンプレートを適用した（文字と長さはそのまま）", 5000)
             return
 
