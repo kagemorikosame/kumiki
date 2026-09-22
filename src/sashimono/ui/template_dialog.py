@@ -54,12 +54,22 @@ class TemplateDialog(QDialog):
     """テンプレートを選んで、置くか着せるかを決める"""
 
     def __init__(
-        self, catalog: TemplateCatalog | None = None, parent: QWidget | None = None
+        self,
+        catalog: TemplateCatalog | None = None,
+        parent: QWidget | None = None,
+        *,
+        roots: tuple[Path, ...] | None = None,
     ) -> None:
+        """``roots`` を渡すと、既定のフォルダではなくその置き場だけを並べる
+
+        渡せないと「読み直す」が必ず本人のフォルダを見に行く 写真を撮る道具
+        （``tools/shots.py``）は決まった置き場だけを並べたいので、その口を開ける
+        """
         super().__init__(parent)
         self.setWindowTitle("テンプレート")
         self.resize(820, 520)
         self._catalog = catalog if catalog is not None else template_catalog()
+        self._roots = roots
         self._report = CompatibilityReport()
         self._loaded: list[MappedObject] = []
 
@@ -123,7 +133,7 @@ class TemplateDialog(QDialog):
         """棚を読み直して並べ直す"""
         from sashimono.compat.catalog import default_template_roots
 
-        self._catalog.scan(default_template_roots())
+        self._catalog.scan(self._roots if self._roots is not None else default_template_roots())
         self._tree.clear()
 
         groups: dict[str, QTreeWidgetItem] = {}
