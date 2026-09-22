@@ -247,6 +247,17 @@ class TestTheOutline:
         # ここが落ちると、読み込んだ図形が今までどおり輪郭の中央に線を引く
         assert _source(self._TRIANGLE).params["line_align"] == "inside"
 
+    @pytest.mark.parametrize("name", ["図形", "扇型"])
+    def test_the_first_generation_keeps_the_centred_line(self, name: str) -> None:
+        # 内側に引くと確かめられたのは AviUtl2 だけ AviUtl1 のファイルにも当てると、
+        # 今まで読めていた絵が測らないまま一回り小さくなる
+        body = f"[0]\nstart=1\nend=30\nlayer=1\n[0.0]\n_name={name}\nサイズ=400\nライン幅=20\n"
+        report = CompatibilityReport()
+        item = map_object(parse_exo(body).objects[0], RATE, report=report)
+        assert item is not None
+        assert item.clip.source is not None
+        assert item.clip.source.params["line_align"] == "center"
+
     def test_a_native_shape_keeps_the_centred_line(self) -> None:
         # 既にある作品の見た目を変えないため、既定は今までの引き方のまま
         # ここが落ちると、AviUtl2 と関係の無い図形まで一回り小さくなる
