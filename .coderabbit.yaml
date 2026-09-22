@@ -40,7 +40,7 @@ reviews:
     - "!tests/fixtures/**"
 
   path_instructions:
-    - path: "src/kumiki/**/*.py"
+    - path: "src/sashimono/**/*.py"
       instructions: |
         このプロジェクトの約束を見てください
 
@@ -50,8 +50,8 @@ reviews:
         - 文章に句点（まる）を使わない方針です 文の途中は半角空白で区切ります
           機械の検査（tools/punctuation.py）があるので個別の指摘は不要ですが、
           逆に「句点が無いので文として不完全」という指摘もしないでください
-          ただし `src/kumiki/asr/cleanup.py` の句点の一覧や正規表現はデータです
-        - `src/kumiki/core/` は GUI に依存しません ここで PySide6 を
+          ただし `src/sashimono/asr/cleanup.py` の句点の一覧や正規表現はデータです
+        - `src/sashimono/core/` は GUI に依存しません ここで PySide6 を
           import していたら指摘してください
         - モデル（Project / Timeline / Clip）の変更は必ず `Command` 経由です
           直接書き換えていたら指摘してください
@@ -60,7 +60,7 @@ reviews:
         - 型は mypy strict で通ります `type: ignore` に理由が
           書かれていなければ指摘してください
 
-    - path: "src/kumiki/compat/**/*.py"
+    - path: "src/sashimono/compat/**/*.py"
       instructions: |
         他ソフト（AviUtl / YMM4）の資産を読む層です
 

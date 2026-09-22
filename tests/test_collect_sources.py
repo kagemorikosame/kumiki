@@ -231,7 +231,7 @@ class TestCheck:
 
 
 def _pyside(root: Path, *names: str) -> Path:
-    pyside = root / "Kumiki" / "_internal" / "PySide6"
+    pyside = root / "Sashimono" / "_internal" / "PySide6"
     for name in names:
         (pyside / name).parent.mkdir(parents=True, exist_ok=True)
         (pyside / name).write_bytes(b"")

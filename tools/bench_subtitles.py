@@ -34,7 +34,7 @@ if isinstance(sys.stdout, io.TextIOWrapper):
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 # 開発者本人の設定に触らない
-_base = Path(tempfile.mkdtemp(prefix="kumiki-subtitle-bench-"))
+_base = Path(tempfile.mkdtemp(prefix="sashimono-subtitle-bench-"))
 # 終わったら捨てる 残すと、回すたびに空の設定フォルダが溜まる
 atexit.register(shutil.rmtree, _base, True)
 os.environ["APPDATA"] = str(_base / "roaming")
@@ -65,14 +65,14 @@ if _scale is not None:
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from kumiki.core.commands import (  # noqa: E402
+from sashimono.core.commands import (  # noqa: E402
     AddClip,
     AddMedia,
     AddTrack,
     RenameProject,
     SetTranscript,
 )
-from kumiki.core.model import (  # noqa: E402
+from sashimono.core.model import (  # noqa: E402
     AudioStreamInfo,
     Clip,
     MediaItem,
@@ -84,9 +84,9 @@ from kumiki.core.model import (  # noqa: E402
     TranscriptSegment,
     VideoStreamInfo,
 )
-from kumiki.core.timebase import FrameRate  # noqa: E402
-from kumiki.engine.cache import MediaAnalyzer  # noqa: E402
-from kumiki.ui.subtitle import SubtitlePanel  # noqa: E402
+from sashimono.core.timebase import FrameRate  # noqa: E402
+from sashimono.engine.cache import MediaAnalyzer  # noqa: E402
+from sashimono.ui.subtitle import SubtitlePanel  # noqa: E402
 
 #: 30fps の 1 コマ（ミリ秒） 再生中に毎フレーム通る所の予算
 FRAME_BUDGET_MS = 1000 / 30

@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from kumiki.core.clipboard import copy_clips, paste_commands
-from kumiki.core.commands import (
+from sashimono.core.clipboard import copy_clips, paste_commands
+from sashimono.core.commands import (
     AddClip,
     AddMedia,
     AddScene,
@@ -32,11 +32,11 @@ from kumiki.core.commands import (
     insert_scene,
     new_scene,
 )
-from kumiki.core.io import load_project, save_project
-from kumiki.core.io.serialize import ProjectFileError, project_from_dict, project_to_dict
-from kumiki.core.model import Clip, MediaItem, Project, SceneId, Track, TrackKind, Transcript
-from kumiki.core.projection import project_timeline
-from kumiki.effects.sources import TEXT
+from sashimono.core.io import load_project, save_project
+from sashimono.core.io.serialize import ProjectFileError, project_from_dict, project_to_dict
+from sashimono.core.model import Clip, MediaItem, Project, SceneId, Track, TrackKind, Transcript
+from sashimono.core.projection import project_timeline
+from sashimono.effects.sources import TEXT
 from tests.conftest import make_clip
 
 
@@ -223,7 +223,7 @@ class TestSaving:
         other = project.timeline.tracks[0].clips[1]
         project = GroupClips((placed.id, other.id)).apply(project)
 
-        path = tmp_path / "本編.kmk"
+        path = tmp_path / "本編.sme"
         save_project(project, path)
         loaded = load_project(path)
         assert loaded.scenes[0].name == "オープニング"

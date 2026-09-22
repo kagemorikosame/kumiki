@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from kumiki.ai.host import ToolError
+from sashimono.ai.host import ToolError
 from tests.ai.conftest import FakeHost
 from tests.ai.test_operations import run
 

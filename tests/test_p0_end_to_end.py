@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from kumiki.core.commands import (
+from sashimono.core.commands import (
     AddClip,
     AddMedia,
     AddTrack,
@@ -18,8 +18,8 @@ from kumiki.core.commands import (
     SetTranscript,
     SplitClip,
 )
-from kumiki.core.io import load_project, save_project
-from kumiki.core.model import (
+from sashimono.core.io import load_project, save_project
+from sashimono.core.model import (
     MediaItem,
     Project,
     ProjectSettings,
@@ -27,8 +27,8 @@ from kumiki.core.model import (
     TrackKind,
     Transcript,
 )
-from kumiki.core.projection import project_timeline
-from kumiki.core.timebase import FrameRate, format_timecode
+from sashimono.core.projection import project_timeline
+from sashimono.core.timebase import FrameRate, format_timecode
 from tests.conftest import make_clip
 
 
@@ -71,7 +71,7 @@ def test_edit_save_reload_and_undo(
     assert after_cut == [("今日は", 0), ("編集ソフトを", 60), ("作ります", 150)]
 
     # 保存して読み直す
-    path = tmp_path / "配信回.kmk"
+    path = tmp_path / "配信回.sme"
     save_project(document.project, path)
     reloaded = load_project(path)
     assert reloaded == replace(document.project, name=reloaded.name)

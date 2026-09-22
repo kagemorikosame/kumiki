@@ -13,12 +13,12 @@ from dataclasses import replace
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from kumiki.core.commands import AddClip, AddTrack
-from kumiki.core.model import Clip, MediaId, Project, Track, TrackKind
-from kumiki.effects import registry
-from kumiki.engine.cache.proxy import ProxyStore
-from kumiki.engine.render import Invalidation
-from kumiki.ui.preview import SLOW_FRAME_MS, PreviewWidget
+from sashimono.core.commands import AddClip, AddTrack
+from sashimono.core.model import Clip, MediaId, Project, Track, TrackKind
+from sashimono.effects import registry
+from sashimono.engine.cache.proxy import ProxyStore
+from sashimono.engine.render import Invalidation
+from sashimono.ui.preview import SLOW_FRAME_MS, PreviewWidget
 
 
 class StubRenderer:
@@ -311,7 +311,7 @@ class TestWhenPrefetchingGoesWrong:
         """
         widget, stub = preview
         ticks = iter([0.0, (SLOW_FRAME_MS + 1) / 1000])
-        monkeypatch.setattr("kumiki.ui.preview.time.perf_counter", lambda: next(ticks))
+        monkeypatch.setattr("sashimono.ui.preview.time.perf_counter", lambda: next(ticks))
         monkeypatch.setattr(stub, "step", lambda playhead: True)
         stopped: list[str] = []
         widget.prefetch_stopped.connect(stopped.append)
@@ -325,7 +325,7 @@ class TestWhenPrefetchingGoesWrong:
     ) -> None:
         widget, stub = preview
         ticks = iter([0.0, 0.001])
-        monkeypatch.setattr("kumiki.ui.preview.time.perf_counter", lambda: next(ticks))
+        monkeypatch.setattr("sashimono.ui.preview.time.perf_counter", lambda: next(ticks))
         monkeypatch.setattr(stub, "step", lambda playhead: True)
         widget.set_frame(3)
         widget._prefetch_step()

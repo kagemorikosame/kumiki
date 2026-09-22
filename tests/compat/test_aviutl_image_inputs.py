@@ -16,12 +16,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from kumiki.compat.aviutl.exo import load_exo, parse_exo
-from kumiki.compat.aviutl.mapping import map_object
-from kumiki.compat.aviutl.report import CompatibilityReport
-from kumiki.compat.catalog import place
-from kumiki.core.model import AnimatedValue, Effect, Project, ProjectSettings
-from kumiki.core.timebase import FrameRate
+from sashimono.compat.aviutl.exo import load_exo, parse_exo
+from sashimono.compat.aviutl.mapping import map_object
+from sashimono.compat.aviutl.report import CompatibilityReport
+from sashimono.compat.catalog import place
+from sashimono.core.model import AnimatedValue, Effect, Project, ProjectSettings
+from sashimono.core.timebase import FrameRate
 
 RATE = FrameRate(60)
 
@@ -172,8 +172,8 @@ def _probe(name: str) -> Path:
 
 @pytest.fixture(scope="module")
 def renderer() -> Iterator[object]:
-    from kumiki.engine.gpu import GLContextError, OffscreenGLContext
-    from kumiki.engine.render import FrameRenderer
+    from sashimono.engine.gpu import GLContextError, OffscreenGLContext
+    from sashimono.engine.render import FrameRenderer
 
     try:
         context = OffscreenGLContext()
@@ -187,7 +187,7 @@ def renderer() -> Iterator[object]:
 
 
 def _render(renderer: object, name: str) -> np.ndarray:
-    from kumiki.engine.render import FrameRenderer
+    from sashimono.engine.render import FrameRenderer
 
     assert isinstance(renderer, FrameRenderer)
     path = _probe(name)

@@ -25,10 +25,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from kumiki.compat.aviutl.exo import ALIAS_SUFFIXES, ExoParseError, load_exo
-from kumiki.compat.aviutl.mapping import map_object
-from kumiki.compat.aviutl.report import CompatibilityReport
-from kumiki.core.timebase import FrameRate
+from sashimono.compat.aviutl.exo import ALIAS_SUFFIXES, ExoParseError, load_exo
+from sashimono.compat.aviutl.mapping import map_object
+from sashimono.compat.aviutl.report import CompatibilityReport
+from sashimono.core.timebase import FrameRate
 
 
 def default_roots() -> list[Path]:

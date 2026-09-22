@@ -18,7 +18,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from kumiki.core.model import (
+from sashimono.core.model import (
     Clip,
     Effect,
     GeneratedSource,
@@ -29,16 +29,16 @@ from kumiki.core.model import (
     Track,
     TrackKind,
 )
-from kumiki.core.timebase import FrameRate
-from kumiki.effects import registry
-from kumiki.effects.sources import SHAPE
-from kumiki.effects.spec import IMAGE_SUFFIXES
-from kumiki.engine.decode.image import read_image
-from kumiki.engine.decode.probe import STILL_SUFFIXES
-from kumiki.engine.gpu import GLContextError, OffscreenGLContext
-from kumiki.engine.gpu.images import EffectImages
-from kumiki.engine.render import FrameRenderer, image_spans
-from kumiki.engine.render.invalidate import image_paths
+from sashimono.core.timebase import FrameRate
+from sashimono.effects import registry
+from sashimono.effects.sources import SHAPE
+from sashimono.effects.spec import IMAGE_SUFFIXES
+from sashimono.engine.decode.image import read_image
+from sashimono.engine.decode.probe import STILL_SUFFIXES
+from sashimono.engine.gpu import GLContextError, OffscreenGLContext
+from sashimono.engine.gpu.images import EffectImages
+from sashimono.engine.render import FrameRenderer, image_spans
+from sashimono.engine.render.invalidate import image_paths
 
 WIDTH, HEIGHT = 200, 200
 RATE = FrameRate(30)
@@ -472,7 +472,7 @@ class TestTheImageStore:
         # 伝えたことを覚えたままだと、次のレンダラで同じ画像が無くても黙る
         path = str(tmp_path / "無い.png")
         images = _images(_Reader())
-        with caplog.at_level("WARNING", logger="kumiki.engine.gpu.images"):
+        with caplog.at_level("WARNING", logger="sashimono.engine.gpu.images"):
             images.get(path)
             images.release()
             images.get(path)

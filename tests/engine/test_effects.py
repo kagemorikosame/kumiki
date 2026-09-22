@@ -11,7 +11,7 @@ from collections.abc import Callable, Iterator
 import numpy as np
 import pytest
 
-from kumiki.core.model import (
+from sashimono.core.model import (
     AnimatedValue,
     Clip,
     Effect,
@@ -22,13 +22,13 @@ from kumiki.core.model import (
     Track,
     TrackKind,
 )
-from kumiki.core.timebase import FrameRate
-from kumiki.effects import ColorSpec, TrackSpec, registry
-from kumiki.effects.definition import EffectDefinition
-from kumiki.effects.sources import SHAPE, TEXT, source_registry
-from kumiki.engine.gpu import BlendMode, GLContextError, OffscreenGLContext, srgb_to_linear
-from kumiki.engine.render import FrameRenderer
-from kumiki.engine.sources import render_source
+from sashimono.core.timebase import FrameRate
+from sashimono.effects import ColorSpec, TrackSpec, registry
+from sashimono.effects.definition import EffectDefinition
+from sashimono.effects.sources import SHAPE, TEXT, source_registry
+from sashimono.engine.gpu import BlendMode, GLContextError, OffscreenGLContext, srgb_to_linear
+from sashimono.engine.render import FrameRenderer
+from sashimono.engine.sources import render_source
 
 
 def builtin_effects() -> tuple[EffectDefinition, ...]:
@@ -164,8 +164,8 @@ class TestShaders:
     def test_every_effect_compiles(self, gl: OffscreenGLContext) -> None:
         # コンパイルできないエフェクトは黙って素通しになる仕様なので、
         # 「絵が出た」だけでは検出できない 1 つずつ通して確かめる
-        from kumiki.engine.gpu.effects import EffectProcessor
-        from kumiki.engine.gpu.glutil import ScreenQuad
+        from sashimono.engine.gpu.effects import EffectProcessor
+        from sashimono.engine.gpu.glutil import ScreenQuad
 
         with gl:
             quad = ScreenQuad()

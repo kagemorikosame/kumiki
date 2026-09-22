@@ -6,12 +6,12 @@
 
 from __future__ import annotations
 
-from kumiki.compat.aviutl.exo import parse_exo
-from kumiki.compat.aviutl.mapping import map_object, media_paths
-from kumiki.compat.aviutl.report import CompatibilityReport
-from kumiki.compat.mapped import MappedObject
-from kumiki.core.model import AnimatedValue
-from kumiki.core.timebase import FrameRate
+from sashimono.compat.aviutl.exo import parse_exo
+from sashimono.compat.aviutl.mapping import map_object, media_paths
+from sashimono.compat.aviutl.report import CompatibilityReport
+from sashimono.compat.mapped import MappedObject
+from sashimono.core.model import AnimatedValue
+from sashimono.core.timebase import FrameRate
 
 LINE = """[Object]
 frame=0,80

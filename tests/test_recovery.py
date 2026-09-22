@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from kumiki.core.io import (
+from sashimono.core.io import (
     RecoverySession,
     backup_before_save,
     backup_folder,
@@ -20,7 +20,7 @@ from kumiki.core.io import (
     load_project,
     recovery,
 )
-from kumiki.core.model import Project
+from sashimono.core.model import Project
 
 
 def crash(session: RecoverySession) -> None:
@@ -47,7 +47,7 @@ class TestRecovery:
 
     def test_a_crashed_session_is_found(self, tmp_path: Path) -> None:
         session = RecoverySession(tmp_path)
-        source = tmp_path / "本編.kmk"
+        source = tmp_path / "本編.sme"
         session.save(Project.create(name="本編"), source)
         crash(session)
 
@@ -122,11 +122,11 @@ class TestRecovery:
 class TestBackup:
     def test_nothing_to_back_up_before_the_first_save(self, tmp_path: Path) -> None:
         # 壊れると、初めての保存が「控えるものが無い」例外で失敗する
-        assert backup_before_save(tmp_path / "無い.kmk", tmp_path / "state") is None
+        assert backup_before_save(tmp_path / "無い.sme", tmp_path / "state") is None
 
     def test_the_previous_contents_are_kept(self, tmp_path: Path) -> None:
         # 壊れると、上書きで壊した保存を戻せない（バックアップの意味が無くなる）
-        target = tmp_path / "本編.kmk"
+        target = tmp_path / "本編.sme"
         target.write_text("前の中身", "utf-8")
         copied = backup_before_save(target, tmp_path / "state")
         assert copied is not None
@@ -134,7 +134,7 @@ class TestBackup:
 
     def test_old_generations_are_pruned(self, tmp_path: Path) -> None:
         # 壊れると、保存するたびに控えが増え続けてディスクを埋める
-        target = tmp_path / "本編.kmk"
+        target = tmp_path / "本編.sme"
         for index in range(4):
             target.write_text(str(index), "utf-8")
             backup_before_save(target, tmp_path / "state", keep=2)
@@ -155,7 +155,7 @@ class TestBackup:
                 return cls.fromtimestamp(frozen.timestamp())
 
         monkeypatch.setattr(recovery, "datetime", Stopped)
-        target = tmp_path / "本編.kmk"
+        target = tmp_path / "本編.sme"
         for index in range(3):
             target.write_text(str(index), "utf-8")
             backup_before_save(target, tmp_path / "state")
@@ -173,11 +173,11 @@ class TestBackup:
                 return cls(2026, 9, 12, 12, 0, 0)
 
         monkeypatch.setattr(recovery, "datetime", Stopped)
-        target = tmp_path / "本編.kmk"
+        target = tmp_path / "本編.sme"
         target.write_text("こちら", "utf-8")
         folder = backup_folder(target, tmp_path / "state")
         folder.mkdir(parents=True)
-        taken = folder / "20260912-120000-000000-000.kmk"
+        taken = folder / "20260912-120000-000000-000.sme"
         taken.write_text("別の窓", "utf-8")
 
         copied = backup_before_save(target, tmp_path / "state")
@@ -186,13 +186,13 @@ class TestBackup:
         assert copied.read_text("utf-8") == "こちら"
 
     def test_same_name_in_another_folder_is_kept_apart(self, tmp_path: Path) -> None:
-        # 「本編.kmk」はどこにでもある 名前だけで分けると別の作品の控えが混ざる
+        # 「本編.sme」はどこにでもある 名前だけで分けると別の作品の控えが混ざる
         state = tmp_path / "state"
-        assert backup_folder(tmp_path / "a" / "本編.kmk", state) != backup_folder(
-            tmp_path / "b" / "本編.kmk", state
+        assert backup_folder(tmp_path / "a" / "本編.sme", state) != backup_folder(
+            tmp_path / "b" / "本編.sme", state
         )
 
-    @pytest.mark.parametrize("name", ["a:b*c?.kmk", "con.kmk"])
+    @pytest.mark.parametrize("name", ["a:b*c?.sme", "con.sme"])
     def test_awkward_names_still_get_a_folder(self, tmp_path: Path, name: str) -> None:
         # Windows で使えない文字や予約名がそのまま残ると、控えのフォルダを作れず控えが取れない
         folder = backup_folder(tmp_path / name, tmp_path / "state")

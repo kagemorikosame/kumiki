@@ -10,14 +10,14 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from kumiki.compat.aviutl import raster
-from kumiki.compat.aviutl.mapping import _spec_value
-from kumiki.compat.aviutl.objapi import ObjectState
-from kumiki.compat.aviutl.report import CompatibilityReport
-from kumiki.compat.aviutl.runtime import LuaScriptRuntime
-from kumiki.core.model import AnimatedValue, GeneratedSource, ParamValue
-from kumiki.effects.spec import ColorSpec
-from kumiki.engine.sources import render_source
+from sashimono.compat.aviutl import raster
+from sashimono.compat.aviutl.mapping import _spec_value
+from sashimono.compat.aviutl.objapi import ObjectState
+from sashimono.compat.aviutl.report import CompatibilityReport
+from sashimono.compat.aviutl.runtime import LuaScriptRuntime
+from sashimono.core.model import AnimatedValue, GeneratedSource, ParamValue
+from sashimono.effects.spec import ColorSpec
+from sashimono.engine.sources import render_source
 
 YELLOW = (255, 212, 0, 255)
 

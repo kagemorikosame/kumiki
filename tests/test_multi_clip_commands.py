@@ -10,7 +10,7 @@ from dataclasses import replace
 
 import pytest
 
-from kumiki.core.commands import (
+from sashimono.core.commands import (
     Document,
     MoveClips,
     RemoveClips,
@@ -19,9 +19,9 @@ from kumiki.core.commands import (
     TrimClips,
     insert_media,
 )
-from kumiki.core.model import Clip, MediaItem, Project, ProjectSettings, Track, TrackKind
-from kumiki.core.timebase import FrameRate
-from kumiki.effects.sources import TEXT
+from sashimono.core.model import Clip, MediaItem, Project, ProjectSettings, Track, TrackKind
+from sashimono.core.timebase import FrameRate
+from sashimono.effects.sources import TEXT
 
 
 def _text(start: int, duration: int = 30) -> Clip:

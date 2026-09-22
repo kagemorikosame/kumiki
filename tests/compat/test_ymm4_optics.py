@@ -10,10 +10,10 @@ from typing import Any
 
 import pytest
 
-from kumiki.compat.aviutl.report import CompatibilityReport
-from kumiki.compat.ymm4.decorations import map_video_effects
-from kumiki.compat.ymm4.template import map_template
-from kumiki.core.model import AnimatedValue, Effect
+from sashimono.compat.aviutl.report import CompatibilityReport
+from sashimono.compat.ymm4.decorations import map_video_effects
+from sashimono.compat.ymm4.template import map_template
+from sashimono.core.model import AnimatedValue, Effect
 
 
 def _still(amount: float) -> dict[str, Any]:

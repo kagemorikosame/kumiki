@@ -6,7 +6,7 @@ r"""文章に句点（まる）を使わない、という約束を確かめる
 対象はコメント・docstring・画面や例外に出す文言・Markdown などの**文章**
 **データとしての句点は対象外**で、ここを取り違えると機能が壊れる
 
-- 字幕整形（``src/kumiki/asr/cleanup.py``）が句点として扱う文字の一覧や正規表現
+- 字幕整形（``src/sashimono/asr/cleanup.py``）が句点として扱う文字の一覧や正規表現
 - テストの入力データ（起こし結果の字幕文など）
 
 そのため Python では字句に分けてから、その句点がどこにあるかで決める
@@ -58,13 +58,13 @@ SKIP_PARTS = {
     ".work",
 }
 #: リポジトリ直下だけを外すもの 名前だけで外すと、同じ名前のソースの
-#: フォルダ（``src/kumiki/build/`` など）まで黙って検査から抜ける
+#: フォルダ（``src/sashimono/build/`` など）まで黙って検査から抜ける
 #: ``build/`` ``dist/`` は配る zip を組み立てた残り（tools/build_package.py）
 #: 部品の中には UTF-8 でない文字列ファイルもあり、読んだ時点で検査が落ちる
 SKIP_PREFIXES = ("tests/fixtures/", "build/", "dist/")
 
 #: 文字列リテラルがデータとして句点を持つファイル リテラルだけ見逃す
-DATA_LITERAL_FILES = {"src/kumiki/asr/cleanup.py"}
+DATA_LITERAL_FILES = {"src/sashimono/asr/cleanup.py"}
 
 #: この文字の前にある句点は、ただ消す（空白を挟むと不自然になる）
 _CLOSERS = set("」』）)】〕》’”\"'`*_]|\\") | {" ", "　", "\n", "\r", "\t"}

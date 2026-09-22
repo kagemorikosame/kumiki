@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import pytest
 
-from kumiki.core.model import MediaItem, Timeline, Track, TrackKind
-from kumiki.core.timebase import FrameRate
-from kumiki.ui.theme import Metrics
-from kumiki.ui.timeline.layout import (
+from sashimono.core.model import MediaItem, Timeline, Track, TrackKind
+from sashimono.core.timebase import FrameRate
+from sashimono.ui.theme import Metrics
+from sashimono.ui.timeline.layout import (
     MAX_PIXELS_PER_FRAME,
     MIN_PIXELS_PER_FRAME,
     TimelineLayout,
@@ -181,7 +181,7 @@ class TestVertical:
 
 class TestVisibleClips:
     def test_only_visible_clips_are_returned(self, video_media: MediaItem) -> None:
-        from kumiki.ui.timeline.painter import visible_clips
+        from sashimono.ui.timeline.painter import visible_clips
 
         timeline = Timeline(
             rate=FrameRate(30),
@@ -200,7 +200,7 @@ class TestVisibleClips:
         assert [clip.timeline_start for _, clip, _ in found] == [0]
 
     def test_clip_rect_is_clipped_to_the_screen(self, video_media: MediaItem) -> None:
-        from kumiki.ui.timeline.painter import visible_clips
+        from sashimono.ui.timeline.painter import visible_clips
 
         timeline = Timeline(
             rate=FrameRate(30),

@@ -16,11 +16,11 @@ from pathlib import Path
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from kumiki.asr import CleanupOptions, clean_transcript
-from kumiki.core.commands import RippleCut, SetClipProperty, SetTranscript, SplitClip
-from kumiki.core.io import load_project, save_subtitles
-from kumiki.core.jetcut import plan_cuts
-from kumiki.core.model import (
+from sashimono.asr import CleanupOptions, clean_transcript
+from sashimono.core.commands import RippleCut, SetClipProperty, SetTranscript, SplitClip
+from sashimono.core.io import load_project, save_subtitles
+from sashimono.core.jetcut import plan_cuts
+from sashimono.core.model import (
     Clip,
     MediaItem,
     Project,
@@ -28,11 +28,11 @@ from kumiki.core.model import (
     Transcript,
     TranscriptSegment,
 )
-from kumiki.core.projection import project_timeline
-from kumiki.core.timebase import FrameRate
-from kumiki.engine.audio.silence import SilenceOptions, detect_silence, keep_speech
-from kumiki.engine.audio.waveform import analyze_waveform
-from kumiki.ui.main_window import MainWindow
+from sashimono.core.projection import project_timeline
+from sashimono.core.timebase import FrameRate
+from sashimono.engine.audio.silence import SilenceOptions, detect_silence, keep_speech
+from sashimono.engine.audio.waveform import analyze_waveform
+from sashimono.ui.main_window import MainWindow
 from tests.media_fixtures import make_silent_gap
 
 RATE = FrameRate(30)
@@ -149,8 +149,8 @@ class TestSubtitleFlow:
         assert_subtitles_point_at_the_same_audio(window._document.project, media)
 
         # --- 保存して読み直す ---
-        saved = tmp_path / "字幕.kmk"
-        from kumiki.core.io import save_project
+        saved = tmp_path / "字幕.sme"
+        from sashimono.core.io import save_project
 
         save_project(window._document.project, saved)
         reopened = load_project(saved)

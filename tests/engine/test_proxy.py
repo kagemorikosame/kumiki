@@ -17,9 +17,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-import kumiki.engine.cache.proxy as proxy_module
-from kumiki.core.commands import AddClip, AddMedia, AddTrack
-from kumiki.core.model import (
+import sashimono.engine.cache.proxy as proxy_module
+from sashimono.core.commands import AddClip, AddMedia, AddTrack
+from sashimono.core.model import (
     Clip,
     MediaId,
     MediaItem,
@@ -29,8 +29,8 @@ from kumiki.core.model import (
     TrackKind,
     VideoStreamInfo,
 )
-from kumiki.core.timebase import FrameRate
-from kumiki.engine.cache.proxy import (
+from sashimono.core.timebase import FrameRate
+from sashimono.engine.cache.proxy import (
     MIN_SOURCE_HEIGHT,
     ProxyBuilder,
     ProxyStore,
@@ -38,10 +38,10 @@ from kumiki.engine.cache.proxy import (
     is_worth_proxying,
     proxy_codecs,
 )
-from kumiki.engine.cache.store import CacheStore
-from kumiki.engine.decode import VideoDecoder, probe_media
-from kumiki.engine.gpu import GLContextError, OffscreenGLContext
-from kumiki.engine.render import FrameRenderer
+from sashimono.engine.cache.store import CacheStore
+from sashimono.engine.decode import VideoDecoder, probe_media
+from sashimono.engine.gpu import GLContextError, OffscreenGLContext
+from sashimono.engine.render import FrameRenderer
 from tests.media_fixtures import (
     SampleMedia,
     decode_all_frames,
@@ -307,7 +307,7 @@ class TestMakingOne:
         中身の無い控えができる 置くと、描く側が捨てて作り直しを頼み、
         また同じものができる、の繰り返しになる
         """
-        import kumiki.engine.cache.proxy as proxy_module
+        import sashimono.engine.cache.proxy as proxy_module
 
         target = tmp_path / "proxy.mp4"
         original = proxy_module._has_a_frame

@@ -1,17 +1,17 @@
 # 同梱している部品と使用許諾（Third-party notices）
 
-Kumiki 本体のソースコードは MIT License です（`LICENSE`）
+Sashimono 本体のソースコードは MIT License です（`LICENSE`）
 
-配る zip（`Kumiki-<版>-windows-x64.zip`）には、Kumiki を動かすための他の部品を
+配る zip（`SashimonoEdit-<版>-windows-x64.zip`）には、Sashimono を動かすための他の部品を
 一緒に入れてあります その中に GPL の部品（x264・x265）があるため、**zip は全体として
-GPL の条件で配ります** Kumiki 本体の MIT は GPL と両立するので、本体のソースは MIT の
+GPL の条件で配ります** Sashimono 本体の MIT は GPL と両立するので、本体のソースは MIT の
 ままです 部品ごとの使用許諾はそれぞれの部品に従います
 
 ## zip の中の置き場
 
 | 置き場 | 中身 |
 |---|---|
-| `LICENSE.txt` | Kumiki 本体の使用許諾（MIT） |
+| `LICENSE.txt` | Sashimono 本体の使用許諾（MIT） |
 | `THIRD_PARTY_NOTICES.txt` | この一覧 |
 | `licenses\GPL-2.0.txt` `GPL-3.0.txt` `LGPL-2.1.txt` `LGPL-3.0.txt` | GNU の使用許諾の全文 |
 | `licenses\<包みの名前>-<版>\` | Python の包みが自分の dist-info に持っている使用許諾の写し 組み立てのたびに集める |
@@ -29,7 +29,7 @@ GPL の条件で配ります** Kumiki 本体の MIT は GPL と両立するの�
 
 | 配布名 | 版 | 使用許諾 | ソース |
 |---|---|---|---|
-| `PySide6_Essentials` | 6.11.2 | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only（Kumiki は LGPL-3.0 で使う） | https://code.qt.io/cgit/pyside/pyside-setup.git/ |
+| `PySide6_Essentials` | 6.11.2 | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only（Sashimono は LGPL-3.0 で使う） | https://code.qt.io/cgit/pyside/pyside-setup.git/ |
 | `PySide6_Addons` | 6.11.2 | 同上 | 同上 |
 | `shiboken6` | 6.11.2 | 同上 | 同上 |
 | `av`（PyAV） | 18.1.0 | BSD-3-Clause | https://github.com/PyAV-Org/PyAV |
@@ -46,7 +46,7 @@ GPL の条件で配ります** Kumiki 本体の MIT は GPL と両立するの�
 | `trove-classifiers` | 2026.6.1.19 | Apache Software License | https://github.com/pypa/trove-classifiers |
 | `typing_extensions` | 4.16.0 | PSF-2.0 | https://github.com/python/typing_extensions |
 | `pywin32` | 312 | PSF | https://github.com/mhammond/pywin32 |
-| `pyinstaller` | 6.22.3 | GPL-2.0 に配布物への例外付き（`Kumiki.exe` の起動部と実行時の差し込み） | https://github.com/pyinstaller/pyinstaller |
+| `pyinstaller` | 6.22.3 | GPL-2.0 に配布物への例外付き（`Sashimono.exe` の起動部と実行時の差し込み） | https://github.com/pyinstaller/pyinstaller |
 
 版は開発機の組み立てで数えた物です 組み立てる機械の包みが変わると版も変わり、
 写しはそのとき入っている物から集め直します
@@ -90,7 +90,7 @@ libiconv・winpthreads・zlib は、組み立てに使った MSYS2 の MinGW か
 ## ソースの入手先
 
 **GPL と LGPL の部品の対応するソースは、zip と同じ GitHub Release に添付します**
-（https://github.com/kagemorikosame/kumiki/releases の、同じ版の Release に添付したソースと
+（https://github.com/kagemorikosame/sashimono-edit/releases の、同じ版の Release に添付したソースと
 `sources-manifest.json`） 上流の置き場が消えても、配った版のソースを渡せるようにするためです
 
 添付するのは次の物で、`tools/collect_sources.py` がリリースのたびに積んだのと同じ版を落とし、
@@ -107,13 +107,13 @@ libiconv・winpthreads・zlib は、組み立てに使った MSYS2 の MinGW か
 | Qt（積んだ Qt のファイルが属するモジュールだけ いまは qtbase・qtsvg・qtimageformats・qttranslations） | 6.11.2 | https://download.qt.io/official_releases/qt/6.11/6.11.2/submodules/ |
 | PySide6 / shiboken6 | 6.11.2 | https://download.qt.io/official_releases/QtForPython/pyside6/PySide6-6.11.2-src/ |
 
-組み立てに使った FFmpeg の設定は次で確かめられます（Kumiki の開発環境で）
+組み立てに使った FFmpeg の設定は次で確かめられます（Sashimono の開発環境で）
 
 ```
 .venv\Scripts\python.exe -c "import av._core as c; print(c.library_meta['libavcodec'])"
 ```
 
-Kumiki 本体のソースは https://github.com/kagemorikosame/kumiki にあります
+Sashimono 本体のソースは https://github.com/kagemorikosame/sashimono-edit にあります
 
 ## Qt を差し替える
 

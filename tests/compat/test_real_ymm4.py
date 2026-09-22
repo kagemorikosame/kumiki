@@ -17,10 +17,10 @@ from pathlib import Path
 
 import pytest
 
-from kumiki.compat.aviutl.report import CompatibilityReport
-from kumiki.compat.catalog import TemplateCatalog, TemplateEntry, place, restyle
-from kumiki.compat.mapped import MappedObject
-from kumiki.core.model import AnimatedValue, Clip, GeneratedSource, Project
+from sashimono.compat.aviutl.report import CompatibilityReport
+from sashimono.compat.catalog import TemplateCatalog, TemplateEntry, place, restyle
+from sashimono.compat.mapped import MappedObject
+from sashimono.core.model import AnimatedValue, Clip, GeneratedSource, Project
 
 #: 棚に並んだテンプレートと、それを読んだ結果
 type Loaded = list[tuple[TemplateEntry, list[MappedObject]]]
@@ -163,10 +163,10 @@ def test_every_template_renders(loaded: Loaded) -> None:
     写し方が合っていても、値の組み合わせでシェーダが落ちたり、例外で描画が
     止まったりすれば配布物は開けない 小さな画面で 1 枚ずつ描く
     """
-    from kumiki.core.model import ProjectSettings
-    from kumiki.core.timebase import FrameRate
-    from kumiki.engine.gpu import GLContextError, OffscreenGLContext
-    from kumiki.engine.render import FrameRenderer
+    from sashimono.core.model import ProjectSettings
+    from sashimono.core.timebase import FrameRate
+    from sashimono.engine.gpu import GLContextError, OffscreenGLContext
+    from sashimono.engine.render import FrameRenderer
 
     try:
         context = OffscreenGLContext()

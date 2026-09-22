@@ -1,6 +1,6 @@
 # 開発ルール
 
-Kumiki の開発で守ることをここにまとめる **このファイルが大本**で、
+Sashimono の開発で守ることをここにまとめる **このファイルが大本**で、
 `CLAUDE.md` / `AGENTS.md` / `.cursor/rules/` はここを指しているだけ
 ルールを変えるときはここを直す
 
@@ -117,7 +117,7 @@ def test_the_animation_uses_the_whole_length(self) -> None:
 
 ### コア層は GUI に依存しない
 
-`src/kumiki/core/` は PySide6 を import しない CLI からもテストからも AI からも
+`src/sashimono/core/` は PySide6 を import しない CLI からもテストからも AI からも
 同じ API で動くことが、AI 連携とテスト容易性の前提になっている
 
 ### 変更は必ずコマンド経由
@@ -161,8 +161,21 @@ UI の操作も AI の操作も同じ `Command` を発行し、同じ Undo ス�
 
 ### 版の出どころは 1 か所
 
-`src/kumiki/__init__.py` の `__version__` だけ `pyproject.toml` はここから読む
+`src/sashimono/__init__.py` の `__version__` だけ `pyproject.toml` はここから読む
 2 か所に書くと、配った版と中身の版が必ずずれる
+
+### 本人の置き場の名前は 1 か所、旧名は印で囲む
+
+設定・退避・キャッシュ・導入した実行環境の場所は `src/sashimono/core/userdirs.py` から取る
+`%APPDATA%` などを各所で直に組み立てない 改名で置き場の名前を変えたときに、
+引き継ぎの側と食い違う
+
+改名前の名前（古い拡張子・形式名・置き場）は、読む側と引き継ぐ側にだけ残す
+その範囲は「旧名を残す」の印の行で囲む（印の後ろに `: ここから` と `: ここまで`、
+ファイルごと残すときは `: このファイル全体` を付ける 書き方は `core/io/serialize.py` を見る
+ここに印そのものを書くと、この文書まで一括置換から外れる） 名前を一括で
+置き換える道具はこの範囲を飛ばす 囲まずに書くと、一括置換で新しい名前に書き換わり、
+改名前に保存した作品が開けなくなる（`tests/test_legacy_names.py` が落ちる）
 
 ### Y 軸は上が正
 
@@ -213,7 +226,7 @@ JSON のキーの名前から意味を推し量ると必ず外れる（`InOutZoo
 - `tools/ymm4_probes.py` … 値を 1 つずつ変えたテンプレートを作る
   （`第 1〜5 弾` を引数で選ぶ: `first` `second` `third` `fourth` `fifth`）
 - `tools/ymm4_compare.py` … テンプレートを時間差で並べた `.ymmp` を作り（`build`）、
-  YMM4 が書き出した動画と Kumiki の絵をフレームごとに比べる（`compare`）
+  YMM4 が書き出した動画と Sashimono の絵をフレームごとに比べる（`compare`）
 
 ```
 .venv\Scripts\python.exe tools\ymm4_probes.py .work\probe5\probes.ymmt fifth
@@ -222,7 +235,7 @@ JSON のキーの名前から意味を推し量ると必ず外れる（`InOutZoo
 .venv\Scripts\python.exe tools\ymm4_compare.py --work .work\probe5 compare
 ```
 
-`compare` は `report.html` と、`ymm4 | Kumiki | 差` を並べた画像を `images/` に書く
+`compare` は `report.html` と、`ymm4 | Sashimono | 差` を並べた画像を `images/` に書く
 差は 480x270 に縮めた平均なので、細い縁の違いは数に出にくい 数字だけでなく絵も見る
 
 YMM4 が読み込みで断った設定（列挙型の名前の間違いなど）は、ダイアログが別の窓に
@@ -252,7 +265,7 @@ YMM4 が読み込みで断った設定（列挙型の名前の間違いなど）
 
 - **利用者の AviUtl2 に入っている DLL をそのまま呼ぶ**（``compat/aviutl/native.py``）
   呼び方は AviUtl ExEdit2 Plugin SDK の ``module2.h`` に従う（MIT ライセンス）
-- DLL は Kumiki と同じ権限で動く（Lua の閉じ込めの外） 読むのはスクリプトフォルダに
+- DLL は Sashimono と同じ権限で動く（Lua の閉じ込めの外） 読むのはスクリプトフォルダに
   本人が置いた物だけにし、設定で切れるようにしてある
 - 配布物の DLL はリポジトリに入れない 試験は、Python で作った関数を C の関数として
   渡し、DLL と同じ作法で引数を読み結果を積ませて確かめる 実物での確認は、DLL が
@@ -363,7 +376,7 @@ Qodo が止まった、無料枠が切れたなどで返事が来ないときは
 その場合だけ、理由を書いて手で通す（管理者の操作 何を確かめたかを PR に残す）
 
 ```
-gh api repos/kagemorikosame/kumiki/statuses/<先頭のコミットの SHA> -f state=success -f context="Qodo review" -f description="手で通した: <理由>"
+gh api repos/kagemorikosame/sashimono-edit/statuses/<先頭のコミットの SHA> -f state=success -f context="Qodo review" -f description="手で通した: <理由>"
 ```
 
 Gemini Code Assist（GitHub の PR レビュー）は使わない GitHub 向けの無料 consumer version は
@@ -395,8 +408,8 @@ YMM4 互換を、実配布の .ymmt に合わせて書き直す
 ## 7. リリース
 
 正式リリースの条件と残っている課題は
-[Issues](https://github.com/kagemorikosame/kumiki/issues) と
-[マイルストーン](https://github.com/kagemorikosame/kumiki/milestones)で追う
+[Issues](https://github.com/kagemorikosame/sashimono-edit/issues) と
+[マイルストーン](https://github.com/kagemorikosame/sashimono-edit/milestones)で追う
 
 いまは **β 版** 作りが大きく変わることがある 互換の穴（AviUtl / YMM4 で
 まだ再現できていないもの）は、実際に呼ばれた回数つきで Issue に出す
@@ -408,7 +421,7 @@ YMM4 互換を、実配布の .ymmt に合わせて書き直す
 .venv\Scripts\python.exe tools\build_package.py
 ```
 
-`dist\Kumiki-<版>-windows-x64.zip` ができる 最後に**その zip を別の場所へ展開し、
+`dist\SashimonoEdit-<版>-windows-x64.zip` ができる 最後に**その zip を別の場所へ展開し、
 中の exe で `--self-check` を走らせる**ところまでが 1 回の作業
 
 - 組み立てた直後のフォルダで確かめない 開発機の Python や DLL を拾って通ってしまう
@@ -417,7 +430,7 @@ YMM4 互換を、実配布の .ymmt に合わせて書き直す
   あるか、を 1 行ずつ出す 起動しただけでは積み忘れは分からない
   （読み込みは遅延で、呼んだ時点で初めて DLL を探しに行く）
 - 使う人の機械で動かないと言われたら、zip の中の `README.txt` にあるとおり
-  `Kumiki.exe --self-check | more` の結果を貼ってもらう
+  `Sashimono.exe --self-check | more` の結果を貼ってもらう
 - 字幕起こしと AI 連携は積まない（合わせて 2 GB を超える） 開発機に入っていても
   拾わないよう、`tools/build_package.py` の `EXCLUDED_MODULES` で外している
 - **名前で読み込む部品**（lupa の Lua の実体、pip）は PyInstaller が辿れない
@@ -429,7 +442,7 @@ YMM4 互換を、実配布の .ymmt に合わせて書き直す
 
 ### 使用許諾（配る zip は GPL の条件で配る）
 
-Kumiki 本体のソースは MIT PyAV の wheel に入っている FFmpeg は組み込みの表記が
+Sashimono 本体のソースは MIT PyAV の wheel に入っている FFmpeg は組み込みの表記が
 「LGPL version 3 or later」だが、同じ wheel に GPL の libx264 と libx265 が入っていて、
 CPU での書き出しは libx264 を使う **zip は全体として GPL の条件で配る** と決めた
 （Issue #32） 本体の MIT は GPL と両立するので、ソースは MIT のまま
@@ -446,7 +459,7 @@ CPU での書き出しは libx264 を使う **zip は全体として GPL の条�
   ファイル 1 つずつの出どころを辿って数える PyInstaller は入っていれば拾うので、組み立てる
   機械が変わると積む包みも変わる
 - 次のどれかがあると、zip を作る前に止まる
-  - 出どころの分からないファイル（どの包みでも、Kumiki のソースでも、Python 本体でもない）
+  - 出どころの分からないファイル（どの包みでも、Sashimono のソースでも、Python 本体でもない）
   - 使用許諾の写しが見つからない包み（写しを持たない包みは `WITHOUT_LICENSE_FILES` で名指しする
     その前に `THIRD_PARTY_NOTICES.md` へ書く）
   - `THIRD_PARTY_NOTICES.md` の一覧に無い包み
@@ -476,11 +489,11 @@ GPL と LGPL の部品（FFmpeg・x264・x265・LAME・libiconv・Qt・PySide6�
 ```
 .venv\Scripts\python.exe tools\collect_sources.py --check
 .venv\Scripts\python.exe tools\collect_sources.py
-gh release upload <タグ> dist\Kumiki-<版>-windows-x64.zip dist\sources\*
+gh release upload <タグ> dist\SashimonoEdit-<版>-windows-x64.zip dist\sources\*
 ```
 
 - `--check` は入手先に届くかだけを見る（中身は落とさない） 落とすと 100 MB ほど
-- Qt のソースは、組み立てたフォルダ（`dist\Kumiki`）に積んだ Qt のファイルが属する
+- Qt のソースは、組み立てたフォルダ（`dist\Sashimono`）に積んだ Qt のファイルが属する
   モジュールの分だけ落とす（`QT_FILE_MODULES`） 先に `tools/build_package.py` を走らせる
   どのモジュールの物か分からない Qt のファイルがあれば止まる
 - 落とすと `dist\sources` にアーカイブと `sources-SHA256SUMS.txt` `sources-manifest.json`

@@ -17,9 +17,9 @@ from pathlib import Path
 
 import pytest
 
-from kumiki.compat.aviutl.report import CompatibilityReport
-from kumiki.compat.mapped import MappedObject
-from kumiki.compat.ymm4.template import load_template, map_template
+from sashimono.compat.aviutl.report import CompatibilityReport
+from sashimono.compat.mapped import MappedObject
+from sashimono.compat.ymm4.template import load_template, map_template
 
 ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "ymm4" / "aomoya"
 RIBBON = ROOT / "フキダシ・テロップ_ピンクと水色リボンのテロップ.ymmt"

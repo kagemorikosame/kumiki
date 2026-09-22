@@ -1,0 +1,800 @@
+"""基本的な編集コマンド
+
+どれも純関数で、失敗するときは例外を投げる トラック内でクリップが重ならないことなどの
+不変条件は :class:`~sashimono.core.model.Track` 側で検査されるので、ここで作った
+おかしな状態はモデル構築時点で弾かれる
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, replace
+
+from sashimono.core.commands.base import Command
+from sashimono.core.model import (
+    Clip,
+    ClipId,
+    GroupId,
+    MediaId,
+    MediaItem,
+    Project,
+    Track,
+    TrackId,
+    TrackKind,
+    Transcript,
+    new_clip_id,
+    new_group_id,
+)
+from sashimono.core.timebase import FrameRate
+
+__all__ = [
+    "AddClip",
+    "AddMedia",
+    "AddTrack",
+    "MoveClip",
+    "MoveClips",
+    "RemoveClip",
+    "RemoveClips",
+    "RemoveMedia",
+    "RemoveTrack",
+    "RenameProject",
+    "RippleCut",
+    "SetResolution",
+    "SetTrackHeights",
+    "SetTrackState",
+    "SetTranscript",
+    "SplitClip",
+    "TrimClip",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class AddMedia(Command):
+    """メディアプールに素材を追加する"""
+
+    item: MediaItem
+
+    @property
+    def label(self) -> str:
+        return f"素材を追加: {self.item.name}"
+
+    def apply(self, project: Project) -> Project:
+        if project.find_media(self.item.id) is not None:
+            raise ValueError(f"すでに登録されている素材: {self.item.id}")
+        return project.with_media((*project.media, self.item))
+
+
+@dataclass(frozen=True, slots=True)
+class RemoveMedia(Command):
+    """素材をメディアプールから外す
+
+    その素材を使っているクリップが 1 つでもあれば失敗する 参照だけ残して
+    素材を消すと、あとから原因の分からない再生エラーになるため
+    """
+
+    media_id: MediaId
+
+    @property
+    def label(self) -> str:
+        return "素材を削除"
+
+    def apply(self, project: Project) -> Project:
+        item = project.require_media(self.media_id)
+        # シーンの中で実行されても、メインとほかのシーンの参照まで数える
+        # 開いているタイムラインだけを見ると、別の場所のクリップが消えた素材を指す
+        timelines = [project.timeline, *(scene.timeline for scene in project.scenes)]
+        in_use = [
+            clip.id
+            for timeline in timelines
+            for track in timeline.tracks
+            for clip in track.clips
+            if clip.media_id == self.media_id
+        ]
+        if in_use:
+            raise ValueError(f"素材 {item.name!r} はタイムラインで {len(in_use)} 箇所使われている")
+        remaining = tuple(m for m in project.media if m.id != self.media_id)
+        return project.with_media(remaining)
+
+
+@dataclass(frozen=True, slots=True)
+class SetTranscript(Command):
+    """素材の字幕起こし結果を差し替える
+
+    字幕はトラックではなく素材に紐付くので、この 1 操作でその素材を使っている
+    すべての箇所の字幕が同時に変わる
+    """
+
+    media_id: MediaId
+    transcript: Transcript | None
+
+    @property
+    def label(self) -> str:
+        return "字幕を更新" if self.transcript is not None else "字幕を削除"
+
+    def apply(self, project: Project) -> Project:
+        item = project.require_media(self.media_id)
+        return project.replace_media(item.with_transcript(self.transcript))
+
+
+@dataclass(frozen=True, slots=True)
+class AddTrack(Command):
+    """トラックを追加する ``index`` が ``None`` なら末尾"""
+
+    track: Track
+    index: int | None = None
+
+    @property
+    def label(self) -> str:
+        return f"トラックを追加: {self.track.name or self.track.kind.value}"
+
+    def apply(self, project: Project) -> Project:
+        timeline = project.timeline
+        if timeline.find_track(self.track.id) is not None:
+            raise ValueError(f"すでに存在するトラック: {self.track.id}")
+        tracks = list(timeline.tracks)
+        tracks.insert(len(tracks) if self.index is None else self.index, self.track)
+        return project.with_timeline(replace(timeline, tracks=tuple(tracks)))
+
+
+@dataclass(frozen=True, slots=True)
+class RemoveTrack(Command):
+    """トラックを、載っているクリップごと削除する"""
+
+    track_id: TrackId
+
+    @property
+    def label(self) -> str:
+        return "トラックを削除"
+
+    def apply(self, project: Project) -> Project:
+        timeline = project.timeline
+        if timeline.find_track(self.track_id) is None:
+            raise KeyError(f"トラックが見つからない: {self.track_id}")
+        tracks = tuple(t for t in timeline.tracks if t.id != self.track_id)
+        return project.with_timeline(replace(timeline, tracks=tracks))
+
+
+@dataclass(frozen=True, slots=True)
+class AddClip(Command):
+    """トラックにクリップを置く 既存のクリップと重なる場合は失敗する"""
+
+    track_id: TrackId
+    clip: Clip
+
+    @property
+    def label(self) -> str:
+        return "クリップを追加"
+
+    def apply(self, project: Project) -> Project:
+        timeline = project.timeline
+        track = _require_track(project, self.track_id)
+        if track.locked:
+            raise ValueError(f"トラック {track.name!r} はロックされている")
+        _validate_clip_media(project, track, self.clip)
+        updated = track.with_clips((*track.clips, self.clip))
+        return project.with_timeline(timeline.replace_track(updated))
+
+
+@dataclass(frozen=True, slots=True)
+class RemoveClip(Command):
+    """クリップを削除する
+
+    ``ripple`` が真なら、同じトラックの後続クリップを詰める リンクされた
+    映像・音声も同時に削除される
+    """
+
+    clip_id: ClipId
+    ripple: bool = False
+
+    @property
+    def label(self) -> str:
+        return "クリップを削除（詰める）" if self.ripple else "クリップを削除"
+
+    def apply(self, project: Project) -> Project:
+        located = project.timeline.locate_clip(self.clip_id)
+        if located is None:
+            raise KeyError(f"クリップが見つからない: {self.clip_id}")
+        _, clip = located
+
+        targets = _linked_group(project, clip)
+        # 消す前に組の全員のトラックを見る 移動とトリムはロックを見ていたのに、
+        # 削除だけ素通しで、ロックしたトラックのクリップも消えていた
+        # 片方だけ消すと映像と音声の組が壊れるので、1 本でもロックなら丸ごと止める
+        for track_id, _ in targets:
+            locked = _require_track(project, track_id)
+            if locked.locked:
+                raise ValueError(f"トラック {locked.name!r} はロックされている")
+        timeline = project.timeline
+        for track_id, target in targets:
+            track = _require_track(project, track_id)
+            remaining = [c for c in track.clips if c.id != target.id]
+            if self.ripple:
+                remaining = [
+                    c.moved_to(c.timeline_start - target.duration)
+                    if c.timeline_start >= target.timeline_end
+                    else c
+                    for c in remaining
+                ]
+            timeline = timeline.replace_track(track.with_clips(tuple(remaining)))
+            project = project.with_timeline(timeline)
+        return project
+
+
+@dataclass(frozen=True, slots=True)
+class MoveClip(Command):
+    """クリップを別の位置、必要なら別のトラックへ動かす
+
+    リンクされた映像・音声は同じだけ動く トラックの移動は掴んだクリップだけで、
+    相手は自分のトラックに残る（音声が映像トラックへ飛んでは困る）
+    """
+
+    clip_id: ClipId
+    timeline_start: int
+    track_id: TrackId | None = None
+
+    @property
+    def label(self) -> str:
+        return "クリップを移動"
+
+    def apply(self, project: Project) -> Project:
+        located = project.timeline.locate_clip(self.clip_id)
+        if located is None:
+            raise KeyError(f"クリップが見つからない: {self.clip_id}")
+        source_track, clip = located
+        if self.timeline_start < 0:
+            raise ValueError(f"開始位置が負: {self.timeline_start}")
+
+        target_track = (
+            source_track if self.track_id is None else _require_track(project, self.track_id)
+        )
+        if source_track.locked or target_track.locked:
+            raise ValueError("ロックされたトラックのクリップは動かせない")
+        _validate_clip_media(project, target_track, clip)
+
+        delta = self.timeline_start - clip.timeline_start
+        timeline = project.timeline
+        without = tuple(c for c in source_track.clips if c.id != clip.id)
+        timeline = timeline.replace_track(source_track.with_clips(without))
+
+        # 同一トラック内の移動では、直前の replace_track で反映済みのトラックを
+        # 取り直さないと、取り除いたはずのクリップが復活する
+        destination = timeline.find_track(target_track.id)
+        if destination is None:
+            raise KeyError(f"トラックが見つからない: {target_track.id}")
+        moved = clip.moved_to(self.timeline_start)
+        timeline = timeline.replace_track(destination.with_clips((*destination.clips, moved)))
+
+        for track_id, partner in _linked_group(project, clip):
+            if partner.id == clip.id:
+                continue
+            track = timeline.find_track(track_id)
+            if track is None or track.locked:
+                continue
+            start = partner.timeline_start + delta
+            if start < 0:
+                raise ValueError("リンクされたクリップがタイムラインの先頭より前へ出る")
+            others = tuple(c for c in track.clips if c.id != partner.id)
+            timeline = timeline.replace_track(track.with_clips((*others, partner.moved_to(start))))
+        return project.with_timeline(timeline)
+
+
+@dataclass(frozen=True, slots=True)
+class MoveClips(Command):
+    """選んだクリップをまとめて ``delta`` フレームずらす トラックは変えない
+
+    :class:`MoveClip` を並べると、動かす途中で前のクリップが後ろのクリップの元の
+    場所へ入り、まだ動いていない相手と重なって失敗する（全体としては重ならない
+    動かし方でも） 全員をいったん外してから置き直す
+
+    リンクした相手も同じだけ動く 動く全員（選んだものと相手）のうち 1 本でも
+    ロックしたトラックにいれば、何も動かさない :class:`MoveClip` は相手を残して
+    動くが、まとめて動かすときに同じことをすると、選んだ中のどれかの映像と音声が
+    黙ってずれる 何本も動かすと、どれがずれたのかを見つけにくい
+    """
+
+    clip_ids: tuple[ClipId, ...]
+    delta: int
+    #: 動かすトラックの本数（同じ種類のトラックの並びで数える） 正で下へ
+    track_delta: int = 0
+
+    @property
+    def label(self) -> str:
+        return f"{len(self.clip_ids)} 本を移動"
+
+    def apply(self, project: Project) -> Project:
+        timeline = project.timeline
+        targets: dict[ClipId, tuple[TrackId, Clip]] = {}
+        for clip_id in self.clip_ids:
+            located = timeline.locate_clip(clip_id)
+            if located is None:
+                raise KeyError(f"クリップが見つからない: {clip_id}")
+            track, clip = located
+            if track.locked:
+                raise ValueError(f"トラック {track.name!r} はロックされている")
+            for track_id, member in _linked_group(project, clip):
+                partner_track = _require_track(project, track_id)
+                if partner_track.locked:
+                    raise ValueError(
+                        f"リンクした相手のトラック {partner_track.name!r} がロックされている"
+                    )
+                targets.setdefault(member.id, (track_id, member))
+        if (self.delta == 0 and self.track_delta == 0) or not targets:
+            return project
+        if any(clip.timeline_start + self.delta < 0 for _, clip in targets.values()):
+            raise ValueError("タイムラインの先頭より前へは動かせない")
+
+        by_track: dict[TrackId, list[Clip]] = {}
+        for track_id, clip in targets.values():
+            by_track.setdefault(track_id, []).append(clip)
+
+        # まず全員を元のトラックから外す 先に置き直すと、行き先のトラックにまだ残って
+        # いる元のクリップと重なって失敗する
+        arrivals: dict[TrackId, list[Clip]] = {}
+        for track_id, moving in by_track.items():
+            track = _require_track(project, track_id)
+            leaving = {clip.id for clip in moving}
+            staying = tuple(c for c in track.clips if c.id not in leaving)
+            timeline = timeline.replace_track(track.with_clips(staying))
+            destination = _shifted_track(project, track_id, self.track_delta)
+            arrivals.setdefault(destination, []).extend(
+                c.moved_to(c.timeline_start + self.delta) for c in moving
+            )
+        for track_id, coming in arrivals.items():
+            arrival = timeline.find_track(track_id)
+            if arrival is None:
+                raise KeyError(f"トラックが見つからない: {track_id}")
+            if arrival.locked:
+                raise ValueError(f"トラック {arrival.name!r} はロックされている")
+            timeline = timeline.replace_track(arrival.with_clips((*arrival.clips, *coming)))
+        return project.with_timeline(timeline)
+
+
+def _shifted_track(project: Project, track_id: TrackId, delta: int) -> TrackId:
+    """同じ種類のトラックの並びで ``delta`` 本ずらした先 端を越えれば断る"""
+    if delta == 0:
+        return track_id
+    track = _require_track(project, track_id)
+    same = [t for t in project.timeline.tracks if t.kind is track.kind]
+    index = next(i for i, t in enumerate(same) if t.id == track_id) + delta
+    if not 0 <= index < len(same):
+        raise ValueError("トラックの並びの外へは動かせない")
+    return same[index].id
+
+
+@dataclass(frozen=True, slots=True)
+class TrimClips(Command):
+    """選んだクリップの端をまとめて動かす
+
+    1 本ずつ :class:`TrimClip` を当てる 途中で失敗すれば、コマンドごと失敗するので
+    タイムラインは元のまま残る（履歴も 1 段）
+    """
+
+    clip_ids: tuple[ClipId, ...]
+    head_delta: int = 0
+    tail_delta: int = 0
+
+    @property
+    def label(self) -> str:
+        return f"{len(self.clip_ids)} 本をトリム"
+
+    def apply(self, project: Project) -> Project:
+        if self.head_delta == 0 and self.tail_delta == 0:
+            return project
+        done: set[ClipId] = set()
+        for clip_id in self.clip_ids:
+            located = project.timeline.locate_clip(clip_id)
+            if located is None:
+                raise KeyError(f"クリップが見つからない: {clip_id}")
+            track, clip = located
+            if track.locked:
+                raise ValueError(f"トラック {track.name!r} はロックされている")
+            if clip_id in done:
+                continue
+            # リンクした映像と音声は 1 回で両方が削れる 2 回当てると相手だけ余分に縮む
+            done.update(member.id for _, member in _linked_group(project, clip))
+            project = TrimClip(
+                clip_id, head_delta=self.head_delta, tail_delta=self.tail_delta
+            ).apply(project)
+        return project
+
+
+@dataclass(frozen=True, slots=True)
+class RemoveClips(Command):
+    """選んだクリップをまとめて消す ``ripple`` なら消したぶんを詰める
+
+    後ろのクリップから順に消す 前から消して詰めると、後ろのクリップの位置が
+    ずれ、詰める量の計算がずれる リンクした組は 1 回で両方消えるので、2 本目に
+    来たら飛ばす
+    """
+
+    clip_ids: tuple[ClipId, ...]
+    ripple: bool = False
+
+    @property
+    def label(self) -> str:
+        suffix = "（詰める）" if self.ripple else ""
+        return f"{len(self.clip_ids)} 本を削除{suffix}"
+
+    def apply(self, project: Project) -> Project:
+        located = [project.timeline.locate_clip(clip_id) for clip_id in self.clip_ids]
+        if any(entry is None for entry in located):
+            raise KeyError("消すクリップの一部が見つからない")
+        ordered = sorted(
+            (entry[1] for entry in located if entry is not None),
+            key=lambda clip: clip.timeline_start,
+            reverse=True,
+        )
+        for clip in ordered:
+            if project.timeline.locate_clip(clip.id) is not None:
+                project = RemoveClip(clip.id, ripple=self.ripple).apply(project)
+        return project
+
+
+@dataclass(frozen=True, slots=True)
+class SplitClip(Command):
+    """クリップを ``frame`` の位置で 2 つに割る
+
+    左側は元の ID を保ち、右側が新しい ID を得る リンクされた映像・音声も
+    同じ位置で割られるので、片方だけずれることはない
+    """
+
+    clip_id: ClipId
+    frame: int
+
+    @property
+    def label(self) -> str:
+        return "クリップを分割"
+
+    def apply(self, project: Project) -> Project:
+        located = project.timeline.locate_clip(self.clip_id)
+        if located is None:
+            raise KeyError(f"クリップが見つからない: {self.clip_id}")
+        _, clip = located
+        if not (clip.timeline_start < self.frame < clip.timeline_end):
+            raise ValueError(
+                f"分割位置がクリップの内側にない: {self.frame} は "
+                f"[{clip.timeline_start}, {clip.timeline_end}) の外"
+            )
+
+        rate = project.rate
+        timeline = project.timeline
+        # 右側は新しいリンクグループにする 元のままだと、分割してできた左右が
+        # 同じグループに残り、片方を削除するともう片方まで消える 新しいグループを
+        # 映像・音声の右側どうしで共有するので、分割後もリンクは保たれる
+        right_group = new_group_id() if clip.link_group is not None else None
+
+        for track_id, target in _linked_group(project, clip):
+            if not target.contains(self.frame):
+                # リンク先の長さが違う場合 片方だけ割ると同期が崩れるので何もしない
+                continue
+            track = timeline.find_track(track_id)
+            if track is None:
+                continue
+            left_duration = self.frame - target.timeline_start
+            left = replace(target, duration=left_duration)
+            right = replace(
+                target,
+                id=new_clip_id(),
+                timeline_start=self.frame,
+                duration=target.timeline_end - self.frame,
+                # 右側は、左側が消費したソース時間の分だけ後ろから始まる
+                source_in=target.source_in + left_duration * rate.frame_duration * target.speed,
+                link_group=right_group,
+            )
+            others = tuple(c for c in track.clips if c.id != target.id)
+            timeline = timeline.replace_track(track.with_clips((*others, left, right)))
+        return project.with_timeline(timeline)
+
+
+@dataclass(frozen=True, slots=True)
+class TrimClip(Command):
+    """クリップの端を動かす
+
+    ``head`` を動かすとソース範囲の開始位置も一緒にずれる（素材の中身は動かない）
+    ``tail`` は長さだけを変える
+    """
+
+    clip_id: ClipId
+    #: 先頭を動かす量（フレーム） 正で短く、負で長くなる
+    head_delta: int = 0
+    #: 末尾を動かす量（フレーム） 正で長く、負で短くなる
+    tail_delta: int = 0
+
+    @property
+    def label(self) -> str:
+        return "クリップをトリム"
+
+    def apply(self, project: Project) -> Project:
+        located = project.timeline.locate_clip(self.clip_id)
+        if located is None:
+            raise KeyError(f"クリップが見つからない: {self.clip_id}")
+        _, clip = located
+
+        timeline = project.timeline
+        # リンクされた映像・音声は同じだけ削る 片方だけ縮めると音がずれる
+        for track_id, target in _linked_group(project, clip):
+            track = timeline.find_track(track_id)
+            if track is None or track.locked:
+                continue
+            others = tuple(c for c in track.clips if c.id != target.id)
+            trimmed = _trimmed(project, target, self.head_delta, self.tail_delta)
+            timeline = timeline.replace_track(track.with_clips((*others, trimmed)))
+        return project.with_timeline(timeline)
+
+
+@dataclass(frozen=True, slots=True)
+class SetTrackState(Command):
+    """トラックのミュート・ソロ・ロックを切り替える ``None`` の項目は触らない
+
+    ロック中のトラックでも切り替えられる ロックはクリップを守るためのもので、
+    聞こえ方まで固めると「ロックしたら消音できない」になる
+    """
+
+    track_id: TrackId
+    muted: bool | None = None
+    solo: bool | None = None
+    locked: bool | None = None
+
+    @property
+    def label(self) -> str:
+        names = [
+            (on if value else off)
+            for value, on, off in (
+                (self.muted, "ミュート", "ミュートを解除"),
+                (self.solo, "ソロ", "ソロを解除"),
+                (self.locked, "ロック", "ロックを解除"),
+            )
+            if value is not None
+        ]
+        return "、".join(names) or "トラックの状態を変更"
+
+    def apply(self, project: Project) -> Project:
+        track = _require_track(project, self.track_id)
+        if self.muted is None and self.solo is None and self.locked is None:
+            return project
+        updated = replace(
+            track,
+            muted=track.muted if self.muted is None else self.muted,
+            solo=track.solo if self.solo is None else self.solo,
+            locked=track.locked if self.locked is None else self.locked,
+        )
+        return project.with_timeline(project.timeline.replace_track(updated))
+
+
+#: トラックの高さ（画素） 下はトラック名とボタンが 1 行で収まる高さ、上は
+#: 1 本で画面を占領しない程度 既定は :class:`Track` の既定と同じ
+MIN_TRACK_HEIGHT = 28
+MAX_TRACK_HEIGHT = 240
+DEFAULT_TRACK_HEIGHT = 60
+
+
+@dataclass(frozen=True, slots=True)
+class SetTrackHeights(Command):
+    """トラックの高さを変える 範囲の外は端へ寄せる
+
+    1 本でも全部でも同じコマンドで扱う 全トラックをまとめて変えたときに、
+    トラックの数だけ取り消し段ができると戻すのが大変になる
+    """
+
+    heights: tuple[tuple[TrackId, int], ...]
+
+    @property
+    def label(self) -> str:
+        return "トラックの高さを変更"
+
+    def apply(self, project: Project) -> Project:
+        timeline = project.timeline
+        for track_id, height in self.heights:
+            track = _require_track(project, track_id)
+            clamped = min(max(height, MIN_TRACK_HEIGHT), MAX_TRACK_HEIGHT)
+            if clamped != track.height:
+                timeline = timeline.replace_track(replace(track, height=clamped))
+                project = project.with_timeline(timeline)
+        return project
+
+
+#: 解像度として受け付ける範囲（画素）
+#: 下は縮小プレビューが潰れない程度、上は 8K まで GPU のテクスチャ上限もこのあたり
+MIN_RESOLUTION = 16
+MAX_RESOLUTION = 8192
+
+
+@dataclass(frozen=True, slots=True)
+class SetResolution(Command):
+    """出力の解像度を変える
+
+    クリップは動かさない 位置は画面中央からの画素数で持っているので、中央に
+    置いたものは中央のまま残る 端に寄せたものは、広げれば内側へ、縮めれば外へ出る
+
+    縦横とも偶数に限る 書き出しの yuv420p は色を 2x2 画素ごとに持つので、奇数だと
+    エンコーダが断る 書き出しの最後で分かっても遅いので、決める時点で止める
+    """
+
+    width: int
+    height: int
+
+    @property
+    def label(self) -> str:
+        return f"解像度を変更: {self.width}x{self.height}"
+
+    def apply(self, project: Project) -> Project:
+        for name, value in (("横", self.width), ("縦", self.height)):
+            if not MIN_RESOLUTION <= value <= MAX_RESOLUTION:
+                raise ValueError(
+                    f"{name}の画素数は {MIN_RESOLUTION}〜{MAX_RESOLUTION} にしてください: {value}"
+                )
+            if value % 2:
+                raise ValueError(f"{name}の画素数は偶数にしてください（書き出せないため）: {value}")
+        settings = replace(project.settings, width=self.width, height=self.height)
+        return replace(project, settings=settings)
+
+
+@dataclass(frozen=True, slots=True)
+class RenameProject(Command):
+    """プロジェクト名を変える"""
+
+    name: str
+
+    @property
+    def label(self) -> str:
+        return "プロジェクト名を変更"
+
+    def apply(self, project: Project) -> Project:
+        return project.renamed(self.name)
+
+
+def _trimmed(project: Project, clip: Clip, head_delta: int, tail_delta: int) -> Clip:
+    """端を動かしたクリップを返す 無理な指定は例外にする"""
+    duration = clip.duration - head_delta + tail_delta
+    if duration <= 0:
+        raise ValueError(f"トリム後の長さが 0 以下: {duration}")
+
+    source_in = clip.source_in + head_delta * project.rate.frame_duration * clip.speed
+    if source_in < 0:
+        raise ValueError("素材の先頭より前はトリムできない")
+    if clip.timeline_start + head_delta < 0:
+        raise ValueError("タイムラインの先頭より前へは動かせない")
+
+    return replace(
+        clip,
+        timeline_start=clip.timeline_start + head_delta,
+        duration=duration,
+        source_in=source_in,
+    )
+
+
+def _require_track(project: Project, track_id: TrackId) -> Track:
+    track = project.timeline.find_track(track_id)
+    if track is None:
+        raise KeyError(f"トラックが見つからない: {track_id}")
+    return track
+
+
+def _validate_clip_media(project: Project, track: Track, clip: Clip) -> None:
+    """クリップの素材がトラックの種類に合っているかを確かめる
+
+    映像トラックに音声しか持たない素材を置くと、再生時に何も出ない無音の穴になる
+    置いた時点で気付ける方がよい
+    """
+    if clip.media_id is None:
+        return
+    item = project.require_media(clip.media_id)
+    if track.kind is TrackKind.VIDEO and not (item.has_video or item.is_still):
+        raise ValueError(f"素材 {item.name!r} に映像が無いので映像トラックには置けない")
+    if track.kind is TrackKind.AUDIO and not item.has_audio:
+        raise ValueError(f"素材 {item.name!r} に音声が無いので音声トラックには置けない")
+
+
+def _linked_group(project: Project, clip: Clip) -> list[tuple[TrackId, Clip]]:
+    """リンクされたクリップをまとめて返す リンクが無ければ自分だけ"""
+    if clip.link_group is None:
+        located = project.timeline.locate_clip(clip.id)
+        if located is None:
+            return []
+        track, found = located
+        return [(track.id, found)]
+    return [(track.id, found) for track, found in project.timeline.linked_clips(clip.link_group)]
+
+
+@dataclass(frozen=True, slots=True)
+class RippleCut(Command):
+    """タイムラインの範囲をまとめて削除し、後ろを詰める
+
+    ジェットカットの実体 範囲を 1 つずつ「分割して削除して詰める」形で組み立てる
+    こともできるが、分割で生まれるクリップの ID が実行するまで分からないため、
+    コマンドの列としては書けない 範囲の一覧を受け取って一度に処理する
+
+    範囲に掛かったクリップは端が削られ、範囲をまたぐクリップは 2 つに分かれる
+    ロックされたトラックには触れない 触れてしまうと、そのトラックだけ長さが
+    変わらず、以降すべてがずれる
+    """
+
+    ranges: tuple[tuple[int, int], ...]
+
+    @property
+    def label(self) -> str:
+        return f"無音をカット: {len(self.ranges)} か所"
+
+    def apply(self, project: Project) -> Project:
+        # 後ろから切る 前から切ると、切るたびに残りの範囲がずれて計算し直しになる
+        for start, end in sorted(_normalized(self.ranges), reverse=True):
+            project = _cut_range(project, start, end)
+        return project
+
+
+def _normalized(ranges: tuple[tuple[int, int], ...]) -> list[tuple[int, int]]:
+    ordered = sorted((start, end) for start, end in ranges if end > start)
+    merged: list[tuple[int, int]] = []
+    for start, end in ordered:
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _cut_range(project: Project, start: int, end: int) -> Project:
+    """``[start, end)`` を全トラックから取り除き、後ろを詰める"""
+    length = end - start
+    rate = project.rate
+    timeline = project.timeline
+    # 範囲をまたいだクリップの右側に配り直すリンクグループ 左右が同じ
+    # グループに残ると、片方を消したときにもう片方まで消える 映像と音声で
+    # 同じ新グループを共有させたいので、この範囲の処理を通して覚えておく
+    regrouped: dict[GroupId, GroupId] = {}
+
+    for track in timeline.tracks:
+        if track.locked:
+            continue
+        pieces: list[Clip] = []
+        for clip in track.clips:
+            pieces.extend(_cut_clip(clip, start, end, length, rate, regrouped))
+        timeline = timeline.replace_track(track.with_clips(tuple(pieces)))
+
+    markers = tuple(
+        replace(marker, frame=marker.frame - length) if marker.frame >= end else marker
+        for marker in timeline.markers
+        if not (start <= marker.frame < end)
+    )
+    return project.with_timeline(replace(timeline, markers=markers, work_area=None))
+
+
+def _cut_clip(
+    clip: Clip,
+    start: int,
+    end: int,
+    length: int,
+    rate: FrameRate,
+    regrouped: dict[GroupId, GroupId],
+) -> list[Clip]:
+    """1 つのクリップから範囲を抜く 残るのは 0 個・1 個・2 個のどれか"""
+    if clip.timeline_end <= start:
+        return [clip]
+    if clip.timeline_start >= end:
+        return [clip.moved_to(clip.timeline_start - length)]
+
+    head = start - clip.timeline_start
+    tail = clip.timeline_end - end
+    if head <= 0 and tail <= 0:
+        return []
+    if head > 0 and tail <= 0:
+        return [replace(clip, duration=head)]
+
+    # 範囲より後ろに残る部分 素材のどこから始まるかを計算し直す
+    consumed = (end - clip.timeline_start) * rate.frame_duration * clip.speed
+    right = replace(
+        clip,
+        id=new_clip_id() if head > 0 else clip.id,
+        timeline_start=start,
+        duration=tail,
+        source_in=clip.source_in + consumed,
+        link_group=_regroup(clip.link_group, regrouped) if head > 0 else clip.link_group,
+    )
+    return [replace(clip, duration=head), right] if head > 0 else [right]
+
+
+def _regroup(group: GroupId | None, regrouped: dict[GroupId, GroupId]) -> GroupId | None:
+    if group is None:
+        return None
+    if group not in regrouped:
+        regrouped[group] = new_group_id()
+    return regrouped[group]

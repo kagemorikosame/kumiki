@@ -12,18 +12,18 @@ from collections.abc import Iterator
 import numpy as np
 import pytest
 
-from kumiki.core.model import Effect
-from kumiki.effects.definition import registry
-from kumiki.effects.motion import register_motion_effects
-from kumiki.effects.stylize import register_stylize_effects
-from kumiki.engine.gpu import (
+from sashimono.core.model import Effect
+from sashimono.effects.definition import registry
+from sashimono.effects.motion import register_motion_effects
+from sashimono.effects.stylize import register_stylize_effects
+from sashimono.engine.gpu import (
     Compositor,
     EffectProcessor,
     GLContextError,
     OffscreenGLContext,
     Texture,
 )
-from kumiki.engine.gpu.glutil import Framebuffer
+from sashimono.engine.gpu.glutil import Framebuffer
 
 SIZE = 64
 
@@ -321,8 +321,8 @@ class TestAxes:
 class TestFrameBuffer:
     def test_it_reads_what_was_drawn_below(self, gl_context: OffscreenGLContext) -> None:
         # 下の絵を読めないと、YMM4 の「背景だけぼかす帯」が黒い板になる
-        from kumiki.core.commands import AddClip, AddEffect, AddTrack
-        from kumiki.core.model import (
+        from sashimono.core.commands import AddClip, AddEffect, AddTrack
+        from sashimono.core.model import (
             Clip,
             GeneratedSource,
             Project,
@@ -330,8 +330,8 @@ class TestFrameBuffer:
             Track,
             TrackKind,
         )
-        from kumiki.core.timebase import FrameRate
-        from kumiki.engine.render import FrameRenderer
+        from sashimono.core.timebase import FrameRate
+        from sashimono.engine.render import FrameRenderer
 
         project = Project.create(ProjectSettings(width=64, height=64, frame_rate=FrameRate(30)))
         below, above = Track(TrackKind.VIDEO, "V1"), Track(TrackKind.VIDEO, "V2")

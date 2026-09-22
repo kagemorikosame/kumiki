@@ -37,7 +37,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: Kumiki の版
+      label: Sashimono Edit の版
       description: 〔ヘルプ〕→〔バージョン情報〕、または実行ファイルの名前
       placeholder: 0.1.0
     validations:
@@ -78,5 +78,5 @@ body:
     attributes:
       label: 関係するファイル
       description: |
-        プロジェクト（`.kmk`）やスクリプトを貼れると助かります
+        プロジェクト（`.sme`）やスクリプトを貼れると助かります
         **他人が作った配布物は、再配布の条件を確認してから貼ってください**

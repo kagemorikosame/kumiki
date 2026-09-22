@@ -12,8 +12,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from kumiki.core.timebase import FrameRate
-from kumiki.engine.decode import AudioDecoder, ProbeError, VideoDecoder, probe_media
+from sashimono.core.timebase import FrameRate
+from sashimono.engine.decode import AudioDecoder, ProbeError, VideoDecoder, probe_media
 from tests.media_fixtures import SampleMedia, decode_all_frames, make_rotated, make_sample
 
 

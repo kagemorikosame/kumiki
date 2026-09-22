@@ -12,7 +12,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from kumiki.core.model import (
+from sashimono.core.model import (
     Clip,
     Effect,
     Interpolation,
@@ -21,10 +21,10 @@ from kumiki.core.model import (
     Track,
     TrackKind,
 )
-from kumiki.core.timebase import FrameRate
-from kumiki.effects import registry
-from kumiki.effects.audio import AudioContext
-from kumiki.effects.spec import TrackSpec
+from sashimono.core.timebase import FrameRate
+from sashimono.effects import registry
+from sashimono.effects.audio import AudioContext
+from sashimono.effects.spec import TrackSpec
 
 RATE = 48000
 
@@ -158,7 +158,7 @@ class TestTheMixerAppliesThem:
         AviUtl は音声オブジェクトにも映像フィルタを積めるので、
         種類を見ずに呼ぶと、シェーダしか持たないものを呼んで落ちる
         """
-        from kumiki.engine.audio.mixer import _apply_effects
+        from sashimono.engine.audio.mixer import _apply_effects
 
         clip = Clip(timeline_start=0, duration=30, effects=(registry.require("blur").create(),))
         samples = _stereo(16)
@@ -171,7 +171,7 @@ class TestTheMixerAppliesThem:
         左右へ振ってからモノラル化すると両側が 0.5 になり、
         順番が逆なら左が 0 のまま残る 見分けのつく組にする
         """
-        from kumiki.engine.audio.mixer import _apply_effects
+        from sashimono.engine.audio.mixer import _apply_effects
 
         pan = registry.require("audio_volume").create(pan=100.0)
         mono = registry.require("audio_monaural").create(ratio=100.0)
@@ -206,7 +206,7 @@ class TestTheMixerAppliesThem:
         """
         from dataclasses import replace as _replace
 
-        from kumiki.engine.audio.mixer import _apply_effects
+        from sashimono.engine.audio.mixer import _apply_effects
 
         broken = registry.require("audio_volume").create()
         broken = _replace(broken, params={**broken.params, "volume": "でたらめ"})
@@ -226,8 +226,8 @@ class TestTheMixerAppliesThem:
         塊の先頭で 1 度だけ解くと、プレビューの細かい塊がフレームを
         またいだときに音量の変わる時刻がずれ、書き出しと合わなくなる
         """
-        from kumiki.core.model import AnimatedValue, Keyframe
-        from kumiki.engine.audio.mixer import _apply_effects
+        from sashimono.core.model import AnimatedValue, Keyframe
+        from sashimono.engine.audio.mixer import _apply_effects
 
         fading = registry.require("audio_volume").create(
             volume=AnimatedValue(
@@ -256,8 +256,8 @@ class TestTheMixerAppliesThem:
         切り捨てて 1601 サンプル目から始まるのに 1601 / 1601.6 は 0 になり、
         先頭の 1 サンプルだけ前のフレームの音量で鳴る
         """
-        from kumiki.core.model import AnimatedValue, Keyframe
-        from kumiki.engine.audio.mixer import _apply_effects, _frame_to_sample
+        from sashimono.core.model import AnimatedValue, Keyframe
+        from sashimono.engine.audio.mixer import _apply_effects, _frame_to_sample
 
         rate = FrameRate(30000, 1001)
         fading = registry.require("audio_volume").create(
@@ -290,8 +290,8 @@ class TestTheMixerAppliesThem:
         タイムラインのフレーム 4 は 6406 から、フレーム 5 は 8008 から始まるので、
         ここに置いたクリップの最初の升は 1601 ではなく 1602 サンプル
         """
-        from kumiki.core.model import AnimatedValue, Keyframe
-        from kumiki.engine.audio.mixer import _apply_effects, _frame_to_sample
+        from sashimono.core.model import AnimatedValue, Keyframe
+        from sashimono.engine.audio.mixer import _apply_effects, _frame_to_sample
 
         rate = FrameRate(30000, 1001)
         start = 4
@@ -318,7 +318,7 @@ class TestTheMixerAppliesThem:
         assert out[width, 0] == pytest.approx(0.0), "升をまたいでも下がっていない"
 
     def test_a_disabled_effect_is_skipped(self) -> None:
-        from kumiki.engine.audio.mixer import _apply_effects
+        from sashimono.engine.audio.mixer import _apply_effects
 
         muted = replace(registry.require("audio_volume").create(volume=0.0), enabled=False)
         clip = Clip(timeline_start=0, duration=30, effects=(muted,))

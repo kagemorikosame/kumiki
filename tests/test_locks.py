@@ -10,7 +10,7 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
-from kumiki.core.io import (
+from sashimono.core.io import (
     HeldLock,
     hold_new,
     is_held,
@@ -115,13 +115,13 @@ class TestPresence:
 class TestProjectPresenceDir:
     def test_the_same_file_gets_the_same_place(self, tmp_path: Path) -> None:
         # 書き方の違い（.. を挟むなど）で別の場所になると、2 つの窓に気付けない
-        direct = project_presence_dir(tmp_path / "本編.kmk", tmp_path / "state")
-        roundabout = project_presence_dir(tmp_path / "x" / ".." / "本編.kmk", tmp_path / "state")
+        direct = project_presence_dir(tmp_path / "本編.sme", tmp_path / "state")
+        roundabout = project_presence_dir(tmp_path / "x" / ".." / "本編.sme", tmp_path / "state")
         assert direct == roundabout
 
     def test_other_files_get_other_places(self, tmp_path: Path) -> None:
-        # 名前だけで分けると、別のフォルダの「本編.kmk」を開いただけで警告が出る
+        # 名前だけで分けると、別のフォルダの「本編.sme」を開いただけで警告が出る
         state = tmp_path / "state"
-        assert project_presence_dir(tmp_path / "a" / "本編.kmk", state) != project_presence_dir(
-            tmp_path / "b" / "本編.kmk", state
+        assert project_presence_dir(tmp_path / "a" / "本編.sme", state) != project_presence_dir(
+            tmp_path / "b" / "本編.sme", state
         )

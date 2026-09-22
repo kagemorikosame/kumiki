@@ -13,12 +13,12 @@ from pathlib import Path
 import pytest
 from PySide6.QtWidgets import QApplication, QLabel
 
-from kumiki.core.commands import AddMedia
-from kumiki.core.model import MediaItem, Project, VideoStreamInfo
-from kumiki.core.timebase import FrameRate
-from kumiki.ui.main_window import MainWindow
-from kumiki.ui.preferences_dialog import PREFETCH_BUDGETS, PROXY_HEIGHTS, PreferencesDialog
-from kumiki.ui.workspace import AUTO_QUALITY_HEIGHT, Preferences, PreferenceStore
+from sashimono.core.commands import AddMedia
+from sashimono.core.model import MediaItem, Project, VideoStreamInfo
+from sashimono.core.timebase import FrameRate
+from sashimono.ui.main_window import MainWindow
+from sashimono.ui.preferences_dialog import PREFETCH_BUDGETS, PROXY_HEIGHTS, PreferencesDialog
+from sashimono.ui.workspace import AUTO_QUALITY_HEIGHT, Preferences, PreferenceStore
 
 
 def _uhd_media() -> MediaItem:
@@ -48,7 +48,7 @@ class TestTheAutomaticQuality:
         """4K では落とす
 
         1 枚だけなら元の素材でも入るが、重ねた時点で外れる（実測は
-        kumiki.engine.cache.proxy の表）効果を積むと控えだけでも足りず、
+        sashimono.engine.cache.proxy の表）効果を積むと控えだけでも足りず、
         画面の側も落として初めて入る
         """
         assert Preferences().quality_for(2160) == 2
@@ -158,7 +158,7 @@ class TestTheDialog:
         画面へ直に書くと、測り直したときにここだけ古いまま残り、
         使う人が古い数を見て設定を選ぶことになる
         """
-        from kumiki.engine.cache.proxy import (
+        from sashimono.engine.cache.proxy import (
             MEASURED_ONE_LAYER_MS,
             MEASURED_PREFETCH_MS,
             MEASURED_THREE_LAYERS_MS,
@@ -427,13 +427,13 @@ class TestThePrefetchSetting:
 class TestTheNativeModuleSetting:
     """AviUtl2 のスクリプトモジュール（DLL）を読むかどうか
 
-    読んだ DLL は Kumiki と同じ権限で動く（Lua の閉じ込めの外） 切った人の機械で
+    読んだ DLL は Sashimono と同じ権限で動く（Lua の閉じ込めの外） 切った人の機械で
     読み続けると、切った意味が無い
     """
 
     @pytest.fixture(autouse=True)
     def restore(self) -> Iterator[None]:
-        from kumiki.compat.aviutl import native
+        from sashimono.compat.aviutl import native
 
         yield
         native.set_enabled(True)

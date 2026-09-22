@@ -7,7 +7,7 @@ from itertools import pairwise
 
 import pytest
 
-from kumiki.core.model import (
+from sashimono.core.model import (
     AnimatedValue,
     Clip,
     Effect,
@@ -22,7 +22,7 @@ from kumiki.core.model import (
     Transcript,
     TranscriptSegment,
 )
-from kumiki.core.timebase import FrameRate
+from sashimono.core.timebase import FrameRate
 from tests.conftest import RATE_30, make_clip
 
 
@@ -124,7 +124,7 @@ class TestProject:
             Project.create(media=(video_media, video_media))
 
     def test_require_media_raises_for_unknown(self, project: Project) -> None:
-        from kumiki.core.model import MediaId
+        from sashimono.core.model import MediaId
 
         with pytest.raises(KeyError):
             project.require_media(MediaId("存在しない"))

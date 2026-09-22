@@ -17,8 +17,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from kumiki.core.commands import AddClip, AddTrack
-from kumiki.core.model import (
+from sashimono.core.commands import AddClip, AddTrack
+from sashimono.core.model import (
     AnimatedValue,
     Clip,
     GeneratedSource,
@@ -28,16 +28,16 @@ from kumiki.core.model import (
     Track,
     TrackKind,
 )
-from kumiki.core.timebase import FrameRate
-from kumiki.engine.audio_shapes import (
+from sashimono.core.timebase import FrameRate
+from sashimono.engine.audio_shapes import (
     SPECTRUM_SIZE,
     WAVEFORM_LEAD,
     cell_mask,
     spectrum_levels,
 )
-from kumiki.engine.gpu import GLContextError, OffscreenGLContext
-from kumiki.engine.render import FrameRenderer
-from kumiki.engine.sources import render_source, waveform_points
+from sashimono.engine.gpu import GLContextError, OffscreenGLContext
+from sashimono.engine.render import FrameRenderer
+from sashimono.engine.sources import render_source, waveform_points
 
 RATE = 44100
 WIDTH, HEIGHT = 640, 360

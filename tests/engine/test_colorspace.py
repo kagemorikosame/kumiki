@@ -15,12 +15,12 @@ import numpy as np
 import pytest
 from av.video.reformatter import ColorPrimaries, ColorRange, Colorspace, ColorTrc
 
-from kumiki.core.model import MediaItem
-from kumiki.engine.cache.proxy import ProxyStore, create_proxy, proxy_codecs
-from kumiki.engine.cache.store import CacheStore, media_key
-from kumiki.engine.colorspace import source_matrix, tag_bt709, to_bt709, to_rgb_array
-from kumiki.engine.decode import VideoDecoder
-from kumiki.engine.decode.image import read_image
+from sashimono.core.model import MediaItem
+from sashimono.engine.cache.proxy import ProxyStore, create_proxy, proxy_codecs
+from sashimono.engine.cache.store import CacheStore, media_key
+from sashimono.engine.colorspace import source_matrix, tag_bt709, to_bt709, to_rgb_array
+from sashimono.engine.decode import VideoDecoder
+from sashimono.engine.decode.image import read_image
 from tests.color_bars import (
     AVCOL_SPC_BT470BG,
     AVCOL_SPC_BT709,

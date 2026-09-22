@@ -12,8 +12,8 @@ from collections.abc import Callable
 import numpy as np
 import pytest
 
-from kumiki.core.model import AnimatedValue, GeneratedSource, Interpolation, Keyframe, ParamValue
-from kumiki.engine.motion_shapes import (
+from sashimono.core.model import AnimatedValue, GeneratedSource, Interpolation, Keyframe, ParamValue
+from sashimono.engine.motion_shapes import (
     StarField,
     Trail,
     TrailPath,
@@ -24,7 +24,7 @@ from kumiki.engine.motion_shapes import (
     trail,
     trail_path,
 )
-from kumiki.engine.sources import render_source
+from sashimono.engine.sources import render_source
 
 WIDTH, HEIGHT = 1920, 1080
 

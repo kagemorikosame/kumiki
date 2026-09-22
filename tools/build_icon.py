@@ -3,7 +3,7 @@
 .venv\\Scripts\\python.exe tools/build_icon.py
 
 SVG が唯一の原本 ここで作るものは全部その派生なので、形を直したいときは
-``src/kumiki/resources/icon.svg`` だけを触る
+``src/sashimono/resources/icon.svg`` だけを触る
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from PySide6.QtSvg import QSvgRenderer
 ICO_SIZES = (16, 24, 32, 48, 64, 128, 256)
 
 ROOT = Path(__file__).resolve().parent.parent
-RESOURCES = ROOT / "src" / "kumiki" / "resources"
+RESOURCES = ROOT / "src" / "sashimono" / "resources"
 DOCS = ROOT / "docs"
 
 
@@ -75,8 +75,8 @@ def main() -> int:
     icon = RESOURCES / "icon.svg"
     logo = RESOURCES / "logo.svg"
 
-    build_ico(icon, RESOURCES / "kumiki.ico")
-    print(f"作成: {RESOURCES / 'kumiki.ico'}（{len(ICO_SIZES)} サイズ）")
+    build_ico(icon, RESOURCES / "sashimono.ico")
+    print(f"作成: {RESOURCES / 'sashimono.ico'}（{len(ICO_SIZES)} サイズ）")
 
     for size in (256, 512):
         render(icon, size).save(str(DOCS / f"icon-{size}.png"))

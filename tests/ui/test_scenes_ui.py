@@ -14,10 +14,10 @@ from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from kumiki.core.commands import GroupClips
-from kumiki.core.model import Clip, Project, Track, TrackKind
-from kumiki.effects.sources import TEXT
-from kumiki.ui.main_window import MainWindow
+from sashimono.core.commands import GroupClips
+from sashimono.core.model import Clip, Project, Track, TrackKind
+from sashimono.effects.sources import TEXT
+from sashimono.ui.main_window import MainWindow
 
 
 def _project() -> Project:

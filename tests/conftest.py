@@ -11,7 +11,7 @@ import pytest
 from PySide6.QtGui import QSurfaceFormat
 from PySide6.QtWidgets import QApplication
 
-from kumiki.core.model import (
+from sashimono.core.model import (
     AudioStreamInfo,
     Clip,
     MediaItem,
@@ -23,9 +23,9 @@ from kumiki.core.model import (
     TranscriptSegment,
     VideoStreamInfo,
 )
-from kumiki.core.timebase import FrameRate
-from kumiki.effects import registry
-from kumiki.engine.gpu import GLContextError, OffscreenGLContext, preferred_surface_format
+from sashimono.core.timebase import FrameRate
+from sashimono.effects import registry
+from sashimono.engine.gpu import GLContextError, OffscreenGLContext, preferred_surface_format
 from tests.media_fixtures import SampleMedia, ffmpeg_available, make_sample
 
 RATE_30 = FrameRate(30)

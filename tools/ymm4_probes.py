@@ -29,8 +29,8 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 from ymm4_compare import base_shape  # noqa: E402
 
-from kumiki.compat.ymm4.template import load_template  # noqa: E402
-from kumiki.compat.ymm4.values import type_name  # noqa: E402
+from sashimono.compat.ymm4.template import load_template  # noqa: E402
+from sashimono.compat.ymm4.values import type_name  # noqa: E402
 
 FIXTURES = ROOT / "tests" / "fixtures" / "ymm4"
 EFFECTS = "YukkuriMovieMaker.Project.Effects"

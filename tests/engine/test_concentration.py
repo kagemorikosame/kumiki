@@ -9,8 +9,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from kumiki.core.model import AnimatedValue, GeneratedSource
-from kumiki.engine.sources import render_source
+from sashimono.core.model import AnimatedValue, GeneratedSource
+from sashimono.engine.sources import render_source
 
 WIDTH, HEIGHT = 960, 540
 

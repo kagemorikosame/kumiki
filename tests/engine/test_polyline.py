@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from kumiki.engine.sources import MAX_POLYLINE_POINTS, polyline_points
+from sashimono.engine.sources import MAX_POLYLINE_POINTS, polyline_points
 
 
 def test_the_number_of_points_is_capped() -> None:

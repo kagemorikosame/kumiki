@@ -17,11 +17,11 @@ from types import ModuleType
 
 import pytest
 
-from kumiki.app import SELF_CHECK_FLAG, main
-from kumiki.compat.aviutl.catalog import PORTABLE_SCRIPTS_DIR, default_script_roots
-from kumiki.core.model import Project
-from kumiki.runtime import app_dir, install_command, pip_arguments, run_pip
-from kumiki.selfcheck import CheckResult, format_results, run_self_check
+from sashimono.app import SELF_CHECK_FLAG, main
+from sashimono.compat.aviutl.catalog import PORTABLE_SCRIPTS_DIR, default_script_roots
+from sashimono.core.model import Project
+from sashimono.runtime import app_dir, install_command, pip_arguments, run_pip
+from sashimono.selfcheck import CheckResult, format_results, run_self_check
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parent.parent
 @pytest.fixture
 def frozen(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     """固めた exe として動いているふりをする 返すのは exe の場所"""
-    executable = tmp_path / "Kumiki" / "Kumiki.exe"
+    executable = tmp_path / "Sashimono" / "Sashimono.exe"
     executable.parent.mkdir()
     executable.write_bytes(b"")
     monkeypatch.setattr(sys, "frozen", True, raising=False)
@@ -61,7 +61,7 @@ class TestTheScriptFolderBesideTheExe:
         # 開発環境で .venv の隣を探しに行くと、関係の無いフォルダを読む
         assert app_dir() is None
         assert all(
-            root.name != PORTABLE_SCRIPTS_DIR or "Kumiki" in root.parts
+            root.name != PORTABLE_SCRIPTS_DIR or "Sashimono" in root.parts
             for root in default_script_roots()
         )
 
@@ -70,8 +70,8 @@ class TestPipInsideThePackage:
     """配布版には Python の本体が無い 導入ボタンは exe 自身に pip を走らせる"""
 
     def test_the_install_button_calls_the_exe_itself(self, frozen: Path) -> None:
-        # 導入ボタンが組み立てるコマンド 先頭は exe（ここで受けないと Kumiki が 2 つ立つ）
-        from kumiki.runtime import FeaturePack
+        # 導入ボタンが組み立てるコマンド 先頭は exe（ここで受けないと Sashimono が 2 つ立つ）
+        from sashimono.runtime import FeaturePack
 
         command = install_command(FeaturePack(key="x", label="x", required=("pkg",)))
         assert command[:4] == [str(frozen), "-m", "pip", "install"]
@@ -80,13 +80,13 @@ class TestPipInsideThePackage:
         assert pip_arguments([str(frozen), "-m", "pip", "install", "pkg"]) == ["install", "pkg"]
 
     def test_an_ordinary_start_is_not_taken_for_pip(self, frozen: Path) -> None:
-        """プロジェクトを開く起動（``Kumiki.exe 作品.kmk``）を pip と取り違えない"""
-        assert pip_arguments([str(frozen), "作品.kmk"]) is None
+        """プロジェクトを開く起動（``Sashimono.exe 作品.sme``）を pip と取り違えない"""
+        assert pip_arguments([str(frozen), "作品.sme"]) is None
 
     def test_development_leaves_it_to_python(self) -> None:
         """開発環境の ``sys.executable`` は本物の Python なので、こちらは受けない
 
-        受けると、``python -m kumiki -m pip`` のような書き方まで pip に回る
+        受けると、``python -m sashimono -m pip`` のような書き方まで pip に回る
         """
         assert pip_arguments(["python", "-m", "pip", "list"]) is None
 
@@ -142,8 +142,8 @@ class TestTheSelfCheck:
 
         窓を作ると、使う人の機械で確かめてもらうときに、閉じるまで結果が出ない
         """
-        monkeypatch.setattr("kumiki.selfcheck.run_self_check", lambda: [CheckResult("x", True)])
-        assert main(["kumiki", SELF_CHECK_FLAG]) == 0
+        monkeypatch.setattr("sashimono.selfcheck.run_self_check", lambda: [CheckResult("x", True)])
+        assert main(["sashimono", SELF_CHECK_FLAG]) == 0
 
     def test_a_project_with_the_flag_is_opened_not_checked(
         self, monkeypatch: pytest.MonkeyPatch
@@ -158,7 +158,7 @@ class TestTheSelfCheck:
             checked.append(True)
             return 0
 
-        monkeypatch.setattr("kumiki.selfcheck.main", fake_check)
+        monkeypatch.setattr("sashimono.selfcheck.main", fake_check)
 
         class ReachedTheWindowError(Exception):
             """いつもの起動の最初の段まで来たら止める ここまで来れば開く起動"""
@@ -167,27 +167,27 @@ class TestTheSelfCheck:
             raise ReachedTheWindowError
 
         # main 自身が見ている名前を差し替える ほかの試験がモジュールを読み直すと、
-        # 「kumiki.app」という名前の先と、ここで握っている main の先が別物になる
+        # 「sashimono.app」という名前の先と、ここで握っている main の先が別物になる
         monkeypatch.setitem(main.__globals__, "activate_runtime", stop)
         with pytest.raises(ReachedTheWindowError):
-            main(["kumiki", "作品.kmk", SELF_CHECK_FLAG])
+            main(["sashimono", "作品.sme", SELF_CHECK_FLAG])
         assert checked == []
 
     def test_a_missing_part_fails_the_whole(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """1 つでも動かなければ終了コード 1 組み立ての道具はこれを見て止まる"""
         monkeypatch.setattr(
-            "kumiki.selfcheck.run_self_check",
+            "sashimono.selfcheck.run_self_check",
             lambda: [CheckResult("GL で描く", False, "積み忘れ")],
         )
-        assert main(["kumiki", SELF_CHECK_FLAG]) == 1
+        assert main(["sashimono", SELF_CHECK_FLAG]) == 1
 
     def test_an_optional_part_does_not(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """音の出口が無い機械（リモート接続など）でも編集はできる 落とさない"""
         monkeypatch.setattr(
-            "kumiki.selfcheck.run_self_check",
+            "sashimono.selfcheck.run_self_check",
             lambda: [CheckResult("音の出口", False, "無い", optional=True)],
         )
-        assert main(["kumiki", SELF_CHECK_FLAG]) == 0
+        assert main(["sashimono", SELF_CHECK_FLAG]) == 0
 
     def test_a_failure_says_which_part(self) -> None:
         # どの項目が動かないかが 1 行で分かる 分からないと組み立て直しを繰り返す
@@ -197,20 +197,20 @@ class TestTheSelfCheck:
 
 class TestTheZip:
     def test_it_unpacks_into_one_folder(self, builder: ModuleType, tmp_path: Path) -> None:
-        """展開すると ``Kumiki\\`` が 1 つできる
+        """展開すると ``Sashimono\\`` が 1 つできる
 
         ばらで入れると、展開した場所（デスクトップなど）に部品が散らばる
         """
         bundle = tmp_path / "bundle"
         (bundle / "_internal").mkdir(parents=True)
-        (bundle / "Kumiki.exe").write_bytes(b"MZ")
+        (bundle / "Sashimono.exe").write_bytes(b"MZ")
         (bundle / "_internal" / "part.dll").write_bytes(b"x")
         builder.assemble(bundle)
         archive = builder.make_zip(bundle, tmp_path / "out.zip")
         with zipfile.ZipFile(archive) as opened:
             names = opened.namelist()
-        assert all(name.startswith("Kumiki/") for name in names)
-        assert "Kumiki/Kumiki.exe" in names
+        assert all(name.startswith("Sashimono/") for name in names)
+        assert "Sashimono/Sashimono.exe" in names
 
     def test_the_script_folder_is_already_there(self, builder: ModuleType, tmp_path: Path) -> None:
         """空でも置き場を作っておく 無いと、どこへ置けばいいのかが分からない
@@ -222,7 +222,7 @@ class TestTheZip:
         builder.assemble(bundle)
         archive = builder.make_zip(bundle, tmp_path / "out.zip")
         with zipfile.ZipFile(archive) as opened:
-            assert f"Kumiki/{PORTABLE_SCRIPTS_DIR}/README.txt" in opened.namelist()
+            assert f"Sashimono/{PORTABLE_SCRIPTS_DIR}/README.txt" in opened.namelist()
 
     def test_an_unfinished_zip_is_not_left_as_the_real_one(
         self, builder: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -230,7 +230,7 @@ class TestTheZip:
         """途中で止まった zip を完成品と取り違えない"""
         bundle = tmp_path / "bundle"
         bundle.mkdir()
-        (bundle / "Kumiki.exe").write_bytes(b"MZ")
+        (bundle / "Sashimono.exe").write_bytes(b"MZ")
 
         def broken(self: zipfile.ZipFile, *args: object, **kwargs: object) -> None:
             raise OSError("書けない")
@@ -251,7 +251,7 @@ class TestTheZip:
         """
         bundle = tmp_path / "bundle"
         bundle.mkdir()
-        (bundle / "Kumiki.exe").write_bytes(b"MZ")
+        (bundle / "Sashimono.exe").write_bytes(b"MZ")
         target = tmp_path / "out.zip"
 
         def locked(self: Path, other: Path) -> Path:
@@ -271,7 +271,7 @@ class TestTheZip:
         """
         bundle = tmp_path / "bundle"
         bundle.mkdir()
-        (bundle / "Kumiki.exe").write_bytes(b"MZ")
+        (bundle / "Sashimono.exe").write_bytes(b"MZ")
         target = tmp_path / "out.zip"
         target.write_bytes(b"previous build")
 
@@ -342,10 +342,10 @@ class TestTheNotices:
         archive = builder.make_zip(bundle, tmp_path / "out.zip")
         with zipfile.ZipFile(archive) as opened:
             names = set(opened.namelist())
-        assert "Kumiki/THIRD_PARTY_NOTICES.txt" in names
-        assert "Kumiki/LICENSE.txt" in names
+        assert "Sashimono/THIRD_PARTY_NOTICES.txt" in names
+        assert "Sashimono/LICENSE.txt" in names
         for text in ("GPL-2.0.txt", "GPL-3.0.txt", "LGPL-2.1.txt", "LGPL-3.0.txt"):
-            assert f"Kumiki/licenses/{text}" in names, f"{text} の全文が zip に無い"
+            assert f"Sashimono/licenses/{text}" in names, f"{text} の全文が zip に無い"
 
     def test_the_dll_licenses_the_wheel_lacks_go_in(
         self, builder: ModuleType, tmp_path: Path
@@ -380,7 +380,7 @@ class TestTheNotices:
             "LuaJIT-2.0-e4c7d8b3/COPYRIGHT",
             "LuaJIT-2.1-18b087cd/COPYRIGHT",
         ):
-            assert f"Kumiki/licenses/{copy}" in names, f"{copy} が zip に無い"
+            assert f"Sashimono/licenses/{copy}" in names, f"{copy} が zip に無い"
         # zip から確かめる段も、リポジトリに置いた写しを全部見本にする
         assert "x264-b35605ac/COPYING" in builder.repository_license_files()
 
@@ -439,14 +439,14 @@ class TestTheNotices:
         problems = builder.collect_licenses(tmp_path / "bundle", [stray], ())
         assert any("libssl-3-x64.dll" in p for p in problems), problems
 
-    def test_kumikis_own_files_are_not_taken_for_strays(
+    def test_sashimonos_own_files_are_not_taken_for_strays(
         self, builder: ModuleType, tmp_path: Path
     ) -> None:
-        """Kumiki 自身のソースは出どころの分からない物として止めない
+        """Sashimono 自身のソースは出どころの分からない物として止めない
 
         止めると、正しい組み立てでも毎回 zip を作れなくなる
         """
-        own = ROOT / "src" / "kumiki" / "__init__.py"
+        own = ROOT / "src" / "sashimono" / "__init__.py"
         problems = builder.collect_licenses(tmp_path, [own], (ROOT / "src",))
         assert not [p for p in problems if "__init__.py" in p], problems
 
@@ -500,7 +500,7 @@ class TestTheNotices:
         exe の隣のフォルダだけを見ると、pip や setuptools の写しを集め損ねる
         """
         (tmp_path / "COLLECT-00.toc").write_text(
-            repr(([("Kumiki.exe", r"C:\work\Kumiki.exe", "EXECUTABLE")],)), encoding="utf-8"
+            repr(([("Sashimono.exe", r"C:\work\Sashimono.exe", "EXECUTABLE")],)), encoding="utf-8"
         )
         (tmp_path / "PYZ-00.toc").write_text(
             repr(
@@ -515,13 +515,13 @@ class TestTheNotices:
             encoding="utf-8",
         )
         assert builder.bundled_sources(tmp_path) == [
-            Path(r"C:\work\Kumiki.exe"),
+            Path(r"C:\work\Sashimono.exe"),
             Path(r"C:\venv\pip\__init__.py"),
         ]
 
     def test_the_unpacked_zip_is_checked(self, builder: ModuleType, tmp_path: Path) -> None:
         """zip から確かめる段でも見る 途中の段を飛ばしても zip は作れてしまう"""
-        home = tmp_path / "Kumiki"
+        home = tmp_path / "Sashimono"
         home.mkdir()
         missing = builder.missing_notices(home)
         assert "THIRD_PARTY_NOTICES.txt" in missing
@@ -673,16 +673,16 @@ class TestOnlyRecordedFilesGoIn:
         record = tmp_path / "record"
         record.mkdir()
         entries = [
-            ("Kumiki.exe", r"C:\work\Kumiki.exe", "EXECUTABLE"),
+            ("Sashimono.exe", r"C:\work\Sashimono.exe", "EXECUTABLE"),
             ("PySide6\\Qt6Core.dll", r"C:\venv\PySide6\Qt6Core.dll", "BINARY"),
         ]
         (record / "COLLECT-00.toc").write_text(repr((entries,)), encoding="utf-8")
         return record
 
     def test_a_stray_dll_is_found(self, builder: ModuleType, tmp_path: Path) -> None:
-        bundle = tmp_path / "Kumiki"
+        bundle = tmp_path / "Sashimono"
         (bundle / "_internal" / "PySide6").mkdir(parents=True)
-        (bundle / "Kumiki.exe").write_bytes(b"MZ")
+        (bundle / "Sashimono.exe").write_bytes(b"MZ")
         (bundle / "_internal" / "PySide6" / "Qt6Core.dll").write_bytes(b"MZ")
         (bundle / "_internal" / "leftover.dll").write_bytes(b"MZ")
         builder.assemble(bundle)
@@ -697,7 +697,7 @@ class TestTheUnpackedCopiesAreTheSame:
 
         名前だけを見ると、途中で消えた写しや壊れた写しでも通る
         """
-        bundle = tmp_path / "Kumiki"
+        bundle = tmp_path / "Sashimono"
         bundle.mkdir()
         builder.assemble(bundle)
         expected = builder.notice_digests(bundle)
@@ -775,8 +775,8 @@ class TestTheEditorCheckLeavesNoTrace:
     """
 
     def test_the_layout_is_not_written(self) -> None:
-        from kumiki.selfcheck import _editor
-        from kumiki.ui.workspace import config_root
+        from sashimono.selfcheck import _editor
+        from sashimono.ui.workspace import config_root
 
         layout = config_root() / "workspace.ini"
         before = layout.read_bytes() if layout.exists() else None
@@ -788,7 +788,7 @@ class TestTheEditorCheckLeavesNoTrace:
         # 向け先を戻し忘れると、そのあとの項目（スクリプト置き場）が一時フォルダを見る
         import os
 
-        from kumiki.selfcheck import USER_FOLDER_VARIABLES, _isolated_user_folders
+        from sashimono.selfcheck import USER_FOLDER_VARIABLES, _isolated_user_folders
 
         before = {name: os.environ.get(name) for name in USER_FOLDER_VARIABLES}
         with _isolated_user_folders():
@@ -803,10 +803,10 @@ class TestTheExportCheckUsesTheCpu:
         逃げると、GPU の符号化器がある開発機では通り、無い機械では書き出せない
         zip を「動いた」として配ることになる
         """
-        from kumiki import selfcheck
+        from sashimono import selfcheck
 
         monkeypatch.setattr(
-            "kumiki.engine.encode.available_video_codecs", lambda: ["h264_nvenc", "h264_qsv"]
+            "sashimono.engine.encode.available_video_codecs", lambda: ["h264_nvenc", "h264_qsv"]
         )
         with pytest.raises(RuntimeError, match="libx264"):
             selfcheck._export()
@@ -825,16 +825,16 @@ class TestWithoutAConsole:
         def fake(text: str, title: str, *, warning: bool) -> None:
             shown.append((text, warning))
 
-        monkeypatch.setattr("kumiki.selfcheck._native_message", fake)
+        monkeypatch.setattr("sashimono.selfcheck._native_message", fake)
         monkeypatch.setattr(sys, "stdout", None)
         return shown
 
     def test_the_result_is_shown_in_a_window(self, monkeypatch: pytest.MonkeyPatch) -> None:
         shown = self._capture(monkeypatch)
         monkeypatch.setattr(
-            "kumiki.selfcheck.run_self_check", lambda: [CheckResult("GL で描く", True, "描けた")]
+            "sashimono.selfcheck.run_self_check", lambda: [CheckResult("GL で描く", True, "描けた")]
         )
-        assert main(["kumiki", SELF_CHECK_FLAG]) == 0
+        assert main(["sashimono", SELF_CHECK_FLAG]) == 0
         assert shown and "GL で描く" in shown[0][0]
         assert shown[0][1] is False
 
@@ -842,9 +842,9 @@ class TestWithoutAConsole:
         # 落ちた項目があるときは目立つ形で出す 情報の窓だと読み流される
         shown = self._capture(monkeypatch)
         monkeypatch.setattr(
-            "kumiki.selfcheck.run_self_check", lambda: [CheckResult("GL で描く", False, "x")]
+            "sashimono.selfcheck.run_self_check", lambda: [CheckResult("GL で描く", False, "x")]
         )
-        assert main(["kumiki", SELF_CHECK_FLAG]) == 1
+        assert main(["sashimono", SELF_CHECK_FLAG]) == 1
         assert shown and shown[0][1] is True
 
     def test_it_does_not_need_qt(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -856,9 +856,9 @@ class TestWithoutAConsole:
         shown = self._capture(monkeypatch)
         monkeypatch.setitem(sys.modules, "PySide6.QtWidgets", None)
         monkeypatch.setattr(
-            "kumiki.selfcheck.run_self_check", lambda: [CheckResult("Qt", False, "DLL が無い")]
+            "sashimono.selfcheck.run_self_check", lambda: [CheckResult("Qt", False, "DLL が無い")]
         )
-        assert main(["kumiki", SELF_CHECK_FLAG]) == 1
+        assert main(["sashimono", SELF_CHECK_FLAG]) == 1
         assert shown and "DLL が無い" in shown[0][0]
 
 
@@ -869,9 +869,9 @@ class TestOnlyCheckedZipsRemain:
     """
 
     def _bundle(self, tmp_path: Path) -> Path:
-        bundle = tmp_path / "Kumiki"
+        bundle = tmp_path / "Sashimono"
         bundle.mkdir()
-        (bundle / "Kumiki.exe").write_bytes(b"MZ")
+        (bundle / "Sashimono.exe").write_bytes(b"MZ")
         return bundle
 
     def test_a_failed_check_takes_the_zip_away(
@@ -889,7 +889,7 @@ class TestOnlyCheckedZipsRemain:
         monkeypatch.setattr(builder, "smoke_test", lambda archive, notices: 1)
         bundle = self._bundle(tmp_path)
         builder.package(bundle, tmp_path / "out.zip")
-        assert (bundle / "Kumiki.exe").exists()
+        assert (bundle / "Sashimono.exe").exists()
 
     def test_a_passed_check_keeps_it(
         self, builder: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -907,9 +907,9 @@ class TestNothingUncheckedIsLeft:
         self, builder: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """展開できない・exe が返ってこない（時間切れ）でも同じ"""
-        bundle = tmp_path / "Kumiki"
+        bundle = tmp_path / "Sashimono"
         bundle.mkdir()
-        (bundle / "Kumiki.exe").write_bytes(b"MZ")
+        (bundle / "Sashimono.exe").write_bytes(b"MZ")
 
         def crash(archive: Path, notices: object) -> int:
             raise TimeoutError("exe が返ってこない")
@@ -928,9 +928,9 @@ class TestNothingUncheckedIsLeft:
         組み立てで落ちると zip を作る所まで進まない そこで消していては、
         前の物が今回の完成品に見えて残る
         """
-        from kumiki import __version__
+        from sashimono import __version__
 
-        old = tmp_path / f"Kumiki-{__version__}-windows-x64.zip"
+        old = tmp_path / f"SashimonoEdit-{__version__}-windows-x64.zip"
         old.write_bytes(b"previous build")
         # 組み立て済みの exe が無い＝組み立てに失敗した状態
         assert builder.main(["--skip-build"], dist=tmp_path) == 1
@@ -948,8 +948,8 @@ class TestTheExportCheckCountsFrames:
         """
         from dataclasses import replace
 
-        import kumiki.engine.encode as encode
-        from kumiki import selfcheck
+        import sashimono.engine.encode as encode
+        from sashimono import selfcheck
 
         real = encode.export_project
 
@@ -984,7 +984,7 @@ class TestTheEntryDoesNotNeedQt:
 
     def test_the_entry_does_not_load_qt(self) -> None:
         # pip を走らせるだけのために Qt 一式を読まない
-        completed = self._run("import sys, kumiki.app; print('PySide6' in sys.modules)")
+        completed = self._run("import sys, sashimono.app; print('PySide6' in sys.modules)")
         assert completed.stdout.strip() == "False", completed.stderr
 
     def test_the_self_check_reports_a_missing_qt(self, tmp_path: Path) -> None:
@@ -993,13 +993,13 @@ class TestTheEntryDoesNotNeedQt:
         code = (
             "import sys\n"
             "sys.modules['PySide6'] = None  # Qt の部品が欠けた配布版の代わり\n"
-            "import kumiki.selfcheck as check\n"
+            "import sashimono.selfcheck as check\n"
             "def show(text, title, *, warning):\n"
             "    open(sys.argv[1], 'w', encoding='utf-8').write(text)\n"
             "check._native_message = show\n"
             "sys.stdout = None  # パイプ無しで起動した窓だけの exe の代わり\n"
-            "from kumiki.app import main\n"
-            "raise SystemExit(main(['kumiki', '--self-check']))\n"
+            "from sashimono.app import main\n"
+            "raise SystemExit(main(['sashimono', '--self-check']))\n"
         )
         completed = self._run(code, str(shown))
         assert completed.returncode == 1, completed.stderr

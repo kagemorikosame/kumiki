@@ -1,4 +1,4 @@
-"""AviUtl2 本体の絵と Kumiki の絵を並べて比べる
+"""AviUtl2 本体の絵と Sashimono の絵を並べて比べる
 
 AviUtl の効果は、項目名を実物（AviUtl2 に作らせたエイリアス）から読み取って写している
 読めて描けることはテストで確かめられるが、**AviUtl と同じ絵になるか**は本体で
@@ -9,7 +9,7 @@ AviUtl の効果は、項目名を実物（AviUtl2 に作らせたエイリア�
 1. ``build``   エイリアスを時間をずらして並べた AviUtl2 のプロジェクト（.aup2）と、
                どこに何を置いたかの一覧（manifest.json）を作る
 2. AviUtl2 でそのプロジェクトを開き、同じフォルダへ ``aviutl.mp4`` として書き出す
-3. ``compare`` 書き出した動画と、同じオブジェクトを Kumiki で描いた絵を並べ、
+3. ``compare`` 書き出した動画と、同じオブジェクトを Sashimono で描いた絵を並べ、
                差の大きい順に一覧（report.html）と並べた絵（PNG）を作る
 
 作業フォルダは既定で ``.work/aviutl-compare`` リポジトリには入れない
@@ -43,12 +43,12 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from kumiki.compat.aviutl.encoding import read_text  # noqa: E402
-from kumiki.compat.aviutl.exo import ALIAS_SUFFIXES, ExoParseError, load_exo  # noqa: E402
-from kumiki.compat.aviutl.mapping import map_object  # noqa: E402
-from kumiki.compat.aviutl.report import CompatibilityReport, global_report  # noqa: E402
-from kumiki.compat.catalog import place  # noqa: E402
-from kumiki.compat.mapped import MappedObject  # noqa: E402
+from sashimono.compat.aviutl.encoding import read_text  # noqa: E402
+from sashimono.compat.aviutl.exo import ALIAS_SUFFIXES, ExoParseError, load_exo  # noqa: E402
+from sashimono.compat.aviutl.mapping import map_object  # noqa: E402
+from sashimono.compat.aviutl.report import CompatibilityReport, global_report  # noqa: E402
+from sashimono.compat.catalog import place  # noqa: E402
+from sashimono.compat.mapped import MappedObject  # noqa: E402
 
 WIDTH, HEIGHT, FPS = 1920, 1080, 60
 #: 並べたプロジェクトの音のレート 描く側（compare）も同じ値にそろえる
@@ -315,9 +315,9 @@ def _video_frames(video: Path, wanted: set[int]) -> dict[int, np.ndarray]:
 
 
 def command_compare(arguments: argparse.Namespace) -> int:
-    from kumiki.core.model import Project, ProjectSettings
-    from kumiki.core.timebase import FrameRate
-    from kumiki.engine.render import FrameRenderer
+    from sashimono.core.model import Project, ProjectSettings
+    from sashimono.core.timebase import FrameRate
+    from sashimono.engine.render import FrameRenderer
 
     work: Path = arguments.work
     manifest = json.loads((work / "manifest.json").read_text(encoding="utf-8"))
@@ -477,12 +477,12 @@ def _write_report(
 ) -> None:
     parts = [
         "<!doctype html><meta charset='utf-8'>",
-        "<title>AviUtl と Kumiki の比べ</title>",
+        "<title>AviUtl と Sashimono の比べ</title>",
         "<style>body{font-family:sans-serif;background:#111;color:#eee}",
         "img{image-rendering:pixelated;width:1440px}",
         "td{padding:4px 8px;vertical-align:top}</style>",
-        "<h1>AviUtl と Kumiki の比べ</h1>",
-        "<p>左が AviUtl 本体、真ん中が Kumiki、右が差（3 倍に強めて表示）</p>",
+        "<h1>AviUtl と Sashimono の比べ</h1>",
+        "<p>左が AviUtl 本体、真ん中が Sashimono、右が差（3 倍に強めて表示）</p>",
         "<p>差は 0 にはならない AviUtl 側は h.264 を通っているので、"
         "鮮やかな色が痩せる（赤 255 が 232、青 255 が 243 になる） "
         "画面いっぱいの原色では、これだけで 5 前後の差が残る</p>",

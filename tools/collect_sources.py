@@ -40,7 +40,7 @@ FFMPEG_VERSION = "8.1.2"
 #: 積んでいる Qt と PySide6
 QT_VERSION = "6.11.2"
 #: tools/build_package.py が組み立てるフォルダの名前 積んだ Qt をここから数える
-BUNDLE_NAME = "Kumiki"
+BUNDLE_NAME = "Sashimono"
 #: Qt の置き場は major.minor のフォルダの下にある 版から作り、上げたときの直し忘れを防ぐ
 _QT_SERIES = ".".join(QT_VERSION.split(".")[:2])
 _QT = f"https://download.qt.io/official_releases/qt/{_QT_SERIES}/{QT_VERSION}/submodules"
@@ -202,7 +202,7 @@ SUMS_NAME = "sources-SHA256SUMS.txt"
 MANIFEST_NAME = "sources-manifest.json"
 
 #: 落とすときに名乗る名前 名乗らないと断る置き場がある
-USER_AGENT = "kumiki-collect-sources"
+USER_AGENT = "sashimono-collect-sources"
 
 Opener = Callable[[urllib.request.Request], IO[bytes]]
 

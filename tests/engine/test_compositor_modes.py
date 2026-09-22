@@ -12,7 +12,7 @@ from collections.abc import Iterator
 import numpy as np
 import pytest
 
-from kumiki.engine.gpu import (
+from sashimono.engine.gpu import (
     BlendMode,
     Compositor,
     GLContextError,
@@ -21,7 +21,7 @@ from kumiki.engine.gpu import (
     Texture,
     Transform,
 )
-from kumiki.engine.gpu.projection import (
+from sashimono.engine.gpu.projection import (
     CAMERA_DISTANCE,
     Corners,
     homography,

@@ -11,14 +11,14 @@ __pycache__/
 .coverage
 htmlcov/
 
-# Kumiki の実行時キャッシュ・作業ファイル
+# Sashimono の実行時キャッシュ・作業ファイル
 #
-# 先頭の / は「リポジトリ直下だけ」の意味。これを付けないと、
-# src/kumiki/engine/cache/ のような同名のソースまで巻き込む。
-# 実際に巻き込んでいて、push するまで誰も気付かなかった。
+# 先頭の / は「リポジトリ直下だけ」の意味 これを付けないと、
+# src/sashimono/engine/cache/ のような同名のソースまで巻き込む
+# 実際に巻き込んでいて、push するまで誰も気付かなかった
 /cache/
 /proxies/
-*.kmk.bak
+*.sme.bak
 *.peaks
 
 # 比較などの作業フォルダ 配布物の絵が入るので入れない

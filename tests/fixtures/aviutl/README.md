@@ -25,4 +25,4 @@
    `%PROGRAMDATA%\aviutl2\Alias` に `.object` として出る
 6. そのファイルをここへ移す（AviUtl2 側からは消しておく）
 
-読み取った文法は `src/kumiki/compat/aviutl/motion.py` の説明に書いてある
+読み取った文法は `src/sashimono/compat/aviutl/motion.py` の説明に書いてある

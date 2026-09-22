@@ -16,11 +16,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from kumiki.compat.aviutl.exo import load_exo
-from kumiki.compat.aviutl.mapping import map_object
-from kumiki.compat.aviutl.report import CompatibilityReport
-from kumiki.core.timebase import FrameRate
-from kumiki.engine.sources import render_source
+from sashimono.compat.aviutl.exo import load_exo
+from sashimono.compat.aviutl.mapping import map_object
+from sashimono.compat.aviutl.report import CompatibilityReport
+from sashimono.core.timebase import FrameRate
+from sashimono.engine.sources import render_source
 
 WORKS = Path(__file__).resolve().parents[2] / ".work"
 
@@ -175,10 +175,10 @@ def test_the_waveform_follows_the_sound() -> None:
     # 違うと、線の縦の位置がフレームごとに実物とずれて相関が落ちる（逆さまなら負になる）
     if not BGM.exists():
         pytest.skip("音声波形表示の見本が描く音が無い")
-    from kumiki.core.commands import AddClip, AddTrack
-    from kumiki.core.model import Project, ProjectSettings, Track, TrackKind
-    from kumiki.engine.gpu import GLContextError, OffscreenGLContext
-    from kumiki.engine.render import FrameRenderer
+    from sashimono.core.commands import AddClip, AddTrack
+    from sashimono.core.model import Project, ProjectSettings, Track, TrackKind
+    from sashimono.engine.gpu import GLContextError, OffscreenGLContext
+    from sashimono.engine.render import FrameRenderer
 
     name = "kumiki_p6_wave_range"
     offsets = [30, 40, 50, 60, 70]
@@ -237,10 +237,10 @@ def _shrunk(image: np.ndarray) -> np.ndarray:
 def test_the_waveform_modes_match_aviutl(name: str, limit: float) -> None:
     if not BGM.exists():
         pytest.skip("音声波形表示の見本が描く音が無い")
-    from kumiki.core.commands import AddClip, AddTrack
-    from kumiki.core.model import Project, ProjectSettings, Track, TrackKind
-    from kumiki.engine.gpu import GLContextError, OffscreenGLContext
-    from kumiki.engine.render import FrameRenderer
+    from sashimono.core.commands import AddClip, AddTrack
+    from sashimono.core.model import Project, ProjectSettings, Track, TrackKind
+    from sashimono.engine.gpu import GLContextError, OffscreenGLContext
+    from sashimono.engine.render import FrameRenderer
 
     offsets = [3, 40, 76]
     reference = _reference(name, offsets)

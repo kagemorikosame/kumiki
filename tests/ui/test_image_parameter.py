@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 from PySide6.QtWidgets import QApplication, QFileDialog
 
-from kumiki.effects import FileSpec, registry
-from kumiki.ui.inspector.widgets import FileEditor, create_editor
+from sashimono.effects import FileSpec, registry
+from sashimono.ui.inspector.widgets import FileEditor, create_editor
 
 
 @pytest.mark.parametrize(("kind", "name"), [("image_blend", "image_file"), ("border", "pattern")])
