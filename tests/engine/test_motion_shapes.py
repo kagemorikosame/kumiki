@@ -316,3 +316,11 @@ def test_the_default_width_draws_a_line() -> None:
     }
     rows = np.nonzero(_drawn(params, 20)[:, WIDTH // 2 - 450] > 128)[0]
     assert len(rows) == pytest.approx(15, abs=1)
+
+
+def test_a_broken_current_position_stays_finite() -> None:
+    # 道の点は範囲へ収めていたが、今の位置は引いた値のままで、先端へ非数が行っていた
+    shape = _trail(lambda at: (float("nan"), 1e40) if at >= 20 else (0.0, 0.0))
+    assert all(math.isfinite(value) for value in shape.last)
+    assert shape.head is not None
+    assert all(math.isfinite(value) for value in shape.head)

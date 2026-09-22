@@ -277,7 +277,10 @@ def trail(
     else:
         now = frame
         walked = float(np.interp(min(frame, float(path.frames)), frames, path.reach))
-        last = position(frame)
+        # 今の位置も道の点と同じく有限に、範囲へ収める 壊れたキーフレームの非数や
+        # 巨大な値がそのまま先端と今の位置の円へ行くと、描く所で座標が壊れる
+        cleaned = _clean(np.array([position(frame)], dtype=np.float64))
+        last = (float(cleaned[0, 0]), float(cleaned[0, 1]))
 
     # 道のりが間隔の倍数の所に円を押す 多すぎるときは今に近い側を残す
     # （古い側を残すと、今の位置との間が空いた線になる）

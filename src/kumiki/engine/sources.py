@@ -84,8 +84,9 @@ def render_source(
     values["_audio"] = audio
     values["_audio_rate"] = audio_rate
     # 移動軌跡の道の置き場 レンダラが自分のものを渡す（他のレンダラが描く道を
-    # 巻き込んで捨てないように） 渡されなければ、その 1 枚のためだけに引く
-    values["_trail_paths"] = trail_paths if trail_paths is not None else TrailPaths()
+    # 巻き込んで捨てないように） 無ければ移動軌跡を描くときだけその場で作る
+    # （文字や普通の図形のたびに作らない）
+    values["_trail_paths"] = trail_paths
     image = QImage(width, height, QImage.Format.Format_RGBA8888)
     image.fill(Qt.GlobalColor.transparent)
 
