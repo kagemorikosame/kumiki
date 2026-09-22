@@ -42,9 +42,12 @@ def test_the_ribbon_text_is_not_moved_twice() -> None:
     """
     mapped = _mapped(RIBBON)
     text = next(item for item in mapped if item.kind == "text")
-    kinds = [effect.kind for effect in text.clip.effects]
-    assert kinds.count("border") <= 1, kinds
-    assert len(kinds) == len(set(kinds)), f"同じエフェクトが重なった: {kinds}"
+    # 比べる相手は、同じ文字をグループ抜きで写した結果 同じ種類のエフェクトを
+    # テンプレートが自分で 2 つ持っていても、それは文字自身のものなので数に入れない
+    items = load_template(RIBBON)[0].items
+    alone = next(item for item in items if item.get("$type", "").split(",")[0].endswith("TextItem"))
+    own = map_template([alone], report=CompatibilityReport())[0]
+    assert [e.kind for e in text.clip.effects] == [e.kind for e in own.clip.effects]
 
 
 def test_the_ribbon_balloon_is_one_picture() -> None:

@@ -373,8 +373,13 @@ def _composite_groups(
     """合成するグループと、その範囲の中身を 1 つのまとめた絵にする
 
     返すのは「グループの ``id`` → まとめた絵」と、まとめた絵の中へ入った中身の ``id``
-    入れ子のグループは、外側（下の段）から順にまとめる 内側のグループは中身と一緒に
-    外側の絵の中へ入り、そこでもう一度この関数を通る
+    入れ子のグループは、外側（レイヤー番号の小さい方 YMM4 の画面では上の段）から
+    順にまとめる 内側のグループは中身と一緒に外側の絵の中へ入り、そこでもう一度
+    この関数を通る
+
+    中身に数えるのは、範囲の段にあって**時間もグループと重なる**ものだけ
+    グループが終わった後に始まるアイテムまでまとめると、シーンのクリップの長さで
+    切られて消える
 
     範囲に中身が 1 つも無い合成するグループは、ふつうの入れ物として残す
     （ペイントトランジションの「この範囲内に次の場面を置いてください」という空の枠）
@@ -397,13 +402,43 @@ def _composite_groups(
             and id(item) not in consumed
             and _layer_of(item) > low
             and (reach is None or _layer_of(item) <= low + reach)
+            and _overlaps(item, group)
         ]
+        _note_crossing(members, low, reach, log)
         scene = _composite(group, members, log)
         if scene is None:
             continue
         made[id(group)] = scene
         consumed.update(id(item) for item in members)
     return made, consumed
+
+
+def _span_of(item: dict[str, Any]) -> tuple[int, int]:
+    start = int(number(item.get("Frame"), 0.0))
+    return start, start + max(1, int(number(item.get("Length"), 1.0)))
+
+
+def _overlaps(item: dict[str, Any], group: dict[str, Any]) -> bool:
+    start, end = _span_of(item)
+    group_start, group_end = _span_of(group)
+    return start < group_end and group_start < end
+
+
+def _note_crossing(
+    members: list[dict[str, Any]], low: int, reach: int | None, log: CompatibilityReport
+) -> None:
+    """合成するグループの中のグループが、外側の範囲を越えて掛かっていれば記録する
+
+    内側のグループはまとめた絵の中でしか働かないので、外側の範囲の外の段には何も
+    掛けられない YMM4 がこの形をどう描くかは確かめていない（配布物 230 本に合成する
+    グループを越える形は無かった） 黙って捨てず、互換性レポートに残す
+    """
+    if reach is None:
+        return
+    for item in members:
+        inner = _reach_of(item) if type_name(item) in _CONTAINER_ITEMS else None
+        if inner is not None and _layer_of(item) + inner > low + reach:
+            log.note_missing("YMM4 の合成するグループの範囲を越える内側のグループ")
 
 
 def _is_composite(item: dict[str, Any]) -> bool:
@@ -415,8 +450,13 @@ def _composite(
 ) -> MappedObject | None:
     """合成するグループ 1 つを、中身をまとめたシーンのクリップへ
 
-    中身のレイヤーと時刻はグループからの相対へ直す シーンのトラックは 1 から
-    始まるので、グループのすぐ上の段が 1 本目になる
+    中身のレイヤーはグループからの相対へ直す シーンのトラックは 1 から始まるので、
+    グループのすぐ上の段が 1 本目になる
+
+    時刻は、グループと中身のうち一番早く始まるものからの相対にする グループより
+    先に始まった中身は、シーンの中でもその分だけ先に始まり、グループのクリップは
+    シーンの途中（:attr:`MappedObject.scene_offset`）から映す グループの頭へ
+    詰めると、グループが始まった時点で進んでいるはずの動きが頭から描き直される
 
     グループ自身の反転・拡大・回転・エフェクトは、まとめた絵（画面の大きさ）に
     掛かるので、画面の中心を軸に効く YMM4 の書き出しと比べて確かめた
@@ -427,12 +467,14 @@ def _composite(
     if center != "ScreenCenter":
         log.note_missing(f"YMM4 のグループの合成の中心: {center}")
     start = int(number(group.get("Frame"), 0.0))
+    earliest = min((_span_of(item)[0] for item in members), default=start)
+    origin = min(start, earliest)
     base = _layer_of(group) + 1
     rebased = [
         {
             **item,
             "Layer": _layer_of(item) - base,
-            "Frame": int(number(item.get("Frame"), 0.0)) - start,
+            "Frame": _span_of(item)[0] - origin,
         }
         for item in members
     ]
@@ -458,6 +500,7 @@ def _composite(
         kind="scene",
         children=children,
         label=remark[0] if remark else "合成したグループ",
+        scene_offset=start - origin,
     )
 
 

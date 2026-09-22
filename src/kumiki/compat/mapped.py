@@ -37,6 +37,9 @@ class MappedObject:
     children: tuple[MappedObject, ...] = ()
     #: シーンにするときの名前
     label: str = ""
+    #: シーンのどのフレームから映し始めるか 中身がまとめた入れ物より先に始まるとき、
+    #: シーンの頭は一番早い中身に合わせ、入れ物のクリップはその分だけ進めた所から映す
+    scene_offset: int = 0
 
     @property
     def has_picture(self) -> bool:

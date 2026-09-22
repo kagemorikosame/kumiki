@@ -256,7 +256,12 @@ def place(
             duration=max(1, duration),
         )
         if item.children:
-            placed = replace(placed, scene_id=_scene_for(item, project, commands))
+            placed = replace(
+                placed,
+                scene_id=_scene_for(item, project, commands),
+                # シーンの中の時刻は秒で持つ（素材のクリップと同じ決まり）
+                source_in=item.scene_offset * project.rate.frame_duration,
+            )
         target = track_id if track_id is not None else tracks[item.layer].id
         commands.append(AddClip(target, placed))
     return commands

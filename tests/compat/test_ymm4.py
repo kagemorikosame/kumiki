@@ -870,6 +870,48 @@ class TestCompositeGroups:
         assert int(outside[0]) > 200
         assert int(outside[1]) < 60
 
+    def test_a_member_starting_before_the_group_keeps_its_elapsed_time(self) -> None:
+        """グループより先に始まった中身は、グループが始まった時点の続きから映る
+
+        グループの頭へ詰める（0 に丸める）と、20 フレーム先に始まっていた動きが
+        グループの頭から描き直される シーンの頭を一番早い中身に合わせ、グループの
+        クリップはシーンの 20 フレーム目から映す
+        """
+        group = group_item(Layer=0, GroupRange=1, IsComposite=True, Frame=50, Length=100)
+        member = shape_item(Layer=1, Frame=30, Length=120)
+        scene = map_template([group, member], report=CompatibilityReport())[0]
+        assert scene.clip.timeline_start == 50
+        assert scene.children[0].clip.timeline_start == 0
+        assert scene.scene_offset == 20
+
+        project = Project.create()
+        for command in place([scene], project, at_frame=0):
+            project = command.apply(project)
+        placed = next(clip for track in project.timeline.tracks for clip in track.clips)
+        assert placed.source_in == 20 * project.rate.frame_duration
+
+    def test_a_member_outside_the_group_time_stays_outside(self) -> None:
+        # グループが終わった後に始まるアイテムまでまとめると、シーンのクリップの
+        # 長さで切られて消える
+        group = group_item(Layer=0, GroupRange=2, IsComposite=True, Frame=0, Length=60)
+        mapped = map_template(
+            [group, shape_item(Layer=1, Length=60), text_item(Layer=2, Frame=90, Length=30)],
+            report=CompatibilityReport(),
+        )
+        assert sorted(item.kind for item in mapped) == ["scene", "text"]
+
+    def test_an_inner_group_reaching_past_the_outer_range_is_recorded(self) -> None:
+        """合成するグループの範囲を越えて掛かる内側のグループは、記録に残す
+
+        内側のグループはまとめた絵の中でしか働かないので、範囲の外の段（ここでは 3 段目）
+        には何も掛からない YMM4 がどう描くかは確かめていないので、黙って捨てない
+        """
+        report = CompatibilityReport()
+        outer = group_item(Layer=0, GroupRange=2, IsComposite=True)
+        inner = group_item(Layer=1, GroupRange=2, VideoEffects=[outline(6.0)])
+        map_template([outer, inner, shape_item(Layer=2), shape_item(Layer=3)], report=report)
+        assert any("範囲を越える" in line for line in report.lines())
+
     def test_another_composite_center_is_recorded(self) -> None:
         # 手元の配布物は画面の中心だけ ほかの中心は確かめていないので、黙って画面の
         # 中心で掛けずに記録へ残す
