@@ -14,9 +14,24 @@ import math
 
 __all__ = ["CURVES", "ease"]
 
-#: キーフレームに持たせられる曲線の名前 直線と Jump は補間方法（直線・瞬間移動）で表せるので外す
+#: キーフレームに持たせられる曲線の名前 YMM4 の移動方法の形（``Back_InOut`` の ``Back``）
+#: 直線（Linear）と Jump も持たせる 向き（In・Out・InOut）と組むと補間方法だけでは表せない
+#: （Jump_Out は頭で一気に行き着き、Jump_InOut は真ん中で行き着く 瞬間移動は終わりで行き着く）
 CURVES: frozenset[str] = frozenset(
-    {"sine", "quad", "cubic", "quart", "quint", "expo", "circ", "back", "elastic", "bounce"}
+    {
+        "linear",
+        "sine",
+        "quad",
+        "cubic",
+        "quart",
+        "quint",
+        "expo",
+        "circ",
+        "back",
+        "elastic",
+        "bounce",
+        "jump",
+    }
 )
 
 

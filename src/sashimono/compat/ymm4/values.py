@@ -30,6 +30,9 @@ YMM4 は .NET のシリアライザで書き出しているので、型の名前
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 from sashimono.compat.aviutl.report import CompatibilityReport, global_report
@@ -44,6 +47,7 @@ __all__ = [
     "frame_positions",
     "interpolation_of",
     "number",
+    "reporting",
     "type_name",
 ]
 
@@ -118,11 +122,6 @@ def interpolation_of(name: str) -> Interpolation:
     return Interpolation.LINEAR
 
 
-#: 形の名前を持たなくてよい英語のイージング 直線は補間方法そのもの、Jump は
-#: 終わりで一気に行き着く形で、キーフレームの曲線には持たせていない
-_PLAIN_EASINGS = frozenset({"linear", "jump"})
-
-
 def curve_of(name: str, report: CompatibilityReport | None = None) -> str:
     """英語のイージング名（``Back_InOut`` など）の曲線の名前 無ければ空
 
@@ -132,6 +131,7 @@ def curve_of(name: str, report: CompatibilityReport | None = None) -> str:
 
     知らない形の名前は記録してから空を返す（向きだけの加減速で描く） 黙って丸めると、
     YMM4 が形を足したときに動きが違うことに誰も気付けない ``report`` を省くと、
+    いま読んでいるテンプレートの記録（:func:`reporting`）へ、それも無ければ
     アプリ全体の記録へ書く
     """
     kind, separator, _ = name.partition("_")
@@ -140,9 +140,24 @@ def curve_of(name: str, report: CompatibilityReport | None = None) -> str:
     lowered = kind.lower()
     if lowered in CURVES:
         return lowered
-    if lowered not in _PLAIN_EASINGS:
-        (report or global_report).note_missing(f"YMM4 の移動方法の形: {kind}")
+    (report or _reporting.get() or global_report).note_missing(f"YMM4 の移動方法の形: {kind}")
     return ""
+
+
+#: いま読んでいるテンプレートの記録 値を読む関数はあちこちから呼ばれ、どれも記録を
+#: 受け取るわけではない 読み込みの入口で置いておけば、知らない形の名前がその読み込みの
+#: 記録に残る（アプリ全体の記録へ混ざらない）
+_reporting: ContextVar[CompatibilityReport | None] = ContextVar("ymm4_reporting", default=None)
+
+
+@contextmanager
+def reporting(report: CompatibilityReport) -> Iterator[None]:
+    """この中で読んだ値の、知らない形の名前を ``report`` へ書く"""
+    token = _reporting.set(report)
+    try:
+        yield
+    finally:
+        _reporting.reset(token)
 
 
 def frame_positions(keyframes: Any, length: int, count: int) -> list[int]:

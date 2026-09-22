@@ -36,7 +36,14 @@ from sashimono.compat.mapped import MappedObject, fitted_effect
 from sashimono.compat.ymm4.brushes import BLEND_NAMES, brush_effect, is_solid
 from sashimono.compat.ymm4.decorations import map_decorations, map_video_effects, with_pivot
 from sashimono.compat.ymm4.effects import CenterPoint
-from sashimono.compat.ymm4.values import animated, brush_colour, colour, number, type_name
+from sashimono.compat.ymm4.values import (
+    animated,
+    brush_colour,
+    colour,
+    number,
+    reporting,
+    type_name,
+)
 from sashimono.core.model import AnimatedValue, Clip, Effect, GeneratedSource, ParamValue
 from sashimono.effects.definition import registry
 from sashimono.effects.sources import source_registry
@@ -263,7 +270,10 @@ def map_template(
     **エフェクトだけ**の結果になり、既にあるクリップへ着せて使う
     """
     log = report if report is not None else global_report
-    return _map_items(list(items), log)
+    # 値を読む関数の多くは記録を受け取らない 知らない移動方法の形がこの読み込みの
+    # 記録に残るよう、入口で置いておく
+    with reporting(log):
+        return _map_items(list(items), log)
 
 
 def _map_items(items: list[dict[str, Any]], log: CompatibilityReport) -> list[MappedObject]:

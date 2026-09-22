@@ -292,8 +292,9 @@ class TestInterpolationNames:
         """
         assert curve_of("Back_InOut") == "back"
         assert curve_of("Expo_Out") == "expo"
-        # 直線と Jump は補間方法で表せる 知らない名前も形を持たない
-        assert curve_of("Jump_In") == ""
+        # Jump も形 瞬間移動（終わりで行き着く）に丸めると、Jump_Out が頭で行き着かない
+        assert curve_of("Jump_Out") == "jump"
+        # 日本語の移動方法は形を持たない
         assert curve_of("加減速") == ""
         value = animated(moving(0.0, 180.0, style="Back_InOut"), length=90)
         assert value.keyframes[0].curve == "back"
@@ -301,16 +302,34 @@ class TestInterpolationNames:
         # Back_InOut は頭で逆へ振れる（YMM4 の書き出しでも 6 度ほど逆へ回った）
         assert value.at(15) < 0.0
 
+    def test_jump_out_arrives_at_the_start_not_the_end(self) -> None:
+        # Jump は向きで行き着く時刻が変わる In は終わり、Out は頭、InOut は真ん中
+        # 瞬間移動に丸めると、Jump_Out の動きが終わりまで止まったままになる
+        out = animated(moving(0.0, 100.0, style="Jump_Out"), length=30)
+        assert out.at(1) == pytest.approx(100.0)
+        into = animated(moving(0.0, 100.0, style="Jump_In"), length=30)
+        assert into.at(29) == pytest.approx(0.0)
+        middle = animated(moving(0.0, 100.0, style="Jump_InOut"), length=30)
+        assert middle.at(10) == pytest.approx(0.0)
+        assert middle.at(20) == pytest.approx(100.0)
+
+    def test_an_unknown_shape_goes_to_the_report_of_the_template_being_read(self) -> None:
+        # 値を読む所の多くは記録を受け取らない 読み込みの入口の記録へ書かないと、
+        # テンプレートを読んだ人の見る一覧に出ず、アプリ全体の記録へ紛れる
+        report = CompatibilityReport()
+        map_template([text_item(X=moving(0.0, 10.0, style="Magic_Out"))], report=report)
+        assert any("Magic" in line for line in report.lines())
+
     def test_an_unknown_easing_shape_is_recorded_before_it_is_rounded(self) -> None:
         # 知らない形は向きだけの加減速で描く 記録しないと、YMM4 が形を足したときに
-        # 動きが違うことに誰も気付けない 直線と Jump は形を持たないので記録しない
+        # 動きが違うことに誰も気付けない 知っている形（Linear など）は記録しない
         report = CompatibilityReport()
         value = animated(moving(0.0, 1.0, style="Magic_In"), length=30, report=report)
         assert value.keyframes[0].curve == ""
         assert value.keyframes[0].interpolation is Interpolation.EASE_IN
         assert any("Magic" in line for line in report.lines())
         quiet = CompatibilityReport()
-        animated(moving(0.0, 1.0, style="Jump_In"), length=30, report=quiet)
+        animated(moving(0.0, 1.0, style="Linear_In"), length=30, report=quiet)
         assert not quiet.lines()
 
 
