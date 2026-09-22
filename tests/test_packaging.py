@@ -18,6 +18,7 @@ import pytest
 
 from kumiki.app import SELF_CHECK_FLAG, main
 from kumiki.compat.aviutl.catalog import PORTABLE_SCRIPTS_DIR, default_script_roots
+from kumiki.core.model import Project
 from kumiki.runtime import app_dir, install_command, pip_arguments, run_pip
 from kumiki.selfcheck import CheckResult, format_results, run_self_check
 
@@ -495,8 +496,8 @@ class TestTheExportCheckCountsFrames:
 
         real = encode.export_project
 
-        def truncated(project: object, settings: encode.ExportSettings, **kwargs: object) -> Path:
-            return real(project, replace(settings, frame_range=(0, 1)))  # type: ignore[arg-type]
+        def truncated(project: Project, settings: encode.ExportSettings, **kwargs: object) -> Path:
+            return real(project, replace(settings, frame_range=(0, 1)))
 
         monkeypatch.setattr(encode, "export_project", truncated)
         with pytest.raises(RuntimeError, match="1 コマ"):
