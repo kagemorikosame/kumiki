@@ -71,11 +71,7 @@ def _content_box(image: np.ndarray) -> tuple[int, int, int, int] | None:
     テキストや図形は画面と同じ大きさの絵で届く 角丸や中心基準の動きは、この範囲を
     絵の大きさとして扱わないと、画面の角や画面の中央を基準にしてしまう
     """
-    return _alpha_box(image[..., 3])
-
-
-def _alpha_box(alpha: np.ndarray) -> tuple[int, int, int, int] | None:
-    """不透明度の面 ``(高さ, 幅)`` の中で 0 でない範囲（画素、左・上・右・下）"""
+    alpha = image[..., 3]
     columns = np.flatnonzero(alpha.any(axis=0))
     rows = np.flatnonzero(alpha.any(axis=1))
     if columns.size == 0 or rows.size == 0:
@@ -624,7 +620,7 @@ class FrameRenderer:
             global_report.note_missing("場面切り替えに積んだ AviUtl スクリプト")
         if not self._effects.has_work(gpu_effects):
             return image
-        box = _alpha_box(image.read_alpha())
+        box = image.content_box()
         result = self._effects.apply(
             image.canvas,
             gpu_effects,

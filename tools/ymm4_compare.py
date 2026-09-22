@@ -25,11 +25,12 @@ import sys
 import uuid
 from dataclasses import dataclass, field
 from fractions import Fraction
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
 import numpy as np
 
@@ -304,8 +305,14 @@ def frame_index(pts: int, start: int | None, time_base: Fraction, rate: float) -
     return round(float((pts - (start or 0)) * time_base) * rate)
 
 
-def _ymm4_frames(video: Path) -> Iterator[tuple[int, np.ndarray]]:
-    """書き出した動画を頭から 1 枚ずつ、フレーム番号と絵の組で返す"""
+#: 動画の 1 枚 フレーム番号と、絵を取り出す関数の組
+#: 取り出す（RGB の配列へ変換する）のは比べる 1 枚だけ 3 枚だけ比べるときに、
+#: そこまで読み進めた全部の絵を変換すると、それだけで数分かかる
+Picture = tuple[int, "Callable[[], np.ndarray]"]
+
+
+def _ymm4_frames(video: Path) -> Iterator[Picture]:
+    """書き出した動画を頭から 1 枚ずつ返す"""
     import av
 
     with av.open(str(video)) as container:
@@ -315,7 +322,7 @@ def _ymm4_frames(video: Path) -> Iterator[tuple[int, np.ndarray]]:
             if frame.pts is None or frame.time_base is None:
                 continue
             index = frame_index(frame.pts, stream.start_time, frame.time_base, rate)
-            yield index, frame.to_ndarray(format="rgb24")
+            yield index, partial(frame.to_ndarray, format="rgb24")
 
 
 class References:
@@ -325,18 +332,26 @@ class References:
     1 万枚を超え、メモリに載らない 比べる順（番号の若い順）に動画を進めて読む
     """
 
-    def __init__(self, frames: Iterator[tuple[int, np.ndarray]]) -> None:
+    def __init__(self, frames: Iterator[Picture]) -> None:
         self._frames = frames
-        self._current: tuple[int, np.ndarray] | None = None
+        self._current: Picture | None = None
+        self._asked = -1
 
     def get(self, wanted: int) -> np.ndarray | None:
-        """``wanted`` 番の絵 動画に無ければ ``None`` 前に引いた番号より若い番号は引けない"""
+        """``wanted`` 番の絵 動画に無ければ ``None``
+
+        前に引いた番号より若い番号を引くと例外にする 読み進めた動画は戻せないので、
+        黙って ``None`` を返すと、呼ぶ側の並べ間違いが「比べる絵が無い」に化けて気付けない
+        """
+        if wanted < self._asked:
+            raise ValueError(f"{self._asked} 番の後に {wanted} 番は引けない 若い順に引くこと")
+        self._asked = wanted
         while self._current is None or self._current[0] < wanted:
             following = next(self._frames, None)
             if following is None:
                 return None
             self._current = following
-        return self._current[1] if self._current[0] == wanted else None
+        return self._current[1]() if self._current[0] == wanted else None
 
 
 def command_compare(arguments: argparse.Namespace) -> int:
