@@ -147,6 +147,7 @@ SHAPE = SourceDefinition(
                 ("concentration", "集中線"),
                 ("motion_trail", "移動軌跡"),
                 ("starfield", "星空"),
+                ("waveform", "音声波形"),
             ),
             "rect",
         ),
@@ -206,6 +207,19 @@ SHAPE = SourceDefinition(
         SelectSpec("star_shape", "星の形", _FIGURE_CHOICES, "ellipse"),
         TrackSpec("star_fade_in", "星のフェードイン", 0, 10, 0.15, step=0.01, unit="秒"),
         TrackSpec("star_fade_out", "星のフェードアウト", 0, 10, 0.15, step=0.01, unit="秒"),
+        # 音声波形（AviUtl2 の ``音声波形表示``） 素材の音を今の時刻から 1 画素 1 サンプルで描く
+        # クリップが素材を持てばそちらを使い、無ければこの道の音を読む
+        TextSpec("audio_path", "音声波形の音声ファイル", "", multiline=False),
+        TrackSpec("wave_volume", "音声波形の音量", 0, 500, 100, unit="%"),
+        # 素材のこのミリ秒より先は描かない（AviUtl の 再生範囲 の終わり） 負なら素材の終わりまで
+        # 整数しか持てない項目なのでミリ秒 秒で持つと 80.448 秒が 80 秒に切れる
+        ValueSpec(
+            "audio_end_ms",
+            "音声波形を読む終わり（ミリ秒 負で最後まで）",
+            -1,
+            minimum=-1,
+            maximum=10**10,
+        ),
         TrackSpec("pos_x", "X", -4000, 4000, 0, step=1, unit="px"),
         TrackSpec("pos_y", "Y", -4000, 4000, 0, step=1, unit="px"),
         TrackSpec("rotation", "回転", -3600, 3600, 0, unit="度"),

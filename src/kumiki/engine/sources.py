@@ -46,12 +46,15 @@ def render_source(
     frame: int = 0,
     fps: float = 30.0,
     duration: int = 0,
+    audio: np.ndarray | None = None,
 ) -> np.ndarray | None:
     """生成オブジェクトを描いて配列で返す 未知の種類なら ``None``
 
     ``fps`` は時間で変わる図形（タイマー・集中線）がフレームを秒へ直すのに使う
     ``duration`` はクリップの長さ（フレーム） 移動軌跡が先端の向きを決めるときに、
     クリップの終わりより先の動きを見ないために使う 分からなければ 0
+    ``audio`` は音声波形が描く音（今の時刻からの 1 チャンネルのサンプル）
+    音を読むのはレンダラの仕事 ここは渡された数を線にするだけ
     """
     definition = source_registry.get(source.kind)
     if definition is None:
@@ -64,6 +67,7 @@ def render_source(
     values["_duration"] = duration
     # 移動軌跡は、今の値ではなく**動きそのもの**（過去の位置）を読む
     values["_motion"] = _motion_of(definition, source.params)
+    values["_audio"] = audio
     image = QImage(width, height, QImage.Format.Format_RGBA8888)
     image.fill(Qt.GlobalColor.transparent)
 
@@ -482,6 +486,9 @@ def _draw_shape(painter: QPainter, values: dict[str, object], width: int, height
     if str(values.get("shape", "rect")) == "starfield":
         _draw_star_field(painter, values, width, height)
         return
+    if str(values.get("shape", "rect")) == "waveform":
+        _draw_waveform(painter, values, centre_x, centre_y, shape_width, shape_height)
+        return
     rect = QRectF(-shape_width / 2.0, -shape_height / 2.0, shape_width, shape_height)
     path = _shape_path(str(values.get("shape", "rect")), rect, values)
 
@@ -778,6 +785,52 @@ def _draw_motion_trail(
     transform.translate(centre_x + shape.head[0], centre_y + shape.head[1])
     transform.rotate(math.degrees(shape.head_turn))
     painter.fillPath(transform.map(path), colour)
+
+
+#: 音声波形の線の太さ（画素） AviUtl2 の無音の所は、中心の下 2 行がちょうど塗られていた
+WAVEFORM_LINE = 2.0
+
+
+def waveform_points(samples: np.ndarray, width: float, height: float, volume: float) -> np.ndarray:
+    """音声波形の線の点 画面の座標（中心から、Y は下が正）で ``(点の数, 2)``
+
+    1 画素に 1 サンプル 振幅 1 で高さの半分まで振れ、**正の値が下へ出る**
+    （AviUtl2 の絵を素材のサンプルと突き合わせると、下向きを正として相関 0.99 だった
+    上向きに描くと相関が -0.99 になり、波形が上下逆さまに出る）
+    線は太さ 2 で中心の下 1 画素へずらして引く（無音の線が中心の下 2 行に乗る実物に合わせる）
+    幅より多いサンプルは捨てる 描く範囲の外へ線がはみ出さないように
+    """
+    count = min(len(samples), max(0, round(width)))
+    x = -width / 2.0 + np.arange(count) + 0.5
+    y = WAVEFORM_LINE / 2.0 + samples[:count] * (volume / 100.0) * height / 2.0
+    return np.stack([x, y], axis=1)
+
+
+def _draw_waveform(
+    painter: QPainter,
+    values: dict[str, object],
+    centre_x: float,
+    centre_y: float,
+    width: float,
+    height: float,
+) -> None:
+    """音声波形（AviUtl2 の ``音声波形表示``） 音はレンダラが ``_audio`` に入れて渡す
+
+    音が無ければ何も描かない 実物も、再生範囲が 0 秒の見本では何も出さなかった
+    """
+    samples = values.get("_audio")
+    if not isinstance(samples, np.ndarray) or samples.size < 2:
+        return
+    points = waveform_points(samples, width, height, _number(values, "wave_volume", 100.0))
+    if len(points) < 2:
+        return
+    line = QPolygonF([QPointF(centre_x + x, centre_y + y) for x, y in points])
+    pen = QPen(_color(values.get("color")), WAVEFORM_LINE)
+    pen.setCapStyle(Qt.PenCapStyle.FlatCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.setPen(pen)
+    painter.drawPolyline(line)
 
 
 #: 星空の粒の絵をこの大きさ（画素）まで半分ずつ縮めて用意しておく

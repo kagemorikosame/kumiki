@@ -462,6 +462,12 @@ def media_paths(exo: ExoFile) -> tuple[str, ...]:
             path = content.params.get("file", "")
             if path and path not in found:
                 found.append(path)
+        elif content.name == "音声波形表示":
+            # 波形は自分の ``ファイル`` の音を描く 素材として読み込ませないと、
+            # 別の機械へ持っていったときに探し直せない
+            path = content.value("ファイル", "file").strip()
+            if path and path not in found:
+                found.append(path)
     return tuple(found)
 
 
@@ -709,6 +715,9 @@ def _content(
         return _motion_trail(entry, points, log), "", "shape"
     if entry.name == "星":
         return _star_field(entry, points, log), "", "shape"
+    if entry.name == "音声波形表示":
+        path = entry.value("ファイル", "file").strip()
+        return _waveform(entry, path, points, log), path, "shape"
     if entry.name in ("動画ファイル", "画像ファイル", "音声ファイル"):
         return None, entry.params.get("file", ""), entry.name
 
@@ -1099,6 +1108,57 @@ def _star_field(
             "star_fade_in": track("フェードイン時間", 0.15),
             "star_fade_out": track("フェードアウト時間", 0.15),
             "color": _color(entry.value("色", default="ddddff")),
+        },
+    )
+
+
+#: 音声波形表示の項目のうち、まだ描き分けられないもの 0 以外なら記録に残す
+#: 解像度とスペースは升目に区切った絵、スペクトラムは周波数ごとの棒になる
+#: どちらも AviUtl2 に描かせた絵はあるが、升目の取り方と棒の高さの決まりがまだ読めていない
+_WAVEFORM_UNREAD = (
+    "スペクトラム表示",
+    "ミラー表示",
+    "横解像度",
+    "縦解像度",
+    "横スペース",
+    "縦スペース",
+)
+
+
+def _waveform(
+    entry: ExoEntry, path: str, points: tuple[int, ...], log: CompatibilityReport
+) -> GeneratedSource:
+    """音声波形表示 AviUtl2 の**メディアオブジェクト**（フィルタではない）
+
+    自分の ``ファイル`` の音を、今の時刻から 1 画素 1 サンプルで横に並べて線にする
+    AviUtl2 に描かせた絵を素材のサンプルと突き合わせて読んだ（44.1kHz のプロジェクトで
+    横幅 800 の線が 800 サンプル、最後のフレームではクリップの終わりから先が 0 だった）
+    再生位置と再生速度は音声ファイルと同じくクリップの切り出しへ写す（:func:`_playback`）
+    """
+    for key in _WAVEFORM_UNREAD:
+        value = entry.params.get(key, "").strip()
+        if value not in ("", "0"):
+            log.note_missing(f"音声波形表示の{key}")
+    preset = entry.params.get("波形のプリセット", "").strip()
+    if preset:
+        log.note_missing(f"音声波形表示の波形のプリセット: {preset}")
+    track = _tracks_of(entry, points, log)
+    # 再生範囲の 2 つ目の値は、素材をどこまで読むか 始めと同じ値（10,10）の見本は
+    # AviUtl2 で何も描かれなかった 読まずに素材の続きを描くと、無いはずの波形が出る
+    position = parse_motion(entry.params.get("再生位置"))
+    end = -1
+    if position is not None and position.method == "再生範囲" and len(position.values) >= 2:
+        end = max(0, round(position.values[-1] * 1000.0))
+    return GeneratedSource(
+        kind="shape",
+        params={
+            "shape": "waveform",
+            "audio_end_ms": end,
+            "width": track("横幅", 800.0),
+            "height": track("高さ", 400.0),
+            "wave_volume": track("音量", 100.0),
+            "audio_path": path,
+            "color": _color(entry.value("波形の色", default="ffffff")),
         },
     )
 

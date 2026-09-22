@@ -51,6 +51,8 @@ from kumiki.compat.catalog import place  # noqa: E402
 from kumiki.compat.mapped import MappedObject  # noqa: E402
 
 WIDTH, HEIGHT, FPS = 1920, 1080, 60
+#: 並べたプロジェクトの音のレート 描く側（compare）も同じ値にそろえる
+AUDIO_RATE = 44100
 #: 比べる絵の大きさ 書き出しは圧縮されるので、縮めてならしてから比べる
 COMPARE_WIDTH, COMPARE_HEIGHT = 480, 270
 #: 長さの書いていないエイリアスに当てる長さ（フレーム）
@@ -78,7 +80,7 @@ video.width={width}
 video.height={height}
 video.rate={rate}
 video.scale=1
-audio.rate=44100
+audio.rate={audio_rate}
 cursor.frame=0
 cursor.layer=0
 preview.frame=0
@@ -203,7 +205,7 @@ def build_cases(files: list[Path]) -> tuple[list[Case], list[str]]:
 
 def write_project(cases: list[Case], target: Path) -> None:
     """並べたプロジェクトを書く 1 本を 1 レイヤーの 1 区間に置く"""
-    out = [_HEADER.format(file=target, width=WIDTH, height=HEIGHT, rate=FPS)]
+    out = [_HEADER.format(file=target, width=WIDTH, height=HEIGHT, rate=FPS, audio_rate=AUDIO_RATE)]
     for number, case in enumerate(cases):
         end = case.start + case.length - 1
         out.append(f"[{number}]")
@@ -334,7 +336,11 @@ def command_compare(arguments: argparse.Namespace) -> int:
         wanted.update(Case(**raw).sample_frames())
     references = _video_frames(video, wanted)
 
-    settings = ProjectSettings(width=WIDTH, height=HEIGHT, frame_rate=FrameRate(FPS))
+    # 音のレートは並べたプロジェクトの見出し（audio.rate=44100）と合わせる 音声波形は
+    # 1 画素 1 サンプルなので、レートが違うと同じ横幅に入る時間が変わる
+    settings = ProjectSettings(
+        width=WIDTH, height=HEIGHT, frame_rate=FrameRate(FPS), sample_rate=AUDIO_RATE
+    )
     images = work / "images"
     images.mkdir(exist_ok=True)
     rows: list[tuple[float, str, str, int, str, str]] = []

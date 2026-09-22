@@ -35,7 +35,7 @@ from kumiki.core.model import (
 from kumiki.core.timebase import FrameRate, seconds_to_frame
 from kumiki.effects.easing import ease
 from kumiki.engine.cache.proxy import ProxyStore
-from kumiki.engine.decode import ProbeError, VideoDecoder
+from kumiki.engine.decode import AudioDecoder, ProbeError, VideoDecoder
 from kumiki.engine.gpu import (
     BlendMode,
     Compositor,
@@ -139,7 +139,21 @@ MAX_GENERATED_CACHE = 48
 #: 値が止まっていても時計で絵が変わる図形
 #: 星空は粒が時間で流れ、移動軌跡は線が時間で伸びる（固定速度） 載せ忘れると、
 #: 最初のフレームの絵を覚えたまま使い回して、止まった星空になる
-_CLOCK_SHAPES = frozenset({"concentration", "starfield", "motion_trail"})
+_CLOCK_SHAPES = frozenset({"concentration", "starfield", "motion_trail", "waveform"})
+
+
+def _is_generated(clip: Clip) -> bool:
+    """絵をこちらで作るクリップか
+
+    音声波形は素材（音声ファイル）を持つが、絵は素材から取り出すのではなく描く
+    素材を持つからと映像を取り出しに行くと、音声だけの素材なので何も出ない
+    """
+    if clip.media_id is None:
+        return True
+    source = clip.source
+    return (
+        source is not None and source.kind == "shape" and source.params.get("shape") == "waveform"
+    )
 
 
 def _varies_over_time(source: GeneratedSource) -> bool:
@@ -238,6 +252,10 @@ class FrameRenderer:
         self._nested: dict[int, Compositor] = {}
         #: クリップを下のクリップの形で切り抜くときに使う合成先（役目と深さごと）
         self._layers: dict[tuple[str, int], Compositor] = {}
+        #: 音声波形が音を読むデコーダ（道ごと） 映像のデコーダとは別に持つ
+        self._audio: OrderedDict[Path, AudioDecoder] = OrderedDict()
+        #: 開けなかった音の道 毎フレーム開き直さないために覚えておく
+        self._audio_missing: set[Path] = set()
         self._closed = False
 
     @property
@@ -520,6 +538,9 @@ class FrameRenderer:
         for decoder in self._decoders.values():
             decoder.close()
         self._decoders.clear()
+        for audio in self._audio.values():
+            audio.close()
+        self._audio.clear()
         with self._context:
             for texture in self._textures.values():
                 texture.release()
@@ -556,7 +577,7 @@ class FrameRenderer:
             # スクリプトは渡した絵を書き換えることがある 覚えておいた絵は渡さない
             # 生成オブジェクトは画面と同じ大きさで作るので、AviUtl と同じ「自分の大きさ」
             # （obj.w / obj.h）になるよう、色の付いた所だけを切り出して渡す
-            cropped, offset = _object_sized(image) if clip.media_id is None else (image, (0.0, 0.0))
+            cropped, offset = _object_sized(image) if _is_generated(clip) else (image, (0.0, 0.0))
             self._draw_scripted(
                 track,
                 clip,
@@ -573,9 +594,7 @@ class FrameRenderer:
         texture.upload(image)
 
         screen_width, screen_height = self._compositor.width, self._compositor.height
-        if clip.media_id is None and (
-            texture.width > screen_width or texture.height > screen_height
-        ):
+        if _is_generated(clip) and (texture.width > screen_width or texture.height > screen_height):
             # 画面より大きく作った生成オブジェクト 縮めて収めず、画面の中心に等倍で置く
             self._draw_oversized(texture, image, clip, gpu_effects, local_frame, rate, opacity)
             return
@@ -1054,9 +1073,89 @@ class FrameRenderer:
             self._scripts.set_screen(self._compositor.width, self._compositor.height)
         return self._scripts
 
+    def _waveform_audio(
+        self, clip: Clip, source: GeneratedSource, local_frame: int, rate: FrameRate
+    ) -> np.ndarray | None:
+        """音声波形が描く音 今の時刻から、横幅ぶんのサンプルを 1 チャンネルで
+
+        サンプルはプロジェクトの音のレート（AviUtl2 は 44.1kHz の書き出しで 1 画素
+        1 サンプルだった） クリップの終わりより先は 0 実物も最後のフレームでは、
+        終わりから先が平らな線になっていた（素材の続きを読むと、そこに音が出る）
+        """
+        if source.kind != "shape" or source.params.get("shape") != "waveform":
+            return None
+        decoder = self._audio_decoder_for(clip, source)
+        if decoder is None:
+            return None
+        width = source.params.get("width")
+        count = max(1, round(width.at(local_frame) if isinstance(width, AnimatedValue) else 800))
+        sample_rate = decoder.sample_rate
+        seconds = clip.source_in + local_frame * rate.frame_duration * clip.speed
+        start = int(seconds * sample_rate)
+        speed = float(clip.speed)
+        needed = max(1, int(np.ceil(count * speed)))
+        raw = decoder.read(start, needed)
+        mono = raw.mean(axis=1) if raw.ndim == 2 else raw
+        if needed != count:
+            # 速く回すと 1 画素に何サンプルも入る 間引いて横幅に合わせる
+            mono = mono[(np.arange(count) * speed).astype(int).clip(0, len(mono) - 1)]
+        # クリップの終わり（この窓の頭から何サンプル先か）より後ろを 0 にする
+        left = (clip.duration - local_frame) * rate.frame_duration * sample_rate
+        cut = max(0, round(float(left)))
+        mono = mono.astype(np.float32).copy()
+        mono[cut:] = 0.0
+        end_ms = source.params.get("audio_end_ms")
+        if isinstance(end_ms, int) and not isinstance(end_ms, bool) and end_ms >= 0:
+            # 読む範囲の終わりより先の素材は描かない（AviUtl の 再生範囲）
+            remaining = (Fraction(end_ms, 1000) - seconds) * sample_rate / clip.speed
+            if remaining <= 0:
+                # 範囲をもう過ぎている 実物は平らな線も出さず、何も描かなかった
+                # （再生位置を 10,10 にした見本が 81 フレームとも真っ黒）
+                return None
+            mono[int(np.ceil(float(remaining))) :] = 0.0
+        result: np.ndarray = mono
+        return result
+
+    def _audio_decoder_for(self, clip: Clip, source: GeneratedSource) -> AudioDecoder | None:
+        """音声波形の音を読む係 素材を持つクリップならその素材、無ければ設定の道"""
+        path: Path | None = None
+        if clip.media_id is not None:
+            media = self._project.find_media(clip.media_id)
+            if media is not None:
+                path = Path(media.path)
+        if path is None:
+            written = source.params.get("audio_path")
+            if isinstance(written, str) and written:
+                path = Path(written)
+        if path is None:
+            return None
+        decoder = self._audio.get(path)
+        if decoder is not None:
+            self._audio.move_to_end(path)
+            return decoder
+        if path in self._audio_missing:
+            return None
+        try:
+            rate = self._project.settings.sample_rate
+            decoder = AudioDecoder(path, sample_rate=rate, channels=2)
+            if decoder.info.channels == 1:
+                # モノラルの素材を 2 チャンネルへ広げると、変換が振幅を 0.7 倍に落とす
+                # 素材のままの 1 チャンネルで読み、波形の振れ幅を変えない
+                decoder.close()
+                decoder = AudioDecoder(path, sample_rate=rate, channels=1)
+        except (ProbeError, OSError):
+            # 開けない音は何度も開き直さない 毎フレーム探しに行って再生が止まる
+            self._audio_missing.add(path)
+            return None
+        self._audio[path] = decoder
+        while len(self._audio) > MAX_OPEN_DECODERS:
+            _, evicted = self._audio.popitem(last=False)
+            evicted.close()
+        return decoder
+
     def _image_for(self, clip: Clip, frame: int, rate: FrameRate) -> np.ndarray | None:
         """クリップの元絵 素材由来と生成オブジェクトの両方をここで扱う"""
-        if clip.media_id is None:
+        if _is_generated(clip):
             return self._generate(clip, frame, rate)
         return self._decode(clip, frame, rate)
 
@@ -1085,12 +1184,29 @@ class FrameRenderer:
         when = local_frame if _varies_over_time(source) else -1
         # 長さも鍵に入れる 移動軌跡の先端の向きはクリップの終わりまでの動きで決まるので、
         # 伸び縮みさせただけのクリップに前の長さの絵を出さないように
-        key = (source.kind, width, height, when, clip.duration, _fingerprint(source.params))
+        # 切り出し位置と速度は音声波形が読む音の位置を決める 変えたのに前の波形が出ないように
+        key = (
+            source.kind,
+            width,
+            height,
+            when,
+            clip.duration,
+            clip.source_in,
+            clip.speed,
+            _fingerprint(source.params),
+        )
         cached = self._generated.get(clip.id)
         if cached is not None and cached[0] == key:
             return cached[1]
+        audio = self._waveform_audio(clip, source, local_frame, rate)
         image = render_source(
-            source, width, height, frame=local_frame, fps=float(rate.fps), duration=clip.duration
+            source,
+            width,
+            height,
+            frame=local_frame,
+            fps=float(rate.fps),
+            duration=clip.duration,
+            audio=audio,
         )
         if image is not None:
             # 入れ替えのときは減らない 先に捨てると、関係ないクリップの絵が消える

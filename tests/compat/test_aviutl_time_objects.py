@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from kumiki.compat.aviutl.exo import parse_exo
-from kumiki.compat.aviutl.mapping import map_object
+from kumiki.compat.aviutl.mapping import map_object, media_paths
 from kumiki.compat.aviutl.report import CompatibilityReport
 from kumiki.compat.mapped import MappedObject
 from kumiki.core.model import AnimatedValue
@@ -129,3 +129,64 @@ class TestStarField:
         assert source.params["star_shape"] == "ellipse"
         assert source.params["color"][2] == 1.0  # type: ignore[index]
         assert not report.missing
+
+
+#: 音声波形表示の見本が読む音（道だけを使う 開かない）
+BGM = r"D:\V用のBGM\138_BPM150.mp3"
+
+WAVE = """[Object]
+frame=0,80
+[Object.0]
+effect.name=音声波形表示
+横幅=800
+高さ=400
+再生位置=0.000,80.448,再生範囲,0
+再生速度=100.00
+音量=100.00
+ファイル={bgm}
+波形の色=ffffff
+波形のプリセット=
+スペクトラム表示=0
+ミラー表示=0
+横解像度=0
+縦解像度=0
+横スペース=0
+縦スペース=0
+[Object.1]
+effect.name=標準描画
+X=0.00
+Y=0.00
+合成モード=通常
+""".replace("{bgm}", BGM)
+
+
+class TestWaveform:
+    def test_it_becomes_a_waveform_of_its_own_file(self) -> None:
+        # フィルタではなくメディアオブジェクト 自分の ファイル の音を描く
+        # 読めないと中身の無いクリップになり、何も描かれない
+        item, report = _mapped(WAVE)
+        source = item.clip.source
+        assert source is not None
+        assert source.params["shape"] == "waveform"
+        assert source.params["audio_path"] == BGM
+        assert item.media_path == BGM
+        assert _static(source.params["width"]) == 800.0
+        assert _static(source.params["height"]) == 400.0
+        assert source.params["audio_end_ms"] == 80448
+        assert not report.missing
+
+    def test_the_media_path_is_listed(self) -> None:
+        # 素材として読み込ませないと、別の機械へ持っていったときに探し直せない
+        assert media_paths(parse_exo(WAVE)) == (BGM,)
+
+    def test_an_empty_range_is_kept(self) -> None:
+        # 10,10 のように始めと終わりが同じなら、読む範囲は 0 秒（実物は何も描かない）
+        item, _ = _mapped(WAVE.replace("0.000,80.448,再生範囲", "10.000,10.000,再生範囲"))
+        assert item.clip.source is not None
+        assert item.clip.source.params["audio_end_ms"] == 10000
+        assert item.clip.source_in == 10
+
+    def test_the_modes_not_yet_drawn_are_recorded(self) -> None:
+        # 升目とスペクトラムはまだ描き分けられない 線で代えたことを黙らない
+        _, report = _mapped(WAVE.replace("スペクトラム表示=0", "スペクトラム表示=1"))
+        assert any("スペクトラム表示" in entry for entry in report.missing)
