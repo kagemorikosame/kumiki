@@ -158,5 +158,4 @@ class TestFailures:
             pipeline.reserve()
             pipeline.submit(0, 0, _image(0))
             raise ValueError("合成に失敗")
-        assert threading.active_count() >= 1
         assert all(t.name != "sashimono-export-writer" for t in threading.enumerate())

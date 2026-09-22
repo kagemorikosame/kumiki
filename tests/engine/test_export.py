@@ -419,17 +419,24 @@ class TestPipeline:
         worker.start()
         assert finished.wait(120), "書き込みが失敗した後、書き出しが戻ってこない"
 
-    @pytest.mark.parametrize("depth", [-1, MAX_PIPELINE_DEPTH + 1])
+    @pytest.mark.parametrize("depth", [-1, MAX_PIPELINE_DEPTH + 1, 2.5])
     def test_an_out_of_range_depth_is_refused(
-        self, ready_project: Project, tmp_path: Path, depth: int
+        self, ready_project: Project, tmp_path: Path, depth: float
     ) -> None:
         # 黙って通すと、大きい値で合成済みの絵を抱えすぎてメモリを使い切る
         # 負の値は「重ねない」と同じに丸められ、頼んだ設定と実際が食い違う
+        # 2.5 のような値は範囲だけ見ると通り、席やキューの数として奥まで流れる
         output = tmp_path / "depth.mp4"
         with pytest.raises(ExportError, match="先読みの深さ"):
             export_project(
                 ready_project,
-                ExportSettings(path=output, video_codec="libx264", pipeline_depth=depth),
+                ExportSettings(
+                    path=output,
+                    video_codec="libx264",
+                    # 型の宣言は int なので mypy は通さない ここで試すのは、
+                    # 型検査を通さずに呼ぶ側（設定ファイルや別の言語からの呼び出し）
+                    pipeline_depth=depth,  # type: ignore[arg-type]
+                ),
             )
         assert not output.exists()
 

@@ -211,10 +211,15 @@ def export_project(
     # 深さは合成済みの絵を何枚抱えるかで、4K なら 1 枚 33MB 大きい値をそのまま通すと
     # 長い書き出しの途中でメモリを使い切る 設定画面の側は範囲を見ているので、
     # ここを素通しにすると API から直に呼んだときだけ守られない形になる
-    if not 0 <= settings.pipeline_depth <= MAX_PIPELINE_DEPTH:
-        raise ExportError(
-            f"先読みの深さは 0 から {MAX_PIPELINE_DEPTH} まで: {settings.pipeline_depth}"
-        )
+    # 整数かどうかも見る 2.5 のような値は範囲の確認だけなら通ってしまい、
+    # 席やキューの数として半端な値が奥まで流れる（失敗しても ExportError にならない）
+    depth = settings.pipeline_depth
+    if (
+        not isinstance(depth, int)
+        or isinstance(depth, bool)
+        or not 0 <= depth <= MAX_PIPELINE_DEPTH
+    ):
+        raise ExportError(f"先読みの深さは 0 から {MAX_PIPELINE_DEPTH} までの整数: {depth!r}")
 
     settings.path.parent.mkdir(parents=True, exist_ok=True)
     context = OffscreenGLContext()
