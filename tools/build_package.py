@@ -6,11 +6,13 @@ r"""配る zip を作る
 やること
 
 1. PyInstaller で ``Kumiki.exe`` と部品一式（``_internal``）を組み立てる
-2. 組み立ての記録から、積んだファイルがどの包みから来たかを辿り、包みごとの
+2. PyInstaller がプラグインごと積んだ Qt の部品のうち、使わない物を外す
+   （``UNUSED_QT_PARTS`` 外した物を読む物が残っていれば止まる）
+3. 組み立ての記録から、積んだファイルがどの包みから来たかを辿り、包みごとの
    使用許諾の写しを ``licenses`` へ集める 出どころの分からないファイルがあれば止まる
-3. 隣にスクリプト置き場（``scripts``）と説明書き・使用許諾の一覧を置く
-4. ``dist\Kumiki-<版>-windows-x64.zip`` にまとめる
-5. **できた zip を別の場所へ展開し、中の exe で ``--self-check`` を走らせる**
+4. 隣にスクリプト置き場（``scripts``）と説明書き・使用許諾の一覧を置く
+5. ``dist\Kumiki-<版>-windows-x64.zip`` にまとめる
+6. **できた zip を別の場所へ展開し、中の exe で ``--self-check`` を走らせる**
    組み立てた直後のフォルダで確かめると、開発環境の DLL や Python を
    拾って通ってしまう 配るのは zip なので、zip から確かめる
 
@@ -26,17 +28,19 @@ from __future__ import annotations
 import argparse
 import ast
 import contextlib
+import hashlib
 import importlib.metadata
 import io
 import locale
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import zipfile
-from collections.abc import Iterable, Iterator, Mapping, Sequence
-from pathlib import Path, PurePosixPath
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 if isinstance(sys.stdout, io.TextIOWrapper):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -222,11 +226,15 @@ def distribution_owners() -> dict[str, importlib.metadata.Distribution]:
     return owners
 
 
-def license_files(distribution: importlib.metadata.Distribution) -> list[tuple[str, Path]]:
-    """包みが dist-info に持っている使用許諾の写し（置く名前、元の場所）
+def license_files(
+    distribution: importlib.metadata.Distribution,
+) -> tuple[list[tuple[str, Path]], list[str]]:
+    """包みが dist-info に持っている使用許諾の写し（置く名前、元の場所）と、見つからない物
 
     名前は METADATA の ``License-File`` から引く PEP 639 以降は ``licenses`` の下、
     それより前は dist-info の直下に置かれる 書いていない古い包みは名前で拾う
+    書いてあるのに無い物は 2 つ目に返す 1 つでも見つかれば良しとすると、写しの
+    欠けた一式を黙って配る
     """
     inside: dict[PurePosixPath, Path] = {}
     for file in distribution.files or ():
@@ -234,18 +242,44 @@ def license_files(distribution: importlib.metadata.Distribution) -> list[tuple[s
             inside[PurePosixPath(*file.parts[1:])] = Path(str(file.locate()))
     declared = distribution.metadata.get_all("License-File") or []
     found: list[tuple[str, Path]] = []
+    missing: list[str] = []
     for name in declared:
         for candidate in (PurePosixPath("licenses", name), PurePosixPath(name)):
             if candidate in inside:
                 found.append((name, inside[candidate]))
                 break
+        else:
+            missing.append(name)
     if not declared:
         found = [
             (str(relative), path)
             for relative, path in inside.items()
             if relative.name.upper().startswith(("LICEN", "COPYING", "NOTICE"))
         ]
-    return found
+    return found, missing
+
+
+def canonical_name(name: str) -> str:
+    """配布名の表記揺れをそろえる（PEP 503）
+
+    ``PySide6_Essentials`` と ``PySide6-Essentials`` は同じ包み
+    """
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def listed_versions(notices: str) -> dict[str, str]:
+    """一覧（THIRD_PARTY_NOTICES.md）の Python の包みの表から、配布名と版を読む
+
+    表の行は ``| `配布名` | 版 | ...`` の形 1 列目の最初の ``` `...` ``` を配布名とする
+    """
+    versions: dict[str, str] = {}
+    for line in notices.splitlines():
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) < 2 or not cells[0].startswith("`"):
+            continue
+        name = cells[0].split("`")[1]
+        versions[canonical_name(name)] = cells[1]
+    return versions
 
 
 def collect_licenses(
@@ -283,15 +317,30 @@ def collect_licenses(
         with contextlib.suppress(importlib.metadata.PackageNotFoundError):
             found.setdefault(name, importlib.metadata.distribution(name))
 
+    listed = listed_versions(notices)
     target = bundle / LICENSES_DIR
+    # 前の組み立ての写し（上げる前の版のフォルダ）を残すと、今は積んでいない版の
+    # 写しまで zip に入る
+    shutil.rmtree(target, ignore_errors=True)
     for key, distribution in sorted(found.items()):
         name = distribution.metadata["Name"]
-        # 一覧に書いていない包みは、ソースの入手先も書いていない 一覧を直してから配る
-        if f"`{name.lower()}`" not in notices.lower():
+        # 一覧に書いていない包みは、ソースの入手先も書いていない 版が違えば、書いてある
+        # 使用許諾も違うかもしれない どちらも一覧を直してから配る
+        version = listed.get(canonical_name(name))
+        if version is None:
             problems.append(f"{name} が {NOTICES_SOURCE.name} の一覧に無い")
-        files = license_files(distribution)
+        elif version != distribution.version:
+            problems.append(
+                f"{name} は {distribution.version} を積んでいるが、"
+                f"{NOTICES_SOURCE.name} の一覧は {version}"
+            )
+        files, missing = license_files(distribution)
         if not files and key not in WITHOUT_LICENSE_FILES:
             problems.append(f"{name} {distribution.version} の使用許諾の写しが見つからない")
+        problems += [
+            f"{name} {distribution.version} が書いている使用許諾の写しが無い: {relative}"
+            for relative in missing
+        ]
         folder = target / f"{name}-{distribution.version}"
         for relative, path in files:
             destination = folder / relative
@@ -320,6 +369,132 @@ def missing_notices(home: Path) -> list[str]:
         *(f"{LICENSES_DIR}/{name}" for name in repository_license_files()),
     ]
     return [name for name in expected if not (home / name).is_file()]
+
+
+#: wheel の中の DLL と、その使用許諾の写しを置いたリポジトリの ``licenses`` のフォルダ
+#: DLL の名前（版と、delvewheel が付ける印を外した物）で引く PyAV を上げて DLL が
+#: 増えたり版が変わったりしたら、ここと写しと一覧を一緒に直す
+NATIVE_LICENSES: dict[str, str] = {
+    **dict.fromkeys(
+        ("avcodec", "avdevice", "avfilter", "avformat", "avutil", "swresample", "swscale"),
+        "ffmpeg-8.1.2",
+    ),
+    "libx264": "x264-b35605ac",
+    "libx265": "x265-4.2",
+    "libdav1d": "dav1d-1.5.3",
+    "libmp3lame": "lame-3.100",
+    "libopencore-amrnb": "opencore-amr-0.1.6",
+    "libopencore-amrwb": "opencore-amr-0.1.6",
+    "libopus": "opus-1.6.1",
+    "libsvtav1enc": "SVT-AV1-4.1.0",
+    "libvpx": "libvpx-1.16.0",
+    "libwebp": "libwebp-1.6.0",
+    "libwebpmux": "libwebp-1.6.0",
+    "libsharpyuv": "libwebp-1.6.0",
+    "libvpl": "libvpl-2.16.0",
+    "libiconv": "libiconv-1.19",
+    "zlib1": "zlib-1.3.2",
+    "libgcc_s_seh": "gcc-16.1.0",
+    "libstdc++": "gcc-16.1.0",
+    "libwinpthread": "winpthreads-mingw-w64-14.0.0",
+    # lupa の中の LuaJIT（Lua 5.x の分は lupa 自身の写しにある）
+    "luajit20": "LuaJIT-2.0-e4c7d8b3",
+    "luajit21": "LuaJIT-2.1-18b087cd",
+}
+
+#: 写しを見張る DLL の置き場（``_internal`` からの相対） どれも wheel が写しを持たない
+NATIVE_FOLDERS = ("av.libs", "lupa")
+
+
+def native_base_name(filename: str) -> str:
+    """``libx264-165-f3a9....dll`` → ``libx264`` 版の番号と delvewheel の印を外す"""
+    stem = filename.lower().split(".", 1)[0]
+    stem = re.sub(r"-[0-9a-f]{32}$", "", stem)
+    return re.sub(r"(-\d+)+$", "", stem)
+
+
+def native_license_problems(internal: Path) -> list[str]:
+    """wheel の中の DLL に、リポジトリに置いた使用許諾の写しが対応しているか
+
+    DLL の使用許諾は wheel が持っていないので、dist-info から集めても入らない
+    表に無い DLL が増えていたら止める 黙って通すと、写しの無い部品を配る
+    """
+    problems = []
+    for folder in NATIVE_FOLDERS:
+        for path in sorted((internal / folder).glob("*")):
+            if path.suffix.lower() not in (".dll", ".pyd"):
+                continue
+            base = native_base_name(path.name)
+            if folder == "lupa" and not base.startswith("luajit"):
+                continue
+            copy = NATIVE_LICENSES.get(base)
+            if copy is None:
+                problems.append(f"{folder}/{path.name} の使用許諾の写しが決まっていない")
+            elif not (ROOT / LICENSES_DIR / copy).is_dir():
+                problems.append(f"{folder}/{path.name} の写し licenses/{copy} が無い")
+    return problems
+
+
+#: 組み立ての記録に載らないが、zip に入れてよい物（:func:`assemble` と
+#: :func:`collect_licenses` が置く物）
+ASSEMBLED = ("README.txt", "LICENSE.txt", NOTICES_NAME)
+ASSEMBLED_FOLDERS = (PORTABLE_SCRIPTS_DIR, LICENSES_DIR)
+
+
+def untracked_files(bundle: Path, record: Path) -> list[str]:
+    """組み立てたフォルダにあるのに、組み立ての記録に無いファイル
+
+    ``--skip-build`` で前の組み立てを使うと、手で足した DLL や前の組み立ての残りが
+    フォルダに混ざっていても zip に入る 記録に無い物は出どころを辿れず、使用許諾を
+    そろえられない
+    """
+    collected = ast.literal_eval((record / "COLLECT-00.toc").read_text(encoding="utf-8"))[0]
+    # 記録の置き先は exe だけがフォルダの直下で、ほかは ``_internal`` の下
+    known = {
+        PurePosixPath(PureWindowsPath(entry[0]).as_posix()).as_posix().lower()
+        for entry in collected
+    }
+    found = []
+    for path in sorted(bundle.rglob("*")):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(bundle)
+        if relative.parts[0] in ASSEMBLED_FOLDERS or relative.as_posix() in ASSEMBLED:
+            continue
+        inner = (
+            PurePosixPath(*relative.parts[1:]).as_posix()
+            if relative.parts[0] == "_internal"
+            else relative.as_posix()
+        )
+        if inner.lower() not in known:
+            found.append(relative.as_posix())
+    return found
+
+
+def notice_digests(bundle: Path) -> dict[str, str]:
+    """zip に入れる使用許諾の一覧・写しと、その sha256（``Kumiki`` からの相対）
+
+    zip から確かめる段で、全部そろっていて中身も同じかを見る 名前だけ見ると、
+    途中で消えた写しや壊れた写しに気付けない
+    """
+    paths = [bundle / name for name in ASSEMBLED if (bundle / name).is_file()]
+    paths += [path for path in (bundle / LICENSES_DIR).rglob("*") if path.is_file()]
+    return {
+        path.relative_to(bundle).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(paths)
+    }
+
+
+def changed_notices(home: Path, expected: Mapping[str, str]) -> list[str]:
+    """展開した zip の使用許諾が、組み立てたときの物と違う・無い物"""
+    changed = []
+    for relative, digest in expected.items():
+        path = home / relative
+        if not path.is_file():
+            changed.append(f"無い: {relative}")
+        elif hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            changed.append(f"中身が違う: {relative}")
+    return changed
 
 
 def make_zip(bundle: Path, target: Path) -> Path:
@@ -442,8 +617,10 @@ def _run(executable: Path, arguments: list[str], folder: str) -> subprocess.Comp
     )
 
 
-def smoke_test(archive: Path) -> int:
+def smoke_test(archive: Path, notices: Mapping[str, str]) -> int:
     """zip を別の場所へ展開し、中の exe で確かめる
+
+    ``notices`` は組み立てたときの使用許諾の一覧と写しの sha256（:func:`notice_digests`）
 
     1. 自己診断（描く・書き出す・Lua・pip の有無）
     2. exe の隣の置き場へ見本を置き、**読まれた**こと
@@ -465,6 +642,7 @@ def smoke_test(archive: Path) -> int:
             print(checked.stderr.rstrip())
         failures = [] if checked.returncode == 0 else ["自己診断"]
         failures += [f"使用許諾が入っていない: {name}" for name in missing_notices(home)]
+        failures += [f"使用許諾の写しが{change}" for change in changed_notices(home, notices)]
 
         beside = f"{home / PORTABLE_SCRIPTS_DIR}（1 本）"
         if beside not in checked.stdout:
@@ -493,12 +671,13 @@ def smoke_test(archive: Path) -> int:
 def package(bundle: Path, target: Path, *, check: bool = True) -> int:
     """組み立てたフォルダを zip にし、zip から確かめる 戻り値は終了コード"""
     assemble(bundle)
+    notices = notice_digests(bundle)
     archive = make_zip(bundle, target)
     print(f"できた: {archive}（{_size(archive)} 展開すると {_size(bundle)}）")
     if not check:
         return 0
     try:
-        result = smoke_test(archive)
+        result = smoke_test(archive, notices)
     except BaseException:
         # 確かめる途中で落ちた（展開できない・exe が返ってこない）ときも同じ
         # 確かめ終えていない zip を完成品の名前で残さない
@@ -551,20 +730,101 @@ def main(argv: list[str] | None = None, *, dist: Path | None = None) -> int:
         print(f"{bundle} に {APP_NAME}.exe が無い 組み立てに失敗している")
         return 1
 
+    drop_unused_qt(bundle)
+    dangling = dangling_imports(bundle / "_internal", UNUSED_QT_PARTS)
+    if dangling:
+        # 外した DLL を読む物が残っていると、それを使った時点で落ちる 外した判断が誤り
+        for user, name in dangling:
+            print(f"[NG] 外した {name} を {user} が読む")
+        return 1
+
     record = work / APP_NAME
     try:
         sources = bundled_sources(record)
+        untracked = untracked_files(bundle, record)
     except FileNotFoundError:
         # 記録が無いと、何を積んだかを数えられず使用許諾をそろえられない
         print(f"{record} に組み立ての記録が無い --skip-build を外して組み立て直す")
         return 1
-    problems = collect_licenses(bundle, sources, (ROOT / "src", record))
+    problems = [f"組み立ての記録に無いファイルがある: {name}" for name in untracked]
+    problems += native_license_problems(bundle / "_internal")
+    problems += collect_licenses(bundle, sources, (ROOT / "src", record))
     if problems:
         for problem in problems:
             print(f"[NG] {problem}")
         return 1
 
     return package(bundle, target, check=not args.skip_check)
+
+
+#: 積まない Qt の部品（``_internal`` からの相対の綴り）と、外してよいと言える理由
+#: PyInstaller の PySide6 の差し込みはプラグインをまとめて積み、プラグインが読む DLL も
+#: 付いてくる どの DLL を誰が読むかは、組み立てた zip の DLL の import 表で確かめた
+#: 外した物を読む物が残っていないかは、組み立てのたびに :func:`dangling_imports` が見る
+UNUSED_QT_PARTS: dict[str, str] = {
+    "PySide6/plugins/imageformats/qpdf.dll": (
+        "PDF を絵として読むプラグイン Kumiki は PDF を素材にしない"
+        "（読み込める拡張子にも、読み込みの窓の絞り込みにも無い）"
+    ),
+    "PySide6/Qt6Pdf.dll": "qpdf.dll だけが読む",
+    "PySide6/plugins/platforminputcontexts/qtvirtualkeyboardplugin.dll": (
+        "画面に出す仮想キーボード 環境変数 QT_IM_MODULE で選んだときだけ読まれ、"
+        "Kumiki は選ばない（日本語の入力は Windows の IME が受ける）"
+    ),
+    "PySide6/Qt6VirtualKeyboard.dll": "仮想キーボードのプラグインだけが読む",
+    "PySide6/Qt6Quick.dll": "仮想キーボードだけが読む（QML の画面部品）",
+    "PySide6/Qt6Qml.dll": "仮想キーボードと Qt6Quick だけが読む",
+    "PySide6/Qt6QmlMeta.dll": "Qt6Quick だけが読む",
+    "PySide6/Qt6QmlModels.dll": "Qt6Quick と Qt6QmlMeta だけが読む",
+    "PySide6/Qt6QmlWorkerScript.dll": "Qt6QmlMeta だけが読む",
+}
+
+
+def drop_unused_qt(bundle: Path) -> list[str]:
+    """使わない Qt の部品を組み立てたフォルダから外す 戻り値は外した物
+
+    外さないと 18 MB ほど zip が膨らむうえ、LGPL の部品として対応するソースを
+    添付しなければならない（Qt6Pdf の入っている qtwebengine のソースは 580 MB ある）
+    """
+    removed = []
+    for relative in UNUSED_QT_PARTS:
+        path = bundle / "_internal" / relative
+        if path.exists():
+            path.unlink()
+            removed.append(relative)
+    return removed
+
+
+def _imported_dlls(path: Path) -> list[str]:
+    """DLL / pyd が読む DLL の名前（小文字）"""
+    import pefile
+
+    image = pefile.PE(str(path), fast_load=True)
+    try:
+        image.parse_data_directories(
+            directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IMPORT"]]
+        )
+        return [
+            entry.dll.decode().lower() for entry in getattr(image, "DIRECTORY_ENTRY_IMPORT", [])
+        ]
+    finally:
+        image.close()
+
+
+def dangling_imports(
+    internal: Path,
+    removed: Iterable[str],
+    *,
+    reader: Callable[[Path], list[str]] = _imported_dlls,
+) -> list[tuple[str, str]]:
+    """外した DLL を、まだ残っている DLL / pyd が読んでいないか（読む物、読まれる DLL）"""
+    names = {Path(relative).name.lower() for relative in removed}
+    found = []
+    for path in sorted([*internal.rglob("*.dll"), *internal.rglob("*.pyd")]):
+        for name in reader(path):
+            if name in names:
+                found.append((path.relative_to(internal).as_posix(), name))
+    return found
 
 
 @contextlib.contextmanager

@@ -38,6 +38,8 @@ ROOT = Path(__file__).resolve().parent.parent
 FFMPEG_VERSION = "8.1.2"
 #: 積んでいる Qt と PySide6
 QT_VERSION = "6.11.2"
+#: tools/build_package.py が組み立てるフォルダの名前 積んだ Qt をここから数える
+BUNDLE_NAME = "Kumiki"
 _QT = f"https://download.qt.io/official_releases/qt/6.11/{QT_VERSION}/submodules"
 
 
@@ -53,6 +55,63 @@ class Source:
     license: str
     #: 保存するファイルの名前 URL の末尾がファイル名にならない物（コミットの tarball）に使う
     filename: str
+    #: Qt のモジュール名 zip に積んだ Qt のファイルがこのモジュールの物のときだけ添付する
+    qt_module: str | None = None
+
+
+#: Qt のモジュール ソースは 1 モジュール 1 アーカイブで配られる
+QT_MODULES = (
+    "qtbase",
+    "qtdeclarative",
+    "qtsvg",
+    "qtimageformats",
+    "qtvirtualkeyboard",
+    "qtwebengine",
+    "qttranslations",
+)
+
+#: Qt の DLL とプラグインが、どのモジュールのソースから作られるか
+#: 積んでいる物がどのモジュールの物かで、添付するソースを決める 決め打ちで全部添付すると
+#: 積んでいない qtwebengine（580 MB）まで添付することになる
+QT_FILE_MODULES: dict[str, str] = {
+    **dict.fromkeys(
+        (
+            "qt6core",
+            "qt6gui",
+            "qt6network",
+            "qt6opengl",
+            "qt6openglwidgets",
+            "qt6widgets",
+            "qwindows",
+            "qdirect2d",
+            "qminimal",
+            "qoffscreen",
+            "qmodernwindowsstyle",
+            "qgif",
+            "qico",
+            "qjpeg",
+            "qcertonlybackend",
+            "qopensslbackend",
+            "qschannelbackend",
+            "qnetworklistmanager",
+            "qtuiotouchplugin",
+        ),
+        "qtbase",
+    ),
+    **dict.fromkeys(("qt6svg", "qsvg", "qsvgicon"), "qtsvg"),
+    **dict.fromkeys(("qicns", "qtga", "qtiff", "qwbmp", "qwebp"), "qtimageformats"),
+    **dict.fromkeys(("qt6pdf", "qpdf"), "qtwebengine"),
+    **dict.fromkeys(
+        ("qt6qml", "qt6qmlmeta", "qt6qmlmodels", "qt6qmlworkerscript", "qt6quick"),
+        "qtdeclarative",
+    ),
+    **dict.fromkeys(("qt6virtualkeyboard", "qtvirtualkeyboardplugin"), "qtvirtualkeyboard"),
+}
+
+#: PySide6 のフォルダにあるが Qt のモジュールの物ではない物
+#: PySide6 自身の部品（pyside-setup のソースで渡す 拡張子 .pyd の物も同じ）、Mesa の描画（MIT）、
+#: VC++ の実行時部品
+NOT_QT_MODULE_PREFIXES = ("pyside6", "opengl32sw", "msvcp", "vcruntime")
 
 
 #: 添付するソースの一覧 版と sha256 は pyav-ffmpeg 8.1.2-1 の ``scripts/pkg.py`` から写した
@@ -119,17 +178,9 @@ SOURCES: tuple[Source, ...] = (
             None,
             "LGPL-3.0-only",
             f"{module}-everywhere-src-{QT_VERSION}.tar.xz",
+            qt_module=module,
         )
-        # 積んでいる Qt の DLL とプラグインが属するモジュール Qt6Pdf（qpdf）は
-        # qtwebengine に入っている
-        for module in (
-            "qtbase",
-            "qtdeclarative",
-            "qtsvg",
-            "qtimageformats",
-            "qtvirtualkeyboard",
-            "qtwebengine",
-        )
+        for module in QT_MODULES
     ),
     Source(
         "PySide6 / shiboken6",
@@ -174,6 +225,37 @@ def installed_mismatches() -> list[str]:
     if PySide6.__version__ != QT_VERSION:
         problems.append(f"積んでいる PySide6 は {PySide6.__version__} 一覧は {QT_VERSION}")
     return problems
+
+
+def bundled_qt_modules(pyside: Path) -> tuple[set[str], list[str]]:
+    """組み立てたフォルダの PySide6 から、積んだ Qt のモジュールを数える
+
+    戻り値は（モジュール、どのモジュールの物か分からないファイル） 分からない物が
+    あるときは止める 添付し損ねたソースのまま配ることになる
+    """
+    modules: set[str] = set()
+    unknown: list[str] = []
+    for path in sorted(pyside.rglob("*")):
+        if not path.is_file():
+            continue
+        stem = path.stem.lower()
+        if path.suffix.lower() == ".qm":
+            # 画面の文言の訳 qt_*.qm qtbase_*.qm qt_help_*.qm はどれも qttranslations の物
+            modules.add("qttranslations")
+        elif path.suffix.lower() == ".dll" and stem in QT_FILE_MODULES:
+            modules.add(QT_FILE_MODULES[stem])
+        elif path.suffix.lower() == ".pyd" or (
+            path.suffix.lower() == ".dll" and stem.startswith(NOT_QT_MODULE_PREFIXES)
+        ):
+            continue
+        else:
+            unknown.append(path.relative_to(pyside).as_posix())
+    return modules, unknown
+
+
+def sources_for(modules: set[str]) -> list[Source]:
+    """積んだ Qt のモジュールの分だけに絞った、添付するソースの一覧"""
+    return [source for source in SOURCES if source.qt_module is None or source.qt_module in modules]
 
 
 def _request(url: str, *, method: str = "GET", ranged: bool = False) -> urllib.request.Request:
@@ -295,16 +377,30 @@ def main(argv: list[str] | None = None, *, dist: Path | None = None) -> int:
     if mismatches:
         return 1
 
+    dist = dist if dist is not None else ROOT / "dist"
+    pyside = dist / BUNDLE_NAME / "_internal" / "PySide6"
+    if not pyside.is_dir():
+        # 積んだ物を数えずに添付する物を決めると、積んでいない Qt のモジュールまで落とすか、
+        # 積んだ物を落とし損ねる
+        print(f"[NG] {pyside} が無い 先に tools/build_package.py で組み立てる")
+        return 1
+    modules, unknown = bundled_qt_modules(pyside)
+    for name in unknown:
+        print(f"[NG] どの Qt のモジュールの物か分からない: {name}（QT_FILE_MODULES に足す）")
+    if unknown:
+        return 1
+    sources = sources_for(modules)
+    print(f"積んでいる Qt のモジュール: {', '.join(sorted(modules))}")
+
     if args.check:
-        problems = check_urls(SOURCES)
+        problems = check_urls(sources)
         for problem in problems:
             print(f"[NG] {problem}")
         if not problems:
-            print(f"[ok] {len(SOURCES)} 件すべてに届いた")
+            print(f"[ok] {len(sources)} 件すべてに届いた")
         return 1 if problems else 0
 
-    folder = (dist if dist is not None else ROOT / "dist") / "sources"
-    manifest = collect(SOURCES, folder)
+    manifest = collect(sources, dist / "sources")
     print(f"できた: {manifest.parent}（GitHub Release に zip と一緒に添付する）")
     return 0
 

@@ -177,6 +177,70 @@ class TestCheck:
         assert tool.check_urls([_source(tool, f"{server}/page")]) != []
 
 
+def _pyside(root: Path, *names: str) -> Path:
+    pyside = root / "Kumiki" / "_internal" / "PySide6"
+    for name in names:
+        (pyside / name).parent.mkdir(parents=True, exist_ok=True)
+        (pyside / name).write_bytes(b"")
+    return pyside
+
+
+class TestOnlyWhatIsBundled:
+    """添付する Qt のソースは、zip に積んだ Qt のファイルから決める
+
+    決め打ちで全部添付すると、積んでいない qtwebengine（580 MB）まで毎回落とす
+    """
+
+    def test_the_modules_come_from_the_files(self, tool: ModuleType, tmp_path: Path) -> None:
+        pyside = _pyside(
+            tmp_path,
+            "Qt6Core.dll",
+            "Qt6Svg.dll",
+            "plugins/imageformats/qwebp.dll",
+            "translations/qt_ja.qm",
+            "QtCore.pyd",
+            "pyside6.abi3.dll",
+            "opengl32sw.dll",
+            "MSVCP140.dll",
+        )
+        modules, unknown = tool.bundled_qt_modules(pyside)
+        assert modules == {"qtbase", "qtsvg", "qtimageformats", "qttranslations"}
+        assert unknown == []
+
+    def test_an_unshipped_module_is_not_attached(self, tool: ModuleType) -> None:
+        attached = {source.qt_module for source in tool.sources_for({"qtbase"})}
+        assert "qtwebengine" not in attached
+        assert "qtbase" in attached
+        # Qt ではない部品（FFmpeg や x264）は積んだ Qt に関係なく添付する
+        assert any(source.name == "x264" for source in tool.sources_for(set()))
+
+    def test_a_pdf_plugin_brings_webengine(self, tool: ModuleType, tmp_path: Path) -> None:
+        # Qt6Pdf を積んだら、そのソースの入っている qtwebengine も添付しなければならない
+        pyside = _pyside(tmp_path, "Qt6Pdf.dll", "plugins/imageformats/qpdf.dll")
+        modules, _ = tool.bundled_qt_modules(pyside)
+        assert modules == {"qtwebengine"}
+
+    def test_an_unknown_qt_file_stops_it(self, tool: ModuleType, tmp_path: Path) -> None:
+        """どのモジュールの物か分からない Qt の DLL があれば止める
+
+        黙って通すと、そのモジュールのソースを添付し損ねたまま配る
+        """
+        pyside = _pyside(tmp_path, "Qt6Multimedia.dll")
+        _, unknown = tool.bundled_qt_modules(pyside)
+        assert unknown == ["Qt6Multimedia.dll"]
+
+    def test_it_needs_a_built_bundle(
+        self, tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 組み立てる前に走らせると、何を添付すればよいか決められない
+        monkeypatch.setattr(tool, "installed_mismatches", list)
+        assert tool.main(["--check"], dist=tmp_path) == 1
+
+    def test_every_module_has_a_source(self, tool: ModuleType) -> None:
+        # 表に書いたモジュールのどれにも、落とす先がある
+        assert set(tool.QT_FILE_MODULES.values()) | {"qttranslations"} <= set(tool.QT_MODULES)
+
+
 class TestTheList:
     def test_the_gpl_parts_are_all_there(self, tool: ModuleType) -> None:
         """GPL と LGPL の部品のうち、ソースを渡さなければならない物が全部ある"""
@@ -199,13 +263,6 @@ class TestTheList:
         for source in tool.SOURCES:
             assert source.version in notices, source.name
             assert source.name.split()[0] in notices, source.name
-
-    def test_the_versions_match_what_is_bundled(self, tool: ModuleType) -> None:
-        """手で書いた版が、いま入っている PyAV と PySide6 の版と合う
-
-        PyAV か PySide6 を上げたらここで落ちる 一覧を直さないと別の版のソースを添付する
-        """
-        assert tool.installed_mismatches() == []
 
     def test_a_version_mismatch_stops_the_tool(
         self, tool: ModuleType, monkeypatch: pytest.MonkeyPatch

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import os
 import subprocess
@@ -316,6 +317,17 @@ class TestTheZip:
         assert {"lupa", "pip"} <= collected
 
 
+def _listing(*names: str) -> str:
+    """いま入っている版で書いた一覧（THIRD_PARTY_NOTICES.md の表の形）
+
+    試験を走らせる機械の版で書く リポジトリの一覧の版で比べると、CI が新しい版を
+    入れた日に、写しを集める試験まで落ちる
+    """
+    import importlib.metadata
+
+    return "".join(f"| `{name}` | {importlib.metadata.version(name)} |\n" for name in names)
+
+
 class TestTheNotices:
     """配る zip は GPL の部品（x264・x265）を積むので、全体を GPL の条件で配る
 
@@ -383,6 +395,21 @@ class TestTheNotices:
             head = (ROOT / "licenses" / name).read_text(encoding="utf-8")[:200]
             assert title in head and version in head, name
 
+    def test_the_gnu_texts_are_whole(self) -> None:
+        """全文が 1 文字も欠けていない（FSF の配る全文と sha256 が同じ）
+
+        見出しだけを見ると、途中で切れた全文でも通って zip に入る
+        """
+        expected = {
+            "GPL-2.0.txt": "edaef632cbb643e4e7a221717a6c441a4c1a7c918e6e4d56debc3d8739b233f6",
+            "GPL-3.0.txt": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+            "LGPL-2.1.txt": "20e50fe7aae3e56378ebf0417d9de904f55a0e61e4df315333e632a4d3555d95",
+            "LGPL-3.0.txt": "da7eabb7bafdf7d3ae5e9f223aa5bdc1eece45ac569dc21b3b037520b4464768",
+        }
+        for name, digest in expected.items():
+            data = (ROOT / "licenses" / name).read_bytes()
+            assert hashlib.sha256(data).hexdigest() == digest, name
+
     def test_a_bundled_package_brings_its_license(
         self, builder: ModuleType, tmp_path: Path
     ) -> None:
@@ -393,7 +420,9 @@ class TestTheNotices:
         """
         import numpy
 
-        problems = builder.collect_licenses(tmp_path, [Path(numpy.__file__)], ())
+        problems = builder.collect_licenses(
+            tmp_path, [Path(numpy.__file__)], (), notices=_listing("numpy", "pyinstaller")
+        )
         assert not [p for p in problems if "numpy" in p], problems
         copied = tmp_path / "licenses" / f"numpy-{numpy.__version__}" / "LICENSE.txt"
         assert copied.is_file(), "numpy の使用許諾の写しが集まっていない"
@@ -408,7 +437,13 @@ class TestTheNotices:
         problems = builder.collect_licenses(tmp_path / "bundle", [stray], ())
         assert any("libssl-3-x64.dll" in p for p in problems), problems
 
-    def test_kumikis_own_files_pass(self, builder: ModuleType, tmp_path: Path) -> None:
+    def test_kumikis_own_files_are_not_taken_for_strays(
+        self, builder: ModuleType, tmp_path: Path
+    ) -> None:
+        """Kumiki 自身のソースは出どころの分からない物として止めない
+
+        止めると、正しい組み立てでも毎回 zip を作れなくなる
+        """
         own = ROOT / "src" / "kumiki" / "__init__.py"
         problems = builder.collect_licenses(tmp_path, [own], (ROOT / "src",))
         assert not [p for p in problems if "__init__.py" in p], problems
@@ -420,11 +455,12 @@ class TestTheNotices:
         import OpenGL
 
         source = [Path(OpenGL.__file__)]
-        allowed = builder.collect_licenses(tmp_path / "a", source, ())
+        listing = _listing("PyOpenGL", "pyinstaller")
+        allowed = builder.collect_licenses(tmp_path / "a", source, (), notices=listing)
         assert not [p for p in allowed if "PyOpenGL" in p], allowed
 
         monkeypatch.setattr(builder, "WITHOUT_LICENSE_FILES", frozenset())
-        refused = builder.collect_licenses(tmp_path / "b", source, ())
+        refused = builder.collect_licenses(tmp_path / "b", source, (), notices=listing)
         assert any("PyOpenGL" in p and "写し" in p for p in refused), refused
 
     def test_a_package_missing_from_the_list_stops_it(
@@ -489,8 +525,9 @@ class TestTheNotices:
         assert "THIRD_PARTY_NOTICES.txt" in missing
         assert "licenses/GPL-3.0.txt" in missing
 
-        builder.assemble(home)
+        # 組み立てと同じ順（写しを集めてから説明書きと全文を置く）
         builder.collect_licenses(home, [], ())
+        builder.assemble(home)
         if not (Path(sys.base_prefix) / "LICENSE.txt").exists():
             pytest.skip("この Python には LICENSE.txt が無い")
         assert builder.missing_notices(home) == []
@@ -507,6 +544,225 @@ class TestTheNotices:
         with builder._without_developer_path():
             assert "Git" not in os.environ["PATH"]
         assert os.environ["PATH"] == developer
+
+
+def _distribution(root: Path, declared: list[str], present: list[str]) -> object:
+    """dist-info を手で作った包み ``declared`` を METADATA に書き、``present`` だけ置く"""
+    import importlib.metadata
+
+    info = root / "sample-1.0.dist-info"
+    (info / "licenses").mkdir(parents=True)
+    metadata = "Metadata-Version: 2.4\nName: sample\nVersion: 1.0\n"
+    metadata += "".join(f"License-File: {name}\n" for name in declared)
+    (info / "METADATA").write_text(metadata, encoding="utf-8")
+    record = ["sample-1.0.dist-info/METADATA,,"]
+    for name in present:
+        (info / "licenses" / name).write_text("license text", encoding="utf-8")
+        record.append(f"sample-1.0.dist-info/licenses/{name},,")
+    (info / "RECORD").write_text("\n".join(record) + "\n", encoding="utf-8")
+    return importlib.metadata.PathDistribution(info)
+
+
+class TestTheNoticesStayExact:
+    """一覧と写しが、実際に積んだ物と食い違わない"""
+
+    def test_a_declared_license_that_is_missing_stops_it(
+        self, builder: ModuleType, tmp_path: Path
+    ) -> None:
+        """包みが書いている写しが 1 つでも無ければ止める
+
+        1 つ見つかれば良しとすると、写しの欠けた一式を黙って配る
+        """
+        distribution = _distribution(tmp_path, ["LICENSE", "NOTICE"], ["LICENSE"])
+        found, missing = builder.license_files(distribution)
+        assert [name for name, _ in found] == ["LICENSE"]
+        assert missing == ["NOTICE"]
+
+        source = tmp_path / "sample" / "__init__.py"
+        owners = {builder._key(source): distribution}
+        problems = builder.collect_licenses(
+            tmp_path / "bundle", [source], (), owners=owners, notices="| `sample` | 1.0 |\n"
+        )
+        assert any("NOTICE" in p for p in problems), problems
+
+    def test_a_version_the_list_does_not_have_stops_it(
+        self, builder: ModuleType, tmp_path: Path
+    ) -> None:
+        """積んだ版と一覧の版が違えば止める
+
+        依存は下限だけで指定しているので、新しい版が黙って入る 一覧の版と使用許諾が
+        古いまま配ることになる
+        """
+        distribution = _distribution(tmp_path, ["LICENSE"], ["LICENSE"])
+        source = tmp_path / "sample" / "__init__.py"
+        problems = builder.collect_licenses(
+            tmp_path / "bundle",
+            [source],
+            (),
+            owners={builder._key(source): distribution},
+            notices="| `sample` | 0.9 |\n",
+        )
+        assert any("0.9" in p and "1.0" in p for p in problems), problems
+
+    def test_the_name_may_be_spelled_either_way(self, builder: ModuleType) -> None:
+        """``PySide6-Essentials`` と ``PySide6_Essentials`` は同じ包み
+
+        揃えないと、一覧に載っているのに「一覧に無い」と言って止まる
+        """
+        listed = builder.listed_versions("| `PySide6_Essentials` | 6.11.2 | LGPL |\n")
+        assert listed[builder.canonical_name("PySide6-Essentials")] == "6.11.2"
+
+    def test_the_real_list_is_read(self, builder: ModuleType) -> None:
+        # リポジトリの一覧の表が読めること 読めないと、どの包みも「一覧に無い」になる
+        notices = (ROOT / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
+        listed = builder.listed_versions(notices)
+        assert listed["numpy"] == "2.5.3"
+        assert listed["av"] == "18.1.0"
+        assert listed["pyside6-essentials"] == "6.11.2"
+
+
+class TestNativeLicenses:
+    """wheel の中の DLL（PyAV の av.libs、lupa の LuaJIT）には、リポジトリの写しが要る"""
+
+    def test_the_version_and_mark_are_stripped(self, builder: ModuleType) -> None:
+        assert builder.native_base_name("libx264-165-f3a909470ddc2d85ed21eda3d0fb7954.dll") == (
+            "libx264"
+        )
+        assert builder.native_base_name(
+            "libopencore-amrnb-0-b8933128305cd084d40426d0d2c0d9ef.dll"
+        ) == ("libopencore-amrnb")
+        assert builder.native_base_name("libstdc++-6-2d5c346d47ad531ef9f5185db0e8cef3.dll") == (
+            "libstdc++"
+        )
+        assert builder.native_base_name("luajit21.cp314-win_amd64.pyd") == "luajit21"
+
+    def test_known_dlls_pass(self, builder: ModuleType, tmp_path: Path) -> None:
+        internal = tmp_path / "_internal"
+        (internal / "av.libs").mkdir(parents=True)
+        (internal / "lupa").mkdir()
+        for name in (
+            "avcodec-62-984de33114b7fa384296817dec999c9d.dll",
+            "libx265-efe48a158520a59ef99c0a0b3eb835ae.dll",
+            "zlib1-79e0c4f9db71cb511398c504b832d395.dll",
+        ):
+            (internal / "av.libs" / name).write_bytes(b"MZ")
+        (internal / "lupa" / "luajit20.cp314-win_amd64.pyd").write_bytes(b"MZ")
+        # Lua 5.x の分は lupa 自身の写しにあるので見張らない
+        (internal / "lupa" / "lua54.cp314-win_amd64.pyd").write_bytes(b"MZ")
+        assert builder.native_license_problems(internal) == []
+
+    def test_a_new_dll_stops_it(self, builder: ModuleType, tmp_path: Path) -> None:
+        """PyAV を上げて DLL が増えたら止める 黙って通すと写しの無い部品を配る"""
+        internal = tmp_path / "_internal"
+        (internal / "av.libs").mkdir(parents=True)
+        (internal / "av.libs" / "libaom-3-0123456789abcdef0123456789abcdef.dll").write_bytes(b"MZ")
+        problems = builder.native_license_problems(internal)
+        assert len(problems) == 1 and "libaom" in problems[0]
+
+    def test_every_listed_copy_is_in_the_repository(self, builder: ModuleType) -> None:
+        for folder in set(builder.NATIVE_LICENSES.values()):
+            assert (ROOT / "licenses" / folder).is_dir(), folder
+
+
+class TestOnlyRecordedFilesGoIn:
+    """--skip-build で前の組み立てを使うとき、フォルダに混ざった物を zip に入れない"""
+
+    def _record(self, tmp_path: Path) -> Path:
+        record = tmp_path / "record"
+        record.mkdir()
+        entries = [
+            ("Kumiki.exe", r"C:\work\Kumiki.exe", "EXECUTABLE"),
+            ("PySide6\\Qt6Core.dll", r"C:\venv\PySide6\Qt6Core.dll", "BINARY"),
+        ]
+        (record / "COLLECT-00.toc").write_text(repr((entries,)), encoding="utf-8")
+        return record
+
+    def test_a_stray_dll_is_found(self, builder: ModuleType, tmp_path: Path) -> None:
+        bundle = tmp_path / "Kumiki"
+        (bundle / "_internal" / "PySide6").mkdir(parents=True)
+        (bundle / "Kumiki.exe").write_bytes(b"MZ")
+        (bundle / "_internal" / "PySide6" / "Qt6Core.dll").write_bytes(b"MZ")
+        (bundle / "_internal" / "leftover.dll").write_bytes(b"MZ")
+        builder.assemble(bundle)
+        found = builder.untracked_files(bundle, self._record(tmp_path))
+        # 説明書きや写しは記録に無くても入れてよい 混ざった DLL だけを挙げる
+        assert found == ["_internal/leftover.dll"]
+
+
+class TestTheUnpackedCopiesAreTheSame:
+    def test_a_broken_copy_is_found(self, builder: ModuleType, tmp_path: Path) -> None:
+        """展開した zip の写しが、組み立てたときの物と同じか
+
+        名前だけを見ると、途中で消えた写しや壊れた写しでも通る
+        """
+        bundle = tmp_path / "Kumiki"
+        bundle.mkdir()
+        builder.assemble(bundle)
+        expected = builder.notice_digests(bundle)
+        assert "licenses/x264-b35605ac/COPYING" in expected
+        assert "THIRD_PARTY_NOTICES.txt" in expected
+
+        (bundle / "licenses" / "x264-b35605ac" / "COPYING").write_text("cut", encoding="utf-8")
+        (bundle / "licenses" / "GPL-3.0.txt").unlink()
+        changed = builder.changed_notices(bundle, expected)
+        assert "中身が違う: licenses/x264-b35605ac/COPYING" in changed
+        assert "無い: licenses/GPL-3.0.txt" in changed
+
+
+class TestUnusedQtIsLeftOut:
+    """PyInstaller がプラグインごと積む Qt の部品のうち、使わない物を外す
+
+    外さないと zip が 18 MB ほど膨らみ、LGPL の部品として qtwebengine（580 MB）の
+    ソースまで添付しなければならない
+    """
+
+    def test_the_listed_parts_are_removed(self, builder: ModuleType, tmp_path: Path) -> None:
+        internal = tmp_path / "_internal"
+        for relative in [*builder.UNUSED_QT_PARTS, "PySide6/Qt6Core.dll"]:
+            (internal / relative).parent.mkdir(parents=True, exist_ok=True)
+            (internal / relative).write_bytes(b"MZ")
+        removed = builder.drop_unused_qt(tmp_path)
+        assert set(removed) == set(builder.UNUSED_QT_PARTS)
+        assert not (internal / "PySide6" / "Qt6Pdf.dll").exists()
+        # 使う物には触らない
+        assert (internal / "PySide6" / "Qt6Core.dll").exists()
+
+    def test_a_part_still_in_use_stops_it(self, builder: ModuleType, tmp_path: Path) -> None:
+        """外した DLL を残った物が読むなら止める 使った時点で落ちる zip になる"""
+        internal = tmp_path / "_internal"
+        (internal / "PySide6").mkdir(parents=True)
+        (internal / "PySide6" / "QtQuick.pyd").write_bytes(b"MZ")
+        (internal / "PySide6" / "Qt6Core.dll").write_bytes(b"MZ")
+        imports = {"QtQuick.pyd": ["qt6quick.dll", "qt6core.dll"], "Qt6Core.dll": []}
+
+        def reader(path: Path) -> list[str]:
+            return imports[path.name]
+
+        found = builder.dangling_imports(internal, builder.UNUSED_QT_PARTS, reader=reader)
+        assert found == [("PySide6/QtQuick.pyd", "qt6quick.dll")]
+
+    def test_nothing_dangles_when_nothing_uses_them(
+        self, builder: ModuleType, tmp_path: Path
+    ) -> None:
+        internal = tmp_path / "_internal"
+        (internal / "PySide6").mkdir(parents=True)
+        (internal / "PySide6" / "Qt6Widgets.dll").write_bytes(b"MZ")
+        found = builder.dangling_imports(
+            internal, builder.UNUSED_QT_PARTS, reader=lambda path: ["qt6core.dll"]
+        )
+        assert found == []
+
+    def test_the_kept_qt_is_not_on_the_list(self, builder: ModuleType) -> None:
+        # 画面・描画・絵の読み込みに使う物を誤って外すと、起動も描画もできない
+        names = {Path(relative).name for relative in builder.UNUSED_QT_PARTS}
+        for kept in (
+            "Qt6Core.dll",
+            "Qt6Gui.dll",
+            "Qt6Widgets.dll",
+            "Qt6OpenGL.dll",
+            "qwindows.dll",
+        ):
+            assert kept not in names
 
 
 class TestTheEditorCheckLeavesNoTrace:
@@ -619,7 +875,7 @@ class TestOnlyCheckedZipsRemain:
     def test_a_failed_check_takes_the_zip_away(
         self, builder: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(builder, "smoke_test", lambda archive: 1)
+        monkeypatch.setattr(builder, "smoke_test", lambda archive, notices: 1)
         target = tmp_path / "out.zip"
         assert builder.package(self._bundle(tmp_path), target) == 1
         assert not target.exists(), "確かめて落ちた zip が残っている"
@@ -628,7 +884,7 @@ class TestOnlyCheckedZipsRemain:
         self, builder: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # 何が足りないかを調べるには、組み立てたフォルダの方が要る
-        monkeypatch.setattr(builder, "smoke_test", lambda archive: 1)
+        monkeypatch.setattr(builder, "smoke_test", lambda archive, notices: 1)
         bundle = self._bundle(tmp_path)
         builder.package(bundle, tmp_path / "out.zip")
         assert (bundle / "Kumiki.exe").exists()
@@ -636,7 +892,7 @@ class TestOnlyCheckedZipsRemain:
     def test_a_passed_check_keeps_it(
         self, builder: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(builder, "smoke_test", lambda archive: 0)
+        monkeypatch.setattr(builder, "smoke_test", lambda archive, notices: 0)
         target = tmp_path / "out.zip"
         assert builder.package(self._bundle(tmp_path), target) == 0
         assert target.exists()
@@ -653,7 +909,7 @@ class TestNothingUncheckedIsLeft:
         bundle.mkdir()
         (bundle / "Kumiki.exe").write_bytes(b"MZ")
 
-        def crash(archive: Path) -> int:
+        def crash(archive: Path, notices: object) -> int:
             raise TimeoutError("exe が返ってこない")
 
         monkeypatch.setattr(builder, "smoke_test", crash)

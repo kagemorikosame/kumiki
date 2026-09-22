@@ -62,7 +62,7 @@ libiconv・winpthreads・zlib は、組み立てに使った MSYS2 の MinGW か
 
 | 部品 | 版 | 置き場 | 使用許諾 | 写し | 写しの取得元 |
 |---|---|---|---|---|---|
-| Qt 6（`Qt6*.dll` とプラグイン） | 6.11.2 | `_internal\PySide6\` | LGPL-3.0（PySide6 の表記に従う） | `LGPL-3.0.txt` `GPL-3.0.txt` | GNU の全文 |
+| Qt 6（`Qt6*.dll` とプラグイン Qt6Pdf・Qt6Quick・Qt6Qml・Qt6VirtualKeyboard は使わないので積まない） | 6.11.2 | `_internal\PySide6\` | LGPL-3.0（PySide6 の表記に従う） | `LGPL-3.0.txt` `GPL-3.0.txt` | GNU の全文 |
 | FFmpeg（`avcodec` `avformat` `avutil` `avfilter` `avdevice` `swscale` `swresample`） | 8.1.2 | `_internal\av.libs\` | 組み込みの表記は「LGPL version 3 or later」（`--enable-version3`） | `ffmpeg-8.1.2\LICENSE.md` | https://raw.githubusercontent.com/FFmpeg/FFmpeg/n8.1.2/LICENSE.md |
 | x264（`libx264-165`） | コミット b35605ace3ddf7c1a5d67a2eb553f034aef41d55 | `_internal\av.libs\` | GPL-2.0-or-later | `x264-b35605ac\COPYING` | https://code.videolan.org/videolan/x264/-/raw/b35605ace3ddf7c1a5d67a2eb553f034aef41d55/COPYING |
 | x265 | 4.2 | `_internal\av.libs\` | GPL-2.0-or-later | `x265-4.2\COPYING` | https://bitbucket.org/multicoreware/x265_git/raw/4.2/COPYING |
@@ -104,7 +104,7 @@ libiconv・winpthreads・zlib は、組み立てに使った MSYS2 の MinGW か
 | x265 | 4.2 | https://bitbucket.org/multicoreware/x265_git/downloads/x265_4.2.tar.gz |
 | LAME | 3.100 | http://deb.debian.org/debian/pool/main/l/lame/lame_3.100.orig.tar.gz |
 | libiconv | 1.19 | https://ftp.gnu.org/pub/gnu/libiconv/libiconv-1.19.tar.gz |
-| Qt（qtbase・qtdeclarative・qtsvg・qtimageformats・qtvirtualkeyboard・qtwebengine） | 6.11.2 | https://download.qt.io/official_releases/qt/6.11/6.11.2/submodules/ |
+| Qt（積んだ Qt のファイルが属するモジュールだけ いまは qtbase・qtsvg・qtimageformats・qttranslations） | 6.11.2 | https://download.qt.io/official_releases/qt/6.11/6.11.2/submodules/ |
 | PySide6 / shiboken6 | 6.11.2 | https://download.qt.io/official_releases/QtForPython/pyside6/PySide6-6.11.2-src/ |
 
 組み立てに使った FFmpeg の設定は次で確かめられます（Kumiki の開発環境で）
