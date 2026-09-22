@@ -45,6 +45,13 @@ _LAYOUTS = {1: "mono", 2: "stereo", 6: "5.1", 8: "7.1"}
 #: 色のタグを決めるコーデックのオプション名 :attr:`ExportSettings.options` には入れられない
 COLOR_OPTIONS = frozenset({"color_primaries", "color_trc", "colorspace", "color_range"})
 
+#: エンコーダ自身の設定をまとめて渡すオプション この中にも色の指定を書ける
+_ENCODER_PARAM_OPTIONS = frozenset({"x264-params", "x264opts", "x265-params"})
+#: まとめ書きの中で色のタグを決める名前（x264 と x265 で共通）
+_ENCODER_COLOR_PARAMS = frozenset(
+    {"colorprim", "transfer", "colormatrix", "range", "fullrange", "input-range"}
+)
+
 
 class ExportError(RuntimeError):
     """書き出しを開始できない、または途中で失敗した"""
@@ -81,6 +88,23 @@ def available_video_codecs() -> list[str]:
     return found
 
 
+def _color_options_in(options: dict[str, str]) -> list[str]:
+    """``options`` のうち、色のタグを変えてしまう指定の名前
+
+    x264 / x265 はまとめ書きのオプション（``x264-params`` など）の中でも色を指定できる
+    こちらはビットストリームの VUI だけを書き換え、MP4 の colr は BT.709 のまま残るので、
+    コンテナとビットストリームでタグが食い違ったファイルになる（再生側によって読み方が変わる）
+    """
+    found = sorted(COLOR_OPTIONS & options.keys())
+    for name in sorted(_ENCODER_PARAM_OPTIONS & options.keys()):
+        # 項目の区切りは ``:`` 、名前と値は ``=`` x264opts だけは ``,`` で区切った書き方も通る
+        for item in options[name].replace(",", ":").split(":"):
+            key = item.split("=", 1)[0].strip().lower()
+            if key in _ENCODER_COLOR_PARAMS:
+                found.append(f"{name} の {key}")
+    return found
+
+
 def export_project(
     project: Project,
     settings: ExportSettings,
@@ -106,7 +130,7 @@ def export_project(
     # 色のタグは options で上書きできてしまう（コーデックを開くときに options が後から効く）
     # 画素は必ず BT.709 / limited で変換するので、別のタグを通すと中身と食い違う
     # 黙って捨てると頼んだ指定が効かない理由が分からないので、始める前に断る
-    conflicting = sorted(COLOR_OPTIONS & settings.options.keys())
+    conflicting = _color_options_in(settings.options)
     if conflicting:
         raise ExportError(
             f"色のタグは BT.709 に固定している オプションでは変えられない: {', '.join(conflicting)}"

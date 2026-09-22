@@ -9,9 +9,11 @@ from __future__ import annotations
 import threading
 from fractions import Fraction
 from pathlib import Path
+from typing import cast
 
 import av
 import av.error
+import av.video.codeccontext
 import pytest
 from av.video.reformatter import ColorPrimaries, ColorRange, ColorTrc
 
@@ -231,6 +233,26 @@ def bars_project(tmp_path: Path) -> Project:
 HARDWARE_CODECS = frozenset({"h264_nvenc", "h264_qsv"})
 
 
+def skip_unless_it_opens(codec: str) -> None:
+    """エンコーダを書き出しと同じ条件で開いてみて、開けなければ飛ばす
+
+    QSV はコーデックとしては入っていても、Intel の GPU が無い機械では開けない
+    飛ばすのはここで開けないときだけ 書き出し全体の失敗まで飛ばすと、開けたあとの
+    回帰（変換・エンコード・多重化）が「飛ばした」に紛れる
+    """
+    # create は種類の union を返す 映像の属性を触るので、ここで型を確定させる
+    context = cast("av.video.codeccontext.VideoCodecContext", av.CodecContext.create(codec, "w"))
+    context.width = 320
+    context.height = 240
+    context.pix_fmt = "yuv420p"
+    context.time_base = Fraction(1, 30)
+    # 開いた文脈は捨てるだけでよい PyAV は参照が切れたときに閉じる
+    try:
+        context.open()
+    except av.error.FFmpegError as exc:
+        pytest.skip(f"{codec} を開けない: {exc}")
+
+
 class TestColor:
     """書き出しの色は BT.709 / limited で、同じ値のタグが付く（#61）
 
@@ -244,17 +266,14 @@ class TestColor:
     ) -> None:
         if codec not in available_video_codecs():
             pytest.skip(f"{codec} が使えない")
+        if codec in HARDWARE_CODECS:
+            skip_unless_it_opens(codec)
+        # 書き出しそのものは囲まない 開けると分かったあとの失敗（変換・エンコード・
+        # 多重化）は、どのコーデックでも本物の回帰
         output = tmp_path / f"{codec}.mp4"
-        try:
-            export_project(
-                bars_project, ExportSettings(path=output, video_codec=codec, frame_range=(0, 3))
-            )
-        except av.error.FFmpegError as exc:
-            # ハードウェアのエンコーダは、コーデックとしては入っていても GPU が無い機械では
-            # 開けない（QSV なら Intel の GPU） libx264 の失敗は本物の回帰なので飛ばさない
-            if codec not in HARDWARE_CODECS:
-                raise
-            pytest.skip(f"{codec} を開けない: {exc}")
+        export_project(
+            bars_project, ExportSettings(path=output, video_codec=codec, frame_range=(0, 3))
+        )
 
         with av.open(str(output)) as container:
             stream = container.streams.video[0]
@@ -281,6 +300,40 @@ class TestColor:
         with pytest.raises(ExportError, match=name):
             export_project(bars_project, settings)
         assert not output.exists()
+
+    @pytest.mark.parametrize(
+        ("name", "value", "culprit"),
+        [
+            ("x264-params", "colorprim=bt470bg:colormatrix=bt470bg", "colorprim"),
+            ("x264-params", "keyint=60:Transfer=smpte170m", "transfer"),
+            ("x264opts", "keyint=60,fullrange=on", "fullrange"),
+            ("x265-params", "range=full", "range"),
+        ],
+    )
+    def test_color_params_inside_encoder_options_are_refused(
+        self, name: str, value: str, culprit: str, bars_project: Project, tmp_path: Path
+    ) -> None:
+        # x264-params の中の色はビットストリームの VUI だけを書き換える MP4 の colr は
+        # bt709 のまま残り、生の H.264 を読むと bt470bg、というファイルになっていた
+        output = tmp_path / "out.mp4"
+        settings = ExportSettings(
+            path=output, video_codec="libx264", frame_range=(0, 3), options={name: value}
+        )
+        with pytest.raises(ExportError, match=culprit):
+            export_project(bars_project, settings)
+        assert not output.exists()
+
+    def test_other_encoder_params_pass(self, bars_project: Project, tmp_path: Path) -> None:
+        # 色と関係の無いまとめ書きまで断ると、プリセットや品質の指定が通せなくなる
+        output = tmp_path / "out.mp4"
+        settings = ExportSettings(
+            path=output,
+            video_codec="libx264",
+            frame_range=(0, 3),
+            options={"x264-params": "keyint=30:bframes=0"},
+        )
+        export_project(bars_project, settings)
+        assert output.exists()
 
     def test_colors_survive_a_round_trip(self, bars_project: Project, tmp_path: Path) -> None:
         # 書いたタグどおりに読み直せば、元の色へ戻る
