@@ -19,6 +19,7 @@ from sashimono.core.model import (
     AnimatedValue,
     Clip,
     GeneratedSource,
+    ParamValue,
     Project,
     ProjectSettings,
     Track,
@@ -41,8 +42,8 @@ def ms_ui_gothic() -> None:
         pytest.skip("MS UI Gothic が入っていない")
 
 
-def text(**params: object) -> GeneratedSource:
-    base: dict[str, object] = {
+def text(**params: ParamValue) -> GeneratedSource:
+    base: dict[str, ParamValue] = {
         "text": "田田田",
         "font": "MS UI Gothic",
         "size": AnimatedValue(60.0),
@@ -50,7 +51,7 @@ def text(**params: object) -> GeneratedSource:
         "layout": "aviutl",
     }
     base.update(params)
-    return GeneratedSource(kind="text", params=base)  # type: ignore[arg-type]
+    return GeneratedSource(kind="text", params=base)
 
 
 def ink(image: np.ndarray) -> tuple[float, float, float, float]:
@@ -96,6 +97,15 @@ class TestFrame:
         # 効果の掛かる範囲が変わる
         image, framed = render_source_framed(text(layout="native"), *SCREEN)
         assert image is not None
+        assert framed is None
+
+    def test_vertical_aviutl_text_stays_bold(self) -> None:
+        # 縦書きは AviUtl2 の太らせ方を通らないので、Qt の太字まで切ると細字で出る
+        plain, _ = render_source_framed(text(vertical=True), *SCREEN)
+        bold, framed = render_source_framed(text(vertical=True, bold=True), *SCREEN)
+        assert plain is not None and bold is not None
+        assert int((bold[..., 3] > 128).sum()) > int((plain[..., 3] > 128).sum()) * 1.05
+        # 縦書きの枠は測っていない 決まりの分からない枠を返さず、字の形を入れ物にする
         assert framed is None
 
     def test_shapes_have_no_frame(self) -> None:

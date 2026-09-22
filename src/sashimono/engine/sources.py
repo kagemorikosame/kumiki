@@ -319,7 +319,10 @@ def _draw_text(
     if not text:
         return None
 
-    aviutl = values.get("layout") == "aviutl"
+    # 縦書きは AviUtl2 で測っていないので、AviUtl2 の組み方でも標準の縦書きで描く
+    # （枠は返さず、太字も Qt に任せる） ここで外さないと、Qt の太字を切ったまま
+    # 自分で太らせる横書きの処理も通らず、太字が細字で出る
+    aviutl = values.get("layout") == "aviutl" and not bool(values.get("vertical", False))
     bold = bool(values.get("bold", False))
     size = max(1, int(float(values.get("size", 64))))  # type: ignore[arg-type]
     font = QFont(str(values.get("font", "Yu Gothic UI")))
