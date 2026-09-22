@@ -371,6 +371,31 @@ _PARAMS: dict[str, dict[str, _Param]] = {
     "透明度": {"透明度": _Param("amount", _rest)},
     "回転": {"Z": _Param("rotation"), "X": _Param("rotation_x"), "Y": _Param("rotation_y")},
     "リサイズ": {"拡大率": _Param("scale", also="scale_y")},
+    # 万華鏡 長さ は鏡の三角の辺 繰り返し回数 は覆う範囲を三角何段ぶんにするか
+    # AviUtl2 に長さと繰り返しを変えた見本を描かせ、模様の間隔と端の位置から読んだ
+    "万華鏡": {
+        "中心X": _Param("center_x"),
+        "中心Y": _Param("center_y", _flip),
+        "長さ": _Param("span"),
+        "回転": _Param("angle"),
+        "角数(偶数)": _Param("corners"),
+        "繰り返し回数": _Param("repeats"),
+        "固定サイズ": _Param("fixed_size"),
+        "円形マスク": _Param("circle_mask"),
+        "領域外を透過": _Param("clip_outside"),
+    },
+    # 個別オブジェクトの 2 つは、オブジェクト分割 で切ったマスの**位置**を動かす
+    # 分け方は :func:`map_object` が前にある オブジェクト分割 から渡す
+    "座標の拡大縮小(個別オブジェクト)": {
+        "拡大率": _Param("scale"),
+        "中心X": _Param("center_x"),
+        "中心Y": _Param("center_y", _flip),
+    },
+    "座標の回転(個別オブジェクト)": {
+        "角度": _Param("angle"),
+        "中心X": _Param("center_x"),
+        "中心Y": _Param("center_y", _flip),
+    },
 }
 
 #: AviUtl のフィルタ名と、こちらのエフェクト種別
@@ -444,7 +469,13 @@ _FILTERS: dict[str, str] = {
     "拡大率": "transform",
     "透明度": "opacity",
     "回転": "transform",
+    "万華鏡": "kaleidoscope",
+    "座標の拡大縮小(個別オブジェクト)": "split_pieces",
+    "座標の回転(個別オブジェクト)": "split_pieces",
 }
+
+#: 絵を切るだけで、それ自体は絵を変えないフィルタ 後ろの 個別オブジェクト の効果へ分け方を渡す
+_SPLIT = "オブジェクト分割"
 
 
 def media_paths(exo: ExoFile) -> tuple[str, ...]:
@@ -523,8 +554,14 @@ def map_object(
     # 中間点はオブジェクトの持ち物 トラックバーの値はこの点の数だけ並ぶ
     points = obj.relative_points()
     placement: dict[str, AnimatedValue] | None = None
+    # オブジェクト分割 の分け方 切らないうちは 1 マスなので、個別の効果は何も動かさない
+    # （AviUtl2 でも分割なしの 個別の拡大 50 は元の絵のままだった）
+    grid: dict[str, ParamValue] = {}
 
     for entry in obj.filters():
+        if entry.name == _SPLIT:
+            grid = _split_grid(entry, points, log)
+            continue
         if entry.name in _DRAW_NAMES:
             placement = _placement(entry, points, log)
             opacity = animated_value(
@@ -538,6 +575,12 @@ def map_object(
             continue
 
         effect = _filter(entry, points, log)
+        if effect is not None and effect.kind == "split_pieces":
+            effect = replace(effect, params={**effect.params, **grid})
+            merged = _merge_pieces(effects[-1], effect) if effects else None
+            if merged is not None:
+                effects[-1] = merged
+                continue
         if effect is not None:
             effects.append(effect)
 
@@ -569,6 +612,47 @@ def map_object(
         kind=kind,
         has_span=obj.span_given,
     )
+
+
+def _split_grid(
+    entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport
+) -> dict[str, ParamValue]:
+    """オブジェクト分割 の横と縦の数を、個別の効果のパラメータとして読む"""
+    grid: dict[str, ParamValue] = {}
+    for source_name, target in (("横分割数", "columns"), ("縦分割数", "rows")):
+        grid[target] = animated_value(
+            entry.params.get(source_name),
+            points=points,
+            log=log,
+            label=f"{_SPLIT}の{source_name}",
+            default=1.0,
+        )
+    return grid
+
+
+def _merge_pieces(previous: Effect, effect: Effect) -> Effect | None:
+    """続けて積んだ 個別オブジェクト の拡大と回転を 1 つにまとめる
+
+    2 つ目の効果は、1 つ目で動いた後のマスを動かす こちらのエフェクトは
+    分けた升目の位置から動かすので、別々に並べると 2 つ目が元の升目を基準に
+    読み直してしまう 軸が同じなら拡大と回転は順番を入れ替えても同じ所へ行くので、
+    片方が拡大だけ、もう片方が回転だけのときに限って 1 つへ畳む
+    """
+    if previous.kind != "split_pieces":
+        return None
+    keys = ("columns", "rows", "center_x", "center_y")
+    if any(previous.params.get(key) != effect.params.get(key) for key in keys):
+        return None
+    unit = {"scale": AnimatedValue(100.0), "angle": AnimatedValue(0.0)}
+    params = dict(previous.params)
+    for name, idle in unit.items():
+        mine, theirs = previous.params.get(name), effect.params.get(name)
+        if theirs is None or theirs == idle:
+            continue
+        if mine != idle:
+            return None
+        params[name] = theirs
+    return replace(previous, params=params)
 
 
 #: 変形エフェクトへ写す描画設定と、その既定値（既定のままなら変形を足さない）

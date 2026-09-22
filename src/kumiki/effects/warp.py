@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from kumiki.effects.builtin import PRELUDE
 from kumiki.effects.definition import EffectDefinition, registry
-from kumiki.effects.spec import SelectSpec, TrackSpec
+from kumiki.effects.spec import CheckSpec, SelectSpec, TrackSpec
 
 __all__ = ["register_warp_effects"]
 
@@ -155,6 +155,84 @@ _SIDES = (("bottom", "下側"), ("top", "上側"), ("left", "左側"), ("right",
 _MAP_KINDS = (("circle", "円"), ("rect", "四角"), ("horizontal", "横"), ("vertical", "縦"))
 
 
+_KALEIDOSCOPE = _shader("""
+uniform float center_x;
+uniform float center_y;
+uniform float span;
+uniform float angle;
+uniform float corners;
+uniform float repeats;
+uniform float fixed_size;
+uniform bool circle_mask;
+uniform bool clip_outside;
+
+void main() {
+    vec2 origin = object_center();
+    vec2 p = v_uv * u_size - origin;
+
+    // 角数は偶数に丸める 鏡を交互に返して 1 周させるので、奇数では継ぎ目が合わない
+    float n = max(2.0, floor(corners * 0.5 + 0.5) * 2.0);
+    float half_ = PI / n;
+    float length_ = max(span, 1.0);
+    // 覆う範囲は、鏡の三角を 繰り返し回数 + 1 段ぶん並べた正多角形
+    // 実測で 繰り返し 2・長さ 100 の端が 300、3・200 が 800 の辺に乗った
+    float outer = (max(floor(repeats + 0.5), 1.0) + 1.0) * length_;
+    // 固定サイズ は覆う範囲の差し渡しをその大きさへ縮める（実測 200 で半分）
+    float zoom = fixed_size > 0.0 ? fixed_size / (2.0 * outer) : 1.0;
+    p /= zoom;
+
+    // 鏡の軸は真下 三角の頂点は軸から ±180/角数 の線の上に乗る
+    // 田の縦棒が軸に沿って残り、横棒は鏡の線に消えることから軸が縦だと読んだ
+    // 上か下かは、田の上半分と下半分の違いで決めた（真上だと差が 8.0、真下で 3.3）
+    const float AXIS = -PI * 0.5;
+
+    // 範囲の外は描かない 角を鏡の線へ畳んでから、軸へ下ろした長さで測る
+    float phi = atan(p.y, p.x) - AXIS;
+    float folded = abs(mod(phi + half_, 4.0 * half_) - 2.0 * half_) - half_;
+    float along = length(p) * cos(folded);
+    float apothem = outer * cos(half_);
+    if (circle_mask ? length(p) > apothem : along > apothem) {
+        frag_color = vec4(0.0);
+        return;
+    }
+
+    // 畳む 角を 1 つの三角へ折り返し、三角の底辺を越えたら底辺で折り返す
+    // 繰り返せば、鏡を三角に組んだ万華鏡と同じ模様になる
+    float base = length_ * cos(half_);
+    for (int i = 0; i < 256; ++i) {
+        float radius = length(p);
+        // 中心ちょうどは角が決まらない（atan(0, 0) は実装しだいで NaN になる）
+        if (radius < 0.0001) break;
+        phi = atan(p.y, p.x) - AXIS;
+        folded = abs(mod(phi + half_, 4.0 * half_) - 2.0 * half_) - half_;
+        p = radius * vec2(cos(AXIS + folded), sin(AXIS + folded));
+        // 軸が真下なので、軸に沿った長さは -p.y
+        if (-p.y <= base) break;
+        p.y = -2.0 * base - p.y;
+    }
+
+    // 回転 は元の絵を鏡の下で回す 模様の形（範囲・鏡の向き）は変わらない
+    // 回した見本はまだ無く、万華鏡を筒ごと回すのではなく中の絵を回す道具だという
+    // 読み方で決めた 実物と比べて違えば、ここを模様ごと回す形へ直す
+    float turn = radians(angle);
+    float cs = cos(turn);
+    float sn = sin(turn);
+    p = vec2(p.x * cs + p.y * sn, -p.x * sn + p.y * cs);
+
+    // 中心 は読む所をずらし、模様はオブジェクトの真ん中に置いたままにする
+    // ずらした見本はまだ無く、模様の置き場所が動くなら origin の側をずらす
+    vec2 source = origin + vec2(center_x, center_y) + p;
+    if (!clip_outside) {
+        // 領域外を透過 を外すと、絵の外は縁の色を引き伸ばして埋める
+        // 田の字の見本は縁が透明なので、入れても外しても同じ絵だった（差も同じ 3.3）
+        // 透明にすると 外す 意味が無くなるので、縁を伸ばす側に読んだ
+        source = clamp(source, u_object.xy + 0.5, u_object.zw - 0.5);
+    }
+    frag_color = sample_pixel(source);
+}
+""")
+
+
 def register_warp_effects() -> None:
     definitions = (
         EffectDefinition(
@@ -194,6 +272,23 @@ def register_warp_effects() -> None:
                 SelectSpec("map_kind", "マップの種類", _MAP_KINDS, "circle"),
             ),
             fragment_shader=_DISPLACEMENT,
+        ),
+        EffectDefinition(
+            kind="kaleidoscope",
+            label="万華鏡",
+            category="変形",
+            parameters=(
+                TrackSpec("center_x", "中心 X", -4000, 4000, 0, step=1, unit="px"),
+                TrackSpec("center_y", "中心 Y", -4000, 4000, 0, step=1, unit="px"),
+                TrackSpec("span", "長さ", 1, 4000, 100, step=1, unit="px"),
+                TrackSpec("angle", "回転", -3600, 3600, 0, unit="度"),
+                TrackSpec("corners", "角数", 2, 64, 6, step=2),
+                TrackSpec("repeats", "繰り返し回数", 1, 32, 1, step=1),
+                TrackSpec("fixed_size", "固定サイズ", 0, 8000, 0, step=1, unit="px"),
+                CheckSpec("circle_mask", "円形マスク", False),
+                CheckSpec("clip_outside", "領域外を透過", False),
+            ),
+            fragment_shader=_KALEIDOSCOPE,
         ),
     )
     for definition in definitions:
