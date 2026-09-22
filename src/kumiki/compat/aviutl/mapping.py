@@ -382,6 +382,7 @@ _PARAMS: dict[str, dict[str, _Param]] = {
         "繰り返し回数": _Param("repeats"),
         "固定サイズ": _Param("fixed_size"),
         "円形マスク": _Param("circle_mask"),
+        "回転同期": _Param("spin_pattern"),
         "領域外を透過": _Param("clip_outside"),
     },
     # 個別オブジェクトの 2 つは、オブジェクト分割 で切ったマスの**位置**を動かす

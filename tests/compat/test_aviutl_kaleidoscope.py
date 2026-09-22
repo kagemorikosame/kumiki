@@ -1,7 +1,7 @@
 """AviUtl の 万華鏡 と、オブジェクト分割 + 個別オブジェクト の拡大・回転を写す
 
 項目の名前は AviUtl2（v2.1.6a）に効果を積んだエイリアスを作らせて読み取った
-（``tests/fixtures/aviutl/probes/kumiki_p5_k_*`` と ``kumiki_p5_s_*``）
+（``tests/fixtures/aviutl/probes/kumiki_p5_*`` と ``kumiki_p6_*`` の ``k_`` と ``s_``）
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ def _value(effect: Effect, name: str) -> float:
 
 KALEIDOSCOPE = (
     "万華鏡\n中心X=10.0\n中心Y=20.0\n長さ=150.0\n回転=0.0\n角数(偶数)=4\n繰り返し回数=3\n"
-    "固定サイズ=200.0\n円形マスク=1\n回転同期=0\n領域外を透過=1\n表示位置確認=0"
+    "固定サイズ=200.0\n円形マスク=1\n回転同期=1\n領域外を透過=1\n表示位置確認=0"
 )
 
 
@@ -61,6 +61,7 @@ class TestKaleidoscope:
         assert _value(effect, "repeats") == 3.0
         assert _value(effect, "fixed_size") == 200.0
         assert effect.params["circle_mask"] is True
+        assert effect.params["spin_pattern"] is True
         assert effect.params["clip_outside"] is True
         assert not report.lines()
 
@@ -131,7 +132,7 @@ class TestSplitPieces:
 
 
 def _real_probes() -> list[Path]:
-    names = ("kumiki_p5_k_*.object", "kumiki_p5_s_*.object")
+    names = ("kumiki_p[56]_k_*.object", "kumiki_p[56]_s_*.object")
     return sorted(path for name in names for path in PROBES.glob(name))
 
 

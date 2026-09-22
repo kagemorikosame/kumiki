@@ -131,6 +131,61 @@ class TestKaleidoscope:
         centre = image[HEIGHT // 2 - 10 : HEIGHT // 2 + 10, WIDTH // 2 - 10 : WIDTH // 2 + 10]
         assert _lit(centre).mean() > 0.9
 
+    def _lit_at(self, image: np.ndarray, x: int, y: int) -> bool:
+        """中心から (x, y) の画素が光っているか Y は上が正"""
+        return bool(_lit(image)[HEIGHT // 2 - y, WIDTH // 2 + x])
+
+    def test_the_wedge_is_read_flipped_left_to_right(self, draw: Callable[..., np.ndarray]) -> None:
+        """下の三角は左右を返して読む
+
+        読む中心を四角の右端の 10px 手前へずらす 中心から右下 (12, -40) の画素は、
+        返して読めば四角の中（右端から 22px 内側）、返さなければ四角の外になる
+        AviUtl2 で F の字を映すと、返さない読み方では三角の模様が逆向きに並んだ
+        """
+        image = draw(
+            _kaleidoscope(span=60.0, repeats=1.0, center_x=SQUARE / 2 - 10, clip_outside=True)
+        )
+        assert self._lit_at(image, 12, -40)
+        assert not self._lit_at(image, -12, -40)
+        # 底辺（中心から 52px）で折り返した先も同じ向きで読む (12, -64) は (12, -40) の鏡像
+        # 畳む式の符号を誤ると、折り返した回数の偶奇でここだけ左右が入れ替わる
+        assert self._lit_at(image, 12, -64)
+        assert not self._lit_at(image, -12, -64)
+
+    def test_a_positive_angle_turns_the_picture_clockwise(
+        self, draw: Callable[..., np.ndarray]
+    ) -> None:
+        # 90 度回すと、真下 40px の画素は元の絵の右 40px を（左右を返して）読む
+        # 右端の 10px 手前を中心にしておけば、向きが逆なら四角の外になって暗い
+        image = draw(
+            _kaleidoscope(
+                span=60.0, repeats=1.0, angle=90.0, center_x=SQUARE / 2 - 10, clip_outside=True
+            )
+        )
+        assert self._lit_at(image, 0, -40)
+
+    def test_turning_alone_keeps_the_area(self, draw: Callable[..., np.ndarray]) -> None:
+        # 回転 だけなら範囲は横長の六角形のまま（実測 回転 30 でも横 600 縦 520）
+        width, height = _size(draw(_kaleidoscope(span=20.0, repeats=2.0, angle=30.0)))
+        assert width > height
+
+    def test_the_synced_turn_turns_the_area_too(self, draw: Callable[..., np.ndarray]) -> None:
+        # 回転同期 を入れると範囲も回り、30 度で縦長になる（実測 横 520 縦 600）
+        width, height = _size(
+            draw(_kaleidoscope(span=20.0, repeats=2.0, angle=30.0, spin_pattern=True))
+        )
+        assert height > width
+
+    def test_the_edge_is_stretched_unless_clipped(self, draw: Callable[..., np.ndarray]) -> None:
+        """領域外を透過 を外すと、絵の外は縁の色で埋まる
+
+        実測 白い四角で外すと範囲いっぱいが白く、入れると四角の模様が並んだ
+        """
+        wide = {"span": 100.0, "repeats": 1.0}
+        stretched = _lit(draw(_kaleidoscope(**wide))).sum()
+        clipped = _lit(draw(_kaleidoscope(**wide, clip_outside=True))).sum()
+        assert stretched > clipped * 1.2
+
     def test_nothing_outside_the_area_is_drawn(self, draw: Callable[..., np.ndarray]) -> None:
         # 範囲の外は元の絵も残らない（実測 長さ 50 で、はみ出た田の字が消えた）
         width, _ = _size(draw(_kaleidoscope(span=5.0, repeats=1.0)))

@@ -164,6 +164,7 @@ uniform float corners;
 uniform float repeats;
 uniform float fixed_size;
 uniform bool circle_mask;
+uniform bool spin_pattern;
 uniform bool clip_outside;
 
 void main() {
@@ -181,14 +182,27 @@ void main() {
     float zoom = fixed_size > 0.0 ? fixed_size / (2.0 * outer) : 1.0;
     p /= zoom;
 
+    // 回転 は元の絵を時計回りに回してから鏡に映す 範囲と鏡の向きは動かない
+    // 回転同期 を入れると、模様（範囲と鏡）もいっしょに時計回りに回る
+    // 実測 回転 30 で範囲は横 600 のまま（差 13.5 → 4.0）、同期ありで縦 600 に
+    // 変わった（差 14.9 → 4.0） 同期ありで元の絵を回さない読み方は差 12.8
+    float turn = radians(angle);
+    mat2 counter = mat2(cos(turn), sin(turn), -sin(turn), cos(turn));
+    if (spin_pattern) {
+        p = counter * p;
+    }
+
     // 鏡の軸は真下 三角の頂点は軸から ±180/角数 の線の上に乗る
     // 田の縦棒が軸に沿って残り、横棒は鏡の線に消えることから軸が縦だと読んだ
     // 上か下かは、田の上半分と下半分の違いで決めた（真上だと差が 8.0、真下で 3.3）
     const float AXIS = -PI * 0.5;
 
     // 範囲の外は描かない 角を鏡の線へ畳んでから、軸へ下ろした長さで測る
+    // 畳む式は、もともと軸の側の三角にある角をそのまま返す形にする
+    // 符号を逆にすると軸の側の三角が左右に返り、底辺で折り返す回数の偶奇で
+    // 返ったり返らなかったりする 回した絵で模様が崩れる（差 8.6）
     float phi = atan(p.y, p.x) - AXIS;
-    float folded = abs(mod(phi + half_, 4.0 * half_) - 2.0 * half_) - half_;
+    float folded = half_ - abs(mod(phi + half_, 4.0 * half_) - 2.0 * half_);
     float along = length(p) * cos(folded);
     float apothem = outer * cos(half_);
     if (circle_mask ? length(p) > apothem : along > apothem) {
@@ -204,28 +218,26 @@ void main() {
         // 中心ちょうどは角が決まらない（atan(0, 0) は実装しだいで NaN になる）
         if (radius < 0.0001) break;
         phi = atan(p.y, p.x) - AXIS;
-        folded = abs(mod(phi + half_, 4.0 * half_) - 2.0 * half_) - half_;
+        folded = half_ - abs(mod(phi + half_, 4.0 * half_) - 2.0 * half_);
         p = radius * vec2(cos(AXIS + folded), sin(AXIS + folded));
         // 軸が真下なので、軸に沿った長さは -p.y
         if (-p.y <= base) break;
         p.y = -2.0 * base - p.y;
     }
 
-    // 回転 は元の絵を鏡の下で回す 模様の形（範囲・鏡の向き）は変わらない
-    // 回した見本はまだ無く、万華鏡を筒ごと回すのではなく中の絵を回す道具だという
-    // 読み方で決めた 実物と比べて違えば、ここを模様ごと回す形へ直す
-    float turn = radians(angle);
-    float cs = cos(turn);
-    float sn = sin(turn);
-    p = vec2(p.x * cs + p.y * sn, -p.x * sn + p.y * cs);
+    // 読む所を反時計回りに回すと、映る絵は時計回りに回る
+    p = counter * p;
+    // 下の三角は左右を返して読む 田の字では見分けが付かず、F の字で分かった
+    // （返さないと、三角の模様が中心の右へ逆向きに並んで差 4.4、返すと 2.6）
+    p.x = -p.x;
 
     // 中心 は読む所をずらし、模様はオブジェクトの真ん中に置いたままにする
-    // ずらした見本はまだ無く、模様の置き場所が動くなら origin の側をずらす
+    // 実測 中心X 60・中心Y 30 で、範囲の端は動かず差は 1.7
     vec2 source = origin + vec2(center_x, center_y) + p;
     if (!clip_outside) {
         // 領域外を透過 を外すと、絵の外は縁の色を引き伸ばして埋める
-        // 田の字の見本は縁が透明なので、入れても外しても同じ絵だった（差も同じ 3.3）
-        // 透明にすると 外す 意味が無くなるので、縁を伸ばす側に読んだ
+        // 実測 白い四角で外すと範囲いっぱいが白く（光る割合 25.4%）、入れると
+        // 四角の模様が並んだ（15.0%） どちらもこの読み方で差 0.1 未満
         source = clamp(source, u_object.xy + 0.5, u_object.zw - 0.5);
     }
     frag_color = sample_pixel(source);
@@ -286,6 +298,7 @@ def register_warp_effects() -> None:
                 TrackSpec("repeats", "繰り返し回数", 1, 32, 1, step=1),
                 TrackSpec("fixed_size", "固定サイズ", 0, 8000, 0, step=1, unit="px"),
                 CheckSpec("circle_mask", "円形マスク", False),
+                CheckSpec("spin_pattern", "回転同期", False),
                 CheckSpec("clip_outside", "領域外を透過", False),
             ),
             fragment_shader=_KALEIDOSCOPE,
