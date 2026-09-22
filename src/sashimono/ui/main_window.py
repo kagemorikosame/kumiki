@@ -1453,7 +1453,8 @@ class MainWindow(QMainWindow):
         placed = sum(isinstance(command, AddClip) for command in commands)
         note = f"{placed} 個を置いた"
         if plan.missing:
-            note += f"（素材 {len(plan.missing)} 件が見つかりません）"
+            # 見つからないものと、見つかっても開けなかったものの両方を数えている
+            note += f"（素材 {len(plan.missing)} 件が見つからないか開けません）"
         self.statusBar().showMessage(note, 6000)
 
     def rescan_scripts(self) -> None:
