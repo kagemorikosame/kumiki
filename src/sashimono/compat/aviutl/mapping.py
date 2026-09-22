@@ -1090,7 +1090,9 @@ def _fan(entry: ExoEntry, log: CompatibilityReport) -> GeneratedSource:
             "color": _color(entry.value("色", default="ffffff")),
             "line_width": AnimatedValue(0.0 if filled else line),
             "outline_only": not filled,
-            # 図形と同じく輪郭は内側（#87）
+            # 図形と同じく輪郭は内側（#87） kumiki_p9_fan_s400_l40 を AviUtl2 に
+            # 描かせると、中心の行の帯が -200..-160 で円のときと 1 画素も変わらなかった
+            # 中央に引いたままだと差が 6.7 残る（内側にすると 2.0）
             "line_align": "inside",
         },
     )

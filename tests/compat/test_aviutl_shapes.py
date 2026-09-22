@@ -201,6 +201,48 @@ class TestTheOutline:
         assert abs((left_end - left_start + 1) - 24) <= 2
         assert abs((right_end - right_start + 1) - 24) <= 2
 
+    @pytest.mark.parametrize(
+        ("body", "expected"),
+        [
+            # 四角形 サイズ 400 ライン幅 20 外形は ±200 のまま、帯は内側の 20 画素
+            ("図形\n図形の種類=四角形\nサイズ=400\n色=ffffff\nライン幅=20", (-200, -181, 180, 199)),
+            ("図形\n図形の種類=四角形\nサイズ=400\n色=ffffff\nライン幅=60", (-200, -141, 140, 199)),
+            # 円も同じ 半径 200 の円の内側に帯が入る
+            ("図形\n図形の種類=円\nサイズ=400\n色=ffffff\nライン幅=20", (-200, -180, 179, 199)),
+            ("図形\n図形の種類=円\nサイズ=400\n色=ffffff\nライン幅=60", (-200, -140, 139, 199)),
+        ],
+    )
+    def test_every_shape_draws_the_line_inside(
+        self, body: str, expected: tuple[int, int, int, int]
+    ) -> None:
+        # AviUtl2 v2.1.6a に 1920x1080 で書き出させた kumiki_p9_* を測った値
+        # 中央に引くと外形が太さの半分ぶん広がり、どの図形も一回り大きく見える
+        bands = _spans(body)
+        assert len(bands) == 2
+        measured = (bands[0][0], bands[0][1], bands[1][0], bands[1][1])
+        assert all(abs(a - b) <= 2 for a, b in zip(measured, expected, strict=True)), measured
+
+    def test_the_fan_ring_sits_inside_too(self) -> None:
+        # 扇型（カスタムオブジェクト）の輪も内側 円のときと同じ位置に出る
+        # 中央に引いたままだと見本との差が 6.7 残る（内側にすると 2.0）
+        # 残りの差は輪郭の引き方とは別の所（中心の角の丸め方と 中心角 の基準）
+        bands = _spans("扇型\n中心角=360.0\nサイズ=400.0\nライン幅=40.0\n色=ffffff")
+        assert abs(bands[0][0] - -200) <= 2
+        assert abs(bands[0][1] - -160) <= 2
+        assert abs(bands[-1][0] - 159) <= 2
+        assert abs(bands[-1][1] - 199) <= 2
+
+    def test_the_polygon_keeps_its_centred_line(self) -> None:
+        # 多角形（カスタムオブジェクト）だけは輪郭の中央に引かれる 図形と同じにすると
+        # ±150 の四角形の外形が ±170 から ±150 へ縮む（kumiki_p9_poly_sq_l40 で確かめた）
+        bands = _spans(
+            "多角形\n色=ffffff\nライン幅=40\n頂点数=4\n"
+            "座標=-150,-150,150,-150,150,150,-150,150\n簡易塗り潰し=0"
+        )
+        assert len(bands) == 2
+        assert abs(bands[0][0] - -170) <= 2
+        assert abs(bands[1][1] - 169) <= 2
+
     def test_the_line_align_comes_from_the_mapping(self) -> None:
         # ここが落ちると、読み込んだ図形が今までどおり輪郭の中央に線を引く
         assert _source(self._TRIANGLE).params["line_align"] == "inside"
