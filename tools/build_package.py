@@ -6,9 +6,11 @@ r"""配る zip を作る
 やること
 
 1. PyInstaller で ``Kumiki.exe`` と部品一式（``_internal``）を組み立てる
-2. 隣にスクリプト置き場（``scripts``）と説明書きを置く
-3. ``dist\Kumiki-<版>-windows-x64.zip`` にまとめる
-4. **できた zip を別の場所へ展開し、中の exe で ``--self-check`` を走らせる**
+2. 組み立ての記録から、積んだファイルがどの包みから来たかを辿り、包みごとの
+   使用許諾の写しを ``licenses`` へ集める 出どころの分からないファイルがあれば止まる
+3. 隣にスクリプト置き場（``scripts``）と説明書き・使用許諾の一覧を置く
+4. ``dist\Kumiki-<版>-windows-x64.zip`` にまとめる
+5. **できた zip を別の場所へ展開し、中の exe で ``--self-check`` を走らせる**
    組み立てた直後のフォルダで確かめると、開発環境の DLL や Python を
    拾って通ってしまう 配るのは zip なので、zip から確かめる
 
@@ -22,6 +24,9 @@ Windows 側の部品は開発機に入っている） 本人の確認に回す
 from __future__ import annotations
 
 import argparse
+import ast
+import contextlib
+import importlib.metadata
 import io
 import locale
 import os
@@ -30,8 +35,8 @@ import subprocess
 import sys
 import tempfile
 import zipfile
-from collections.abc import Mapping
-from pathlib import Path
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from pathlib import Path, PurePosixPath
 
 if isinstance(sys.stdout, io.TextIOWrapper):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -81,6 +86,10 @@ AviUtl のスクリプト（.anm2 .obj2 など）は、この隣の {PORTABLE_SC
 
 字幕起こしと AI 連携は、ソフトの中のボタンから必要になったときに入れます
 （最初から入れると 2 GB を超えるため）
+
+使用許諾: Kumiki 本体は MIT（LICENSE.txt） 一緒に入れている部品に GPL の物が
+あるため、この zip は全体として GPL の条件で配っています 部品ごとの使用許諾と
+ソースの入手先は THIRD_PARTY_NOTICES.txt と licenses フォルダにあります
 """
 
 SCRIPTS_README = f"""AviUtl のスクリプトの置き場です
@@ -94,6 +103,23 @@ AviUtl2 が入っている機械では、AviUtl2 の Script フォルダも同�
 動いているか確かめるには Kumiki.exe {SELF_CHECK_FLAG}
 """
 
+#: 使用許諾の写しを置くフォルダ exe の隣とリポジトリの直下で同じ名前にする
+#: リポジトリの方には、どの包みも写しを持っていない GNU の全文を置いてある
+LICENSES_DIR = "licenses"
+
+#: 同梱した部品の一覧 リポジトリの THIRD_PARTY_NOTICES.md を、Windows で開きやすい名前で置く
+NOTICES_SOURCE = ROOT / "THIRD_PARTY_NOTICES.md"
+NOTICES_NAME = "THIRD_PARTY_NOTICES.txt"
+
+#: 使用許諾の写しを dist-info に持っていない包み（配布名を小文字で）
+#: 写しが無いことは一覧（THIRD_PARTY_NOTICES.md）に書いてある 足すときも、先に一覧へ
+#: 書いてからここへ足す 黙って足すと、写しの無い物を無いまま配ることになる
+WITHOUT_LICENSE_FILES = frozenset({"pyopengl"})
+
+#: いつも積む包み ``Kumiki.exe`` の起動部そのものが PyInstaller の物で、組み立ての記録では
+#: 作業フォルダの exe として出てくるため、ファイルを辿っても包みに行き着かない
+ALWAYS_BUNDLED = ("pyinstaller",)
+
 
 def pyinstaller_arguments(work: Path, dist: Path) -> list[str]:
     """PyInstaller へ渡す引数
@@ -101,6 +127,8 @@ def pyinstaller_arguments(work: Path, dist: Path) -> list[str]:
     画面のアプリなので窓を出さない（``--windowed``） 1 ファイルにまとめる形
     （``--onefile``）は使わない 起動のたびに一時フォルダへ全部を展開するので、
     300 MB 近い部品だと起動に数秒余計に掛かり、ウイルス対策にも引っかかりやすい
+    もう 1 つ、Qt を LGPL-3.0 で使う以上、使う人が Qt の DLL を差し替えられなければ
+    ならない onedir なら DLL は別のファイルのまま置かれる
     """
     arguments = [
         "--noconfirm",
@@ -139,6 +167,153 @@ def assemble(bundle: Path) -> None:
     (scripts / "README.txt").write_text(SCRIPTS_README, encoding="utf-8")
     (bundle / "README.txt").write_text(README_TEXT, encoding="utf-8")
     shutil.copyfile(ROOT / "LICENSE", bundle / "LICENSE.txt")
+    shutil.copyfile(NOTICES_SOURCE, bundle / NOTICES_NAME)
+    texts = bundle / LICENSES_DIR
+    texts.mkdir(exist_ok=True)
+    for text in sorted((ROOT / LICENSES_DIR).glob("*.txt")):
+        shutil.copyfile(text, texts / text.name)
+
+
+def gnu_license_names() -> list[str]:
+    """リポジトリに置いた GNU の全文の名前 zip から確かめるときの見本にする"""
+    return sorted(text.name for text in (ROOT / LICENSES_DIR).glob("*.txt"))
+
+
+def bundled_sources(record: Path) -> list[Path]:
+    """組み立ての記録（PyInstaller の TOC）から、積んだファイルの元の場所を読む
+
+    exe の隣に並ぶファイル（``COLLECT``）だけでは足りない 純 Python の包みは
+    exe の中の書庫（``PYZ``）に入り、フォルダには現れない
+    """
+    collected = ast.literal_eval((record / "COLLECT-00.toc").read_text(encoding="utf-8"))[0]
+    _, modules = ast.literal_eval((record / "PYZ-00.toc").read_text(encoding="utf-8"))
+    sources: list[Path] = []
+    for entry in [*collected, *modules]:
+        source = entry[1]
+        # 名前空間の包みはファイルを持たず "-" で記録される 辿る物が無い
+        if source and source != "-":
+            sources.append(Path(source))
+    return sources
+
+
+def _key(path: Path) -> str:
+    # 記録の綴りと dist-info の綴りで大文字小文字や区切りが揺れる 揃えないと同じ
+    # ファイルを別物と見て、出どころが分からないと言って止まる
+    # resolve は使わない 数千のファイルごとに実体を辿ると遅く、辿らなくても揃う
+    return os.path.normcase(os.path.normpath(path.absolute()))
+
+
+def _inside(path: Path, root: Path) -> bool:
+    return _key(path).startswith(_key(root) + os.sep)
+
+
+def distribution_owners() -> dict[str, importlib.metadata.Distribution]:
+    """入っているファイル 1 つずつから、それを入れた包みを引く表"""
+    owners: dict[str, importlib.metadata.Distribution] = {}
+    for distribution in importlib.metadata.distributions():
+        for file in distribution.files or ():
+            owners[_key(Path(str(file.locate())))] = distribution
+    return owners
+
+
+def license_files(distribution: importlib.metadata.Distribution) -> list[tuple[str, Path]]:
+    """包みが dist-info に持っている使用許諾の写し（置く名前、元の場所）
+
+    名前は METADATA の ``License-File`` から引く PEP 639 以降は ``licenses`` の下、
+    それより前は dist-info の直下に置かれる 書いていない古い包みは名前で拾う
+    """
+    inside: dict[PurePosixPath, Path] = {}
+    for file in distribution.files or ():
+        if len(file.parts) > 1 and file.parts[0].endswith(".dist-info"):
+            inside[PurePosixPath(*file.parts[1:])] = Path(str(file.locate()))
+    declared = distribution.metadata.get_all("License-File") or []
+    found: list[tuple[str, Path]] = []
+    for name in declared:
+        for candidate in (PurePosixPath("licenses", name), PurePosixPath(name)):
+            if candidate in inside:
+                found.append((name, inside[candidate]))
+                break
+    if not declared:
+        found = [
+            (str(relative), path)
+            for relative, path in inside.items()
+            if relative.name.upper().startswith(("LICEN", "COPYING", "NOTICE"))
+        ]
+    return found
+
+
+def collect_licenses(
+    bundle: Path,
+    sources: Iterable[Path],
+    own_roots: Sequence[Path],
+    *,
+    owners: Mapping[str, importlib.metadata.Distribution] | None = None,
+    notices: str | None = None,
+) -> list[str]:
+    """積んだファイルの出どころの包みを数え、使用許諾の写しを ``licenses`` へ集める
+
+    戻り値は配れない理由の一覧 空なら配ってよい 包みの名前を決め打ちの一覧で持つと、
+    組み立てる機械に入っている包みが変わったとき（PyInstaller は入っていれば拾う）に
+    写しの無い物を黙って配る そのため毎回、実際に積んだ物から数える
+
+    ``own_roots`` は Kumiki 自身のファイルの置き場（ソースと組み立ての作業フォルダ）
+    Python 本体のファイルは ``sys.base_prefix`` の下にあり、使用許諾はそこの
+    ``LICENSE.txt`` を写す
+    """
+    owners = distribution_owners() if owners is None else owners
+    notices = NOTICES_SOURCE.read_text(encoding="utf-8") if notices is None else notices
+    python_root = Path(sys.base_prefix)
+    found: dict[str, importlib.metadata.Distribution] = {}
+    problems: list[str] = []
+    for source in sources:
+        distribution = owners.get(_key(source))
+        if distribution is not None:
+            found.setdefault(distribution.metadata["Name"].lower(), distribution)
+        elif not any(_inside(source, root) for root in (*own_roots, python_root)):
+            # 開発機の PATH から拾った DLL などがここに来る どの使用許諾で配るのか
+            # 決められない物は配らない
+            problems.append(f"出どころの分からないファイルを積んでいる: {source}")
+    for name in ALWAYS_BUNDLED:
+        with contextlib.suppress(importlib.metadata.PackageNotFoundError):
+            found.setdefault(name, importlib.metadata.distribution(name))
+
+    target = bundle / LICENSES_DIR
+    for key, distribution in sorted(found.items()):
+        name = distribution.metadata["Name"]
+        # 一覧に書いていない包みは、ソースの入手先も書いていない 一覧を直してから配る
+        if f"`{name.lower()}`" not in notices.lower():
+            problems.append(f"{name} が {NOTICES_SOURCE.name} の一覧に無い")
+        files = license_files(distribution)
+        if not files and key not in WITHOUT_LICENSE_FILES:
+            problems.append(f"{name} {distribution.version} の使用許諾の写しが見つからない")
+        folder = target / f"{name}-{distribution.version}"
+        for relative, path in files:
+            destination = folder / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(path, destination)
+
+    python_license = python_root / "LICENSE.txt"
+    if python_license.exists():
+        (target / "Python").mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(python_license, target / "Python" / "LICENSE.txt")
+    else:
+        problems.append(f"Python 本体の使用許諾が無い: {python_license}")
+    return problems
+
+
+def missing_notices(home: Path) -> list[str]:
+    """展開した zip に、使用許諾の一覧と全文がそろっているか
+
+    GPL の部品を積んで配る以上、使用許諾の全文を一緒に渡さなければならない
+    組み立ての途中の段を飛ばしても zip は作れてしまうので、配る物の側で確かめる
+    """
+    expected = [
+        "LICENSE.txt",
+        NOTICES_NAME,
+        f"{LICENSES_DIR}/Python/LICENSE.txt",
+        *(f"{LICENSES_DIR}/{name}" for name in gnu_license_names()),
+    ]
+    return [name for name in expected if not (home / name).is_file()]
 
 
 def make_zip(bundle: Path, target: Path) -> Path:
@@ -283,6 +458,7 @@ def smoke_test(archive: Path) -> int:
         if checked.stderr.strip():
             print(checked.stderr.rstrip())
         failures = [] if checked.returncode == 0 else ["自己診断"]
+        failures += [f"使用許諾が入っていない: {name}" for name in missing_notices(home)]
 
         beside = f"{home / PORTABLE_SCRIPTS_DIR}（1 本）"
         if beside not in checked.stdout:
@@ -363,12 +539,46 @@ def main(argv: list[str] | None = None, *, dist: Path | None = None) -> int:
     if not args.skip_build:
         import PyInstaller.__main__
 
-        PyInstaller.__main__.run(pyinstaller_arguments(work, dist))
+        with _without_developer_path():
+            PyInstaller.__main__.run(pyinstaller_arguments(work, dist))
     if not (bundle / f"{APP_NAME}.exe").exists():
         print(f"{bundle} に {APP_NAME}.exe が無い 組み立てに失敗している")
         return 1
 
+    record = work / APP_NAME
+    try:
+        sources = bundled_sources(record)
+    except FileNotFoundError:
+        # 記録が無いと、何を積んだかを数えられず使用許諾をそろえられない
+        print(f"{record} に組み立ての記録が無い --skip-build を外して組み立て直す")
+        return 1
+    problems = collect_licenses(bundle, sources, (ROOT / "src", record))
+    if problems:
+        for problem in problems:
+            print(f"[NG] {problem}")
+        return 1
+
     return package(bundle, target, check=not args.skip_check)
+
+
+@contextlib.contextmanager
+def _without_developer_path() -> Iterator[None]:
+    """組み立てる間だけ ``PATH`` を Windows の分にする
+
+    PyInstaller は Qt の通信部品のために OpenSSL の DLL を ``PATH`` から探す
+    開発機では Git for Windows の物（``C:\\Program Files\\Git\\mingw64\\bin``）が
+    見つかって積まれていた Kumiki は Qt で通信しないので要らないうえ、出どころが
+    組み立てる機械で変わる物は使用許諾をそろえられない
+    """
+    before = os.environ.get("PATH")
+    os.environ["PATH"] = minimal_environment(os.environ)["PATH"]
+    try:
+        yield
+    finally:
+        if before is None:
+            os.environ.pop("PATH", None)
+        else:
+            os.environ["PATH"] = before
 
 
 if __name__ == "__main__":

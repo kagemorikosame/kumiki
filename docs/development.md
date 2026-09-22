@@ -423,3 +423,41 @@ YMM4 互換を、実配布の .ymmt に合わせて書き直す
 
 依存が何も入っていない機械（VC++ ランタイムなど Windows 側の部品も無い）での
 確認は、開発機ではできない 配る前に 1 度、別の機械かクリーンな環境で確かめる
+
+### 使用許諾（配る zip は GPL の条件で配る）
+
+Kumiki 本体のソースは MIT PyAV の wheel に入っている FFmpeg は組み込みの表記が
+「LGPL version 3 or later」だが、同じ wheel に GPL の libx264 と libx265 が入っていて、
+CPU での書き出しは libx264 を使う **zip は全体として GPL の条件で配る** と決めた
+（Issue #32） 本体の MIT は GPL と両立するので、ソースは MIT のまま
+
+- 部品ごとの使用許諾とソースの入手先は `THIRD_PARTY_NOTICES.md` に手で書く
+  zip には `THIRD_PARTY_NOTICES.txt` として入る
+- GNU の使用許諾の全文は `licenses/` に置く（どの包みも dist-info に持っていないため）
+- Python の包みの使用許諾は、組み立てのたびに dist-info から `licenses\<名前>-<版>\` へ写す
+  **包みの名前は決め打ちにしない** 組み立ての記録（PyInstaller の TOC）から、積んだ
+  ファイル 1 つずつの出どころを辿って数える PyInstaller は入っていれば拾うので、組み立てる
+  機械が変わると積む包みも変わる
+- 次のどれかがあると、zip を作る前に止まる
+  - 出どころの分からないファイル（どの包みでも、Kumiki のソースでも、Python 本体でもない）
+  - 使用許諾の写しが見つからない包み（写しを持たない包みは `WITHOUT_LICENSE_FILES` で名指しする
+    その前に `THIRD_PARTY_NOTICES.md` へ書く）
+  - `THIRD_PARTY_NOTICES.md` の一覧に無い包み
+- 組み立てる間は `PATH` を Windows の分にする 開発機の `PATH` にある
+  Git for Windows の OpenSSL が、Qt の通信部品のためとして積まれていた
+- zip から確かめる段でも、一覧と全文が入っているかを見る
+- Qt は LGPL-3.0 で使う onedir で組み立てるので Qt の DLL は別のファイルのまま残り、
+  使う人が差し替えられる 1 つの exe へまとめる形（onefile）に変えるときは、これを考え直す
+
+### 色の範囲
+
+扱うのは **SDR の sRGB / Rec.709 だけ** HDR と広色域は今後の課題（Issue #32 で決めた）
+新しく色を扱う処理を足すときも、この範囲を前提にしてよい 範囲の外の素材を正しく
+扱うふりはしない
+
+### 自動更新の署名鍵
+
+自動更新（Issue #36）は β の間は保留 署名鍵も β の間は作らない
+作るときは **GitHub Actions の Secrets にだけ置き、組み立てる手元の機械には置かない**
+（Issue #32 で決めた） 手元に置くと、その機械が乗っ取られたときに偽の更新へ署名できる
+署名は Actions の中で行い、鍵をファイルとして書き出さない

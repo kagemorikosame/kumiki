@@ -316,6 +316,162 @@ class TestTheZip:
         assert {"lupa", "pip"} <= collected
 
 
+class TestTheNotices:
+    """配る zip は GPL の部品（x264・x265）を積むので、全体を GPL の条件で配る
+
+    使用許諾の全文と、部品ごとの一覧・ソースの入手先を一緒に渡さなければならない
+    欠けていても zip は作れて動くので、道具の側で止める
+    """
+
+    def test_the_zip_carries_the_notices(self, builder: ModuleType, tmp_path: Path) -> None:
+        bundle = tmp_path / "bundle"
+        bundle.mkdir()
+        builder.assemble(bundle)
+        archive = builder.make_zip(bundle, tmp_path / "out.zip")
+        with zipfile.ZipFile(archive) as opened:
+            names = set(opened.namelist())
+        assert "Kumiki/THIRD_PARTY_NOTICES.txt" in names
+        assert "Kumiki/LICENSE.txt" in names
+        for text in ("GPL-2.0.txt", "GPL-3.0.txt", "LGPL-2.1.txt", "LGPL-3.0.txt"):
+            assert f"Kumiki/licenses/{text}" in names, f"{text} の全文が zip に無い"
+
+    def test_the_gnu_texts_are_the_real_ones(self) -> None:
+        # 名前だけの空のファイルや別の版の全文を置いても、有無の確認は通ってしまう
+        for name, title, version in (
+            ("GPL-2.0.txt", "GNU GENERAL PUBLIC LICENSE", "Version 2, June 1991"),
+            ("GPL-3.0.txt", "GNU GENERAL PUBLIC LICENSE", "Version 3, 29 June 2007"),
+            ("LGPL-2.1.txt", "GNU LESSER GENERAL PUBLIC LICENSE", "Version 2.1, February 1999"),
+            ("LGPL-3.0.txt", "GNU LESSER GENERAL PUBLIC LICENSE", "Version 3, 29 June 2007"),
+        ):
+            head = (ROOT / "licenses" / name).read_text(encoding="utf-8")[:200]
+            assert title in head and version in head, name
+
+    def test_a_bundled_package_brings_its_license(
+        self, builder: ModuleType, tmp_path: Path
+    ) -> None:
+        """積んだファイルから包みを辿り、その包みの写しを集める
+
+        包みの名前を決め打ちで持つと、組み立てる機械に入っている包みが変わったとき
+        （PyInstaller は入っていれば拾う）に写しの無い物を黙って配る
+        """
+        import numpy
+
+        problems = builder.collect_licenses(tmp_path, [Path(numpy.__file__)], ())
+        assert not [p for p in problems if "numpy" in p], problems
+        copied = tmp_path / "licenses" / f"numpy-{numpy.__version__}" / "LICENSE.txt"
+        assert copied.is_file(), "numpy の使用許諾の写しが集まっていない"
+
+    def test_a_file_from_nowhere_stops_it(self, builder: ModuleType, tmp_path: Path) -> None:
+        """開発機の PATH から拾った DLL のように、どの包みの物でもないファイルは止める
+
+        どの使用許諾で配るのか決められない 実際に Git for Windows の OpenSSL が
+        積まれていた
+        """
+        stray = tmp_path / "elsewhere" / "libssl-3-x64.dll"
+        problems = builder.collect_licenses(tmp_path / "bundle", [stray], ())
+        assert any("libssl-3-x64.dll" in p for p in problems), problems
+
+    def test_kumikis_own_files_pass(self, builder: ModuleType, tmp_path: Path) -> None:
+        own = ROOT / "src" / "kumiki" / "__init__.py"
+        problems = builder.collect_licenses(tmp_path, [own], (ROOT / "src",))
+        assert not [p for p in problems if "__init__.py" in p], problems
+
+    def test_a_package_without_a_license_file_stops_it(
+        self, builder: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """写しを持たない包みは、一覧に書いたうえで名指しで許した物だけ通す"""
+        import OpenGL
+
+        source = [Path(OpenGL.__file__)]
+        allowed = builder.collect_licenses(tmp_path / "a", source, ())
+        assert not [p for p in allowed if "PyOpenGL" in p], allowed
+
+        monkeypatch.setattr(builder, "WITHOUT_LICENSE_FILES", frozenset())
+        refused = builder.collect_licenses(tmp_path / "b", source, ())
+        assert any("PyOpenGL" in p and "写し" in p for p in refused), refused
+
+    def test_a_package_missing_from_the_list_stops_it(
+        self, builder: ModuleType, tmp_path: Path
+    ) -> None:
+        # 一覧に無い包みは、ソースの入手先も書いていない
+        import numpy
+
+        problems = builder.collect_licenses(tmp_path, [Path(numpy.__file__)], (), notices="")
+        assert any("numpy" in p and "一覧" in p for p in problems), problems
+
+    def test_the_list_names_what_the_real_build_bundled(self, builder: ModuleType) -> None:
+        """開発機の組み立てで数えた包みが、一覧に全部載っている
+
+        一覧に無い包みがあると、組み立ての最後で止まって zip を作れない
+        """
+        listed = (ROOT / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8").lower()
+        for name in (
+            "PySide6_Essentials",
+            "PySide6_Addons",
+            "shiboken6",
+            "av",
+            "numpy",
+            "lupa",
+            "PyOpenGL",
+            "sounddevice",
+            "pip",
+            "pyinstaller",
+        ):
+            assert f"`{name.lower()}`" in listed, name
+
+    def test_the_record_includes_the_archive(self, builder: ModuleType, tmp_path: Path) -> None:
+        """exe の中の書庫（PYZ）に入った純 Python の包みも数える
+
+        exe の隣のフォルダだけを見ると、pip や setuptools の写しを集め損ねる
+        """
+        (tmp_path / "COLLECT-00.toc").write_text(
+            repr(([("Kumiki.exe", r"C:\work\Kumiki.exe", "EXECUTABLE")],)), encoding="utf-8"
+        )
+        (tmp_path / "PYZ-00.toc").write_text(
+            repr(
+                (
+                    r"C:\work\PYZ-00.pyz",
+                    [
+                        ("pip", r"C:\venv\pip\__init__.py", "PYMODULE"),
+                        ("ns", "-", "PYMODULE"),
+                    ],
+                )
+            ),
+            encoding="utf-8",
+        )
+        assert builder.bundled_sources(tmp_path) == [
+            Path(r"C:\work\Kumiki.exe"),
+            Path(r"C:\venv\pip\__init__.py"),
+        ]
+
+    def test_the_unpacked_zip_is_checked(self, builder: ModuleType, tmp_path: Path) -> None:
+        """zip から確かめる段でも見る 途中の段を飛ばしても zip は作れてしまう"""
+        home = tmp_path / "Kumiki"
+        home.mkdir()
+        missing = builder.missing_notices(home)
+        assert "THIRD_PARTY_NOTICES.txt" in missing
+        assert "licenses/GPL-3.0.txt" in missing
+
+        builder.assemble(home)
+        builder.collect_licenses(home, [], ())
+        if not (Path(sys.base_prefix) / "LICENSE.txt").exists():
+            pytest.skip("この Python には LICENSE.txt が無い")
+        assert builder.missing_notices(home) == []
+
+    def test_the_build_does_not_see_the_developers_path(
+        self, builder: ModuleType, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """組み立てる間は PATH を Windows の分にし、終わったら戻す
+
+        戻さないと、そのあとの zip の確認や後続の処理が別の PATH で動く
+        """
+        developer = r"C:\Program Files\Git\mingw64\bin;C:\Windows\System32"
+        monkeypatch.setenv("PATH", developer)
+        with builder._without_developer_path():
+            assert "Git" not in os.environ["PATH"]
+        assert os.environ["PATH"] == developer
+
+
 class TestTheEditorCheckLeavesNoTrace:
     """編集画面の組み立ては、本人の設定に触れない
 
