@@ -150,6 +150,9 @@ class ExportDialog(QDialog):
         layout.addStretch(1)
         layout.addWidget(self._buttons)
 
+        if not codecs:
+            # 押せるままにすると、押しても何も起きず理由が分からない 理由はコーデックの欄に出ている
+            self._buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(False)
         if project.duration <= 0:
             self._buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(False)
             form.addRow("", QLabel("タイムラインが空なので書き出せない", self))
