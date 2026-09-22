@@ -10,7 +10,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import av
+import av.codec
 import numpy as np
+import pytest
 from av.video.reformatter import ColorRange, Colorspace
 
 __all__ = [
@@ -22,6 +24,7 @@ __all__ = [
     "assert_close",
     "bars",
     "rgb_at_bars",
+    "skip_without_libx264",
     "write_bars",
     "yuv_at_bars",
 ]
@@ -87,6 +90,20 @@ def assert_close(
         )
 
 
+def skip_without_libx264() -> None:
+    """libx264 が入っていなければ、素材を作る前に試験を飛ばす
+
+    ここで作るのは試験の入力で、確かめたいのは読み方の方 libx264 の無い PyAV
+    （自前で組んだ FFmpeg など）で「作れない」を失敗にすると、読み方の回帰と見分けが付かない
+    確かめるのは作る前だけで、エンコードが始まってからの失敗はそのまま落とす
+    """
+    try:
+        av.codec.Codec("libx264", "w")
+    except Exception:
+        # 無いときに投げる例外の種類は PyAV の版で違うので、種類では絞らない
+        pytest.skip("libx264 が無いので、色の試験の素材を作れない")
+
+
 def write_bars(
     path: Path,
     width: int,
@@ -99,6 +116,7 @@ def write_bars(
 
     可逆（qp 0）にするのは、ずれが行列の違いだけで出るようにするため
     """
+    skip_without_libx264()
     rgb = av.VideoFrame.from_ndarray(bars(width, height), format="rgb24")
     yuv = rgb.reformat(format="yuv420p", dst_colorspace=matrix, dst_color_range=ColorRange.MPEG)
     # reformat はフレームに行列のタグを付ける タグの無い素材を作るときに残すと、

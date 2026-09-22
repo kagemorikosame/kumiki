@@ -336,7 +336,8 @@ class TestColor:
         assert output.exists()
 
     def test_colors_survive_a_round_trip(self, bars_project: Project, tmp_path: Path) -> None:
-        # 書いたタグどおりに読み直せば、元の色へ戻る
+        # 書いたタグどおりに読み直せば、元の色へ戻る 変換とタグのどちらかが壊れると、
+        # 書き出したものを素材として読み込み直したときに原色がずれる（中間ファイルの色が変わる）
         output = tmp_path / "again.mp4"
         export_project(
             bars_project,

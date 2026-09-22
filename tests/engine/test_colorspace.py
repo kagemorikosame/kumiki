@@ -20,6 +20,7 @@ from kumiki.engine.cache.proxy import ProxyStore, create_proxy, proxy_codecs
 from kumiki.engine.cache.store import CacheStore, media_key
 from kumiki.engine.colorspace import source_matrix, tag_bt709, to_bt709, to_rgb_array
 from kumiki.engine.decode import VideoDecoder
+from kumiki.engine.decode.image import read_image
 from tests.color_bars import (
     AVCOL_SPC_BT470BG,
     AVCOL_SPC_BT709,
@@ -29,6 +30,7 @@ from tests.color_bars import (
     assert_close,
     bars,
     rgb_at_bars,
+    skip_without_libx264,
     write_bars,
     yuv_at_bars,
 )
@@ -42,6 +44,7 @@ class TestWriting:
         assert_close(yuv_at_bars(converted), BT709_YUV, tolerance=1)
 
     def test_the_frame_carries_the_tags(self) -> None:
+        # フレームのタグが無いと、エンコーダによっては行列を書かず、再生側の推測で色が変わる
         rgb = av.VideoFrame.from_ndarray(bars(320, 240), format="rgb24")
         converted = to_bt709(rgb, "yuv420p")
         assert converted.colorspace == AVCOL_SPC_BT709
@@ -56,6 +59,9 @@ class TestWriting:
         assert rgb_at_bars(converted.to_ndarray(format="rgb24")) == list(COLORS)
 
     def test_a_yuv_stream_is_tagged(self, tmp_path: Path) -> None:
+        # ストリームにタグが無いと、書き出したファイルを再生ソフトやブラウザが BT.601 で
+        # 読むことがあり、赤が明るく緑が暗く見える
+        skip_without_libx264()
         with av.open(str(tmp_path / "out.mp4"), mode="w") as container:
             stream = container.add_stream("libx264", rate=30)
             stream.pix_fmt = "yuv420p"
@@ -91,15 +97,19 @@ class TestGuessingTheMatrix:
     def test_an_untagged_frame_is_judged_by_size(
         self, width: int, height: int, expected: Colorspace
     ) -> None:
+        # 大きさの判定を誤ると、タグの無い素材が別の行列で読まれる HD を BT.601 で読むと
+        # 赤がくすみ緑が黄色へ寄り、SD を BT.709 で読むと肌色が赤っぽくなる
         frame = av.VideoFrame(width, height, "yuv420p")
         assert source_matrix(frame) == expected
 
     def test_a_tag_wins_over_the_size(self) -> None:
+        # タグより大きさを優先すると、BT.601 と明記した HD の素材まで BT.709 で読んで色が変わる
         frame = av.VideoFrame(1920, 1080, "yuv420p")
         frame.colorspace = AVCOL_SPC_BT470BG
         assert source_matrix(frame) is None
 
     def test_rgb_has_no_matrix(self) -> None:
+        # RGB に行列を指定すると swscale が要らない変換を挟み、PNG の素材の色まで動く
         assert source_matrix(av.VideoFrame(1920, 1080, "rgb24")) is None
 
 
@@ -126,6 +136,14 @@ class TestReading:
         path = write_bars(tmp_path / name, width, height, matrix=matrix, tag=tag)
         with VideoDecoder(path) as decoder:
             image = decoder.frame_at(Fraction(0))
+        assert image is not None
+        assert_close(rgb_at_bars(image), COLORS, tolerance=3)
+
+    def test_an_effect_image_reads_like_a_clip(self, tmp_path: Path) -> None:
+        # 画像合成などのエフェクトは動画も受け、先頭のコマを使う ここだけ素の to_ndarray だと、
+        # 同じタグの無い HD の動画が、素材としては正しい色、エフェクトでは BT.601 の色になる
+        path = write_bars(tmp_path / "hd.mkv", 1280, 720, matrix=Colorspace.ITU709, tag=None)
+        image = read_image(path)
         assert image is not None
         assert_close(rgb_at_bars(image), COLORS, tolerance=3)
 
