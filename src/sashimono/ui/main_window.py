@@ -149,14 +149,14 @@ class _ExoMedia:
     （テンプレートの棚の :func:`~sashimono.compat.catalog.gather_media` と同じ作り）
     """
 
-    #: 書かれていたパス → 結ぶ素材の id
+    #: 書かれていたパス → 結ぶ素材の id（:func:`map_exo` がそのまま受ける形）
     ids: dict[str, MediaId]
     #: 見つからないか開けなかったパス
-    missing: list[str]
+    missing: tuple[str, ...]
     #: 素材一覧へ入れるコマンド
-    commands: list[Command]
+    commands: tuple[Command, ...]
     #: 入ったあとに解析と控えを頼む素材
-    items: list[MediaItem]
+    items: tuple[MediaItem, ...]
 
 
 class MainWindow(QMainWindow):
@@ -1432,22 +1432,28 @@ class MainWindow(QMainWindow):
         """
         from sashimono.compat.aviutl.mapping import media_paths
 
-        found = _ExoMedia(ids={}, missing=[], commands=[], items=[])
+        ids: dict[str, MediaId] = {}
+        missing: list[str] = []
+        items: list[MediaItem] = []
         for raw in media_paths(exo):
             candidates = [Path(raw), source.parent / Path(raw).name]
             path = next((c for c in candidates if c.exists()), None)
             if path is None:
-                found.missing.append(raw)
+                missing.append(raw)
                 continue
             try:
                 media = probe_media(path)
             except ProbeError:
-                found.missing.append(raw)
+                missing.append(raw)
                 continue
-            found.commands.append(AddMedia(media))
-            found.items.append(media)
-            found.ids[raw] = media.id
-        return found
+            items.append(media)
+            ids[raw] = media.id
+        return _ExoMedia(
+            ids=ids,
+            missing=tuple(missing),
+            commands=tuple(AddMedia(media) for media in items),
+            items=tuple(items),
+        )
 
     def show_templates(self) -> None:
         """テンプレートの棚を開いて、選ばれたものを反映する

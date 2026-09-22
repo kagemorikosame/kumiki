@@ -345,7 +345,8 @@ def place(
         return []
 
     known = media or {}
-    _note_silent_videos(objects, known, report if report is not None else global_report)
+    log = report if report is not None else global_report
+    _note_silent_videos(objects, known, log)
     heard = [item for item in objects if _is_sound(item, known)]
     seen = [item for item in objects if not _is_sound(item, known)]
 
@@ -378,7 +379,7 @@ def place(
         if item.children:
             placed = replace(
                 placed,
-                scene_id=_scene_for(item, project, commands, known),
+                scene_id=_scene_for(item, project, commands, known, log),
                 # シーンの中の時刻は秒で持つ（素材のクリップと同じ決まり）
                 source_in=item.scene_offset * project.rate.frame_duration,
             )
@@ -474,12 +475,16 @@ def _scene_for(
     project: Project,
     commands: list[Command],
     media: Mapping[str, MediaItem],
+    log: CompatibilityReport,
 ) -> SceneId:
     """まとめて 1 枚にする中身をシーンへ置き、そのシーンを返す
 
     中身の位置はまとめた入れ物の頭からの時刻で持っているので、そのまま置く
     （``at_frame`` を中身の一番早い位置にして、ずらさない） 頭へ詰めると、
     遅れて出てくる中身が入れ物の頭から出てしまう
+
+    ``log`` は呼んだ側のレポートをそのまま渡す 渡さないと、まとめた中身の
+    未対応だけが共通のレポートへ紛れ、呼んだ側の数に出ない
     """
     scene = new_scene(project, item.label or "まとめた絵")
     commands.append(AddScene(scene))
@@ -489,7 +494,9 @@ def _scene_for(
     earliest = min((child.clip.timeline_start for child in item.children), default=0)
     commands.extend(
         InScene(scene.id, command)
-        for command in place(list(item.children), inside, at_frame=earliest, media=media)
+        for command in place(
+            list(item.children), inside, at_frame=earliest, media=media, report=log
+        )
     )
     return scene.id
 

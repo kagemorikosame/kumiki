@@ -355,6 +355,24 @@ def test_a_video_with_sound_is_counted_as_unsupported(tmp_path: Path) -> None:
     assert any("動画の音" in line for line in report.lines())
 
 
+def test_a_video_with_sound_inside_a_group_is_counted_too(tmp_path: Path) -> None:
+    """まとめた中身の動画の音も、呼んだ側のレポートに残る
+
+    シーンへ置く再帰にレポートを渡さないと、合成グループの中の動画だけが
+    共通のレポートへ紛れ、渡したレポートには何も出ない
+    """
+    clip = tmp_path / "映像.mp4"
+    clip.write_bytes(b"")
+    inner = media_object(clip, "動画ファイル")
+    group = MappedObject(clip=Clip(timeline_start=0, duration=30), layer=1, children=(inner,))
+    project = Project.create()
+    report = CompatibilityReport()
+    plan = gather_media([group], project, FakeProbe())
+    place([group], project, media=plan.media, report=report)
+
+    assert any("動画の音" in line for line in report.lines())
+
+
 def test_audio_uses_an_existing_track_when_it_is_free_there(files: tuple[Path, Path]) -> None:
     # 置く範囲の外にだけ音がある音声トラックは使ってよい 範囲を見ずに断ると、
     # 使える音声トラックがあるのに置くたびに新しいトラックが増える
