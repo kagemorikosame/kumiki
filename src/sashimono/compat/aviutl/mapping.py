@@ -504,8 +504,14 @@ _FILTERS: dict[str, str] = {
 _SPLIT = "オブジェクト分割"
 
 
-#: 素材ファイルを読み込む中身の名前
-_MEDIA_NAMES = ("動画ファイル", "画像ファイル", "音声ファイル")
+#: 絵や音をそのまま素材として持つ中身 素材一覧へ載せる側（media_paths）と、
+#: クリップを素材と結ぶ側（_content）の両方がここを見る 片方だけに足すと、
+#: 一覧には載るのにクリップが空のまま、ということが起きる
+_MEDIA_NAMES = frozenset({"動画ファイル", "画像ファイル", "音声ファイル"})
+
+#: 素材一覧へ載せる中身 音声波形表示は自分では素材にならないが、``ファイル`` の音を描く
+#: 読み込ませないと、別の機械へ持っていったときに探し直せない
+_LISTED_NAMES = _MEDIA_NAMES | {"音声波形表示"}
 
 
 def media_paths(exo: ExoFile) -> tuple[str, ...]:
@@ -517,9 +523,7 @@ def media_paths(exo: ExoFile) -> tuple[str, ...]:
     found: list[str] = []
     for obj in exo.objects:
         content = obj.content
-        # 音声波形表示も自分の ``ファイル`` の音を描く 素材として読み込ませないと、
-        # 別の機械へ持っていったときに探し直せない
-        if content is None or content.name not in (*_MEDIA_NAMES, "音声波形表示"):
+        if content is None or content.name not in _LISTED_NAMES:
             continue
         path = _media_file(content)
         if path and path not in found:
