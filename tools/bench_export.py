@@ -75,8 +75,14 @@ from sashimono.engine.gpu import GLContextError, OffscreenGLContext  # noqa: E40
 from sashimono.engine.render import FULL_QUALITY, FrameRenderer  # noqa: E402
 
 
-def _make_source(directory: Path, *, width: int, height: int, seconds: float, tag: str) -> Path:
-    """測る用の素材を ffmpeg で作る 動きのある絵にして、圧縮で楽をさせない"""
+def _make_source(
+    directory: Path, *, width: int, height: int, seconds: float, tag: str
+) -> Path | None:
+    """測る用の素材を ffmpeg で作る 動きのある絵にして、圧縮で楽をさせない
+
+    作れなければ ``None`` 使えるコーデックの判定は PyAV のエンコーダを見ているので、
+    外の ffmpeg に libx264 が入っているかは別の話 落とさずに、測らずに終える
+    """
     path = directory / f"{tag}-{width}x{height}.mp4"
     if path.exists():
         return path
@@ -101,7 +107,7 @@ def _make_source(directory: Path, *, width: int, height: int, seconds: float, ta
     # パスだけで、外から来る文字列は混ざらない shell は通さない（list 渡し）
     # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
     if subprocess.run(command, check=False).returncode != 0:
-        raise RuntimeError("ffmpeg で素材を作れない")
+        return None
     return path
 
 
@@ -339,12 +345,18 @@ def main(argv: list[str] | None = None) -> int:
     seconds = max(2.0, (arguments.frames + 4) / 30)
     # 層ごとに別のファイルにする 同じファイルだとレンダラがデコーダを使い回し、
     # 重ねた分のデコードが 1 回で済んでしまう
-    sources = [
+    made = [
         _make_source(
             _base, width=arguments.width, height=arguments.height, seconds=seconds, tag=f"s{index}"
         )
         for index in range(arguments.layers)
     ]
+    if any(path is None for path in made):
+        # 手元の ffmpeg に libx264 が無い（または testsrc2 が無い）ときにここへ来る
+        # 落とさずに終える 測れない環境で「壊れた」と読まれないように
+        print("ffmpeg で素材を作れないので測れない（libx264 が入っているか見る）")
+        return 0
+    sources = [path for path in made if path is not None]
 
     try:
         context = OffscreenGLContext()

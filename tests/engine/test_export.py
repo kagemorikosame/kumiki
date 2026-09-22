@@ -34,6 +34,7 @@ from sashimono.core.timebase import FrameRate
 from sashimono.engine.decode import VideoDecoder, probe_media
 from sashimono.engine.encode import (
     COLOR_OPTIONS,
+    MAX_PIPELINE_DEPTH,
     ExportError,
     ExportSettings,
     available_video_codecs,
@@ -376,11 +377,13 @@ class TestPipeline:
         original = exporter._FrameWriter.write
         calls = [0]
 
-        def failing(self: object, index: int, frame_number: int, image: np.ndarray) -> None:
+        def failing(
+            self: exporter._FrameWriter, index: int, frame_number: int, image: np.ndarray
+        ) -> None:
             calls[0] += 1
             if calls[0] == 3:
                 raise RuntimeError("書き込みで失敗した")
-            original(self, index, frame_number, image)  # type: ignore[arg-type]
+            original(self, index, frame_number, image)
 
         monkeypatch.setattr(exporter._FrameWriter, "write", failing)
         with pytest.raises(RuntimeError, match="書き込みで失敗した"):
@@ -394,7 +397,9 @@ class TestPipeline:
         self, ready_project: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # 失敗した後に受け取りをやめると、合成の側がキューで止まって書き出しが固まる
-        def failing(self: object, index: int, frame_number: int, image: np.ndarray) -> None:
+        def failing(
+            self: exporter._FrameWriter, index: int, frame_number: int, image: np.ndarray
+        ) -> None:
             raise RuntimeError("書き込みで失敗した")
 
         monkeypatch.setattr(exporter._FrameWriter, "write", failing)
@@ -413,6 +418,54 @@ class TestPipeline:
         worker = threading.Thread(target=run, daemon=True)
         worker.start()
         assert finished.wait(120), "書き込みが失敗した後、書き出しが戻ってこない"
+
+    @pytest.mark.parametrize("depth", [-1, MAX_PIPELINE_DEPTH + 1])
+    def test_an_out_of_range_depth_is_refused(
+        self, ready_project: Project, tmp_path: Path, depth: int
+    ) -> None:
+        # 黙って通すと、大きい値で合成済みの絵を抱えすぎてメモリを使い切る
+        # 負の値は「重ねない」と同じに丸められ、頼んだ設定と実際が食い違う
+        output = tmp_path / "depth.mp4"
+        with pytest.raises(ExportError, match="先読みの深さ"):
+            export_project(
+                ready_project,
+                ExportSettings(path=output, video_codec="libx264", pipeline_depth=depth),
+            )
+        assert not output.exists()
+
+    def test_cancelling_while_the_last_frames_drain_is_a_failure(
+        self, ready_project: Project, tmp_path: Path
+    ) -> None:
+        # 最後の 1 枚を渡した後、書き込みが終わるまでの間にも中止は押せる
+        # そこを見ないと「書き出しました」と出てファイルも残る
+        output = tmp_path / "late.mp4"
+        stop = threading.Event()
+        frames = 6
+
+        def should_cancel() -> bool:
+            # 全部渡し終えた後にだけ真を返す 合成の途中では止めない
+            return stop.is_set()
+
+        original = exporter._WritePipeline.close
+
+        def closing(self: exporter._WritePipeline, *, reraise: bool = True) -> None:
+            stop.set()
+            original(self, reraise=reraise)
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(exporter._WritePipeline, "close", closing)
+            with pytest.raises(ExportError, match="中止"):
+                export_project(
+                    ready_project,
+                    ExportSettings(
+                        path=output,
+                        video_codec="libx264",
+                        frame_range=(0, frames),
+                        pipeline_depth=2,
+                    ),
+                    should_cancel=should_cancel,
+                )
+        assert not output.exists()
 
     def test_progress_counts_written_frames(self, ready_project: Project, tmp_path: Path) -> None:
         # 合成した枚数で数えると、深さのぶんだけ先に 100% になり、

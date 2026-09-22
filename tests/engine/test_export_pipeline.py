@@ -33,16 +33,18 @@ class TestPipelining:
         with _WritePipeline(write, depth=2) as pipeline:
             # 1 枚目は書き込みスレッドが抱え、2 枚目はキューに入る
             # どちらも書き込みの終わりを待たずに戻らなければならない
+            pipeline.reserve()
             pipeline.submit(0, 0, _image(0))
+            pipeline.reserve()
             pipeline.submit(1, 1, _image(1))
             assert written == []
             release.set()
 
         assert written == [0, 1]
 
-    def test_the_queue_holds_the_producer_back(self) -> None:
-        # 上限を外すと、合成した絵をいくらでも溜め込む 4K なら 1 枚 33MB で、
-        # 長い書き出しではメモリを使い切る
+    def test_the_seat_holds_the_producer_back_before_composing(self) -> None:
+        # 席を取らずに描いてから渡すと、キューの分と書き込み中の分に加えて
+        # 手元の 1 枚が余分に残る 4K なら 1 枚 33MB で、選んだ枚数より多く抱える
         release = threading.Event()
         started = threading.Event()
 
@@ -52,13 +54,16 @@ class TestPipelining:
 
         pipeline = _WritePipeline(write, depth=1)
         with pipeline:
+            # 1 枚目は書き込み中、2 枚目はキュー 深さ 1 ならここで席が尽きる
+            pipeline.reserve()
             pipeline.submit(0, 0, _image(0))
             assert started.wait(5)
+            pipeline.reserve()
             pipeline.submit(1, 1, _image(1))
-            blocked = threading.Thread(target=pipeline.submit, args=(2, 2, _image(2)))
+            blocked = threading.Thread(target=pipeline.reserve)
             blocked.start()
             blocked.join(0.3)
-            # 3 枚目はキューが空くまで入れない
+            # 3 枚目は席が空くまで**描き始められない**
             assert blocked.is_alive()
             release.set()
             blocked.join(5)
@@ -69,6 +74,7 @@ class TestPipelining:
         written: list[int] = []
         with _WritePipeline(lambda index, _f, _i: written.append(index), depth=4) as pipeline:
             for index in range(10):
+                pipeline.reserve()
                 pipeline.submit(index, index, _image(index))
         assert written == list(range(10))
 
@@ -79,6 +85,7 @@ class TestPipelining:
         with _WritePipeline(
             lambda _i, _f, _img: threads.append(threading.get_ident()), depth=0
         ) as pipeline:
+            pipeline.reserve()
             pipeline.submit(0, 0, _image(0))
         assert threads == [threading.get_ident()]
 
@@ -92,6 +99,7 @@ class TestFailures:
         pipeline = _WritePipeline(write, depth=2)
         with pytest.raises(RuntimeError, match="書き込みに失敗"), pipeline:
             for index in range(4):
+                pipeline.reserve()
                 pipeline.submit(index, index, _image(index))
 
     def test_a_failure_does_not_block_the_producer(self) -> None:
@@ -107,6 +115,7 @@ class TestFailures:
             try:
                 with pipeline:
                     for index in range(50):
+                        pipeline.reserve()
                         pipeline.submit(index, index, _image(index))
             except RuntimeError:
                 pass
@@ -128,6 +137,7 @@ class TestFailures:
         pipeline = _WritePipeline(write, depth=1)
         try:
             pipeline.__enter__()
+            pipeline.reserve()
             pipeline.submit(0, 0, _image(0))
             assert failed.wait(5)
             # 投げた直後に旗が立つとは限らない 書き込みスレッドが例外を捕まえて
@@ -145,6 +155,7 @@ class TestFailures:
         # 取り合って FFmpeg の中で落ちる
         pipeline = _WritePipeline(lambda _i, _f, _img: None, depth=2)
         with pytest.raises(ValueError, match="合成に失敗"), pipeline:
+            pipeline.reserve()
             pipeline.submit(0, 0, _image(0))
             raise ValueError("合成に失敗")
         assert threading.active_count() >= 1

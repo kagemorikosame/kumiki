@@ -208,6 +208,14 @@ def export_project(
             f"色のタグは BT.709 に固定している オプションでは変えられない: {', '.join(conflicting)}"
         )
 
+    # 深さは合成済みの絵を何枚抱えるかで、4K なら 1 枚 33MB 大きい値をそのまま通すと
+    # 長い書き出しの途中でメモリを使い切る 設定画面の側は範囲を見ているので、
+    # ここを素通しにすると API から直に呼んだときだけ守られない形になる
+    if not 0 <= settings.pipeline_depth <= MAX_PIPELINE_DEPTH:
+        raise ExportError(
+            f"先読みの深さは 0 から {MAX_PIPELINE_DEPTH} まで: {settings.pipeline_depth}"
+        )
+
     settings.path.parent.mkdir(parents=True, exist_ok=True)
     context = OffscreenGLContext()
     renderer = FrameRenderer(project, context=context, quality=FULL_QUALITY)
@@ -324,7 +332,15 @@ def _encode(
                 # 本当の失敗（閉じるときに投げ直す）が後ろへ遠ざかる
                 if pipeline.failed:
                     break
+                # 席を取ってから描く 描いてから待つと、キューの上限に加えて手元の 1 枚が
+                # 余分に残り、選んだ枚数より多く抱える（4K なら 1 枚 33MB）
+                pipeline.reserve()
                 pipeline.submit(index, frame_number, renderer.render(frame_number))
+
+        # 最後の 1 枚を渡した後、書き込みが終わるまでの間に押された中止もここで拾う
+        # 見ないと、中止したのに「書き出しました」と出てファイルも残る
+        if should_cancel is not None and should_cancel():
+            raise ExportError("書き出しを中止した")
 
         # エンコーダに溜まっている分を吐き出す これを忘れると末尾が欠ける
         # ここへ来るのは書き込みスレッドが終わった後だけ（`with` が待って join する）
@@ -409,18 +425,25 @@ class _WritePipeline:
     直列にすると、CPU が動いている間ずっと GPU が遊んでいる
 
     ``depth`` が 0 なら、スレッドを作らずその場で書く（設定で切れるようにするため）
+    1 以上なら、**書き込み中の 1 枚に加えて ``depth`` 枚**まで手元に置く
+    席（:meth:`reserve`）で数えるので、合成の側が描いてから渡すまでの間も含まれる
 
     失敗したときに**黙って取りこぼさない**のがこの作りの肝
     - 書き込みスレッドが投げた例外は覚えておき、:meth:`close` で投げ直す
     - 失敗した後も品物を受け取り続ける 受け取りをやめると、合成の側が
       いっぱいのキューへ ``put`` したまま永久に止まる
+    - 席は書き終わったかどうかに関わらず返す 返さないと、失敗した後に
+      :meth:`reserve` で止まる
     """
 
     def __init__(self, write: Callable[[int, int, np.ndarray], None], depth: int) -> None:
         self._write = write
         self._depth = max(0, depth)
         self._error: BaseException | None = None
-        self._queue: queue.Queue[_Item] = queue.Queue(maxsize=max(1, self._depth))
+        # 席は「書き込み中の 1 枚」ぶん多く用意する depth と同じにすると、
+        # 深さ 1 が実質直列（書き終わるまで次を描けない）になる
+        self._slots = threading.Semaphore(self._depth + 1) if self._depth else None
+        self._queue: queue.Queue[_Item] = queue.Queue(maxsize=self._depth + 2)
         self._thread: threading.Thread | None = None
 
     @property
@@ -447,12 +470,21 @@ class _WritePipeline:
         # 取り合い、FFmpeg の中で落ちる
         self.close(reraise=kind is None)
 
+    def reserve(self) -> None:
+        """合成を始める前に、1 枚ぶんの席を取る 空くまで待つ
+
+        描いてから :meth:`submit` で待つ作りにすると、キューに入っている分と
+        書き込み中の分に加えて、手元の 1 枚が余分に残る 4K では 1 枚 33MB あり、
+        設定した枚数より多く抱えることになる
+        """
+        if self._slots is not None:
+            self._slots.acquire()
+
     def submit(self, index: int, frame_number: int, image: np.ndarray) -> None:
         if self._thread is None:
             self._write(index, frame_number, image)
             return
-        # キューが埋まっていれば、ここで待つ これが合成の側の速さの上限になり、
-        # 溜め込みすぎてメモリを食うのを防ぐ
+        # 席は :meth:`reserve` で取ってある ここで待つことは普通は無い
         self._queue.put((index, frame_number, image))
 
     def close(self, *, reraise: bool = True) -> None:
@@ -470,13 +502,16 @@ class _WritePipeline:
             item = self._queue.get()
             if item is None:
                 return
-            if self._error is not None:
-                # すでに失敗している 捨てるだけ 受け取りは続ける（上の説明のとおり）
-                continue
             try:
-                self._write(*item)
+                # すでに失敗していれば捨てるだけ 受け取りは続ける（上の説明のとおり）
+                if self._error is None:
+                    self._write(*item)
             except BaseException as error:
                 self._error = error
+            finally:
+                # 席は必ず返す 失敗したときに返さないと、合成の側が reserve で止まる
+                if self._slots is not None:
+                    self._slots.release()
 
 
 def _write_audio(

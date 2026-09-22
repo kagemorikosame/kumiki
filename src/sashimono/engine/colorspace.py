@@ -69,15 +69,38 @@ def source_matrix(frame: av.video.frame.VideoFrame) -> Colorspace | None:
 def _reformat(
     frame: av.video.frame.VideoFrame,
     reformatter: VideoReformatter | None,
-    **options: object,
+    *,
+    width: int | None = None,
+    height: int | None = None,
+    pixel_format: str,
+    src_colorspace: Colorspace | None = None,
+    dst_colorspace: Colorspace | None = None,
+    dst_color_range: ColorRange | None = None,
 ) -> av.video.frame.VideoFrame:
     """``reformatter`` があればそれで、無ければフレーム自身の表で変換する
 
     フレーム自身に任せると、フレームごとに swscale の表を作り直す
+    受ける項目はここで使う 6 つに絞る ``**options`` で素通しにすると、
+    PyAV の引数が変わっても型検査に掛からない
     """
     if reformatter is None:
-        return frame.reformat(**options)  # type: ignore[arg-type]
-    return reformatter.reformat(frame, **options)  # type: ignore[arg-type]
+        return frame.reformat(
+            width=width,
+            height=height,
+            format=pixel_format,
+            src_colorspace=src_colorspace,
+            dst_colorspace=dst_colorspace,
+            dst_color_range=dst_color_range,
+        )
+    return reformatter.reformat(
+        frame,
+        width=width,
+        height=height,
+        format=pixel_format,
+        src_colorspace=src_colorspace,
+        dst_colorspace=dst_colorspace,
+        dst_color_range=dst_color_range,
+    )
 
 
 def to_rgb_array(frame: av.video.frame.VideoFrame, pixel_format: str) -> np.ndarray:
@@ -105,13 +128,13 @@ def to_bt709(
     出る画素は同じなので、同じ設定で呼び続ける所だけ渡す
     """
     if not _has_matrix(av.VideoFormat(pixel_format)):
-        return _reformat(frame, reformatter, width=width, height=height, format=pixel_format)
+        return _reformat(frame, reformatter, width=width, height=height, pixel_format=pixel_format)
     converted = _reformat(
         frame,
         reformatter,
         width=width,
         height=height,
-        format=pixel_format,
+        pixel_format=pixel_format,
         src_colorspace=source_matrix(frame),
         dst_colorspace=Colorspace.ITU709,
         dst_color_range=ColorRange.MPEG,

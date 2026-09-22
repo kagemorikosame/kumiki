@@ -140,8 +140,9 @@ class PreferencesDialog(QDialog):
         self._select(self._pipeline_depth, preferences.export_pipeline_depth)
         self._pipeline_depth.setToolTip(
             "書き出しで、GPU の合成と、CPU の色変換・エンコード・多重化を重ねて進める "
-            "重ねるほど速いが、合成済みの絵を貯めるぶんメモリを使う（1080p で 1 枚 8MB、"
-            "4K で 33MB） メモリが足りない機械では「重ねない」にする"
+            "合成済みの絵を貯めるぶんメモリを使う（1080p で 1 枚 8MB、4K で 33MB）ので、"
+            "深くすれば速いとは限らない 実測では 4K で 4 枚先まで貯めると 2 枚より遅くなった "
+            "メモリが足りない機械では「重ねない」にする"
         )
         form.addRow("書き出しの先読み", self._pipeline_depth)
 
