@@ -262,6 +262,9 @@ def _video_effect(name: str, entry: dict[str, Any], length: int, keyframes: Any)
             contrast=AnimatedValue(number(entry.get("Contrast"), 100.0) - 100.0),
             saturation=AnimatedValue(number(entry.get("Saturation"), 100.0) - 100.0),
             hue=value("HueRotation"),
+            # 輝度（Brightness）は明るさ（Lightness）と別の項目 読まずにいると、
+            # 場面切り替えで明るく飛ばす動き（ペイントトランジション）が消える
+            gain=value("Brightness", 100.0),
         )
     if kind == "directional_blur":
         definition = registry.get("directional_blur")

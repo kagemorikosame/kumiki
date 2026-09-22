@@ -47,6 +47,7 @@ from sashimono.core.model import (
     VideoStreamInfo,
     Word,
 )
+from sashimono.core.model.easing import CURVES
 from sashimono.core.timebase import FrameRate
 
 __all__ = [
@@ -171,6 +172,9 @@ def _keyframe_to_json(keyframe: Keyframe) -> dict[str, Any]:
     }
     if keyframe.control_points is not None:
         data["control_points"] = list(keyframe.control_points)
+    if keyframe.curve:
+        # 空のときは書かない 曲線の無いキーフレームの形を、前の版の保存と同じに保つ
+        data["curve"] = keyframe.curve
     return data
 
 
@@ -193,11 +197,16 @@ def _keyframe_from_json(raw: object) -> Keyframe:
             raise ProjectFileError(f"control_points に扱えない数がある: {points_raw!r}")
         control_points = (a, b, c, d)
 
+    curve = _get_str(data, "curve", "")
+    if curve and curve not in CURVES:
+        raise ProjectFileError(f"未知の曲線: {curve!r}")
+
     return Keyframe(
         frame=_get_int(data, "frame"),
         value=_get_float(data, "value", 0.0),
         interpolation=interpolation,
         control_points=control_points,
+        curve=curve,
     )
 
 

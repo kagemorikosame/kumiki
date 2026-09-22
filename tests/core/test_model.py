@@ -206,6 +206,38 @@ class TestAnimatedValue:
         # (0,0,1,1) は直線と同じ曲線
         assert value.at(5) == pytest.approx(5.0, abs=1e-4)
 
+    def test_a_named_curve_overshoots_like_back(self) -> None:
+        """曲線の名前（``back``）を持つキーフレームは、その形で動く
+
+        名前を落として 3 種の加減速へ丸めると、行き過ぎて戻る動きが消え、
+        YMM4 の Back_InOut で回るローテンショントランジションが 30 度ずれた
+        """
+        value = AnimatedValue(
+            keyframes=(
+                Keyframe(frame=0, value=0.0, interpolation=Interpolation.EASE_IN_OUT, curve="back"),
+                Keyframe(frame=100, value=180.0),
+            )
+        )
+        # Back_InOut は前半で一度逆へ振れ、後半で行き過ぎる
+        assert min(value.at(f) for f in range(0, 101)) < -5.0
+        assert max(value.at(f) for f in range(0, 101)) > 185.0
+        assert value.at(100) == 180.0
+
+    def test_the_curve_takes_its_direction_from_the_interpolation(self) -> None:
+        # Quart_In は 4 乗 向き（In）は補間方法が持つ 25% の所で 0.25^4
+        value = AnimatedValue(
+            keyframes=(
+                Keyframe(frame=0, value=0.0, interpolation=Interpolation.EASE_IN, curve="quart"),
+                Keyframe(frame=100, value=1.0),
+            )
+        )
+        assert value.at(25) == pytest.approx(0.25**4)
+
+    def test_an_unknown_curve_is_rejected(self) -> None:
+        # 知らない名前を通すと、描くときに直線へ落ちて誰も気付かない
+        with pytest.raises(ValueError, match="曲線"):
+            Keyframe(frame=0, value=0.0, interpolation=Interpolation.EASE_IN, curve="魔法")
+
     def test_bezier_requires_control_points(self) -> None:
         with pytest.raises(ValueError, match="control_points"):
             Keyframe(frame=0, value=0.0, interpolation=Interpolation.BEZIER)

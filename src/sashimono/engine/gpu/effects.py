@@ -82,6 +82,7 @@ class EffectProcessor:
         self._images = EffectImages()
         self._front = 0
         self._object: tuple[float, float, float, float] = (0.0, 0.0, float(width), float(height))
+        self._origin: tuple[float, float] = (float(width) * 0.5, float(height) * 0.5)
         self._duration = 0
 
     @property
@@ -115,6 +116,7 @@ class EffectProcessor:
         flip_source: bool = True,
         duration: int = 0,
         bounds: tuple[float, float, float, float] | None = None,
+        origin: tuple[float, float] | None = None,
         premultiplied: bool = False,
     ) -> Framebuffer:
         """``source`` にエフェクトを掛けた結果のバッファを返す
@@ -128,6 +130,9 @@ class EffectProcessor:
         ``bounds`` は絵の中身が実際にある範囲（画素、左・上・右・下、左上が原点）
         省くと ``source_rect`` 全体 テキストや図形は画面と同じ大きさの絵で届くので、
         全体を基準にすると角丸が画面の角に付き、中心基準の動きが画面の中央で回る
+
+        ``origin`` は絵の原点（画素、左上が原点） 省くと ``bounds`` の中央
+        範囲の中央と原点が離れる絵（場面切り替えの場面）だけが渡す
         """
         self._front = 0
         self._draw_source(source, source_rect, flip_source, premultiplied)
@@ -143,6 +148,13 @@ class EffectProcessor:
                 (bottom + 1.0) * 0.5 * height,
                 (right + 1.0) * 0.5 * width,
                 (top + 1.0) * 0.5 * height,
+            )
+        if origin is not None:
+            self._origin = (origin[0], height - origin[1])
+        else:
+            self._origin = (
+                (self._object[0] + self._object[2]) * 0.5,
+                (self._object[1] + self._object[3]) * 0.5,
             )
         self._duration = max(duration, 0)
 
@@ -212,6 +224,7 @@ class EffectProcessor:
             program.set_float("u_fps", fps)
             program.set_float("u_duration", float(self._duration) / fps if fps else 0.0)
             program.set_vec4("u_object", self._object)
+            program.set_vec2("u_origin", self._origin)
             program.bind_texture("u_texture", source_buffer.color, unit=0)
             program.bind_texture("u_source", self._source.color, unit=1)
             self._set_parameters(program, definition, effect, frame)

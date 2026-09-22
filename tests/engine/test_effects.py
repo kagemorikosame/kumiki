@@ -198,6 +198,20 @@ class TestColorEffect:
         square = white_square()
         assert np.array_equal(draw(square), draw(square, (registry.require("color").create(),)))
 
+    def test_gain_multiplies_the_encoded_value(self, draw: Callable[..., np.ndarray]) -> None:
+        """輝度（``gain``）は sRGB の値に掛ける YMM4 の色調補正の「輝度」と同じ形
+
+        リニアのまま掛けると 150% でも sRGB で 1.2 倍ほどにしかならず、明るく飛ばす
+        場面切り替え（ペイントトランジション）の真ん中が YMM4 より 30 ほど暗く出た
+        """
+        grey = SHAPE.create(shape="rect", width=180, height=180, color=(0.5, 0.5, 0.5, 1.0))
+        plain = centre(draw(grey))
+        brighter = centre(draw(grey, (registry.require("color").create(gain=150),)))
+        assert brighter[0] == pytest.approx(plain[0] * 1.5, abs=3)
+        # 白は白のまま頭打ち
+        white = centre(draw(white_square(180), (registry.require("color").create(gain=150),)))
+        assert white[0] >= 254
+
 
 class TestGeometryEffects:
     def test_transform_moves_the_image(self, draw: Callable[..., np.ndarray]) -> None:
@@ -223,6 +237,30 @@ class TestGeometryEffects:
         upper = columns[rows < HEIGHT // 2].mean()
         lower = columns[rows > HEIGHT // 2].mean()
         assert upper > lower, "時計回りになっていない"
+
+    def test_a_tilt_is_seen_from_the_origin_not_from_a_far_pivot(
+        self, draw: Callable[..., np.ndarray]
+    ) -> None:
+        """支点を絵から遠く離して傾けても、遠近は絵の原点から見た形になる
+
+        支点の正面にカメラを置くと、1000 画素下の支点から見上げる形になり、Y 軸で
+        傾けただけの四角が上下に歪む YMM4 は原点から見た遠近のまま傾けた
+        （ページめくり風その2 は支点が 1700 画素下にあり、差が最大 13 から 0.3 まで減った）
+        """
+        square = white_square(60)
+        tilted = draw(
+            square,
+            (
+                registry.require("transform").create(
+                    rotation_y=40, pivot_h="origin", pivot_v="origin", anchor_y=-1000
+                ),
+            ),
+        )
+        lit = tilted[:, :, 0] > 100
+        rows = lit.any(axis=1).nonzero()[0]
+        # 原点から見れば、Y 軸の傾きは上下に対して対称
+        assert rows.min() + rows.max() + 1 == pytest.approx(HEIGHT, abs=2)
+        assert np.abs(lit.astype(int) - lit[::-1].astype(int)).sum() < 40
 
     def test_transform_scale(self, draw: Callable[..., np.ndarray]) -> None:
         square = white_square(60)

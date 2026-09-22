@@ -40,6 +40,7 @@ uniform float u_frame;         // クリップ先頭からの経過フレーム
 uniform float u_fps;           // 1 秒あたりのフレーム数
 uniform float u_duration;      // クリップの長さ（秒） 退場の動きは終わりから逆算する
 uniform vec4 u_object;         // 絵が置かれた範囲（画素、左・下・右・上 Y は上が正）
+uniform vec2 u_origin;         // 絵の原点（画素、Y は上が正） ふつうは範囲の中央
 
 const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);  // Rec.709
 const float PI = 3.14159265358979;
@@ -48,6 +49,9 @@ const float CAMERA = 1024.0;
 
 vec2 object_center() { return (u_object.xy + u_object.zw) * 0.5; }
 vec2 object_size() { return max(abs(u_object.zw - u_object.xy), vec2(1.0)); }
+// 絵の原点 YMM4 が位置の設定を足し込む点 素材や図形では範囲の中央と同じだが、
+// 場面切り替えの場面の絵は画面の中央が原点で、範囲（中身の描かれた所）とずれる
+vec2 object_origin() { return u_origin; }
 
 // 画素の位置で読む 外は透明 端を引き伸ばして読むと、動かした絵の外側に
 // 縁の色が帯になって伸びる
@@ -118,17 +122,24 @@ mat3 rotation3(vec3 degrees) {
 // 傾けた板の逆算 画面の点（支点からの画素、Y 上向き）が、回す前の板のどこに
 // あたるかを返す カメラから画面の点へ伸ばした線と、回した板の面との交点を
 // 回す前へ戻す 板が真横を向いて交わらなければ、遠くの点（透明）を返す
-vec2 untilt(vec2 point, vec3 degrees) {
+// camera はカメラの真正面の点（支点からの画素、Y 上向き） 支点と離れていると、
+// 離れた側ほど遠近が付く
+vec2 untilt_seen_from(vec2 point, vec3 degrees, vec2 camera) {
     mat3 rotation = rotation3(degrees);
     vec3 normal = rotation * vec3(0.0, 0.0, 1.0);
-    vec3 direction = vec3(point.x, -point.y, CAMERA);
+    vec3 eye = vec3(camera.x, -camera.y, -CAMERA);
+    vec3 direction = vec3(point.x - camera.x, -(point.y - camera.y), CAMERA);
     float facing = dot(normal, direction);
     if (abs(facing) < 1e-5) return vec2(1e6);
-    float distance = CAMERA * normal.z / facing;
+    float distance = -dot(normal, eye) / facing;
     if (distance <= 0.0) return vec2(1e6);
-    vec3 hit = vec3(0.0, 0.0, -CAMERA) + direction * distance;
+    vec3 hit = eye + direction * distance;
     vec3 local = transpose(rotation) * hit;
     return vec2(local.x, -local.y);
+}
+
+vec2 untilt(vec2 point, vec3 degrees) {
+    return untilt_seen_from(point, degrees, vec2(0.0));
 }
 
 // 奥行き z（画素、奥が正）へ置いたときの拡大率
@@ -185,10 +196,27 @@ uniform float brightness;
 uniform float contrast;
 uniform float saturation;
 uniform float hue;
+uniform float gain;
+
+vec3 encode_srgb(vec3 c) {
+    c = clamp(c, 0.0, 1.0);
+    return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+vec3 decode_srgb(vec3 c) {
+    c = clamp(c, 0.0, 1.0);
+    return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
+}
 
 void main() {
     vec4 color = texture(u_texture, v_uv);
     vec3 rgb = color.rgb;
+
+    if (abs(gain - 100.0) > 0.001) {
+        // 符号化した値（sRGB）に掛けて、白で頭打ちにする YMM4 の色調補正の「輝度」は
+        // この形だった リニアのまま掛けると 150% でも明るさが半分ほどしか上がらず、
+        // ペイントトランジションの真ん中が YMM4 より 30 ほど暗く出た
+        rgb = decode_srgb(encode_srgb(rgb) * max(gain, 0.0) / 100.0);
+    }
 
     rgb *= 1.0 + brightness / 100.0;
 
@@ -347,6 +375,8 @@ void main() {
     if (pivot_v == 2) base.y = u_object.y;
     if (pivot_h == 3) base.x = object_center().x;
     if (pivot_v == 3) base.y = object_center().y;
+    if (pivot_h == 4) base.x = object_origin().x;
+    if (pivot_v == 4) base.y = object_origin().y;
     vec2 anchor = base + vec2(anchor_x, anchor_y);
     if (move_to_pivot) {
         // 選んだ中心が、絵の元の中心の位置へ来るように絵ごと動かす（YMM4 の中心点で
@@ -358,7 +388,12 @@ void main() {
 
     if (rotation_x != 0.0 || rotation_y != 0.0) {
         // 板を傾ける 平面の回転と拡大より先に戻す（掛ける順の逆）
-        pixel = untilt(pixel, vec3(rotation_x, rotation_y, 0.0));
+        // カメラは絵の原点の正面 支点の正面に置くと、支点を絵から遠く離したとき
+        // （ページめくり風その2 は 1700 画素下）に絵が斜めから見た台形に歪む
+        // YMM4 は支点を離しても、原点から見た遠近のまま回した
+        pixel = untilt_seen_from(
+            pixel, vec3(rotation_x, rotation_y, 0.0), object_origin() - anchor
+        );
     }
 
     float angle = radians(-rotation);
@@ -790,6 +825,7 @@ def register_builtin_effects() -> None:
                 TrackSpec("contrast", "コントラスト", -100, 300, 0, unit="%"),
                 TrackSpec("saturation", "彩度", -100, 300, 0, unit="%"),
                 TrackSpec("hue", "色相", -180, 180, 0, unit="度"),
+                TrackSpec("gain", "輝度（sRGB の値に掛ける）", 0, 400, 100, unit="%"),
             ),
             fragment_shader=_COLOR,
         )
@@ -861,6 +897,7 @@ def register_builtin_effects() -> None:
                         ("left", "絵の左端"),
                         ("right", "絵の右端"),
                         ("center", "絵の中央"),
+                        ("origin", "絵の原点"),
                     ),
                     "screen",
                 ),
@@ -872,6 +909,7 @@ def register_builtin_effects() -> None:
                         ("top", "絵の上端"),
                         ("bottom", "絵の下端"),
                         ("middle", "絵の中央"),
+                        ("origin", "絵の原点"),
                     ),
                     "screen",
                 ),

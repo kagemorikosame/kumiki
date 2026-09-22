@@ -637,6 +637,19 @@ class Compositor:
         # GL は左下原点で返すので、画像として扱えるよう上下を戻す
         return np.ascontiguousarray(image[::-1])
 
+    def read_alpha(self) -> np.ndarray:
+        """合成途中の絵の不透明度を ``(高さ, 幅)`` の uint8 配列で返す（上下は画像の向き）
+
+        絵の中身がどこにあるかを知るためだけに読む 色の符号化は要らないので、
+        :meth:`read` のように sRGB へ通すパスを挟まず、キャンバスをそのまま読む
+        GL の読み出しに不透明度だけを取る形式は無い（コアでは ``GL_ALPHA`` を断る）
+        """
+        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self._canvas.handle)
+        GL.glPixelStorei(GL.GL_PACK_ALIGNMENT, 1)
+        raw = GL.glReadPixels(0, 0, self.width, self.height, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE)
+        image = np.frombuffer(raw, dtype=np.uint8).reshape(self.height, self.width, 4)
+        return np.ascontiguousarray(image[::-1, :, 3])
+
     def present(
         self,
         framebuffer: int,

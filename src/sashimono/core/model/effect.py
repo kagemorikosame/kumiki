@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
+from sashimono.core.model.easing import CURVES, ease
 from sashimono.core.model.ids import EffectId, new_effect_id
 
 __all__ = [
@@ -58,10 +59,16 @@ class Keyframe:
     interpolation: Interpolation = Interpolation.LINEAR
     #: BEZIER のときの制御点 (x1, y1, x2, y2) それ以外では無視される
     control_points: tuple[float, float, float, float] | None = None
+    #: イージング 3 種のときの曲線の名前（``back`` ``expo`` など） 空なら CSS と同じ曲線
+    #: YMM4 の移動方法（``Back_InOut`` など）は曲線ごとに形が違う 3 種の曲線へ丸めると、
+    #: 行き過ぎて戻る動きが消え、ローテンショントランジションの回り方が最大 30 度ずれた
+    curve: str = ""
 
     def __post_init__(self) -> None:
         if self.interpolation is Interpolation.BEZIER and self.control_points is None:
             raise ValueError("BEZIER には control_points が必要")
+        if self.curve and self.curve not in CURVES:
+            raise ValueError(f"未知の曲線: {self.curve!r}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,7 +119,7 @@ class AnimatedValue:
 
         span = right.frame - left.frame
         progress = (frame - left.frame) / span
-        eased = _ease(progress, left.interpolation, left.control_points)
+        eased = _ease(progress, left.interpolation, left.control_points, left.curve)
         return left.value + (right.value - left.value) * eased
 
     def _surrounding(self, frame: float) -> tuple[Keyframe, Keyframe]:
@@ -125,14 +132,26 @@ class AnimatedValue:
         raise AssertionError("端の判定を先に済ませているのでここには来ない")
 
 
+#: イージング 3 種と、名前付きの曲線の向き
+_CURVE_MODES: dict[Interpolation, str] = {
+    Interpolation.EASE_IN: "in",
+    Interpolation.EASE_OUT: "out",
+    Interpolation.EASE_IN_OUT: "inout",
+}
+
+
 def _ease(
     progress: float,
     interpolation: Interpolation,
     control_points: tuple[float, float, float, float] | None,
+    curve: str = "",
 ) -> float:
     """0..1 の進捗を補間曲線に通す"""
     if interpolation is Interpolation.LINEAR:
         return progress
+    mode = _CURVE_MODES.get(interpolation)
+    if curve and mode is not None:
+        return ease(progress, curve, mode)
     if interpolation is Interpolation.BEZIER:
         if control_points is None:
             raise ValueError("BEZIER には control_points が必要")

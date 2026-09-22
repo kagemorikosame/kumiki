@@ -117,6 +117,8 @@ vec2 pivot_point() {
     if (pivot_v == 0) p.y = u_size.y * 0.5;
     if (pivot_v == 1) p.y = u_object.w;
     if (pivot_v == 2) p.y = u_object.y;
+    if (pivot_h == 4) p.x = object_origin().x;
+    if (pivot_v == 4) p.y = object_origin().y;
     return p + vec2(anchor_x, anchor_y);
 }
 
@@ -139,6 +141,7 @@ def _pivot_specs() -> tuple[TrackSpec | SelectSpec, ...]:
                 ("left", "絵の左端"),
                 ("right", "絵の右端"),
                 ("center", "絵の中央"),
+                ("origin", "絵の原点"),
             ),
             "center",
         ),
@@ -150,6 +153,7 @@ def _pivot_specs() -> tuple[TrackSpec | SelectSpec, ...]:
                 ("top", "絵の上端"),
                 ("bottom", "絵の下端"),
                 ("middle", "絵の中央"),
+                ("origin", "絵の原点"),
             ),
             "middle",
         ),

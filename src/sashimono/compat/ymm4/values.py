@@ -33,11 +33,13 @@ from __future__ import annotations
 from typing import Any
 
 from sashimono.core.model import AnimatedValue, Interpolation, Keyframe
+from sashimono.core.model.easing import CURVES
 
 __all__ = [
     "INTERPOLATIONS",
     "animated",
     "colour",
+    "curve_of",
     "frame_positions",
     "interpolation_of",
     "number",
@@ -115,6 +117,20 @@ def interpolation_of(name: str) -> Interpolation:
     return Interpolation.LINEAR
 
 
+def curve_of(name: str) -> str:
+    """英語のイージング名（``Back_InOut`` など）の曲線の名前 無ければ空
+
+    向き（``_InOut``）は :func:`interpolation_of` が補間方法として読む ここでは
+    ``Back`` ``Expo`` のような形の名前だけを取る 取らずに向きだけで描くと、
+    どの曲線も同じ加減速になり、行き過ぎて戻る Back や急に立ち上がる Expo が消える
+    """
+    kind, separator, _ = name.partition("_")
+    if not separator:
+        return ""
+    lowered = kind.lower()
+    return lowered if lowered in CURVES else ""
+
+
 def frame_positions(keyframes: Any, length: int, count: int) -> list[int]:
     """値の並びに対応するフレーム位置
 
@@ -168,6 +184,7 @@ def animated(
     style = str(value.get("AnimationType") or "")
     interpolation = interpolation_of(style)
     control = (0.42, 0.0, 0.58, 1.0) if interpolation is Interpolation.BEZIER else None
+    curve = curve_of(style)
 
     positions = frame_positions(keyframes, length, len(numbers))
     built: list[Keyframe] = []
@@ -181,6 +198,7 @@ def animated(
                 value=amount,
                 interpolation=interpolation,
                 control_points=control,
+                curve=curve,
             )
         )
 
