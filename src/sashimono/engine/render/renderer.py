@@ -34,7 +34,7 @@ from sashimono.core.model import (
 )
 from sashimono.core.timebase import FrameRate, seconds_to_frame
 from sashimono.effects.easing import ease
-from sashimono.engine.audio_shapes import SPECTRUM_SIZE, WAVEFORM_LEAD
+from sashimono.engine.audio_shapes import spectrum_window
 from sashimono.engine.cache.proxy import ProxyStore
 from sashimono.engine.decode import AudioDecoder, ProbeError, VideoDecoder
 from sashimono.engine.gpu import (
@@ -192,6 +192,10 @@ def _is_generated(clip: Clip) -> bool:
 
 #: 音声波形の音を読むデコーダの鍵 素材の道・音声ストリームの番号・読むレート
 WaveformKey = tuple[Path, int, int]
+
+#: 音声波形の音を、時刻のどれだけ前から読み始めるか（サンプル 読んだ後で捨てる）
+#: 理由は :meth:`FrameRenderer._waveform_audio` に書いた
+_WAVEFORM_PREROLL = 512
 
 
 def _waveform_key(project: Project, clip: Clip, source: GeneratedSource) -> WaveformKey | None:
@@ -1227,9 +1231,9 @@ class FrameRenderer:
     def _waveform_audio(
         self, clip: Clip, source: GeneratedSource, local_frame: int, rate: FrameRate
     ) -> tuple[np.ndarray, int] | None:
-        """音声波形が描く音と、そのレート 1 チャンネルで、今の時刻の ``WAVEFORM_LEAD`` 前から
+        """音声波形が描く音と、そのレート 1 チャンネルで、今の時刻から
 
-        線は今の時刻から横幅ぶん、スペクトラムはその前後 ``SPECTRUM_SIZE`` を使う
+        線は横幅ぶん、スペクトラムは頭の :func:`spectrum_window` ぶんを使う
         サンプルはプロジェクトの音のレート（AviUtl2 は 44.1kHz の書き出しで 1 画素
         1 サンプルだった） クリップの外（頭より前・終わりより先）は 0 実物も最後の
         フレームでは、終わりから先が平らな線になっていた（素材の続きを読むと、そこに音が出る）
@@ -1261,20 +1265,25 @@ class FrameRenderer:
             wide = 800.0
         # 描く大きさの上限より多くは読まない 壊れた横幅で何億サンプルも読んで止まらないように
         span = max(1, round(min(wide, float(MAX_CANVAS)))) if math.isfinite(wide) else 800
-        count = WAVEFORM_LEAD + max(span, SPECTRUM_SIZE - WAVEFORM_LEAD)
+        count = max(span, spectrum_window(sample_rate))
         speed = float(clip.speed)
-        first = int(seconds * sample_rate) - int(WAVEFORM_LEAD * speed)
-        raw = decoder.read(first, int(np.ceil(count * speed)) + 1)
+        # 読み始めは時刻の少し前 デコーダはシークした所からリサンプラを作り直すので、
+        # 読み始めの位置で同じ時刻のサンプルが僅かに変わる（この曲で振幅 0.01〜0.05）
+        # 前と同じ位置から読み、実物と突き合わせた線の絵を変えない（時刻ちょうどから
+        # 読むと、76 フレーム目の差が 0.50 から 0.78 へ開いた）
+        lead = int(_WAVEFORM_PREROLL * speed)
+        first = int(seconds * sample_rate) - lead
+        raw = decoder.read(first, lead + int(np.ceil(count * speed)) + 1)[lead:]
         # float32 のまま平均する 既定の float64 にすると、毎フレーム型を変えて配列を作り直す
         mono = raw.mean(axis=1, dtype=np.float32) if raw.ndim == 2 else raw
         # 速く回すと 1 画素に何サンプルも入る 間引いて 1 画素 1 サンプルに合わせる
         picked = (np.arange(count) * speed).astype(int).clip(0, max(len(mono) - 1, 0))
         samples = mono[picked].astype(np.float32) if len(mono) else np.zeros(count, np.float32)
-        # 今の時刻からの位置（サンプル） クリップの頭より前と終わりより先を 0 にする
-        offset = np.arange(count) - WAVEFORM_LEAD
-        before = float(local_frame * rate.frame_duration * sample_rate)
+        # 今の時刻からの位置（サンプル） クリップの終わりより先を 0 にする
+        # 窓は今の時刻から先だけを見るので、クリップの頭より前は読まない
+        offset = np.arange(count)
         after = float((clip.duration - local_frame) * rate.frame_duration * sample_rate)
-        samples[(offset < -before) | (offset >= round(after))] = 0.0
+        samples[offset >= round(after)] = 0.0
         if remaining is not None:
             samples[offset >= int(np.ceil(float(remaining)))] = 0.0
         return samples, sample_rate
