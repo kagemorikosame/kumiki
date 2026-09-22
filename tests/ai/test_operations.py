@@ -13,9 +13,9 @@ from typing import Any
 
 import pytest
 
-from kumiki.ai.host import ToolError
-from kumiki.ai.operations import OPERATIONS, ImageResult, find_operation
-from kumiki.core.model import AnimatedValue, ClipId, MediaItem, Project
+from sashimono.ai.host import ToolError
+from sashimono.ai.operations import OPERATIONS, ImageResult, find_operation
+from sashimono.core.model import AnimatedValue, ClipId, MediaItem, Project
 from tests.ai.conftest import FakeHost
 
 
@@ -274,8 +274,8 @@ class TestSubtitles:
 
 
 def _forget_transcript(project: Project, media_id: str) -> object:
-    from kumiki.core.commands import SetTranscript
-    from kumiki.core.model import MediaId
+    from sashimono.core.commands import SetTranscript
+    from sashimono.core.model import MediaId
 
     del project
     return SetTranscript(MediaId(media_id), None)

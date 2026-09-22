@@ -14,7 +14,7 @@ from types import ModuleType
 
 import pytest
 
-from kumiki.asr import cleanup
+from sashimono.asr import cleanup
 
 ROOT = Path(__file__).resolve().parent.parent
 MARU = chr(0x3002)
@@ -52,7 +52,7 @@ class TestData:
     def test_the_cleanup_literals_are_not_checked(self, tool: ModuleType, definition: str) -> None:
         # どれか 1 つでも書き換えられると、字幕の改行位置・行頭禁則・読点の扱いが
         # 変わる 例外にはならず、出来上がった字幕が少し変になるだけで気付きにくい
-        path = ROOT / "src" / "kumiki" / "asr" / "cleanup.py"
+        path = ROOT / "src" / "sashimono" / "asr" / "cleanup.py"
         lines = path.read_text(encoding="utf-8").splitlines()
         targets = {number for number, line in enumerate(lines, 1) if definition in line}
         assert targets, f"{definition} が見つからない（名前が変わったならここも直す）"

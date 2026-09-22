@@ -11,7 +11,7 @@ from fractions import Fraction
 
 import pytest
 
-from kumiki.core.commands import (
+from sashimono.core.commands import (
     AddClip,
     AddMedia,
     AddTrack,
@@ -21,7 +21,7 @@ from kumiki.core.commands import (
     SplitClip,
     TrimClip,
 )
-from kumiki.core.model import (
+from sashimono.core.model import (
     Clip,
     MediaItem,
     Project,
@@ -30,7 +30,7 @@ from kumiki.core.model import (
     Transcript,
     TranscriptSegment,
 )
-from kumiki.core.projection import project_timeline
+from sashimono.core.projection import project_timeline
 from tests.conftest import make_clip
 
 

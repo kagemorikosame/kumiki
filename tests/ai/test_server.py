@@ -17,8 +17,8 @@ import pytest
 
 pytest.importorskip("claude_agent_sdk", reason="AI 連携の実行環境が未導入")
 
-from kumiki.ai.bridge import EditorBridge
-from kumiki.ai.server import (
+from sashimono.ai.bridge import EditorBridge
+from sashimono.ai.server import (
     SERVER_NAME,
     build_server,
     build_tools,
@@ -71,7 +71,7 @@ class TestNaming:
 
 class TestServer:
     def test_every_operation_becomes_a_tool(self, host: FakeHost) -> None:
-        from kumiki.ai.operations import OPERATIONS
+        from sashimono.ai.operations import OPERATIONS
 
         assert len(build_tools(EditorBridge(host))) == len(OPERATIONS)
         # サーバそのものも組み立てられること

@@ -10,8 +10,8 @@ from typing import Any
 
 import pytest
 
-from kumiki.ai.host import ToolError
-from kumiki.ai.operations import find_operation
+from sashimono.ai.host import ToolError
+from sashimono.ai.operations import find_operation
 from tests.ai.conftest import FakeHost
 
 

@@ -1,0 +1,24 @@
+---
+description: Sashimono の開発ルール
+globs:
+  - "**/*.py"
+alwaysApply: true
+---
+
+開発ルールの大本は `docs/development.md` 以下はそのうち特に外しやすい点
+
+- Python は `.venv\Scripts\python.exe` を使う 素の `python` はランチャースタブで
+  応答が返らない
+- 実装したら `.venv\Scripts\python.exe tools\verify.py` を走らせる
+  （ruff → mypy strict → pytest）
+- コメントは日本語で「なぜ」を書く 何をしているかはコードを読めば分かる
+- 文章に句点（まる）を使わない コメント・文言・Markdown・コミットメッセージまで
+  文の途中は半角空白で区切る 字幕整形の句点の一覧やテストの入力データは残す
+  リポジトリの中のファイルは `tools\punctuation.py` が検査する
+  コミットメッセージと PR の本文は道具では見ないので、書くときに気を付ける
+- TODO をコードに残さない
+- コア層（`src/sashimono/core/`）は PySide6 を import しない
+- 変更は必ず `Command` 経由 モデルを直接書き換えない
+- 版の出どころは `src/sashimono/__init__.py` の `__version__` 1 か所だけ
+- Y 軸は上が正（テキスト・影・変形・マスクすべて）
+- PR はフェーズ単位 `phase/*` ブランチから `main` へ PR を出す

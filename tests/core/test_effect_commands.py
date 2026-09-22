@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from kumiki.core.commands import (
+from sashimono.core.commands import (
     AddEffect,
     ClearKeyframes,
     Document,
@@ -28,9 +28,9 @@ from kumiki.core.commands import (
     SetSource,
     resolve_param,
 )
-from kumiki.core.io import Preset, PresetStore, ProjectFileError
-from kumiki.core.io.presets import SUFFIX
-from kumiki.core.model import (
+from sashimono.core.io import Preset, PresetStore, ProjectFileError
+from sashimono.core.io.presets import SUFFIX
+from sashimono.core.model import (
     AnimatedValue,
     ClipId,
     Effect,
@@ -43,8 +43,8 @@ from kumiki.core.model import (
     Track,
     TrackKind,
 )
-from kumiki.effects import registry
-from kumiki.effects.sources import SHAPE, TEXT
+from sashimono.effects import registry
+from sashimono.effects.sources import SHAPE, TEXT
 from tests.conftest import make_clip
 
 

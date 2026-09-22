@@ -8,12 +8,12 @@ from __future__ import annotations
 
 import pytest
 
-from kumiki.compat.aviutl.encoding import encode_utf16_hex
-from kumiki.compat.aviutl.exo import parse_exo
-from kumiki.compat.aviutl.mapping import MappedObject, map_exo, map_object
-from kumiki.compat.aviutl.report import CompatibilityReport
-from kumiki.core.model import Project, ProjectSettings
-from kumiki.core.timebase import FrameRate
+from sashimono.compat.aviutl.encoding import encode_utf16_hex
+from sashimono.compat.aviutl.exo import parse_exo
+from sashimono.compat.aviutl.mapping import MappedObject, map_exo, map_object
+from sashimono.compat.aviutl.report import CompatibilityReport
+from sashimono.core.model import Project, ProjectSettings
+from sashimono.core.timebase import FrameRate
 
 RATE = FrameRate(30)
 

@@ -12,9 +12,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from kumiki.core.model import Transcript, TranscriptSegment
-from kumiki.engine.audio.silence import SilenceOptions, detect_silence, keep_speech
-from kumiki.engine.audio.waveform import (
+from sashimono.core.model import Transcript, TranscriptSegment
+from sashimono.engine.audio.silence import SilenceOptions, detect_silence, keep_speech
+from sashimono.engine.audio.waveform import (
     BASE_SAMPLES_PER_PEAK,
     PeakLevel,
     Waveform,

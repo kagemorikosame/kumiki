@@ -12,12 +12,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from kumiki.core.commands import AddClip, AddMedia, AddTrack
-from kumiki.core.model import Clip, Project, ProjectSettings, Track, TrackKind
-from kumiki.core.timebase import FrameRate
-from kumiki.engine.audio import AudioMixer, analyze_waveform
-from kumiki.engine.audio.waveform import BASE_SAMPLES_PER_PEAK
-from kumiki.engine.decode import probe_media
+from sashimono.core.commands import AddClip, AddMedia, AddTrack
+from sashimono.core.model import Clip, Project, ProjectSettings, Track, TrackKind
+from sashimono.core.timebase import FrameRate
+from sashimono.engine.audio import AudioMixer, analyze_waveform
+from sashimono.engine.audio.waveform import BASE_SAMPLES_PER_PEAK
+from sashimono.engine.decode import probe_media
 from tests.media_fixtures import SampleMedia, make_silent_gap
 
 

@@ -12,7 +12,7 @@ from collections.abc import Callable, Iterator
 import numpy as np
 import pytest
 
-from kumiki.core.model import (
+from sashimono.core.model import (
     Clip,
     Effect,
     GeneratedSource,
@@ -21,12 +21,12 @@ from kumiki.core.model import (
     Track,
     TrackKind,
 )
-from kumiki.core.timebase import FrameRate
-from kumiki.effects import registry
-from kumiki.effects.sources import SHAPE
-from kumiki.effects.spec import ParamInput
-from kumiki.engine.gpu import GLContextError, OffscreenGLContext
-from kumiki.engine.render import FrameRenderer
+from sashimono.core.timebase import FrameRate
+from sashimono.effects import registry
+from sashimono.effects.sources import SHAPE
+from sashimono.effects.spec import ParamInput
+from sashimono.engine.gpu import GLContextError, OffscreenGLContext
+from sashimono.engine.render import FrameRenderer
 
 WIDTH, HEIGHT = 200, 200
 #: クリップの長さ（フレーム） 30fps なので 2 秒

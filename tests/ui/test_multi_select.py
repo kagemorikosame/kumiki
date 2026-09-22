@@ -15,7 +15,7 @@ from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from kumiki.core.commands import (
+from sashimono.core.commands import (
     AddEffect,
     Command,
     GroupClips,
@@ -28,7 +28,7 @@ from kumiki.core.commands import (
     TrimClips,
     insert_media,
 )
-from kumiki.core.model import (
+from sashimono.core.model import (
     AnimatedValue,
     Clip,
     ClipId,
@@ -37,11 +37,11 @@ from kumiki.core.model import (
     Track,
     TrackKind,
 )
-from kumiki.effects import registry
-from kumiki.effects.sources import TEXT
-from kumiki.engine.cache import MediaAnalyzer
-from kumiki.ui.main_window import MainWindow
-from kumiki.ui.timeline import TimelineView
+from sashimono.effects import registry
+from sashimono.effects.sources import TEXT
+from sashimono.engine.cache import MediaAnalyzer
+from sashimono.ui.main_window import MainWindow
+from sashimono.ui.timeline import TimelineView
 
 _CTRL = Qt.KeyboardModifier.ControlModifier
 _SHIFT = Qt.KeyboardModifier.ShiftModifier

@@ -13,8 +13,8 @@ from typing import Any
 
 import pytest
 
-from kumiki.core.io import ProjectFileError, project_from_dict, project_to_dict
-from kumiki.core.model import Project
+from sashimono.core.io import ProjectFileError, project_from_dict, project_to_dict
+from sashimono.core.model import Project
 
 #: 値を差し替えるときの候補 型違い、極端な数、壊れた文字、入れ子の取り違え
 _BROKEN_VALUES: tuple[Any, ...] = (

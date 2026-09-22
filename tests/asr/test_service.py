@@ -13,9 +13,9 @@ from pathlib import Path
 
 import pytest
 
-from kumiki.asr.backend import AsrError, Progress, ShouldCancel, TranscribeOptions
-from kumiki.asr.service import JobEvent, JobKind, TranscriptionService
-from kumiki.core.model import MediaId, Transcript, TranscriptSegment
+from sashimono.asr.backend import AsrError, Progress, ShouldCancel, TranscribeOptions
+from sashimono.asr.service import JobEvent, JobKind, TranscriptionService
+from sashimono.core.model import MediaId, Transcript, TranscriptSegment
 
 RESULT = Transcript((TranscriptSegment(Fraction(0), Fraction(1), "できた"),))
 

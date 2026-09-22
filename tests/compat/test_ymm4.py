@@ -26,10 +26,10 @@ from typing import Any
 
 import pytest
 
-from kumiki.compat.aviutl.report import CompatibilityReport
-from kumiki.compat.ymm4.decorations import map_decorations, map_video_effects
-from kumiki.compat.ymm4.template import Ymm4ParseError, load_template, map_template
-from kumiki.compat.ymm4.values import (
+from sashimono.compat.aviutl.report import CompatibilityReport
+from sashimono.compat.ymm4.decorations import map_decorations, map_video_effects
+from sashimono.compat.ymm4.template import Ymm4ParseError, load_template, map_template
+from sashimono.compat.ymm4.values import (
     animated,
     brush_colour,
     colour,
@@ -38,7 +38,7 @@ from kumiki.compat.ymm4.values import (
     number,
     type_name,
 )
-from kumiki.core.model import AnimatedValue, Interpolation
+from sashimono.core.model import AnimatedValue, Interpolation
 
 #: 実物と同じ書き方のブラシ
 BRUSH = {
@@ -368,7 +368,7 @@ class TestVideoEffects:
         assert value_at(result.effects[0].params["rotation"]) == 60.0
 
     def test_the_tilt_axes_are_reversed(self) -> None:
-        # YMM4 の X が正だと上の辺が手前へ来る Kumiki の X 軸の正は上の辺が奥へ倒れる
+        # YMM4 の X が正だと上の辺が手前へ来る Sashimono の X 軸の正は上の辺が奥へ倒れる
         effect = {
             "$type": "YukkuriMovieMaker.Project.Effects.RotateEffect, YukkuriMovieMaker",
             "X": still(30.0),

@@ -16,13 +16,13 @@ from PySide6.QtCore import QPoint
 from PySide6.QtGui import QImage, QPainter
 from PySide6.QtWidgets import QApplication
 
-from kumiki.core.model import Clip, Project, Track, TrackKind
-from kumiki.effects.sources import TEXT
-from kumiki.engine.cache import MediaAnalyzer
-from kumiki.ui.theme import Colors, Metrics
-from kumiki.ui.timeline import TimelineView
-from kumiki.ui.timeline.layout import TimelineLayout
-from kumiki.ui.timeline.painter import clips_in_range
+from sashimono.core.model import Clip, Project, Track, TrackKind
+from sashimono.effects.sources import TEXT
+from sashimono.engine.cache import MediaAnalyzer
+from sashimono.ui.theme import Colors, Metrics
+from sashimono.ui.timeline import TimelineView
+from sashimono.ui.timeline.layout import TimelineLayout
+from sashimono.ui.timeline.painter import clips_in_range
 
 
 def _track(count: int, length: int = 10, gap: int = 5) -> Track:

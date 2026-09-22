@@ -12,8 +12,8 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from kumiki.core.io import project_from_dict, project_to_dict
-from kumiki.core.model import (
+from sashimono.core.io import project_from_dict, project_to_dict
+from sashimono.core.model import (
     AnimatedValue,
     Clip,
     GeneratedSource,
@@ -22,9 +22,9 @@ from kumiki.core.model import (
     Track,
     TrackKind,
 )
-from kumiki.core.timebase import FrameRate
-from kumiki.engine.gpu import GLContextError, OffscreenGLContext
-from kumiki.engine.render import FrameRenderer
+from sashimono.core.timebase import FrameRate
+from sashimono.engine.gpu import GLContextError, OffscreenGLContext
+from sashimono.engine.render import FrameRenderer
 
 SETTINGS = ProjectSettings(width=64, height=64, frame_rate=FrameRate(30))
 

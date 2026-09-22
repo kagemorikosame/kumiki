@@ -10,14 +10,14 @@ from fractions import Fraction
 
 import pytest
 
-from kumiki.compat.aviutl.exo import parse_exo
-from kumiki.compat.aviutl.mapping import _spec_value, map_object
-from kumiki.compat.aviutl.motion import Motion, animated_value, parse_motion
-from kumiki.compat.aviutl.report import CompatibilityReport
-from kumiki.compat.mapped import MappedObject
-from kumiki.core.model import AnimatedValue, Interpolation
-from kumiki.core.timebase import FrameRate
-from kumiki.effects.spec import CheckSpec, SelectSpec, TrackSpec
+from sashimono.compat.aviutl.exo import parse_exo
+from sashimono.compat.aviutl.mapping import _spec_value, map_object
+from sashimono.compat.aviutl.motion import Motion, animated_value, parse_motion
+from sashimono.compat.aviutl.report import CompatibilityReport
+from sashimono.compat.mapped import MappedObject
+from sashimono.core.model import AnimatedValue, Interpolation
+from sashimono.core.timebase import FrameRate
+from sashimono.effects.spec import CheckSpec, SelectSpec, TrackSpec
 
 RATE = FrameRate(60)
 

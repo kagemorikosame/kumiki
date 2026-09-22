@@ -10,11 +10,11 @@ from pathlib import Path
 
 import pytest
 
-from kumiki.compat.aviutl.exo import load_exo, parse_exo
-from kumiki.compat.aviutl.mapping import map_object
-from kumiki.compat.aviutl.report import CompatibilityReport
-from kumiki.core.model import AnimatedValue, Effect
-from kumiki.core.timebase import FrameRate
+from sashimono.compat.aviutl.exo import load_exo, parse_exo
+from sashimono.compat.aviutl.mapping import map_object
+from sashimono.compat.aviutl.report import CompatibilityReport
+from sashimono.core.model import AnimatedValue, Effect
+from sashimono.core.timebase import FrameRate
 
 RATE = FrameRate(60)
 PROBES = Path(__file__).resolve().parents[1] / "fixtures" / "aviutl" / "probes"
@@ -132,7 +132,7 @@ class TestSplitPieces:
 
 
 def _real_probes() -> list[Path]:
-    names = ("kumiki_p[56]_k_*.object", "kumiki_p[56]_s_*.object")
+    names = ("sashimono_p[56]_k_*.object", "sashimono_p[56]_s_*.object")
     return sorted(path for name in names for path in PROBES.glob(name))
 
 

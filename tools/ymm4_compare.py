@@ -1,4 +1,4 @@
-"""YMM4 本体の絵と Kumiki の絵を並べて比べる
+"""YMM4 本体の絵と Sashimono の絵を並べて比べる
 
 YMM4 のテンプレートは、値の意味を配布物の並びから読み取って写している 読めて描ける
 ことはテストで確かめられるが、**YMM4 と同じ絵になるか**は本体で描いてみないと分からない
@@ -8,7 +8,7 @@ YMM4 のテンプレートは、値の意味を配布物の並びから読み取
 1. ``build``   テンプレートを時間をずらして並べた YMM4 のプロジェクト（.ymmp）と、
                どこに何を置いたかの一覧（manifest.json）を作る
 2. YMM4 でそのプロジェクトを開き、同じフォルダへ ``ymm4.mp4`` として書き出す（手作業）
-3. ``compare`` 書き出した動画と、同じアイテムを Kumiki で描いた絵を並べ、差の大きい順に
+3. ``compare`` 書き出した動画と、同じアイテムを Sashimono で描いた絵を並べ、差の大きい順に
                一覧（report.html）と並べた絵（PNG）を作る
 
 作業フォルダは既定で ``.work/ymm4-compare`` リポジトリには入れない
@@ -32,10 +32,10 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from kumiki.compat.aviutl.report import CompatibilityReport  # noqa: E402
-from kumiki.compat.catalog import place  # noqa: E402
-from kumiki.compat.ymm4.template import load_template, map_template  # noqa: E402
-from kumiki.compat.ymm4.values import number, type_name  # noqa: E402
+from sashimono.compat.aviutl.report import CompatibilityReport  # noqa: E402
+from sashimono.compat.catalog import place  # noqa: E402
+from sashimono.compat.ymm4.template import load_template, map_template  # noqa: E402
+from sashimono.compat.ymm4.values import number, type_name  # noqa: E402
 
 WIDTH, HEIGHT, FPS = 1920, 1080, 30
 #: 比べる絵の大きさ YMM4 の書き出しは圧縮されるので、縮めてならしてから比べる
@@ -296,9 +296,9 @@ def _ymm4_frames(video: Path, wanted: set[int]) -> dict[int, np.ndarray]:
 
 
 def command_compare(arguments: argparse.Namespace) -> int:
-    from kumiki.core.model import Project, ProjectSettings
-    from kumiki.core.timebase import FrameRate
-    from kumiki.engine.render import FrameRenderer
+    from sashimono.core.model import Project, ProjectSettings
+    from sashimono.core.timebase import FrameRate
+    from sashimono.engine.render import FrameRenderer
 
     work: Path = arguments.work
     manifest = json.loads((work / "manifest.json").read_text(encoding="utf-8"))
@@ -376,10 +376,10 @@ def _write_report(
     report: CompatibilityReport,
 ) -> None:
     body = [
-        "<!doctype html><meta charset='utf-8'><title>YMM4 と Kumiki の比較</title>",
+        "<!doctype html><meta charset='utf-8'><title>YMM4 と Sashimono の比較</title>",
         "<style>body{font-family:sans-serif;background:#111;color:#ddd}"
         "img{max-width:100%}td{vertical-align:top;padding:4px}</style>",
-        "<h1>YMM4（左）と Kumiki（中）と差（右、3 倍）</h1>",
+        "<h1>YMM4（左）と Sashimono（中）と差（右、3 倍）</h1>",
         f"<p>比べた絵 {len(rows)} 枚 差は 0〜255 の平均</p>",
         "<table>",
     ]

@@ -12,16 +12,16 @@ from pathlib import Path
 
 import pytest
 
-from kumiki.compat.catalog import TemplateCatalog, place, restyle
-from kumiki.core.commands import AddClip, AddEffect, AddTrack, RemoveEffect, SetSource
-from kumiki.core.model import AnimatedValue, Clip, GeneratedSource, Project
-from kumiki.effects import registry
+from sashimono.compat.catalog import TemplateCatalog, place, restyle
+from sashimono.core.commands import AddClip, AddEffect, AddTrack, RemoveEffect, SetSource
+from sashimono.core.model import AnimatedValue, Clip, GeneratedSource, Project
+from sashimono.effects import registry
 
 
 def value_at(value: object, frame: int = 0) -> float:
     """数値パラメータの、その時刻での値
 
-    :data:`~kumiki.core.model.ParamValue` は数値とは限らないので、
+    :data:`~sashimono.core.model.ParamValue` は数値とは限らないので、
     数値であることをここで 1 度だけ確かめる
     """
     assert isinstance(value, AnimatedValue)
@@ -313,8 +313,8 @@ class TestRestylingKeepsTheMotion:
         入れ物の長さを捨てていると尺合わせができず、300 フレーム向けの動きが
         60 フレームのクリップの 5 分の 1 で止まる
         """
-        from kumiki.compat.mapped import MappedObject
-        from kumiki.core.model import Keyframe
+        from sashimono.compat.mapped import MappedObject
+        from sashimono.core.model import Keyframe
 
         transform = registry.require("transform").create(
             rotation=AnimatedValue(
@@ -344,8 +344,8 @@ class TestRestylingKeepsTheMotion:
         YMM4 は長さそのものに置く 分母を取り違えると、長さ 300 の
         フレーム 240 が長さ 600 で 479 ではなく 481 へ移る
         """
-        from kumiki.compat.mapped import MappedObject
-        from kumiki.core.model import Keyframe
+        from sashimono.compat.mapped import MappedObject
+        from sashimono.core.model import Keyframe
 
         transform = registry.require("transform").create(
             rotation=AnimatedValue(

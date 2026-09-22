@@ -10,12 +10,12 @@ from pathlib import Path
 
 import pytest
 
-from kumiki.compat.aviutl.encoding import (
+from sashimono.compat.aviutl.encoding import (
     decode_bytes,
     decode_utf16_hex,
     encode_utf16_hex,
 )
-from kumiki.compat.aviutl.exo import ExoParseError, load_exo, parse_exo
+from sashimono.compat.aviutl.exo import ExoParseError, load_exo, parse_exo
 
 SAMPLE = """[exedit]
 width=1920

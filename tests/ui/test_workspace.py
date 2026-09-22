@@ -17,17 +17,17 @@ from PySide6.QtGui import QKeySequence
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDialogButtonBox
 
-from kumiki.core.commands import AddClip, Command, RenameProject, SetTrackState
-from kumiki.core.io import RecoverySession, backup_folder, find_orphans
-from kumiki.core.model import Clip, Project, ProjectSettings, Track, TrackKind
-from kumiki.core.timebase import FrameRate
-from kumiki.effects.sources import TEXT
-from kumiki.engine.cache import MediaAnalyzer
-from kumiki.ui.main_window import MainWindow
-from kumiki.ui.project_settings_dialog import FRAME_RATE_PRESETS, ProjectSettingsDialog
-from kumiki.ui.timeline import TimelineView
-from kumiki.ui.timeline.painter import track_button_rects
-from kumiki.ui.workspace import ShortcutStore, Workspace, find_conflicts
+from sashimono.core.commands import AddClip, Command, RenameProject, SetTrackState
+from sashimono.core.io import RecoverySession, backup_folder, find_orphans
+from sashimono.core.model import Clip, Project, ProjectSettings, Track, TrackKind
+from sashimono.core.timebase import FrameRate
+from sashimono.effects.sources import TEXT
+from sashimono.engine.cache import MediaAnalyzer
+from sashimono.ui.main_window import MainWindow
+from sashimono.ui.project_settings_dialog import FRAME_RATE_PRESETS, ProjectSettingsDialog
+from sashimono.ui.timeline import TimelineView
+from sashimono.ui.timeline.painter import track_button_rects
+from sashimono.ui.workspace import ShortcutStore, Workspace, find_conflicts
 
 _PORTABLE = QKeySequence.SequenceFormat.PortableText
 
@@ -130,7 +130,7 @@ class TestUnsavedChanges:
     def test_saving_clears_the_autosave_and_backs_up(
         self, window: MainWindow, tmp_path: Path
     ) -> None:
-        window._path = tmp_path / "本編.kmk"
+        window._path = tmp_path / "本編.sme"
         window.execute(RenameProject("一回目"))
         window.autosave()
         assert window.save_project()
@@ -149,7 +149,7 @@ class TestUnsavedChanges:
 
 class TestRestoring:
     def test_a_crashed_session_comes_back(self, window: MainWindow, tmp_path: Path) -> None:
-        source = tmp_path / "本編.kmk"
+        source = tmp_path / "本編.sme"
         crashed = RecoverySession()
         crashed.save(_with_tracks().renamed("落ちた作業"), source)
         # 落ちたことにする 錠は片付けずに手放す（プロセスが消えたときと同じ）

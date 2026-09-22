@@ -10,9 +10,9 @@ from pathlib import Path
 
 import pytest
 
-from kumiki.compat.aviutl.catalog import ScriptCatalog, set_script_catalog
-from kumiki.effects.definition import registry
-from kumiki.effects.spec import TrackSpec
+from sashimono.compat.aviutl.catalog import ScriptCatalog, set_script_catalog
+from sashimono.effects.definition import registry
+from sashimono.effects.spec import TrackSpec
 
 ANM = """--track0:振れ幅,0,200,20,1
 --track1:速さ,0,10,2,0.1

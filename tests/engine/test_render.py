@@ -13,8 +13,8 @@ from fractions import Fraction
 import numpy as np
 import pytest
 
-from kumiki.core.commands import AddClip, AddMedia, AddTrack
-from kumiki.core.model import (
+from sashimono.core.commands import AddClip, AddMedia, AddTrack
+from sashimono.core.model import (
     AnimatedValue,
     Clip,
     Keyframe,
@@ -23,10 +23,10 @@ from kumiki.core.model import (
     Track,
     TrackKind,
 )
-from kumiki.core.timebase import FrameRate
-from kumiki.effects.sources import TEXT
-from kumiki.engine.decode import probe_media
-from kumiki.engine.gpu import (
+from sashimono.core.timebase import FrameRate
+from sashimono.effects.sources import TEXT
+from sashimono.engine.decode import probe_media
+from sashimono.engine.gpu import (
     Compositor,
     GLContextError,
     OffscreenGLContext,
@@ -34,7 +34,7 @@ from kumiki.engine.gpu import (
     Texture,
     fit_placement,
 )
-from kumiki.engine.render import FrameRenderer, RenderQuality
+from sashimono.engine.render import FrameRenderer, RenderQuality
 from tests.media_fixtures import SampleMedia
 
 

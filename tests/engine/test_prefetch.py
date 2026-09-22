@@ -12,9 +12,9 @@ from dataclasses import dataclass, field
 import pytest
 from OpenGL.error import GLError
 
-from kumiki.engine.gpu import ShaderError
-from kumiki.engine.render import FrameCache, Invalidation
-from kumiki.engine.render.prefetch import CacheSurface
+from sashimono.engine.gpu import ShaderError
+from sashimono.engine.render import FrameCache, Invalidation
+from sashimono.engine.render.prefetch import CacheSurface
 
 #: 予算を「何枚ぶん」で書くための単位 枚数で書かないと、遠い絵を捨てる所の
 #: 試験が「この予算なら何枚入るのか」を数える所から始まってしまう

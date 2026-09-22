@@ -5,9 +5,9 @@ r"""配る zip を作る
 
 やること
 
-1. PyInstaller で ``Kumiki.exe`` と部品一式（``_internal``）を組み立てる
+1. PyInstaller で ``Sashimono.exe`` と部品一式（``_internal``）を組み立てる
 2. 隣にスクリプト置き場（``scripts``）と説明書きを置く
-3. ``dist\Kumiki-<版>-windows-x64.zip`` にまとめる
+3. ``dist\SashimonoEdit-<版>-windows-x64.zip`` にまとめる
 4. **できた zip を別の場所へ展開し、中の exe で ``--self-check`` を走らせる**
    組み立てた直後のフォルダで確かめると、開発環境の DLL や Python を
    拾って通ってしまう 配るのは zip なので、zip から確かめる
@@ -39,12 +39,12 @@ if isinstance(sys.stdout, io.TextIOWrapper):
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from kumiki import __version__  # noqa: E402
-from kumiki.app import SELF_CHECK_FLAG  # noqa: E402
-from kumiki.compat.aviutl.catalog import PORTABLE_SCRIPTS_DIR  # noqa: E402
+from sashimono import __version__  # noqa: E402
+from sashimono.app import SELF_CHECK_FLAG  # noqa: E402
+from sashimono.compat.aviutl.catalog import PORTABLE_SCRIPTS_DIR  # noqa: E402
 
 #: exe と、zip を展開したときのフォルダの名前
-APP_NAME = "Kumiki"
+APP_NAME = "Sashimono"
 
 #: 同梱しないもの 追加機能（字幕起こし・AI 連携）は画面のボタンから後で入れる
 #: 開発機に入っていると PyInstaller が拾ってしまい、zip が 2 GB を超える
@@ -67,9 +67,9 @@ EXCLUDED_MODULES = (
 COLLECTED_PACKAGES = ("lupa", "pip")
 
 #: exe の隣に置く説明書き
-README_TEXT = f"""Kumiki {__version__}
+README_TEXT = f"""Sashimono Edit {__version__}
 
-起動: Kumiki.exe
+起動: Sashimono.exe
 
 AviUtl のスクリプト（.anm2 .obj2 など）は、この隣の {PORTABLE_SCRIPTS_DIR} フォルダへ
 置けば読み込まれます AviUtl2 が入っていれば、そちらの Script フォルダも読みます
@@ -77,7 +77,7 @@ AviUtl のスクリプト（.anm2 .obj2 など）は、この隣の {PORTABLE_SC
 動かないときは、このフォルダでコマンドを開いて次を打つと、どの部品が
 動いていないかが 1 行ずつ出ます（そのまま打つと、結果は窓で出ます）
 
-    Kumiki.exe {SELF_CHECK_FLAG} | more
+    Sashimono.exe {SELF_CHECK_FLAG} | more
 
 字幕起こしと AI 連携は、ソフトの中のボタンから必要になったときに入れます
 （最初から入れると 2 GB を超えるため）
@@ -86,12 +86,12 @@ AviUtl のスクリプト（.anm2 .obj2 など）は、この隣の {PORTABLE_SC
 SCRIPTS_README = f"""AviUtl のスクリプトの置き場です
 
 ここへ .anm2 .obj2 .cam2 .scn2 .tra2（と AviUtl1 世代の .anm .obj）を置くと、
-Kumiki を起動し直したときに読み込まれます フォルダに分けて置いても読みます
+Sashimono を起動し直したときに読み込まれます フォルダに分けて置いても読みます
 
 AviUtl2 が入っている機械では、AviUtl2 の Script フォルダも同じように読みます
 （こちらへ写す必要はありません）
 
-動いているか確かめるには Kumiki.exe {SELF_CHECK_FLAG}
+動いているか確かめるには Sashimono.exe {SELF_CHECK_FLAG}
 """
 
 
@@ -110,7 +110,7 @@ def pyinstaller_arguments(work: Path, dist: Path) -> list[str]:
         "--name",
         APP_NAME,
         "--icon",
-        str(ROOT / "src" / "kumiki" / "resources" / "kumiki.ico"),
+        str(ROOT / "src" / "sashimono" / "resources" / "sashimono.ico"),
         "--paths",
         str(ROOT / "src"),
         "--workpath",
@@ -122,13 +122,13 @@ def pyinstaller_arguments(work: Path, dist: Path) -> list[str]:
         # アイコンやロゴ（.ico .svg） importlib.resources で引くので、
         # データとして積まないと窓のアイコンが出ない
         "--collect-data",
-        "kumiki.resources",
+        "sashimono.resources",
     ]
     for package in COLLECTED_PACKAGES:
         arguments += ["--collect-all", package]
     for module in EXCLUDED_MODULES:
         arguments += ["--exclude-module", module]
-    arguments.append(str(ROOT / "src" / "kumiki" / "__main__.py"))
+    arguments.append(str(ROOT / "src" / "sashimono" / "__main__.py"))
     return arguments
 
 
@@ -142,7 +142,7 @@ def assemble(bundle: Path) -> None:
 
 
 def make_zip(bundle: Path, target: Path) -> Path:
-    """フォルダごと zip にする 展開すると ``Kumiki\\`` が 1 つできる形
+    """フォルダごと zip にする 展開すると ``Sashimono\\`` が 1 つできる形
 
     中身をばらで入れると、展開した場所に部品が散らばる
     """
@@ -209,7 +209,7 @@ obj.ox = amount
 """
 
 #: pip で入れてみる小さな包み ネットにつながずに入れられるよう、ここで作る
-SAMPLE_PACKAGE = "kumiki_check_sample"
+SAMPLE_PACKAGE = "sashimono_check_sample"
 
 
 def write_sample_wheel(folder: Path) -> Path:
@@ -223,7 +223,7 @@ def write_sample_wheel(folder: Path) -> Path:
     files = {
         f"{SAMPLE_PACKAGE}/__init__.py": "VALUE = 1\n",
         f"{info}/METADATA": f"Metadata-Version: 2.1\nName: {SAMPLE_PACKAGE}\nVersion: 0.1\n",
-        f"{info}/WHEEL": "Wheel-Version: 1.0\nGenerator: kumiki\nRoot-Is-Purelib: true\n"
+        f"{info}/WHEEL": "Wheel-Version: 1.0\nGenerator: sashimono\nRoot-Is-Purelib: true\n"
         "Tag: py3-none-any\n",
     }
     record = "".join(f"{path},,\n" for path in files) + f"{info}/RECORD,,\n"
@@ -268,7 +268,7 @@ def smoke_test(archive: Path) -> int:
     2. exe の隣の置き場へ見本を置き、**読まれた**こと
     3. exe に pip を走らせ、導入ボタンと同じ入れ方で**実際に入る**こと
     """
-    with tempfile.TemporaryDirectory(prefix="kumiki-zip-check-") as folder:
+    with tempfile.TemporaryDirectory(prefix="sashimono-zip-check-") as folder:
         with zipfile.ZipFile(archive) as opened:
             opened.extractall(folder)
         home = Path(folder) / APP_NAME

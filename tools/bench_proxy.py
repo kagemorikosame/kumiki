@@ -30,7 +30,7 @@ if isinstance(sys.stdout, io.TextIOWrapper):
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 # 開発者本人の設定やキャッシュに触らない
-_base = Path(tempfile.mkdtemp(prefix="kumiki-proxy-bench-"))
+_base = Path(tempfile.mkdtemp(prefix="sashimono-proxy-bench-"))
 # 終わったら捨てる 4K の素材と控えを置くので、回すたびに残すと GB 単位で溜まる
 atexit.register(shutil.rmtree, _base, True)
 os.environ["APPDATA"] = str(_base / "roaming")
@@ -38,8 +38,8 @@ os.environ["LOCALAPPDATA"] = str(_base / "local")
 
 from OpenGL import GL  # noqa: E402
 
-from kumiki.core.commands import AddClip, AddMedia, AddTrack  # noqa: E402
-from kumiki.core.model import (  # noqa: E402
+from sashimono.core.commands import AddClip, AddMedia, AddTrack  # noqa: E402
+from sashimono.core.model import (  # noqa: E402
     AnimatedValue,
     Clip,
     Project,
@@ -47,24 +47,24 @@ from kumiki.core.model import (  # noqa: E402
     Track,
     TrackKind,
 )
-from kumiki.core.timebase import FrameRate  # noqa: E402
-from kumiki.effects.definition import registry  # noqa: E402
-from kumiki.engine.cache.proxy import (  # noqa: E402
+from sashimono.core.timebase import FrameRate  # noqa: E402
+from sashimono.effects.definition import registry  # noqa: E402
+from sashimono.engine.cache.proxy import (  # noqa: E402
     BUDGET_MS,
     PROXY_HEIGHT,
     ProxyStore,
     create_proxy,
     proxy_codecs,
 )
-from kumiki.engine.cache.store import CacheStore  # noqa: E402
-from kumiki.engine.decode import probe_media  # noqa: E402
-from kumiki.engine.gpu import (  # noqa: E402
+from sashimono.engine.cache.store import CacheStore  # noqa: E402
+from sashimono.engine.decode import probe_media  # noqa: E402
+from sashimono.engine.gpu import (  # noqa: E402
     Framebuffer,
     GLContextError,
     OffscreenGLContext,
 )
-from kumiki.engine.render import FrameRenderer, RenderQuality  # noqa: E402
-from kumiki.engine.render.prefetch import BYTES_PER_FRAME_PIXEL, PreviewCache  # noqa: E402
+from sashimono.engine.render import FrameRenderer, RenderQuality  # noqa: E402
+from sashimono.engine.render.prefetch import BYTES_PER_FRAME_PIXEL, PreviewCache  # noqa: E402
 
 #: 画面へ出す先の大きさ プレビューの枠は画面の実寸で、素材の大きさではない
 PREVIEW_WIDTH, PREVIEW_HEIGHT = 1920, 1080

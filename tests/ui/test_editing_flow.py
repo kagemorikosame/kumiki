@@ -16,11 +16,11 @@ from pathlib import Path
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from kumiki.core.io import load_project
-from kumiki.core.model import Project, ProjectSettings, TrackKind
-from kumiki.core.timebase import FrameRate
-from kumiki.engine.encode import ExportSettings, available_video_codecs, export_project
-from kumiki.ui.main_window import MainWindow
+from sashimono.core.io import load_project
+from sashimono.core.model import Project, ProjectSettings, TrackKind
+from sashimono.core.timebase import FrameRate
+from sashimono.engine.encode import ExportSettings, available_video_codecs, export_project
+from sashimono.ui.main_window import MainWindow
 from tests.media_fixtures import SampleMedia, make_sample
 
 
@@ -154,7 +154,7 @@ class TestSaveAndExport:
         window._seek(45)
         window._timeline.split_at_playhead()
 
-        path = tmp_path / "flow.kmk"
+        path = tmp_path / "flow.sme"
         window._path = path
         window.save_project()
 

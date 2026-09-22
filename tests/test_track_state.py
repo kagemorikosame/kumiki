@@ -10,10 +10,10 @@ from dataclasses import replace
 
 import pytest
 
-from kumiki.core.commands import Document, SetResolution, SetTrackHeights, SetTrackState
-from kumiki.core.io import project_from_dict, project_to_dict
-from kumiki.core.model import Project, Timeline, Track, TrackKind
-from kumiki.core.timebase import FrameRate
+from sashimono.core.commands import Document, SetResolution, SetTrackHeights, SetTrackState
+from sashimono.core.io import project_from_dict, project_to_dict
+from sashimono.core.model import Project, Timeline, Track, TrackKind
+from sashimono.core.timebase import FrameRate
 
 
 def timeline(*tracks: Track) -> Timeline:

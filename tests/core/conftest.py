@@ -7,8 +7,8 @@ from fractions import Fraction
 
 import pytest
 
-from kumiki.core.commands import AddClip, AddMedia, AddTrack, SetTranscript
-from kumiki.core.model import (
+from sashimono.core.commands import AddClip, AddMedia, AddTrack, SetTranscript
+from sashimono.core.model import (
     AnimatedValue,
     Effect,
     Interpolation,

@@ -13,9 +13,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from kumiki.compat.aviutl.objapi import MAX_BUFFERS, ObjectState
-from kumiki.compat.aviutl.report import MAX_KINDS, CompatibilityReport
-from kumiki.compat.aviutl.runtime import LuaScriptRuntime, blank_image, lua_available
+from sashimono.compat.aviutl.objapi import MAX_BUFFERS, ObjectState
+from sashimono.compat.aviutl.report import MAX_KINDS, CompatibilityReport
+from sashimono.compat.aviutl.runtime import LuaScriptRuntime, blank_image, lua_available
 
 
 @pytest.fixture(scope="module")
@@ -249,11 +249,11 @@ class TestHelpers:
 class TestTextAndFigures:
     def test_setfont_and_mes_make_an_image(self, qt_application: object) -> None:
         del qt_application
-        from kumiki.core.model import GeneratedSource
-        from kumiki.engine.sources import render_source
+        from sashimono.core.model import GeneratedSource
+        from sashimono.engine.sources import render_source
 
         def draw(kind: str, params: dict[str, object], width: int, height: int) -> np.ndarray:
-            from kumiki.core.model import AnimatedValue
+            from sashimono.core.model import AnimatedValue
 
             wrapped = {
                 name: AnimatedValue(float(value)) if isinstance(value, int | float) else value
@@ -272,8 +272,8 @@ class TestTextAndFigures:
 
     def test_load_figure_uses_the_aviutl_names(self, qt_application: object) -> None:
         del qt_application
-        from kumiki.core.model import AnimatedValue, GeneratedSource
-        from kumiki.engine.sources import render_source
+        from sashimono.core.model import AnimatedValue, GeneratedSource
+        from sashimono.engine.sources import render_source
 
         seen: dict[str, object] = {}
 
@@ -342,9 +342,9 @@ class TestSandbox:
 _ISOLATED = """
 import sys
 from pathlib import Path
-from kumiki.compat.aviutl.objapi import ObjectState
-from kumiki.compat.aviutl.report import CompatibilityReport
-from kumiki.compat.aviutl.runtime import LuaScriptRuntime, blank_image
+from sashimono.compat.aviutl.objapi import ObjectState
+from sashimono.compat.aviutl.report import CompatibilityReport
+from sashimono.compat.aviutl.runtime import LuaScriptRuntime, blank_image
 runtime = LuaScriptRuntime(report=CompatibilityReport(), instruction_limit=200_000)
 if len(sys.argv) > 2:
     runtime.set_roots((Path(sys.argv[2]),))
@@ -418,7 +418,7 @@ class TestLimits:
 
 class TestSetup:
     def test_param_code_runs_before_the_script(self, runtime: LuaScriptRuntime) -> None:
-        from kumiki.compat.aviutl.control import parse_control
+        from sashimono.compat.aviutl.control import parse_control
 
         header = parse_control("--param:base=5;")
         target = state()

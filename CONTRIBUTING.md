@@ -1,6 +1,6 @@
 # 開発に参加する
 
-Kumiki はまだ **β 版**です 作りが大きく変わることがあります
+Sashimono はまだ **β 版**です 作りが大きく変わることがあります
 
 - **不具合の報告・要望** → [Issue](../../issues/new/choose)
 - **どちらとも言えないこと** → [Discussions](../../discussions)
@@ -16,8 +16,8 @@ Windows 専用です Python 3.12 以上（開発は 3.14）と
 [ffmpeg](https://www.gyan.dev/ffmpeg/builds/) が要ります
 
 ```
-git clone https://github.com/kagemorikosame/kumiki.git
-cd kumiki
+git clone https://github.com/kagemorikosame/sashimono-edit.git
+cd sashimono-edit
 py -3.14 -m venv .venv
 .venv\Scripts\python.exe -m pip install -e ".[dev]"
 ```
@@ -26,7 +26,7 @@ py -3.14 -m venv .venv
 
 ```
 .venv\Scripts\python.exe tools\verify.py
-.venv\Scripts\python.exe -m kumiki
+.venv\Scripts\python.exe -m sashimono
 ```
 
 > **`python` ではなく `.venv\Scripts\python.exe` を使ってください**

@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import pytest
 
-from kumiki.compat.aviutl.embedded import build_source, literal_text, split_embedded
-from kumiki.compat.aviutl.objapi import ObjectState
-from kumiki.compat.aviutl.report import CompatibilityReport
-from kumiki.compat.aviutl.runtime import LuaScriptRuntime, blank_image
+from sashimono.compat.aviutl.embedded import build_source, literal_text, split_embedded
+from sashimono.compat.aviutl.objapi import ObjectState
+from sashimono.compat.aviutl.report import CompatibilityReport
+from sashimono.compat.aviutl.runtime import LuaScriptRuntime, blank_image
 
 
 @pytest.fixture(scope="module")

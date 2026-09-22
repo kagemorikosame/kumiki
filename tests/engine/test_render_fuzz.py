@@ -15,7 +15,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from kumiki.core.model import (
+from sashimono.core.model import (
     AnimatedValue,
     Clip,
     Effect,
@@ -26,11 +26,11 @@ from kumiki.core.model import (
     Track,
     TrackKind,
 )
-from kumiki.core.timebase import FrameRate
-from kumiki.effects.definition import registry
-from kumiki.effects.sources import source_registry
-from kumiki.engine.gpu import GLContextError, OffscreenGLContext
-from kumiki.engine.render import FrameRenderer
+from sashimono.core.timebase import FrameRate
+from sashimono.effects.definition import registry
+from sashimono.effects.sources import source_registry
+from sashimono.engine.gpu import GLContextError, OffscreenGLContext
+from sashimono.engine.render import FrameRenderer
 
 SETTINGS = ProjectSettings(width=64, height=36, frame_rate=FrameRate(30))
 

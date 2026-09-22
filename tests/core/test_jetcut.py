@@ -11,20 +11,20 @@ from fractions import Fraction
 
 import pytest
 
-from kumiki.core.commands import (
+from sashimono.core.commands import (
     AddClip,
     RippleCut,
     SetTranscript,
     insert_media,
 )
-from kumiki.core.jetcut import merge_ranges, plan_cuts
-from kumiki.core.model import (
+from sashimono.core.jetcut import merge_ranges, plan_cuts
+from sashimono.core.model import (
     Clip,
     MediaItem,
     Project,
     Transcript,
 )
-from kumiki.core.projection import project_timeline
+from sashimono.core.projection import project_timeline
 from tests.conftest import make_clip
 
 #: 素材の無音区間（ソース秒） 発話は 1-3 / 4-6 / 7-9 秒にある
@@ -202,7 +202,7 @@ class TestRippleCut:
     def test_markers_inside_the_cut_are_removed_and_the_rest_shift(self, placed: Project) -> None:
         from dataclasses import replace
 
-        from kumiki.core.model import Marker
+        from sashimono.core.model import Marker
 
         marked = placed.with_timeline(
             replace(

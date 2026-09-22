@@ -18,15 +18,15 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from kumiki.compat.aviutl import catalog as catalog_module
-from kumiki.compat.aviutl import native
-from kumiki.compat.aviutl.catalog import ScriptCatalog, set_script_catalog
-from kumiki.compat.aviutl.exo import load_exo
-from kumiki.compat.aviutl.mapping import map_object
-from kumiki.compat.catalog import place
-from kumiki.core.model import Project, ProjectSettings
-from kumiki.core.timebase import FrameRate
-from kumiki.engine.render import FrameRenderer
+from sashimono.compat.aviutl import catalog as catalog_module
+from sashimono.compat.aviutl import native
+from sashimono.compat.aviutl.catalog import ScriptCatalog, set_script_catalog
+from sashimono.compat.aviutl.exo import load_exo
+from sashimono.compat.aviutl.mapping import map_object
+from sashimono.compat.catalog import place
+from sashimono.core.model import Project, ProjectSettings
+from sashimono.core.timebase import FrameRate
+from sashimono.engine.render import FrameRenderer
 
 pytestmark = pytest.mark.usefixtures("gpu")
 

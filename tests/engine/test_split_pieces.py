@@ -12,7 +12,7 @@ from collections.abc import Callable, Iterator
 import numpy as np
 import pytest
 
-from kumiki.core.model import (
+from sashimono.core.model import (
     Clip,
     Effect,
     GeneratedSource,
@@ -21,11 +21,11 @@ from kumiki.core.model import (
     Track,
     TrackKind,
 )
-from kumiki.core.timebase import FrameRate
-from kumiki.effects import registry
-from kumiki.effects.sources import SHAPE
-from kumiki.engine.gpu import GLContextError, OffscreenGLContext
-from kumiki.engine.render import FrameRenderer
+from sashimono.core.timebase import FrameRate
+from sashimono.effects import registry
+from sashimono.effects.sources import SHAPE
+from sashimono.engine.gpu import GLContextError, OffscreenGLContext
+from sashimono.engine.render import FrameRenderer
 
 WIDTH, HEIGHT = 320, 320
 #: 下地は横長の帯 分けたマスが回ったかどうかを、縦横の長さで見分ける

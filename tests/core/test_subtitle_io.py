@@ -11,11 +11,11 @@ from pathlib import Path
 
 import pytest
 
-from kumiki.core.commands import AddClip, RippleCut, SetTranscript
-from kumiki.core.io import save_subtitles, to_srt, to_text, to_vtt
-from kumiki.core.model import MediaItem, Project, Transcript
-from kumiki.core.projection import project_timeline
-from kumiki.core.timebase import FrameRate
+from sashimono.core.commands import AddClip, RippleCut, SetTranscript
+from sashimono.core.io import save_subtitles, to_srt, to_text, to_vtt
+from sashimono.core.model import MediaItem, Project, Transcript
+from sashimono.core.projection import project_timeline
+from sashimono.core.timebase import FrameRate
 from tests.conftest import make_clip
 
 
@@ -39,7 +39,7 @@ class TestSrt:
         assert srt.startswith("1\n00:00:00,000 --> 00:00:02,000\n今日は\n")
 
     def test_empty_text_is_skipped(self, project: Project, video_media: MediaItem) -> None:
-        from kumiki.core.model import TranscriptSegment
+        from sashimono.core.model import TranscriptSegment
 
         blank = Transcript(
             (
@@ -69,7 +69,7 @@ class TestText:
     def test_line_breaks_inside_a_subtitle_become_spaces(
         self, project: Project, video_media: MediaItem
     ) -> None:
-        from kumiki.core.model import TranscriptSegment
+        from sashimono.core.model import TranscriptSegment
 
         wrapped = Transcript((TranscriptSegment(Fraction(0), Fraction(2), "上の行\n下の行"),))
         placed = SetTranscript(video_media.id, wrapped).apply(project)
