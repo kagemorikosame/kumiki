@@ -1,6 +1,14 @@
 r"""アプリケーションの入口
 
 .venv\Scripts\python.exe -m kumiki
+
+**一番上では Qt を読まない** 読むのは、いつもの起動（:func:`_start_editor`）の中
+配布版は同じ exe が 3 つの役をする（編集画面・自己診断・導入ボタンの pip）
+一番上で Qt と編集画面を読むと、
+
+- Qt の部品が欠けた配布版では、自己診断にたどり着く前に落ちる
+  （結果を見せる窓も出ない 欠けたことを知りたいまさにそのときに何も出ない）
+- 導入ボタンの pip も、Qt 一式を読み込んでから走ることになる
 """
 
 from __future__ import annotations
@@ -8,20 +16,11 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
-from PySide6.QtGui import QIcon, QSurfaceFormat
-from PySide6.QtWidgets import QApplication
-
+# この 2 つは Qt を読まない（読まないことを試験で押さえている）
 from kumiki.asr import activate_runtime
-from kumiki.core.io import ProjectFileError, load_project
-from kumiki.engine.gpu import preferred_surface_format
-from kumiki.resources import ICON_FILE, path_to
 from kumiki.runtime import pip_arguments, run_pip
-from kumiki.ui.main_window import MainWindow
-from kumiki.ui.theme import STYLE_SHEET
 
 __all__ = ["SELF_CHECK_FLAG", "main"]
-
 
 #: 画面を出さずに、同梱した部品が動くかだけを確かめる
 SELF_CHECK_FLAG = "--self-check"
@@ -45,9 +44,24 @@ def main(argv: list[str] | None = None) -> int:
 
         return self_check()
 
+    return _start_editor(arguments)
+
+
+def _start_editor(arguments: list[str]) -> int:
+    """いつもの起動 Qt と編集画面はここで初めて読む"""
     # ソフト内から導入した字幕起こしの実行環境を import できるようにする
     # 通常の実行では何もしない（パッケージ版のためだけの手当て）
     activate_runtime()
+
+    from PySide6.QtCore import QTimer
+    from PySide6.QtGui import QIcon, QSurfaceFormat
+    from PySide6.QtWidgets import QApplication
+
+    from kumiki.core.io import ProjectFileError, load_project
+    from kumiki.engine.gpu import preferred_surface_format
+    from kumiki.resources import ICON_FILE, path_to
+    from kumiki.ui.main_window import MainWindow
+    from kumiki.ui.theme import STYLE_SHEET
 
     # サーフェス形式は QApplication を作る前に決めておく必要がある
     # 後から設定しても、ウィジェットのコンテキストには反映されない

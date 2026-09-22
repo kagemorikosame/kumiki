@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import importlib.util
+import os
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -499,3 +501,49 @@ class TestTheExportCheckCountsFrames:
         monkeypatch.setattr(encode, "export_project", truncated)
         with pytest.raises(RuntimeError, match="1 コマ"):
             selfcheck._export()
+
+
+class TestTheEntryDoesNotNeedQt:
+    """配布版は同じ exe が 3 つの役をする（編集画面・自己診断・導入ボタンの pip）
+
+    入口の一番上で Qt を読むと、Qt の部品が欠けた配布版では自己診断にたどり着く
+    前に落ちる 欠けたことを知りたいまさにそのときに、結果の窓も出ない
+    別のプロセスで確かめる（このプロセスはもう Qt を読んでいる）
+    """
+
+    def _run(self, code: str, *extra: str) -> subprocess.CompletedProcess[str]:
+        environment = {**os.environ, "PYTHONPATH": str(ROOT / "src"), "PYTHONUTF8": "1"}
+        return subprocess.run(
+            [sys.executable, "-c", code, *extra],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=ROOT,
+            env=environment,
+            timeout=300,
+            check=False,
+        )
+
+    def test_the_entry_does_not_load_qt(self) -> None:
+        # pip を走らせるだけのために Qt 一式を読まない
+        completed = self._run("import sys, kumiki.app; print('PySide6' in sys.modules)")
+        assert completed.stdout.strip() == "False", completed.stderr
+
+    def test_the_self_check_reports_a_missing_qt(self, tmp_path: Path) -> None:
+        """Qt が読めなくても自己診断は最後まで走り、結果を窓へ渡して 1 を返す"""
+        shown = tmp_path / "shown.txt"
+        code = (
+            "import sys\n"
+            "sys.modules['PySide6'] = None  # Qt の部品が欠けた配布版の代わり\n"
+            "import kumiki.selfcheck as check\n"
+            "def show(text, title, *, warning):\n"
+            "    open(sys.argv[1], 'w', encoding='utf-8').write(text)\n"
+            "check._native_message = show\n"
+            "sys.stdout = None  # パイプ無しで起動した窓だけの exe の代わり\n"
+            "from kumiki.app import main\n"
+            "raise SystemExit(main(['kumiki', '--self-check']))\n"
+        )
+        completed = self._run(code, str(shown))
+        assert completed.returncode == 1, completed.stderr
+        assert shown.exists(), "結果の窓が出ていない"
+        assert "[NG] Qt" in shown.read_text(encoding="utf-8")
