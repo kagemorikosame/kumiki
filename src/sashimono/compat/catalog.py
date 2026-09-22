@@ -180,9 +180,8 @@ def default_template_roots() -> tuple[Path, ...]:
     優先する AviUtl2 や YMM4 が入っていれば、そのフォルダをそのまま見る
     """
     roots: list[Path] = []
-    appdata = os.environ.get("APPDATA")
-    if appdata:
-        roots.append(userdirs.config_root() / "templates")
+    # APPDATA の有無で分けない（スクリプトの置き場と同じ理由 引き継ぎで写した先と揃える）
+    roots.append(userdirs.config_root() / "templates")
 
     program_data = os.environ.get("PROGRAMDATA")
     if program_data:

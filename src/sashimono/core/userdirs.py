@@ -47,15 +47,18 @@ APP_FOLDER = "Sashimono"
 LEGACY_APP_FOLDERS = ("Kumiki",)
 # 旧名を残す: ここまで
 
-#: 退避の置き場の中で、キャッシュと実行環境が入るフォルダの名前
-#: 移し替えに失敗して写しで済ませるときに、この 2 つは写さない（下の説明を参照）
+#: 退避の置き場の中で、キャッシュが入るフォルダの名前
 _CACHE_DIR = "cache"
-_RUNTIME_DIR = "runtime"
 
-#: 写しで済ませるときに写さない、動いている起動の印
-#: 錠は開いているプロセスが握っていて初めて意味がある 写すと持ち主の居ない錠になり、
-#: 旧版がまだ動いていても「落ちた起動の退避」として復元を勧めてしまう
-_LIVE_MARKERS = ("*.lock",)
+#: 退避の置き場を丸ごと付け替えられなかったときに、1 つずつ拾い上げるフォルダ
+#: 作り直せない物だけ キャッシュ（``cache``）は作り直せ、実行環境（``runtime``）は
+#: 画面のボタンで入れ直せる 窓ごとの錠（``open``）は動いている起動の印で、移す物ではない
+_SALVAGED_DIRS = ("recovery", "backups")
+
+#: 拾い上げを続ける印（新しい退避の置き場に置く） 名前に旧名を入れて、旧名ごとに分ける
+#: 旧版が動いている間は付け替えられず、旧版はその後も旧い置き場へ退避と控えを書く
+#: 印が無いと、最初の起動で拾った後に旧版が書いた物は旧い置き場に取り残される
+_PARTIAL_PREFIX = ".partial-migration-"
 
 
 def config_root(folder: str = APP_FOLDER) -> Path:
@@ -110,7 +113,7 @@ class MigrationNote:
     source: Path
     target: Path
     #: ``copied``（写した 元は残す）・``moved``（移した）・
-    #: ``copied-partly``（移せず、作り直せない物だけ写した）・``failed``
+    #: ``moved-partly``（丸ごとは移せず、作り直せない物を 1 つずつ移した）・``failed``
     action: str
     detail: str = ""
 
@@ -132,9 +135,11 @@ def migrate_legacy_folders() -> list[MigrationNote]:
       合わせて数 GB になる 写すと起動が何分も止まり、ディスクも倍使う 同じ親の下の
       名前の付け替えなので一瞬で済み、キャッシュの鍵（素材の場所）も変わらないので
       そのまま使える
-    - 移せなかったとき（旧版が動いていてファイルを掴んでいる、など）は、
-      **作り直せない物（退避とバックアップ）だけを写す** キャッシュは作り直せ、
-      実行環境は画面のボタンで入れ直せる 大きな物を写して起動を止めるよりよい
+    - 付け替えられなかったとき（旧版が動いていてファイルを掴んでいる、など）は、
+      **作り直せない物（退避とバックアップ）だけを 1 つずつ移す** キャッシュは
+      作り直せ、実行環境は画面のボタンで入れ直せる 大きな物を写して起動を止める
+      よりよい 旧い置き場が残っている間は、次の起動からも拾い上げを続ける
+      （旧版がその後に書いた退避と控えを取り残さないため）
     - Windows 以外でキャッシュや実行環境が退避と別の場所にあるときは、それぞれ
       移すだけにする 移せなければ作り直させる
 
@@ -143,20 +148,16 @@ def migrate_legacy_folders() -> list[MigrationNote]:
     """
     notes: list[MigrationNote] = []
     for legacy in LEGACY_APP_FOLDERS:
-        note = _copy_once(config_root(legacy), config_root())
-        if note is not None:
-            notes.append(note)
         state = state_root()
-        note = _move_once(state_root(legacy), state, fallback=True)
-        if note is not None:
-            notes.append(note)
+        found = [
+            _copy_once(config_root(legacy), config_root()),
+            _move_state(state_root(legacy), state, legacy),
+        ]
         for old, new in ((cache_root(legacy), cache_root()), (data_root(legacy), data_root())):
             # Windows ではどちらも退避の置き場の中にあり、上で一緒に移っている
-            if new.is_relative_to(state):
-                continue
-            note = _move_once(old, new, fallback=False)
-            if note is not None:
-                notes.append(note)
+            if not new.is_relative_to(state):
+                found.append(_move_once(old, new))
+        notes.extend(note for note in found if note is not None)
     return notes
 
 
@@ -166,9 +167,7 @@ def _needs_migration(old: Path, new: Path) -> bool:
     return old.is_dir() and not new.exists() and old != new
 
 
-def _copy_once(
-    old: Path, new: Path, *, skip: tuple[str, ...] = (), action: str = "copied"
-) -> MigrationNote | None:
+def _copy_once(old: Path, new: Path) -> MigrationNote | None:
     """写す 書き終えてから新しい名前を付ける
 
     直に新しい名前へ写すと、途中で落ちたときに半分だけの置き場ができ、
@@ -176,39 +175,116 @@ def _copy_once(
     """
     if not _needs_migration(old, new):
         return None
-    temporary = new.with_name(f"{new.name}.migrating-{os.getpid()}")
-    top_level_skip = shutil.ignore_patterns(*skip) if skip else None
-
-    def ignore(folder: str, names: list[str]) -> set[str]:
-        ignored = set(shutil.ignore_patterns(*_LIVE_MARKERS)(folder, names))
-        # 写さない物は一番上の階層だけで見る 奥にたまたま同じ名前（``cache`` という
-        # 名前のスクリプトの分類など）があっても写す
-        if top_level_skip is not None and Path(folder) == old:
-            ignored |= set(top_level_skip(folder, names))
-        return ignored
-
+    temporary = _temporary_beside(new)
     try:
         new.parent.mkdir(parents=True, exist_ok=True)
-        shutil.rmtree(temporary, ignore_errors=True)
-        shutil.copytree(old, temporary, ignore=ignore)
+        shutil.copytree(old, temporary)
         # 付け替えは同時に起動したもう 1 つと競う 先に付けた方が勝ち、負けた方は
         # 自分の写しを捨てる（中身は同じ）
         temporary.rename(new)
     except OSError as exc:
         shutil.rmtree(temporary, ignore_errors=True)
         return MigrationNote(old, new, "failed", str(exc))
-    return MigrationNote(old, new, action)
+    return MigrationNote(old, new, "copied")
 
 
-def _move_once(old: Path, new: Path, *, fallback: bool) -> MigrationNote | None:
-    """移す 移せなければ、``fallback`` のときだけ作り直せない物を写す"""
+def _move_once(old: Path, new: Path) -> MigrationNote | None:
+    """移す 移せなければ何もしない（作り直せる物にだけ使う）"""
     if not _needs_migration(old, new):
         return None
     try:
         new.parent.mkdir(parents=True, exist_ok=True)
         old.rename(new)
     except OSError as exc:
-        if not fallback:
-            return MigrationNote(old, new, "failed", str(exc))
-        return _copy_once(old, new, skip=(_CACHE_DIR, _RUNTIME_DIR), action="copied-partly")
+        return MigrationNote(old, new, "failed", str(exc))
     return MigrationNote(old, new, "moved")
+
+
+def _move_state(old: Path, new: Path, legacy: str) -> MigrationNote | None:
+    """退避の置き場を移す 丸ごと付け替えられなければ、作り直せない物を拾い上げる"""
+    marker = new / f"{_PARTIAL_PREFIX}{legacy}"
+    started = _needs_migration(old, new)
+    if started:
+        try:
+            new.parent.mkdir(parents=True, exist_ok=True)
+            old.rename(new)
+        except OSError:
+            pass
+        else:
+            return MigrationNote(old, new, "moved")
+        # 印を入れた空の置き場を作ってから名前を付ける 名前だけ先に付けると、
+        # 印を置く前に落ちたとき「引き継ぎ済み」に見えて拾い上げが止まる
+        temporary = _temporary_beside(new)
+        try:
+            temporary.mkdir()
+            (temporary / marker.name).write_text(str(old), encoding="utf-8")
+            temporary.rename(new)
+        except OSError as exc:
+            shutil.rmtree(temporary, ignore_errors=True)
+            return MigrationNote(old, new, "failed", str(exc))
+    if not marker.is_file():
+        return None
+    if not old.is_dir():
+        # 旧い置き場が片付けられた もう拾う物は無い
+        marker.unlink(missing_ok=True)
+        return None
+    moved = _salvage(old, new)
+    # 2 回目からは、拾った物があったときだけ知らせる 毎回出すと起動のたびに記録が増える
+    if moved or started:
+        return MigrationNote(old, new, "moved-partly", f"{moved} 件")
+    return None
+
+
+def _salvage(old: Path, new: Path) -> int:
+    """退避とバックアップを 1 つずつ新しい置き場へ移す 移した数を返す
+
+    写さずに移すのは、新しい版で捨てた退避や消えた控えが、次の起動で旧い置き場から
+    戻ってこないようにするため 移し先に同じ名前があれば触らない（名前は時刻や
+    起動ごとの番号を含むので、同じ名前なら同じ物）
+    """
+    moved = 0
+    for folder in _SALVAGED_DIRS:
+        source = old / folder
+        if not source.is_dir():
+            continue
+        for path in sorted(source.rglob("*")):
+            if not path.is_file() or not _can_take(path, folder):
+                continue
+            target = new / path.relative_to(old)
+            if target.exists():
+                continue
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                path.rename(target)
+            except OSError:
+                # 旧版が書いている最中などで掴まれている 次の起動でまた試す
+                continue
+            moved += 1
+    return moved
+
+
+def _can_take(path: Path, folder: str) -> bool:
+    """拾い上げてよいファイルか
+
+    - 錠（``.lock``）は移さない 開いているプロセスが握っていて初めて意味があり、
+      移すと持ち主の居ない錠になる
+    - 書きかけ（``.writing``）は移さない 途中の中身を完成品として扱うことになる
+    - 旧版で**まだ動いている起動**の退避は移さない 移すと、その窓がまだ開いているのに
+      新しい版が「落ちた起動の退避」として復元を勧める 落ちたあとの起動で拾う
+    """
+    if path.suffix in (".lock", ".writing"):
+        return False
+    if folder != "recovery":
+        return True
+    # core.io は置き場を決めるためにここを読むので、上で読むと読み込みが輪になる
+    from sashimono.core.io.locks import is_held
+
+    session = path.name.split(".", 1)[0]
+    return not is_held(path.parent / f"{session}.lock")
+
+
+def _temporary_beside(new: Path) -> Path:
+    """新しい置き場の隣の作業用の名前 前の起動が残した物があれば片付けてから返す"""
+    temporary = new.with_name(f"{new.name}.migrating-{os.getpid()}")
+    shutil.rmtree(temporary, ignore_errors=True)
+    return temporary

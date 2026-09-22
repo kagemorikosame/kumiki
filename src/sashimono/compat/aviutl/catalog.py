@@ -124,9 +124,9 @@ def default_script_roots() -> tuple[Path, ...]:
     beside = app_dir()
     if beside is not None:
         roots.append(beside / PORTABLE_SCRIPTS_DIR)
-    appdata = os.environ.get("APPDATA")
-    if appdata:
-        roots.append(userdirs.config_root() / "scripts")
+    # APPDATA の有無で分けない 置き場は userdirs が XDG まで見て決めるので、ここで
+    # APPDATA だけを条件にすると、引き継ぎで写した先とここで探す先が食い違う
+    roots.append(userdirs.config_root() / "scripts")
 
     program_data = os.environ.get("PROGRAMDATA")
     if program_data:

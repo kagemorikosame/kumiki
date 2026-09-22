@@ -17,8 +17,9 @@ from typing import Any
 import pytest
 
 from sashimono.compat.aviutl.catalog import default_script_roots
+from sashimono.compat.catalog import default_template_roots
 from sashimono.core import userdirs
-from sashimono.core.io import find_orphans, load_project, project_to_dict
+from sashimono.core.io import RecoverySession, find_orphans, load_project, project_to_dict
 from sashimono.core.io.presets import PresetStore
 from sashimono.core.model import Project
 from sashimono.core.userdirs import migrate_legacy_folders
@@ -41,6 +42,21 @@ def _put(path: Path, text: str = "x") -> Path:
     return path
 
 
+def _hold_old_folder(old: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """旧版が動いていて、旧い置き場を丸ごとは付け替えられない形にする
+
+    中のファイル 1 つずつは移せる（Windows では、開いていないファイルは移せる）
+    """
+    real_rename = Path.rename
+
+    def locked(self: Path, target: Path) -> Path:
+        if self == old:
+            raise PermissionError("使用中")
+        return real_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", locked)
+
+
 class TestSettings:
     def test_settings_are_copied_and_the_old_folder_stays(self, roaming: Path) -> None:
         # 写すのは、途中で落ちても旧版へ戻しても設定を失わないため
@@ -59,6 +75,20 @@ class TestSettings:
         script_root = roaming / "Sashimono" / "scripts"
         assert script_root in default_script_roots()
         assert (script_root / "揺れ.anm2").is_file()
+
+    def test_without_appdata_the_copied_folders_are_still_searched(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # APPDATA が無く XDG_CONFIG_HOME だけの環境でも、写した先と探す先を揃える
+        # APPDATA だけを条件にすると、写したスクリプトとテンプレートが一覧に出ない
+        monkeypatch.delenv("APPDATA", raising=False)
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+        _put(tmp_path / "xdg" / "Kumiki" / "scripts" / "揺れ.anm2", "--track0:強さ")
+        migrate_legacy_folders()
+        new = tmp_path / "xdg" / "Sashimono"
+        assert (new / "scripts" / "揺れ.anm2").is_file()
+        assert new / "scripts" in default_script_roots()
+        assert new / "templates" in default_template_roots()
 
     def test_old_presets_appear_in_the_list(self, roaming: Path) -> None:
         _put(
@@ -120,36 +150,88 @@ class TestLocalFolder:
         assert userdirs.data_root() / "runtime" == local / "Sashimono" / "runtime"
         assert (local / "Sashimono" / "runtime" / "faster_whisper" / "__init__.py").is_file()
 
-    def test_when_it_cannot_move_only_what_cannot_be_remade_is_copied(
+    def test_when_it_cannot_move_only_what_cannot_be_remade_is_taken(
         self, local: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # 旧版が動いていてファイルを掴んでいると移せない そのときは退避と控えだけを
-        # 写す キャッシュは作り直せ、実行環境はボタンで入れ直せる 写すと起動が止まる
+        # 旧版が動いていてファイルを掴んでいると丸ごとは移せない そのときは退避と控え
+        # だけを拾う キャッシュは作り直せ、実行環境はボタンで入れ直せる 写すと起動が止まる
         old = local / "Kumiki"
         _put(old / "cache" / "a.peaks.npz")
         _put(old / "runtime" / "big.dll")
         _put(old / "backups" / "本編-0123456789" / "20260101-000000-000000-000.kmk", "控え")
         _put(old / "recovery" / "abc.kmk", "{}")
+        _put(old / "recovery" / "abc.kmk.writing", "{")
         _put(old / "recovery" / "live.lock")
-        real_rename = Path.rename
+        _hold_old_folder(old, monkeypatch)
 
-        def locked(self: Path, target: Path) -> Path:
-            if self == old:
-                raise PermissionError("使用中")
-            return real_rename(self, target)
-
-        monkeypatch.setattr(Path, "rename", locked)
         (note,) = [n for n in migrate_legacy_folders() if n.target == local / "Sashimono"]
-        assert note.action == "copied-partly"
+        assert note.action == "moved-partly"
 
         new = local / "Sashimono"
         assert (new / "backups" / "本編-0123456789" / "20260101-000000-000000-000.kmk").is_file()
         assert (new / "recovery" / "abc.kmk").is_file()
         assert not (new / "cache").exists()
         assert not (new / "runtime").exists()
-        # 錠を写すと持ち主の居ない錠になり、旧版の生きた作業を「落ちた」と勧める
+        # 錠を移すと持ち主の居ない錠になり、旧版の生きた作業を「落ちた」と勧める
         assert not (new / "recovery" / "live.lock").exists()
+        # 書きかけを移すと、途中の中身を完成品として扱う
+        assert not (new / "recovery" / "abc.kmk.writing").exists()
         assert old.is_dir()
+
+    def test_what_the_old_version_writes_afterwards_is_picked_up_later(
+        self, local: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 丸ごと移せなかったあとも旧版は動き続け、旧い置き場へ控えを書く 最初の起動で
+        # 引き継ぎ済みとして止めると、その控えは旧い置き場に取り残される
+        old = local / "Kumiki"
+        _put(old / "backups" / "本編-0123456789" / "20260101-000000-000000-000.kmk")
+        _hold_old_folder(old, monkeypatch)
+        migrate_legacy_folders()
+
+        later = _put(old / "backups" / "本編-0123456789" / "20260101-000500-000000-000.kmk")
+        (note,) = migrate_legacy_folders()
+        assert (note.action, note.detail) == ("moved-partly", "1 件")
+        assert (local / "Sashimono" / later.relative_to(old)).is_file()
+        # 何も増えていなければ知らせない（起動のたびに記録を出さない）
+        assert migrate_legacy_folders() == []
+
+    def test_a_session_still_running_in_the_old_version_waits_until_it_ends(
+        self, local: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 旧版の窓がまだ開いているのに退避を移すと、新しい版が「落ちた起動」として
+        # 復元を勧める その窓が落ちたあとの起動で拾う
+        old = local / "Kumiki"
+        session = RecoverySession(old)
+        session.save(Project.create(name="旧版で作業中"), None)
+        _hold_old_folder(old, monkeypatch)
+        try:
+            migrate_legacy_folders()
+            assert find_orphans() == []
+            assert session.path.is_file()
+        finally:
+            lock = session._lock
+            assert lock is not None
+            lock.abandon()
+            session._lock = None
+
+        migrate_legacy_folders()
+        (entry,) = find_orphans()
+        assert entry.name == "旧版で作業中"
+
+    def test_the_marker_goes_once_the_old_folder_is_gone(
+        self, local: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 旧い置き場を本人が消したあとも拾い上げを続けると、毎回無駄に探す
+        old = local / "Kumiki"
+        _put(old / "backups" / "a" / "x.kmk")
+        _hold_old_folder(old, monkeypatch)
+        migrate_legacy_folders()
+        new = local / "Sashimono"
+        assert any(path.name.startswith(".partial-migration-") for path in new.iterdir())
+
+        shutil.rmtree(old)
+        assert migrate_legacy_folders() == []
+        assert not any(path.name.startswith(".partial-migration-") for path in new.iterdir())
 
     def test_a_crash_from_the_old_version_is_offered_after_moving(self, local: Path) -> None:
         # 引き継いだあとに復元を勧められなければ、引き継いだ意味が無い
@@ -187,6 +269,28 @@ class TestWhenItRuns:
         with pytest.raises(StopError):
             app.main(["sashimono"])
         assert calls == ["migrate", "activate"]
+
+    def test_the_windowed_package_without_stdout_still_starts(
+        self, roaming: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 窓だけの配布版には標準出力が無い（sys.stdout が None） 引き継ぎの記録を出す所で
+        # 落ちると、初めて起動した人だけが編集画面にたどり着けない
+        import sys
+
+        import sashimono.app as app
+
+        class StopError(Exception):
+            pass
+
+        def activate() -> None:
+            raise StopError
+
+        _put(roaming / "Kumiki" / "shortcuts.json")
+        monkeypatch.setattr(sys, "stdout", None)
+        monkeypatch.setattr(app, "activate_runtime", activate)
+        with pytest.raises(StopError):
+            app.main(["sashimono"])
+        assert (roaming / "Sashimono" / "shortcuts.json").is_file()
 
     def test_the_self_check_leaves_the_old_folders_alone(
         self, roaming: Path, monkeypatch: pytest.MonkeyPatch
