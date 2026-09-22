@@ -735,6 +735,8 @@ class TestCompositeGroups:
         assert clip.clip_to_below
 
     def test_an_item_above_the_range_stays_outside(self) -> None:
+        # 範囲の外の文字までまとめると、グループの縁取りや登場の動きが文字にも掛かる
+        # リボンのテロップ（配布物）では、自分の動きを持つ文字が倍の距離を飛んでくる
         group = group_item(Layer=0, GroupRange=1, IsComposite=True)
         mapped = map_template(
             [group, shape_item(Layer=1), text_item(Layer=2)], report=CompatibilityReport()
@@ -769,6 +771,8 @@ class TestCompositeGroups:
         assert effects == [0, 1]
 
     def test_a_nested_composite_group_becomes_a_scene_inside_the_scene(self) -> None:
+        # 内側の合成するグループを平らにすると、内側の反転が中身 1 つずつの中心で掛かり、
+        # 内側でまとめた絵ごと裏返るはずの形が別の配置になる
         outer = group_item(Layer=0, GroupRange=3, IsComposite=True)
         inner = group_item(Layer=1, GroupRange=2, IsComposite=True, IsInverted=True)
         mapped = map_template(
