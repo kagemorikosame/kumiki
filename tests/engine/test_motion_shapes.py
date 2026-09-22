@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 from kumiki.core.model import AnimatedValue, GeneratedSource, Keyframe, ParamValue
-from kumiki.engine.motion_shapes import StarField, Trail, star_field, trail
+from kumiki.engine.motion_shapes import StarField, Trail, TrailPath, star_field, trail, trail_path
 from kumiki.engine.sources import render_source
 
 WIDTH, HEIGHT = 1920, 1080
@@ -25,7 +25,9 @@ def _moving_right(at: float) -> tuple[float, float]:
 
 
 def _trail(
-    position: Callable[[float], tuple[float, float]] = _moving_right, **overrides: float
+    position: Callable[[float], tuple[float, float]] = _moving_right,
+    path: TrailPath | None = None,
+    **overrides: float,
 ) -> Trail:
     settings: dict[str, float] = {
         "frame": 20.0,
@@ -39,7 +41,7 @@ def _trail(
         "head_offset": 70.0,
     }
     settings.update(overrides)
-    return trail(position, **settings)
+    return trail(position, path=path, **settings)
 
 
 class TestTrail:
@@ -85,6 +87,7 @@ class TestTrail:
     def test_a_long_still_clip_does_not_walk_every_frame(self) -> None:
         # 止まっている区間は点が増えないので点の上限が効かず、クリップ頭から
         # 今までの位置を毎フレーム全部引いていた（長いクリップの再生が二乗で重くなる）
+        # 道は 1 度だけ引いて覚え、フレームごとには先端の向きを探す分しか引かない
         calls = 0
 
         def still(_at: float) -> tuple[float, float]:
@@ -92,8 +95,37 @@ class TestTrail:
             calls += 1
             return 0.0, 0.0
 
-        _trail(still, frame=1_000_000.0, total=2_000_000.0)
-        assert calls < 60_000
+        path = trail_path(still, 100_000.0)
+        calls = 0
+        for frame in range(50_000, 50_100):
+            _trail(still, frame=float(frame), total=100_000.0, path=path)
+        assert calls < 100 * 2 * 2400 + 1000
+
+    def test_a_long_fixed_speed_trail_keeps_growing(self) -> None:
+        # 位置を引くフレームを 2 万で打ち切ると、固定速度の長いクリップで
+        # 5 分半より後の伸びが止まり、先端が途中に残っていた
+        def walking(at: float) -> tuple[float, float]:
+            return at, 0.0
+
+        shape = _trail(walking, frame=30_000.0, total=40_000.0, fixed_speed=1.0)
+        assert shape.last[0] == pytest.approx(30_000.0, abs=1.0)
+
+    def test_the_stamps_match_walking_frame_by_frame(self) -> None:
+        # 道のりを先に数えて円を置いても、実物の 1 フレームずつ進める置き方と
+        # 同じ所に来る（曲がった道で、間隔 10 画素の円が道のりの 10 の倍数に並ぶ）
+        def curve(at: float) -> tuple[float, float]:
+            return 100.0 * math.cos(at / 10.0), 100.0 * math.sin(at / 10.0)
+
+        shape = _trail(curve, frame=30.0, total=60.0, interval=62.5)
+        path = trail_path(curve, 60.0)
+        for index, (x, y) in enumerate(shape.stamps[:20]):
+            distance = index * 10.0
+            frame = float(np.interp(distance, path.reach, np.arange(len(path.reach))))
+            base = math.floor(frame)
+            share = frame - base
+            ax, ay = curve(float(base))
+            bx, by = curve(float(base + 1))
+            assert (x, y) == pytest.approx((ax + (bx - ax) * share, ay + (by - ay) * share))
 
     def test_a_broken_motion_does_not_hang(self) -> None:
         # 無限の彼方へ飛ぶ値でも、点の数の上限で止まる
@@ -192,3 +224,13 @@ def test_the_star_field_moves_with_time() -> None:
     params: dict[str, ParamValue] = {"shape": "starfield", "star_count": AnimatedValue(200.0)}
     assert not np.array_equal(_drawn(params, 0), _drawn(params, 30))
     assert _drawn(params, 30).max() > 200
+
+
+def test_a_broken_star_size_does_not_stop_drawing() -> None:
+    # 無限大の大きさは粒の絵を作るところで例外になり、フレームごと描けなかった
+    params: dict[str, ParamValue] = {
+        "shape": "starfield",
+        "star_count": AnimatedValue(50.0),
+        "star_size": AnimatedValue(float("inf")),
+    }
+    assert _drawn(params, 10).max() > 0

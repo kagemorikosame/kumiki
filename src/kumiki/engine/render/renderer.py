@@ -1158,7 +1158,14 @@ class FrameRenderer:
                 return None
 
         width = source.params.get("width")
-        wide = width.at(local_frame) if isinstance(width, AnimatedValue) else 800.0
+        # 横幅は素の数でも持てる（設定の決まり） 数を既定の 800 に置き換えると、
+        # 描く幅より読む音が短くなり、右側が平らな線になる
+        if isinstance(width, AnimatedValue):
+            wide = width.at(local_frame)
+        elif isinstance(width, int | float) and not isinstance(width, bool):
+            wide = float(width)
+        else:
+            wide = 800.0
         # 描く大きさの上限より多くは読まない 壊れた横幅で何億サンプルも読んで止まらないように
         span = max(1, round(min(wide, float(MAX_CANVAS)))) if math.isfinite(wide) else 800
         count = WAVEFORM_LEAD + max(span, SPECTRUM_SIZE - WAVEFORM_LEAD)

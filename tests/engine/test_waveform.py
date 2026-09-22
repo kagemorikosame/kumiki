@@ -173,9 +173,10 @@ def _project(
     duration: int = 60,
     sample_rate: int = RATE,
     stream_index: int = 0,
+    screen: tuple[int, int] = (WIDTH, HEIGHT),
 ) -> Project:
     settings = ProjectSettings(
-        width=WIDTH, height=HEIGHT, frame_rate=FrameRate(60), sample_rate=sample_rate
+        width=screen[0], height=screen[1], frame_rate=FrameRate(60), sample_rate=sample_rate
     )
     project = Project.create(settings)
     track = Track(kind=TrackKind.VIDEO, name="V1")
@@ -192,9 +193,14 @@ def _render(
     duration: int = 60,
     sample_rate: int = RATE,
     stream_index: int = 0,
+    screen: tuple[int, int] = (WIDTH, HEIGHT),
 ) -> np.ndarray:
     project = _project(
-        source, duration=duration, sample_rate=sample_rate, stream_index=stream_index
+        source,
+        duration=duration,
+        sample_rate=sample_rate,
+        stream_index=stream_index,
+        screen=screen,
     )
     renderer = FrameRenderer(project, context=context)
     try:
@@ -321,3 +327,12 @@ class TestWhatTheReviewFound:
         source = _source(width=AnimatedValue(float("inf")), wave_rows=AnimatedValue(1e12))
         audio = np.zeros(WAVEFORM_LEAD + 800, dtype=np.float32)
         assert render_source(source, WIDTH, HEIGHT, audio=audio) is not None
+
+    def test_a_plain_number_width_reads_enough_sound(
+        self, gl_context: OffscreenGLContext, stepped_audio: Path
+    ) -> None:
+        # 横幅を素の数で持つと、読む音を既定の 800 サンプル（スペクトラムの窓と合わせて
+        # 1536）に切っていた 横幅 2000 なら 1537 サンプル目より先が平らな線になる
+        source = _source(audio_path=str(stepped_audio), width=2000)
+        image = _render(gl_context, source, 0, screen=(2000, HEIGHT))
+        assert _line_row(image, 1900) == pytest.approx(51.0, abs=1.5)

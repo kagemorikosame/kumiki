@@ -9,6 +9,7 @@ Qt の描画系（``QPainter``）を使う 日本語の禁則処理やフォン�
 
 from __future__ import annotations
 
+import functools
 import math
 
 import numpy as np
@@ -39,7 +40,7 @@ from kumiki.engine.audio_shapes import (
     waveform_cells,
     waveform_points,
 )
-from kumiki.engine.motion_shapes import star_field, trail
+from kumiki.engine.motion_shapes import TrailPath, star_field, trail, trail_path
 
 __all__ = ["render_source", "waveform_points"]
 
@@ -723,6 +724,18 @@ def _draw_concentration_frame(
 _STAMP_EDGE = 0.5
 
 
+@functools.lru_cache(maxsize=8)
+def _trail_path_of(x_value: AnimatedValue, y_value: AnimatedValue, frames: float) -> TrailPath:
+    """動きから引いた道を覚えておく 同じ動きのクリップを描くたびに、頭から全部の
+    位置を引き直さない（長いクリップの再生がフレームごとに重くならないように）"""
+
+    def position(at: float) -> tuple[float, float]:
+        # 設定の Y は上が正 形の計算は実物のまま下が正で持つ
+        return x_value.at(at), -y_value.at(at)
+
+    return trail_path(position, frames)
+
+
 def _draw_motion_trail(
     painter: QPainter, values: dict[str, object], width: int, height: int
 ) -> None:
@@ -756,6 +769,7 @@ def _draw_motion_trail(
         head_size=head_size,
         head_angle=_number(values, "trail_head_angle", 0.0),
         head_offset=_number(values, "trail_head_offset", 70.0),
+        path=_trail_path_of(x_value, y_value, max(duration, frame)),
     )
     centre_x, centre_y = width / 2.0, height / 2.0
     colour = _color(values.get("color"))
@@ -890,7 +904,9 @@ def _draw_star_field(painter: QPainter, values: dict[str, object], width: int, h
     粒は ``大きさ`` の図形を ``大きさ / 3`` だけぼかした絵 実物はぼかしで絵が広がり、
     その広がった絵を遠近で縮めて置く ぼかさずに置くと、遠くの粒が硬い点になる
     """
-    size = max(1.0, _number(values, "star_size", 30.0))
+    # 大きさは設定の範囲（1〜100）へ収める キーフレームの値は範囲を守らないことがあり、
+    # 無限大は粒の絵の大きさの計算で例外、巨大な値は巨大な絵を作って描画が止まる
+    size = _within(_number(values, "star_size", 30.0), 1.0, 100.0, 30.0)
     field = star_field(
         seconds=_number(values, "_seconds", 0.0),
         count=_number(values, "star_count", 1500.0),

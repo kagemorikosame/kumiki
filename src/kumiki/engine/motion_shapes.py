@@ -26,8 +26,10 @@ __all__ = [
     "PERSPECTIVE",
     "StarField",
     "Trail",
+    "TrailPath",
     "star_field",
     "trail",
+    "trail_path",
 ]
 
 #: その時刻（クリップ頭からのフレーム 小数も取る）での位置 Y は下が正
@@ -37,15 +39,14 @@ PositionAt = Callable[[float], tuple[float, float]]
 #: 1 フレームが何秒もかからないように頭を抑える
 MAX_TRAIL_POINTS = 20000
 
-#: 1 本の軌跡のために位置を引くフレームの数の上限（60fps で 5 分半）
-#: 実物は毎フレーム、クリップ頭から今までの位置を引き直す 止まっている長い区間では
-#: 押す点が増えないので点の上限が効かず、長いクリップの再生がフレームごとに重くなる
-#: これより長い軌跡は、今から上限ぶん前のフレームから描く（それより前の跡は出ない）
-MAX_TRAIL_FRAMES = 20000
+#: 軌跡のために位置を引くフレームの数の上限（60fps で 4 時間半）
+#: 道は描く側が 1 度だけ引いて覚えておく（:class:`TrailPath`） 壊れた長さのクリップで
+#: 何億フレームも引かないための最後の歯止め
+MAX_TRAIL_FRAMES = 1_000_000
 
-#: 先端の向きを探すときに前後へ広げる回数の上限（半フレームずつなので前後 5000 フレーム）
+#: 先端の向きを探すときに前後へ広げる回数の上限（半フレームずつなので前後 1200 フレーム）
 #: 止まったままの長いクリップでは、クリップの端まで探しても向きが決まらない
-MAX_HEAD_STEPS = 10000
+MAX_HEAD_STEPS = 2400
 
 #: 先端の向きを決めるのに要る移動量（画素） 実物が ``4*4`` と書いている値
 _HEAD_REACH = 16.0
@@ -74,6 +75,32 @@ class Trail:
     head_turn: float
 
 
+@dataclass(frozen=True, slots=True)
+class TrailPath:
+    """整数のフレームごとの位置と、頭からたどった道のり
+
+    軌跡を描くたびにクリップ頭から位置を引き直すと、長いクリップほど 1 フレームが
+    重くなる（再生全体では 2 乗） 描く側はこれを 1 度だけ作って使い回す
+    """
+
+    points: np.ndarray
+    reach: np.ndarray
+
+    @property
+    def frames(self) -> int:
+        return len(self.points) - 1
+
+
+def trail_path(position: PositionAt, frames: float) -> TrailPath:
+    """フレーム 0 から ``frames`` までの位置を引いて道にする"""
+    count = int(min(max(math.ceil(frames), 0), MAX_TRAIL_FRAMES)) + 1
+    points = np.array([position(float(index)) for index in range(count)], dtype=np.float64)
+    points = np.nan_to_num(points, nan=0.0, posinf=0.0, neginf=0.0)
+    lengths = np.hypot(*np.diff(points, axis=0).T) if count > 1 else np.zeros(0)
+    reach = np.concatenate([[0.0], np.cumsum(lengths)])
+    return TrailPath(points=points, reach=reach)
+
+
 def trail(
     position: PositionAt,
     *,
@@ -86,87 +113,52 @@ def trail(
     head_size: float,
     head_angle: float,
     head_offset: float,
+    path: TrailPath | None = None,
 ) -> Trail:
-    """``ライン(移動軌跡)`` の形 実物の式をそのまま移した
+    """``ライン(移動軌跡)`` の形 実物の式を、道のりの計算に置き直して移した
 
     線は「一定の間隔ごとに円を押す」ことで引く 間隔は ``ライン幅 × 描画間隔 / 100``
-    （``最小間隔`` と 1 画素より細かくはしない） 間隔を広げると点線になるのは、
-    この押し方だから 折れ線として引くと、間隔の設定が効かなくなる
+    （``最小間隔`` と 1 画素より細かくはしない） 実物はフレームを 1 つずつ進めながら
+    道のりを数えて円を置くが、置く所は「道のりが間隔の倍数の所」なので、道のりを
+    先に数えておけば同じ所に置ける 間隔を広げると点線になるのは、この押し方だから
 
     ``固定速度`` が 0 なら、クリップ頭から今の位置までをたどる 0 より大きいと、
     動きの時刻に関係なく **1 フレームにその画素ずつ**道をたどって伸びていく
 
     時間はすべてクリップ頭からのフレームで持つ（実物は秒 ``f/obj.framerate`` で
-    持つが、割って掛け戻すだけなので同じ位置になる）
+    持つが、割って掛け戻すだけなので同じ位置になる） ``path`` を渡さなければ、
+    ここで道を引く（描く側は覚えておいた道を渡す）
     """
     half = line_width / 2.0
     step = max(half * interval / 50.0, min_step, 1.0)
-    # 押す円の間隔の数で頭を抑える 間隔を細かくした長い道でも止まらない
-    budget = MAX_TRAIL_POINTS
-    # 固定速度はクリップ頭から道をたどって伸びるので、頭から数える
-    # 動きどおりなら今から上限ぶん前から たどるフレームの数を上限で抑える
-    first = 0 if fixed_speed > 0 else max(0, math.floor(frame) - MAX_TRAIL_FRAMES)
-    last_frame = min(max(total, frame) + 2.0, float(first + MAX_TRAIL_FRAMES))
-
-    now = float(first)
-    visited = first
-    left = 0.0
-    run = 1.0
-    walked = 0.0
-    end_x, end_y = position(float(first))
-    start_x, start_y = end_x, end_y
-    x0, y0 = end_x, end_y
-    x1, y1 = x0, y0
-    stamps: list[tuple[float, float]] = []
-    bands: list[tuple[float, float, float, float]] = []
-
-    while now < frame and budget > 0:
-        budget -= 1
-        remaining = step
-        while remaining > 0:
-            if left <= 0:
-                if now >= frame or visited > last_frame:
-                    break
-                start_x, start_y = end_x, end_y
-                visited += 1
-                now = float(visited)
-                end_x, end_y = position(now)
-                left = math.hypot(end_x - start_x, end_y - start_y)
-                run = left
-            if left > remaining:
-                walked += remaining
-                left -= remaining
-                remaining = 0.0
-                x1 = end_x + (start_x - end_x) * left / run
-                y1 = end_y + (start_y - end_y) * left / run
-            else:
-                walked += left
-                remaining -= left
-                left = 0.0
-                x1, y1 = end_x, end_y
-            if fixed_speed > 0:
-                if now >= total:
-                    break
-                now = walked / fixed_speed
-            elif left > 0:
-                now = visited - left / run
-        stamps.append((x0, y0))
-        bands.append((x0, y0, x1, y1))
-        x0, y0 = x1, y1
-        if visited > last_frame:
-            break
+    if path is None:
+        path = trail_path(position, max(total, frame))
+    frames = np.arange(len(path.points), dtype=np.float64)
 
     if fixed_speed > 0:
-        # 止まっている所（進む量 0）で割らない 実物はここで 0 を 0 で割り、
-        # 先端の向きが決まらないまま描く
-        now = visited - (left / run if run > 0 else 0.0)
+        # 1 フレームに固定速度ぶん クリップの終わりまでの道のりで止まる
+        end = min(total, float(path.frames))
+        limit = float(np.interp(end, frames, path.reach))
+        walked = min(frame * fixed_speed, limit)
+        now = _time_at(path, walked)
+        last = _point_at(path, walked)
     else:
         now = frame
-        x0, y0 = position(frame)
-    last = (x0, y0)
+        walked = float(np.interp(min(frame, float(path.frames)), frames, path.reach))
+        last = position(frame)
+
+    # 道のりが間隔の倍数の所に円を押す 多すぎるときは今に近い側を残す
+    # （古い側を残すと、今の位置との間が空いた線になる）
+    count = math.ceil(walked / step) if walked > 0 else 0
+    first = max(0, count - MAX_TRAIL_POINTS)
+    distances = np.arange(first, count, dtype=np.float64) * step
+    xs, ys = _points_at(path, distances)
+    stamps = tuple(zip(xs.tolist(), ys.tolist(), strict=True))
+    ends = [*stamps[1:], last] if stamps else []
+    bands = tuple((x0, y0, x1, y1) for (x0, y0), (x1, y1) in zip(stamps, ends, strict=True))
 
     if head_size <= 0:
-        return Trail(tuple(stamps), tuple(bands), last, None, 0.0)
+        return Trail(stamps, bands, last, None, 0.0)
 
     # 先端の向き 今の時刻から前後へ半フレームずつ広げ、16 画素以上動いた所で決める
     # 止まっている間は上向き（角度 0）
@@ -185,10 +177,39 @@ def trail(
     turn += math.radians(head_angle)
     # 先端位置補正 50% で図形の中心が今の位置に来る 70% なら大きさの 2 割だけ先へ出る
     shift = head_size * (head_offset - 50.0) / 100.0
+    x0, y0 = last
     head = (x0 - math.sin(turn) * shift, y0 - math.cos(turn) * shift)
     # 実物の回し方は、図形の上（先端）を進む向きへ向ける回転になる
     # 画面の座標（Y は下が正）で時計回りを正とすると、ちょうど符号が逆
-    return Trail(tuple(stamps), tuple(bands), last, head, -turn)
+    return Trail(stamps, bands, last, head, -turn)
+
+
+def _moving(path: TrailPath) -> np.ndarray:
+    """道のりが伸びるフレームだけ 止まっている間の同じ道のりが並ぶと、道のりから
+    位置を引くときにどのフレームを取るかが決まらない"""
+    keep: np.ndarray = np.concatenate([[True], np.diff(path.reach) > 0])
+    return keep
+
+
+def _points_at(path: TrailPath, distances: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    keep = _moving(path)
+    reach = path.reach[keep]
+    return (
+        np.interp(distances, reach, path.points[keep, 0]),
+        np.interp(distances, reach, path.points[keep, 1]),
+    )
+
+
+def _point_at(path: TrailPath, distance: float) -> tuple[float, float]:
+    xs, ys = _points_at(path, np.array([distance]))
+    return float(xs[0]), float(ys[0])
+
+
+def _time_at(path: TrailPath, distance: float) -> float:
+    """その道のりに着いたフレーム（小数） 止まっている間は、着いた最初のフレーム"""
+    keep = _moving(path)
+    frames = np.arange(len(path.points), dtype=np.float64)[keep]
+    return float(np.interp(distance, path.reach[keep], frames))
 
 
 @dataclass(frozen=True, slots=True)
