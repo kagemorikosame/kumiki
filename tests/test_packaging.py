@@ -240,14 +240,12 @@ class TestTheZip:
     ) -> None:
         """書き終えても、名前を付けられなければ書いた物を残さない
 
-        前の zip を開いたままだと Windows は置き換えを断る そこで残すと、
-        書き終えた 100 MB がそのまま溜まる 前の完成品には触れない
+        そこで残すと、書き終えた 100 MB がそのまま溜まる
         """
         bundle = tmp_path / "bundle"
         bundle.mkdir()
         (bundle / "Kumiki.exe").write_bytes(b"MZ")
         target = tmp_path / "out.zip"
-        target.write_bytes(b"previous")
 
         def locked(self: Path, other: Path) -> Path:
             raise PermissionError("使用中")
@@ -256,7 +254,27 @@ class TestTheZip:
         with pytest.raises(PermissionError):
             builder.make_zip(bundle, target)
         assert list(tmp_path.glob("*.writing")) == []
-        assert target.read_bytes() == b"previous", "前の完成品を壊している"
+
+    def test_the_previous_zip_does_not_survive_a_failure(
+        self, builder: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """前の組み立ての zip を、今回の版の名前で残さない
+
+        今回が途中で落ちたときに前の物が残ると、新しい物と取り違えて配る
+        """
+        bundle = tmp_path / "bundle"
+        bundle.mkdir()
+        (bundle / "Kumiki.exe").write_bytes(b"MZ")
+        target = tmp_path / "out.zip"
+        target.write_bytes(b"previous build")
+
+        def broken(self: zipfile.ZipFile, *args: object, **kwargs: object) -> None:
+            raise OSError("書けない")
+
+        monkeypatch.setattr(zipfile.ZipFile, "write", broken)
+        with pytest.raises(OSError):
+            builder.make_zip(bundle, target)
+        assert not target.exists(), "前の組み立ての zip が今回の名前で残っている"
 
     def test_the_check_does_not_borrow_the_developers_path(self, builder: ModuleType) -> None:
         """確かめるときは開発機の PATH を使わない
@@ -370,3 +388,41 @@ class TestWithoutAConsole:
         monkeypatch.setattr(QMessageBox, "warning", lambda parent, title, text: warned.append(text))
         assert main(["kumiki", SELF_CHECK_FLAG]) == 1
         assert warned
+
+
+class TestOnlyCheckedZipsRemain:
+    """dist に zip がある＝確かめ済み
+
+    確かめて落ちた zip を残すと、動かない物を完成品と取り違えて配る
+    """
+
+    def _bundle(self, tmp_path: Path) -> Path:
+        bundle = tmp_path / "Kumiki"
+        bundle.mkdir()
+        (bundle / "Kumiki.exe").write_bytes(b"MZ")
+        return bundle
+
+    def test_a_failed_check_takes_the_zip_away(
+        self, builder: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(builder, "smoke_test", lambda archive: 1)
+        target = tmp_path / "out.zip"
+        assert builder.package(self._bundle(tmp_path), target) == 1
+        assert not target.exists(), "確かめて落ちた zip が残っている"
+
+    def test_the_folder_stays_for_a_look(
+        self, builder: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 何が足りないかを調べるには、組み立てたフォルダの方が要る
+        monkeypatch.setattr(builder, "smoke_test", lambda archive: 1)
+        bundle = self._bundle(tmp_path)
+        builder.package(bundle, tmp_path / "out.zip")
+        assert (bundle / "Kumiki.exe").exists()
+
+    def test_a_passed_check_keeps_it(
+        self, builder: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(builder, "smoke_test", lambda archive: 0)
+        target = tmp_path / "out.zip"
+        assert builder.package(self._bundle(tmp_path), target) == 0
+        assert target.exists()

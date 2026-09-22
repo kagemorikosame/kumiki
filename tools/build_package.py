@@ -147,6 +147,10 @@ def make_zip(bundle: Path, target: Path) -> Path:
     中身をばらで入れると、展開した場所に部品が散らばる
     """
     target.parent.mkdir(parents=True, exist_ok=True)
+    # 前の組み立ての zip を先に消す 残したまま今回が途中で落ちると、
+    # 前の物が今回の版の名前で残り、新しい物と取り違えて配ることになる
+    # （消しても組み立て直せば戻る） 開いたままで消せなければ、ここで止まる
+    target.unlink(missing_ok=True)
     temporary = target.with_name(target.name + ".writing")
     try:
         with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -291,7 +295,8 @@ def smoke_test(archive: Path) -> int:
             ["-m", "pip", "install", "--no-index", "--target", str(target), str(wheel)],
             folder,
         )
-        if (target / SAMPLE_PACKAGE / "__init__.py").exists():
+        # 終了コードも見る ファイルを置いたあとで落ちた pip を「入った」と数えない
+        if installed.returncode == 0 and (target / SAMPLE_PACKAGE / "__init__.py").exists():
             print(f"[ok] exe の pip で入れられた: {target}")
         else:
             print(installed.stdout.rstrip())
@@ -301,6 +306,23 @@ def smoke_test(archive: Path) -> int:
         for failure in failures:
             print(f"[NG] {failure}")
         return 1 if failures else 0
+
+
+def package(bundle: Path, target: Path, *, check: bool = True) -> int:
+    """組み立てたフォルダを zip にし、zip から確かめる 戻り値は終了コード"""
+    assemble(bundle)
+    archive = make_zip(bundle, target)
+    print(f"できた: {archive}（{_size(archive)} 展開すると {_size(bundle)}）")
+    if not check:
+        return 0
+    result = smoke_test(archive)
+    if result != 0:
+        # 確かめて落ちた zip は残さない **dist に zip がある＝確かめ済み** に
+        # そろえる 残すと、動かない物を完成品と取り違えて配る 中身を調べたい
+        # ときは、組み立てたフォルダがそのまま残っている
+        archive.unlink(missing_ok=True)
+        print(f"確かめて落ちたので {archive.name} を消した（{bundle} は残してある）")
+    return result
 
 
 def _size(path: Path) -> str:
@@ -315,7 +337,11 @@ def _size(path: Path) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--skip-build", action="store_true", help="組み立て済みを使う")
-    parser.add_argument("--skip-check", action="store_true", help="zip からの確認を省く")
+    parser.add_argument(
+        "--skip-check",
+        action="store_true",
+        help="zip からの確認を省く（できた zip は確かめていない物になる）",
+    )
     args = parser.parse_args()
 
     work = ROOT / "build" / "pyinstaller"
@@ -330,13 +356,8 @@ def main() -> int:
         print(f"{bundle} に {APP_NAME}.exe が無い 組み立てに失敗している")
         return 1
 
-    assemble(bundle)
-    archive = make_zip(bundle, dist / f"{APP_NAME}-{__version__}-windows-x64.zip")
-    print(f"できた: {archive}（{_size(archive)} 展開すると {_size(bundle)}）")
-
-    if args.skip_check:
-        return 0
-    return smoke_test(archive)
+    target = dist / f"{APP_NAME}-{__version__}-windows-x64.zip"
+    return package(bundle, target, check=not args.skip_check)
 
 
 if __name__ == "__main__":
