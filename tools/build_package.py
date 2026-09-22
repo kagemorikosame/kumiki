@@ -315,7 +315,13 @@ def package(bundle: Path, target: Path, *, check: bool = True) -> int:
     print(f"できた: {archive}（{_size(archive)} 展開すると {_size(bundle)}）")
     if not check:
         return 0
-    result = smoke_test(archive)
+    try:
+        result = smoke_test(archive)
+    except BaseException:
+        # 確かめる途中で落ちた（展開できない・exe が返ってこない）ときも同じ
+        # 確かめ終えていない zip を完成品の名前で残さない
+        archive.unlink(missing_ok=True)
+        raise
     if result != 0:
         # 確かめて落ちた zip は残さない **dist に zip がある＝確かめ済み** に
         # そろえる 残すと、動かない物を完成品と取り違えて配る 中身を調べたい
@@ -334,7 +340,7 @@ def _size(path: Path) -> str:
     return f"{total / (1024 * 1024):.0f} MB"
 
 
-def main() -> int:
+def main(argv: list[str] | None = None, *, dist: Path | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--skip-build", action="store_true", help="組み立て済みを使う")
     parser.add_argument(
@@ -342,11 +348,17 @@ def main() -> int:
         action="store_true",
         help="zip からの確認を省く（できた zip は確かめていない物になる）",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     work = ROOT / "build" / "pyinstaller"
-    dist = ROOT / "dist"
+    dist = dist if dist is not None else ROOT / "dist"
     bundle = dist / APP_NAME
+    target = dist / f"{APP_NAME}-{__version__}-windows-x64.zip"
+
+    # **組み立てる前に**前の zip を消す 組み立て（PyInstaller）で落ちると
+    # zip を作る所まで進まないので、そこで消していては前の物が残り、
+    # 今回の完成品に見えてしまう
+    target.unlink(missing_ok=True)
 
     if not args.skip_build:
         import PyInstaller.__main__
@@ -356,7 +368,6 @@ def main() -> int:
         print(f"{bundle} に {APP_NAME}.exe が無い 組み立てに失敗している")
         return 1
 
-    target = dist / f"{APP_NAME}-{__version__}-windows-x64.zip"
     return package(bundle, target, check=not args.skip_check)
 
 

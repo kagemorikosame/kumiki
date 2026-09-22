@@ -277,8 +277,10 @@ def _export() -> str:
         export_project(project, ExportSettings(path=target, video_codec=CPU_CODEC))
         with av.open(str(target)) as container:
             frames = sum(1 for _ in container.decode(video=0))
-    if frames < 1:
-        raise RuntimeError("書き出した動画から 1 コマも読めない")
+    # 見本の長さと同じだけ読めること 1 コマでも読めれば通す形だと、
+    # 書き出しが黙って途中で切れても気づけない
+    if frames != project.duration:
+        raise RuntimeError(f"書き出した動画が {frames} コマ（{project.duration} コマのはず）")
     return (
         f"{CPU_CODEC} で書き出して {frames} コマ読み戻せた（使える符号化器: {', '.join(codecs)}）"
     )

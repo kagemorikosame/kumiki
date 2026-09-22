@@ -441,3 +441,61 @@ class TestOnlyCheckedZipsRemain:
         target = tmp_path / "out.zip"
         assert builder.package(self._bundle(tmp_path), target) == 0
         assert target.exists()
+
+
+class TestNothingUncheckedIsLeft:
+    """どの段で落ちても、確かめていない zip を完成品の名前で残さない"""
+
+    def test_a_crash_while_checking_takes_the_zip_away(
+        self, builder: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """展開できない・exe が返ってこない（時間切れ）でも同じ"""
+        bundle = tmp_path / "Kumiki"
+        bundle.mkdir()
+        (bundle / "Kumiki.exe").write_bytes(b"MZ")
+
+        def crash(archive: Path) -> int:
+            raise TimeoutError("exe が返ってこない")
+
+        monkeypatch.setattr(builder, "smoke_test", crash)
+        target = tmp_path / "out.zip"
+        with pytest.raises(TimeoutError):
+            builder.package(bundle, target)
+        assert not target.exists()
+
+    def test_the_previous_zip_goes_before_building(
+        self, builder: ModuleType, tmp_path: Path
+    ) -> None:
+        """組み立てる前に前の zip を消す
+
+        組み立てで落ちると zip を作る所まで進まない そこで消していては、
+        前の物が今回の完成品に見えて残る
+        """
+        from kumiki import __version__
+
+        old = tmp_path / f"Kumiki-{__version__}-windows-x64.zip"
+        old.write_bytes(b"previous build")
+        # 組み立て済みの exe が無い＝組み立てに失敗した状態
+        assert builder.main(["--skip-build"], dist=tmp_path) == 1
+        assert not old.exists(), "組み立てに失敗したのに前の zip が残っている"
+
+
+class TestTheExportCheckCountsFrames:
+    def test_a_truncated_export_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """書き出しが黙って途中で切れたら落とす
+
+        1 コマでも読めれば通す形だと、見本（2 コマ）が 1 コマに切れても気づけない
+        """
+        from dataclasses import replace
+
+        import kumiki.engine.encode as encode
+        from kumiki import selfcheck
+
+        real = encode.export_project
+
+        def truncated(project: object, settings: encode.ExportSettings, **kwargs: object) -> Path:
+            return real(project, replace(settings, frame_range=(0, 1)))  # type: ignore[arg-type]
+
+        monkeypatch.setattr(encode, "export_project", truncated)
+        with pytest.raises(RuntimeError, match="1 コマ"):
+            selfcheck._export()
