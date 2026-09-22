@@ -162,6 +162,10 @@ def _is_generated(clip: Clip) -> bool:
 #: 音声波形の音を読むデコーダの鍵 素材の道・音声ストリームの番号・読むレート
 WaveformKey = tuple[Path, int, int]
 
+#: 音声波形の音を、時刻のどれだけ前から読み始めるか（サンプル 読んだ後で捨てる）
+#: 理由は :meth:`FrameRenderer._waveform_audio` に書いた
+_WAVEFORM_PREROLL = 512
+
 
 def _waveform_key(project: Project, clip: Clip, source: GeneratedSource) -> WaveformKey | None:
     """このクリップの音声波形が読む音の鍵 読む音が無ければ ``None``"""
@@ -1226,8 +1230,13 @@ class FrameRenderer:
         span = max(1, round(min(wide, float(MAX_CANVAS)))) if math.isfinite(wide) else 800
         count = max(span, SPECTRUM_WINDOW)
         speed = float(clip.speed)
-        first = int(seconds * sample_rate)
-        raw = decoder.read(first, int(np.ceil(count * speed)) + 1)
+        # 読み始めは時刻の少し前 デコーダはシークした所からリサンプラを作り直すので、
+        # 読み始めの位置で同じ時刻のサンプルが僅かに変わる（この曲で振幅 0.01〜0.05）
+        # 前と同じ位置から読み、実物と突き合わせた線の絵を変えない（時刻ちょうどから
+        # 読むと、76 フレーム目の差が 0.50 から 0.78 へ開いた）
+        lead = int(_WAVEFORM_PREROLL * speed)
+        first = int(seconds * sample_rate) - lead
+        raw = decoder.read(first, lead + int(np.ceil(count * speed)) + 1)[lead:]
         # float32 のまま平均する 既定の float64 にすると、毎フレーム型を変えて配列を作り直す
         mono = raw.mean(axis=1, dtype=np.float32) if raw.ndim == 2 else raw
         # 速く回すと 1 画素に何サンプルも入る 間引いて 1 画素 1 サンプルに合わせる
