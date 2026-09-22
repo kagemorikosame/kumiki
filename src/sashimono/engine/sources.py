@@ -10,6 +10,7 @@ Qt の描画系（``QPainter``）を使う 日本語の禁則処理やフォン�
 from __future__ import annotations
 
 import math
+import struct
 from collections.abc import Callable
 
 import numpy as np
@@ -26,6 +27,7 @@ from PySide6.QtGui import (
     QPen,
     QPolygonF,
     QRadialGradient,
+    QRawFont,
     QTransform,
 )
 
@@ -327,7 +329,9 @@ def _draw_text(
     font.setBold(bold and not aviutl)
     font.setItalic(bool(values.get("italic", False)))
     letter_spacing = float(values.get("letter_spacing", 0.0))  # type: ignore[arg-type]
-    if letter_spacing:
+    # AviUtl2 の字間は文字と文字の間にだけ入る（自分で足す） Qt に頼むと最後の字の
+    # 後ろにも入り、3 文字の行が字間 1 つ分広く、中央揃えで半分だけ左へ寄る
+    if letter_spacing and not aviutl:
         font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, letter_spacing)
 
     metrics = QFontMetricsF(font)
@@ -335,50 +339,135 @@ def _draw_text(
         _draw_vertical_text(painter, text, font, metrics, values, width, height)
         return None
 
-    embolden = size * _AVIUTL_BOLD if aviutl and bold else 0.0
     lines = text.split(chr(10))
-    line_height = metrics.height() + float(values.get("line_spacing", 0.0))  # type: ignore[arg-type]
-    block_height = line_height * len(lines)
-
-    align = str(values.get("align", "center"))
     centre_x = width / 2.0 + float(values.get("pos_x", 0.0))  # type: ignore[arg-type]
     centre_y = height / 2.0 - float(values.get("pos_y", 0.0))  # type: ignore[arg-type]
+    if aviutl:
+        path, framed = _aviutl_lines(lines, font, size, bold, values, centre_x, centre_y)
+        _paint_glyphs(painter, path, values, width, height)
+        return framed
+
+    line_height = metrics.height() + float(values.get("line_spacing", 0.0))  # type: ignore[arg-type]
+    block_height = line_height * len(lines)
+    align = str(values.get("align", "center"))
     top = centre_y - block_height * _VERTICAL_SHARE.get(str(values.get("valign", "middle")), 0.5)
-
-    def advance(line: str) -> float:
-        if not aviutl:
-            return metrics.horizontalAdvance(line)
-        return sum(metrics.horizontalAdvance(part) + embolden for part in _graphemes(line))
-
-    widest = max((advance(line) for line in lines), default=0.0)
+    widest = max((metrics.horizontalAdvance(line) for line in lines), default=0.0)
 
     # 文字を輪郭（パス）として組み立てる 縁取りを外側だけに出すには、
     # 塗りとは別に輪郭を太らせる必要があり、それはパスでしかできない
+    # 太字は、同じ揃え方で細字を置いたときの字の外形の中心へ戻す（:func:`_bold_drift`）
+    plain_font = QFont(font)
+    plain_font.setBold(False)
+    plain_metrics = QFontMetricsF(plain_font)
+    plain_widest = max((plain_metrics.horizontalAdvance(line) for line in lines), default=0.0)
+
+    def start(line_width: float, block_width: float) -> float:
+        if align == "left":
+            return centre_x - block_width / 2.0
+        if align == "right":
+            return centre_x + block_width / 2.0 - line_width
+        return centre_x - line_width / 2.0
+
     path = QPainterPath()
     for index, line in enumerate(lines):
-        line_width = advance(line)
-        if align == "left":
-            x = centre_x - widest / 2.0
-        elif align == "right":
-            x = centre_x + widest / 2.0 - line_width
-        else:
-            x = centre_x - line_width / 2.0
+        x = start(metrics.horizontalAdvance(line), widest)
         baseline = top + line_height * index + metrics.ascent()
-        if not aviutl:
-            path.addText(QPointF(x, baseline), font, line)
-            continue
+        placed = QPainterPath()
+        placed.addText(QPointF(x, baseline), font, line)
+        if bold:
+            plain = QPainterPath()
+            plain_x = start(plain_metrics.horizontalAdvance(line), plain_widest)
+            plain.addText(QPointF(plain_x, baseline), plain_font, line)
+            placed.translate(_bold_drift(plain, placed), 0.0)
+        path.addPath(placed)
+
+    _paint_glyphs(painter, path, values, width, height)
+    return None
+
+
+def _bold_drift(plain: QPainterPath, bold: QPainterPath) -> float:
+    """Qt の太字を、細字で置いたときと同じ中心へ戻す横のずれ（画素）
+
+    Qt の合成の太字（太字の書体を持たない MS UI Gothic など）は右へだけ太らせ、
+    送り幅は 1 文字 1 画素しか広げないので、中央揃えでも字が右へ寄る（180 の
+    「田田田」で 4〜5 画素） 太字の書体を持つフォントでも測って戻すだけなので、
+    寄っていなければ 0 に近くなる
+    """
+    plain_box, bold_box = plain.boundingRect(), bold.boundingRect()
+    if plain_box.isEmpty() or bold_box.isEmpty():
+        return 0.0
+    return plain_box.center().x() - bold_box.center().x()
+
+
+def _aviutl_lines(
+    lines: list[str],
+    font: QFont,
+    size: int,
+    bold: bool,
+    values: dict[str, object],
+    centre_x: float,
+    centre_y: float,
+) -> tuple[QPainterPath, Frame]:
+    """AviUtl2 の組み方で行を並べ、字の輪郭と文字の枠を返す
+
+    AviUtl2 に描かせて測った決まり（#64 の見本 ``kumiki_p8_t_*``）
+
+    - 行の高さは書体の行送り（上の高さ + 下の深さ + 行間の余白） Arial 120 で 139
+      ベースラインは行の上端から上の高さ 余白は下に付く
+    - 字間は文字の間にだけ、行間は行の間にだけ入る（字間 20 の 3 文字で枠が 40 広がる）
+    - 文字揃えの横は、左寄せなら枠の左端、右寄せなら右端を置いた位置に合わせる
+      縦も同じで、上なら上端、下なら下端 行はそれぞれ枠の中で左・中央・右へ揃える
+    - 縁取りは枠を広げない（縁は枠の内側に描かれていた）
+    """
+    metrics = QFontMetricsF(font)
+    embolden = size * _AVIUTL_BOLD if bold else 0.0
+    letter_spacing = float(values.get("letter_spacing", 0.0))  # type: ignore[arg-type]
+    line_spacing = float(values.get("line_spacing", 0.0))  # type: ignore[arg-type]
+    line_height = metrics.height() + _external_leading(font)
+    block_height = line_height * len(lines) + line_spacing * max(len(lines) - 1, 0)
+
+    def advance(line: str) -> float:
+        parts = _graphemes(line)
+        widths = sum(metrics.horizontalAdvance(part) + embolden for part in parts)
+        return widths + letter_spacing * max(len(parts) - 1, 0)
+
+    widest = max((advance(line) for line in lines), default=0.0)
+    align = str(values.get("align", "center"))
+    left = centre_x - widest * {"left": 0.0, "right": 1.0}.get(align, 0.5)
+    top = centre_y - block_height * _VERTICAL_SHARE.get(str(values.get("valign", "middle")), 0.5)
+
+    path = QPainterPath()
+    for index, line in enumerate(lines):
+        rest = widest - advance(line)
+        x = left + rest * {"left": 0.0, "right": 1.0}.get(align, 0.5)
+        baseline = top + (line_height + line_spacing) * index + metrics.ascent()
         # 1 文字ずつ置く 太字の分だけ送り幅を広げるのは文字ごとで、行をまとめて
         # 置くと 2 文字目から先が太った分だけ前の字に食い込む
         for part in _graphemes(line):
             path.addText(QPointF(x, baseline), font, part)
-            x += metrics.horizontalAdvance(part) + embolden
+            x += metrics.horizontalAdvance(part) + embolden + letter_spacing
 
     if embolden > 0.0:
         path = _emboldened(path, embolden)
-    _paint_glyphs(painter, path, values, width, height)
-    if not aviutl:
-        return None
-    return (centre_x - widest / 2.0, top, centre_x + widest / 2.0, top + block_height)
+    return path, (left, top, left + widest, top + block_height)
+
+
+def _external_leading(font: QFont) -> float:
+    """行の下に足す余白（画素） Windows の GDI が ``tmExternalLeading`` と呼ぶもの
+
+    ``hhea`` の上の高さ + 下の深さ + 行間の余白が、``OS/2`` の win の上下より長い分
+    Arial 120 で 3.9 画素 AviUtl2 の枠は 139 で、Qt の行の高さ（134、余白 0）より
+    これだけ高かった Qt は余白を 0 として返すので、表から読む
+    """
+    raw = QRawFont.fromFont(font)
+    hhea = bytes(raw.fontTable("hhea").data())
+    os2 = bytes(raw.fontTable("OS/2").data())
+    if len(hhea) < 10 or len(os2) < 78 or raw.unitsPerEm() <= 0:
+        return 0.0
+    ascender, descender, gap = struct.unpack(">hhh", hhea[4:10])
+    win_ascent, win_descent = struct.unpack(">HH", os2[74:78])
+    extra = (ascender - descender + gap) - (win_ascent + win_descent)
+    return max(0.0, float(extra) * float(raw.pixelSize()) / float(raw.unitsPerEm()))
 
 
 def _graphemes(line: str) -> list[str]:

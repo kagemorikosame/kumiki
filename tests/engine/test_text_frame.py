@@ -138,6 +138,78 @@ class TestBold:
         assert bold_box[1] < plain_box[1] - 2
 
 
+@pytest.mark.usefixtures("ms_ui_gothic")
+class TestAviUtlLayout:
+    """AviUtl2 に描かせた ``kumiki_p8_t_*`` の見本で測った並べ方"""
+
+    def test_left_top_puts_the_frame_corner_on_the_position(self) -> None:
+        # 左寄せ[上] は枠の左上が置いた位置に来る（見本 lt の枠 960..1320 x 540..780）
+        # 標準の組み方のように枠を横の中心へ置くと、枠の幅の半分だけ左へずれる
+        _, framed = render_source_framed(
+            text(text="田田田\n田", size=AnimatedValue(120.0), align="left", valign="top"),
+            1920,
+            1080,
+        )
+        assert framed == pytest.approx((960.0, 540.0, 1320.0, 780.0), abs=0.5)
+
+    def test_right_bottom_puts_the_opposite_corner_there(self) -> None:
+        # 右寄せ[下] は枠の右下が置いた位置に来る（見本 rb の枠 600..960 x 300..540）
+        image, framed = render_source_framed(
+            text(text="田田田\n田", size=AnimatedValue(120.0), align="right", valign="bottom"),
+            1920,
+            1080,
+        )
+        assert image is not None
+        assert framed == pytest.approx((600.0, 300.0, 960.0, 540.0), abs=0.5)
+        # 2 行目は枠の右へ揃う（見本では 2 行目の字の右端が 1 行目と同じ 944）
+        lower = image[420:540]
+        columns = np.flatnonzero((lower[..., 3] > 8).any(axis=0))
+        assert columns[-1] + 1 == pytest.approx(944, abs=1)
+
+    def test_spacing_goes_only_between_letters_and_lines(self) -> None:
+        # 字間 20・行間 30 で枠は 400 x 270（見本 spacing） 最後の字の後ろや最後の行の
+        # 下にも入れると 420 x 300 になり、中央揃えで字が 10 画素ずつ左上へ寄る
+        _, framed = render_source_framed(
+            text(
+                text="田田田\n田",
+                size=AnimatedValue(120.0),
+                letter_spacing=AnimatedValue(20.0),
+                line_spacing=AnimatedValue(30.0),
+            ),
+            1920,
+            1080,
+        )
+        assert framed == pytest.approx((760.0, 405.0, 1160.0, 675.0), abs=0.5)
+
+
+class TestLineGap:
+    def test_the_line_gap_goes_under_the_line(self) -> None:
+        # Arial 120 の枠は AviUtl2 で 139 画素 Qt の行の高さ（134）のままだと枠が低く、
+        # 字が 2 画素下がる 余白（hhea の行間 67/2048）は行の下に付く
+        if not QFont("Arial").exactMatch():
+            pytest.skip("Arial が入っていない")
+        image, framed = render_source_framed(
+            text(text="AVg", font="Arial", size=AnimatedValue(120.0)), 1920, 1080
+        )
+        assert image is not None and framed is not None
+        assert framed[3] - framed[1] == pytest.approx(138.0, abs=1.0)
+        # AviUtl2 の書き出しでは字の上端が 494
+        assert ink(image)[1] == pytest.approx(494.0, abs=1.0)
+
+
+@pytest.mark.usefixtures("ms_ui_gothic")
+class TestNativeBold:
+    def test_native_bold_text_is_centred(self) -> None:
+        # Qt の合成の太字は右へだけ太るので、標準の組み方でも中央揃えの字が
+        # 4〜5 画素右へ寄っていた 細字と同じ中心に戻す
+        image, framed = render_source_framed(
+            text(size=AnimatedValue(180.0), bold=True, layout="native"), 1920, 1080
+        )
+        assert image is not None and framed is None
+        left, _, right, _ = ink(image)
+        assert (left + right) / 2 == pytest.approx(960.0, abs=1.0)
+
+
 class TestGraphemes:
     def test_surrogate_pairs_and_combining_marks_stay_whole(self) -> None:
         # 1 文字ずつ置くので、割れると絵文字や濁点が崩れて別々に並ぶ
