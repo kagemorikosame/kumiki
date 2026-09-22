@@ -212,15 +212,32 @@ void main() {
         return;
     }
 
+    // 角数 の三角で畳むのは中心のまわりだけで、その先は角数 6 の万華鏡として読む
+    // 鏡の三角（頂角 360/角数、辺 長さ）を、辺 長さ の正三角形へ引き伸ばしてから畳む
+    // 横は 1/(2 sin(180/角数)) 倍、軸に沿っては cos 30/cos(180/角数) 倍で、角数 6 では両方 1
+    //
+    // AviUtl2 の 角数 4 と 12 では、中心の外の頂点に集まる三角がどれも 6 枚で、
+    // 横か縦へ潰れた六角形の模様が並び、角数 4 の中心の田は 0.8 倍に縮んでいた
+    // 角数 の三角のまま底辺で折り返すと、外の頂点にも 角数 枚の三角が集まり、
+    // 差は角数 4 で 10.4、12 で 12.3 引き伸ばすと 2.5 と 5.2
+    // 三角の高さを保つ引き伸ばし方（横だけ tan 30/tan(180/角数) 倍）は 8.5 と 10.7、
+    // 軸に沿った倍率を 3% 増減させると、どちらの角数でも差が増える
+    // 中心ちょうどは角が決まらない（atan(0, 0) は実装しだいで NaN になる）ので畳まない
+    if (length(p) >= 0.0001) {
+        p = length(p) * vec2(cos(AXIS + folded), sin(AXIS + folded));
+    }
+    const float SIXTH = PI / 6.0;
+    p *= vec2(0.5 / sin(half_), cos(SIXTH) / cos(half_));
+
     // 畳む 角を 1 つの三角へ折り返し、三角の底辺を越えたら底辺で折り返す
     // 繰り返せば、鏡を三角に組んだ万華鏡と同じ模様になる
-    float base = length_ * cos(half_);
+    float base = length_ * cos(SIXTH);
     for (int i = 0; i < 256; ++i) {
         float radius = length(p);
         // 中心ちょうどは角が決まらない（atan(0, 0) は実装しだいで NaN になる）
         if (radius < 0.0001) break;
         phi = atan(p.y, p.x) - AXIS;
-        folded = half_ - abs(mod(phi + half_, 4.0 * half_) - 2.0 * half_);
+        folded = SIXTH - abs(mod(phi + SIXTH, 4.0 * SIXTH) - 2.0 * SIXTH);
         p = radius * vec2(cos(AXIS + folded), sin(AXIS + folded));
         // 軸が真下なので、軸に沿った長さは -p.y
         if (-p.y <= base) break;
