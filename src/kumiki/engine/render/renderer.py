@@ -58,7 +58,7 @@ from kumiki.engine.render.scripts import (
     script_effects,
     split_effects,
 )
-from kumiki.engine.sources import render_source, source_canvas
+from kumiki.engine.sources import MAX_CANVAS, render_source, source_canvas
 
 __all__ = ["FrameRenderer", "RenderQuality"]
 
@@ -155,6 +155,50 @@ def _is_generated(clip: Clip) -> bool:
     return (
         source is not None and source.kind == "shape" and source.params.get("shape") == "waveform"
     )
+
+
+#: 音声波形の音を読むデコーダの鍵 素材の道・音声ストリームの番号・読むレート
+WaveformKey = tuple[Path, int, int]
+
+
+def _waveform_key(project: Project, clip: Clip, source: GeneratedSource) -> WaveformKey | None:
+    """このクリップの音声波形が読む音の鍵 読む音が無ければ ``None``"""
+    path: Path | None = None
+    if clip.media_id is not None:
+        media = project.find_media(clip.media_id)
+        if media is not None:
+            path = Path(media.path)
+    if path is None:
+        written = source.params.get("audio_path")
+        if isinstance(written, str) and written:
+            path = Path(written)
+    if path is None:
+        return None
+    return path, clip.stream_index, project.settings.sample_rate
+
+
+#: 覚えておく絵の鍵のうち、音声波形が読む音（``WaveformKey``）が入る位置
+_HEARD_AT = 7
+
+
+def _hears(key: object) -> bool:
+    """覚えておいた絵が、音声波形のものか（鍵のその位置に読む音が入っている）"""
+    return isinstance(key, tuple) and len(key) > _HEARD_AT and key[_HEARD_AT] is not None
+
+
+def _waveform_keys(project: Project) -> set[WaveformKey]:
+    """プロジェクトの音声波形が読む音の鍵をすべて 入れ子のシーンの中も見る"""
+    keys: set[WaveformKey] = set()
+    for timeline in (project.timeline, *(scene.timeline for scene in project.scenes)):
+        for track in timeline.tracks:
+            for clip in track.clips:
+                source = clip.source
+                if source is None or source.params.get("shape") != "waveform":
+                    continue
+                key = _waveform_key(project, clip, source)
+                if key is not None:
+                    keys.add(key)
+    return keys
 
 
 def _varies_over_time(source: GeneratedSource) -> bool:
@@ -254,9 +298,9 @@ class FrameRenderer:
         #: クリップを下のクリップの形で切り抜くときに使う合成先（役目と深さごと）
         self._layers: dict[tuple[str, int], Compositor] = {}
         #: 音声波形が音を読むデコーダ（道ごと） 映像のデコーダとは別に持つ
-        self._audio: OrderedDict[Path, AudioDecoder] = OrderedDict()
-        #: 開けなかった音の道 毎フレーム開き直さないために覚えておく
-        self._audio_missing: set[Path] = set()
+        self._audio: OrderedDict[WaveformKey, AudioDecoder] = OrderedDict()
+        #: 開けなかった音 毎フレーム開き直さないために覚えておく
+        self._audio_missing: set[WaveformKey] = set()
         self._closed = False
 
     @property
@@ -282,6 +326,19 @@ class FrameRenderer:
         alive = {m.id for m in project.media}
         for key in [k for k in self._decoders if k[0] not in alive]:
             self._decoders.pop(key).close()
+
+        # 音声波形の音も、使われなくなったものは閉じる 開いたままだと、クリップを消しても
+        # レンダラを閉じるまで音声ファイルを差し替えられない
+        # 開けなかった記録は忘れる 後から置いた素材を、差し替えのたびに読み直せるように
+        heard = _waveform_keys(project)
+        for sound in [k for k in self._audio if k not in heard]:
+            self._audio.pop(sound).close()
+        if self._audio_missing:
+            self._audio_missing.clear()
+            # 音が無くて空で描いた波形の絵も忘れる 鍵（設定とフレーム）は同じなので、
+            # 残しておくと素材を置いた後も空の絵を使い回す
+            for clip_id in [cid for cid, (key, _) in self._generated.items() if _hears(key)]:
+                del self._generated[clip_id]
 
     def set_quality(self, quality: RenderQuality) -> None:
         self._quality = quality
@@ -1101,7 +1158,9 @@ class FrameRenderer:
                 return None
 
         width = source.params.get("width")
-        span = max(1, round(width.at(local_frame) if isinstance(width, AnimatedValue) else 800))
+        wide = width.at(local_frame) if isinstance(width, AnimatedValue) else 800.0
+        # 描く大きさの上限より多くは読まない 壊れた横幅で何億サンプルも読んで止まらないように
+        span = max(1, round(min(wide, float(MAX_CANVAS)))) if math.isfinite(wide) else 800
         count = WAVEFORM_LEAD + max(span, SPECTRUM_SIZE - WAVEFORM_LEAD)
         speed = float(clip.speed)
         first = int(seconds * sample_rate) - int(WAVEFORM_LEAD * speed)
@@ -1120,37 +1179,35 @@ class FrameRenderer:
         return samples, sample_rate
 
     def _audio_decoder_for(self, clip: Clip, source: GeneratedSource) -> AudioDecoder | None:
-        """音声波形の音を読む係 素材を持つクリップならその素材、無ければ設定の道"""
-        path: Path | None = None
-        if clip.media_id is not None:
-            media = self._project.find_media(clip.media_id)
-            if media is not None:
-                path = Path(media.path)
-        if path is None:
-            written = source.params.get("audio_path")
-            if isinstance(written, str) and written:
-                path = Path(written)
-        if path is None:
+        """音声波形の音を読む係 素材を持つクリップならその素材、無ければ設定の道
+
+        素材とストリームの番号とレートの組で持つ 道だけで持つと、音声を複数持つ素材で
+        2 本目を選んだクリップにも 1 本目の波形が出る
+        """
+        key = _waveform_key(self._project, clip, source)
+        if key is None:
             return None
-        decoder = self._audio.get(path)
+        decoder = self._audio.get(key)
         if decoder is not None:
-            self._audio.move_to_end(path)
+            self._audio.move_to_end(key)
             return decoder
-        if path in self._audio_missing:
+        if key in self._audio_missing:
             return None
+        path, stream_index, rate = key
+        stream = stream_index if stream_index else None
         try:
-            rate = self._project.settings.sample_rate
-            decoder = AudioDecoder(path, sample_rate=rate, channels=2)
+            decoder = AudioDecoder(path, sample_rate=rate, channels=2, stream_index=stream)
             if decoder.info.channels == 1:
                 # モノラルの素材を 2 チャンネルへ広げると、変換が振幅を 0.7 倍に落とす
                 # 素材のままの 1 チャンネルで読み、波形の振れ幅を変えない
                 decoder.close()
-                decoder = AudioDecoder(path, sample_rate=rate, channels=1)
+                decoder = AudioDecoder(path, sample_rate=rate, channels=1, stream_index=stream)
         except (ProbeError, OSError):
             # 開けない音は何度も開き直さない 毎フレーム探しに行って再生が止まる
-            self._audio_missing.add(path)
+            # （プロジェクトを差し替えたときに忘れて、置き直した素材を読み直す）
+            self._audio_missing.add(key)
             return None
-        self._audio[path] = decoder
+        self._audio[key] = decoder
         while len(self._audio) > MAX_OPEN_DECODERS:
             _, evicted = self._audio.popitem(last=False)
             evicted.close()
@@ -1196,6 +1253,11 @@ class FrameRenderer:
             clip.duration,
             clip.source_in,
             clip.speed,
+            # 音声波形は読む音（素材の道・ストリーム・レート）も鍵に入れる 素材を
+            # 繋ぎ直したりストリームを選び直したりしても、前の音の波形が出ないように
+            _waveform_key(self._project, clip, source)
+            if source.params.get("shape") == "waveform"
+            else None,
             _fingerprint(source.params),
         )
         cached = self._generated.get(clip.id)

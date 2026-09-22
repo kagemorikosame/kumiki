@@ -22,6 +22,7 @@ from kumiki.core.model import (
     AnimatedValue,
     Clip,
     GeneratedSource,
+    ParamValue,
     Project,
     ProjectSettings,
     Track,
@@ -64,14 +65,14 @@ class TestPoints:
         assert points[0, 1] == pytest.approx(1.0 + 50.0)
 
 
-def _source(**extra: object) -> GeneratedSource:
-    params: dict[str, object] = {
+def _source(**extra: ParamValue) -> GeneratedSource:
+    params: dict[str, ParamValue] = {
         "shape": "waveform",
         "width": AnimatedValue(400.0),
         "height": AnimatedValue(200.0),
     }
     params.update(extra)
-    return GeneratedSource(kind="shape", params=params)  # type: ignore[arg-type]
+    return GeneratedSource(kind="shape", params=params)
 
 
 def test_silence_is_a_flat_line_below_the_centre() -> None:
@@ -166,6 +167,23 @@ def stepped_audio(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return path
 
 
+def _project(
+    source: GeneratedSource,
+    *,
+    duration: int = 60,
+    sample_rate: int = RATE,
+    stream_index: int = 0,
+) -> Project:
+    settings = ProjectSettings(
+        width=WIDTH, height=HEIGHT, frame_rate=FrameRate(60), sample_rate=sample_rate
+    )
+    project = Project.create(settings)
+    track = Track(kind=TrackKind.VIDEO, name="V1")
+    project = AddTrack(track).apply(project)
+    placed = Clip(timeline_start=0, duration=duration, source=source, stream_index=stream_index)
+    return AddClip(track.id, placed).apply(project)
+
+
 def _render(
     context: OffscreenGLContext,
     source: GeneratedSource,
@@ -173,15 +191,11 @@ def _render(
     *,
     duration: int = 60,
     sample_rate: int = RATE,
+    stream_index: int = 0,
 ) -> np.ndarray:
-    settings = ProjectSettings(
-        width=WIDTH, height=HEIGHT, frame_rate=FrameRate(60), sample_rate=sample_rate
+    project = _project(
+        source, duration=duration, sample_rate=sample_rate, stream_index=stream_index
     )
-    project = Project.create(settings)
-    track = Track(kind=TrackKind.VIDEO, name="V1")
-    project = AddTrack(track).apply(project)
-    placed = Clip(timeline_start=0, duration=duration, source=source)
-    project = AddClip(track.id, placed).apply(project)
     renderer = FrameRenderer(project, context=context)
     try:
         image: np.ndarray = renderer.render(frame)
@@ -225,3 +239,85 @@ class TestRenderer:
         source = _source(audio_path=str(stepped_audio), audio_end_ms=0)
         image = _render(gl_context, source, 10)
         assert image[:, :, :3].max() == 0
+
+
+def _write_wav(path: Path, value: float) -> None:
+    pcm = (np.full(RATE, value) * 32767).astype("<i2")
+    with wave.open(str(path), "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(RATE)
+        writer.writeframes(pcm.tobytes())
+
+
+@pytest.fixture(scope="module")
+def two_streams(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """音声を 2 本持つ素材 1 本目は +0.5、2 本目は -0.5 がずっと続く"""
+    av = pytest.importorskip("av")
+    path = tmp_path_factory.mktemp("streams") / "two.mka"
+    with av.open(str(path), "w", format="matroska") as container:
+        streams = []
+        for _ in range(2):
+            stream = container.add_stream("pcm_s16le", rate=RATE)
+            stream.layout = "mono"
+            streams.append(stream)
+        for stream, value in zip(streams, (0.5, -0.5), strict=True):
+            pcm = (np.full((1, RATE), value) * 32767).astype("<i2")
+            frame = av.AudioFrame.from_ndarray(pcm, format="s16", layout="mono")
+            frame.sample_rate = RATE
+            for packet in stream.encode(frame):
+                container.mux(packet)
+            for packet in stream.encode(None):
+                container.mux(packet)
+    return path
+
+
+class TestWhatTheReviewFound:
+    def test_the_chosen_audio_stream_is_drawn(
+        self, gl_context: OffscreenGLContext, two_streams: Path
+    ) -> None:
+        # 2 本目の音声を選んだクリップに 1 本目の波形が出ていた（デコーダを道だけで持っていた）
+        source = _source(audio_path=str(two_streams))
+        first = _render(gl_context, source, 10, stream_index=0)
+        second = _render(gl_context, source, 10, stream_index=1)
+        assert _line_row(first, WIDTH // 2) == pytest.approx(51.0, abs=1.5)
+        assert _line_row(second, WIDTH // 2) == pytest.approx(-49.0, abs=1.5)
+
+    def test_a_removed_waveform_lets_go_of_its_file(
+        self, gl_context: OffscreenGLContext, tmp_path: Path
+    ) -> None:
+        # 波形のクリップを消しても、レンダラを閉じるまで音声ファイルを開いたままだった
+        # 開いたままでは Windows で消すことも差し替えることもできない
+        path = tmp_path / "held.wav"
+        _write_wav(path, 0.5)
+        project = _project(_source(audio_path=str(path)))
+        renderer = FrameRenderer(project, context=gl_context)
+        try:
+            renderer.render(10)
+            renderer.set_project(Project.create(project.settings))
+            path.unlink()
+        finally:
+            renderer.close()
+        assert not path.exists()
+
+    def test_a_file_put_back_later_is_read(
+        self, gl_context: OffscreenGLContext, tmp_path: Path
+    ) -> None:
+        # 開けなかった記録をずっと覚えていて、後から置いた素材を読まなかった
+        path = tmp_path / "later.wav"
+        project = _project(_source(audio_path=str(path)))
+        renderer = FrameRenderer(project, context=gl_context)
+        try:
+            assert renderer.render(10)[:, :, :3].max() == 0
+            _write_wav(path, 0.5)
+            renderer.set_project(project)
+            image = renderer.render(10)
+        finally:
+            renderer.close()
+        assert _line_row(image, WIDTH // 2) == pytest.approx(51.0, abs=1.5)
+
+    def test_a_broken_width_does_not_stop_drawing(self) -> None:
+        # 横幅が無限大でも round で落ちず、描ける範囲に収める
+        source = _source(width=AnimatedValue(float("inf")), wave_rows=AnimatedValue(1e12))
+        audio = np.zeros(WAVEFORM_LEAD + 800, dtype=np.float32)
+        assert render_source(source, WIDTH, HEIGHT, audio=audio) is not None

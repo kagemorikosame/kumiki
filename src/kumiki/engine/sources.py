@@ -817,8 +817,11 @@ def _draw_waveform(
     if not isinstance(audio, np.ndarray) or audio.size <= WAVEFORM_LEAD + 1:
         return
     volume = _number(values, "wave_volume", 100.0)
-    columns = round(_number(values, "wave_columns", 0.0))
-    rows = round(_number(values, "wave_rows", 0.0))
+    # 升目の数は描く大きさより細かくしない 壊れた値で巨大な升目を作ると描画が止まる
+    width = _within(width, 1.0, float(MAX_CANVAS), 800.0)
+    height = _within(height, 1.0, float(MAX_CANVAS), 400.0)
+    columns = round(_within(_number(values, "wave_columns", 0.0), 0.0, width, 0.0))
+    rows = round(_within(_number(values, "wave_rows", 0.0), 0.0, height, 0.0))
     spectrum = bool(values.get("wave_spectrum", False))
     body = audio[WAVEFORM_LEAD:]
     if columns <= 0 and rows <= 0 and not spectrum:
@@ -890,7 +893,7 @@ def _draw_star_field(painter: QPainter, values: dict[str, object], width: int, h
     size = max(1.0, _number(values, "star_size", 30.0))
     field = star_field(
         seconds=_number(values, "_seconds", 0.0),
-        count=int(_number(values, "star_count", 1500.0)),
+        count=_number(values, "star_count", 1500.0),
         speed=_number(values, "star_speed", 6.0),
         spread=_number(values, "star_spread", 12.0),
         depth=_number(values, "star_depth", 20.0),
@@ -1171,6 +1174,13 @@ def _superformula_path(rect: QRectF, m: float, n: float) -> QPainterPath:
 def _around(centre_x: float, centre_y: float, radius: float) -> QRectF:
     """中心と半径から、円弧を描くための四角"""
     return QRectF(centre_x - radius, centre_y - radius, radius * 2.0, radius * 2.0)
+
+
+def _within(value: float, low: float, high: float, default: float) -> float:
+    """範囲へ収める 無限大や非数は既定値にする（``round`` が例外で描画ごと止まる）"""
+    if not math.isfinite(value):
+        return default
+    return min(max(value, low), high)
 
 
 def _number(values: dict[str, object], name: str, default: float) -> float:

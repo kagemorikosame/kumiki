@@ -12,7 +12,7 @@ from collections.abc import Callable
 import numpy as np
 import pytest
 
-from kumiki.core.model import AnimatedValue, GeneratedSource, Keyframe
+from kumiki.core.model import AnimatedValue, GeneratedSource, Keyframe, ParamValue
 from kumiki.engine.motion_shapes import StarField, Trail, star_field, trail
 from kumiki.engine.sources import render_source
 
@@ -82,6 +82,19 @@ class TestTrail:
         shape = _trail(fixed_speed=5.0, frame=10.0)
         assert shape.last[0] == pytest.approx(-600.0 + 50.0, abs=2.0)
 
+    def test_a_long_still_clip_does_not_walk_every_frame(self) -> None:
+        # 止まっている区間は点が増えないので点の上限が効かず、クリップ頭から
+        # 今までの位置を毎フレーム全部引いていた（長いクリップの再生が二乗で重くなる）
+        calls = 0
+
+        def still(_at: float) -> tuple[float, float]:
+            nonlocal calls
+            calls += 1
+            return 0.0, 0.0
+
+        _trail(still, frame=1_000_000.0, total=2_000_000.0)
+        assert calls < 60_000
+
     def test_a_broken_motion_does_not_hang(self) -> None:
         # 無限の彼方へ飛ぶ値でも、点の数の上限で止まる
         shape = _trail(lambda at: (at * 1e9, 0.0), frame=80.0)
@@ -102,7 +115,7 @@ class TestStarField:
             "screen_height": float(HEIGHT),
         }
         settings.update(overrides)
-        count = int(settings.pop("count"))
+        count = settings.pop("count")
         return star_field(count=count, **settings)
 
     def test_the_same_time_gives_the_same_stars(self) -> None:
@@ -135,14 +148,21 @@ class TestStarField:
             growth.append(float(np.median(ratio)))
         assert growth[1] / growth[0] == pytest.approx(2.0, rel=0.25)
 
+    def test_a_huge_count_is_capped(self) -> None:
+        # キーフレームの値は設定の上限（5000）を守らない 個数をそのまま配列にすると
+        # 何百万もの粒を作って描画が止まる 無限大は int() で例外になっていた
+        huge = self._field(0.3, count=1e6, fade_in=0.0, fade_out=0.0)
+        assert huge.x.size <= 5000
+        assert self._field(0.3, count=float("inf")).x.size == 0
+
     def test_all_stars_are_accounted_for(self) -> None:
         # 個数ぶんの粒が居る（フェードの途中で透明な粒だけは外す）
         field = self._field(0.3, fade_in=0.0, fade_out=0.0)
         assert field.x.size == 30
 
 
-def _drawn(params: dict[str, object], frame: int, duration: int = 81) -> np.ndarray:
-    source = GeneratedSource(kind="shape", params=params)  # type: ignore[arg-type]
+def _drawn(params: dict[str, ParamValue], frame: int, duration: int = 81) -> np.ndarray:
+    source = GeneratedSource(kind="shape", params=params)
     image = render_source(source, WIDTH, HEIGHT, frame=frame, fps=60.0, duration=duration)
     assert image is not None
     lit: np.ndarray = image[:, :, 3].astype(np.float32)
@@ -155,7 +175,9 @@ def test_the_trail_is_drawn_as_an_arrow() -> None:
     moving = AnimatedValue(
         0.0, keyframes=(Keyframe(frame=0, value=-600.0), Keyframe(frame=80, value=600.0))
     )
-    alpha = _drawn({"shape": "motion_trail", "pos_x": moving, "line_width": 16.0}, 20)
+    alpha = _drawn(
+        {"shape": "motion_trail", "pos_x": moving, "line_width": AnimatedValue(16.0)}, 20
+    )
     columns = np.nonzero(alpha.max(axis=0) > 128)[0] - WIDTH // 2
     assert columns.min() == pytest.approx(-608, abs=1)
     assert columns.max() == pytest.approx(-267, abs=2)
@@ -167,6 +189,6 @@ def test_the_trail_is_drawn_as_an_arrow() -> None:
 
 def test_the_star_field_moves_with_time() -> None:
     # 時計で動く図形 同じ絵を使い回すと、止まった星空になる
-    params: dict[str, object] = {"shape": "starfield", "star_count": AnimatedValue(200.0)}
+    params: dict[str, ParamValue] = {"shape": "starfield", "star_count": AnimatedValue(200.0)}
     assert not np.array_equal(_drawn(params, 0), _drawn(params, 30))
     assert _drawn(params, 30).max() > 200

@@ -22,6 +22,7 @@ from dataclasses import dataclass
 import numpy as np
 
 __all__ = [
+    "MAX_STARS",
     "PERSPECTIVE",
     "StarField",
     "Trail",
@@ -36,8 +37,21 @@ PositionAt = Callable[[float], tuple[float, float]]
 #: 1 フレームが何秒もかからないように頭を抑える
 MAX_TRAIL_POINTS = 20000
 
+#: 1 本の軌跡のために位置を引くフレームの数の上限（60fps で 5 分半）
+#: 実物は毎フレーム、クリップ頭から今までの位置を引き直す 止まっている長い区間では
+#: 押す点が増えないので点の上限が効かず、長いクリップの再生がフレームごとに重くなる
+#: これより長い軌跡は、今から上限ぶん前のフレームから描く（それより前の跡は出ない）
+MAX_TRAIL_FRAMES = 20000
+
+#: 先端の向きを探すときに前後へ広げる回数の上限（半フレームずつなので前後 5000 フレーム）
+#: 止まったままの長いクリップでは、クリップの端まで探しても向きが決まらない
+MAX_HEAD_STEPS = 10000
+
 #: 先端の向きを決めるのに要る移動量（画素） 実物が ``4*4`` と書いている値
 _HEAD_REACH = 16.0
+
+#: 星空の粒の数の上限 実物の ``個数`` の範囲の上限と同じ
+MAX_STARS = 5000
 
 #: AviUtl の奥行きの見え方 Z が 0 の面で等倍、カメラは手前 1024 の所にある
 #: 星空の粒の広がりと速さを実物から測ると、この値で合った（:func:`star_field`）
@@ -89,14 +103,17 @@ def trail(
     step = max(half * interval / 50.0, min_step, 1.0)
     # 押す円の間隔の数で頭を抑える 間隔を細かくした長い道でも止まらない
     budget = MAX_TRAIL_POINTS
-    last_frame = max(total, frame) + 2.0
+    # 固定速度はクリップ頭から道をたどって伸びるので、頭から数える
+    # 動きどおりなら今から上限ぶん前から たどるフレームの数を上限で抑える
+    first = 0 if fixed_speed > 0 else max(0, math.floor(frame) - MAX_TRAIL_FRAMES)
+    last_frame = min(max(total, frame) + 2.0, float(first + MAX_TRAIL_FRAMES))
 
-    now = 0.0
-    visited = 0
+    now = float(first)
+    visited = first
     left = 0.0
     run = 1.0
     walked = 0.0
-    end_x, end_y = position(0.0)
+    end_x, end_y = position(float(first))
     start_x, start_y = end_x, end_y
     x0, y0 = end_x, end_y
     x1, y1 = x0, y0
@@ -155,7 +172,9 @@ def trail(
     # 止まっている間は上向き（角度 0）
     turn = 0.0
     back = ahead = now
-    while back > 0 or ahead < total:
+    for _ in range(MAX_HEAD_STEPS):
+        if not (back > 0 or ahead < total):
+            break
         back = max(back - 0.5, 0.0)
         ahead = min(ahead + 0.5, total)
         before, after = position(back), position(ahead)
@@ -185,7 +204,7 @@ class StarField:
 def star_field(
     *,
     seconds: float,
-    count: int,
+    count: float,
     speed: float,
     spread: float,
     depth: float,
@@ -205,7 +224,9 @@ def star_field(
     乱数は実物と同じ並びにはならない（``obj.rand`` の中身は公開されていない）
     同じ種と周回からは同じ位置が出るので、同じフレームは何度描いても同じ絵になる
     """
-    n = max(0, int(count))
+    # 読み込んだファイルやキーフレームの値は、設定の範囲（5000 まで）を守っていない
+    # ことがある そのまま個数にすると巨大な配列を作って描画が止まる
+    n = int(min(max(count, 0), MAX_STARS)) if math.isfinite(count) else 0
     if n == 0:
         empty = np.zeros(0)
         return StarField(empty, empty, empty, empty)
@@ -236,7 +257,15 @@ def star_field(
     # カメラより手前（後ろ）へ来た粒は映らない 奥行き 0 でも 512 手前に居るだけなので
     # 実物の値の範囲では起きないが、割り算を 0 で割らないために外す
     distance = PERSPECTIVE + z
-    seen = (distance > 1e-6) & (alpha > 0)
+    # 無限大や非数（壊れた速さ・広がり）で出た粒も外す 描く側で座標が壊れる
+    seen = (
+        (distance > 1e-6)
+        & (alpha > 0)
+        & np.isfinite(distance)
+        & np.isfinite(alpha)
+        & np.isfinite(x)
+        & np.isfinite(y)
+    )
     scale = np.where(seen, PERSPECTIVE / np.where(seen, distance, 1.0), 0.0)
     return StarField(
         x=(x * scale)[seen],
