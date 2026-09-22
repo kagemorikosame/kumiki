@@ -28,8 +28,12 @@ __all__ = [
     "PackStatus",
     "PackageStatus",
     "activate_runtime",
+    "app_dir",
     "install_command",
     "install_runtime",
+    "is_frozen",
+    "pip_arguments",
+    "run_pip",
     "runtime_target_dir",
 ]
 
@@ -153,14 +157,42 @@ def _version(name: str) -> str | None:
         return None
 
 
-def _is_frozen() -> bool:
+def is_frozen() -> bool:
     """PyInstaller などで固めた実行ファイルとして動いているか"""
     return bool(getattr(sys, "frozen", False))
 
 
+def app_dir() -> Path | None:
+    """配った zip を展開したフォルダ（``Kumiki.exe`` の置き場） 通常の実行では ``None``
+
+    利用者が手で触る物（スクリプト置き場）はここに置く ``_internal`` の中は
+    PyInstaller の持ち物で、更新のたびに丸ごと置き換わる
+    """
+    if not is_frozen():
+        return None
+    return Path(sys.executable).resolve().parent
+
+
+def pip_arguments(argv: Sequence[str]) -> list[str] | None:
+    """``Kumiki.exe -m pip ...`` と呼ばれたときの pip への引数 それ以外は ``None``
+
+    パッケージ版には Python の本体が無い 導入ボタンは ``sys.executable -m pip`` を
+    呼ぶが、パッケージ版の ``sys.executable`` は ``Kumiki.exe`` 自身なので、
+    ここで受けて pip を動かさないと、**導入するつもりで Kumiki がもう 1 つ起動する**
+
+    通常の実行では受けない ``sys.executable`` が本物の Python なので、そちらが
+    pip を動かす
+    """
+    if not is_frozen():
+        return None
+    if list(argv[1:3]) != ["-m", "pip"]:
+        return None
+    return list(argv[3:])
+
+
 def runtime_target_dir() -> Path | None:
     """導入先の専用フォルダ 通常の実行では ``None``（動いている環境へ直接入れる）"""
-    if not _is_frozen():
+    if not is_frozen():
         return None
     base = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_DATA_HOME")
     root = Path(base) if base else Path.home() / ".local" / "share"
@@ -181,6 +213,30 @@ def activate_runtime() -> Path | None:
         # 使わせるため
         sys.path.insert(0, path)
     return target
+
+
+def run_pip(arguments: Sequence[str]) -> int:
+    """配布版の中で pip を走らせる :func:`pip_arguments` が受けたときに使う
+
+    pip が中で使う distlib は、同梱の部品（``t64.exe`` など）を
+    **読み込み方式ごとの探し方**で見つける PyInstaller の読み込み方式は
+    distlib の一覧に無いので、``pip install`` は部品を探す所で落ちる
+    （``pip --version`` は部品を探さないので通ってしまう 実物で確かめた）
+
+    配布版では部品が ``_internal`` の下にファイルとして置いてあるので、
+    ファイルとして探す方式を割り当てれば見つかる
+    """
+    from pip._vendor import distlib
+    from pip._vendor.distlib import resources
+
+    loader = getattr(distlib, "__loader__", None)
+    if loader is not None:
+        # distlib は型を配っていない 呼び方は distlib 0.3 系の resources.py で確かめた
+        resources.register_finder(loader, resources.ResourceFinder)  # type: ignore[no-untyped-call]
+
+    from pip._internal.cli.main import main as pip_main
+
+    return int(pip_main(list(arguments)))
 
 
 def install_command(

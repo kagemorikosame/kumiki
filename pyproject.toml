@@ -36,6 +36,8 @@ dev = [
     "hypothesis>=6.100",
     "ruff>=0.14",
     "mypy>=1.14",
+    # 配る zip を作る（tools/build_package.py） 使う人の機械には入らない
+    "pyinstaller>=6.22",
 ]
 
 [project.scripts]

@@ -57,7 +57,11 @@ SKIP_PARTS = {
     ".pytest_cache",
     ".work",
 }
-SKIP_PREFIXES = ("tests/fixtures/",)
+#: リポジトリ直下だけを外すもの 名前だけで外すと、同じ名前のソースの
+#: フォルダ（``src/kumiki/build/`` など）まで黙って検査から抜ける
+#: ``build/`` ``dist/`` は配る zip を組み立てた残り（tools/build_package.py）
+#: 部品の中には UTF-8 でない文字列ファイルもあり、読んだ時点で検査が落ちる
+SKIP_PREFIXES = ("tests/fixtures/", "build/", "dist/")
 
 #: 文字列リテラルがデータとして句点を持つファイル リテラルだけ見逃す
 DATA_LITERAL_FILES = {"src/kumiki/asr/cleanup.py"}
