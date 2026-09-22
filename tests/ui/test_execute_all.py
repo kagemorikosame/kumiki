@@ -39,6 +39,8 @@ def test_a_refused_batch_reports_failure_and_rolls_back(window: MainWindow) -> N
 
 
 def test_a_successful_batch_reports_success(window: MainWindow) -> None:
+    # 通ったのに偽を返すと、テンプレートを置いても素材の解析と控えの作成に進まず、
+    # 「置いた」とも出ない
     media = MediaItem(path=Path("C:/素材/効果音.mp3"))
     assert window.execute_all([AddMedia(media)], "素材を追加") is True
     assert window.document.project.media == (media,)

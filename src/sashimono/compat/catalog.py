@@ -254,13 +254,15 @@ def _media_paths(objects: list[MappedObject]) -> list[str]:
     クリップに結ばない 結ぶと、音声しか無い素材を映像トラックへ置くことになり
     置く時点で断られる
     """
-    found: list[str] = []
-    for item in objects:
-        for inner in item.walk():
-            path = inner.media_path
-            if path and inner.clip.source is None and path not in found:
-                found.append(path)
-    return found
+    # 辞書で順序を保ったまま重複を落とす 一覧で ``in`` を引くと数が増えるほど遅くなる
+    return list(
+        dict.fromkeys(
+            inner.media_path
+            for item in objects
+            for inner in item.walk()
+            if inner.media_path and inner.clip.source is None
+        )
+    )
 
 
 def _same_file(path: Path) -> str:
