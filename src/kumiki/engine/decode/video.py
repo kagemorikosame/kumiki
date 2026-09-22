@@ -17,6 +17,7 @@ import numpy as np
 
 from kumiki.core.model import VideoStreamInfo
 from kumiki.core.timebase import Rounding, seconds_to_pts
+from kumiki.engine.colorspace import to_rgb_array
 from kumiki.engine.decode.probe import ProbeError, probe_media
 
 __all__ = ["VideoDecoder"]
@@ -168,8 +169,13 @@ def _frame_time(frame: av.VideoFrame) -> Fraction:
 
 
 def _to_rgba(frame: av.VideoFrame, rotation: int) -> np.ndarray:
-    """デコード済みフレームを RGBA の配列へ 回転があれば適用する"""
-    image = frame.to_ndarray(format="rgba")
+    """デコード済みフレームを RGBA の配列へ 回転があれば適用する
+
+    行列は :func:`~kumiki.engine.colorspace.to_rgb_array` に決めさせる 素の
+    ``to_ndarray`` はタグの無い素材を大きさに関係なく BT.601 で読む タグの無い HD の
+    素材はほとんど BT.709 で作られているので、赤がくすみ緑が黄色へ寄った絵になる
+    """
+    image = to_rgb_array(frame, "rgba")
     if rotation == 0:
         return image
     # np.rot90 は反時計回りなので、時計回り 90 度は k=-1 にあたる
