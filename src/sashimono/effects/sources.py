@@ -168,11 +168,13 @@ SHAPE = SourceDefinition(
         TrackSpec("corner_radius", "角の丸み", 0, 500, 24, step=1, unit="px"),
         TrackSpec("line_width", "線の太さ", 0, 200, 0, step=1, unit="px"),
         CheckSpec("outline_only", "線のみ", False),
-        # 線をどこへ引くか 既定は AviUtl2 と YMM4 に合わせて**内側**
+        # 線をどこへ引くか 既定は AviUtl2 と同じ**内側**
         # 内側なら「幅」がそのまま外形になる 中央に引くと線の太さの半分
         # （太さ 20 で約 10 画素）外へはみ出し、幅 400 の図形が 420 に見える（#87）
         # 前の版で作った作品を開くと、輪郭だけの図形が線の太さぶん小さくなる
         # 元の見た目に戻したいときは ``輪郭の中央`` を選ぶ
+        # YMM4 も内側に引くが、読み込む側が大きさを太さぶん縮めて写しているので、
+        # `compat/ymm4/template.py` は ``center`` を明に渡す（二重に細るのを防ぐ）
         SelectSpec(
             "line_align",
             "線の位置",
