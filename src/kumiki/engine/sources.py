@@ -9,8 +9,8 @@ Qt の描画系（``QPainter``）を使う 日本語の禁則処理やフォン�
 
 from __future__ import annotations
 
-import functools
 import math
+from collections.abc import Callable
 
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt
@@ -40,9 +40,9 @@ from kumiki.engine.audio_shapes import (
     waveform_cells,
     waveform_points,
 )
-from kumiki.engine.motion_shapes import TrailPath, star_field, trail, trail_path
+from kumiki.engine.motion_shapes import TrailPath, TrailPaths, sample_value, star_field, trail
 
-__all__ = ["render_source", "waveform_points"]
+__all__ = ["forget_trail_paths", "render_source", "waveform_points"]
 
 #: 縦の基準ごとに、指定した位置より上へ出す割合 ``下`` なら全部が上に出る
 _VERTICAL_SHARE = {"top": 0.0, "middle": 0.5, "bottom": 1.0}
@@ -724,16 +724,28 @@ def _draw_concentration_frame(
 _STAMP_EDGE = 0.5
 
 
-@functools.lru_cache(maxsize=8)
-def _trail_path_of(x_value: AnimatedValue, y_value: AnimatedValue, frames: float) -> TrailPath:
-    """動きから引いた道を覚えておく 同じ動きのクリップを描くたびに、頭から全部の
-    位置を引き直さない（長いクリップの再生がフレームごとに重くならないように）"""
+#: 移動軌跡の道の置き場 レンダラがプロジェクトを差し替えたとき・閉じたときに空にする
+_TRAIL_PATHS = TrailPaths()
 
-    def position(at: float) -> tuple[float, float]:
+
+def forget_trail_paths() -> None:
+    """覚えておいた移動軌跡の道を捨てる 使われなくなった長い道をメモリに残さない"""
+    _TRAIL_PATHS.clear()
+
+
+def _trail_paths_of(x_value: AnimatedValue, y_value: AnimatedValue) -> Callable[[int], TrailPath]:
+    """その動きの道を、要るフレームまで伸ばして返す係"""
+
+    def positions(first: int, stop: int) -> np.ndarray:
         # 設定の Y は上が正 形の計算は実物のまま下が正で持つ
-        return x_value.at(at), -y_value.at(at)
+        xs = sample_value(x_value, first, stop)
+        ys = -sample_value(y_value, first, stop)
+        return np.stack([xs, ys], axis=1)
 
-    return trail_path(position, frames)
+    def paths(frames: int) -> TrailPath:
+        return _TRAIL_PATHS.get((x_value, y_value), positions, frames)
+
+    return paths
 
 
 def _draw_motion_trail(
@@ -769,7 +781,7 @@ def _draw_motion_trail(
         head_size=head_size,
         head_angle=_number(values, "trail_head_angle", 0.0),
         head_offset=_number(values, "trail_head_offset", 70.0),
-        path=_trail_path_of(x_value, y_value, max(duration, frame)),
+        paths=_trail_paths_of(x_value, y_value),
     )
     centre_x, centre_y = width / 2.0, height / 2.0
     colour = _color(values.get("color"))

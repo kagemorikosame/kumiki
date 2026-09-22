@@ -12,8 +12,18 @@ from collections.abc import Callable
 import numpy as np
 import pytest
 
-from kumiki.core.model import AnimatedValue, GeneratedSource, Keyframe, ParamValue
-from kumiki.engine.motion_shapes import StarField, Trail, TrailPath, star_field, trail, trail_path
+from kumiki.core.model import AnimatedValue, GeneratedSource, Interpolation, Keyframe, ParamValue
+from kumiki.engine.motion_shapes import (
+    StarField,
+    Trail,
+    TrailPath,
+    TrailPaths,
+    positions_from,
+    sample_value,
+    star_field,
+    trail,
+    trail_path,
+)
 from kumiki.engine.sources import render_source
 
 WIDTH, HEIGHT = 1920, 1080
@@ -27,6 +37,7 @@ def _moving_right(at: float) -> tuple[float, float]:
 def _trail(
     position: Callable[[float], tuple[float, float]] = _moving_right,
     path: TrailPath | None = None,
+    paths: Callable[[int], TrailPath] | None = None,
     **overrides: float,
 ) -> Trail:
     settings: dict[str, float] = {
@@ -41,7 +52,7 @@ def _trail(
         "head_offset": 70.0,
     }
     settings.update(overrides)
-    return trail(position, path=path, **settings)
+    return trail(position, path=path, paths=paths, **settings)
 
 
 class TestTrail:
@@ -87,7 +98,7 @@ class TestTrail:
     def test_a_long_still_clip_does_not_walk_every_frame(self) -> None:
         # 止まっている区間は点が増えないので点の上限が効かず、クリップ頭から
         # 今までの位置を毎フレーム全部引いていた（長いクリップの再生が二乗で重くなる）
-        # 道は 1 度だけ引いて覚え、フレームごとには先端の向きを探す分しか引かない
+        # 道は覚えておいて先へ伸ばすだけにし、フレームごとには先端の向きを探す分しか引かない
         calls = 0
 
         def still(_at: float) -> tuple[float, float]:
@@ -95,11 +106,52 @@ class TestTrail:
             calls += 1
             return 0.0, 0.0
 
-        path = trail_path(still, 100_000.0)
+        store = TrailPaths()
+        many = positions_from(still)
+
+        def paths(frames: int) -> TrailPath:
+            return store.get("still", many, frames)
+
+        _trail(still, paths=paths, frame=50_000.0, total=100_000.0)
         calls = 0
-        for frame in range(50_000, 50_100):
-            _trail(still, frame=float(frame), total=100_000.0, path=path)
-        assert calls < 100 * 2 * 2400 + 1000
+        for frame in range(50_001, 50_101):
+            _trail(still, paths=paths, frame=float(frame), total=100_000.0)
+        assert calls < 100 * 2 * 2400 + 2000
+
+    def test_the_first_frame_reads_only_up_to_now(self) -> None:
+        # 初めて描くときにクリップの長さぶん全部を引いていた（長いクリップの初めの 1 枚が
+        # 止まる） 今のフレームまでで足りる
+        store = TrailPaths()
+        asked: list[int] = []
+
+        def many(first: int, stop: int) -> np.ndarray:
+            asked.append(stop)
+            return np.zeros((stop - first, 2))
+
+        store.get("clip", many, 100)
+        assert max(asked) <= 101
+
+    def test_the_store_keeps_within_its_budget(self) -> None:
+        # 長い道を何本も描いた後に、全部をメモリに残していた
+        store = TrailPaths(budget=1000)
+        for index in range(5):
+            store.get(index, lambda a, b: np.zeros((b - a, 2)), 600)
+        assert len(store._paths) == 1
+
+    def test_the_fast_sampling_matches_one_by_one(self) -> None:
+        # まとめて引いた値が 1 つずつ引いた値と違うと、道が実物からずれる
+        value = AnimatedValue(
+            0.0,
+            keyframes=(
+                Keyframe(frame=0, value=-600.0),
+                Keyframe(frame=40, value=100.0, interpolation=Interpolation.EASE_IN_OUT),
+                Keyframe(frame=60, value=100.0, interpolation=Interpolation.HOLD),
+                Keyframe(frame=80, value=600.0),
+            ),
+        )
+        fast = sample_value(value, 0, 120)
+        slow = np.array([value.at(float(at)) for at in range(120)])
+        assert fast == pytest.approx(slow)
 
     def test_a_long_fixed_speed_trail_keeps_growing(self) -> None:
         # 位置を引くフレームを 2 万で打ち切ると、固定速度の長いクリップで
@@ -109,6 +161,9 @@ class TestTrail:
 
         shape = _trail(walking, frame=30_000.0, total=40_000.0, fixed_speed=1.0)
         assert shape.last[0] == pytest.approx(30_000.0, abs=1.0)
+        # 動きより速く伸ばすときは、今のフレームより先の道まで伸ばして読む
+        faster = _trail(walking, frame=10_000.0, total=40_000.0, fixed_speed=2.0)
+        assert faster.last[0] == pytest.approx(20_000.0, abs=1.0)
 
     def test_the_stamps_match_walking_frame_by_frame(self) -> None:
         # 道のりを先に数えて円を置いても、実物の 1 フレームずつ進める置き方と
@@ -166,6 +221,7 @@ class TestStarField:
         assert np.all(np.hypot(after.x, after.y) >= np.hypot(before.x, before.y))
 
     def test_a_negative_speed_goes_away(self) -> None:
+        # 速度が負なら手前から奥へ下がる 下がらないと、流れる向きが実物と逆になる
         before = self._field(0.5, speed=-6.0, fade_in=0.0, fade_out=0.0)
         after = self._field(0.51, speed=-6.0, fade_in=0.0, fade_out=0.0)
         assert np.all(after.scale <= before.scale)

@@ -15,11 +15,16 @@
 
 from __future__ import annotations
 
+import itertools
 import math
+import threading
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
+
+from kumiki.core.model import AnimatedValue, Interpolation
 
 __all__ = [
     "MAX_STARS",
@@ -27,7 +32,11 @@ __all__ = [
     "StarField",
     "Trail",
     "TrailPath",
+    "TrailPaths",
+    "positions_from",
+    "sample_value",
     "star_field",
+    "start_path",
     "trail",
     "trail_path",
 ]
@@ -35,14 +44,21 @@ __all__ = [
 #: その時刻（クリップ頭からのフレーム 小数も取る）での位置 Y は下が正
 PositionAt = Callable[[float], tuple[float, float]]
 
+#: 整数のフレーム ``[始め, 終わり)`` の位置をまとめて返す ``(フレームの数, 2)``
+PositionsIn = Callable[[int, int], np.ndarray]
+
 #: 1 本の軌跡で打つ点の上限 壊れた値（描画間隔 0 で画面の端から端まで動く、など）でも
 #: 1 フレームが何秒もかからないように頭を抑える
 MAX_TRAIL_POINTS = 20000
 
-#: 軌跡のために位置を引くフレームの数の上限（60fps で 4 時間半）
-#: 道は描く側が 1 度だけ引いて覚えておく（:class:`TrailPath`） 壊れた長さのクリップで
-#: 何億フレームも引かないための最後の歯止め
-MAX_TRAIL_FRAMES = 1_000_000
+#: 軌跡のために位置を引くフレームの数の上限（60fps で 24 時間）
+#: 道は今のフレームまでだけを引き、描く側が伸ばしながら覚えておく（:class:`TrailPaths`）
+#: これは壊れた長さのクリップで何十億フレームも引かないための最後の歯止め
+MAX_TRAIL_FRAMES = 60 * 60 * 60 * 24
+
+#: 覚えておく道のフレームの数の合計の上限 1 フレームに 16 バイト使うので 32MB
+#: 超えたら古く使った道から捨てる 今描いている道 1 本だけは、超えていても残す
+MAX_CACHED_FRAMES = 2_000_000
 
 #: 先端の向きを探すときに前後へ広げる回数の上限（半フレームずつなので前後 1200 フレーム）
 #: 止まったままの長いクリップでは、クリップの端まで探しても向きが決まらない
@@ -80,7 +96,8 @@ class TrailPath:
     """整数のフレームごとの位置と、頭からたどった道のり
 
     軌跡を描くたびにクリップ頭から位置を引き直すと、長いクリップほど 1 フレームが
-    重くなる（再生全体では 2 乗） 描く側はこれを 1 度だけ作って使い回す
+    重くなる（再生全体では 2 乗） 描く側はこれを覚えておき、先へ進んだぶんだけ伸ばす
+    位置は float32（画面の範囲なら 1/1000 画素より細かい）、道のりは長く足すので float64
     """
 
     points: np.ndarray
@@ -90,15 +107,113 @@ class TrailPath:
     def frames(self) -> int:
         return len(self.points) - 1
 
+    def extended(self, positions: PositionsIn, frames: int) -> TrailPath:
+        """``frames`` まで伸ばした道 もう届いていればそのまま"""
+        stop = min(frames, MAX_TRAIL_FRAMES)
+        if stop <= self.frames:
+            return self
+        more = _clean(positions(self.frames + 1, stop + 1))
+        joined = np.concatenate([self.points[-1:], more])
+        lengths = np.hypot(*np.diff(joined.astype(np.float64), axis=0).T)
+        reach = np.concatenate([self.reach, self.reach[-1] + np.cumsum(lengths)])
+        return TrailPath(points=np.concatenate([self.points, more]), reach=reach)
+
+
+def _clean(points: np.ndarray) -> np.ndarray:
+    cleaned: np.ndarray = np.nan_to_num(
+        np.asarray(points, dtype=np.float64), nan=0.0, posinf=0.0, neginf=0.0
+    ).astype(np.float32)
+    return cleaned
+
+
+def start_path(positions: PositionsIn) -> TrailPath:
+    """フレーム 0 だけの道"""
+    return TrailPath(points=_clean(positions(0, 1)), reach=np.zeros(1))
+
+
+def sample_value(value: AnimatedValue, first: int, stop: int) -> np.ndarray:
+    """``AnimatedValue.at`` を整数のフレーム ``[first, stop)`` でまとめて引く
+
+    直線と止まった区間は配列の計算で済ませる 何十万フレームを 1 つずつ引くと、
+    長いクリップの初めの 1 枚に何秒もかかる イージングの区間だけ 1 つずつ引く
+    （曲線の解き方を 2 か所に持たないため）
+    """
+    frames = np.arange(first, stop, dtype=np.float64)
+    keys = value.keyframes
+    if not keys:
+        return np.full(len(frames), value.static, dtype=np.float64)
+    out = np.empty(len(frames), dtype=np.float64)
+    out[frames <= keys[0].frame] = keys[0].value
+    out[frames >= keys[-1].frame] = keys[-1].value
+    inner = (frames > keys[0].frame) & (frames < keys[-1].frame)
+    for left, right in itertools.pairwise(keys):
+        mask = inner & (frames >= left.frame) & (frames < right.frame)
+        if not mask.any():
+            continue
+        if left.interpolation is Interpolation.HOLD or left.value == right.value:
+            out[mask] = left.value
+        elif left.interpolation is Interpolation.LINEAR:
+            progress = (frames[mask] - left.frame) / (right.frame - left.frame)
+            out[mask] = left.value + (right.value - left.value) * progress
+        else:
+            out[mask] = [value.at(float(at)) for at in frames[mask]]
+    return out
+
+
+def positions_from(position: PositionAt) -> PositionsIn:
+    """1 つずつ引く位置を、まとめて引く形へ（試験や、式を持たない動きに使う）"""
+
+    def many(first: int, stop: int) -> np.ndarray:
+        return np.array([position(float(index)) for index in range(first, stop)], dtype=np.float64)
+
+    return many
+
 
 def trail_path(position: PositionAt, frames: float) -> TrailPath:
     """フレーム 0 から ``frames`` までの位置を引いて道にする"""
-    count = int(min(max(math.ceil(frames), 0), MAX_TRAIL_FRAMES)) + 1
-    points = np.array([position(float(index)) for index in range(count)], dtype=np.float64)
-    points = np.nan_to_num(points, nan=0.0, posinf=0.0, neginf=0.0)
-    lengths = np.hypot(*np.diff(points, axis=0).T) if count > 1 else np.zeros(0)
-    reach = np.concatenate([[0.0], np.cumsum(lengths)])
-    return TrailPath(points=points, reach=reach)
+    positions = positions_from(position)
+    return start_path(positions).extended(positions, max(math.ceil(frames), 0))
+
+
+class TrailPaths:
+    """動きごとの道を、要る所まで伸ばしながら覚えておく
+
+    同じ動きのクリップを描くたびに、頭から全部の位置を引き直さない 初めて描くときも
+    今のフレームまでしか引かない（クリップの長さぶんを先に引くと、長いクリップの
+    初めの 1 枚が止まる） 覚える量は :data:`MAX_CACHED_FRAMES` で抑える
+    """
+
+    def __init__(self, budget: int = MAX_CACHED_FRAMES) -> None:
+        self._budget = budget
+        self._paths: OrderedDict[object, TrailPath] = OrderedDict()
+        # プレビューと書き出しは別のスレッドで同時に描く 1 つの置き場を共有するので鍵を掛ける
+        self._lock = threading.Lock()
+
+    def get(self, key: object, positions: PositionsIn, frames: int) -> TrailPath:
+        with self._lock:
+            return self._get(key, positions, frames)
+
+    def _get(self, key: object, positions: PositionsIn, frames: int) -> TrailPath:
+        path = self._paths.pop(key, None)
+        if path is None:
+            path = start_path(positions)
+        if frames > path.frames:
+            # 少しずつ伸ばすと毎フレーム配列を作り直すので、倍ずつ先まで引く
+            # （再生が進むたびに 1 フレームずつ足すと、つなぐ手間が 2 乗になる）
+            path = path.extended(positions, max(frames, min(path.frames * 2, frames + 600)))
+        self._paths[key] = path
+        self._trim()
+        return path
+
+    def clear(self) -> None:
+        with self._lock:
+            self._paths.clear()
+
+    def _trim(self) -> None:
+        total = sum(len(path.points) for path in self._paths.values())
+        while total > self._budget and len(self._paths) > 1:
+            _, dropped = self._paths.popitem(last=False)
+            total -= len(dropped.points)
 
 
 def trail(
@@ -114,6 +229,7 @@ def trail(
     head_angle: float,
     head_offset: float,
     path: TrailPath | None = None,
+    paths: Callable[[int], TrailPath] | None = None,
 ) -> Trail:
     """``ライン(移動軌跡)`` の形 実物の式を、道のりの計算に置き直して移した
 
@@ -126,13 +242,25 @@ def trail(
     動きの時刻に関係なく **1 フレームにその画素ずつ**道をたどって伸びていく
 
     時間はすべてクリップ頭からのフレームで持つ（実物は秒 ``f/obj.framerate`` で
-    持つが、割って掛け戻すだけなので同じ位置になる） ``path`` を渡さなければ、
-    ここで道を引く（描く側は覚えておいた道を渡す）
+    持つが、割って掛け戻すだけなので同じ位置になる） 道は ``paths``（そのフレーム
+    まで届いた道を返す）から受け取る 渡されなければ ``path``、それも無ければここで引く
     """
     half = line_width / 2.0
     step = max(half * interval / 50.0, min_step, 1.0)
-    if path is None:
-        path = trail_path(position, max(total, frame))
+    if paths is None:
+        whole = path if path is not None else trail_path(position, max(total, frame))
+
+        def paths(_frames: int) -> TrailPath:
+            return whole
+
+    last_frame = min(math.ceil(max(total, 0.0)), MAX_TRAIL_FRAMES)
+    path = paths(min(max(math.ceil(frame), 0), last_frame))
+    if fixed_speed > 0:
+        # 固定速度は道のりで伸びる 今の道のりに届くまで、クリップの終わりを上限に
+        # 道を先へ伸ばす（動きより速く伸ばすと、今のフレームより先の道が要る）
+        target = frame * fixed_speed
+        while path.reach[-1] < target and path.frames < last_frame:
+            path = paths(min(max(path.frames * 2, path.frames + 1), last_frame))
     frames = np.arange(len(path.points), dtype=np.float64)
 
     if fixed_speed > 0:

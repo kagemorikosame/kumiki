@@ -59,7 +59,12 @@ from kumiki.engine.render.scripts import (
     script_effects,
     split_effects,
 )
-from kumiki.engine.sources import MAX_CANVAS, render_source, source_canvas
+from kumiki.engine.sources import (
+    MAX_CANVAS,
+    forget_trail_paths,
+    render_source,
+    source_canvas,
+)
 
 __all__ = ["FrameRenderer", "RenderQuality"]
 
@@ -179,12 +184,14 @@ def _waveform_key(project: Project, clip: Clip, source: GeneratedSource) -> Wave
 
 
 #: 覚えておく絵の鍵のうち、音声波形が読む音（``WaveformKey``）が入る位置
-_HEARD_AT = 7
+#: 末尾（設定の指紋）の 1 つ前に置く 先頭から数えると、途中に項目を足したときに
+#: 別の項目を読んで判定が崩れる
+_HEARD_AT = -2
 
 
 def _hears(key: object) -> bool:
     """覚えておいた絵が、音声波形のものか（鍵のその位置に読む音が入っている）"""
-    return isinstance(key, tuple) and len(key) > _HEARD_AT and key[_HEARD_AT] is not None
+    return isinstance(key, tuple) and len(key) >= 2 and key[_HEARD_AT] is not None
 
 
 def _waveform_keys(project: Project) -> set[WaveformKey]:
@@ -331,6 +338,9 @@ class FrameRenderer:
         # 音声波形の音も、使われなくなったものは閉じる 開いたままだと、クリップを消しても
         # レンダラを閉じるまで音声ファイルを差し替えられない
         # 開けなかった記録は忘れる 後から置いた素材を、差し替えのたびに読み直せるように
+        # 移動軌跡の覚えた道も捨てる 長い道は 1 本で数十 MB あり、使わなくなった
+        # プロジェクトのぶんを残さない（次に描くときに今のフレームまで引き直す）
+        forget_trail_paths()
         heard = _waveform_keys(project)
         for sound in [k for k in self._audio if k not in heard]:
             self._audio.pop(sound).close()
@@ -599,6 +609,8 @@ class FrameRenderer:
         if self._closed:
             return
         self._closed = True
+        # 覚えた移動軌跡の道も手放す 閉じたレンダラのぶんを次のプロジェクトまで残さない
+        forget_trail_paths()
         for decoder in self._decoders.values():
             decoder.close()
         self._decoders.clear()

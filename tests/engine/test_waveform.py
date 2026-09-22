@@ -61,6 +61,7 @@ class TestPoints:
         assert points[0, 1] == pytest.approx(1.0 + 100.0)
 
     def test_the_volume_scales_the_swing(self) -> None:
+        # 音量が振れ幅に掛からないと、音量 50 でも実物の倍の高さの波形が出る
         points = waveform_points(np.array([0.5, 0.5]), 2.0, 400.0, 50.0)
         assert points[0, 1] == pytest.approx(1.0 + 50.0)
 
