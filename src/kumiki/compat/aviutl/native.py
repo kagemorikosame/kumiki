@@ -326,17 +326,19 @@ class NativeModule:
         self._functions: dict[str, Any] = {}
         if not table.functions:
             raise NativeModuleError(f"{path.name} が関数の一覧を持っていない")
-        for index in range(MAX_FUNCTIONS):
+        # 上限の数まで受け取り、その次が終わりの印（名前が空の行）であることも見る
+        # 上限ちょうどの数の関数を持つ正しい一覧を断らないため、1 つ多く見る
+        for index in range(MAX_FUNCTIONS + 1):
             entry = table.functions[index]
             if not entry.name:
                 break
+            if index == MAX_FUNCTIONS:
+                # 終わりの印が無い一覧 読み続けると、関係の無い場所まで
+                # 関数として読みに行く
+                raise NativeModuleError(f"{path.name} の関数の一覧に終わりが無い")
             if not entry.func:
                 raise NativeModuleError(f"{path.name} の {entry.name} に中身が無い")
             self._functions[entry.name] = entry.func
-        else:
-            # 終わりの印（名前が空の行）が無い一覧 読み続けると、関係の無い
-            # 場所まで関数として読みに行く
-            raise NativeModuleError(f"{path.name} の関数の一覧に終わりが無い")
         # 同じ DLL を描画と書き出しが同時に呼ぶことがある 中が同時に呼ばれる
         # ことに耐えるかは分からないので、1 つずつにする
         self._lock = threading.Lock()

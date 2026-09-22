@@ -600,7 +600,12 @@ class LuaScriptRuntime:
         if self._lua_type(value) != "table":
             return value
         if depth >= NATIVE_TABLE_DEPTH:
-            return {}
+            # 黙って空の表にすると、DLL は切れた引数を正しい値として読む
+            # 呼ぶのをやめて、スクリプトの失敗として記録する
+            raise LuaError(
+                f"DLL へ渡す表が深すぎる（{NATIVE_TABLE_DEPTH} 段まで）"
+                " 自分自身を指す表かもしれない"
+            )
         return {key: self._from_lua(item, depth + 1) for key, item in value.items()}
 
     def _to_lua(self, value: Any) -> Any:

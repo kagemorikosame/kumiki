@@ -386,3 +386,41 @@ class TestRoundTwo:
         table = _ModuleTable(information="", functions=entries)
         with pytest.raises(NativeModuleError, match="終わり"):
             NativeModule(Path("長い.mod2"), None, table)
+
+
+class TestRoundThree:
+    def test_exactly_the_limit_of_functions_is_accepted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """上限ちょうどの数の関数と、その次の終わりの印 正しい一覧なので断らない"""
+        monkeypatch.setattr(native, "MAX_FUNCTIONS", 2)
+        module, _keep = _module({"f0": lambda p: None, "f1": lambda p: None})
+        assert module.names == ("f0", "f1")
+
+    def test_a_table_too_deep_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """深すぎる表は、黙って空にせず呼ぶのをやめる
+
+        空にして渡すと、DLL は切れた引数を正しい値として読む
+        """
+        (tmp_path / "板.mod2").write_bytes(b"MZ")
+        calls: list[Any] = []
+
+        class Fake:
+            names = ("scan",)
+            path = tmp_path / "板.mod2"
+
+            def call(self, name: str, args: list[Any]) -> list[Any]:
+                calls.append(args)
+                return []
+
+        monkeypatch.setattr(native, "load", lambda path: Fake())
+        report = CompatibilityReport()
+        runtime = LuaScriptRuntime(report=report, instruction_limit=200_000)
+        runtime.set_roots((tmp_path,))
+        result = runtime.run(
+            'local t = {}\nt.self = t\nobj.module("板").scan(t)', _state(), script="深い"
+        )
+        assert calls == []
+        assert result.failed

@@ -336,3 +336,22 @@ class TestTheTempBufferSize:
         runtime.run('obj.setoption("drawtarget", "tempbuffer", 100000, 20)', state)
         assert state.buffers["tmp"].shape[0] == 20
         assert any("切った" in line for line in report.lines())
+
+
+class TestWindingWithDifferentVertices:
+    def test_each_corner_keeps_its_own_colour(self) -> None:
+        """向きを逆にしても、それぞれの頂点の近くにはその頂点の色が出る
+
+        どの頂点も同じ色だと、向きをそろえたときに色の並びを入れ替え忘れても
+        気づけない 頂点ごとに違う色で確かめる
+        """
+        red, green, blue = (1.0, 0.0, 0.0, 1.0), (0.0, 1.0, 0.0, 1.0), (0.0, 0.0, 1.0, 1.0)
+        a, b, c = (-8.0, -8.0), (8.0, -8.0), (-8.0, 8.0)
+        clockwise = np.zeros((20, 20, 4), np.uint8)
+        counter = np.zeros((20, 20, 4), np.uint8)
+        raster.draw_triangle(clockwise, (a, b, c), colors=(red, green, blue))
+        raster.draw_triangle(counter, (a, c, b), colors=(red, blue, green))
+        assert np.array_equal(clockwise, counter)
+        assert int(np.argmax(clockwise[2, 2, :3])) == 0
+        assert int(np.argmax(clockwise[2, 16, :3])) == 1
+        assert int(np.argmax(clockwise[16, 2, :3])) == 2
