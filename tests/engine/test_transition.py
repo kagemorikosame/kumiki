@@ -1,6 +1,7 @@
 """場面切り替え（YMM4 の ``TransitionItem``）
 
-決まりは YMM4 に描かせた試験から読んだ 前の場面は範囲の中の切れ目の直前で止まり、
+決まりは YMM4 に描かせた試験と、配布されている場面切り替えの書き出しから読んだ
+前の場面は切り替えの頭より前に始まったクリップだけで、範囲の中の切れ目の直前で止まる
 後の場面はいまの時刻の絵 進み具合は範囲の頭から終わりまで
 """
 
@@ -8,10 +9,14 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 import pytest
 
+from kumiki.compat.aviutl.report import CompatibilityReport
+from kumiki.compat.catalog import place
+from kumiki.compat.ymm4.template import load_template, map_template
 from kumiki.core.commands import (
     AddEffect,
     ParamPath,
@@ -84,10 +89,72 @@ def _render(project: Project, context: OffscreenGLContext, frame: int) -> np.nda
         renderer.close()
 
 
-def test_switch_changes_at_the_cut_not_the_middle(gl_context: OffscreenGLContext) -> None:
+def test_switch_when_the_cut_is_in_the_middle(gl_context: OffscreenGLContext) -> None:
+    # 切れ目と真ん中が同じ 30 のとき、1 フレームもずれずに赤から青へ変わる
     project = _project("switch")
     assert _render(project, gl_context, 29)[18, 32, 0] > 200
     assert _render(project, gl_context, 30)[18, 32, 2] > 200
+
+
+def _tracks(project: Project, *tracks: Track) -> Project:
+    return project.with_timeline(replace(project.timeline, tracks=tracks))
+
+
+def _transition_track(start: int, duration: int, style: str, **params: object) -> Track:
+    clip = Clip(
+        timeline_start=start,
+        duration=duration,
+        source=TRANSITION.create(style=style, **params),  # type: ignore[arg-type]
+    )
+    return Track(TrackKind.VIDEO, "切り替え", (clip,))
+
+
+def test_switch_changes_in_the_middle_not_at_the_cut(gl_context: OffscreenGLContext) -> None:
+    # 赤は 30 で終わるが、切り替えは 20〜60 の真ん中の 40 で入れ替わる
+    # 切れ目で入れ替えると、YMM4 では前の場面が映っている 30〜39 に青が出る
+    # （じわっと抽象化切り替えは長さ 40、切れ目 30 で、YMM4 は 20 から後の場面を出す）
+    base = Project.create(SETTINGS)
+    scenes = Track(
+        TrackKind.VIDEO,
+        "V1",
+        (
+            Clip(timeline_start=0, duration=30, source=_fill(RED)),
+            Clip(timeline_start=30, duration=30, source=_fill(BLUE)),
+        ),
+    )
+    project = _tracks(base, scenes, _transition_track(20, 40, "switch"))
+    assert _render(project, gl_context, 39)[18, 32, 0] > 200
+    assert _render(project, gl_context, 40)[18, 32, 2] > 200
+
+
+def test_a_clip_starting_with_the_transition_is_not_the_old_scene(
+    gl_context: OffscreenGLContext,
+) -> None:
+    # 切り替えと同時に始まる青は後の場面にだけ入る 前の場面は何も無い（黒）
+    # 前の場面にも青を入れると、黒から出てくるはずのクロスフェードが最初から青い
+    # （YMM4 のペイントトランジションで差が 249 あった）
+    base = Project.create(SETTINGS)
+    scenes = Track(
+        TrackKind.VIDEO, "V1", (Clip(timeline_start=20, duration=40, source=_fill(BLUE)),)
+    )
+    project = _tracks(base, scenes, _transition_track(20, 20, "fade"))
+    assert _render(project, gl_context, 20)[18, 32, 2] < 5
+    assert abs(int(_render(project, gl_context, 30)[18, 32, 2]) - 128) <= 3
+
+
+def test_the_old_scene_stops_where_its_own_clip_ends(gl_context: OffscreenGLContext) -> None:
+    # 前の場面の赤は 30 で終わる 後から始まった緑が 35 まで続いても、前の場面は
+    # 赤の終わりの直前で止める 緑の終わりで止めると、32 の前の場面は空になる
+    base = Project.create(SETTINGS)
+    red = Track(TrackKind.VIDEO, "V1", (Clip(timeline_start=0, duration=30, source=_fill(RED)),))
+    green = Track(
+        TrackKind.VIDEO,
+        "V2",
+        (Clip(timeline_start=22, duration=13, source=_fill((0.0, 1.0, 0.0, 1.0))),),
+    )
+    project = _tracks(base, red, green, _transition_track(20, 20, "overlay", target="before"))
+    pixel = _render(project, gl_context, 32)[18, 32]
+    assert pixel[0] > 200 and pixel[1] < 5
 
 
 def test_fade_mixes_the_encoded_values(gl_context: OffscreenGLContext) -> None:
@@ -192,3 +259,35 @@ class TestEditingTheScenes:
         clip = project.timeline.locate_clip(clip_id)[1]  # type: ignore[index]
         assert [e.id for e in clip.effects] == [front.id]
         assert clip.after_effects == ()
+
+
+#: 配布されている場面切り替え（あおもや式テンプレート） 配布物なのでリポジトリには入れていない
+PAINT = (
+    Path(__file__).resolve().parents[1]
+    / "fixtures"
+    / "ymm4"
+    / "aomoya"
+    / "場面切り替え_ペイントトランジション.ymmt"
+)
+
+
+@pytest.mark.skipif(not PAINT.is_file(), reason="ペイントトランジションの .ymmt が置かれていない")
+def test_the_paint_transition_starts_from_black(gl_context: OffscreenGLContext) -> None:
+    # 図形も切り替えも同じ時刻に始まるので、前の場面は黒 YMM4 の書き出しは頭の
+    # 8 フレームがほぼ真っ黒（平均 1 未満） いまのフレームを前の場面にすると、
+    # 頭から明るい灰色が出る（差 249）
+    templates = load_template(PAINT)
+    objects = map_template(list(templates[0].items), report=CompatibilityReport())
+    # 写せず何も置けないと、空のタイムラインは黒なので下の検査が素通りする
+    assert objects, "テンプレートから何も写せなかった"
+    project = Project.create(SETTINGS)
+    commands = place(objects, project, at_frame=0)
+    assert commands, "置くものが無かった"
+    for command in commands:
+        project = command.apply(project)
+    for frame in (0, 2, 5):
+        image = _render(project, gl_context, frame)
+        assert float(image[..., :3].mean()) < 10, f"フレーム {frame} が明るい"
+    # 黒いのは頭だけ YMM4 の書き出しは 40 フレーム目で平均 190 前後まで明るくなる
+    # ここまで黒なら、前の場面ではなく絵そのものが描けていない
+    assert float(_render(project, gl_context, 40)[..., :3].mean()) > 100
