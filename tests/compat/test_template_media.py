@@ -209,11 +209,12 @@ def test_a_missing_file_is_reported_and_the_rest_is_placed(tmp_path: Path) -> No
     """
     absent = r"C:\Users\作者\Documents\効果音\coin04.mp3"
     objects = [media_object(absent, "音声ファイル", layer=4)]
-    plan = gather_media(objects, Project.create(), FakeProbe())
+    project = Project.create()
+    plan = gather_media(objects, project, FakeProbe())
     assert plan.missing == (absent,)
     assert plan.commands == ()
 
-    project = apply(Project.create(), place(objects, Project.create(), media=plan.media))
+    project = apply(project, place(objects, project, media=plan.media))
     # 素材が無くても音声は音声トラックに置く 映像トラックにあると、あとで
     # 素材を足しても鳴らない
     (clip,) = clips_of(project, TrackKind.AUDIO)
@@ -274,3 +275,33 @@ def test_audio_on_a_high_layer_uses_one_audio_track(files: tuple[Path, Path]) ->
     (track,) = project.timeline.audio_tracks()
     assert track.id == existing.id
     assert len(track.clips) == 1
+
+
+def test_audio_avoids_a_busy_or_locked_audio_track(files: tuple[Path, Path]) -> None:
+    """ほかの音と重なる音声トラックやロックされた音声トラックには置かない
+
+    そこへ置くと ``AddClip`` が断り、1 回の Undo にまとめた配置が画像や素材の登録まで
+    全部取り消されて、テンプレートが 1 つも置けない 空きが無ければ新しく作る
+    """
+    _, effect = files
+    busy = Track(kind=TrackKind.AUDIO, name="A1", clips=(Clip(timeline_start=0, duration=100),))
+    locked = Track(kind=TrackKind.AUDIO, name="A2", locked=True)
+    project = AddTrack(locked).apply(AddTrack(busy).apply(Project.create()))
+    project = put([media_object(effect, "音声ファイル", layer=4)], project, FakeProbe())
+
+    tracks = list(project.timeline.audio_tracks())
+    assert len(tracks) == 3
+    assert [len(track.clips) for track in tracks] == [1, 0, 1]
+    assert tracks[2].clips[0].media_id == project.media[0].id
+
+
+def test_audio_uses_an_existing_track_when_it_is_free_there(files: tuple[Path, Path]) -> None:
+    # 置く範囲の外にだけ音がある音声トラックは使ってよい 範囲を見ずに断ると、
+    # 使える音声トラックがあるのに置くたびに新しいトラックが増える
+    _, effect = files
+    later = Track(kind=TrackKind.AUDIO, name="A1", clips=(Clip(timeline_start=200, duration=50),))
+    project = AddTrack(later).apply(Project.create())
+    project = put([media_object(effect, "音声ファイル", layer=4)], project, FakeProbe())
+
+    (track,) = project.timeline.audio_tracks()
+    assert len(track.clips) == 2

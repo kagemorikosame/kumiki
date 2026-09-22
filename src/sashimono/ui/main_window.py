@@ -39,6 +39,7 @@ from sashimono.ai.host import ToolError
 from sashimono.compat.aviutl import native
 from sashimono.compat.aviutl.exo import ExoFile
 from sashimono.core.commands import (
+    AddClip,
     AddMedia,
     AddScene,
     Command,
@@ -684,20 +685,25 @@ class MainWindow(QMainWindow):
             return
         self._on_project_changed()
 
-    def execute_all(self, commands: list[Command], label: str, *, merge: bool = False) -> None:
+    def execute_all(self, commands: list[Command], label: str, *, merge: bool = False) -> bool:
         """複数のコマンドを 1 回の Undo で戻せるようにまとめて実行する
 
         ``merge`` が真なら、直前の同じ操作の段へまとめる（:meth:`Document.checkpoint`）
+        断られてまとめて戻したときは偽を返す 呼び出し側が成功した前提で続きを
+        進めると、戻した素材の解析を頼んだり、置けていないのに「置いた」と出したりする
         """
         if not commands:
-            return
+            return True
         try:
             with self._document.checkpoint(label, merge=merge):
                 for command in commands:
                     self._document.execute(self._in_active_scene(command))
         except (ValueError, KeyError) as exc:
             self.statusBar().showMessage(str(exc), 4000)
+            self._on_project_changed()
+            return False
         self._on_project_changed()
+        return True
 
     def _in_active_scene(self, command: Command) -> Command:
         """開いているシーンの中で実行するよう包む メインなら包まない
@@ -1437,11 +1443,15 @@ class MainWindow(QMainWindow):
             return
         # 素材の登録と配置を 1 回の Undo にまとめる 分けると、戻したときに
         # 使われていない素材だけが一覧に残る
-        self.execute_all([*plan.commands, *commands], "テンプレートを配置")
+        if not self.execute_all([*plan.commands, *commands], "テンプレートを配置"):
+            return
         for media in plan.added:
             self._analyzer.request(media, on_ready=self._on_analysis_ready)
             self._request_proxy(media)
-        note = f"{len(commands)} 個を置いた"
+        # 数えるのは一番上に置いたクリップだけ トラックやシーンを足すコマンドまで
+        # 数えると、画像 1 つでも「2 個を置いた」と出る
+        placed = sum(isinstance(command, AddClip) for command in commands)
+        note = f"{placed} 個を置いた"
         if plan.missing:
             note += f"（素材 {len(plan.missing)} 件が見つかりません）"
         self.statusBar().showMessage(note, 6000)

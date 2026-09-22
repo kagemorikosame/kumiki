@@ -345,26 +345,32 @@ def place(
     heard = [item for item in objects if _is_sound(item, known)]
     seen = [item for item in objects if not _is_sound(item, known)]
 
+    # 一番早いオブジェクトが ``at_frame`` に来るように、まとめてずらす
+    # エイリアスは元のタイムライン上の位置を持ったままなので、そのまま置くと
+    # 指定した場所ではなく元あった場所へ行く
+    origin = min(item.clip.timeline_start for item in objects)
+
+    def timed(item: MappedObject) -> Clip:
+        duration = item.clip.duration if item.has_span else default_duration
+        return replace(
+            item.clip,
+            timeline_start=item.clip.timeline_start - origin + max(0, at_frame),
+            duration=max(1, duration),
+        )
+
     commands: list[Command] = []
     tracks = (
         {}
         if track_id is not None or not seen
         else _tracks_for(project, {item.layer for item in seen}, commands)
     )
-    sound_tracks = _sound_tracks_for(project, {item.layer for item in heard}, commands)
-
-    # 一番早いオブジェクトが ``at_frame`` に来るように、まとめてずらす
-    # エイリアスは元のタイムライン上の位置を持ったままなので、そのまま置くと
-    # 指定した場所ではなく元あった場所へ行く
-    origin = min(item.clip.timeline_start for item in objects)
+    spans: dict[int, list[Clip]] = {}
+    for item in heard:
+        spans.setdefault(item.layer, []).append(timed(item))
+    sound_tracks = _sound_tracks_for(project, spans, commands)
 
     for item in objects:
-        duration = item.clip.duration if item.has_span else default_duration
-        placed = replace(
-            item.clip,
-            timeline_start=item.clip.timeline_start - origin + max(0, at_frame),
-            duration=max(1, duration),
-        )
+        placed = timed(item)
         linked = _media_of(item, known)
         if linked is not None:
             placed = replace(placed, media_id=linked.id)
@@ -404,22 +410,42 @@ def _is_sound(item: MappedObject, known: Mapping[str, MediaItem]) -> bool:
 
 
 def _sound_tracks_for(
-    project: Project, layers: set[int], commands: list[Command]
+    project: Project, spans: dict[int, list[Clip]], commands: list[Command]
 ) -> dict[int, Track]:
-    """音声を置く音声トラック 元のレイヤーの低い順に、上から 1 本ずつ割り当てる
+    """音声を置く音声トラック 元のレイヤーの低い順に、空いている所を上から探す
 
     映像と違い、レイヤー番号をそのままトラックの番号にしない YMM4 は映像と音声を
     同じレイヤーの並びに置くので、10 段目の効果音のために音声トラックを 10 本作ることになる
+
+    すでにある音声トラックは、ロックされておらず置く範囲が空いているときだけ使う
+    ほかの音と重なる所やロックされたトラックへ置くと ``AddClip`` が断り、1 回の Undo に
+    まとめた配置が画像も素材の登録も含めて全部取り消される 空きが無ければ新しく作る
     """
-    existing = list(project.timeline.audio_tracks())
+    free = [track for track in project.timeline.audio_tracks() if not track.locked]
     tracks: dict[int, Track] = {}
-    for index, layer in enumerate(sorted(layers)):
-        if index < len(existing):
-            tracks[layer] = existing[index]
-            continue
-        track = Track(kind=TrackKind.AUDIO, name=f"A{index + 1}")
-        commands.append(AddTrack(track))
-        tracks[layer] = track
+    count = len(list(project.timeline.audio_tracks()))
+    for layer in sorted(spans):
+        clips = spans[layer]
+        chosen = next(
+            (
+                track
+                for track in free
+                if not any(
+                    old.overlaps(new.timeline_start, new.timeline_end)
+                    for old in track.clips
+                    for new in clips
+                )
+            ),
+            None,
+        )
+        if chosen is not None:
+            # 1 本に 1 つのレイヤーだけ 別のレイヤーの音と同じ時刻に重なりうる
+            free.remove(chosen)
+        else:
+            count += 1
+            chosen = Track(kind=TrackKind.AUDIO, name=f"A{count}")
+            commands.append(AddTrack(chosen))
+        tracks[layer] = chosen
     return tracks
 
 
