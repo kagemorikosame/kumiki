@@ -95,10 +95,15 @@ def test_a_refused_place_does_not_analyze_the_rolled_back_media(
         "sashimono.ui.main_window._probe_or_none", lambda path: MediaItem(path=path)
     )
     requested: list[MediaItem] = []
+    analyzed: list[MediaItem] = []
     monkeypatch.setattr(window, "_request_proxy", requested.append)
+    monkeypatch.setattr(
+        window._analyzer, "request", lambda media, **_kwargs: analyzed.append(media)
+    )
     _refuse_everything(window, monkeypatch, ("place", [item]))
     window.statusBar().clearMessage()
 
     window.show_templates()
+    assert analyzed == []
     assert requested == []
     assert "置いた" not in window.statusBar().currentMessage()
