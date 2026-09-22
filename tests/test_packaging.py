@@ -127,6 +127,9 @@ class TestPipInsideThePackage:
 
 
 class TestTheSelfCheck:
+    # 描く・書き出す項目は OpenGL 4.3 が要る GPU の無い CI では飛ばす
+    # （自己診断そのものは動くが、その 2 項目が NG になるのは正しい結果）
+    @pytest.mark.usefixtures("gpu")
     def test_everything_works_here(self) -> None:
         """開発環境では全部動く ここで落ちるなら、配る前から壊れている"""
         results = run_self_check()
@@ -484,6 +487,9 @@ class TestNothingUncheckedIsLeft:
 
 
 class TestTheExportCheckCountsFrames:
+    # 書き出しは中で GL のコンテキストを作る GPU の無い CI では、切れたかを
+    # 見る前に GL で落ちて、確かめたいことを確かめられない
+    @pytest.mark.usefixtures("gpu")
     def test_a_truncated_export_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """書き出しが黙って途中で切れたら落とす
 
