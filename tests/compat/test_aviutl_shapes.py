@@ -13,7 +13,7 @@ from sashimono.compat.aviutl.exo import parse_exo
 from sashimono.compat.aviutl.mapping import map_object
 from sashimono.compat.aviutl.report import CompatibilityReport
 from sashimono.compat.mapped import MappedObject
-from sashimono.core.model import AnimatedValue, GeneratedSource
+from sashimono.core.model import AnimatedValue, GeneratedSource, ParamValue
 from sashimono.core.timebase import FrameRate
 from sashimono.engine.sources import format_time, render_source, timer_text
 
@@ -258,25 +258,30 @@ class TestTheOutline:
         assert item.clip.source is not None
         assert item.clip.source.params["line_align"] == "center"
 
-    def test_a_native_shape_keeps_the_centred_line(self) -> None:
-        # 既にある作品の見た目を変えないため、既定は今までの引き方のまま
-        # ここが落ちると、AviUtl2 と関係の無い図形まで一回り小さくなる
-        source = GeneratedSource(
-            kind="shape",
-            params={
-                "shape": "rect",
-                "width": AnimatedValue(400.0),
-                "height": AnimatedValue(400.0),
-                "color": (1.0, 1.0, 1.0, 1.0),
-                "line_width": AnimatedValue(20.0),
-                "outline_only": True,
-            },
-        )
-        image = render_source(source, 1920, 1080)
+    def _native(self, align: str | None) -> int:
+        """Sashimono で作った幅 400 の輪郭だけの四角形の、右端の画素"""
+        params: dict[str, ParamValue] = {
+            "shape": "rect",
+            "width": AnimatedValue(400.0),
+            "height": AnimatedValue(400.0),
+            "color": (1.0, 1.0, 1.0, 1.0),
+            "line_width": AnimatedValue(20.0),
+            "outline_only": True,
+        }
+        if align is not None:
+            params["line_align"] = align
+        image = render_source(GeneratedSource(kind="shape", params=params), 1920, 1080)
         assert image is not None
-        columns = np.nonzero(image[540, :, 3] > 128)[0]
-        # 中央に引くので、幅 400 の四角形が 210 まで広がる
-        assert abs(int(columns.max()) - 960 - 209) <= 2
+        return int(np.nonzero(image[540, :, 3] > 128)[0].max()) - 960
+
+    def test_a_native_shape_draws_the_line_inside_by_default(self) -> None:
+        # 既定を内側にしたので、幅 400 の図形の外形が 400（±200）になる
+        # 中央のままだと 420（±210）に広がり、指定した幅と見た目が食い違う
+        assert abs(self._native(None) - 199) <= 2
+
+    def test_the_centred_line_is_still_available(self) -> None:
+        # 前の版の見た目に戻せること ここが落ちると、古い作品を直す手立てが無くなる
+        assert abs(self._native("center") - 209) <= 2
 
 
 class TestTheFirstGeneration:
