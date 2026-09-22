@@ -89,8 +89,11 @@ jobs:
             Copy-Item (Join-Path $env:RUNNER_TEMP "$name/bin/*.exe") $env:FFMPEG_DIR
             $fresh = 'true'
           }
-          & $exe -hide_banner -version | Select-Object -First 1
+          # 出力を全部受けてから 1 行だけ出す パイプで先頭だけ取ると ffmpeg が途中で
+          # 止められて終了コードが 0 でなくなり、動いているのに入っていない扱いになる
+          $version = & $exe -hide_banner -version
           if ($LASTEXITCODE -ne 0) { throw 'ffmpeg が動かない' }
+          $version | Select-Object -First 1
           Add-Content $env:GITHUB_PATH $env:FFMPEG_DIR
           "fresh=$fresh" | Add-Content $env:GITHUB_OUTPUT
 
