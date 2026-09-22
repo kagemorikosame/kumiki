@@ -55,6 +55,14 @@ class TestText:
         assert source.params["bold"] == 1
         assert source.params["align"] == "left"
 
+    def test_aviutl1_text_keeps_the_native_layout(self) -> None:
+        # AviUtl2 の組み方は AviUtl2 の書き出しで測った決まり AviUtl1 に当てると、
+        # 測っていない決まりで今まで読めていた字幕の位置と効果の基準が動く
+        mapped = one(build("_name=テキスト\nB=1\nalign=1"))
+        source = mapped.clip.source
+        assert source is not None
+        assert source.params["layout"] == "native"
+
 
 class TestFigure:
     def test_the_figure_number_picks_the_shape(self) -> None:

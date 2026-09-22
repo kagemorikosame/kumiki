@@ -274,6 +274,8 @@ class TestCustomObjects:
         # 速度は 1 秒あたりの進み方 こちらは百分率なので 100 倍する
         assert _value(source, "timer_rate") == 200.0
         assert source.params["font"] == "MS UI Gothic"
+        # テキストと同じく AviUtl2 の入れ物で組む 字の形だと効果の基準がずれる（#64）
+        assert source.params["layout"] == "aviutl"
 
     def test_an_unknown_counter_format_is_recorded(self) -> None:
         # 書式を落とすと、時計のつもりの表示がただの秒数になる
