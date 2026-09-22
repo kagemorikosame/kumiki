@@ -12,8 +12,8 @@ from fractions import Fraction
 import numpy as np
 import pytest
 
-from kumiki.compat.aviutl.catalog import ScriptCatalog, set_script_catalog
-from kumiki.core.commands import (
+from sashimono.compat.aviutl.catalog import ScriptCatalog, set_script_catalog
+from sashimono.core.commands import (
     AddClip,
     AddEffect,
     AddMedia,
@@ -24,7 +24,7 @@ from kumiki.core.commands import (
     insert_scene,
     new_scene,
 )
-from kumiki.core.model import (
+from sashimono.core.model import (
     AnimatedValue,
     Clip,
     GeneratedSource,
@@ -33,12 +33,12 @@ from kumiki.core.model import (
     Track,
     TrackKind,
 )
-from kumiki.core.timebase import FrameRate
-from kumiki.effects.definition import registry
-from kumiki.engine.audio import AudioMixer
-from kumiki.engine.decode import probe_media
-from kumiki.engine.gpu import GLContextError, OffscreenGLContext
-from kumiki.engine.render import FrameRenderer
+from sashimono.core.timebase import FrameRate
+from sashimono.effects.definition import registry
+from sashimono.engine.audio import AudioMixer
+from sashimono.engine.decode import probe_media
+from sashimono.engine.gpu import GLContextError, OffscreenGLContext
+from sashimono.engine.render import FrameRenderer
 from tests.media_fixtures import SampleMedia
 
 SETTINGS = ProjectSettings(width=64, height=64, frame_rate=FrameRate(30), sample_rate=48000)

@@ -11,11 +11,11 @@ from collections.abc import Iterator
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from kumiki.ai.bridge import Approval
-from kumiki.ai.session import AgentEvent, EventKind
-from kumiki.core.commands import SplitClip
-from kumiki.core.model import MediaItem, Project, Transcript
-from kumiki.ui.chat import ChatPanel
+from sashimono.ai.bridge import Approval
+from sashimono.ai.session import AgentEvent, EventKind
+from sashimono.core.commands import SplitClip
+from sashimono.core.model import MediaItem, Project, Transcript
+from sashimono.ui.chat import ChatPanel
 from tests.ai.conftest import FakeHost, make_loaded
 
 
@@ -204,7 +204,7 @@ class TestSending:
 
 class TestFormatting:
     def test_bold_and_code_are_rendered(self) -> None:
-        from kumiki.ui.chat.panel import _to_html
+        from sashimono.ui.chat.panel import _to_html
 
         # Claude の返事は素の Markdown で来る そのまま出すと ** が本文に混ざる
         rendered = _to_html("**強調** と `set_param`")
@@ -212,7 +212,7 @@ class TestFormatting:
         assert "<code" in rendered and "set_param" in rendered
 
     def test_tags_in_the_text_are_neutralised_first(self) -> None:
-        from kumiki.ui.chat.panel import _to_html
+        from sashimono.ui.chat.panel import _to_html
 
         rendered = _to_html("<b>これは太字にしない</b>")
         assert "&lt;b&gt;" in rendered

@@ -15,15 +15,15 @@ from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from kumiki.core.commands import AddClip, Command, SetTrackHeights
-from kumiki.core.io import others_holding, project_presence_dir
-from kumiki.core.model import Clip, MediaItem, Project, Track, TrackKind
-from kumiki.effects.sources import TEXT
-from kumiki.engine.cache import MediaAnalyzer
-from kumiki.ui.main_window import MainWindow
-from kumiki.ui.media_pool import MediaPoolWidget
-from kumiki.ui.theme import Metrics
-from kumiki.ui.timeline import TimelineView
+from sashimono.core.commands import AddClip, Command, SetTrackHeights
+from sashimono.core.io import others_holding, project_presence_dir
+from sashimono.core.model import Clip, MediaItem, Project, Track, TrackKind
+from sashimono.effects.sources import TEXT
+from sashimono.engine.cache import MediaAnalyzer
+from sashimono.ui.main_window import MainWindow
+from sashimono.ui.media_pool import MediaPoolWidget
+from sashimono.ui.theme import Metrics
+from sashimono.ui.timeline import TimelineView
 
 
 def _project() -> Project:
@@ -172,7 +172,7 @@ class TestWindow:
         self, qt_application: QApplication, tmp_path: Path
     ) -> None:
         del qt_application
-        path = tmp_path / "本編.kmk"
+        path = tmp_path / "本編.sme"
         folder = project_presence_dir(path)
         first = MainWindow(_project(), path=path, confirm_unsaved=False)
         try:
@@ -194,7 +194,7 @@ class TestWindow:
         # 「それでも開く」の窓が数に入らないと、先の窓が閉じたあと、まだ開いて
         # いるのに 3 つ目の窓が警告なしで開けてしまう 待ち時間なしで見えること
         del qt_application
-        path = tmp_path / "本編.kmk"
+        path = tmp_path / "本編.sme"
         folder = project_presence_dir(path)
         first = MainWindow(_project(), path=path, confirm_unsaved=False)
         second = MainWindow(_project(), path=path, confirm_unsaved=False)

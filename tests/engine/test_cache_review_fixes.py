@@ -14,11 +14,11 @@ import numpy as np
 import pytest
 from PySide6.QtGui import QSurfaceFormat
 
-from kumiki.engine.audio import analyze_waveform
-from kumiki.engine.cache import CacheStore, MediaAnalyzer, load_waveform, save_waveform
-from kumiki.engine.cache.store import load_arrays, save_arrays
-from kumiki.engine.decode import probe_media
-from kumiki.engine.gpu.context import GLContextError, OffscreenGLContext
+from sashimono.engine.audio import analyze_waveform
+from sashimono.engine.cache import CacheStore, MediaAnalyzer, load_waveform, save_waveform
+from sashimono.engine.cache.store import load_arrays, save_arrays
+from sashimono.engine.decode import probe_media
+from sashimono.engine.gpu.context import GLContextError, OffscreenGLContext
 from tests.media_fixtures import SampleMedia
 
 

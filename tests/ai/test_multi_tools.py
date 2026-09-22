@@ -10,11 +10,11 @@ from typing import Any
 
 import pytest
 
-from kumiki.ai.host import ToolError
-from kumiki.ai.operations import find_operation
-from kumiki.core.commands import AddClip, AddTrack
-from kumiki.core.model import Clip, ClipId, Track, TrackKind
-from kumiki.effects.sources import TEXT
+from sashimono.ai.host import ToolError
+from sashimono.ai.operations import find_operation
+from sashimono.core.commands import AddClip, AddTrack
+from sashimono.core.model import Clip, ClipId, Track, TrackKind
+from sashimono.effects.sources import TEXT
 from tests.ai.conftest import FakeHost
 
 

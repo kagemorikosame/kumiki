@@ -12,7 +12,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from kumiki.core.timebase import (
+from sashimono.core.timebase import (
     FrameRate,
     Rounding,
     format_timecode,

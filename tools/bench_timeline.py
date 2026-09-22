@@ -26,7 +26,7 @@ if isinstance(sys.stdout, io.TextIOWrapper):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 # 開発者本人の設定やキャッシュに触らない
-_base = Path(tempfile.mkdtemp(prefix="kumiki-bench-"))
+_base = Path(tempfile.mkdtemp(prefix="sashimono-bench-"))
 os.environ["APPDATA"] = str(_base / "roaming")
 os.environ["LOCALAPPDATA"] = str(_base / "local")
 
@@ -34,11 +34,11 @@ from PySide6.QtCore import QPoint  # noqa: E402
 from PySide6.QtGui import QImage, QPainter  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from kumiki.core.model import Clip, Project, Track, TrackKind  # noqa: E402
-from kumiki.effects.sources import TEXT  # noqa: E402
-from kumiki.engine.cache import MediaAnalyzer  # noqa: E402
-from kumiki.ui.timeline import TimelineView  # noqa: E402
-from kumiki.ui.timeline.layout import TimelineLayout  # noqa: E402
+from sashimono.core.model import Clip, Project, Track, TrackKind  # noqa: E402
+from sashimono.effects.sources import TEXT  # noqa: E402
+from sashimono.engine.cache import MediaAnalyzer  # noqa: E402
+from sashimono.ui.timeline import TimelineView  # noqa: E402
+from sashimono.ui.timeline.layout import TimelineLayout  # noqa: E402
 
 #: 60fps の 1 コマ（ミリ秒）
 BUDGET_MS = 1000 / 60

@@ -18,8 +18,8 @@ from typing import Any
 import numpy as np
 import pytest
 
-from kumiki.compat.aviutl import native
-from kumiki.compat.aviutl.native import (
+from sashimono.compat.aviutl import native
+from sashimono.compat.aviutl.native import (
     NativeModule,
     NativeModuleError,
     PixelData,
@@ -29,9 +29,9 @@ from kumiki.compat.aviutl.native import (
     _Param,
     is_native_x64,
 )
-from kumiki.compat.aviutl.objapi import ObjectState
-from kumiki.compat.aviutl.report import CompatibilityReport
-from kumiki.compat.aviutl.runtime import LuaScriptRuntime, blank_image
+from sashimono.compat.aviutl.objapi import ObjectState
+from sashimono.compat.aviutl.report import CompatibilityReport
+from sashimono.compat.aviutl.runtime import LuaScriptRuntime, blank_image
 
 
 def _module(functions: dict[str, Callable[[Any], None]]) -> tuple[NativeModule, list[Any]]:
@@ -90,7 +90,7 @@ class TestReadingTheArguments:
         assert seen == [data.address]
 
     def test_what_the_dll_writes_reaches_the_pixels(self) -> None:
-        """DLL が番地へ書いた画素は、そのまま Kumiki から見える（複製を渡していない）"""
+        """DLL が番地へ書いた画素は、そのまま Sashimono から見える（複製を渡していない）"""
         data = PixelData(np.zeros((1, 1, 4), np.uint8))
 
         def body(p: _Param) -> None:
@@ -182,7 +182,7 @@ class TestWhatIsLoaded:
         assert is_native_x64(_pe(tmp_path / "a.mod2", 0x8664))
 
     def test_a_32bit_dll_is_not(self, tmp_path: Path) -> None:
-        """32bit の DLL は 64bit の Kumiki へ読み込めない 読みに行くと落ちる"""
+        """32bit の DLL は 64bit の Sashimono へ読み込めない 読みに行くと落ちる"""
         assert not is_native_x64(_pe(tmp_path / "a.mod2", 0x014C))
 
     def test_text_is_not(self, tmp_path: Path) -> None:

@@ -18,9 +18,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from kumiki.compat.catalog import TemplateCatalog, place, restyle
-from kumiki.core.commands import AddClip, Document
-from kumiki.core.model import (
+from sashimono.compat.catalog import TemplateCatalog, place, restyle
+from sashimono.core.commands import AddClip, Document
+from sashimono.core.model import (
     AnimatedValue,
     Clip,
     GeneratedSource,
@@ -29,9 +29,9 @@ from kumiki.core.model import (
     Track,
     TrackKind,
 )
-from kumiki.core.timebase import FrameRate
-from kumiki.engine.gpu import GLContextError, OffscreenGLContext
-from kumiki.engine.render import FrameRenderer
+from sashimono.core.timebase import FrameRate
+from sashimono.engine.gpu import GLContextError, OffscreenGLContext
+from sashimono.engine.render import FrameRenderer
 
 WIDTH, HEIGHT = 640, 360
 
@@ -313,7 +313,7 @@ class TestTheRealDistributedAliases:
         if not real_aliases:
             pytest.skip("このマシンに AviUtl2 の配布エイリアスが無い")
 
-        from kumiki.compat.catalog import TemplateEntry
+        from sashimono.compat.catalog import TemplateEntry
 
         blank = 0
         for path in real_aliases:

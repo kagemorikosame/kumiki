@@ -11,7 +11,7 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
-from kumiki.core.model import (
+from sashimono.core.model import (
     AudioStreamInfo,
     Clip,
     Effect,
@@ -25,9 +25,9 @@ from kumiki.core.model import (
     Transcript,
     VideoStreamInfo,
 )
-from kumiki.core.model.ids import new_group_id
-from kumiki.core.timebase import FrameRate
-from kumiki.engine.render import Invalidation, changed_spans
+from sashimono.core.model.ids import new_group_id
+from sashimono.core.timebase import FrameRate
+from sashimono.engine.render import Invalidation, changed_spans
 
 RATE = FrameRate(30)
 

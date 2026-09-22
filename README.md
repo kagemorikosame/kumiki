@@ -1,17 +1,32 @@
-<img src="docs/logo.png" width="96" align="left" alt="Kumiki">
+<img src="docs/logo.png" width="96" align="left" alt="Sashimono Edit">
 
-# Kumiki（組木）
+# Sashimono Edit（指物）
 
-[![CI](https://github.com/kagemorikosame/kumiki/actions/workflows/ci.yml/badge.svg)](https://github.com/kagemorikosame/kumiki/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/kagemorikosame/sashimono-edit/actions/workflows/ci.yml/badge.svg)](https://github.com/kagemorikosame/sashimono-edit/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 Python 製の動画編集ソフト AviUtl の表現力、Premiere の操作性、AI エージェントによる編集自動化を 1 つにまとめることを目指しています
 
 <br clear="left">
 
-名前は日本の木工技法「組木」から 釘を使わず、小さな木片を組み合わせて 1 つの形にする技法です
+名前は日本の木工技法「指物」から 釘を使わず、木の板を継手と仕口で組み合わせて箱や家具を作る技法です
 小さな素材を組み上げて 1 本の動画にすること、そして AviUtl のスクリプトや YMM4 のテンプレートと
 自作のものが同じ仕組みに嵌まることの両方を指しています
 ロゴの三本の棒は互いに組まれていて、中央の空きが再生の記号になっています
+
+<!-- 旧名を残す: ここから（名前の一括置換でも書き換えない 旧名を案内する所） -->
+> **旧名は Kumiki（組木）です** 商標の都合で Sashimono Edit に改名しました
+> 中身は同じソフトで、改名前のものはそのまま引き継げます
+>
+> - 改名前に保存したプロジェクト（`.kmk`）とプリセット（`.kmkp`）はそのまま開けます 保存すると新しい形式で書きます
+> - 設定・ショートカット・プリセット・自分で置いたスクリプトとテンプレート（`%APPDATA%\Kumiki`）は、
+>   新しい版を初めて起動したときに `%APPDATA%\Sashimono` へ写します 元のフォルダは残します
+> - 退避・バックアップ・キャッシュ・導入した字幕起こしなど（`%LOCALAPPDATA%\Kumiki`）は
+>   `%LOCALAPPDATA%\Sashimono` へ移します
+> - 配布版の zip は `SashimonoEdit-<版>-windows-x64.zip`、exe は `Sashimono.exe` になりました
+>   前の版の `Kumiki.exe` の隣の `scripts` フォルダへスクリプトを置いていた人は、
+>   新しい `Sashimono.exe` の隣の `scripts` へ移してください
+> - GitHub の置き場も `kagemorikosame/sashimono-edit` へ移りました 前の URL は転送されます
+<!-- 旧名を残す: ここまで -->
 
 ![編集画面](docs/screenshot.png)
 
@@ -25,7 +40,7 @@ Python 製の動画編集ソフト AviUtl の表現力、Premiere の操作性�
 - GPU 合成によるプレビュー（リニア空間、再生品質の切り替え）
 - 音声再生（オーディオを時計にした A/V 同期）
 - NVENC / CPU での書き出し
-- プロジェクトの保存・読み込み（`.kmk`）と Undo / Redo
+- プロジェクトの保存・読み込み（`.sme`）と Undo / Redo
 - エフェクト 80 種 標準の 17 種（色調補正・ぼかし・方向ぼかし・グロー・クロマキー・輝度キー・変形・クリッピング・縁取り・影・グラデーション・単色塗り・不透明度・シャープ・ノイズ・モザイク・マスク）に、YMM4 の配布物と本体の絵に合わせた動き 24 種（ランダム・反復・登場と退場・跳ねる・渦巻き・波・破片・残像・パーティクル ほか）と加工 39 種（模様で塗る・ノイズ・縁の反射・内側の影と縁取り・網点・グリッチ・長い影・魚眼・波紋・極座標・引き伸ばし・レンズぼかし ほか）
 - 合成モード 26 種（通常・加算・減算・乗算・スクリーン・オーバーレイ・ソフトライト・焼き込み・比較(明)(暗)・差の絶対値・色相・輝度 ほか）と、板を傾ける X 軸・Y 軸の回転
 - 場面切り替え（前の場面と後の場面を切り替え・クロスフェード・押し出し・スライド・重ねるで混ぜる 前後それぞれにエフェクトを積める）
@@ -33,7 +48,7 @@ Python 製の動画編集ソフト AviUtl の表現力、Premiere の操作性�
 - キーフレームアニメーションとグラフエディタ（直線・曲線・加減速・瞬間移動）
 - テキストと図形オブジェクト（縁取り・影・行揃え・縦の基準・縦書き・文字送り・時間を数えるタイマー、13 種の図形）
 - パラメータ定義から自動生成される設定 UI
-- エフェクト構成のプリセット保存（`.kmkp`）
+- エフェクト構成のプリセット保存（`.smep`）
 - 字幕起こし（faster-whisper）、フィラー語の除去と改行整形、無音カット、SRT / VTT / テキスト書き出し、タイムラインへの焼き込み
 - ソフト内の AI アシスタント 話しかけると実際に編集し、結果を自分で見て確認する
 - AviUtl のスクリプト実行（Lua 5.1）と、`.exo` / `.exa` / `.object` の読み込み
@@ -91,7 +106,7 @@ GPU を使わない選択もでき、その場合は CUDA ランタイム（約 
 ```
 
 パッケージ版（PyInstaller）では実行ファイルの中へは書き込めないので、
-`%LOCALAPPDATA%\Kumiki\runtime` へ入れ、起動時にそのフォルダを import パスへ足します
+`%LOCALAPPDATA%\Sashimono\runtime` へ入れ、起動時にそのフォルダを import パスへ足します
 
 ## AI アシスタント
 
@@ -175,7 +190,7 @@ AviUtl のアニメーション効果（`.anm` / `.anm2`）をそのまま実行
 | オブジェクト | `.exo` / `.exa` の読み込み（テキスト・図形・フィルタ・描画設定・レイヤー） |
 | 文字コード | Shift_JIS と UTF-8 を中身から自動判別 |
 
-スクリプトは `%APPDATA%\Kumiki\scripts` に置きます AviUtl2 が入っていれば
+スクリプトは `%APPDATA%\Sashimono\scripts` に置きます AviUtl2 が入っていれば
 `%PROGRAMDATA%\aviutl2\Script` も自動で見に行くので、**手元の資産をコピーせずに
 そのまま使えます**
 
@@ -217,7 +232,7 @@ AviUtl のアニメーション効果（`.anm` / `.anm2`）をそのまま実行
 - AviUtl のエイリアス — `%PROGRAMDATA%\aviutl2\Alias` にある `.exa` `.exa2` `.object`
 - YMM4 のアイテムテンプレート — `%LOCALAPPDATA%\YukkuriMovieMaker\ItemTemplate` の `.ymmt`
 
-自分で追加するものは `%APPDATA%\Kumiki\templates` に置いてください
+自分で追加するものは `%APPDATA%\Sashimono\templates` に置いてください
 
 ### 「置く」と「着せる」
 
@@ -342,7 +357,7 @@ python -m venv .venv
 ## 起動
 
 ```bash
-.venv\Scripts\python.exe -m kumiki
+.venv\Scripts\python.exe -m sashimono
 ```
 
 プロジェクトファイルを引数に渡すと、それを開いた状態で起動します

@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from kumiki import runtime as runtime_module
-from kumiki.asr.environment import (
+from sashimono import runtime as runtime_module
+from sashimono.asr.environment import (
     ASR_PACK,
     CUDA_PACKAGES,
     REQUIRED_PACKAGES,
@@ -20,7 +20,7 @@ from kumiki.asr.environment import (
     install_runtime,
     runtime_status,
 )
-from kumiki.runtime import PackageStatus, PackStatus
+from sashimono.runtime import PackageStatus, PackStatus
 
 
 def _status(*, installed: bool, cuda: bool) -> PackStatus:
@@ -96,7 +96,7 @@ class TestInstallRuntime:
 
     def test_a_missing_executable_does_not_raise(self) -> None:
         lines: list[str] = []
-        code = install_runtime(command=["kumiki-存在しないコマンド"], on_output=lines.append)
+        code = install_runtime(command=["sashimono-存在しないコマンド"], on_output=lines.append)
         assert code != 0
         assert any("起動できない" in line for line in lines)
 

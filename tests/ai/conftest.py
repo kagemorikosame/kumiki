@@ -1,6 +1,6 @@
 """AI 層のテスト用のホスト
 
-:class:`~kumiki.ai.host.EditorHost` を満たす偽物を用意する ウィジェットを一切
+:class:`~sashimono.ai.host.EditorHost` を満たす偽物を用意する ウィジェットを一切
 作らずにツールの挙動を確かめられるのは、AI 層が Qt を知らない作りにしてあるため
 """
 
@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from kumiki.ai.host import ToolError
-from kumiki.core.commands import AddClip, Command, Document, InScene
-from kumiki.core.model import (
+from sashimono.ai.host import ToolError
+from sashimono.core.commands import AddClip, Command, Document, InScene
+from sashimono.core.model import (
     ClipId,
     MediaId,
     MediaItem,
@@ -25,8 +25,8 @@ from kumiki.core.model import (
     TrackKind,
     Transcript,
 )
-from kumiki.core.timebase import FrameRate
-from kumiki.engine.audio.waveform import Waveform
+from sashimono.core.timebase import FrameRate
+from sashimono.engine.audio.waveform import Waveform
 from tests.conftest import make_clip
 
 RATE_30 = FrameRate(30)

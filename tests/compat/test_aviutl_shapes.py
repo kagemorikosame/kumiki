@@ -8,13 +8,13 @@ from __future__ import annotations
 
 import pytest
 
-from kumiki.compat.aviutl.exo import parse_exo
-from kumiki.compat.aviutl.mapping import map_object
-from kumiki.compat.aviutl.report import CompatibilityReport
-from kumiki.compat.mapped import MappedObject
-from kumiki.core.model import AnimatedValue, GeneratedSource
-from kumiki.core.timebase import FrameRate
-from kumiki.engine.sources import format_time, timer_text
+from sashimono.compat.aviutl.exo import parse_exo
+from sashimono.compat.aviutl.mapping import map_object
+from sashimono.compat.aviutl.report import CompatibilityReport
+from sashimono.compat.mapped import MappedObject
+from sashimono.core.model import AnimatedValue, GeneratedSource
+from sashimono.core.timebase import FrameRate
+from sashimono.engine.sources import format_time, timer_text
 
 RATE = FrameRate(60)
 

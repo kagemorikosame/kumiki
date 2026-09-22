@@ -9,8 +9,8 @@ from fractions import Fraction
 
 import pytest
 
-from kumiki.asr.cleanup import CleanupOptions, clean_text, clean_transcript, wrap_text
-from kumiki.core.model import Transcript, TranscriptSegment
+from sashimono.asr.cleanup import CleanupOptions, clean_text, clean_transcript, wrap_text
+from sashimono.core.model import Transcript, TranscriptSegment
 
 
 class TestFillerRemoval:

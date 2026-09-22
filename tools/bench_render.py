@@ -28,13 +28,13 @@ if isinstance(sys.stdout, io.TextIOWrapper):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 # 開発者本人の設定やキャッシュに触らない
-_base = Path(tempfile.mkdtemp(prefix="kumiki-bench-"))
+_base = Path(tempfile.mkdtemp(prefix="sashimono-bench-"))
 os.environ["APPDATA"] = str(_base / "roaming")
 os.environ["LOCALAPPDATA"] = str(_base / "local")
 
 from OpenGL import GL  # noqa: E402
 
-from kumiki.core.commands import (  # noqa: E402
+from sashimono.core.commands import (  # noqa: E402
     AddClip,
     AddEffect,
     AddScene,
@@ -44,7 +44,7 @@ from kumiki.core.commands import (  # noqa: E402
     insert_scene,
     new_scene,
 )
-from kumiki.core.model import (  # noqa: E402
+from sashimono.core.model import (  # noqa: E402
     AnimatedValue,
     Clip,
     GeneratedSource,
@@ -53,15 +53,15 @@ from kumiki.core.model import (  # noqa: E402
     Track,
     TrackKind,
 )
-from kumiki.core.timebase import FrameRate  # noqa: E402
-from kumiki.effects.definition import registry  # noqa: E402
-from kumiki.effects.sources import TEXT  # noqa: E402
-from kumiki.engine.gpu import (  # noqa: E402
+from sashimono.core.timebase import FrameRate  # noqa: E402
+from sashimono.effects.definition import registry  # noqa: E402
+from sashimono.effects.sources import TEXT  # noqa: E402
+from sashimono.engine.gpu import (  # noqa: E402
     Framebuffer,
     GLContextError,
     OffscreenGLContext,
 )
-from kumiki.engine.render import FrameRenderer  # noqa: E402
+from sashimono.engine.render import FrameRenderer  # noqa: E402
 
 #: 30fps の 1 コマ（ミリ秒） プレビューの目標
 BUDGET_MS = 1000 / 30
@@ -159,7 +159,7 @@ def measure(
     終わりを待つ 待たないと、投げるのに掛かった時間を測るだけになる
 
     ``readback`` を真にすると**書き出しと同じ道** 書き出し
-    （:mod:`kumiki.engine.encode.exporter`）と同じく、1 枚ごとに
+    （:mod:`sashimono.engine.encode.exporter`）と同じく、1 枚ごとに
     ``renderer.render`` を呼ぶ（中でコンテキストを取る） ``glFinish`` は
     入れない ``glReadPixels`` が終わりを待つので、足すと二重に待つ形になり
     実態より重く出る

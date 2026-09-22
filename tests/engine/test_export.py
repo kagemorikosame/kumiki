@@ -13,11 +13,11 @@ from pathlib import Path
 import av
 import pytest
 
-from kumiki.core.commands import Document, insert_media
-from kumiki.core.model import Project, ProjectSettings
-from kumiki.core.timebase import FrameRate
-from kumiki.engine.decode import probe_media
-from kumiki.engine.encode import (
+from sashimono.core.commands import Document, insert_media
+from sashimono.core.model import Project, ProjectSettings
+from sashimono.core.timebase import FrameRate
+from sashimono.engine.decode import probe_media
+from sashimono.engine.encode import (
     ExportError,
     ExportSettings,
     available_video_codecs,
@@ -187,7 +187,7 @@ class TestRoundTrip:
         output = tmp_path / "audio.mp4"
         export_project(document.project, ExportSettings(path=output, video_codec="libx264"))
 
-        from kumiki.engine.decode import AudioDecoder
+        from sashimono.engine.decode import AudioDecoder
 
         with AudioDecoder(output, sample_rate=48000) as decoder:
             samples = decoder.read_seconds(Fraction(1, 4), Fraction(1, 2))

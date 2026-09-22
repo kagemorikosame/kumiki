@@ -6,8 +6,8 @@
 
 from __future__ import annotations
 
-from kumiki.compat.aviutl.control import parse_control, split_scripts
-from kumiki.effects.spec import (
+from sashimono.compat.aviutl.control import parse_control, split_scripts
+from sashimono.effects.spec import (
     CheckSpec,
     ColorSpec,
     FileSpec,

@@ -7,7 +7,7 @@ Claude Agent SDK は同梱していない（計画書 F-9-9） 既定の導入�
 import が通らないと、AI を使う使わない以前にアプリが起動しない
 
 一度そうなっていた ``ai/server.py`` が SDK を表で import していて、
-そこへ ``ai/session.py`` → チャットパネル → ``kumiki.ui`` と繋がっていたため、
+そこへ ``ai/session.py`` → チャットパネル → ``sashimono.ui`` と繋がっていたため、
 **UI 全体が読み込めなかった** 手元では SDK を入れてあるので気付かず、
 CI（素の環境）で初めて出た
 """
@@ -25,13 +25,13 @@ import pytest
 #: 未導入のときに読み込めないと困るもの
 #: どれか 1 つでも SDK を表で import すると、アプリが起動しなくなる
 MODULES = [
-    "kumiki.ai",
-    "kumiki.ai.server",
-    "kumiki.ai.session",
-    "kumiki.ui.chat",
-    "kumiki.ui.main_window",
-    "kumiki.ui",
-    "kumiki.app",
+    "sashimono.ai",
+    "sashimono.ai.server",
+    "sashimono.ai.session",
+    "sashimono.ui.chat",
+    "sashimono.ui.main_window",
+    "sashimono.ui",
+    "sashimono.app",
 ]
 
 
@@ -52,7 +52,7 @@ def without_sdk() -> Iterator[None]:
     saved = {
         name: module
         for name, module in list(sys.modules.items())
-        if name.startswith(("kumiki.ai", "kumiki.ui", "kumiki.app", "claude_agent_sdk"))
+        if name.startswith(("sashimono.ai", "sashimono.ui", "sashimono.app", "claude_agent_sdk"))
     }
     for name in saved:
         del sys.modules[name]
@@ -63,7 +63,7 @@ def without_sdk() -> Iterator[None]:
     finally:
         builtins.__import__ = real_import
         for name in list(sys.modules):
-            if name.startswith(("kumiki.ai", "kumiki.ui", "kumiki.app")):
+            if name.startswith(("sashimono.ai", "sashimono.ui", "sashimono.app")):
                 del sys.modules[name]
         sys.modules.update(saved)
 
@@ -80,7 +80,7 @@ def test_the_operations_are_still_listed_without_the_sdk(without_sdk: None) -> N
     チャットパネルは「何ができるか」を出しつつ導入ボタンを見せるので、
     ここが読めないとパネル自体を開けない
     """
-    ai = importlib.import_module("kumiki.ai")
+    ai = importlib.import_module("sashimono.ai")
     assert len(ai.OPERATIONS) > 0
 
 
@@ -89,6 +89,6 @@ def test_building_the_server_needs_the_sdk(without_sdk: None) -> None:
 
     黙って空のサーバを返すと、AI が「ツールが無い」と言い出して原因が遠くなる
     """
-    server = importlib.import_module("kumiki.ai.server")
+    server = importlib.import_module("sashimono.ai.server")
     with pytest.raises(ModuleNotFoundError):
         server.build_server(object())

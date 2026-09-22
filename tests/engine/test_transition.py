@@ -12,15 +12,15 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from kumiki.core.commands import (
+from sashimono.core.commands import (
     AddEffect,
     ParamPath,
     RemoveEffect,
     SetParam,
     resolve_param,
 )
-from kumiki.core.io import project_from_dict, project_to_dict
-from kumiki.core.model import (
+from sashimono.core.io import project_from_dict, project_to_dict
+from sashimono.core.model import (
     AnimatedValue,
     Clip,
     ClipId,
@@ -30,12 +30,12 @@ from kumiki.core.model import (
     Track,
     TrackKind,
 )
-from kumiki.core.timebase import FrameRate
-from kumiki.effects import registry
-from kumiki.effects.easing import ease
-from kumiki.effects.sources import TRANSITION
-from kumiki.engine.gpu import GLContextError, OffscreenGLContext
-from kumiki.engine.render import FrameRenderer
+from sashimono.core.timebase import FrameRate
+from sashimono.effects import registry
+from sashimono.effects.easing import ease
+from sashimono.effects.sources import TRANSITION
+from sashimono.engine.gpu import GLContextError, OffscreenGLContext
+from sashimono.engine.render import FrameRenderer
 
 SETTINGS = ProjectSettings(width=64, height=36, frame_rate=FrameRate(30))
 RED = (1.0, 0.0, 0.0, 1.0)

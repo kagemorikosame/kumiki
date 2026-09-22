@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import pytest
 
-from kumiki.compat.aviutl.exo import parse_exo
-from kumiki.compat.aviutl.mapping import map_object
-from kumiki.compat.aviutl.report import CompatibilityReport
-from kumiki.core.model import AnimatedValue
-from kumiki.core.timebase import FrameRate
+from sashimono.compat.aviutl.exo import parse_exo
+from sashimono.compat.aviutl.mapping import map_object
+from sashimono.compat.aviutl.report import CompatibilityReport
+from sashimono.core.model import AnimatedValue
+from sashimono.core.timebase import FrameRate
 
 RATE = FrameRate(30)
 

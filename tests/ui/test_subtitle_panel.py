@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 from PySide6.QtWidgets import QApplication, QFileDialog
 
-from kumiki.core.commands import (
+from sashimono.core.commands import (
     AddClip,
     Command,
     RenameProject,
@@ -23,11 +23,11 @@ from kumiki.core.commands import (
     SetTranscript,
     TrimClip,
 )
-from kumiki.core.model import MediaItem, Project, Transcript
-from kumiki.engine.audio.waveform import BASE_SAMPLES_PER_PEAK, PeakLevel, Waveform
-from kumiki.engine.cache import MediaAnalyzer
-from kumiki.ui.subtitle import SubtitlePanel
-from kumiki.ui.subtitle.dialogs import JetCutDialog
+from sashimono.core.model import MediaItem, Project, Transcript
+from sashimono.engine.audio.waveform import BASE_SAMPLES_PER_PEAK, PeakLevel, Waveform
+from sashimono.engine.cache import MediaAnalyzer
+from sashimono.ui.subtitle import SubtitlePanel
+from sashimono.ui.subtitle.dialogs import JetCutDialog
 from tests.conftest import make_clip
 
 

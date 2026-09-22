@@ -13,11 +13,11 @@ from pathlib import Path
 
 import pytest
 
-from kumiki.compat.aviutl.exo import load_exo
-from kumiki.compat.aviutl.mapping import map_object
-from kumiki.compat.aviutl.report import CompatibilityReport
-from kumiki.compat.mapped import MappedObject
-from kumiki.core.timebase import FrameRate
+from sashimono.compat.aviutl.exo import load_exo
+from sashimono.compat.aviutl.mapping import map_object
+from sashimono.compat.aviutl.report import CompatibilityReport
+from sashimono.compat.mapped import MappedObject
+from sashimono.core.timebase import FrameRate
 
 
 def alias_root() -> Path | None:
@@ -135,8 +135,8 @@ def test_every_middle_point_becomes_a_keyframe(
 
     中間点があるのにどの値も動いていなければ、移動方法の行を読み落としている
     """
-    from kumiki.compat.aviutl.exo import load_exo as _load
-    from kumiki.core.model import AnimatedValue
+    from sashimono.compat.aviutl.exo import load_exo as _load
+    from sashimono.core.model import AnimatedValue
 
     with_points = [path for path in FILES if len(_load(path).objects[0].points) > 2]
     if not with_points:
@@ -160,10 +160,10 @@ def test_a_real_moving_alias_survives_being_restyled(
     合成した見本だけで確かめると、実物の書き方（中間点の数や移動方法の
     並び）から外れていても気付けない
     """
-    from kumiki.compat.aviutl.exo import load_exo as _load
-    from kumiki.compat.catalog import restyle
-    from kumiki.core.commands import AddEffect
-    from kumiki.core.model import AnimatedValue, Clip, GeneratedSource
+    from sashimono.compat.aviutl.exo import load_exo as _load
+    from sashimono.compat.catalog import restyle
+    from sashimono.core.commands import AddEffect
+    from sashimono.core.model import AnimatedValue, Clip, GeneratedSource
 
     with_points = [path for path in FILES if len(_load(path).objects[0].points) > 2]
     moving = [
@@ -205,7 +205,7 @@ def test_the_keyframes_start_at_the_clip_head(
     キーフレームにすると、クリップの先頭では動かず 244 フレーム待ってから
     動き出す 着せるときの尺合わせも 0 から数える前提で組んである
     """
-    from kumiki.core.model import AnimatedValue
+    from sashimono.core.model import AnimatedValue
 
     checked = 0
     for path, item in mapped:

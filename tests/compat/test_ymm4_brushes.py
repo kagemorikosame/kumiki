@@ -8,10 +8,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from kumiki.compat.aviutl.report import CompatibilityReport
-from kumiki.compat.ymm4.brushes import brush_effect, fill_foreground, gradient_effect
-from kumiki.compat.ymm4.template import map_template
-from kumiki.core.model import AnimatedValue
+from sashimono.compat.aviutl.report import CompatibilityReport
+from sashimono.compat.ymm4.brushes import brush_effect, fill_foreground, gradient_effect
+from sashimono.compat.ymm4.template import map_template
+from sashimono.core.model import AnimatedValue
 
 
 def _still(value: float) -> dict[str, Any]:

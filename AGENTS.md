@@ -1,4 +1,4 @@
-# Kumiki — コーディングエージェント向けの指示
+# Sashimono Edit — コーディングエージェント向けの指示
 
 Codex など、`AGENTS.md` を読む道具向け **内容は [CLAUDE.md](CLAUDE.md) と同じ**
 開発ルールの大本は [docs/development.md](docs/development.md)
@@ -31,7 +31,7 @@ PR はフェーズ単位 `phase/*` ブランチを切って `main` へ PR を出
 
 ## 覚えておくと早いこと
 
-- 版の出どころは `src/kumiki/__init__.py` の `__version__` 1 か所だけ
+- 版の出どころは `src/sashimono/__init__.py` の `__version__` 1 か所だけ
 - Y 軸は上が正（テキスト・影・変形・マスクすべて）
-- コア層（`src/kumiki/core/`）は PySide6 を import しない
+- コア層（`src/sashimono/core/`）は PySide6 を import しない
 - 変更は必ず `Command` 経由

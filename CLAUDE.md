@@ -1,4 +1,4 @@
-# Kumiki — Claude Code 向けの指示
+# Sashimono Edit — Claude Code 向けの指示
 
 **開発ルールの大本は [docs/development.md](docs/development.md)** 作業前に読むこと
 ここに書いてあるのは、そのうち特に外しやすい点だけ
@@ -43,10 +43,10 @@ PR はフェーズ単位 `phase/*` ブランチを切って `main` へ PR を出
 
 ## 覚えておくと早いこと
 
-- 版の出どころは `src/kumiki/__init__.py` の `__version__` 1 か所だけ
+- 版の出どころは `src/sashimono/__init__.py` の `__version__` 1 か所だけ
 - Y 軸は上が正（テキスト・影・変形・マスク・線の点すべて）
   例外は `brush_fill` の模様の座標と `particles` の放つ位置の 2 つだけ
   どちらも YMM4 の値をそのまま持つためで、表示名に「下が正」と書く
-- コア層（`src/kumiki/core/`）は PySide6 を import しない
+- コア層（`src/sashimono/core/`）は PySide6 を import しない
 - 変更は必ず `Command` 経由 モデルを直接書き換えない
 - 配布物（他人が作った素材）はリポジトリに入れない

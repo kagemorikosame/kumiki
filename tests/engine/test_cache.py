@@ -10,8 +10,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from kumiki.engine.audio import analyze_waveform
-from kumiki.engine.cache import (
+from sashimono.engine.audio import analyze_waveform
+from sashimono.engine.cache import (
     CacheStore,
     MediaAnalyzer,
     build_filmstrip,
@@ -23,8 +23,8 @@ from kumiki.engine.cache import (
     save_waveform,
     waveform_key,
 )
-from kumiki.engine.cache.store import load_arrays, save_arrays
-from kumiki.engine.decode import probe_media
+from sashimono.engine.cache.store import load_arrays, save_arrays
+from sashimono.engine.decode import probe_media
 from tests.media_fixtures import SampleMedia
 
 

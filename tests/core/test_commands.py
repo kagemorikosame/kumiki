@@ -7,7 +7,7 @@ from fractions import Fraction
 
 import pytest
 
-from kumiki.core.commands import (
+from sashimono.core.commands import (
     AddClip,
     AddMedia,
     AddTrack,
@@ -21,7 +21,7 @@ from kumiki.core.commands import (
     SplitClip,
     TrimClip,
 )
-from kumiki.core.model import (
+from sashimono.core.model import (
     Clip,
     GroupId,
     MediaItem,
@@ -88,7 +88,7 @@ class TestTrackCommands:
         assert updated.timeline.tracks == ()
 
     def test_remove_unknown_track_fails(self, project: Project) -> None:
-        from kumiki.core.model import TrackId
+        from sashimono.core.model import TrackId
 
         with pytest.raises(KeyError):
             RemoveTrack(TrackId("存在しない")).apply(project)

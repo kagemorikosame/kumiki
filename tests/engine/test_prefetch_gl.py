@@ -13,8 +13,8 @@ import numpy as np
 import pytest
 from OpenGL import GL
 
-from kumiki.core.commands import AddClip, AddTrack
-from kumiki.core.model import (
+from sashimono.core.commands import AddClip, AddTrack
+from sashimono.core.model import (
     AnimatedValue,
     Clip,
     GeneratedSource,
@@ -24,10 +24,10 @@ from kumiki.core.model import (
     Track,
     TrackKind,
 )
-from kumiki.core.timebase import FrameRate
-from kumiki.engine.gpu import Framebuffer, GLContextError, OffscreenGLContext
-from kumiki.engine.render import FrameRenderer, Invalidation
-from kumiki.engine.render.prefetch import PreviewCache
+from sashimono.core.timebase import FrameRate
+from sashimono.engine.gpu import Framebuffer, GLContextError, OffscreenGLContext
+from sashimono.engine.render import FrameRenderer, Invalidation
+from sashimono.engine.render.prefetch import PreviewCache
 
 SETTINGS = ProjectSettings(width=64, height=64, frame_rate=FrameRate(30))
 VIEWPORT = (0, 0, 64, 64)

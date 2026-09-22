@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from kumiki.core.commands import SetTranscript
-from kumiki.core.io import (
+from sashimono.core.commands import SetTranscript
+from sashimono.core.io import (
     FORMAT_NAME,
     FORMAT_VERSION,
     ProjectFileError,
@@ -19,7 +19,7 @@ from kumiki.core.io import (
     project_to_dict,
     save_project,
 )
-from kumiki.core.model import (
+from sashimono.core.model import (
     AnimatedValue,
     Clip,
     MediaItem,
@@ -30,7 +30,7 @@ from kumiki.core.model import (
     Transcript,
     TranscriptSegment,
 )
-from kumiki.core.timebase import FrameRate
+from sashimono.core.timebase import FrameRate
 
 
 class TestRoundTrip:
@@ -42,13 +42,13 @@ class TestRoundTrip:
         assert project_from_dict(project_to_dict(rich_project)) == rich_project
 
     def test_survives_a_file(self, rich_project: Project, tmp_path: Path) -> None:
-        path = tmp_path / "配信回_07.kmk"
+        path = tmp_path / "配信回_07.sme"
         save_project(rich_project, path)
         assert load_project(path) == rich_project
 
     def test_repeated_save_load_is_stable(self, rich_project: Project, tmp_path: Path) -> None:
         # 分数を浮動小数で書き出していると、往復のたびに値が動く
-        path = tmp_path / "p.kmk"
+        path = tmp_path / "p.sme"
         current = rich_project
         for _ in range(5):
             save_project(current, path)
@@ -58,7 +58,7 @@ class TestRoundTrip:
     def test_fractions_are_written_as_strings(self, tmp_path: Path) -> None:
         settings = ProjectSettings(frame_rate=FrameRate(30000, 1001))
         project = Project.create(settings)
-        path = tmp_path / "ntsc.kmk"
+        path = tmp_path / "ntsc.sme"
         save_project(project, path)
 
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -67,39 +67,39 @@ class TestRoundTrip:
 
     def test_japanese_is_not_escaped(self, rich_project: Project, tmp_path: Path) -> None:
         # 手で読める・手で直せることが JSON にした理由なので、ここは崩さない
-        path = tmp_path / "p.kmk"
+        path = tmp_path / "p.sme"
         save_project(rich_project, path)
         assert "配信回_07" in path.read_text(encoding="utf-8")
 
 
 class TestFileHandling:
     def test_creates_parent_directories(self, tmp_path: Path) -> None:
-        path = tmp_path / "深い" / "階層" / "p.kmk"
+        path = tmp_path / "深い" / "階層" / "p.sme"
         save_project(Project.create(), path)
         assert path.exists()
 
     def test_no_temporary_file_is_left_behind(self, tmp_path: Path) -> None:
-        path = tmp_path / "p.kmk"
+        path = tmp_path / "p.sme"
         save_project(Project.create(), path)
-        assert [p.name for p in tmp_path.iterdir()] == ["p.kmk"]
+        assert [p.name for p in tmp_path.iterdir()] == ["p.sme"]
 
     def test_overwrites_existing_file(self, tmp_path: Path) -> None:
-        path = tmp_path / "p.kmk"
+        path = tmp_path / "p.sme"
         save_project(Project.create(name="一回目"), path)
         save_project(Project.create(name="二回目"), path)
         assert load_project(path).name == "二回目"
 
     def test_untitled_project_takes_its_filename(self, tmp_path: Path) -> None:
-        path = tmp_path / "夏の思い出.kmk"
+        path = tmp_path / "夏の思い出.sme"
         save_project(Project.create(), path)
         assert load_project(path).name == "夏の思い出"
 
     def test_missing_file(self, tmp_path: Path) -> None:
         with pytest.raises(ProjectFileError, match="開けない"):
-            load_project(tmp_path / "無い.kmk")
+            load_project(tmp_path / "無い.sme")
 
     def test_not_json(self, tmp_path: Path) -> None:
-        path = tmp_path / "p.kmk"
+        path = tmp_path / "p.sme"
         path.write_text("これは JSON ではない", encoding="utf-8")
         with pytest.raises(ProjectFileError, match="JSON として読めない"):
             load_project(path)

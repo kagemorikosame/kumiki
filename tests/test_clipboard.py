@@ -11,9 +11,9 @@ from dataclasses import replace
 
 import pytest
 
-from kumiki.core.clipboard import copy_clips, cut_commands, paste_commands
-from kumiki.core.commands import AddClip, AddTrack, Command, Document, insert_media
-from kumiki.core.model import (
+from sashimono.core.clipboard import copy_clips, cut_commands, paste_commands
+from sashimono.core.commands import AddClip, AddTrack, Command, Document, insert_media
+from sashimono.core.model import (
     Clip,
     GeneratedSource,
     MediaItem,
@@ -22,7 +22,7 @@ from kumiki.core.model import (
     Track,
     TrackKind,
 )
-from kumiki.core.timebase import FrameRate
+from sashimono.core.timebase import FrameRate
 
 
 def apply(project: Project, commands: list[Command]) -> Project:
