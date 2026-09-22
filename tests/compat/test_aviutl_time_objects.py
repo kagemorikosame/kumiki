@@ -205,18 +205,44 @@ class TestWaveform:
         assert not report.missing
 
     def test_the_preset_name_changes_nothing(self) -> None:
-        # ファイルに Type1〜5 と書いた 5 本は、既定と同じ絵だった 記録に並べると、
-        # 本当に写せていない項目が埋もれる
-        _, report = _mapped(WAVE.replace("波形のプリセット=", "波形のプリセット=Type3"))
+        # ファイルに Type1〜5 と書いた 5 本は、既定と同じ絵だった 名前から値を引き直すと、
+        # 名前だけを書いたファイルが AviUtl2 と違う絵（Type3 ならスペクトラム）になる
+        # 記録に並べると、本当に写せていない項目が埋もれる
+        plain, _ = _mapped(WAVE)
+        named, report = _mapped(WAVE.replace("波形のプリセット=", "波形のプリセット=Type3"))
+        assert not report.missing
+        assert named.clip.source is not None and plain.clip.source is not None
+        assert named.clip.source.params == plain.clip.source.params
+
+    def test_a_chosen_preset_is_read_from_its_values(self) -> None:
+        # UI で Type5 を選ぶと、AviUtl2 は名前を空に戻して値を書き込んだ（v2.1.6a）
+        # スペクトラム・ミラー・40x40・スペース 80/0 その値から同じ絵を作る
+        item, report = _mapped(
+            WAVE.replace("スペクトラム表示=0", "スペクトラム表示=1")
+            .replace("ミラー表示=0", "ミラー表示=1")
+            .replace("横解像度=0", "横解像度=40")
+            .replace("縦解像度=0", "縦解像度=40")
+            .replace("横スペース=0", "横スペース=80")
+        )
+        source = item.clip.source
+        assert source is not None
+        assert source.params["wave_spectrum"] is True
+        assert source.params["wave_mirror"] is True
+        assert _static(source.params["wave_columns"]) == 40.0
+        assert _static(source.params["wave_gap_x"]) == 80.0
         assert not report.missing
 
-    def test_a_mirrored_line_is_the_plain_line(self) -> None:
-        # 線のミラー表示は実物で絵が変わらなかった スペクトラムと組むとまだ分からない
-        _, plain = _mapped(WAVE.replace("ミラー表示=0", "ミラー表示=1"))
-        assert not plain.missing
-        _, spectrum = _mapped(
+    def test_the_mirror_is_read(self) -> None:
+        # 前はスペクトラムと組んだミラーを写せない記録に残し、棒を下から積んでいた
+        # 実物（Type5）は棒を上下の真ん中に置く 線のミラーは絵が変わらないので同じ旗のまま渡す
+        item, report = _mapped(
             WAVE.replace("ミラー表示=0", "ミラー表示=1").replace(
                 "スペクトラム表示=0", "スペクトラム表示=1"
             )
         )
-        assert any("ミラー表示" in entry for entry in spectrum.missing)
+        assert item.clip.source is not None
+        assert item.clip.source.params["wave_mirror"] is True
+        assert not report.missing
+        plain, _ = _mapped(WAVE)
+        assert plain.clip.source is not None
+        assert plain.clip.source.params["wave_mirror"] is False

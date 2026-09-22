@@ -34,10 +34,10 @@ from PySide6.QtGui import (
 from sashimono.core.model import AnimatedValue, GeneratedSource, ParamValue
 from sashimono.effects.sources import SourceDefinition, source_registry
 from sashimono.engine.audio_shapes import (
-    SPECTRUM_SIZE,
-    WAVEFORM_LEAD,
     WAVEFORM_LINE,
+    bar_mask,
     cell_mask,
+    spectrum_cells,
     spectrum_levels,
     waveform_cells,
     waveform_points,
@@ -68,8 +68,8 @@ def render_source(
     ``duration`` はクリップの長さ（フレーム） 移動軌跡が先端の向きを決めるときに、
     クリップの終わりより先の動きを見ないために使う 分からなければ 0
     ``trail_paths`` は移動軌跡の道の置き場 レンダラが自分のものを渡し、使い回す
-    ``audio`` は音声波形が描く音（今の時刻の ``WAVEFORM_LEAD`` サンプル前からの
-    1 チャンネルのサンプル） ``audio_rate`` はそのレート（スペクトラムの周波数に使う）
+    ``audio`` は音声波形が描く音（今の時刻からの 1 チャンネルのサンプル）
+    ``audio_rate`` はそのレート（スペクトラムの周波数に使う）
     音を読むのはレンダラの仕事 ここは渡された数を線にするだけ
     """
     return render_source_framed(
@@ -1035,12 +1035,12 @@ def _draw_waveform(
 ) -> None:
     """音声波形（AviUtl2 の ``音声波形表示``） 音はレンダラが ``_audio`` に入れて渡す
 
-    音は ``WAVEFORM_LEAD`` サンプル前から届く 線はフレームの時刻から、スペクトラムは
-    その前後の窓を使う 音が無ければ何も描かない 実物も、再生範囲が 0 秒の見本では
-    何も出さなかった
+    音はフレームの時刻から届く 線はそこから横幅ぶん、スペクトラムは頭の
+    :func:`~sashimono.engine.audio_shapes.spectrum_window` ぶんを使う
+    音が無ければ何も描かない 実物も、再生範囲が 0 秒の見本では何も出さなかった
     """
     audio = values.get("_audio")
-    if not isinstance(audio, np.ndarray) or audio.size <= WAVEFORM_LEAD + 1:
+    if not isinstance(audio, np.ndarray) or audio.size <= 1:
         return
     volume = _number(values, "wave_volume", 100.0)
     # 升目の数は描く大きさより細かくしない 壊れた値で巨大な升目を作ると描画が止まる
@@ -1049,31 +1049,26 @@ def _draw_waveform(
     columns = round(_within(_number(values, "wave_columns", 0.0), 0.0, width, 0.0))
     rows = round(_within(_number(values, "wave_rows", 0.0), 0.0, height, 0.0))
     spectrum = bool(values.get("wave_spectrum", False))
-    body = audio[WAVEFORM_LEAD:]
     if columns <= 0 and rows <= 0 and not spectrum:
         # 升目を持たない線は、にじませて細く引く 升目の絵と同じ道を通すと、
         # 斜めの所がぎざぎざになる（実物の線は縁がにじんでいる）
-        _draw_waveform_line(painter, values, body, centre_x, centre_y, width, height, volume)
+        _draw_waveform_line(painter, values, audio, centre_x, centre_y, width, height, volume)
         return
 
     box_w, box_h = max(1, round(width)), max(1, round(height))
     grid_w = columns if columns > 0 else box_w
     grid_h = rows if rows > 0 else box_h
+    gap_x = _number(values, "wave_gap_x", 0.0)
+    gap_y = _number(values, "wave_gap_y", 0.0)
     if spectrum:
         rate = round(_number(values, "_audio_rate", 44100.0))
-        levels = spectrum_levels(audio[:SPECTRUM_SIZE], grid_w, rate, volume) * grid_h
-        # 下から塗る 升の真ん中まで届いた升を塗る
-        from_bottom = grid_h - np.arange(grid_h)[:, None] - 0.5
-        lit = from_bottom < levels[None, :]
+        # ミラーは線では絵が変わらなかった（p5 と p6 の見本） 効くのはスペクトラムだけ
+        mirror = bool(values.get("wave_mirror", False))
+        cells = spectrum_cells(spectrum_levels(audio, grid_w, rate, volume), grid_h, mirror=mirror)
+        mask = bar_mask(cells, grid_h, box_w, box_h, gap_x, gap_y, mirror=mirror)
     else:
-        lit = waveform_cells(body, grid_w, grid_h, volume)
-    mask = cell_mask(
-        lit,
-        box_w,
-        box_h,
-        _number(values, "wave_gap_x", 0.0),
-        _number(values, "wave_gap_y", 0.0),
-    )
+        lit = waveform_cells(audio, grid_w, grid_h, volume)
+        mask = cell_mask(lit, box_w, box_h, gap_x, gap_y)
     if not mask.any():
         return
     colour = _color(values.get("color"))
