@@ -136,6 +136,12 @@ MAX_OPEN_DECODERS = 8
 MAX_GENERATED_CACHE = 48
 
 
+#: 値が止まっていても時計で絵が変わる図形
+#: 星空は粒が時間で流れ、移動軌跡は線が時間で伸びる（固定速度） 載せ忘れると、
+#: 最初のフレームの絵を覚えたまま使い回して、止まった星空になる
+_CLOCK_SHAPES = frozenset({"concentration", "starfield", "motion_trail"})
+
+
 def _varies_over_time(source: GeneratedSource) -> bool:
     """フレームごとに絵が変わる生成オブジェクトか
 
@@ -147,7 +153,7 @@ def _varies_over_time(source: GeneratedSource) -> bool:
             return True
     if source.params.get("timer_format"):
         return True
-    if source.params.get("shape") == "concentration":
+    if source.params.get("shape") in _CLOCK_SHAPES:
         return True
     text = source.params.get("text")
     return isinstance(text, str) and has_embedded(text)
@@ -1077,11 +1083,15 @@ class FrameRenderer:
         # 何本も重ねたタイムラインでは、そこが再生の足を引っ張る
         # 時間で変わらない絵は、フレームを鍵に入れない（毎フレーム作り直さない）
         when = local_frame if _varies_over_time(source) else -1
-        key = (source.kind, width, height, when, _fingerprint(source.params))
+        # 長さも鍵に入れる 移動軌跡の先端の向きはクリップの終わりまでの動きで決まるので、
+        # 伸び縮みさせただけのクリップに前の長さの絵を出さないように
+        key = (source.kind, width, height, when, clip.duration, _fingerprint(source.params))
         cached = self._generated.get(clip.id)
         if cached is not None and cached[0] == key:
             return cached[1]
-        image = render_source(source, width, height, frame=local_frame, fps=float(rate.fps))
+        image = render_source(
+            source, width, height, frame=local_frame, fps=float(rate.fps), duration=clip.duration
+        )
         if image is not None:
             # 入れ替えのときは減らない 先に捨てると、関係ないクリップの絵が消える
             if clip.id not in self._generated and len(self._generated) >= MAX_GENERATED_CACHE:
