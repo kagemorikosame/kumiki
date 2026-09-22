@@ -355,3 +355,16 @@ class TestWindingWithDifferentVertices:
         assert int(np.argmax(clockwise[2, 2, :3])) == 0
         assert int(np.argmax(clockwise[2, 16, :3])) == 1
         assert int(np.argmax(clockwise[16, 2, :3])) == 2
+
+
+class TestUnreadableScriptColours:
+    def test_it_falls_back_to_the_scripts_own_default(self) -> None:
+        """読めない色は、そのスクリプトが決めた既定の色にして記録する
+
+        白へ倒すと、既定が白でない色欄（板の色など）の見た目が黙って変わる
+        """
+        spec = ColorSpec("color", "背景色", (0.0, 0.0, 0.0, 1.0))
+        report = CompatibilityReport()
+        value = _spec_value(spec, "黄色", (), report, "背景色")
+        assert spec.coerce(value) == (0.0, 0.0, 0.0, 1.0)
+        assert any("色として読めない" in line for line in report.lines())
