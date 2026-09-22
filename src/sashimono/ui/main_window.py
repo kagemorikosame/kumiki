@@ -39,6 +39,7 @@ from sashimono.ai.host import ToolError
 from sashimono.compat.aviutl import native
 from sashimono.compat.aviutl.exo import ExoFile
 from sashimono.core.commands import (
+    AddClip,
     AddMedia,
     AddScene,
     Command,
@@ -124,6 +125,18 @@ _PORTABLE = QKeySequence.SequenceFormat.PortableText
 
 #: AviUtl のオブジェクトファイル
 EXO_FILTER = "AviUtl オブジェクト (*.exo *.exa *.exo2 *.exa2);;すべてのファイル (*)"
+
+
+def _probe_or_none(path: Path) -> MediaItem | None:
+    """テンプレートの素材を開く 開けなければ ``None``
+
+    開けない素材が 1 つあるだけで配置全体を止めない 見つからない素材と同じく
+    数えて知らせ、ほかのアイテムは置く
+    """
+    try:
+        return probe_media(path)
+    except ProbeError:
+        return None
 
 
 class MainWindow(QMainWindow):
@@ -673,20 +686,25 @@ class MainWindow(QMainWindow):
             return
         self._on_project_changed()
 
-    def execute_all(self, commands: list[Command], label: str, *, merge: bool = False) -> None:
+    def execute_all(self, commands: list[Command], label: str, *, merge: bool = False) -> bool:
         """複数のコマンドを 1 回の Undo で戻せるようにまとめて実行する
 
         ``merge`` が真なら、直前の同じ操作の段へまとめる（:meth:`Document.checkpoint`）
+        断られてまとめて戻したときは偽を返す 呼び出し側が成功した前提で続きを
+        進めると、戻した素材の解析を頼んだり、置けていないのに「置いた」と出したりする
         """
         if not commands:
-            return
+            return True
         try:
             with self._document.checkpoint(label, merge=merge):
                 for command in commands:
                     self._document.execute(self._in_active_scene(command))
         except (ValueError, KeyError) as exc:
             self.statusBar().showMessage(str(exc), 4000)
+            self._on_project_changed()
+            return False
         self._on_project_changed()
+        return True
 
     def _in_active_scene(self, command: Command) -> Command:
         """開いているシーンの中で実行するよう包む メインなら包まない
@@ -1397,7 +1415,7 @@ class MainWindow(QMainWindow):
 
         「置く」と「着せる」で行き先が違うだけで、どちらも 1 回の Undo で戻る
         """
-        from sashimono.compat.catalog import place, restyle
+        from sashimono.compat.catalog import gather_media, place, restyle
         from sashimono.ui.template_dialog import TemplateDialog
 
         dialog = TemplateDialog(parent=self)
@@ -1417,16 +1435,36 @@ class MainWindow(QMainWindow):
             if not commands:
                 self.statusBar().showMessage("テキストのクリップにしか適用できません", 5000)
                 return
-            self.execute_all(commands, "テンプレートを適用")
+            if not self.execute_all(commands, "テンプレートを適用"):
+                # 断られた理由は execute_all がステータスバーに出している 上書きしない
+                return
             self.statusBar().showMessage("テンプレートを適用した（文字と長さはそのまま）", 5000)
             return
 
-        commands = place(objects, self.view_project, at_frame=self._timeline.playhead)
+        # 画像・音声のアイテムは素材として登録してからクリップに結ぶ 結ばないと、
+        # 置いたクリップは描かれず鳴らない（素材の無いクリップになる）
+        plan = gather_media(objects, self.view_project, _probe_or_none, near=dialog.origin)
+        commands = place(
+            objects, self.view_project, at_frame=self._timeline.playhead, media=plan.media
+        )
         if not commands:
             self.statusBar().showMessage("置けるオブジェクトがありませんでした", 5000)
             return
-        self.execute_all(commands, "テンプレートを配置")
-        self.statusBar().showMessage(f"{len(commands)} 個を置いた", 5000)
+        # 素材の登録と配置を 1 回の Undo にまとめる 分けると、戻したときに
+        # 使われていない素材だけが一覧に残る
+        if not self.execute_all([*plan.commands, *commands], "テンプレートを配置"):
+            return
+        for media in plan.added:
+            self._analyzer.request(media, on_ready=self._on_analysis_ready)
+            self._request_proxy(media)
+        # 数えるのは一番上に置いたクリップだけ トラックやシーンを足すコマンドまで
+        # 数えると、画像 1 つでも「2 個を置いた」と出る
+        placed = sum(isinstance(command, AddClip) for command in commands)
+        note = f"{placed} 個を置いた"
+        if plan.missing:
+            # 見つからないものと、見つかっても開けなかったものの両方を数えている
+            note += f"（素材 {len(plan.missing)} 件が見つからないか開けません）"
+        self.statusBar().showMessage(note, 6000)
 
     def rescan_scripts(self) -> None:
         """スクリプトのフォルダを読み直す"""
