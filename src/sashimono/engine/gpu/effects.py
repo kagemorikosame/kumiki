@@ -84,6 +84,10 @@ class EffectProcessor:
         self._object: tuple[float, float, float, float] = (0.0, 0.0, float(width), float(height))
         self._origin: tuple[float, float] = (float(width) * 0.5, float(height) * 0.5)
         self._duration = 0
+        #: 事前乗算で渡される絵（合成先のキャンバス）が sRGB で符号化した値か
+        #: 重ね合わせを sRGB で行うプロジェクトで真にする（:class:`Compositor` の ``encoded``）
+        #: 素材のテクスチャやエフェクトの結果はどちらでもリニアなので、事前乗算の絵だけに効く
+        self.canvas_encoded = False
 
     @property
     def width(self) -> int:
@@ -196,6 +200,9 @@ class EffectProcessor:
         self._blit.set_bool("u_flip", flip)
         # エフェクトはストレートアルファで受け取る 事前乗算で溜まった絵は戻してから置く
         self._blit.set_bool("u_premultiplied", premultiplied)
+        # エフェクトはリニアで動く sRGB で重ねたキャンバスを符号化したまま渡すと、
+        # ぼかしやグローの広がりが暗く沈み、戻すときにもう 1 度符号化されて白っぽく浮く
+        self._blit.set_bool("u_decode", premultiplied and self.canvas_encoded)
         handle = source.color if isinstance(source, Framebuffer) else source.handle
         self._blit.bind_texture("u_texture", handle)
         self._quad.draw()
@@ -322,6 +329,7 @@ class EffectProcessor:
         GL.glDisable(GL.GL_BLEND)
         self._blit.use()
         self._blit.set_bool("u_premultiplied", False)
+        self._blit.set_bool("u_decode", False)
         self._blit.set_vec4("u_rect", FULL_RECT)
         self._blit.set_bool("u_flip", False)
         self._blit.bind_texture("u_texture", source.color)
@@ -375,9 +383,15 @@ in vec2 v_uv;
 out vec4 frag_color;
 uniform sampler2D u_texture;
 uniform bool u_premultiplied;
+// 渡された絵が sRGB で符号化した値か（sRGB で重ねた合成先のキャンバス）
+uniform bool u_decode;
 void main() {
     vec4 color = texture(u_texture, v_uv);
     if (u_premultiplied && color.a > 0.0001) color.rgb /= color.a;
+    if (u_decode) {
+        vec3 c = clamp(color.rgb, 0.0, 1.0);
+        color.rgb = mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
+    }
     frag_color = color;
 }
 """

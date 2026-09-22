@@ -18,8 +18,17 @@ import av.video.codeccontext
 import pytest
 from av.video.reformatter import ColorPrimaries, ColorRange, ColorTrc
 
-from sashimono.core.commands import Document, insert_media
-from sashimono.core.model import Project, ProjectSettings
+from sashimono.core.commands import AddClip, AddTrack, Document, insert_media
+from sashimono.core.model import (
+    AnimatedValue,
+    Blending,
+    Clip,
+    GeneratedSource,
+    Project,
+    ProjectSettings,
+    Track,
+    TrackKind,
+)
 from sashimono.core.timebase import FrameRate
 from sashimono.engine.decode import VideoDecoder, probe_media
 from sashimono.engine.encode import (
@@ -463,3 +472,34 @@ class TestColor:
             image = decoder.frame_at(Fraction(0))
         assert image is not None
         assert_close(rgb_at_bars(image), COLORS, tolerance=4)
+
+
+class TestBlending:
+    """書き出しもプロジェクトの重ね合わせの方法（Issue #65）に従う
+
+    プレビューだけ切り替わって書き出しが既定のままだと、画面で合わせた半透明の明るさが
+    書き出した動画で変わる
+    """
+
+    @pytest.mark.parametrize(
+        ("blending", "expected"), [(Blending.SRGB, 128), (Blending.LINEAR, 188)]
+    )
+    def test_half_white_on_black(self, blending: str, expected: int, tmp_path: Path) -> None:
+        # 見たいのは合成の明るさ エンコーダが入っていない機械の失敗と取り違えないよう飛ばす
+        if "libx264" not in available_video_codecs():
+            pytest.skip("libx264 が使えない")
+        settings = ProjectSettings(width=64, height=64, frame_rate=FrameRate(30), blending=blending)
+        project = Project.create(settings)
+        track = Track(TrackKind.VIDEO, "V1")
+        white = GeneratedSource(
+            kind="shape", params={"shape": "background", "color": (1.0, 1.0, 1.0, 1.0)}
+        )
+        clip = Clip(timeline_start=0, duration=3, source=white, opacity=AnimatedValue(0.5))
+        project = AddClip(track.id, clip).apply(AddTrack(track).apply(project))
+        output = tmp_path / f"{blending}.mp4"
+        export_project(project, ExportSettings(path=output, video_codec="libx264"))
+        with VideoDecoder(output) as decoder:
+            image = decoder.frame_at(Fraction(0))
+        assert image is not None
+        # 灰色は行列に左右されない 残るのは limited への変換と圧縮の丸めだけ
+        assert abs(int(image[32, 32, 0]) - expected) <= 3

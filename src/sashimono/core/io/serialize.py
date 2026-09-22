@@ -21,6 +21,7 @@ from typing import Any
 from sashimono.core.model import (
     AnimatedValue,
     AudioStreamInfo,
+    Blending,
     Clip,
     ClipId,
     Effect,
@@ -69,7 +70,10 @@ FORMAT_NAME = "sashimono-project"
 #: 2 でシーン（``scenes`` と ``Clip.scene_id``）とグループ（``Clip.group_id``）を足した
 #: 1 の本体は 2 を開くと「更新してください」と言う（シーンを黙って捨てて開くと、
 #: 置いたシーンが何も映らない穴になり、保存し直すとシーンごと消える）
-FORMAT_VERSION = 2
+#: 3 で重ね合わせの方法（``settings.blending``）を足した（Issue #65） 2 までの本体は項目を
+#: 知らないので、sRGB で混ぜる作品をリニアで描き、保存し直すと項目ごと消えて見た目が変わる
+#: 黙って変えるより「更新してください」で止める方がよいので、版を上げた
+FORMAT_VERSION = 3
 
 #: プロジェクトファイルの拡張子
 SUFFIX = ".sme"
@@ -589,6 +593,7 @@ def project_to_dict(project: Project) -> dict[str, Any]:
             "sample_rate": settings.sample_rate,
             "channels": settings.channels,
             "color_space": settings.color_space,
+            "blending": settings.blending,
         },
         "media": [_media_to_json(m) for m in project.media],
         "timeline": _timeline_to_json(project.timeline),
@@ -648,6 +653,12 @@ def _project_from_dict(data: object) -> Project:
         sample_rate=_get_int(settings_data, "sample_rate", 48000),
         channels=_get_int(settings_data, "channels", 2),
         color_space=_get_str(settings_data, "color_space", "rec709"),
+        # 版 2 までは項目が無い 重ね合わせを選べるようになる前のファイルで、そのころは
+        # リニアで混ぜていたので、リニアで開く 新規作成の既定（sRGB）で開くと、
+        # 半透明の文字やフェードが保存したときより暗くなる
+        # 版 3 は必ず書くので、無ければ壊れたファイル リニアで補うと sRGB の作品が
+        # 黙って明るくなるので、空の値として断る（モデルの検査が ProjectFileError にする）
+        blending=_get_str(settings_data, "blending", Blending.LINEAR if version <= 2 else ""),
     )
 
     timeline = _timeline_from_json(root.get("timeline", {"rate": "30/1"}))

@@ -376,7 +376,9 @@ def command_compare(arguments: argparse.Namespace) -> int:
     every: bool = arguments.every
     references = References(_ymm4_frames(video))
 
-    settings = ProjectSettings(width=WIDTH, height=HEIGHT, frame_rate=FrameRate(FPS))
+    settings = ProjectSettings(
+        width=WIDTH, height=HEIGHT, frame_rate=FrameRate(FPS), blending=arguments.blending
+    )
     images = work / "images"
     images.mkdir(exist_ok=True)
     rows: list[tuple[float, str, str, int, str, str]] = []
@@ -485,6 +487,9 @@ def main() -> int:
         action="store_true",
         help="枠のフレームをすべて比べ、枠ごとに一番大きい差を出す（既定は 3 枚だけ）",
     )
+    # 既定は新しく作るプロジェクトと同じ sRGB（YMM4 の混ぜ方） リニアを選べば、
+    # 設定ができる前に保存したプロジェクトの見え方で比べられる
+    compare.add_argument("--blending", choices=("srgb", "linear"), default="srgb")
     arguments = parser.parse_args()
     if arguments.command == "build":
         return command_build(arguments)

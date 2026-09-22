@@ -10,7 +10,7 @@ from sashimono.core.model.media import MediaItem
 from sashimono.core.model.timeline import Timeline
 from sashimono.core.timebase import FrameRate
 
-__all__ = ["Project", "ProjectSettings", "Scene"]
+__all__ = ["Blending", "Project", "ProjectSettings", "Scene"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +24,21 @@ class Scene:
     name: str
     timeline: Timeline
     id: SceneId = field(default_factory=new_scene_id)
+
+
+class Blending:
+    """半透明の絵を重ねるときに、どの値で混ぜるか（Issue #65）
+
+    値はプロジェクトファイルにそのまま出る 名前を変えると、保存した作品の見た目が変わる
+    """
+
+    #: sRGB で符号化した値のまま混ぜる AviUtl2 と YMM4 はこちら（黒の上に 50% の白で 128）
+    #: 配布されている素材は、この混ざり方を前提に色と不透明度を決めてある
+    SRGB = "srgb"
+    #: 光の量（リニア）に直して混ぜる 半透明の所が明るく出る（黒の上に 50% の白で 188）
+    #: この項目ができる前に保存したプロジェクトは、すべてこちらで描いていた
+    LINEAR = "linear"
+    ALL = (SRGB, LINEAR)
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +56,10 @@ class ProjectSettings:
     channels: int = 2
     #: 当面は sRGB / Rec.709 のみ HDR は将来対応
     color_space: str = "rec709"
+    #: 半透明の重ね合わせ（:class:`Blending`） 新しく作るプロジェクトは AviUtl と YMM4 に
+    #: 合わせて sRGB で混ぜる この項目の無い古いファイルは、読むときにリニアとして開く
+    #: （:mod:`sashimono.core.io.serialize`） 既定で開くと、保存したときと見た目が変わる
+    blending: str = Blending.SRGB
 
     def __post_init__(self) -> None:
         if self.width <= 0 or self.height <= 0:
@@ -49,6 +68,9 @@ class ProjectSettings:
             raise ValueError(f"サンプリングレートが不正: {self.sample_rate}")
         if self.channels <= 0:
             raise ValueError(f"チャンネル数が不正: {self.channels}")
+        if self.blending not in Blending.ALL:
+            # 知らない値のまま描くと、どちらの混ぜ方になるかがレンダラの作り次第になる
+            raise ValueError(f"重ね合わせの方法が不正: {self.blending!r}")
 
     @property
     def resolution(self) -> tuple[int, int]:
