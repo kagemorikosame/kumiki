@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
 )
 
 from kumiki.ai.host import ToolError
+from kumiki.compat.aviutl import native
 from kumiki.compat.aviutl.exo import ExoFile
 from kumiki.core.commands import (
     AddMedia,
@@ -166,6 +167,8 @@ class MainWindow(QMainWindow):
         )
         #: 本人の好みの設定 プロジェクトではなく本人に付く
         self._preferences = PreferenceStore().load()
+        # 描画と書き出しの両方が見るので、窓を組み立てる前に決めておく
+        native.set_enabled(self._preferences.native_modules)
         #: プレビュー用の控えを作る係 **書き出しには渡さない**
         #: 渡すと、画面では気付かないまま低解像度の絵が最終出力に入る
         self._proxies = ProxyBuilder(ProxyStore(height=self._preferences.proxy_height))
@@ -561,6 +564,10 @@ class MainWindow(QMainWindow):
             self._proxies = ProxyBuilder(ProxyStore(height=preferences.proxy_height))
         self._preview.set_proxies(self._proxies.store if preferences.use_proxy else None)
         self._preview.set_prefetch_bytes(preferences.prefetch_bytes())
+        if native.enabled() != preferences.native_modules:
+            native.set_enabled(preferences.native_modules)
+            # 読む・読まないで絵が変わる 先読みした絵は全部使えない
+            self._preview.refresh_all()
         for media in self.view_project.media:
             self._request_proxy(media)
         self._apply_auto_quality()

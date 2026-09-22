@@ -150,6 +150,11 @@ class Preferences:
     #: 上限を置くのは、デコードと効果の側が使う GPU のメモリを残すため
     #: 使い切ると、先読みではなくプレビューそのものが描けなくなる
     prefetch_budget_mb: int = 1024
+    #: AviUtl2 のスクリプトモジュール（``.mod2`` の中身が DLL の物）を読む
+    #: 既定は入 テレビ字幕のように、DLL が無いと絵が出ない配布スクリプトがある
+    #: 読んだ DLL は Kumiki と同じ権限で動く（Lua の閉じ込めの外） 読むのは
+    #: 本人がスクリプトフォルダへ置いた物だけだが、気になる人は切れるようにする
+    native_modules: bool = True
 
     def prefetch_bytes(self) -> int:
         """先読みに使えるバイト数 切ってあれば 0
@@ -201,6 +206,7 @@ class PreferenceStore:
             ),
             prefetch=_flag(data.get("prefetch"), plain.prefetch),
             prefetch_budget_mb=_budget(data.get("prefetch_budget_mb"), plain.prefetch_budget_mb),
+            native_modules=_flag(data.get("native_modules"), plain.native_modules),
         )
 
     def save(self, preferences: Preferences) -> None:

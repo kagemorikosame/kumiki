@@ -422,3 +422,72 @@ class TestThePrefetchSetting:
             assert window._preview._prefetch_bytes == 512 * 1024 * 1024
         finally:
             window.close()
+
+
+class TestTheNativeModuleSetting:
+    """AviUtl2 のスクリプトモジュール（DLL）を読むかどうか
+
+    読んだ DLL は Kumiki と同じ権限で動く（Lua の閉じ込めの外） 切った人の機械で
+    読み続けると、切った意味が無い
+    """
+
+    @pytest.fixture(autouse=True)
+    def restore(self) -> Iterator[None]:
+        from kumiki.compat.aviutl import native
+
+        yield
+        native.set_enabled(True)
+
+    def test_it_is_on_by_default(self) -> None:
+        """既定は入 DLL が無いと絵が出ない配布スクリプト（テレビ字幕）がある"""
+        assert Preferences().native_modules is True
+
+    def test_it_comes_back(self, tmp_path: Path) -> None:
+        """保存して読み直しても同じ 落ちると、切ったのに次の起動でまた読む"""
+        store = PreferenceStore(tmp_path / "preferences.json")
+        store.save(Preferences(native_modules=False))
+        assert store.load().native_modules is False
+
+    def test_a_broken_value_falls_back(self, tmp_path: Path) -> None:
+        # 文字の "false" を真と読むと、切ったつもりで読み続ける
+        path = tmp_path / "preferences.json"
+        path.write_text('{"native_modules": "false"}', encoding="utf-8")
+        assert PreferenceStore(path).load().native_modules is Preferences().native_modules
+
+    def test_the_dialog_shows_what_is_set(self, qt_application: QApplication) -> None:
+        """画面が今の設定を映す 映らないと、開いて OK を押しただけで入り直す"""
+        del qt_application
+        chosen = Preferences(native_modules=False)
+        assert PreferencesDialog(chosen).preferences() == chosen
+
+    def test_the_window_turns_it_off(self, qt_application: QApplication) -> None:
+        """切ったら描く側も読まなくなる 設定だけ変わって描く側が読み続けると意味が無い"""
+        # 編集画面自身が見ている物を使う ほかの試験がモジュールを読み直すと、
+        # 名前で引いた物と編集画面が見ている物が別物になる
+        native = MainWindow.__init__.__globals__["native"]
+        del qt_application
+        window = MainWindow(Project.create(), confirm_unsaved=False)
+        try:
+            refreshed: list[bool] = []
+            window._preview.refresh_all = lambda: refreshed.append(True)  # type: ignore[method-assign]
+            window._apply_preferences(Preferences(native_modules=False))
+            assert native.enabled() is False
+            assert refreshed, "貯めた絵を捨てていない（切る前の板が残る）"
+        finally:
+            window.close()
+
+    def test_the_window_starts_with_it(
+        self, qt_application: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """起動の時点で効く 設定の窓を開くまで効かないと、起動直後の描画で読んでしまう"""
+        names = MainWindow.__init__.__globals__
+        native = names["native"]
+        del qt_application
+        monkeypatch.setattr(
+            names["PreferenceStore"], "load", lambda self: Preferences(native_modules=False)
+        )
+        window = MainWindow(Project.create(), confirm_unsaved=False)
+        try:
+            assert native.enabled() is False
+        finally:
+            window.close()

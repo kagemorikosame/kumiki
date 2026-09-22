@@ -19,6 +19,7 @@ from typing import Any
 
 import numpy as np
 
+from kumiki.compat.aviutl import native
 from kumiki.compat.aviutl.control import ScriptHeader
 from kumiki.compat.aviutl.embedded import EMIT, build_source, has_embedded, literal_text
 from kumiki.compat.aviutl.encoding import read_text
@@ -54,6 +55,9 @@ end
 
 #: モジュールとして読む拡張子 テキストの Lua を先に探す
 MODULE_SUFFIXES = (".lua", ".mod", ".mod2")
+
+#: DLL へ渡す表を写すときの深さの上限 配布物が渡すのは 2 段（頂点の表の表）まで
+NATIVE_TABLE_DEPTH = 8
 
 #: 書き出しの手前で Lua の中のまま長さを数える Python へ渡してから数えると、
 #: Lua に許した大きさの文字列を Python 側にも丸ごと写してから断ることになる
@@ -297,6 +301,8 @@ class LuaScriptRuntime:
         self._render_source = render_source
         self._instruction_limit = instruction_limit
         self._lua = _new_runtime(module)
+        #: 値の種類を Lua の見方で調べる（表かどうか） DLL へ渡す前に写すため
+        self._lua_type = module.lua_type
         # 入れ子で取れる錠にする テキストの展開は、大域変数の差し替えと実行を
         # 1 つの錠の中で行い、その中から run を呼ぶ
         self._lock = threading.RLock()
@@ -369,6 +375,7 @@ class LuaScriptRuntime:
             script=script,
             render_source=self._render_source,
             load_module=self.load_module,
+            load_script_module=self.load_script_module,
         )
         with self._lock:
             self._folder = folder
@@ -474,23 +481,111 @@ class LuaScriptRuntime:
 
         value = None
         if _is_native(path):
+            # DLL は ``obj.module`` で読む（``load_script_module``） ``require`` は Lua の
+            # ファイルを読む物で、DLL を渡されても Lua として走らせられない
             self._report.note_missing(
-                f'モジュール "{key}" は native（{path.name} の中身が DLL）なので使えません'
+                f'モジュール "{key}" は DLL（{path.name}）なので require では読めない'
+                "（obj.module で読む）"
             )
         else:
-            try:
-                text, _ = read_text(path)
-                # 上限の包みの中で走らせる Python から直に実行すると命令数のフックが
-                # 掛からず、モジュールの無限ループで固まる
-                value = self._call_guarded(self._compile(text, path.name))
-            except LuaError as exc:
-                self._report.note_failure(path.name, f"モジュールを読めない: {exc}")
-            except Exception as exc:
-                self._report.note_failure(path.name, f"モジュールを読めない: {exc}")
+            value = self._run_file(path)
         self._modules[key] = value
         return value
 
-    def _find_module(self, name: str) -> Path | None:
+    def _run_file(self, path: Path) -> Any:
+        """Lua のモジュールのファイルを走らせ、返した値を受け取る 読めなければ ``nil``"""
+        try:
+            text, _ = read_text(path)
+            # 上限の包みの中で走らせる Python から直に実行すると命令数のフックが
+            # 掛からず、モジュールの無限ループで固まる
+            return self._call_guarded(self._compile(text, path.name))
+        except LuaError as exc:
+            self._report.note_failure(path.name, f"モジュールを読めない: {exc}")
+        except Exception as exc:
+            self._report.note_failure(path.name, f"モジュールを読めない: {exc}")
+        return None
+
+    def load_script_module(self, name: str = "") -> Any:
+        """``obj.module`` の実体 スクリプトモジュール（``.mod2``）を読む
+
+        ``require`` とは探す物が違う 仕様書（lua.txt）では ``obj.module`` は
+        ``.mod2`` の関数を取り出す物 同じ名前の ``.lua`` も置いてある配布物が
+        あり（テレビ字幕は ``TVSubtitle.lua`` と ``TVSubtitle.mod2``）、``require``
+        と同じく ``.lua`` を先に拾うと、``obj.module`` に Lua の方が返って
+        DLL の関数（``scan``）が nil になる
+
+        ``.mod2`` が無ければ ``require`` と同じ探し方に戻す これまで ``obj.module``
+        で ``.lua`` を読んでいたスクリプトを壊さない
+        """
+        key = str(name)
+        # 設定の入り切りも鍵に入れる 入れないと、切ったあとも読んであった DLL の
+        # 関数が返り続け、切った意味が無い
+        cache = f"mod2:{key}:{native.enabled()}"
+        if cache in self._modules:
+            return self._modules[cache]
+
+        path = self._find_module(key, suffixes=(".mod2",))
+        if path is None:
+            return self.load_module(key)
+
+        # 見つけた .mod2 そのものを読む 名前で探し直すと、同じ名前の .lua を拾う
+        value = self._native_module(path, key) if _is_native(path) else self._run_file(path)
+        self._modules[cache] = value
+        return value
+
+    def _native_module(self, path: Path, name: str) -> Any:
+        """DLL のモジュールを読み、Lua から呼べる表にする 読めなければ ``nil``"""
+        if not native.enabled():
+            self._report.note_missing(
+                f'モジュール "{name}" は DLL（{path.name}）で、読まない設定になっている'
+            )
+            return None
+        try:
+            module = native.load(path)
+        except native.NativeModuleError as exc:
+            self._report.note_missing(f'モジュール "{name}" を読めない: {exc}')
+            return None
+        functions = {function: self._native_function(module, function) for function in module.names}
+        return self._lua.table_from(functions)
+
+    def _native_function(self, module: native.NativeModule, name: str) -> Any:
+        """DLL の関数 1 つを、Lua から呼べる形にする"""
+
+        def call(*args: Any) -> Any:
+            converted = [self._from_lua(value) for value in args]
+            try:
+                results = module.call(name, converted)
+            except native.NativeModuleError as exc:
+                # Lua のエラーにする スクリプトの失敗として記録され、
+                # そのオブジェクトだけ素通しで出る（フレーム全体は落とさない）
+                raise LuaError(str(exc)) from exc
+            values = tuple(self._to_lua(value) for value in results)
+            if not values:
+                return None
+            return values[0] if len(values) == 1 else values
+
+        return call
+
+    def _from_lua(self, value: Any, depth: int = 0) -> Any:
+        """Lua の値を、DLL へ渡せる形へ写す 表は辞書にする（配列は 1 から）
+
+        深さに上限を掛ける 自分自身を指す表を渡されると、写しきれずに固まる
+        """
+        if self._lua_type(value) != "table":
+            return value
+        if depth >= NATIVE_TABLE_DEPTH:
+            return {}
+        return {key: self._from_lua(item, depth + 1) for key, item in value.items()}
+
+    def _to_lua(self, value: Any) -> Any:
+        """DLL の戻り値を Lua の値にする 配列は 1 から数える表"""
+        if isinstance(value, list | dict):
+            return self._lua.table_from(value)
+        return value
+
+    def _find_module(
+        self, name: str, *, suffixes: tuple[str, ...] = MODULE_SUFFIXES
+    ) -> Path | None:
         """モジュールのファイルを探す
 
         AviUtl2 の配布物では ``.mod2``、素の Lua では ``.lua`` が使われる
@@ -506,14 +601,14 @@ class LuaScriptRuntime:
         for folder in folders:
             if folder is None:
                 continue
-            # ``.lua`` を先に見る 同じ名前で ``.mod2``（DLL）と ``.lua`` の
-            # 両方が置かれている配布物があり、こちらで動くのは後者だけ
-            for suffix in MODULE_SUFFIXES:
+            # ``require`` は ``.lua`` を先に見る 同じ名前で ``.mod2``（DLL）と
+            # ``.lua`` の両方が置かれている配布物があり、``require`` が読むのは後者
+            for suffix in suffixes:
                 candidate = folder / f"{name}{suffix}"
                 if candidate.exists():
                     return candidate
             # 1 段下も見る 配布物はフォルダごと置かれることが多い
-            for suffix in MODULE_SUFFIXES:
+            for suffix in suffixes:
                 found = next(folder.glob(f"*/{name}{suffix}"), None)
                 if found is not None:
                     return found

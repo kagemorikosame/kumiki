@@ -119,6 +119,15 @@ class PreferencesDialog(QDialog):
         self._select(self._prefetch_budget, preferences.prefetch_budget_mb)
         form.addRow("先読みに使うメモリ", self._prefetch_budget)
 
+        self._native_modules = QCheckBox("AviUtl2 のスクリプトモジュール（DLL）を読み込む", self)
+        self._native_modules.setChecked(preferences.native_modules)
+        self._native_modules.setToolTip(
+            "テレビ字幕のように、処理を DLL に切り出した配布スクリプトを動かす "
+            "読み込むのはスクリプトフォルダに自分で置いた物だけ DLL は Kumiki と"
+            "同じ権限で動くので、信頼できない物は置かない"
+        )
+        form.addRow(self._native_modules)
+
         # 測った値をそのまま置く 「なんとなく軽くなる」ではなく、
         # どの組が 60fps に入るのかを見て選べるようにする
         # 数は控えの側（kumiki.engine.cache.proxy）から取る ここへ直に書くと、
@@ -180,4 +189,5 @@ class PreferencesDialog(QDialog):
             auto_quality_divisor=int(self._auto_divisor.currentData()),
             prefetch=self._prefetch.isChecked(),
             prefetch_budget_mb=int(self._prefetch_budget.currentData()),
+            native_modules=self._native_modules.isChecked(),
         )

@@ -41,7 +41,7 @@ from kumiki.core.model import (
 )
 from kumiki.core.timebase import FrameRate
 from kumiki.effects.definition import EffectDefinition, registry
-from kumiki.effects.spec import ParameterSpec, ParamInput, TrackSpec, ValueSpec
+from kumiki.effects.spec import ColorSpec, ParameterSpec, ParamInput, TrackSpec, ValueSpec
 
 __all__ = ["MappedObject", "map_exo", "map_object", "media_paths"]
 
@@ -662,6 +662,11 @@ def _spec_value(
         return animated_value(
             raw, points=points, log=log, label=label, convert=adjust, default=spec.default
         )
+    if isinstance(spec, ColorSpec):
+        # エイリアスの色は ``ffd400`` のような 16 進の文字 そのまま渡すと
+        # ``coerce`` が色として読めず、既定の色（多くは黒）へ落ちる
+        # テレビ字幕の板が黒の上に黒で描かれ、何も出ていないように見えていた
+        return _color(raw)
     return raw
 
 
