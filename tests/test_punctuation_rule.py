@@ -163,3 +163,16 @@ class TestSafety:
         assert tool.targets(repo) == []
         with pytest.raises(ValueError, match="外"):
             tool.fix(repo / "link.md", [])
+
+    def test_parallel_worktrees_are_not_checked(
+        self, tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 数えると、別のブランチの写しにある古い句点や UTF-8 でないファイルで
+        # main の検査まで落ちる
+        copy = tmp_path / ".claude" / "worktrees" / "agent" / "README.md"
+        copy.parent.mkdir(parents=True)
+        copy.write_text(f"古い文{MARU}", encoding="utf-8")
+        (tmp_path / ".claude" / "worktrees" / "agent" / "note.txt").write_bytes(bytes([0x93, 0x94]))
+        own = write(tmp_path, "README.md", "文")
+        monkeypatch.setattr(tool, "ROOT", tmp_path)
+        assert tool.targets(tmp_path) == [own]
