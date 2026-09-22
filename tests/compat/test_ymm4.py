@@ -923,6 +923,8 @@ class TestCompositeGroups:
         assert any("範囲を越える" in line for line in report.lines())
 
     def test_an_inner_group_inside_the_range_is_not_recorded(self) -> None:
+        # 範囲に収まる内側のグループまで記録すると、リボンのテロップのように正しく
+        # 写せているテンプレートが互換性レポートで未対応として利用者に見える
         report = CompatibilityReport()
         outer = group_item(Layer=0, GroupRange=3, IsComposite=True)
         inner = group_item(Layer=1, GroupRange=2, VideoEffects=[outline(6.0)])
