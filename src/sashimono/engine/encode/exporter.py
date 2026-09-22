@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from fractions import Fraction
+from functools import cache
 from pathlib import Path
 from typing import cast
 
@@ -18,6 +19,7 @@ import av.audio.fifo
 import av.audio.frame
 import av.audio.stream
 import av.error
+import av.video.codeccontext
 import av.video.frame
 import av.video.stream
 import numpy as np
@@ -76,16 +78,55 @@ class ExportSettings:
     options: dict[str, str] = field(default_factory=dict)
 
 
+#: 開けるかを試すときの大きさ NVENC は小さすぎる画を断る（64x64 では開けない）ので、
+#: 書き出しでよく使う大きさに近い 16:9 で試す 小さくすると、使える NVENC まで外れる
+_PROBE_SIZE = (640, 360)
+
+
 def available_video_codecs() -> list[str]:
-    """この環境で使える映像コーデックを、優先順に返す"""
-    found = []
-    for name in VIDEO_CODEC_PREFERENCE:
-        try:
-            av.codec.Codec(name, "w")
-        except Exception:
-            continue
-        found.append(name)
-    return found
+    """この環境で使える映像コーデックを、優先順に返す
+
+    入っているだけでは数えない 実際に開けたものだけを返す（#67）
+    QSV は FFmpeg に組み込まれていても、Intel の GPU や駆動が無い機械では開けない
+    入っているかだけで選ぶと、開けない QSV が既定になって書き出しが失敗する
+    """
+    return [name for name in VIDEO_CODEC_PREFERENCE if _opens(name)]
+
+
+@cache
+def _opens(name: str) -> bool:
+    """``name`` のエンコーダを開けるか 1 つにつき 1 度だけ試して覚える
+
+    NVENC を開くのは 1 回 100 ms ほどかかる 書き出しの画面を開くたびに試すと、
+    そのたびに待たされる 機械の GPU は起動中に変わらないので、覚えておいてよい
+    """
+    try:
+        _open_encoder(name)
+    except Exception:
+        # 入っていない（UnknownCodecError）・開けない（ArgumentError など）の種類は
+        # 環境によって違う 名前で拾うと、知らない種類の失敗で候補の列挙ごと落ちる
+        return False
+    return True
+
+
+def _open_encoder(name: str) -> None:
+    """``name`` のエンコーダを yuv420p で開いてみる 開けなければ投げる
+
+    画素形式は :attr:`ExportSettings.pixel_format` の既定と同じ yuv420p に固定する
+    答えはコーデックごとに 1 つだけ覚えるので、書き出しごとの設定には追従できない
+    別の画素形式で開けないときは、コーデックを指定しない書き出しなら始めた時点で次の候補へ移る
+    """
+    # create は種類の union を返す 映像の属性を触るので、ここで型を確定させる
+    context = cast("av.video.codeccontext.VideoCodecContext", av.CodecContext.create(name, "w"))
+    context.width, context.height = _PROBE_SIZE
+    context.pix_fmt = "yuv420p"
+    context.time_base = Fraction(1, 30)
+    # 開いた文脈は捨てるだけでよい PyAV は参照が切れたときに閉じる
+    context.open()
+
+
+class _EncoderOpenError(ExportError):
+    """エンコーダを開けなかった まだ 1 コマも書いていないので、別のコーデックでやり直せる"""
 
 
 def _color_options_in(options: dict[str, str]) -> list[str]:
@@ -123,8 +164,11 @@ def export_project(
     if total <= 0:
         raise ExportError("書き出す範囲が空")
 
-    codec = settings.video_codec or next(iter(available_video_codecs()), None)
-    if codec is None:
+    # 指定が無ければ、開けた候補を前から試す 試しに開けても、実際の大きさでは
+    # 断られることがある（NVENC の H.264 は幅 4096 を超える画を開けない）
+    # そのときに書き出しごと失敗させず、最後は libx264 まで落とす
+    codecs = [settings.video_codec] if settings.video_codec else available_video_codecs()
+    if not codecs:
         raise ExportError("使える映像コーデックが見つからない")
 
     # 色のタグは options で上書きできてしまう（コーデックを開くときに options が後から効く）
@@ -142,7 +186,18 @@ def export_project(
     mixer = AudioMixer(project)
 
     try:
-        _encode(project, settings, codec, start, end, renderer, mixer, progress, should_cancel)
+        for index, codec in enumerate(codecs):
+            try:
+                _encode(
+                    project, settings, codec, start, end, renderer, mixer, progress, should_cancel
+                )
+                break
+            except _EncoderOpenError:
+                # 開けなかっただけなら、まだ何も描いておらず音も進めていない
+                # 書きかけの入れ物だけ消して次へ移る 候補が尽きたら理由をそのまま伝える
+                settings.path.unlink(missing_ok=True)
+                if index == len(codecs) - 1:
+                    raise
     except BaseException:
         # 例外でもキャンセルでも、書きかけを残さない
         settings.path.unlink(missing_ok=True)
@@ -176,11 +231,15 @@ def _encode(
         raise ExportError(f"出力ファイルを開けない: {settings.path} ({exc})") from exc
 
     with container:
+        # 入っていない名前やコンテナが受けないコーデックは、開く前のここで断られる
+        # 開けないときと同じく次の候補へ移れるようにする 素の例外のまま出すと、
+        # 指定なしの書き出しでも libx264 まで落ちずに失敗する
+        try:
+            stream = container.add_stream(codec, rate=Fraction(rate.num, rate.den))
+        except (av.error.FFmpegError, ValueError) as exc:
+            raise _EncoderOpenError(f"映像のエンコーダ {codec} を使えない ({exc})") from exc
         # add_stream は種類の union を返す 以降は映像として扱うので、ここで型を確定させる
-        video = cast(
-            "av.video.stream.VideoStream",
-            container.add_stream(codec, rate=Fraction(rate.num, rate.den)),
-        )
+        video = cast("av.video.stream.VideoStream", stream)
         video.width = width
         video.height = height
         video.pix_fmt = settings.pixel_format
@@ -201,6 +260,13 @@ def _encode(
             )
             audio.bit_rate = settings.audio_bitrate
             fifo = av.audio.fifo.AudioFifo()
+
+        # 最初の mux に任せず、ここで開く 任せると開けない失敗が FFmpeg の例外のまま
+        # 途中から飛び出し、別のコーデックへやり直せるかどうかを呼び出し側が区別できない
+        try:
+            video.codec_context.open()
+        except av.error.FFmpegError as exc:
+            raise _EncoderOpenError(f"映像のエンコーダ {codec} を開けない ({exc})") from exc
 
         # フレームの時刻の刻み ストリームの time_base を毎回読み直してはいけない
         # 多重化が始まった時点でコンテナ側の値（MP4 なら 1/15360）に書き換わるので、
