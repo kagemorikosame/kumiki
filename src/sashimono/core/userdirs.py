@@ -275,7 +275,13 @@ def _can_take(path: Path, folder: str) -> bool:
     if path.suffix in (".lock", ".writing"):
         return False
     if folder != "recovery":
-        return True
+        # 空の控えは移さない 旧版の控えは、名前を空のファイルで押さえてから中身を写す
+        # その間に移すと、新しい置き場には空の控えが残り、旧版は元の場所へ中身を書く
+        # 写している最中は旧版がファイルを開いているので、Windows では移せずに飛ばされる
+        try:
+            return path.stat().st_size > 0
+        except OSError:
+            return False
     # core.io は置き場を決めるためにここを読むので、上で読むと読み込みが輪になる
     from sashimono.core.io.locks import is_held
 

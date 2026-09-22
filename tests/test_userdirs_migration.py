@@ -195,6 +195,24 @@ class TestLocalFolder:
         # 何も増えていなければ知らせない（起動のたびに記録を出さない）
         assert migrate_legacy_folders() == []
 
+    def test_a_backup_the_old_version_is_still_writing_waits(
+        self, local: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 旧版は控えの名前を空のファイルで押さえてから中身を写す その隙に移すと、
+        # 新しい置き場には空の控えが残る 中身が入ってからの起動で拾う
+        old = local / "Kumiki"
+        folder = old / "backups" / "本編-0123456789"
+        reserved = _put(folder / "20260101-000000-000000-000.kmk", "")
+        _hold_old_folder(old, monkeypatch)
+        migrate_legacy_folders()
+        new = local / "Sashimono" / reserved.relative_to(old)
+        assert reserved.is_file()
+        assert not new.exists()
+
+        reserved.write_text("控えの中身", "utf-8")
+        migrate_legacy_folders()
+        assert new.read_text("utf-8") == "控えの中身"
+
     def test_a_session_still_running_in_the_old_version_waits_until_it_ends(
         self, local: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
