@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
 
 from kumiki.core.model import AnimatedValue, Clip, Effect, Keyframe, ParamValue
@@ -28,6 +29,28 @@ class MappedObject:
     #: エイリアスは長さを持たないことがある その場合、1 フレームのクリップを
     #: 置くのではなく、置く側が既定の長さを決める
     has_span: bool = True
+    #: 1 枚の絵にまとめてから重ねる中身 空でなければ、置く側はこれをシーンにして
+    #: :attr:`clip` をそのシーンのクリップとして置く
+    #:
+    #: YMM4 の「合成する」グループがこれ 中身を 1 つずつ置いてグループのエフェクトを
+    #: 配ると、反転や拡大が 1 つずつの中心で掛かり、まとめた絵とは別の形になる
+    children: tuple[MappedObject, ...] = ()
+    #: シーンにするときの名前
+    label: str = ""
+    #: シーンのどのフレームから映し始めるか 中身がまとめた入れ物より先に始まるとき、
+    #: シーンの頭は一番早い中身に合わせ、入れ物のクリップはその分だけ進めた所から映す
+    scene_offset: int = 0
+
+    @property
+    def has_picture(self) -> bool:
+        """置けば何かが映るか エフェクトだけのものは置いても映らない"""
+        return self.clip.source is not None or bool(self.media_path) or bool(self.children)
+
+    def walk(self) -> Iterator[MappedObject]:
+        """自分と、まとめた中身をすべて 中の文字を探すときに使う"""
+        yield self
+        for child in self.children:
+            yield from child.walk()
 
 
 def fitted_effect(effect: Effect, span: int, target_last: int) -> Effect:
