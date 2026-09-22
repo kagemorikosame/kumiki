@@ -170,8 +170,15 @@ def build_cases(files: list[Path]) -> tuple[list[Case], list[str]]:
             has_content = any(type_name(item) not in ("GroupItem",) for item in items)
             if not has_content:
                 # エフェクトだけのテンプレート グループの範囲の中（1 つ下）に下地を置く
+                # 別のグループがいる段は避ける 同じ段に重ねると YMM4 は下地を空いた段へ
+                # ずらして描き、こちらは重ねたまま描くので、掛かるグループが食い違う
+                # （オーラはグループが 0・1・3 段にあり、1 段目に置いた下地へ YMM4 は
+                # 1 段目のグループのノイズを掛けていた）
                 group = items[0]
+                taken = {int(item.get("Layer", 0)) for item in items}
                 below = int(group.get("Layer", 0)) + 1
+                while below in taken:
+                    below += 1
                 items.append(base_shape(cursor, below, length))
                 for item in items:
                     if type_name(item) == "GroupItem":

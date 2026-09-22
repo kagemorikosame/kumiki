@@ -227,13 +227,12 @@ class TestCustomObjects:
         )
         assert any("表示形式" in line for line in report.lines())
 
-    def test_the_motion_trail_is_recorded(self) -> None:
+    def test_the_motion_trail_is_not_a_polyline(self) -> None:
         # ライン(移動軌跡) は折れ線ではなく、動いた跡を描く別物
         # 折れ線として写すと、まったく違う絵が出たまま気付けない
-        report = CompatibilityReport()
-        document = parse_exo(_object("ライン(移動軌跡)\nライン幅=16.0\n先端=48.0\n色=ffffff"))
-        map_object(document.objects[0], RATE, report=report)
-        assert any("ライン(移動軌跡)" in line for line in report.lines())
+        # 描き方は tests/compat/test_aviutl_time_objects.py で確かめる
+        source = _source("ライン(移動軌跡)\nライン幅=16.0\n先端=48.0\n色=ffffff")
+        assert source.params["shape"] == "motion_trail"
 
 
 class TestWhatTheSecondReviewFound:

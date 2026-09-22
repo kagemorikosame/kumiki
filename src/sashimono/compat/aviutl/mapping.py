@@ -14,6 +14,7 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from fractions import Fraction
+from pathlib import Path
 
 from sashimono.compat.aviutl.encoding import decode_utf16_hex
 from sashimono.compat.aviutl.exo import ExoEntry, ExoFile, ExoObject
@@ -41,7 +42,15 @@ from sashimono.core.model import (
 )
 from sashimono.core.timebase import FrameRate
 from sashimono.effects.definition import EffectDefinition, registry
-from sashimono.effects.spec import ColorSpec, ParameterSpec, ParamInput, TrackSpec, ValueSpec
+from sashimono.effects.spec import (
+    IMAGE_SUFFIXES,
+    ColorSpec,
+    FileSpec,
+    ParameterSpec,
+    ParamInput,
+    TrackSpec,
+    ValueSpec,
+)
 
 __all__ = ["MappedObject", "map_exo", "map_object", "media_paths"]
 
@@ -177,8 +186,18 @@ _PARAMS: dict[str, dict[str, _Param]] = {
     },
     # AviUtl2 の縁取りは ``サイズ`` ``ぼかし`` ``縁色`` 色は数値ではないので
     # 対応表とは別に扱う（:func:`_filter` を参照）
-    "縁取り": {"サイズ": _Param("width")},
+    # パターン画像 は縁を塗る模様 パスをそのまま渡し、描くときに読む
+    "縁取り": {"サイズ": _Param("width"), "パターン画像": _Param("pattern")},
     "枠線": {"サイズ": _Param("width")},
+    # 画像合成 X と Y は画像をずらす量（画面の画素のまま、拡大率で縮まない）
+    # AviUtl2 に X=50 Y=30 を描かせると、画像は右へ 50、**下へ** 30 動いた
+    "画像合成": {
+        "X": _Param("offset_x"),
+        "Y": _Param("offset_y", _flip),
+        "拡大率": _Param("zoom"),
+        "画像": _Param("image_file"),
+        "ループ画像": _Param("loop"),
+    },
     "グラデーション": {
         "強さ": _Param("strength"),
         "中心X": _Param("center_x"),
@@ -207,7 +226,7 @@ _PARAMS: dict[str, dict[str, _Param]] = {
         "強さ": _Param("strength"),
         "サイズ固定": _Param("fixed_size"),
     },
-    "グラデーションマップ": {"強さ": _Param("strength")},
+    "グラデーションマップ": {"強さ": _Param("strength"), "パターン画像": _Param("pattern")},
     # 拡張色調補正 1 つずつ動かした見本を AviUtl2 に描かせて意味を測った
     # ゲインは倍率、オフセットは足し算、リフトは黒の持ち上げ、ガンマは冪
     "拡張色調補正": {
@@ -383,6 +402,7 @@ _FILTERS: dict[str, str] = {
     "クロマキー": "chroma_key",
     "縁取り": "border",
     "枠線": "border",
+    "画像合成": "image_blend",
     "影": "shadow",
     "シャドー": "shadow",
     "ドロップシャドウ": "shadow",
@@ -460,6 +480,12 @@ def media_paths(exo: ExoFile) -> tuple[str, ...]:
             continue
         if content.name in ("動画ファイル", "画像ファイル", "音声ファイル"):
             path = content.params.get("file", "")
+            if path and path not in found:
+                found.append(path)
+        elif content.name == "音声波形表示":
+            # 波形は自分の ``ファイル`` の音を描く 素材として読み込ませないと、
+            # 別の機械へ持っていったときに探し直せない
+            path = content.value("ファイル", "file").strip()
             if path and path not in found:
                 found.append(path)
     return tuple(found)
@@ -540,6 +566,19 @@ def map_object(
         effect = _filter(entry, points, log)
         if effect is not None:
             effects.append(effect)
+
+    if (
+        placement is not None
+        and source is not None
+        and source.params.get("shape") == "motion_trail"
+    ):
+        # 移動軌跡は自分の位置の**動き**をたどって線を引く 位置は図形へ渡し、
+        # 変形からは外す 両方に残すと、線を描いた絵をもう一度その位置へずらして
+        # 軌跡が 2 倍の所に出る
+        source = source.with_param("pos_x", placement["pos_x"]).with_param(
+            "pos_y", placement["pos_y"]
+        )
+        placement = {**placement, "pos_x": AnimatedValue(0.0), "pos_y": AnimatedValue(0.0)}
 
     # 位置・拡大・回転は変形エフェクトへ AviUtl では描画設定だが、こちらでは
     # クリップの持ち物ではないので、同じ見た目になるエフェクトへ写す
@@ -692,6 +731,13 @@ def _content(
         return _polygon(entry, log), "", "shape"
     if entry.name == "カウンター":
         return _counter(entry, log), "", "text"
+    if entry.name == "ライン(移動軌跡)":
+        return _motion_trail(entry, points, log), "", "shape"
+    if entry.name == "星":
+        return _star_field(entry, points, log), "", "shape"
+    if entry.name == "音声波形表示":
+        path = entry.value("ファイル", "file").strip()
+        return _waveform(entry, path, points, log), path, "shape"
     if entry.name in ("動画ファイル", "画像ファイル", "音声ファイル"):
         return None, entry.params.get("file", ""), entry.name
 
@@ -982,6 +1028,158 @@ def _concentration(
     )
 
 
+#: カスタムオブジェクトが読み込む図形（``--figure``）の名前と、こちらの形
+#: 三角形は円に内接する形 ライン(移動軌跡) の先端を AviUtl2 に描かせて測ると、
+#: 大きさ 48 で高さ 36・底辺 41 だった（四角に合わせた三角形なら 48 と 48）
+_SCRIPT_FIGURES: dict[str, str] = {
+    "円": "ellipse",
+    "四角形": "rect",
+    "三角形": "inscribed_triangle",
+    "五角形": "pentagon",
+    "六角形": "hexagon",
+    "星型": "star",
+}
+
+
+def _script_figure(entry: ExoEntry, key: str, default: str, log: CompatibilityReport) -> str:
+    """図形の名前を形へ 知らない図形（ハートや、自分で足した画像の図形）は記録して既定へ"""
+    named = entry.params.get(key, "").strip()
+    if not named:
+        return default
+    shape = _SCRIPT_FIGURES.get(named)
+    if shape is None:
+        log.note_missing(f"{entry.name}の{key}: {named}")
+        return default
+    return shape
+
+
+def _tracks_of(
+    entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport
+) -> Callable[[str, float], AnimatedValue]:
+    """カスタムオブジェクトの項目を、名前と既定値だけで動く値として読む道具
+
+    項目ごとに ``animated_value`` の引数を並べると、ラベルの付け忘れで記録に
+    どの項目か分からない行が残る 名前を 1 か所で組み立てる
+    """
+
+    def track(key: str, default: float) -> AnimatedValue:
+        return animated_value(
+            entry.params.get(key),
+            points=points,
+            log=log,
+            label=f"{entry.name}の{key}",
+            default=default,
+        )
+
+    return track
+
+
+def _motion_trail(
+    entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport
+) -> GeneratedSource:
+    """ライン(移動軌跡) AviUtl2 のカスタムオブジェクト
+
+    名前は「ライン」だが折れ線ではなく、**オブジェクトが通った跡**を描く
+    （本体の ``script.obj2`` の式を読んで確かめた） たどる位置は描画設定の X と Y で、
+    それは :func:`map_object` が図形へ渡す ここでは線と先端の見た目だけを読む
+    """
+
+    track = _tracks_of(entry, points, log)
+    return GeneratedSource(
+        kind="shape",
+        params={
+            "shape": "motion_trail",
+            "line_width": track("ライン幅", 16.0),
+            "trail_head_size": track("先端", 48.0),
+            "trail_head_angle": track("先端角度", 0.0),
+            "trail_head_offset": track("先端位置補正", 70.0),
+            "trail_head_shape": _script_figure(entry, "先端図形", "inscribed_triangle", log),
+            "trail_speed": track("固定速度", 0.0),
+            "trail_interval": track("描画間隔", 10.0),
+            "trail_min_step": track("最小間隔", 2.0),
+            "trail_core": track("主線描画(%)", 100.0),
+            "trail_band": track("補助描画(%)", 0.0),
+            "color": _color(entry.value("色", default="ffffff")),
+        },
+    )
+
+
+def _star_field(
+    entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport
+) -> GeneratedSource:
+    """星 AviUtl2 のカスタムオブジェクト
+
+    名前は「星」だが星形ではなく、**奥から手前へ流れてくる星空** 本体の
+    ``script.obj2`` の式を移した（:func:`sashimono.engine.motion_shapes.star_field`）
+    粒の置き場所は乱数なので 1 枚ずつは合わない 数・流れる向き・速さを実物の絵で確かめた
+    """
+
+    track = _tracks_of(entry, points, log)
+    return GeneratedSource(
+        kind="shape",
+        params={
+            "shape": "starfield",
+            "star_count": track("個数", 1500.0),
+            "star_speed": track("速度", 6.0),
+            "star_spread": track("広がり", 12.0),
+            "star_depth": track("奥行き", 20.0),
+            "star_size": track("サイズ", 30.0),
+            "star_shape": _script_figure(entry, "形状", "ellipse", log),
+            "star_fade_in": track("フェードイン時間", 0.15),
+            "star_fade_out": track("フェードアウト時間", 0.15),
+            "color": _color(entry.value("色", default="ddddff")),
+        },
+    )
+
+
+def _waveform(
+    entry: ExoEntry, path: str, points: tuple[int, ...], log: CompatibilityReport
+) -> GeneratedSource:
+    """音声波形表示 AviUtl2 の**メディアオブジェクト**（フィルタではない）
+
+    自分の ``ファイル`` の音を、今の時刻から 1 画素 1 サンプルで横に並べて線にする
+    AviUtl2 に描かせた絵を素材のサンプルと突き合わせて読んだ（44.1kHz のプロジェクトで
+    横幅 800 の線が 800 サンプル、最後のフレームではクリップの終わりから先が 0 だった）
+    再生位置と再生速度は音声ファイルと同じくクリップの切り出しへ写す（:func:`_playback`）
+
+    ``波形のプリセット`` はファイルに書いても絵が変わらなかった（Type1〜5 の 5 本とも
+    既定と同じ絵） UI で選ぶと解像度とスペースの値を書き換えるボタンで、その値の方が
+    ファイルに残る 名前は読まずに捨てる
+
+    ``ミラー表示`` は線では絵が変わらなかった（差は圧縮の揺れの 0.02） スペクトラムと
+    組んだときの絵はまだ無いので、そのときだけ記録に残す
+    """
+    spectrum = entry.number("スペクトラム表示") != 0.0
+    if spectrum and entry.number("ミラー表示") != 0.0:
+        log.note_missing("音声波形表示のミラー表示（スペクトラム）")
+    track = _tracks_of(entry, points, log)
+    # 再生範囲の 2 つ目の値は、素材をどこまで読むか 始めと同じ値（10,10）の見本は
+    # AviUtl2 で何も描かれなかった 読まずに素材の続きを描くと、無いはずの波形が出る
+    position = parse_motion(entry.params.get("再生位置"))
+    end = -1
+    if position is not None and position.method == "再生範囲" and len(position.values) >= 2:
+        end = max(0, round(position.values[-1] * 1000.0))
+    return GeneratedSource(
+        kind="shape",
+        params={
+            "shape": "waveform",
+            "audio_end_ms": end,
+            "width": track("横幅", 800.0),
+            "height": track("高さ", 400.0),
+            "wave_volume": track("音量", 100.0),
+            "wave_spectrum": spectrum,
+            # 解像度とスペースは素の値のまま渡す（スペースは升の幅に対する %）
+            # 横 16 升・スペース 4 で、幅 50 の升の境目に 2 画素のすき間だった
+            "wave_columns": track("横解像度", 0.0),
+            "wave_rows": track("縦解像度", 0.0),
+            "wave_gap_x": track("横スペース", 0.0),
+            "wave_gap_y": track("縦スペース", 0.0),
+            "audio_path": path,
+            "color": _color(entry.value("波形の色", default="ffffff")),
+        },
+    )
+
+
 #: 色として読むパラメータ ``ffffff`` の形で入っている **AviUtl の効果名で引く**
 _COLOR_PARAMS: dict[str, dict[str, str]] = {
     "縁取り": {"縁色": "color", "色": "color"},
@@ -1023,6 +1221,19 @@ _SELECT_PARAMS: dict[str, dict[str, tuple[str, dict[str, str]]]] = {
         "合成モード": ("blend", _BLEND_NAMES),
     },
     "マスク": {"種類": ("shape", {"矩形": "rect", "円": "ellipse", "楕円": "ellipse"})},
+    # 画像合成の 合成モード 名前は AviUtl2 v2.1.6a の一覧から読み、1 つずつ描かせた
+    "画像合成": {
+        "合成モード": (
+            "blend",
+            {
+                "前方から合成": "front",
+                "後方から合成": "back",
+                "色情報を上書き": "overwrite",
+                "輝度をアルファ値として上書き": "luma_alpha",
+                "輝度をアルファ値として乗算": "luma_multiply",
+            },
+        )
+    },
     "ミラー": {
         "ミラーの方向": ("side", {"下側": "bottom", "上側": "top", "左側": "left", "右側": "right"})
     },
@@ -1305,8 +1516,46 @@ def _filter(entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport) 
             if spec is not None:
                 params[spec.name] = spec.coerce(chosen)
 
+    _check_images(entry, definition, params, handled, log)
     _note_dropped(entry, handled, log)
     return Effect(kind=kind, params=params)
+
+
+def _check_images(
+    entry: ExoEntry,
+    definition: EffectDefinition,
+    params: dict[str, ParamValue],
+    handled: set[str],
+    log: CompatibilityReport,
+) -> None:
+    """画像として読むパス（画像合成の 画像、縁取りの パターン画像）を確かめる
+
+    中身は開かない（開くのは描くとき） 在るかどうかと拡張子だけを見る
+    エイリアスは作った人の機械のパスをそのまま持っているので、別の機械では
+    見つからないことが多い 描くときは画像なしで描くので、黙っていると
+    模様の消えた絵が出たことに気付けない
+
+    ``ループ再生`` は動画を繰り返すかどうか 静止画か画像なしなら絵は変わらないので
+    写せたことにする 動画は先頭のコマしか使わないので、そのときは項目ごと記録に残る
+    """
+    movie = False
+    images = False
+    for spec in definition.parameters:
+        if not (isinstance(spec, FileSpec) and spec.texture):
+            continue
+        images = True
+        path = params.get(spec.name)
+        if not isinstance(path, str) or not path:
+            continue
+        if Path(path).suffix.lower() not in IMAGE_SUFFIXES:
+            movie = True
+            log.note_missing(f"{entry.name}の画像が静止画でない（先頭のコマだけ使う）")
+        if not Path(path).is_file():
+            log.note_missing(f"{entry.name}の画像が見つからない")
+    # 画像を読まないエフェクトでは写せたことにしない（ほかのフィルタの同じ名前の
+    # 項目が、写していないのに記録から消える）
+    if images and not movie:
+        handled.add("ループ再生")
 
 
 #: 値ではなく並びの区切りに使われる項目 写せなくても困らない

@@ -10,6 +10,7 @@ Qt の描画系（``QPainter``）を使う 日本語の禁則処理やフォン�
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt
@@ -23,25 +24,51 @@ from PySide6.QtGui import (
     QPainterPath,
     QPainterPathStroker,
     QPen,
+    QPolygonF,
     QRadialGradient,
     QTransform,
 )
 
 from sashimono.core.model import AnimatedValue, GeneratedSource, ParamValue
 from sashimono.effects.sources import SourceDefinition, source_registry
+from sashimono.engine.audio_shapes import (
+    SPECTRUM_SIZE,
+    WAVEFORM_LEAD,
+    WAVEFORM_LINE,
+    cell_mask,
+    spectrum_levels,
+    waveform_cells,
+    waveform_points,
+)
+from sashimono.engine.motion_shapes import TrailPath, TrailPaths, sample_value, star_field, trail
 
-__all__ = ["render_source"]
+__all__ = ["render_source", "waveform_points"]
 
 #: 縦の基準ごとに、指定した位置より上へ出す割合 ``下`` なら全部が上に出る
 _VERTICAL_SHARE = {"top": 0.0, "middle": 0.5, "bottom": 1.0}
 
 
 def render_source(
-    source: GeneratedSource, width: int, height: int, *, frame: int = 0, fps: float = 30.0
+    source: GeneratedSource,
+    width: int,
+    height: int,
+    *,
+    frame: int = 0,
+    fps: float = 30.0,
+    duration: int = 0,
+    audio: np.ndarray | None = None,
+    audio_rate: int = 44100,
+    trail_paths: TrailPaths | None = None,
 ) -> np.ndarray | None:
     """生成オブジェクトを描いて配列で返す 未知の種類なら ``None``
 
     ``fps`` は時間で変わる図形（タイマー・集中線）がフレームを秒へ直すのに使う
+    ``duration`` はクリップの長さ（フレーム） 移動軌跡が先端の向きを決めるときに、
+    クリップの終わりより先の動きを見ないために使う 分からなければ 0
+    ``trail_paths`` は移動軌跡の道の置き場 レンダラが自分のものを渡し、使い回す
+    ``audio`` は音声波形が描く音（今の時刻の ``WAVEFORM_LEAD`` サンプル前からの
+    1 チャンネルのサンプル） ``audio_rate`` はそのレート（スペクトラムの周波数に使う）
+    音を読むのはレンダラの仕事 ここは渡された数を線にするだけ
     """
     definition = source_registry.get(source.kind)
     if definition is None:
@@ -50,6 +77,16 @@ def render_source(
     values = _resolve(definition, source.params, frame)
     values["_seconds"] = frame / max(fps, 1e-6)
     values["_fps"] = fps
+    values["_frame"] = frame
+    values["_duration"] = duration
+    # 移動軌跡は、今の値ではなく**動きそのもの**（過去の位置）を読む
+    values["_motion"] = _motion_of(definition, source.params)
+    values["_audio"] = audio
+    values["_audio_rate"] = audio_rate
+    # 移動軌跡の道の置き場 レンダラが自分のものを渡す（他のレンダラが描く道を
+    # 巻き込んで捨てないように） 無ければ移動軌跡を描くときだけその場で作る
+    # （文字や普通の図形のたびに作らない）
+    values["_trail_paths"] = trail_paths
     image = QImage(width, height, QImage.Format.Format_RGBA8888)
     image.fill(Qt.GlobalColor.transparent)
 
@@ -86,7 +123,9 @@ def source_canvas(
     if definition is None:
         return width, height
     values = _resolve(definition, source.params, frame)
-    if values.get("shape") == "background":
+    if values.get("shape") in ("background", "motion_trail", "starfield"):
+        # 移動軌跡と星空は画面の座標で描く 今の位置や大きさの設定から広げると、
+        # 軌跡の通った所とは関係の無い大きさの絵を毎フレーム作ることになる
         return width, height
     if values.get("shape") == "polyline":
         # 線の図形は点の広がりで見積もる
@@ -123,6 +162,18 @@ def _resolve(
         value = spec.coerce(params.get(spec.name))
         resolved[spec.name] = value.at(frame) if isinstance(value, AnimatedValue) else value
     return resolved
+
+
+def _motion_of(
+    definition: SourceDefinition, params: dict[str, ParamValue]
+) -> tuple[AnimatedValue, AnimatedValue]:
+    """位置の X と Y を、時刻で引ける形のまま返す 位置を持たない種類は 0 に止まった値"""
+    pair: list[AnimatedValue] = []
+    for name in ("pos_x", "pos_y"):
+        spec = definition.spec(name)
+        value = spec.coerce(params.get(name)) if spec is not None else None
+        pair.append(value if isinstance(value, AnimatedValue) else AnimatedValue(0.0))
+    return pair[0], pair[1]
 
 
 def timer_text(values: dict[str, object]) -> str:
@@ -448,6 +499,15 @@ def _draw_shape(painter: QPainter, values: dict[str, object], width: int, height
     if str(values.get("shape", "rect")) == "concentration":
         _draw_concentration(painter, values, centre_x, centre_y, width, height)
         return
+    if str(values.get("shape", "rect")) == "motion_trail":
+        _draw_motion_trail(painter, values, width, height)
+        return
+    if str(values.get("shape", "rect")) == "starfield":
+        _draw_star_field(painter, values, width, height)
+        return
+    if str(values.get("shape", "rect")) == "waveform":
+        _draw_waveform(painter, values, centre_x, centre_y, shape_width, shape_height)
+        return
     rect = QRectF(-shape_width / 2.0, -shape_height / 2.0, shape_width, shape_height)
     path = _shape_path(str(values.get("shape", "rect")), rect, values)
 
@@ -663,6 +723,283 @@ def _draw_concentration_frame(
         painter.drawPath(wedge)
 
 
+#: 移動軌跡の円を、設定の太さより半径でこれだけ細く押す
+#: 実物の円（図形の画像）は、にじませた縁が画像の内側に収まっている ライン幅 16 の線を
+#: 測ると、縁の行は 255 中の 133 と 165 で、塗り切った幅は 15 画素だった
+#: 設定の太さどおりに押すと、何百回も重ねるうちに縁が塗り切られて 1 画素ずつ太る
+_STAMP_EDGE = 0.5
+
+
+def _trail_paths_of(
+    store: TrailPaths, x_value: AnimatedValue, y_value: AnimatedValue
+) -> Callable[[int], TrailPath]:
+    """その動きの道を、要るフレームまで伸ばして返す係"""
+
+    def positions(first: int, stop: int) -> np.ndarray:
+        # 設定の Y は上が正 形の計算は実物のまま下が正で持つ
+        xs = sample_value(x_value, first, stop)
+        ys = -sample_value(y_value, first, stop)
+        return np.stack([xs, ys], axis=1)
+
+    def paths(frames: int) -> TrailPath:
+        return store.get((x_value, y_value), positions, frames)
+
+    return paths
+
+
+def _draw_motion_trail(
+    painter: QPainter, values: dict[str, object], width: int, height: int
+) -> None:
+    """移動軌跡（AviUtl2 の ``ライン(移動軌跡)``）
+    形は :func:`~sashimono.engine.motion_shapes.trail`
+
+    円は 1 つずつ重ねて描く 1 つのパスにまとめて塗ると、縁のにじみが 1 回分しか
+    付かない 実物は細かい間隔で円を押し重ねるので、縁がくっきりする
+    """
+    motion = values.get("_motion")
+    if not isinstance(motion, tuple):
+        return
+    x_value, y_value = motion
+    store = values.get("_trail_paths")
+    if not isinstance(store, TrailPaths):
+        store = TrailPaths()
+
+    def position(at: float) -> tuple[float, float]:
+        # 設定の Y は上が正 形の計算は実物のまま下が正で持つ
+        return x_value.at(at), -y_value.at(at)
+
+    frame = _number(values, "_frame", 0.0)
+    duration = _number(values, "_duration", 0.0)
+    line_width = _number(values, "line_width", 16.0)
+    if line_width <= 0:
+        # 図形の線の太さの既定は 0（塗りつぶし）だが、移動軌跡で 0 は線が無い絵になる
+        # 実物の ライン幅 は 2 から始まるので、0 以下は実物の既定の 16 として描く
+        # 線を消したいときは 軌跡の点の大きさ を 0 にする
+        line_width = 16.0
+    head_size = max(0.0, _number(values, "trail_head_size", 48.0))
+    shape = trail(
+        position,
+        frame=frame,
+        # 長さが分からないときは今のフレームで止める 先の動きを勝手に読まない
+        total=duration if duration > 0 else frame,
+        line_width=line_width,
+        interval=_number(values, "trail_interval", 10.0),
+        min_step=_number(values, "trail_min_step", 2.0),
+        fixed_speed=_number(values, "trail_speed", 0.0),
+        head_size=head_size,
+        head_angle=_number(values, "trail_head_angle", 0.0),
+        head_offset=_number(values, "trail_head_offset", 70.0),
+        paths=_trail_paths_of(store, x_value, y_value),
+    )
+    centre_x, centre_y = width / 2.0, height / 2.0
+    colour = _color(values.get("color"))
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QBrush(colour))
+
+    core = line_width * _number(values, "trail_core", 100.0) / 200.0 - _STAMP_EDGE
+    if core > 0:
+        for x, y in shape.stamps:
+            painter.drawEllipse(QPointF(centre_x + x, centre_y + y), core, core)
+    band = line_width * _number(values, "trail_band", 0.0) / 200.0
+    if band > 0:
+        for x0, y0, x1, y1 in shape.bands:
+            length = math.hypot(x1 - x0, y1 - y0)
+            if length <= 0:
+                continue
+            # 進む向きに直角な向きへ、太さの半分ずつ広げた四角
+            normal_x, normal_y = -(y1 - y0) / length * band, (x1 - x0) / length * band
+            painter.drawPolygon(
+                QPolygonF(
+                    [
+                        QPointF(centre_x + x0 + normal_x, centre_y + y0 + normal_y),
+                        QPointF(centre_x + x1 + normal_x, centre_y + y1 + normal_y),
+                        QPointF(centre_x + x1 - normal_x, centre_y + y1 - normal_y),
+                        QPointF(centre_x + x0 - normal_x, centre_y + y0 - normal_y),
+                    ]
+                )
+            )
+    # 今の位置には、点の大きさの設定に関係なく線の太さの円を置く（実物のまま）
+    last = line_width / 2.0 - _STAMP_EDGE
+    if last > 0:
+        painter.drawEllipse(QPointF(centre_x + shape.last[0], centre_y + shape.last[1]), last, last)
+
+    if shape.head is None:
+        return
+    rect = QRectF(-head_size / 2.0, -head_size / 2.0, head_size, head_size)
+    path = _shape_path(str(values.get("trail_head_shape", "inscribed_triangle")), rect, values)
+    transform = QTransform()
+    transform.translate(centre_x + shape.head[0], centre_y + shape.head[1])
+    transform.rotate(math.degrees(shape.head_turn))
+    painter.fillPath(transform.map(path), colour)
+
+
+def _draw_waveform(
+    painter: QPainter,
+    values: dict[str, object],
+    centre_x: float,
+    centre_y: float,
+    width: float,
+    height: float,
+) -> None:
+    """音声波形（AviUtl2 の ``音声波形表示``） 音はレンダラが ``_audio`` に入れて渡す
+
+    音は ``WAVEFORM_LEAD`` サンプル前から届く 線はフレームの時刻から、スペクトラムは
+    その前後の窓を使う 音が無ければ何も描かない 実物も、再生範囲が 0 秒の見本では
+    何も出さなかった
+    """
+    audio = values.get("_audio")
+    if not isinstance(audio, np.ndarray) or audio.size <= WAVEFORM_LEAD + 1:
+        return
+    volume = _number(values, "wave_volume", 100.0)
+    # 升目の数は描く大きさより細かくしない 壊れた値で巨大な升目を作ると描画が止まる
+    width = _within(width, 1.0, float(MAX_CANVAS), 800.0)
+    height = _within(height, 1.0, float(MAX_CANVAS), 400.0)
+    columns = round(_within(_number(values, "wave_columns", 0.0), 0.0, width, 0.0))
+    rows = round(_within(_number(values, "wave_rows", 0.0), 0.0, height, 0.0))
+    spectrum = bool(values.get("wave_spectrum", False))
+    body = audio[WAVEFORM_LEAD:]
+    if columns <= 0 and rows <= 0 and not spectrum:
+        # 升目を持たない線は、にじませて細く引く 升目の絵と同じ道を通すと、
+        # 斜めの所がぎざぎざになる（実物の線は縁がにじんでいる）
+        _draw_waveform_line(painter, values, body, centre_x, centre_y, width, height, volume)
+        return
+
+    box_w, box_h = max(1, round(width)), max(1, round(height))
+    grid_w = columns if columns > 0 else box_w
+    grid_h = rows if rows > 0 else box_h
+    if spectrum:
+        rate = round(_number(values, "_audio_rate", 44100.0))
+        levels = spectrum_levels(audio[:SPECTRUM_SIZE], grid_w, rate, volume) * grid_h
+        # 下から塗る 升の真ん中まで届いた升を塗る
+        from_bottom = grid_h - np.arange(grid_h)[:, None] - 0.5
+        lit = from_bottom < levels[None, :]
+    else:
+        lit = waveform_cells(body, grid_w, grid_h, volume)
+    mask = cell_mask(
+        lit,
+        box_w,
+        box_h,
+        _number(values, "wave_gap_x", 0.0),
+        _number(values, "wave_gap_y", 0.0),
+    )
+    if not mask.any():
+        return
+    colour = _color(values.get("color"))
+    pixels = np.zeros((box_h, box_w, 4), dtype=np.uint8)
+    pixels[mask] = (colour.red(), colour.green(), colour.blue(), colour.alpha())
+    image = QImage(pixels.tobytes(), box_w, box_h, QImage.Format.Format_RGBA8888).copy()
+    painter.drawImage(QPointF(centre_x - box_w / 2.0, centre_y - box_h / 2.0), image)
+
+
+def _draw_waveform_line(
+    painter: QPainter,
+    values: dict[str, object],
+    samples: np.ndarray,
+    centre_x: float,
+    centre_y: float,
+    width: float,
+    height: float,
+    volume: float,
+) -> None:
+    points = waveform_points(samples, width, height, volume)
+    if len(points) < 2:
+        return
+    line = QPolygonF([QPointF(centre_x + x, centre_y + y) for x, y in points])
+    pen = QPen(_color(values.get("color")), WAVEFORM_LINE)
+    pen.setCapStyle(Qt.PenCapStyle.FlatCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.setPen(pen)
+    painter.drawPolyline(line)
+
+
+#: 星空の粒の絵をこの大きさ（画素）まで半分ずつ縮めて用意しておく
+#: 遠くの粒は数画素しかない 大きな絵を一度に縮めると間引きになり、粒が欠けてちらつく
+_SMALLEST_SPRITE = 2
+
+
+def _draw_star_field(painter: QPainter, values: dict[str, object], width: int, height: int) -> None:
+    """星空（AviUtl2 の ``星``） 位置は :func:`~sashimono.engine.motion_shapes.star_field`
+
+    粒は ``大きさ`` の図形を ``大きさ / 3`` だけぼかした絵 実物はぼかしで絵が広がり、
+    その広がった絵を遠近で縮めて置く ぼかさずに置くと、遠くの粒が硬い点になる
+    """
+    # 大きさは設定の範囲（1〜100）へ収める キーフレームの値は範囲を守らないことがあり、
+    # 無限大は粒の絵の大きさの計算で例外、巨大な値は巨大な絵を作って描画が止まる
+    size = _within(_number(values, "star_size", 30.0), 1.0, 100.0, 30.0)
+    field = star_field(
+        seconds=_number(values, "_seconds", 0.0),
+        count=_number(values, "star_count", 1500.0),
+        speed=_number(values, "star_speed", 6.0),
+        spread=_number(values, "star_spread", 12.0),
+        depth=_number(values, "star_depth", 20.0),
+        fade_in=_number(values, "star_fade_in", 0.15),
+        fade_out=_number(values, "star_fade_out", 0.15),
+        screen_width=float(width),
+        screen_height=float(height),
+    )
+    if field.x.size == 0:
+        return
+    sprites = _star_sprites(values, size)
+    base = float(sprites[0].width())
+    centre_x, centre_y = width / 2.0, height / 2.0
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+    for x, y, scale, alpha in zip(field.x, field.y, field.scale, field.alpha, strict=True):
+        side = base * float(scale)
+        # 画面に掛からない粒は描かない 手前へ来た粒は画面の何倍も外にある
+        if (
+            abs(float(x)) - side / 2.0 > centre_x
+            or abs(float(y)) - side / 2.0 > centre_y
+            or side < 0.05
+        ):
+            continue
+        sprite = sprites[0]
+        for smaller in sprites[1:]:
+            if smaller.width() < side:
+                break
+            sprite = smaller
+        painter.setOpacity(float(alpha))
+        painter.drawImage(
+            QRectF(centre_x + float(x) - side / 2.0, centre_y + float(y) - side / 2.0, side, side),
+            sprite,
+            QRectF(sprite.rect()),
+        )
+    painter.setOpacity(1.0)
+
+
+def _star_sprites(values: dict[str, object], size: float) -> list[QImage]:
+    """星の粒 1 つの絵 大きい順に、半分ずつ縮めたものを並べる"""
+    blur = size / 3.0
+    side = max(1, math.ceil(size + blur * 2.0))
+    sprite = QImage(side, side, QImage.Format.Format_RGBA8888)
+    # 透けた所も色は粒の色にしておく 黒のまま不透明度だけぼかすと、粒の縁が暗くにじむ
+    clear = _color(values.get("color"))
+    clear.setAlpha(0)
+    sprite.fill(clear)
+    sprite_painter = QPainter(sprite)
+    sprite_painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    rect = QRectF((side - size) / 2.0, (side - size) / 2.0, size, size)
+    sprite_painter.fillPath(
+        _shape_path(str(values.get("star_shape", "ellipse")), rect, values),
+        _color(values.get("color")),
+    )
+    sprite_painter.end()
+    # 箱ぼかしを 2 回 窓の半分の幅を ぼかしの半分にすると、広がりがぼかしの幅にそろう
+    sprite = _blur_alpha(sprite, max(1.0, blur / 2.0))
+    chain = [sprite]
+    while chain[-1].width() // 2 >= _SMALLEST_SPRITE:
+        last = chain[-1]
+        chain.append(
+            last.scaled(
+                last.width() // 2,
+                last.height() // 2,
+                Qt.AspectRatioMode.IgnoreAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+    return chain
+
+
 #: 折れ線で読み取る点の数の上限 これ以上は捨てる（描画は 1 フレームごとに走る）
 MAX_POLYLINE_POINTS = 4096
 
@@ -873,6 +1210,13 @@ def _superformula_path(rect: QRectF, m: float, n: float) -> QPainterPath:
 def _around(centre_x: float, centre_y: float, radius: float) -> QRectF:
     """中心と半径から、円弧を描くための四角"""
     return QRectF(centre_x - radius, centre_y - radius, radius * 2.0, radius * 2.0)
+
+
+def _within(value: float, low: float, high: float, default: float) -> float:
+    """範囲へ収める 無限大や非数は既定値にする（``round`` が例外で描画ごと止まる）"""
+    if not math.isfinite(value):
+        return default
+    return min(max(value, low), high)
 
 
 def _number(values: dict[str, object], name: str, default: float) -> float:
