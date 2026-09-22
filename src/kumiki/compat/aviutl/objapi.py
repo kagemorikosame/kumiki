@@ -444,7 +444,14 @@ class ObjApi:
         return buffer
 
     def _draw_to_tempbuffer(self, *values: float | None) -> None:
-        """``obj.draw`` を仮想バッファへ 座標は引数のまま（オブジェクトの位置は使わない）"""
+        """``obj.draw`` を仮想バッファへ 座標は引数のまま（オブジェクトの位置は使わない）
+
+        **オブジェクトの透明度（``obj.alpha``）も掛けない** 仕様書は「オブジェクトの
+        持っている座標等の設定は反映せず」とする 仮想バッファへ描いてから
+        ``obj.load("tempbuffer")`` で読み戻す形（テレビ字幕もこれ）では、読み戻した
+        絵を最後に描くときに ``obj.alpha`` が掛かる ここでも掛けると 2 回掛かり、
+        透明度 50% が 25% になる 掛けるのは引数で渡された透明度だけ
+        """
         x, y, _z, zoom, alpha, rx, ry, rz = values
         if any(value not in (None, 0, 0.0) for value in (rx, ry, rz)) or (
             zoom is not None and _as_float(zoom) != 1.0

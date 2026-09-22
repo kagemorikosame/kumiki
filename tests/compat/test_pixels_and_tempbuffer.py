@@ -203,6 +203,23 @@ class TestTheTempBuffer:
         _rows, columns = np.nonzero(state.buffers["tmp"][..., 3])
         assert (columns.min(), columns.max()) == (4, 5)
 
+    def test_the_objects_opacity_is_applied_once(self, runtime: LuaScriptRuntime) -> None:
+        """オブジェクトの透明度は、読み戻した絵を最後に描くときの 1 回だけ掛かる
+
+        仮想バッファへ描くときにも掛けると、描いて読み戻す形（テレビ字幕）で
+        2 回掛かり、透明度 50% の字幕が 25% の薄さになる
+        """
+        state = _state(4, 2)
+        state.alpha = 0.5
+        runtime.run(
+            'obj.setoption("drawtarget", "tempbuffer", 10, 10)\nobj.draw()\n'
+            'obj.setoption("drawtarget", "framebuffer")\nobj.load("tempbuffer")',
+            state,
+        )
+        assert int(state.image[..., 3].max()) == 255, "仮想バッファの側でも透明度を掛けている"
+        (draw,) = state.result()
+        assert draw.alpha == 0.5, "最後に描くときに透明度が掛かっていない"
+
     def test_a_rotated_draw_is_recorded(self) -> None:
         # 回したり拡げたりして仮想バッファへ描くのはまだ写していない 黙って等倍で描かない
         report = CompatibilityReport()
