@@ -436,8 +436,12 @@ def _note_crossing(
     if reach is None:
         return
     for item in members:
-        inner = _reach_of(item) if type_name(item) in _CONTAINER_ITEMS else None
-        if inner is not None and _layer_of(item) + inner > low + reach:
+        if type_name(item) not in _CONTAINER_ITEMS:
+            continue
+        # ``GroupRange`` を持たない内側のグループは上の段すべてに掛かる扱いなので、
+        # 範囲のある外側の中では必ず越えている
+        inner = _reach_of(item)
+        if inner is None or _layer_of(item) + inner > low + reach:
             log.note_missing("YMM4 の合成するグループの範囲を越える内側のグループ")
 
 

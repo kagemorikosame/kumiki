@@ -912,6 +912,23 @@ class TestCompositeGroups:
         map_template([outer, inner, shape_item(Layer=2), shape_item(Layer=3)], report=report)
         assert any("範囲を越える" in line for line in report.lines())
 
+    def test_an_inner_group_without_a_range_is_recorded_too(self) -> None:
+        # GroupRange の無いグループは上の段すべてに掛かる扱い 範囲のある外側の中に
+        # 入ると必ず越えるのに、範囲が無いからと見逃すと記録から漏れる
+        report = CompatibilityReport()
+        outer = group_item(Layer=0, GroupRange=2, IsComposite=True)
+        inner = group_item(Layer=1, VideoEffects=[outline(6.0)])
+        inner.pop("GroupRange")
+        map_template([outer, inner, shape_item(Layer=2)], report=report)
+        assert any("範囲を越える" in line for line in report.lines())
+
+    def test_an_inner_group_inside_the_range_is_not_recorded(self) -> None:
+        report = CompatibilityReport()
+        outer = group_item(Layer=0, GroupRange=3, IsComposite=True)
+        inner = group_item(Layer=1, GroupRange=2, VideoEffects=[outline(6.0)])
+        map_template([outer, inner, shape_item(Layer=2), shape_item(Layer=3)], report=report)
+        assert not any("範囲を越える" in line for line in report.lines())
+
     def test_another_composite_center_is_recorded(self) -> None:
         # 手元の配布物は画面の中心だけ ほかの中心は確かめていないので、黙って画面の
         # 中心で掛けずに記録へ残す
