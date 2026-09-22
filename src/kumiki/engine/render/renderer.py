@@ -488,7 +488,12 @@ class FrameRenderer:
 
     @staticmethod
     def _starts_within(tracks: list[Track], frame: int, start: int) -> bool:
-        """``frame`` に映るクリップに、場面切り替えの頭（``start``）以降に始まったものがあるか"""
+        """前の場面を描き直さず、いまの合成結果（後の場面）を写して済ませてよいかを決める
+
+        頭以降に始まったクリップが映っていると、前の場面は後の場面と別の絵になる
+        それでも写すと、前の場面に後の場面が混ざって黒から出る切り替えが明るくなる
+        映っていなければ同じ絵なので、描き直す手間を省ける（``True`` は描き直しが要る）
+        """
         return any(
             clip.enabled and clip.timeline_start >= start
             for track in tracks
