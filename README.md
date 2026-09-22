@@ -391,4 +391,26 @@ PR は**フェーズ単位**で、CodeRabbit・Copilot・Sourcery・Qodo の 4 �
 
 ## ライセンス
 
-MIT License ただし PySide6 (LGPL) と ffmpeg を利用しているため、バイナリを配布する場合は各ライセンスの条件を確認してください
+**ソースコードは MIT License** です（[LICENSE](LICENSE)）
+
+**配る zip は全体として GPL の条件で配ります** zip には Kumiki を動かす部品を一緒に
+入れてあり、その中に GPL の部品があるためです
+
+- 書き出しに使う FFmpeg（PyAV の wheel に同梱の物）は、組み込みの表記が
+  「LGPL version 3 or later」ですが、同じ wheel に **libx264 と libx265（GPL）** が入っていて、
+  CPU での書き出しは libx264 を使います
+- Qt / PySide6 は LGPL-3.0 で使います zip はフォルダの形（PyInstaller の onedir）で組み立てて
+  あり、Qt の DLL は別のファイルのまま置かれるので、使う人が差し替えられます
+- Kumiki 本体の MIT は GPL と両立します 本体のソースは MIT のままです
+
+同梱している部品ごとの使用許諾とソースの入手先は
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) にまとめてあります zip の中では
+`THIRD_PARTY_NOTICES.txt` と `licenses` フォルダ（GNU の使用許諾の全文と、部品ごとの写し）に
+入っています GPL と LGPL の部品（FFmpeg・x264・x265・Qt など）の対応するソースは、zip と
+同じ [Release](../../releases) に添付します
+
+## 色の扱い
+
+いま扱うのは **SDR の sRGB / Rec.709 だけ**です HDR（PQ / HLG）と広色域（Rec.2020・
+Display P3 など）は対象外で、今後の課題です そうした素材を読み込んでも、色を正しく
+写すことは約束しません
