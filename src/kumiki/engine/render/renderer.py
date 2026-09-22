@@ -292,13 +292,26 @@ class FrameRenderer:
         """1 本のタイムラインを、いまの合成先へ重ねる シーンの入れ子でも同じ道を通る"""
         self._compose_tracks(list(timeline.active_tracks(TrackKind.VIDEO)), frame, depth)
 
-    def _compose_tracks(self, tracks: list[Track], frame: int, depth: int) -> None:
-        """下のトラックから順に重ねる 場面切り替えは、それより下のトラックを見て描き直す"""
+    def _compose_tracks(
+        self,
+        tracks: list[Track],
+        frame: int,
+        depth: int,
+        *,
+        started_before: int | None = None,
+    ) -> None:
+        """下のトラックから順に重ねる 場面切り替えは、それより下のトラックを見て描き直す
+
+        ``started_before`` を渡すと、その時刻より前に始まったクリップだけを重ねる
+        場面切り替えの前の場面を作るため
+        """
         rate = self._project.rate
         visible = [
             (index, track, clip)
             for index, track in enumerate(tracks)
-            if (clip := track.clip_at(frame)) is not None and clip.enabled
+            if (clip := track.clip_at(frame)) is not None
+            and clip.enabled
+            and (started_before is None or clip.timeline_start < started_before)
         ]
         below: Compositor | None = None
         for position, (index, track, clip) in enumerate(visible):
@@ -354,25 +367,34 @@ class FrameRenderer:
     ) -> None:
         """下のトラックの絵を、前の場面から後の場面へ切り替える（YMM4 の ``TransitionItem``）
 
-        決まりは YMM4 に描かせた試験（``tools/ymm4_probes.py`` の 4 回目）から読んだ
+        決まりは YMM4 に描かせた試験（``tools/ymm4_probes.py`` の 4 回目）と、
+        配布されている場面切り替え 11 本を YMM4 で書き出した絵から読んだ
 
         - 後の場面は、いまの時刻の下の絵そのもの
-        - 前の場面は、範囲の中で終わるクリップの終わり（切れ目）の直前で止めた絵
-          切れ目より前は、前の場面も後の場面も同じ絵になる 範囲の中で終わるクリップが
-          無ければ止めない
+        - 前の場面は、**切り替えの頭より前に始まったクリップだけ**の絵 頭と同時か後に
+          始まったクリップは入れない（前に何も無ければ透明で、書き出すと黒）
+          入れると、テンプレートだけを置いたときに前の場面にも後の場面が映り、
+          黒からの切り替えが最初から明るく出る（ペイントトランジションで差が 249）
+        - 前の場面は、範囲の中で終わる前の場面のクリップの終わり（切れ目）の直前で止まる
+          それより前は動き続ける 範囲の中で終わるものが無ければ止めない
         - 進み具合は範囲の頭から終わりまで 押し出しとスライドは画面 1 枚分を動く
-        - 切り替え（switch）は切れ目で入れ替わる（範囲の真ん中ではない）
+        - 切り替え（switch）は範囲の真ん中で入れ替わる 切れ目ではない
+          （じわっと抽象化切り替えは長さ 40、切れ目 30 で、YMM4 は 20 から後の場面を出す）
         - 上のトラックには効かない
         """
         if depth >= MAX_SCENE_DEPTH:
             return
         start, end = clip.timeline_start, clip.timeline_end
+        # 前の場面に入らないクリップの終わりで止めると、前の場面のクリップが範囲の途中で
+        # 動かなくなる 前の場面に入るもの（頭より前に始まったもの）だけを見る
         cut = max(
             (
                 other.timeline_end
                 for track in tracks
                 for other in track.clips
-                if other.enabled and start < other.timeline_end <= end
+                if other.enabled
+                and other.timeline_start < start
+                and start < other.timeline_end <= end
             ),
             default=end,
         )
@@ -399,10 +421,12 @@ class FrameRenderer:
         self._compositor = before
         try:
             before.begin((0.0, 0.0, 0.0, 0.0))
-            if before_frame == frame:
+            # 止める前で、映るクリップがどれも頭より前に始まっているなら、前の場面は
+            # 後の場面と同じ絵 描き直さずに写す
+            if before_frame == frame and not self._starts_within(tracks, frame, start):
                 before.draw_handle(after.canvas.color, full, flip=False, premultiplied=True)
             else:
-                self._compose_tracks(tracks, before_frame, depth + 1)
+                self._compose_tracks(tracks, before_frame, depth + 1, started_before=start)
         finally:
             self._compositor = outer
 
@@ -439,7 +463,7 @@ class FrameRenderer:
             )
 
         if style == "switch":
-            put(before_image if frame < cut else after_image)
+            put(before_image if local_frame * 2 < clip.duration else after_image)
         elif style == "fade":
             # YMM4 は黒の上の絵として sRGB の値のまま混ぜる リニアで混ぜると中間が明るく浮く
             put(before_image)
@@ -461,6 +485,15 @@ class FrameRenderer:
         else:
             put(before_image)
             put(after_image)
+
+    @staticmethod
+    def _starts_within(tracks: list[Track], frame: int, start: int) -> bool:
+        """``frame`` に映るクリップに、場面切り替えの頭（``start``）以降に始まったものがあるか"""
+        return any(
+            clip.enabled and clip.timeline_start >= start
+            for track in tracks
+            if (clip := track.clip_at(frame)) is not None
+        )
 
     def _transition_scene(
         self,
