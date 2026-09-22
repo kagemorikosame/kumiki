@@ -7,11 +7,12 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Iterator
 from fractions import Fraction
 from pathlib import Path
-from typing import cast
 
 import av
+import av.codec.codec
 import av.error
 import av.video.codeccontext
 import pytest
@@ -36,6 +37,7 @@ from sashimono.engine.encode import (
     ExportSettings,
     available_video_codecs,
     export_project,
+    exporter,
 )
 from tests.color_bars import (
     AVCOL_SPC_BT709,
@@ -75,7 +77,81 @@ def silent_project(sample_long: SampleMedia) -> Project:
     return document.project
 
 
+@pytest.fixture
+def forget_probes() -> Iterator[None]:
+    """開けるかの答えを、試験の前後で忘れる
+
+    答えはプロセスの中で覚えている 残すと、偽の答えが後の試験へ漏れて、
+    本物の NVENC が「開けない」扱いになる
+    """
+    exporter._opens.cache_clear()
+    yield
+    exporter._opens.cache_clear()
+
+
+@pytest.fixture
+def probed(monkeypatch: pytest.MonkeyPatch, forget_probes: None) -> list[str]:
+    """開けない QSV を真似る 試しに開いたコーデックの名前を順に記録する
+
+    この開発機と同じく、QSV は FFmpeg に入っているが ``avcodec_open2`` が 22 を返す
+    ほかのコーデックは本物を開く
+    """
+    calls: list[str] = []
+    real = exporter._open_encoder
+
+    def fake(name: str) -> None:
+        calls.append(name)
+        if name == "h264_qsv":
+            raise av.error.ArgumentError(22, "Invalid argument")
+        real(name)
+
+    monkeypatch.setattr(exporter, "_open_encoder", fake)
+    monkeypatch.setattr(exporter, "VIDEO_CODEC_PREFERENCE", ("h264_qsv", "libx264"))
+    return calls
+
+
+def _encoder_of(path: Path) -> str:
+    """書き出したファイルを作ったエンコーダ x264 はビットストリームに名前を残す"""
+    return "libx264" if b"x264 - core" in path.read_bytes() else "libx264 以外"
+
+
 class TestCodecs:
+    def test_a_codec_that_does_not_open_is_not_offered(self, probed: list[str]) -> None:
+        """入っているだけの QSV を候補に出さない（#67）
+
+        出すと先頭に来て既定のコーデックになり、Intel の GPU が無い機械では
+        書き出しを押した途端に失敗する
+        """
+        assert available_video_codecs() == ["libx264"]
+
+    def test_each_codec_is_tried_only_once(self, probed: list[str]) -> None:
+        """開けるかは 1 度だけ試して覚える
+
+        毎回試すと、書き出しの画面を開くたびに NVENC を開く 100 ms 待たされる
+        """
+        available_video_codecs()
+        available_video_codecs()
+        assert probed == ["h264_qsv", "libx264"]
+
+    def test_a_small_probe_does_not_drop_a_working_nvenc(self, forget_probes: None) -> None:
+        """試しに開く大きさが小さすぎて、使える NVENC まで外すことがない
+
+        NVENC は 64x64 を断る 試す大きさをそこまで縮めると、GPU で書き出せる機械でも
+        CPU の libx264 しか選べなくなる
+        """
+        # 入っていても GPU が無ければ開けない それは環境の都合なので、
+        # 書き出しでよく使う 1080p で開けると確かめてから比べる
+        try:
+            context = av.CodecContext.create("h264_nvenc", "w")
+            assert isinstance(context, av.video.codeccontext.VideoCodecContext)
+            context.width, context.height = 1920, 1080
+            context.pix_fmt = "yuv420p"
+            context.time_base = Fraction(1, 30)
+            context.open()
+        except (av.codec.codec.UnknownCodecError, av.error.FFmpegError) as exc:
+            pytest.skip(f"h264_nvenc を 1080p で開けない: {exc}")
+        assert "h264_nvenc" in available_video_codecs()
+
     def test_at_least_one_codec_is_available(self) -> None:
         assert available_video_codecs(), "書き出せるコーデックが 1 つも無い"
 
@@ -106,6 +182,69 @@ class TestExport:
         stream = item.video_streams[0]
         assert (stream.width, stream.height) == (320, 240)
         assert stream.frame_rate == FrameRate(30)
+
+    def test_the_default_codec_skips_a_qsv_that_does_not_open(
+        self, probed: list[str], ready_project: Project, tmp_path: Path
+    ) -> None:
+        """コーデックを指定しない書き出しは、開けない QSV を飛ばして libx264 で通る（#67）"""
+        output = tmp_path / "out.mp4"
+        export_project(ready_project, ExportSettings(path=output, frame_range=(0, 3)))
+        assert _encoder_of(output) == "libx264"
+
+    def test_falls_back_when_the_real_size_is_refused(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        forget_probes: None,
+        ready_project: Project,
+        tmp_path: Path,
+    ) -> None:
+        """試しには開けても実際の設定で断られたら、次の候補で書き出す
+
+        NVENC の H.264 は幅 4096 を超える画を開けない 試しに開けたからと 1 つに決めると、
+        8K の作品は libx264 なら書けるのに失敗する ここでは yuv420p を受け付けない png を
+        「試しには開けた」ことにして同じ状況を作る
+        """
+        monkeypatch.setattr(exporter, "_open_encoder", lambda name: None)
+        monkeypatch.setattr(exporter, "VIDEO_CODEC_PREFERENCE", ("png", "libx264"))
+        output = tmp_path / "out.mp4"
+        export_project(ready_project, ExportSettings(path=output, frame_range=(0, 3)))
+        assert _encoder_of(output) == "libx264"
+        with av.open(str(output)) as container:
+            frames = sum(1 for _ in container.decode(video=0))
+        # やり直しの前に音やコマを進めていたら、頭が欠けたり音がずれたりする
+        assert frames == 3
+
+    def test_falls_back_when_the_stream_cannot_be_added(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        forget_probes: None,
+        ready_project: Project,
+        tmp_path: Path,
+    ) -> None:
+        """開く前の add_stream で断られても、次の候補で書き出す
+
+        入っていない名前やコンテナが受けないコーデックは、開くより前にここで断られる
+        拾わないと、指定なしの書き出しでも libx264 まで落ちずに失敗する
+        """
+        monkeypatch.setattr(exporter, "_open_encoder", lambda name: None)
+        monkeypatch.setattr(exporter, "VIDEO_CODEC_PREFERENCE", ("no_such_encoder", "libx264"))
+        output = tmp_path / "out.mp4"
+        export_project(ready_project, ExportSettings(path=output, frame_range=(0, 3)))
+        assert _encoder_of(output) == "libx264"
+
+    def test_a_chosen_codec_that_does_not_open_is_an_export_error(
+        self, ready_project: Project, tmp_path: Path
+    ) -> None:
+        """名指ししたコーデックが開けなければ、勝手に変えずに ExportError で断る
+
+        FFmpeg の例外のまま投げると、書き出しの画面が理由を出せず「予期しない失敗」になる
+        黙って別のコーデックに変えると、選んだ物で書けたと思い込ませる
+        """
+        output = tmp_path / "out.mp4"
+        settings = ExportSettings(path=output, video_codec="png", frame_range=(0, 3))
+        with pytest.raises(ExportError, match="png"):
+            export_project(ready_project, settings)
+        assert not output.exists()
 
     def test_frame_count_matches_the_timeline(self, ready_project: Project, tmp_path: Path) -> None:
         output = tmp_path / "out.mp4"
@@ -238,30 +377,6 @@ def bars_project(tmp_path: Path) -> Project:
     return document.project
 
 
-#: GPU が無いと開けないエンコーダ この失敗だけは環境の都合として飛ばす
-HARDWARE_CODECS = frozenset({"h264_nvenc", "h264_qsv"})
-
-
-def skip_unless_it_opens(codec: str) -> None:
-    """エンコーダを書き出しと同じ条件で開いてみて、開けなければ飛ばす
-
-    QSV はコーデックとしては入っていても、Intel の GPU が無い機械では開けない
-    飛ばすのはここで開けないときだけ 書き出し全体の失敗まで飛ばすと、開けたあとの
-    回帰（変換・エンコード・多重化）が「飛ばした」に紛れる
-    """
-    # create は種類の union を返す 映像の属性を触るので、ここで型を確定させる
-    context = cast("av.video.codeccontext.VideoCodecContext", av.CodecContext.create(codec, "w"))
-    context.width = 320
-    context.height = 240
-    context.pix_fmt = "yuv420p"
-    context.time_base = Fraction(1, 30)
-    # 開いた文脈は捨てるだけでよい PyAV は参照が切れたときに閉じる
-    try:
-        context.open()
-    except av.error.FFmpegError as exc:
-        pytest.skip(f"{codec} を開けない: {exc}")
-
-
 class TestColor:
     """書き出しの色は BT.709 / limited で、同じ値のタグが付く（#61）
 
@@ -273,10 +388,11 @@ class TestColor:
     def test_values_and_tags_are_bt709(
         self, codec: str, bars_project: Project, tmp_path: Path
     ) -> None:
+        # 候補は開けた物だけ（#67） QSV が入っていても Intel の GPU が無い機械ではここで飛ぶ
+        # 飛ばすのは開けないときだけ 書き出し全体の失敗まで飛ばすと、開けたあとの
+        # 回帰（変換・エンコード・多重化）が「飛ばした」に紛れる
         if codec not in available_video_codecs():
             pytest.skip(f"{codec} が使えない")
-        if codec in HARDWARE_CODECS:
-            skip_unless_it_opens(codec)
         # 書き出しそのものは囲まない 開けると分かったあとの失敗（変換・エンコード・
         # 多重化）は、どのコーデックでも本物の回帰
         output = tmp_path / f"{codec}.mp4"
