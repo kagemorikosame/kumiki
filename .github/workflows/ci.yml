@@ -20,6 +20,16 @@ jobs:
     # Windows 専用のソフトなので、Windows で検証する
     runs-on: windows-latest
 
+    env:
+      # CI に入れる ffmpeg 手元の開発環境（README）と、配る zip の FFmpeg（PyAV の
+      # wheel）と同じ 8.1.2 にそろえる 版とハッシュは置き場の鍵にもそのまま使うので、
+      # ここを変えれば取り直しと鍵が一緒に変わる
+      FFMPEG_VERSION: 8.1.2
+      # 取った zip をこの値と照らしてから展開する 照らさないと、配布元のリリースが
+      # 差し替えられたときに、その実行ファイルを CI の中で動かすことになる
+      # 値は GitHub のリリースの digest と gyan.dev の .sha256 の両方で一致を確かめた
+      FFMPEG_SHA256: db580001caa24ac104c8cb856cd113a87b0a443f7bdf47d8c12b1d740584a2ec
+
     strategy:
       fail-fast: false
       matrix:
@@ -52,9 +62,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ${{ runner.temp }}/ffmpeg
-          # 版とハッシュを鍵にする 版を上げるときは下の FFMPEG_VERSION・FFMPEG_SHA256 と
-          # 一緒に変える
-          key: ffmpeg-${{ runner.os }}-9.0.2-essentials-60f46726
+          key: ffmpeg-${{ runner.os }}-${{ env.FFMPEG_VERSION }}-essentials-${{ env.FFMPEG_SHA256 }}
 
       - name: ffmpeg を入れる
         id: ffmpeg
@@ -64,11 +72,6 @@ jobs:
         continue-on-error: true
         shell: pwsh
         env:
-          FFMPEG_VERSION: 9.0.2
-          # 取った zip をこの値と照らしてから展開する 照らさないと、配布元のリリースが
-          # 差し替えられたときに、その実行ファイルを CI の中で動かすことになる
-          # 値は GitHub のリリースの digest と gyan.dev の .sha256 の両方で一致を確かめた
-          FFMPEG_SHA256: 60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba
           FFMPEG_DIR: ${{ runner.temp }}/ffmpeg
         run: |
           $ErrorActionPreference = 'Stop'
