@@ -290,3 +290,29 @@ def test_a_broken_star_size_does_not_stop_drawing() -> None:
         "star_size": AnimatedValue(float("inf")),
     }
     assert _drawn(params, 10).max() > 0
+
+
+def test_a_huge_position_does_not_stop_drawing() -> None:
+    # float32 に入らない位置は無限大になり、道のりが無限大や非数になっていた
+    # 非数なら軌跡が黙って消え、無限大のまま整数にするところへ来れば例外で止まる
+    path = trail_path(lambda at: (at * 1e39, 0.0), 5.0)
+    assert np.all(np.isfinite(path.reach))
+    moving = AnimatedValue(
+        0.0, keyframes=(Keyframe(frame=0, value=0.0), Keyframe(frame=10, value=1e40))
+    )
+    params: dict[str, ParamValue] = {"shape": "motion_trail", "pos_x": moving}
+    assert _drawn(params, 5).shape == (HEIGHT, WIDTH)
+
+
+def test_the_default_width_draws_a_line() -> None:
+    # 図形の線の太さの既定は 0 そのまま使うと、画面から足した移動軌跡は先端しか出ない
+    moving = AnimatedValue(
+        0.0, keyframes=(Keyframe(frame=0, value=-600.0), Keyframe(frame=80, value=600.0))
+    )
+    params: dict[str, ParamValue] = {
+        "shape": "motion_trail",
+        "pos_x": moving,
+        "line_width": AnimatedValue(0.0),
+    }
+    rows = np.nonzero(_drawn(params, 20)[:, WIDTH // 2 - 450] > 128)[0]
+    assert len(rows) == pytest.approx(15, abs=1)

@@ -42,7 +42,7 @@ from kumiki.engine.audio_shapes import (
 )
 from kumiki.engine.motion_shapes import TrailPath, TrailPaths, sample_value, star_field, trail
 
-__all__ = ["forget_trail_paths", "render_source", "waveform_points"]
+__all__ = ["render_source", "waveform_points"]
 
 #: 縦の基準ごとに、指定した位置より上へ出す割合 ``下`` なら全部が上に出る
 _VERTICAL_SHARE = {"top": 0.0, "middle": 0.5, "bottom": 1.0}
@@ -58,12 +58,14 @@ def render_source(
     duration: int = 0,
     audio: np.ndarray | None = None,
     audio_rate: int = 44100,
+    trail_paths: TrailPaths | None = None,
 ) -> np.ndarray | None:
     """生成オブジェクトを描いて配列で返す 未知の種類なら ``None``
 
     ``fps`` は時間で変わる図形（タイマー・集中線）がフレームを秒へ直すのに使う
     ``duration`` はクリップの長さ（フレーム） 移動軌跡が先端の向きを決めるときに、
     クリップの終わりより先の動きを見ないために使う 分からなければ 0
+    ``trail_paths`` は移動軌跡の道の置き場 レンダラが自分のものを渡し、使い回す
     ``audio`` は音声波形が描く音（今の時刻の ``WAVEFORM_LEAD`` サンプル前からの
     1 チャンネルのサンプル） ``audio_rate`` はそのレート（スペクトラムの周波数に使う）
     音を読むのはレンダラの仕事 ここは渡された数を線にするだけ
@@ -81,6 +83,9 @@ def render_source(
     values["_motion"] = _motion_of(definition, source.params)
     values["_audio"] = audio
     values["_audio_rate"] = audio_rate
+    # 移動軌跡の道の置き場 レンダラが自分のものを渡す（他のレンダラが描く道を
+    # 巻き込んで捨てないように） 渡されなければ、その 1 枚のためだけに引く
+    values["_trail_paths"] = trail_paths if trail_paths is not None else TrailPaths()
     image = QImage(width, height, QImage.Format.Format_RGBA8888)
     image.fill(Qt.GlobalColor.transparent)
 
@@ -724,16 +729,9 @@ def _draw_concentration_frame(
 _STAMP_EDGE = 0.5
 
 
-#: 移動軌跡の道の置き場 レンダラがプロジェクトを差し替えたとき・閉じたときに空にする
-_TRAIL_PATHS = TrailPaths()
-
-
-def forget_trail_paths() -> None:
-    """覚えておいた移動軌跡の道を捨てる 使われなくなった長い道をメモリに残さない"""
-    _TRAIL_PATHS.clear()
-
-
-def _trail_paths_of(x_value: AnimatedValue, y_value: AnimatedValue) -> Callable[[int], TrailPath]:
+def _trail_paths_of(
+    store: TrailPaths, x_value: AnimatedValue, y_value: AnimatedValue
+) -> Callable[[int], TrailPath]:
     """その動きの道を、要るフレームまで伸ばして返す係"""
 
     def positions(first: int, stop: int) -> np.ndarray:
@@ -743,7 +741,7 @@ def _trail_paths_of(x_value: AnimatedValue, y_value: AnimatedValue) -> Callable[
         return np.stack([xs, ys], axis=1)
 
     def paths(frames: int) -> TrailPath:
-        return _TRAIL_PATHS.get((x_value, y_value), positions, frames)
+        return store.get((x_value, y_value), positions, frames)
 
     return paths
 
@@ -760,6 +758,9 @@ def _draw_motion_trail(
     if not isinstance(motion, tuple):
         return
     x_value, y_value = motion
+    store = values.get("_trail_paths")
+    if not isinstance(store, TrailPaths):
+        store = TrailPaths()
 
     def position(at: float) -> tuple[float, float]:
         # 設定の Y は上が正 形の計算は実物のまま下が正で持つ
@@ -767,7 +768,12 @@ def _draw_motion_trail(
 
     frame = _number(values, "_frame", 0.0)
     duration = _number(values, "_duration", 0.0)
-    line_width = max(0.0, _number(values, "line_width", 16.0))
+    line_width = _number(values, "line_width", 16.0)
+    if line_width <= 0:
+        # 図形の線の太さの既定は 0（塗りつぶし）だが、移動軌跡で 0 は線が無い絵になる
+        # 実物の ライン幅 は 2 から始まるので、0 以下は実物の既定の 16 として描く
+        # 線を消したいときは 軌跡の点の大きさ を 0 にする
+        line_width = 16.0
     head_size = max(0.0, _number(values, "trail_head_size", 48.0))
     shape = trail(
         position,
@@ -781,7 +787,7 @@ def _draw_motion_trail(
         head_size=head_size,
         head_angle=_number(values, "trail_head_angle", 0.0),
         head_offset=_number(values, "trail_head_offset", 70.0),
-        paths=_trail_paths_of(x_value, y_value),
+        paths=_trail_paths_of(store, x_value, y_value),
     )
     centre_x, centre_y = width / 2.0, height / 2.0
     colour = _color(values.get("color"))

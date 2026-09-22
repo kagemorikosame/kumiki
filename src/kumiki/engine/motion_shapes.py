@@ -51,14 +51,19 @@ PositionsIn = Callable[[int, int], np.ndarray]
 #: 1 フレームが何秒もかからないように頭を抑える
 MAX_TRAIL_POINTS = 20000
 
-#: 軌跡のために位置を引くフレームの数の上限（60fps で 24 時間）
-#: 道は今のフレームまでだけを引き、描く側が伸ばしながら覚えておく（:class:`TrailPaths`）
-#: これは壊れた長さのクリップで何十億フレームも引かないための最後の歯止め
-MAX_TRAIL_FRAMES = 60 * 60 * 60 * 24
-
 #: 覚えておく道のフレームの数の合計の上限 1 フレームに 16 バイト使うので 32MB
-#: 超えたら古く使った道から捨てる 今描いている道 1 本だけは、超えていても残す
+#: 超えたら古く使った道から捨てる
 MAX_CACHED_FRAMES = 2_000_000
+
+#: 軌跡のために位置を引くフレームの数の上限（60fps で 9 時間余り）
+#: 道は今のフレームまでだけを引き、描く側が伸ばしながら覚えておく（:class:`TrailPaths`）
+#: 1 本の道が覚える量の上限を超えないよう、同じ値にそろえる これより先では軌跡が
+#: 伸びなくなるが、壊れた長さのクリップで何十億フレームも引いて止まるよりよい
+MAX_TRAIL_FRAMES = MAX_CACHED_FRAMES
+
+#: 位置として扱う値の範囲（画素） 描く絵は一辺 8192 までなので十分に広い
+#: 範囲の外の値を float32 にすると無限大になり、道のりが壊れて描画ごと止まる
+_REACHABLE = 1.0e7
 
 #: 先端の向きを探すときに前後へ広げる回数の上限（半フレームずつなので前後 1200 フレーム）
 #: 止まったままの長いクリップでは、クリップの端まで探しても向きが決まらない
@@ -120,9 +125,8 @@ class TrailPath:
 
 
 def _clean(points: np.ndarray) -> np.ndarray:
-    cleaned: np.ndarray = np.nan_to_num(
-        np.asarray(points, dtype=np.float64), nan=0.0, posinf=0.0, neginf=0.0
-    ).astype(np.float32)
+    finite = np.nan_to_num(np.asarray(points, dtype=np.float64), nan=0.0, posinf=0.0, neginf=0.0)
+    cleaned: np.ndarray = np.clip(finite, -_REACHABLE, _REACHABLE).astype(np.float32)
     return cleaned
 
 
@@ -277,7 +281,8 @@ def trail(
 
     # 道のりが間隔の倍数の所に円を押す 多すぎるときは今に近い側を残す
     # （古い側を残すと、今の位置との間が空いた線になる）
-    count = math.ceil(walked / step) if walked > 0 else 0
+    # 道のりは位置を範囲へ収めたうえで数えているので有限だが、念のため見てから整数にする
+    count = math.ceil(walked / step) if walked > 0 and math.isfinite(walked) else 0
     first = max(0, count - MAX_TRAIL_POINTS)
     distances = np.arange(first, count, dtype=np.float64) * step
     xs, ys = _points_at(path, distances)

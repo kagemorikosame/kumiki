@@ -51,6 +51,7 @@ from kumiki.engine.gpu import (
     fit_placement,
 )
 from kumiki.engine.gpu.projection import project
+from kumiki.engine.motion_shapes import TrailPaths
 from kumiki.engine.render.invalidate import image_paths
 from kumiki.engine.render.scripts import (
     ScriptStage,
@@ -59,12 +60,7 @@ from kumiki.engine.render.scripts import (
     script_effects,
     split_effects,
 )
-from kumiki.engine.sources import (
-    MAX_CANVAS,
-    forget_trail_paths,
-    render_source,
-    source_canvas,
-)
+from kumiki.engine.sources import MAX_CANVAS, render_source, source_canvas
 
 __all__ = ["FrameRenderer", "RenderQuality"]
 
@@ -309,6 +305,9 @@ class FrameRenderer:
         self._audio: OrderedDict[WaveformKey, AudioDecoder] = OrderedDict()
         #: 開けなかった音 毎フレーム開き直さないために覚えておく
         self._audio_missing: set[WaveformKey] = set()
+        #: 移動軌跡の道の置き場 描くたびに頭から位置を引き直さないために覚えておく
+        #: レンダラごとに持つ 共有すると、1 つを閉じたときに他のレンダラの道まで消える
+        self._trail_paths = TrailPaths()
         self._closed = False
 
     @property
@@ -340,7 +339,8 @@ class FrameRenderer:
         # 開けなかった記録は忘れる 後から置いた素材を、差し替えのたびに読み直せるように
         # 移動軌跡の覚えた道も捨てる 長い道は 1 本で数十 MB あり、使わなくなった
         # プロジェクトのぶんを残さない（次に描くときに今のフレームまで引き直す）
-        forget_trail_paths()
+        # 置き場はこのレンダラのもの 書き出しのような別のレンダラの道は捨てない
+        self._trail_paths.clear()
         heard = _waveform_keys(project)
         for sound in [k for k in self._audio if k not in heard]:
             self._audio.pop(sound).close()
@@ -648,7 +648,7 @@ class FrameRenderer:
             return
         self._closed = True
         # 覚えた移動軌跡の道も手放す 閉じたレンダラのぶんを次のプロジェクトまで残さない
-        forget_trail_paths()
+        self._trail_paths.clear()
         for decoder in self._decoders.values():
             decoder.close()
         self._decoders.clear()
@@ -1228,7 +1228,8 @@ class FrameRenderer:
         speed = float(clip.speed)
         first = int(seconds * sample_rate) - int(WAVEFORM_LEAD * speed)
         raw = decoder.read(first, int(np.ceil(count * speed)) + 1)
-        mono = raw.mean(axis=1) if raw.ndim == 2 else raw
+        # float32 のまま平均する 既定の float64 にすると、毎フレーム型を変えて配列を作り直す
+        mono = raw.mean(axis=1, dtype=np.float32) if raw.ndim == 2 else raw
         # 速く回すと 1 画素に何サンプルも入る 間引いて 1 画素 1 サンプルに合わせる
         picked = (np.arange(count) * speed).astype(int).clip(0, max(len(mono) - 1, 0))
         samples = mono[picked].astype(np.float32) if len(mono) else np.zeros(count, np.float32)
@@ -1336,6 +1337,7 @@ class FrameRenderer:
             duration=clip.duration,
             audio=heard[0] if heard is not None else None,
             audio_rate=heard[1] if heard is not None else 44100,
+            trail_paths=self._trail_paths,
         )
         if image is not None:
             # 入れ替えのときは減らない 先に捨てると、関係ないクリップの絵が消える

@@ -337,3 +337,18 @@ class TestWhatTheReviewFound:
         source = _source(audio_path=str(stepped_audio), width=2000)
         image = _render(gl_context, source, 0, screen=(2000, HEIGHT))
         assert _line_row(image, 1900) == pytest.approx(51.0, abs=1.5)
+
+
+def test_each_renderer_keeps_its_own_trail_paths(gl_context: OffscreenGLContext) -> None:
+    # 道の置き場をプロセスで 1 つ共有すると、プレビューを閉じたときに書き出しの道まで消えた
+    project = Project.create(ProjectSettings(width=WIDTH, height=HEIGHT))
+    first = FrameRenderer(project, context=gl_context)
+    second = FrameRenderer(project, context=gl_context)
+    try:
+        assert first._trail_paths is not second._trail_paths
+        second._trail_paths.get("kept", lambda a, b: np.zeros((b - a, 2)), 10)
+        first.set_project(project)
+        assert len(second._trail_paths._paths) == 1
+    finally:
+        first.close()
+        second.close()
