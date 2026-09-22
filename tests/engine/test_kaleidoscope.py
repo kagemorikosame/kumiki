@@ -153,6 +153,60 @@ class TestKaleidoscope:
         assert self._lit_at(image, 12, -64)
         assert not self._lit_at(image, -12, -64)
 
+    def test_four_corners_read_the_wedge_shrunk_along_the_axis(
+        self, draw: Callable[..., np.ndarray]
+    ) -> None:
+        """角数 4 の三角は、辺 長さ の正三角形を軸に沿って縮めた絵を映す
+
+        真下 d の画素は、元の絵の真下 d·cos 30/cos 45（1.22 倍）を読む
+        読む中心を四角の下端の 30px 上へずらすと、真下 22 は 27 を読んで四角の中、
+        真下 27 は 33 を読んで四角の外になる 角数 4 の三角をそのまま読むと 27 も光る
+        AviUtl2 の角数 4 では中心の田が 0.8 倍に縮み、縮めないと差が 10.4 だった
+        """
+        image = draw(
+            _kaleidoscope(
+                span=80.0, repeats=1.0, corners=4.0, center_y=-(SQUARE / 2 - 30), clip_outside=True
+            )
+        )
+        assert self._lit_at(image, 0, -22)
+        assert not self._lit_at(image, 0, -27)
+
+    def test_four_corners_read_the_wedge_narrowed_across_the_axis(
+        self, draw: Callable[..., np.ndarray]
+    ) -> None:
+        """角数 4 の三角は、横を 1/(2 sin 45)（0.71 倍）に縮めて読む
+
+        読む中心を四角の右端の 20px 手前へずらす (-24, -40) の画素は左右を返して
+        右 17 を読むので四角の中 横を縮めないと右 24 を読んで四角の外になる
+        """
+        image = draw(
+            _kaleidoscope(
+                span=80.0, repeats=1.0, corners=4.0, center_x=SQUARE / 2 - 20, clip_outside=True
+            )
+        )
+        assert self._lit_at(image, -24, -40)
+
+    def test_twelve_corners_fold_beyond_the_base_as_six(
+        self, draw: Callable[..., np.ndarray]
+    ) -> None:
+        """角数 12 でも、中心の多角形の外は角数 6 の三角として底辺で折り返す
+
+        長さ 60 の三角の底辺は、正三角形へ引き伸ばすと中心から 52 真下 70 の画素は
+        引き伸ばして 62.8、底辺で返して 41.2 を読む 角数 12 の三角のまま返すと 45.9 を読む
+        読む中心を四角の下端の 43.5px 上に置くと、前者だけが四角の中で光る
+        AviUtl2 の角数 12 は外の頂点に 6 枚の三角が集まり、12 枚で返すと差が 12.3 だった
+        """
+        image = draw(
+            _kaleidoscope(
+                span=60.0,
+                repeats=2.0,
+                corners=12.0,
+                center_y=-(SQUARE / 2 - 43.5),
+                clip_outside=True,
+            )
+        )
+        assert self._lit_at(image, 0, -70)
+
     def test_a_positive_angle_turns_the_picture_clockwise(
         self, draw: Callable[..., np.ndarray]
     ) -> None:
