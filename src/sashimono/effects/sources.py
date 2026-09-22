@@ -168,6 +168,16 @@ SHAPE = SourceDefinition(
         TrackSpec("corner_radius", "角の丸み", 0, 500, 24, step=1, unit="px"),
         TrackSpec("line_width", "線の太さ", 0, 200, 0, step=1, unit="px"),
         CheckSpec("outline_only", "線のみ", False),
+        # 線をどこへ引くか AviUtl2 から読んだ図形だけが ``inside`` を持つ
+        # AviUtl2 は輪郭を図形の**内側**に引くので、外形は塗りつぶしたときと変わらない
+        # 中央に引くと線の太さの半分（太さ 20 で約 10 画素）外へはみ出す（#87）
+        # 既定の ``center`` は今までの引き方のまま 既にある作品の見た目を変えない
+        SelectSpec(
+            "line_align",
+            "線の位置",
+            (("center", "輪郭の中央"), ("inside", "図形の内側")),
+            "center",
+        ),
         TrackSpec("span", "扇の角度", 0, 360, 360, unit="度"),
         TrackSpec("bar_length", "矢印の軸の長さ", 0, 1000, 50, unit="%"),
         TrackSpec("bar_thickness", "矢印の軸の太さ", 0, 1000, 50, unit="%"),

@@ -1052,6 +1052,8 @@ def _figure(entry: ExoEntry, log: CompatibilityReport) -> GeneratedSource:
             "color": _color(entry.value("色", "color", default="ffffff")),
             "line_width": AnimatedValue(0.0 if filled else line),
             "outline_only": not filled,
+            # AviUtl2 は輪郭を図形の内側に引く 中央に引くと外へ太さの半分はみ出す（#87）
+            "line_align": "inside",
         },
     )
 
@@ -1088,6 +1090,8 @@ def _fan(entry: ExoEntry, log: CompatibilityReport) -> GeneratedSource:
             "color": _color(entry.value("色", default="ffffff")),
             "line_width": AnimatedValue(0.0 if filled else line),
             "outline_only": not filled,
+            # 図形と同じく輪郭は内側（#87）
+            "line_align": "inside",
         },
     )
 

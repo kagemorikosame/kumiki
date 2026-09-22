@@ -150,6 +150,82 @@ class TestTheTriangle:
         assert abs(area - expected[4]) <= expected[4] * 0.01
 
 
+def _spans(body: str, row: int = 0) -> list[tuple[int, int]]:
+    """1920x1080 に描いた図形の、中心から ``row`` 画素下の行で塗られた帯
+
+    返すのは ``(左端, 右端)`` の並び どちらも画面の中心から測る
+    """
+    image = render_source(_source(body), 1920, 1080)
+    assert image is not None
+    mask = image[540 + row, :, 3] > 128
+    columns = np.nonzero(mask)[0]
+    found: list[tuple[int, int]] = []
+    start = previous = -10
+    for column in columns:
+        if column != previous + 1:
+            if start >= 0:
+                found.append((start - 960, previous - 960))
+            start = int(column)
+        previous = int(column)
+    if start >= 0:
+        found.append((start - 960, previous - 960))
+    return found
+
+
+class TestTheOutline:
+    """AviUtl2 の図形のライン幅は**図形の内側**に引かれる
+
+    ``kumiki_p8_tri_s400_line20`` を AviUtl2 v2.1.6a に 1920x1080 で書き出させて、
+    白い画素の位置を測った 外形は塗りつぶしたときと同じで、中心の行を横に切ると
+    左右それぞれ 24 画素（= 20 / sin 60 度）の帯だった
+    """
+
+    _TRIANGLE = "図形\n図形の種類=三角形\nサイズ=400\n縦横比=0.00\n色=ffffff\nライン幅=20"
+
+    def test_the_outline_does_not_grow_the_shape(self) -> None:
+        # 輪郭の中央に引くと、外形が太さの半分（20 なら約 10 画素）外へ広がり、
+        # 塗りつぶした同じ図形より一回り大きく見える
+        top, bottom, left, right, _ = _bounds(self._TRIANGLE)
+        assert abs(top - -199) <= 2
+        assert abs(bottom - 99) <= 2
+        assert abs(left - -173) <= 2
+        assert abs(right - 172) <= 2
+
+    def test_the_band_lies_inside_the_contour(self) -> None:
+        # 中央に引くと帯が外へずれ、左の帯が -126..-104 まで出る
+        bands = _spans(self._TRIANGLE)
+        assert len(bands) == 2
+        (left_start, left_end), (right_start, right_end) = bands
+        assert abs(left_start - -116) <= 2
+        assert abs(right_end - 115) <= 2
+        assert abs((left_end - left_start + 1) - 24) <= 2
+        assert abs((right_end - right_start + 1) - 24) <= 2
+
+    def test_the_line_align_comes_from_the_mapping(self) -> None:
+        # ここが落ちると、読み込んだ図形が今までどおり輪郭の中央に線を引く
+        assert _source(self._TRIANGLE).params["line_align"] == "inside"
+
+    def test_a_native_shape_keeps_the_centred_line(self) -> None:
+        # 既にある作品の見た目を変えないため、既定は今までの引き方のまま
+        # ここが落ちると、AviUtl2 と関係の無い図形まで一回り小さくなる
+        source = GeneratedSource(
+            kind="shape",
+            params={
+                "shape": "rect",
+                "width": AnimatedValue(400.0),
+                "height": AnimatedValue(400.0),
+                "color": (1.0, 1.0, 1.0, 1.0),
+                "line_width": AnimatedValue(20.0),
+                "outline_only": True,
+            },
+        )
+        image = render_source(source, 1920, 1080)
+        assert image is not None
+        columns = np.nonzero(image[540, :, 3] > 128)[0]
+        # 中央に引くので、幅 400 の四角形が 210 まで広がる
+        assert abs(int(columns.max()) - 960 - 209) <= 2
+
+
 class TestTheFirstGeneration:
     def test_the_number_still_works(self) -> None:
         # AviUtl1 の書き方（番号と color）も読めること
