@@ -29,6 +29,7 @@ from sashimono.core.model import (
     AnimatedValue,
     Clip,
     ClipId,
+    Effect,
     GeneratedSource,
     Project,
     ProjectSettings,
@@ -193,6 +194,78 @@ def test_effects_go_to_their_own_scene(gl_context: OffscreenGLContext) -> None:
     project = project.with_timeline(replace(project.timeline, tracks=tracks))
     # 前の場面を消したので、後の場面（青）が見える
     assert _render(project, gl_context, 35)[18, 32, 2] > 200
+
+
+#: 場面の中身が画面の一部だけにあるときの試験 図形を画面の中央から外して置く
+WIDE = ProjectSettings(width=200, height=100, frame_rate=FrameRate(30))
+
+
+def _scene_with(
+    after_effects: tuple[Effect, ...], *, x: float, width: float, height: float
+) -> Project:
+    """幅 ``width`` 高さ ``height`` の白い四角を画面の中央から ``x`` 右へ置き、
+    同じ時刻に始まる切り替え（重ねるだけ）の後の場面へエフェクトを積む
+    切り替えと同じ時刻に始まるので前の場面は空 見えるのは後の場面だけ
+    """
+    base = Project.create(WIDE)
+    shape = Clip(
+        timeline_start=0,
+        duration=30,
+        source=GeneratedSource(
+            kind="shape",
+            params={
+                "shape": "rect",
+                "width": AnimatedValue(width),
+                "height": AnimatedValue(height),
+                "color": (1.0, 1.0, 1.0, 1.0),
+            },
+        ),
+        effects=(registry.require("transform").create(pos_x=x),),
+    )
+    transition = Clip(
+        timeline_start=0,
+        duration=30,
+        source=TRANSITION.create(style="overlay", target="after"),
+        after_effects=after_effects,
+    )
+    tracks = (
+        Track(TrackKind.VIDEO, "V1", (shape,)),
+        Track(TrackKind.VIDEO, "V2", (transition,)),
+    )
+    return base.with_timeline(replace(base.timeline, tracks=tracks))
+
+
+def test_scene_effects_turn_around_the_contents_not_the_screen(
+    gl_context: OffscreenGLContext,
+) -> None:
+    """場面に掛ける変形の「下端」は、場面の中身（図形）の下端
+
+    画面の下端で回すと、ローテンショントランジション（中心点の下端で 180 度回す）の
+    図形が画面の外へ回って消えた YMM4 の書き出しでは図形の下端で回り、真下へ返った
+    """
+    turn = registry.require("transform").create(rotation=180, pivot_h="center", pivot_v="bottom")
+    # 図形は 30〜70 列、40〜60 行 下端（60 行）で 180 度回すと 60〜80 行へ返る
+    image = _render(_scene_with((turn,), x=-50, width=40, height=20), gl_context, 5)
+    assert image[70, 50, 0] > 200, "図形の下端で回っていない"
+    assert image[50, 50, 0] < 20
+
+
+def test_scene_tiles_are_the_size_of_the_contents_and_masks_sit_on_the_origin(
+    gl_context: OffscreenGLContext,
+) -> None:
+    """タイルは中身の大きさで並び、図形のマスクは原点（画面の中央）に置かれる
+
+    タイルを画面の大きさで並べると、リール回転風の縦に連なる帯が 1 枚だけになり隙間が
+    空いた マスクを中身の中央に置くと、円形端から暗転の円が図形の真ん中へずれた
+    YMM4 の書き出しでは、帯は図形の高さごとに並び、円は画面の中央から開いた
+    """
+    tile = registry.require("tile").create(count_x=1, count_y=3)
+    mask = registry.require("shape_mask").create(shape="ellipse", width=20, height=200)
+    # 図形は 80〜180 列、40〜60 行 タイルで 20〜80 行に 3 枚 マスクは 90〜110 列だけ残す
+    image = _render(_scene_with((tile, mask), x=30, width=100, height=20), gl_context, 5)
+    assert image[30, 100, 0] > 200, "タイルが中身の高さで並んでいないか、マスクが原点にない"
+    assert image[30, 130, 0] < 20, "マスクが中身の中央へずれている"
+    assert image[10, 100, 0] < 20, "タイルが 3 枚より多く並んでいる"
 
 
 def test_after_effects_survive_saving() -> None:

@@ -34,6 +34,7 @@ from sashimono.compat.ymm4.values import (
     animated,
     brush_colour,
     colour,
+    curve_of,
     frame_positions,
     interpolation_of,
     number,
@@ -282,6 +283,54 @@ class TestInterpolationNames:
     def test_an_unknown_name_falls_back_to_a_straight_line(self) -> None:
         # 動きの形は違っても、始点と終点は合う 止めるより良い
         assert interpolation_of("知らない曲線") is Interpolation.LINEAR
+
+    def test_the_shape_of_an_english_easing_is_kept(self) -> None:
+        """``Back_InOut`` は向き（InOut）だけでなく形（Back）も持つ
+
+        形を捨てると、行き過ぎて戻る動きが 3 種の加減速に丸まり、Back_InOut で回る
+        ローテンショントランジションが YMM4 と最大 30 度ずれた
+        """
+        assert curve_of("Back_InOut") == "back"
+        assert curve_of("Expo_Out") == "expo"
+        # Jump も形 瞬間移動（終わりで行き着く）に丸めると、Jump_Out が頭で行き着かない
+        assert curve_of("Jump_Out") == "jump"
+        # 日本語の移動方法は形を持たない
+        assert curve_of("加減速") == ""
+        value = animated(moving(0.0, 180.0, style="Back_InOut"), length=90)
+        assert value.keyframes[0].curve == "back"
+        assert value.keyframes[0].interpolation is Interpolation.EASE_IN_OUT
+        # Back_InOut は頭で逆へ振れる（YMM4 の書き出しでも 6 度ほど逆へ回った）
+        assert value.at(15) < 0.0
+
+    def test_jump_out_arrives_at_the_start_not_the_end(self) -> None:
+        # Jump は向きで行き着く時刻が変わる In は終わり、Out は頭、InOut は真ん中
+        # 瞬間移動に丸めると、Jump_Out の動きが終わりまで止まったままになる
+        out = animated(moving(0.0, 100.0, style="Jump_Out"), length=30)
+        assert out.at(1) == pytest.approx(100.0)
+        into = animated(moving(0.0, 100.0, style="Jump_In"), length=30)
+        assert into.at(29) == pytest.approx(0.0)
+        middle = animated(moving(0.0, 100.0, style="Jump_InOut"), length=30)
+        assert middle.at(10) == pytest.approx(0.0)
+        assert middle.at(20) == pytest.approx(100.0)
+
+    def test_an_unknown_shape_goes_to_the_report_of_the_template_being_read(self) -> None:
+        # 値を読む所の多くは記録を受け取らない 読み込みの入口の記録へ書かないと、
+        # テンプレートを読んだ人の見る一覧に出ず、アプリ全体の記録へ紛れる
+        report = CompatibilityReport()
+        map_template([text_item(X=moving(0.0, 10.0, style="Magic_Out"))], report=report)
+        assert any("Magic" in line for line in report.lines())
+
+    def test_an_unknown_easing_shape_is_recorded_before_it_is_rounded(self) -> None:
+        # 知らない形は向きだけの加減速で描く 記録しないと、YMM4 が形を足したときに
+        # 動きが違うことに誰も気付けない 知っている形（Linear など）は記録しない
+        report = CompatibilityReport()
+        value = animated(moving(0.0, 1.0, style="Magic_In"), length=30, report=report)
+        assert value.keyframes[0].curve == ""
+        assert value.keyframes[0].interpolation is Interpolation.EASE_IN
+        assert any("Magic" in line for line in report.lines())
+        quiet = CompatibilityReport()
+        animated(moving(0.0, 1.0, style="Linear_In"), length=30, report=quiet)
+        assert not quiet.lines()
 
 
 class TestValues:
@@ -537,6 +586,52 @@ class TestVideoEffects:
         assert value_at(params["brightness"]) == pytest.approx(10.0)
         assert value_at(params["contrast"]) == pytest.approx(30.0)
         assert value_at(params["saturation"]) == pytest.approx(0.0)
+
+    def test_the_colour_correction_brightness_is_read(self) -> None:
+        """輝度（Brightness）は明るさ（Lightness）と別の項目で、動かせる
+
+        読まずにいると、明るく飛ばしてから戻す場面切り替え（ペイントトランジション）の
+        真ん中が YMM4 より 30 ほど暗く出た
+        """
+        effect = {
+            "$type": "YukkuriMovieMaker.Project.Effects.ColorCorrectionEffect, YukkuriMovieMaker",
+            "Lightness": still(100.0),
+            "Brightness": moving(150.0, 100.0, style="Sine_Out"),
+            "IsEnabled": True,
+        }
+        result = map_video_effects([effect], CompatibilityReport(), length=60)
+        gain = result.effects[0].params["gain"]
+        assert isinstance(gain, AnimatedValue)
+        assert gain.at(0) == pytest.approx(150.0)
+        assert gain.at(60) == pytest.approx(100.0)
+        assert value_at(result.effects[0].params["brightness"]) == pytest.approx(0.0)
+
+    def test_a_custom_centre_point_is_measured_from_the_origin(self) -> None:
+        """中心点の「任意」は、絵の原点から X と Y だけずらした点
+
+        絵の中央から取ると、場面切り替えの場面（原点は画面の中央、中身は右へ寄った図形）で
+        支点が図形の分だけずれ、ページめくり風その2 の後の場面が 200 画素ずれて回った
+        """
+        centre = {
+            "$type": "YukkuriMovieMaker.Project.Effects.CenterPointEffect, YukkuriMovieMaker",
+            "Horizontal": "Custom",
+            "Vertical": "Custom",
+            "X": still(680.0),
+            "Y": still(-1722.9),
+            "IsKeepPosition": True,
+            "IsEnabled": True,
+        }
+        spin = {
+            "$type": "YukkuriMovieMaker.Project.Effects.RotateEffect, YukkuriMovieMaker",
+            "Z": moving(-50.0, 0.0),
+            "IsEnabled": True,
+        }
+        (mapped,) = map_video_effects([centre, spin], CompatibilityReport(), length=30).effects
+        assert mapped.params["pivot_h"] == "origin"
+        assert mapped.params["pivot_v"] == "origin"
+        assert value_at(mapped.params["anchor_x"]) == pytest.approx(680.0)
+        # YMM4 の Y は下が正 こちらは上が正
+        assert value_at(mapped.params["anchor_y"]) == pytest.approx(1722.9)
 
     def test_random_move_flips_y(self) -> None:
         # YMM4 は下が正 そのまま渡すと上下の揺れの向きが逆になる

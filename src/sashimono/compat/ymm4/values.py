@@ -30,17 +30,24 @@ YMM4 は .NET のシリアライザで書き出しているので、型の名前
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
+from sashimono.compat.aviutl.report import CompatibilityReport, global_report
 from sashimono.core.model import AnimatedValue, Interpolation, Keyframe
+from sashimono.core.model.easing import CURVES
 
 __all__ = [
     "INTERPOLATIONS",
     "animated",
     "colour",
+    "curve_of",
     "frame_positions",
     "interpolation_of",
     "number",
+    "reporting",
     "type_name",
 ]
 
@@ -115,6 +122,44 @@ def interpolation_of(name: str) -> Interpolation:
     return Interpolation.LINEAR
 
 
+def curve_of(name: str, report: CompatibilityReport | None = None) -> str:
+    """英語のイージング名（``Back_InOut`` など）の曲線の名前 無ければ空
+
+    向き（``_InOut``）は :func:`interpolation_of` が補間方法として読む ここでは
+    ``Back`` ``Expo`` のような形の名前だけを取る 取らずに向きだけで描くと、
+    どの曲線も同じ加減速になり、行き過ぎて戻る Back や急に立ち上がる Expo が消える
+
+    知らない形の名前は記録してから空を返す（向きだけの加減速で描く） 黙って丸めると、
+    YMM4 が形を足したときに動きが違うことに誰も気付けない ``report`` を省くと、
+    いま読んでいるテンプレートの記録（:func:`reporting`）へ、それも無ければ
+    アプリ全体の記録へ書く
+    """
+    kind, separator, _ = name.partition("_")
+    if not separator:
+        return ""
+    lowered = kind.lower()
+    if lowered in CURVES:
+        return lowered
+    (report or _reporting.get() or global_report).note_missing(f"YMM4 の移動方法の形: {kind}")
+    return ""
+
+
+#: いま読んでいるテンプレートの記録 値を読む関数はあちこちから呼ばれ、どれも記録を
+#: 受け取るわけではない 読み込みの入口で置いておけば、知らない形の名前がその読み込みの
+#: 記録に残る（アプリ全体の記録へ混ざらない）
+_reporting: ContextVar[CompatibilityReport | None] = ContextVar("ymm4_reporting", default=None)
+
+
+@contextmanager
+def reporting(report: CompatibilityReport) -> Iterator[None]:
+    """この中で読んだ値の、知らない形の名前を ``report`` へ書く"""
+    token = _reporting.set(report)
+    try:
+        yield
+    finally:
+        _reporting.reset(token)
+
+
 def frame_positions(keyframes: Any, length: int, count: int) -> list[int]:
     """値の並びに対応するフレーム位置
 
@@ -137,6 +182,10 @@ def frame_positions(keyframes: Any, length: int, count: int) -> list[int]:
     return [round(span * index / max(1, count - 1)) for index in range(count)]
 
 
+#: 形の名前（``Keyframe.curve``）を持てる補間方法
+_EASINGS = frozenset({Interpolation.EASE_IN, Interpolation.EASE_OUT, Interpolation.EASE_IN_OUT})
+
+
 def animated(
     value: Any,
     default: float = 0.0,
@@ -144,6 +193,7 @@ def animated(
     length: int = 1,
     keyframes: Any = None,
     scale: float = 1.0,
+    report: CompatibilityReport | None = None,
 ) -> AnimatedValue:
     """アニメーションを :class:`AnimatedValue` へ
 
@@ -168,6 +218,9 @@ def animated(
     style = str(value.get("AnimationType") or "")
     interpolation = interpolation_of(style)
     control = (0.42, 0.0, 0.58, 1.0) if interpolation is Interpolation.BEZIER else None
+    # 形の名前はイージング 3 種にだけ付く 向きの読めない名前（``Back_Sideways``）は
+    # 直線で描くので、形も持たせない
+    curve = curve_of(style, report) if interpolation in _EASINGS else ""
 
     positions = frame_positions(keyframes, length, len(numbers))
     built: list[Keyframe] = []
@@ -181,6 +234,7 @@ def animated(
                 value=amount,
                 interpolation=interpolation,
                 control_points=control,
+                curve=curve,
             )
         )
 

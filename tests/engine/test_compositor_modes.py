@@ -231,3 +231,41 @@ class TestMappedDraw:
             base.release()
             top.release()
         assert int(result[8, 8, 0]) == 200
+
+
+class TestContentBox:
+    """合成途中の絵のどこに中身があるか（場面切り替えの場面の絵の範囲に使う）"""
+
+    def test_the_box_is_where_the_picture_is_in_image_rows(
+        self, gl_context: OffscreenGLContext
+    ) -> None:
+        # GL の行は下から数える 上下を取り違えると、場面の図形の上端と下端が入れ替わり、
+        # 中心点の「下端」で回す場面切り替えが図形の上端で回る
+        with gl_context:
+            compositor = Compositor(40, 20)
+            patch = Texture.from_array(_solid(10, 4, 255))
+            compositor.begin((0.0, 0.0, 0.0, 0.0))
+            compositor.draw(patch, placement=Placement(5.0, 2.0, 10.0, 4.0))
+            box = compositor.content_box()
+            compositor.begin((0.0, 0.0, 0.0, 0.0))
+            empty = compositor.content_box()
+            compositor.release()
+            patch.release()
+        assert box == (5, 2, 15, 6)
+        assert empty is None
+
+    def test_a_faint_picture_still_has_a_box(self, gl_context: OffscreenGLContext) -> None:
+        """8 ビットへ丸めると 0 になるほど薄い絵でも、範囲を持つ
+
+        キャンバスを 8 ビットで読んでから測ると、薄い場面が空に見え、回転やタイルが
+        画面全体を基準にしてしまう
+        """
+        with gl_context:
+            compositor = Compositor(40, 20)
+            patch = Texture.from_array(_solid(10, 4, 255))
+            compositor.begin((0.0, 0.0, 0.0, 0.0))
+            compositor.draw(patch, placement=Placement(20.0, 10.0, 10.0, 4.0), opacity=0.001)
+            faint = compositor.content_box()
+            compositor.release()
+            patch.release()
+        assert faint == (20, 10, 30, 14)

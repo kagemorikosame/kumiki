@@ -24,8 +24,13 @@ import json
 import sys
 import uuid
 from dataclasses import dataclass, field
+from fractions import Fraction
+from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
 
 import numpy as np
 
@@ -116,8 +121,13 @@ class Case:
     items: list[dict[str, Any]] = field(default_factory=list)
     note: str = ""
 
-    def sample_frames(self) -> list[int]:
-        """比べるフレーム 入りと真ん中と終わりの手前"""
+    def sample_frames(self, *, every: bool = False) -> list[int]:
+        """比べるフレーム 既定は入りと真ん中と終わりの手前 ``every`` なら枠のすべて
+
+        3 枚だけだと、場面切り替えの切れ目のように一瞬だけずれる所を見落とす
+        """
+        if every:
+            return list(range(self.start, self.start + self.length))
         last = self.length - 1
         picks = {min(2, last), last // 2, max(0, last - 3)}
         return sorted(self.start + offset for offset in picks)
@@ -284,22 +294,64 @@ def _save_png(image: np.ndarray, target: Path) -> None:
     QImage(data.data, width, height, width * 3, QImage.Format.Format_RGB888).save(str(target))
 
 
-def _ymm4_frames(video: Path, wanted: set[int]) -> dict[int, np.ndarray]:
+def frame_index(pts: int, start: int | None, time_base: Fraction, rate: float) -> int:
+    """書き出した動画の 1 枚が、プロジェクトの何フレーム目かを返す
+
+    YMM4 の書き出しは、最初の 1 枚の時刻が 0 ではなく 1 フレームぶん後ろ
+    （``start_time`` が 1 フレーム）から始まる 時刻をそのままフレーム番号にすると、
+    YMM4 の絵が 1 枚ずつ遅れて並び、動きのある所（場面の切れ目や動き出し）で
+    差が 8〜24 跳ねる ストリームの頭の時刻を引いて、最初の 1 枚を 0 にそろえる
+    """
+    return round(float((pts - (start or 0)) * time_base) * rate)
+
+
+#: 動画の 1 枚 フレーム番号と、絵を取り出す関数の組
+#: 取り出す（RGB の配列へ変換する）のは比べる 1 枚だけ 3 枚だけ比べるときに、
+#: そこまで読み進めた全部の絵を変換すると、それだけで数分かかる
+Picture = tuple[int, "Callable[[], np.ndarray]"]
+
+
+def _ymm4_frames(video: Path) -> Iterator[Picture]:
+    """書き出した動画を頭から 1 枚ずつ返す"""
     import av
 
-    found: dict[int, np.ndarray] = {}
     with av.open(str(video)) as container:
         stream = container.streams.video[0]
         rate = float(stream.average_rate or FPS)
         for frame in container.decode(stream):
             if frame.pts is None or frame.time_base is None:
                 continue
-            index = round(float(frame.pts * frame.time_base) * rate)
-            if index in wanted:
-                found[index] = frame.to_ndarray(format="rgb24")
-            if len(found) == len(wanted):
-                break
-    return found
+            index = frame_index(frame.pts, stream.start_time, frame.time_base, rate)
+            yield index, partial(frame.to_ndarray, format="rgb24")
+
+
+class References:
+    """YMM4 の絵を、若い番号から順に 1 枚ずつ引く
+
+    先に全部を読んで持っておくと、全フレームを比べたときに 1920x1080 の絵が
+    1 万枚を超え、メモリに載らない 比べる順（番号の若い順）に動画を進めて読む
+    """
+
+    def __init__(self, frames: Iterator[Picture]) -> None:
+        self._frames = frames
+        self._current: Picture | None = None
+        self._asked = -1
+
+    def get(self, wanted: int) -> np.ndarray | None:
+        """``wanted`` 番の絵 動画に無ければ ``None``
+
+        前に引いた番号より若い番号を引くと例外にする 読み進めた動画は戻せないので、
+        黙って ``None`` を返すと、呼ぶ側の並べ間違いが「比べる絵が無い」に化けて気付けない
+        """
+        if wanted < self._asked:
+            raise ValueError(f"{self._asked} 番の後に {wanted} 番は引けない 若い順に引くこと")
+        self._asked = wanted
+        while self._current is None or self._current[0] < wanted:
+            following = next(self._frames, None)
+            if following is None:
+                return None
+            self._current = following
+        return self._current[1]() if self._current[0] == wanted else None
 
 
 def command_compare(arguments: argparse.Namespace) -> int:
@@ -319,12 +371,10 @@ def command_compare(arguments: argparse.Namespace) -> int:
         # カンマで区切って何語でも 名前にどれかを含むものを比べる
         words = [word for word in arguments.only.split(",") if word]
         cases = [case for case in cases if any(word in case["name"] for word in words)]
-    wanted: dict[int, dict[str, Any]] = {}
-    for raw in cases:
-        case = Case(**{**raw, "items": raw["items"]})
-        for frame in case.sample_frames():
-            wanted[frame] = raw
-    references = _ymm4_frames(video, set(wanted))
+    # 動画を頭から順に読むので、枠も頭から順に比べる
+    cases = sorted(cases, key=lambda raw: int(raw["start"]))
+    every: bool = arguments.every
+    references = References(_ymm4_frames(video))
 
     settings = ProjectSettings(
         width=WIDTH, height=HEIGHT, frame_rate=FrameRate(FPS), blending=arguments.blending
@@ -345,17 +395,23 @@ def command_compare(arguments: argparse.Namespace) -> int:
                 renderer = FrameRenderer(project)
             else:
                 renderer.set_project(project)
-            for frame in case.sample_frames():
+            # 全フレームを比べるときは、枠ごとに差の一番大きい 1 枚だけを残す
+            # 1 枚ずつ絵を書き出すと、77 本で 1 万枚を超える
+            worst: tuple[float, int, np.ndarray, np.ndarray] | None = None
+            for frame in case.sample_frames(every=every):
                 reference = references.get(frame)
                 if reference is None:
                     continue
                 ours = renderer.render(frame)
                 a, b = _shrink(reference), _shrink(ours)
                 difference = float(np.abs(a - b).mean())
-                stem = f"{case.start:06d}_{frame:06d}"
-                side = np.concatenate([a, b, np.abs(a - b) * 3.0], axis=1)
-                _save_png(np.clip(side, 0, 255).astype(np.uint8), images / f"{stem}.png")
-                rows.append((difference, case.name, case.file, frame, stem, case.note))
+                if every:
+                    if worst is None or difference > worst[0]:
+                        worst = (difference, frame, a, b)
+                    continue
+                rows.append(_saved_row(images, case, frame, difference, a, b))
+            if worst is not None:
+                rows.append(_saved_row(images, case, worst[1], worst[0], worst[2], worst[3]))
     finally:
         if renderer is not None:
             renderer.close()
@@ -376,6 +432,16 @@ def command_compare(arguments: argparse.Namespace) -> int:
     for difference, name, _, frame, _, _ in rows[: arguments.top]:
         print(f"{difference:6.1f}  {name}  フレーム {frame}")
     return 0
+
+
+def _saved_row(
+    images: Path, case: Case, frame: int, difference: float, a: np.ndarray, b: np.ndarray
+) -> tuple[float, str, str, int, str, str]:
+    """並べた絵を書き出し、一覧の 1 行を返す"""
+    stem = f"{case.start:06d}_{frame:06d}"
+    side = np.concatenate([a, b, np.abs(a - b) * 3.0], axis=1)
+    _save_png(np.clip(side, 0, 255).astype(np.uint8), images / f"{stem}.png")
+    return (difference, case.name, case.file, frame, stem, case.note)
 
 
 def _write_report(
@@ -416,6 +482,11 @@ def main() -> int:
     compare = commands.add_parser("compare")
     compare.add_argument("--only", default="")
     compare.add_argument("--top", type=int, default=30)
+    compare.add_argument(
+        "--every",
+        action="store_true",
+        help="枠のフレームをすべて比べ、枠ごとに一番大きい差を出す（既定は 3 枚だけ）",
+    )
     # 既定は新しく作るプロジェクトと同じ sRGB（YMM4 の混ぜ方） リニアを選べば、
     # 設定ができる前に保存したプロジェクトの見え方で比べられる
     compare.add_argument("--blending", choices=("srgb", "linear"), default="srgb")

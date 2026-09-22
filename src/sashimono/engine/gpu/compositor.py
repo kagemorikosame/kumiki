@@ -116,6 +116,35 @@ void main() {
 """
 
 
+#: 絵の中身がどの列・どの行にあるかを 1 画素ずつの帯に書く（``u_axis`` 0 で列、1 で行）
+#: 不透明度が 0 より大きい画素が 1 つでもあれば 1 キャンバスは半精度なので、ここで
+#: 比べれば 8 ビットへ丸めると 0 になる薄い絵も拾える 帯だけを読み戻すので、
+#: 画面全体を CPU へ読むより転送が 1000 分の 1 ほどで済む
+_EXTENT_FRAGMENT_SHADER = """
+#version 430 core
+in vec2 v_uv;
+out vec4 frag_color;
+uniform sampler2D u_texture;
+uniform int u_axis;
+
+void main() {
+    ivec2 size = textureSize(u_texture, 0);
+    ivec2 here = ivec2(gl_FragCoord.xy);
+    float found = 0.0;
+    if (u_axis == 0) {
+        for (int y = 0; y < size.y; ++y) {
+            if (texelFetch(u_texture, ivec2(here.x, y), 0).a > 0.0) { found = 1.0; break; }
+        }
+    } else {
+        for (int x = 0; x < size.x; ++x) {
+            if (texelFetch(u_texture, ivec2(x, here.y), 0).a > 0.0) { found = 1.0; break; }
+        }
+    }
+    frag_color = vec4(found);
+}
+"""
+
+
 #: 下の絵を読んで混ぜる合成 ``glBlendFunc`` の係数では式が書けないもの
 #: 描く直前に下の絵を別のバッファへ写し、シェーダの中で混ぜる
 #:
@@ -467,6 +496,11 @@ class Compositor:
         self._backdrop = Framebuffer(width, height)
         # 読み出し用 リニアの合成結果を sRGB へ符号化して受け取る
         self._resolved = Framebuffer(width, height, internal_format=GL.GL_RGBA8)
+        # 中身の範囲を測る帯（列と行） 場面切り替えで要るときに初めて作る
+        # 合成先はレイヤーごとに何枚も作るので、使わないものにまで持たせない
+        self._extent_program: Program | None = None
+        self._columns: Framebuffer | None = None
+        self._rows: Framebuffer | None = None
 
     @property
     def width(self) -> int:
@@ -487,6 +521,10 @@ class Compositor:
         self._canvas.resize(width, height)
         self._backdrop.resize(width, height)
         self._resolved.resize(width, height)
+        if self._columns is not None:
+            self._columns.resize(width, 1)
+        if self._rows is not None:
+            self._rows.resize(1, height)
 
     @property
     def canvas(self) -> Framebuffer:
@@ -683,6 +721,44 @@ class Compositor:
         # GL は左下原点で返すので、画像として扱えるよう上下を戻す
         return np.ascontiguousarray(image[::-1])
 
+    def content_box(self) -> tuple[int, int, int, int] | None:
+        """合成途中の絵で、不透明度が 0 でない範囲（画素、左・上・右・下 左上が原点）
+
+        何も無ければ ``None`` 範囲は GPU の上で列と行の帯にまとめてから読む
+        画面全体を毎フレーム読み戻すと、1080p で 8MB の転送と GPU の待ちが入り、
+        場面切り替えの間だけ再生が重くなる
+        """
+        if self._extent_program is None:
+            self._extent_program = Program(VERTEX_SHADER, _EXTENT_FRAGMENT_SHADER)
+        if self._columns is None:
+            self._columns = Framebuffer(self.width, 1, internal_format=GL.GL_RGBA8)
+        if self._rows is None:
+            self._rows = Framebuffer(1, self.height, internal_format=GL.GL_RGBA8)
+        columns = np.flatnonzero(self._extent(self._columns, 0))
+        # GL の行は下から数える 画像の向き（上から）へ直す
+        rows = np.flatnonzero(self._extent(self._rows, 1)[::-1])
+        if columns.size == 0 or rows.size == 0:
+            return None
+        return int(columns[0]), int(rows[0]), int(columns[-1]) + 1, int(rows[-1]) + 1
+
+    def _extent(self, band: Framebuffer, axis: int) -> np.ndarray:
+        """帯へ中身の有無を書き、真偽の 1 次元配列で読む"""
+        assert self._extent_program is not None
+        band.bind(clear=(0.0, 0.0, 0.0, 0.0))
+        GL.glDisable(GL.GL_BLEND)
+        program = self._extent_program
+        program.use()
+        program.set_vec4("u_rect", FULL_RECT)
+        program.set_bool("u_flip", False)
+        program.set_mat3("u_transform", IDENTITY)
+        program.set_int("u_axis", axis)
+        program.bind_texture("u_texture", self._canvas.color)
+        self._quad.draw()
+        GL.glPixelStorei(GL.GL_PACK_ALIGNMENT, 1)
+        raw = GL.glReadPixels(0, 0, band.width, band.height, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE)
+        values = np.frombuffer(raw, dtype=np.uint8).reshape(band.height * band.width, 4)
+        return np.asarray(values[:, 0] > 127)
+
     def present(
         self,
         framebuffer: int,
@@ -767,6 +843,11 @@ class Compositor:
         self._canvas.release()
         self._backdrop.release()
         self._resolved.release()
+        for band in (self._columns, self._rows):
+            if band is not None:
+                band.release()
+        if self._extent_program is not None:
+            self._extent_program.release()
         self._quad.release()
         for program in (
             self._program,

@@ -31,6 +31,7 @@ from sashimono.compat.ymm4.values import (
     brush_colour,
     colour,
     number,
+    reporting,
     type_name,
 )
 from sashimono.core.model import AnimatedValue, Effect, ParamValue
@@ -140,6 +141,14 @@ def map_video_effects(
     縁取り（``OutlineEffect``）はテキストの飾りとして扱えるので、
     :class:`DecorationResult` に分けて返す
     """
+    # 知らない移動方法の形を、渡された記録へ書く（値を読む所は記録を受け取らない）
+    with reporting(report):
+        return _map_video_effects(effects, report, length=length, keyframes=keyframes)
+
+
+def _map_video_effects(
+    effects: Any, report: CompatibilityReport, *, length: int, keyframes: Any
+) -> DecorationResult:
     result = DecorationResult()
     if not isinstance(effects, list):
         return result
@@ -262,6 +271,9 @@ def _video_effect(name: str, entry: dict[str, Any], length: int, keyframes: Any)
             contrast=AnimatedValue(number(entry.get("Contrast"), 100.0) - 100.0),
             saturation=AnimatedValue(number(entry.get("Saturation"), 100.0) - 100.0),
             hue=value("HueRotation"),
+            # 輝度（Brightness）は明るさ（Lightness）と別の項目 読まずにいると、
+            # 場面切り替えで明るく飛ばす動き（ペイントトランジション）が消える
+            gain=value("Brightness", 100.0),
         )
     if kind == "directional_blur":
         definition = registry.get("directional_blur")

@@ -137,28 +137,45 @@ class SetParam(Command):
 
 @dataclass(frozen=True, slots=True)
 class SetKeyframe(Command):
-    """指定フレームにキーフレームを置く すでにあれば差し替える"""
+    """指定フレームにキーフレームを置く すでにあれば差し替える
+
+    ``interpolation`` を省くと、同じフレームに点があればその出方（補間方法・制御点・
+    曲線の名前）を引き継ぎ、無ければ直線にする 値だけを直す操作（インスペクターで
+    数を打ち直す）で出方まで直線へ戻すと、YMM4 から読んだ Back や Expo の点が
+    値を触っただけで別の動きになる 出方を変えたいときは ``interpolation`` を渡す
+    """
 
     path: ParamPath
     frame: int
     value: float
-    interpolation: Interpolation = Interpolation.LINEAR
+    interpolation: Interpolation | None = None
     control_points: tuple[float, float, float, float] | None = None
+    curve: str = ""
 
     @property
     def label(self) -> str:
         return f"{self.path.name} にキーフレーム"
 
-    def apply(self, project: Project) -> Project:
-        keyframe = Keyframe(
+    def _keyframe(self, existing: Keyframe | None) -> Keyframe:
+        if self.interpolation is None:
+            # 出方を渡さない呼び方は値だけを直すもの 新しい点は直線で置き、
+            # 渡された制御点や曲線の名前は使わない（直線の点に持たせても効かない）
+            if existing is not None:
+                return replace(existing, value=self.value)
+            return Keyframe(frame=self.frame, value=self.value)
+        return Keyframe(
             frame=self.frame,
             value=self.value,
             interpolation=self.interpolation,
             control_points=self.control_points,
+            curve=self.curve,
         )
 
+    def apply(self, project: Project) -> Project:
         def update(current: ParamValue | None) -> ParamValue:
             animated = _as_animated(current)
+            existing = next((k for k in animated.keyframes if k.frame == self.frame), None)
+            keyframe = self._keyframe(existing)
             others = tuple(k for k in animated.keyframes if k.frame != self.frame)
             merged = tuple(sorted((*others, keyframe), key=lambda k: k.frame))
             return AnimatedValue(static=animated.static, keyframes=merged)

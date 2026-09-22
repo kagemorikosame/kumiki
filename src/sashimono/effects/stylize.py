@@ -399,7 +399,9 @@ float sd_triangle(vec2 p, float r) {
 void main() {
     // 図形の当たり判定は Y 下向きで書いてある（扇や矢印の向きがそのまま読める）
     // 設定の中心はほかのエフェクトと同じ Y 上向きなので、ここで符号を合わせる
-    vec2 p = v_uv * u_size - object_center();
+    // 図形は絵の原点に置く 範囲の中央に置くと、場面切り替えで場面の図形が
+    // 画面の端に寄っているとき、YMM4 は画面の中央に出す円が図形の真ん中へずれる
+    vec2 p = v_uv * u_size - object_origin();
     p.y = -p.y;
     p -= vec2(center_x, -center_y);
     float r = radians(-rotation);

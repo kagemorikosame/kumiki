@@ -530,6 +530,8 @@ class FrameRenderer:
         - 切り替え（switch）は範囲の真ん中で入れ替わる 切れ目ではない
           （じわっと抽象化切り替えは長さ 40、切れ目 30 で、YMM4 は 20 から後の場面を出す）
         - 上のトラックには効かない
+        - 場面に掛けるエフェクトは、場面の中身が描かれた範囲を絵の大きさとして見る
+          原点は画面の中央のまま（:meth:`_transition_scene`）
         """
         if depth >= MAX_SCENE_DEPTH:
             return
@@ -669,6 +671,7 @@ class FrameRenderer:
             global_report.note_missing("場面切り替えに積んだ AviUtl スクリプト")
         if not self._effects.has_work(gpu_effects):
             return image
+        box = image.content_box()
         result = self._effects.apply(
             image.canvas,
             gpu_effects,
@@ -676,6 +679,16 @@ class FrameRenderer:
             fps=float(rate.fps),
             flip_source=False,
             duration=clip.duration,
+            # 場面の絵の大きさは、中身が描かれた範囲 画面全体を絵の大きさにすると、
+            # 中心点の「下端」が画面の下端になって図形ごと画面の外へ回り（ローテンション
+            # トランジション）、タイルが画面の高さごとに並んで隙間が空く（リール回転風）
+            # YMM4 の書き出しでは、どちらも図形の範囲で回り、並んでいた
+            bounds=None
+            if box is None
+            else (float(box[0]), float(box[1]), float(box[2]), float(box[3])),
+            # 原点は画面の中央のまま 図形のマスクは範囲ではなく原点に置かれる
+            # （円形端から暗転の円は、図形が右へ寄っていても画面の中央から開いた）
+            origin=(image.width / 2.0, image.height / 2.0),
             premultiplied=True,
         )
         done = self._layer(f"transition_{role}_done", depth)

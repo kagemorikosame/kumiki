@@ -22,6 +22,9 @@ from sashimono.core.io import (
 from sashimono.core.model import (
     AnimatedValue,
     Clip,
+    Effect,
+    Interpolation,
+    Keyframe,
     MediaItem,
     Project,
     ProjectSettings,
@@ -54,6 +57,27 @@ class TestRoundTrip:
             save_project(current, path)
             current = load_project(path)
         assert current == rich_project
+
+    def test_a_keyframe_keeps_its_curve(self) -> None:
+        # 曲線の名前を保存で落とすと、YMM4 から読んだ Back や Expo の動きが
+        # 開き直しただけで 3 種の加減速に変わる
+        value = AnimatedValue(
+            keyframes=(
+                Keyframe(frame=0, value=0.0, interpolation=Interpolation.EASE_OUT, curve="expo"),
+                Keyframe(frame=30, value=1.0),
+            )
+        )
+        effect = Effect(kind="blur", params={"radius": value})
+        clip = Clip(timeline_start=0, duration=30, effects=(effect,))
+        base = Project.create()
+        track = Track(TrackKind.VIDEO, "V1", (clip,))
+        original = base.with_timeline(replace(base.timeline, tracks=(track,)))
+        data = project_to_dict(original)
+        keyframes = data["timeline"]["tracks"][0]["clips"][0]["effects"][0]["params"]["radius"]
+        assert keyframes["keyframes"][0]["curve"] == "expo"
+        # 曲線の無いキーフレームには書かない 前の版で保存したものと同じ形のまま
+        assert "curve" not in keyframes["keyframes"][1]
+        assert project_from_dict(data) == original
 
     def test_fractions_are_written_as_strings(self, tmp_path: Path) -> None:
         settings = ProjectSettings(frame_rate=FrameRate(30000, 1001))
@@ -131,6 +155,24 @@ class TestValidation:
         clip = data["timeline"]["tracks"][0]["clips"][0]
         clip["effects"][0]["params"]["radius"]["keyframes"][0]["interpolation"] = "魔法"
         with pytest.raises(ProjectFileError, match="未知の補間方法"):
+            project_from_dict(data)
+
+    def test_rejects_an_unknown_curve(self, rich_project: Project) -> None:
+        # 通すと、描くときに Keyframe の検査で落ちる 読み込みの時点で弾く
+        data = project_to_dict(rich_project)
+        clip = data["timeline"]["tracks"][0]["clips"][0]
+        clip["effects"][0]["params"]["radius"]["keyframes"][0]["curve"] = "魔法"
+        with pytest.raises(ProjectFileError, match="未知の曲線"):
+            project_from_dict(data)
+
+    def test_rejects_a_curve_on_a_straight_point(self, rich_project: Project) -> None:
+        # 直線の点に曲線を書いたファイルは、描くと曲線が効かない 壊れたことに気付けるよう弾く
+        data = project_to_dict(rich_project)
+        clip = data["timeline"]["tracks"][0]["clips"][0]
+        keyframe = clip["effects"][0]["params"]["radius"]["keyframes"][0]
+        keyframe["interpolation"] = "linear"
+        keyframe["curve"] = "back"
+        with pytest.raises(ProjectFileError, match="イージングの点にだけ"):
             project_from_dict(data)
 
     def test_rejects_a_non_numeric_keyframe_that_would_crash_the_audio_mix(

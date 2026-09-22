@@ -67,6 +67,7 @@ class _Reader:
             length=self.length,
             keyframes=self.keyframes,
             scale=-1.0 if flip else 1.0,
+            report=self.report,
         )
 
     def plain(self, key: str, default: float = 0.0) -> float:
@@ -1133,7 +1134,9 @@ def center_point(
     が後ろの変形に支点を配る
     """
     r = _Reader(entry, length, keyframes, report, "CenterPointEffect")
-    # 任意（Custom）は中央から X と Y だけずらした点 YMM4 に回させた絵と一致した
+    # 任意（Custom）は絵の原点から X と Y だけずらした点 素材や図形では原点が絵の中央なので
+    # 中央からずらした点と同じになる 場面切り替えの場面は原点（画面の中央）と中身の中央が
+    # 離れていて、中央から取るとページめくり風その2 の後の場面が 200 画素ずれて回った
     # 原点（Origin）はアイテムの置き場所 絵の置き場の中央（画面の中央の基準）にあたる
     point = CenterPoint(
         horizontal=r.choice(
@@ -1142,7 +1145,7 @@ def center_point(
                 "Left": "left",
                 "Right": "right",
                 "Center": "center",
-                "Custom": "center",
+                "Custom": "origin",
                 "Origin": "screen",
             },
             "center",
@@ -1153,7 +1156,7 @@ def center_point(
                 "Top": "top",
                 "Bottom": "bottom",
                 "Center": "middle",
-                "Custom": "middle",
+                "Custom": "origin",
                 "Origin": "screen",
             },
             "middle",
