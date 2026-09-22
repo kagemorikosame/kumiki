@@ -107,6 +107,17 @@ TEXT = SourceDefinition(
         ValueSpec("timer_length", "数え下げる長さ", 0, minimum=0, maximum=10**9),
         TrackSpec("pos_x", "X", -4000, 4000, 0, step=1, unit="px"),
         TrackSpec("pos_y", "Y", -4000, 4000, 0, step=1, unit="px"),
+        # 組み方 AviUtl2 から読んだテキストだけが ``aviutl`` を持つ
+        # AviUtl2 はテキストの入れ物を字の形ではなく文字の枠（送り幅 x 行の高さ）にし、
+        # 太字の太らせ方も Qt と違う 画像合成・縁取りの模様・万華鏡・オブジェクト分割は
+        # この入れ物を基準に動くので、字の形で代わりにすると位置も大きさもずれる（#64）
+        # 既定の ``native`` は今までの組み方のまま 既にある作品の見た目を変えない
+        SelectSpec(
+            "layout",
+            "組み方",
+            (("native", "標準"), ("aviutl", "AviUtl2 と同じ")),
+            "native",
+        ),
     ),
 )
 
@@ -213,6 +224,8 @@ SHAPE = SourceDefinition(
         TrackSpec("wave_volume", "音声波形の音量", 0, 500, 100, unit="%"),
         # 周波数ごとの大きさを下から塗る（AviUtl2 の スペクトラム表示）
         CheckSpec("wave_spectrum", "音声波形をスペクトラムにする", False),
+        # スペクトラムの棒を上下の真ん中に置く（AviUtl2 の ミラー表示） 線には効かない
+        CheckSpec("wave_mirror", "音声波形のスペクトラムを上下の真ん中に置く", False),
         # 0 なら 1 画素ずつ 数を決めると、その升目の数の絵に描いてから引き伸ばす
         TrackSpec("wave_columns", "音声波形の横の升目", 0, 4000, 0, step=1),
         TrackSpec("wave_rows", "音声波形の縦の升目", 0, 4000, 0, step=1),

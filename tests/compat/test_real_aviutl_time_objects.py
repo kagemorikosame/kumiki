@@ -1,8 +1,12 @@
 """AviUtl2 本体が書き出した絵と、移動軌跡・星空を突き合わせる
 
 ``tools/aviutl_compare.py`` で並べて AviUtl2 v2.1.6a に書き出させた ``.work/aviutl-p5`` と
-``.work/aviutl-p6-time`` ``.work/aviutl-p6-wave``（1920x1080 60fps）を読む
+``.work/aviutl-p6-time`` ``.work/aviutl-p6-wave`` ``.work/aviutl-p7-wave``（1920x1080 60fps）を読む
 配布物の絵が入るのでリポジトリには入れていない 無ければ飛ばす
+
+``aviutl-p7-wave`` は p6-wave の並びのうち、波形のプリセット Type1〜5 の 5 本を AviUtl2 の
+UI で選び直して書き出させたもの（UI は名前を空に戻して値を書き込む） 一覧の元は
+その値を写した ``kumiki_p7_wave_type1〜5.object``
 
 移動軌跡は 1 枚ずつ比べる 星空は置き場所が乱数なので、粒の数・流れる向き・速さを比べる
 """
@@ -27,7 +31,8 @@ WORKS = Path(__file__).resolve().parents[2] / ".work"
 
 def _case(name: str) -> tuple[Path, dict[str, object]]:
     """見本の名前から、書き出した動画のある作業フォルダと並べた位置を引く 無ければ飛ばす"""
-    for work in (WORKS / "aviutl-p5", WORKS / "aviutl-p6-time", WORKS / "aviutl-p6-wave"):
+    works = ("aviutl-p5", "aviutl-p6-time", "aviutl-p6-wave", "aviutl-p7-wave")
+    for work in (WORKS / folder for folder in works):
         manifest = work / "manifest.json"
         if not (manifest.exists() and (work / "aviutl.mp4").exists()):
             continue
@@ -232,17 +237,35 @@ def _shrunk(image: np.ndarray) -> np.ndarray:
         ("kumiki_p6_wave_h16_v16_space4", 2.5),
         ("kumiki_p6_wave_spec_plain", 2.5),
         ("kumiki_p6_wave_spec_h16", 3.5),
+        # 波形のプリセットを UI で選んだ値（Type2 は 200x100 の升目・スペース 50）
+        # Type5 のミラーを下から積んでいた頃は 1.3、Type3・4 は窓を先へ読みすぎて 1.2・1.5
+        ("kumiki_p7_wave_type1", 1.0),
+        ("kumiki_p7_wave_type2", 0.5),
+        ("kumiki_p7_wave_type3", 1.0),
+        ("kumiki_p7_wave_type4", 1.4),
+        ("kumiki_p7_wave_type5", 0.6),
     ],
 )
 def test_the_waveform_modes_match_aviutl(name: str, limit: float) -> None:
     if not BGM.exists():
         pytest.skip("音声波形表示の見本が描く音が無い")
+    _match(name, [3, 40, 76], limit)
+
+
+def test_the_spectrum_waits_for_the_sound() -> None:
+    # 見本の曲は 18700 サンプル目から鳴る AviUtl2 は 24 フレーム目（17640）に何も出さず、
+    # 25 フレーム目から棒を出した 1536 サンプル先まで読んでいた頃は 24 フレーム目に棒が出た
+    if not BGM.exists():
+        pytest.skip("音声波形表示の見本が描く音が無い")
+    _match("kumiki_p6_wave_spec_plain", [24], 0.01)
+
+
+def _match(name: str, offsets: list[int], limit: float) -> None:
     from sashimono.core.commands import AddClip, AddTrack
     from sashimono.core.model import Project, ProjectSettings, Track, TrackKind
     from sashimono.engine.gpu import GLContextError, OffscreenGLContext
     from sashimono.engine.render import FrameRenderer
 
-    offsets = [3, 40, 76]
     reference = _reference(name, offsets)
     _, case = _case(name)
     item = map_object(
