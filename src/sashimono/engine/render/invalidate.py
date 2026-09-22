@@ -84,6 +84,11 @@ def changed_spans(before: Project, after: Project) -> Invalidation:
     if before.rate != after.rate:
         # 同じフレーム番号が別の時刻を指すようになる 絵は全部変わる
         return Invalidation.all()
+    if before.settings.blending != after.settings.blending:
+        # 半透明の所がある全部のフレームで明るさが変わる どこに半透明があるかは
+        # 描いてみないと分からないので、全部捨てる 捨て損ねると、切り替えたのに
+        # 先読みした所だけ前の混ぜ方の絵が出る
+        return Invalidation.all()
 
     media = _changed_media(before, after)
     scenes = _changed_scenes(before, after, media)

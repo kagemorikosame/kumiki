@@ -15,11 +15,11 @@ import pytest
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QKeySequence
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QDialogButtonBox
+from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox
 
 from sashimono.core.commands import AddClip, Command, RenameProject, SetTrackState
 from sashimono.core.io import RecoverySession, backup_folder, find_orphans
-from sashimono.core.model import Clip, Project, ProjectSettings, Track, TrackKind
+from sashimono.core.model import Blending, Clip, Project, ProjectSettings, Track, TrackKind
 from sashimono.core.timebase import FrameRate
 from sashimono.effects.sources import TEXT
 from sashimono.engine.cache import MediaAnalyzer
@@ -255,6 +255,40 @@ class TestSettingsDialog:
         dialog = ProjectSettingsDialog(ProjectSettings(frame_rate=FrameRate(24)))
         assert dialog._rate is None
         assert dialog.settings().frame_rate == FrameRate(24)
+
+    def test_a_new_project_blends_like_aviutl(self, qt_application: QApplication) -> None:
+        # 新規作成の既定が AviUtl・YMM4 と違うと、読み込んだ素材の半透明が明るく浮く
+        del qt_application
+        dialog = ProjectSettingsDialog(ProjectSettings(), new=True)
+        assert dialog.settings().blending == Blending.SRGB
+
+    def test_the_dialog_keeps_an_old_projects_blending(self, qt_application: QApplication) -> None:
+        # 開いただけで sRGB に戻ると、解像度だけ変えたつもりの OK で見た目まで変わる
+        del qt_application
+        dialog = ProjectSettingsDialog(ProjectSettings(blending=Blending.LINEAR))
+        assert dialog.settings().blending == Blending.LINEAR
+
+    def test_the_chosen_blending_is_applied_and_undone_at_once(
+        self, window: MainWindow, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """設定画面で解像度と重ね合わせを変え、1 回の取り消しで両方戻る
+
+        別々に積むと、取り消しの途中で見たことのない組み合わせを通る 選んだ値が
+        コマンドへ届かないと、画面で選んでも絵が変わらない
+        """
+
+        def choose(dialog: ProjectSettingsDialog) -> int:
+            dialog._width.setValue(640)
+            dialog._blending.setCurrentIndex(dialog._blending.findData(Blending.LINEAR))
+            return int(QDialog.DialogCode.Accepted)
+
+        monkeypatch.setattr(ProjectSettingsDialog, "exec", choose)
+        before = window.document.project.settings
+        window.edit_settings()
+        after = window.document.project.settings
+        assert (after.width, after.blending) == (640, Blending.LINEAR)
+        window.undo()
+        assert window.document.project.settings == before
 
     def test_odd_numbers_cannot_be_confirmed(self, qt_application: QApplication) -> None:
         del qt_application

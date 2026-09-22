@@ -326,7 +326,9 @@ def command_compare(arguments: argparse.Namespace) -> int:
             wanted[frame] = raw
     references = _ymm4_frames(video, set(wanted))
 
-    settings = ProjectSettings(width=WIDTH, height=HEIGHT, frame_rate=FrameRate(FPS))
+    settings = ProjectSettings(
+        width=WIDTH, height=HEIGHT, frame_rate=FrameRate(FPS), blending=arguments.blending
+    )
     images = work / "images"
     images.mkdir(exist_ok=True)
     rows: list[tuple[float, str, str, int, str, str]] = []
@@ -414,6 +416,9 @@ def main() -> int:
     compare = commands.add_parser("compare")
     compare.add_argument("--only", default="")
     compare.add_argument("--top", type=int, default=30)
+    # 既定は新しく作るプロジェクトと同じ sRGB（YMM4 の混ぜ方） リニアを選べば、
+    # 設定ができる前に保存したプロジェクトの見え方で比べられる
+    compare.add_argument("--blending", choices=("srgb", "linear"), default="srgb")
     arguments = parser.parse_args()
     if arguments.command == "build":
         return command_build(arguments)
