@@ -407,7 +407,9 @@ class TestTheNotices:
             "LGPL-3.0.txt": "da7eabb7bafdf7d3ae5e9f223aa5bdc1eece45ac569dc21b3b037520b4464768",
         }
         for name, digest in expected.items():
-            data = (ROOT / "licenses" / name).read_bytes()
+            # 改行は LF にそろえて比べる リポジトリは LF で持つが、Windows で取り出すと
+            # 設定によって CRLF になる（CI の取り出しがそうだった） 文面は同じ
+            data = (ROOT / "licenses" / name).read_bytes().replace(b"\r\n", b"\n")
             assert hashlib.sha256(data).hexdigest() == digest, name
 
     def test_a_bundled_package_brings_its_license(
