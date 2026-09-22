@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
@@ -111,6 +113,8 @@ class TemplateDialog(QDialog):
 
         #: 選ばれた結果 ``("place" | "restyle", 写した結果)``
         self.choice: tuple[str, list[MappedObject]] | None = None
+        #: 選ばれたテンプレートの置き場 書かれた素材のパスに無いとき、ここで探す
+        self.origin: Path | None = None
         self.refresh()
 
     # --- 一覧 ---
@@ -236,4 +240,6 @@ class TemplateDialog(QDialog):
         if not self._loaded:
             return
         self.choice = (action, self._loaded)
+        entry = self._selected_entry()
+        self.origin = entry.path.parent if entry is not None else None
         self.accept()

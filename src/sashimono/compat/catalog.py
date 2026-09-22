@@ -18,8 +18,9 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, replace
-from pathlib import Path
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field, replace
+from pathlib import Path, PureWindowsPath
 
 from sashimono.compat.aviutl.exo import ExoParseError, load_exo
 from sashimono.compat.aviutl.mapping import map_object
@@ -30,6 +31,7 @@ from sashimono.core import userdirs
 from sashimono.core.commands import (
     AddClip,
     AddEffect,
+    AddMedia,
     AddScene,
     AddTrack,
     Command,
@@ -42,6 +44,7 @@ from sashimono.core.commands.insert import DEFAULT_GENERATED_FRAMES
 from sashimono.core.model import (
     Clip,
     GeneratedSource,
+    MediaItem,
     Project,
     SceneId,
     Track,
@@ -51,10 +54,13 @@ from sashimono.core.model import (
 from sashimono.core.timebase import FrameRate
 
 __all__ = [
+    "MediaPlan",
+    "Probe",
     "TemplateCatalog",
     "TemplateEntry",
     "TemplateError",
     "default_template_roots",
+    "gather_media",
     "place",
     "restyle",
     "set_template_catalog",
@@ -217,6 +223,100 @@ def set_template_catalog(catalog: TemplateCatalog) -> None:
     _catalog = catalog
 
 
+#: 素材ファイルを開いて :class:`MediaItem` にする関数 開けなければ ``None``
+#:
+#: 互換層はファイルを開かない（:func:`~sashimono.compat.aviutl.mapping.media_paths` と
+#: 同じ決まり） 開く道具は呼び出し側が渡す
+type Probe = Callable[[Path], MediaItem | None]
+
+
+@dataclass(frozen=True, slots=True)
+class MediaPlan:
+    """テンプレートが参照している素材を、プロジェクトへ登録する段取り"""
+
+    #: 新しく登録する素材の :class:`AddMedia` 置くコマンドより先に実行する
+    commands: tuple[Command, ...] = ()
+    #: テンプレートに書かれたパス → 使う素材 すでに登録済みの素材も入る
+    media: Mapping[str, MediaItem] = field(default_factory=dict)
+    #: 見つからなかった・開けなかったパス
+    missing: tuple[str, ...] = ()
+
+    @property
+    def added(self) -> tuple[MediaItem, ...]:
+        """新しく登録する素材 解析や控えの作成を頼む相手"""
+        return tuple(c.item for c in self.commands if isinstance(c, AddMedia))
+
+
+def _media_paths(objects: list[MappedObject]) -> list[str]:
+    """素材として登録するパス まとめた中身（シーン）の中も見る
+
+    中身を自分で描くもの（音声波形など）は除く 絵は描いて作るので素材を
+    クリップに結ばない 結ぶと、音声しか無い素材を映像トラックへ置くことになり
+    置く時点で断られる
+    """
+    found: list[str] = []
+    for item in objects:
+        for inner in item.walk():
+            path = inner.media_path
+            if path and inner.clip.source is None and path not in found:
+                found.append(path)
+    return found
+
+
+def _same_file(path: Path) -> str:
+    """同じファイルかどうかを見分ける鍵
+
+    Windows ではパスの大文字小文字を区別しない 素の文字列で比べると、
+    同じ画像を書き方違いで 2 つの素材として登録してしまう
+    """
+    return os.path.normcase(str(path.resolve()))
+
+
+def gather_media(
+    objects: list[MappedObject],
+    project: Project,
+    probe: Probe,
+    *,
+    near: Path | None = None,
+) -> MediaPlan:
+    """テンプレートの画像・音声・動画を素材として登録する段取りを作る
+
+    これを通さずに :func:`place` すると、素材を参照するクリップは ``media_id`` を
+    持たず、置いても描かれず鳴らない
+
+    * **同じファイルは 1 つの素材にする** プロジェクトにすでにあれば、それを使う
+      テンプレートを 2 度置くたびに素材が増えると、素材一覧が同じ名前で埋まる
+    * 書かれたパスに無ければ ``near``（テンプレートの置き場）で同じ名前を探す
+      配布物のパスは作者の機械のもの（``C:\\Users\\作者\\…``）で、受け取った側の
+      機械にはまず無い 素材を同じフォルダに添えて配る作者はいる
+    """
+    known = {_same_file(item.path): item for item in project.media}
+    chosen: dict[str, MediaItem] = {}
+    commands: list[Command] = []
+    missing: list[str] = []
+    for raw in _media_paths(objects):
+        # 書かれたパスは Windows の形 ``Path`` で名前を取ると、Windows 以外では
+        # ``\\`` を区切りと見ずにパス全体を名前として探しに行く
+        candidates = [Path(raw)]
+        if near is not None:
+            candidates.append(near / PureWindowsPath(raw).name)
+        path = next((c for c in candidates if c.is_file()), None)
+        if path is None:
+            missing.append(raw)
+            continue
+        key = _same_file(path)
+        media = known.get(key)
+        if media is None:
+            media = probe(path)
+            if media is None:
+                missing.append(raw)
+                continue
+            commands.append(AddMedia(media))
+            known[key] = media
+        chosen[raw] = media
+    return MediaPlan(commands=tuple(commands), media=chosen, missing=tuple(missing))
+
+
 def place(
     objects: list[MappedObject],
     project: Project,
@@ -224,11 +324,16 @@ def place(
     at_frame: int = 0,
     track_id: TrackId | None = None,
     default_duration: int = DEFAULT_GENERATED_FRAMES,
+    media: Mapping[str, MediaItem] | None = None,
 ) -> list[Command]:
     """写した結果をタイムラインへ置くコマンドの列
 
     ``track_id`` を渡せばそのトラックへまとめて置く 渡さなければ、元の
     レイヤー番号に対応する映像トラックへ置く（無ければ作る）
+
+    ``media`` は :func:`gather_media` で登録する素材 素材を参照するクリップへ
+    ``media_id`` を結ぶ 音声しか無い素材は映像トラックでは鳴らないので、
+    ``track_id`` を渡していても音声トラックへ置く
     """
     # 中身を持たないもの（エフェクトだけのテンプレート）は置けない
     # 空のクリップを置いても何も映らないので、:func:`restyle` で着せて使う
@@ -236,12 +341,17 @@ def place(
     if not objects:
         return []
 
+    known = media or {}
+    heard = [item for item in objects if _is_sound(item, known)]
+    seen = [item for item in objects if not _is_sound(item, known)]
+
     commands: list[Command] = []
     tracks = (
         {}
-        if track_id is not None
-        else _tracks_for(project, {item.layer for item in objects}, commands)
+        if track_id is not None or not seen
+        else _tracks_for(project, {item.layer for item in seen}, commands)
     )
+    sound_tracks = _sound_tracks_for(project, {item.layer for item in heard}, commands)
 
     # 一番早いオブジェクトが ``at_frame`` に来るように、まとめてずらす
     # エイリアスは元のタイムライン上の位置を持ったままなので、そのまま置くと
@@ -255,19 +365,70 @@ def place(
             timeline_start=item.clip.timeline_start - origin + max(0, at_frame),
             duration=max(1, duration),
         )
+        linked = _media_of(item, known)
+        if linked is not None:
+            placed = replace(placed, media_id=linked.id)
         if item.children:
             placed = replace(
                 placed,
-                scene_id=_scene_for(item, project, commands),
+                scene_id=_scene_for(item, project, commands, known),
                 # シーンの中の時刻は秒で持つ（素材のクリップと同じ決まり）
                 source_in=item.scene_offset * project.rate.frame_duration,
             )
-        target = track_id if track_id is not None else tracks[item.layer].id
+        if _is_sound(item, known):
+            target = sound_tracks[item.layer].id
+        else:
+            target = track_id if track_id is not None else tracks[item.layer].id
         commands.append(AddClip(target, placed))
     return commands
 
 
-def _scene_for(item: MappedObject, project: Project, commands: list[Command]) -> SceneId:
+def _media_of(item: MappedObject, known: Mapping[str, MediaItem]) -> MediaItem | None:
+    """このクリップに結ぶ素材 中身を描くもの（音声波形など）には結ばない"""
+    if not item.media_path or item.clip.source is not None:
+        return None
+    return known.get(item.media_path)
+
+
+def _is_sound(item: MappedObject, known: Mapping[str, MediaItem]) -> bool:
+    """音声トラックへ置くものか
+
+    素材が見つかっていれば、映像を持つかどうかで決める（映像も持つ動画は映像トラック）
+    見つからなければ種類の名前で決める 素材の無い音声を映像トラックへ置くと、
+    あとで素材を足しても映像トラックでは鳴らない
+    """
+    linked = _media_of(item, known)
+    if linked is not None:
+        return not (linked.has_video or linked.is_still)
+    return item.kind == "音声ファイル" and item.clip.source is None
+
+
+def _sound_tracks_for(
+    project: Project, layers: set[int], commands: list[Command]
+) -> dict[int, Track]:
+    """音声を置く音声トラック 元のレイヤーの低い順に、上から 1 本ずつ割り当てる
+
+    映像と違い、レイヤー番号をそのままトラックの番号にしない YMM4 は映像と音声を
+    同じレイヤーの並びに置くので、10 段目の効果音のために音声トラックを 10 本作ることになる
+    """
+    existing = list(project.timeline.audio_tracks())
+    tracks: dict[int, Track] = {}
+    for index, layer in enumerate(sorted(layers)):
+        if index < len(existing):
+            tracks[layer] = existing[index]
+            continue
+        track = Track(kind=TrackKind.AUDIO, name=f"A{index + 1}")
+        commands.append(AddTrack(track))
+        tracks[layer] = track
+    return tracks
+
+
+def _scene_for(
+    item: MappedObject,
+    project: Project,
+    commands: list[Command],
+    media: Mapping[str, MediaItem],
+) -> SceneId:
     """まとめて 1 枚にする中身をシーンへ置き、そのシーンを返す
 
     中身の位置はまとめた入れ物の頭からの時刻で持っているので、そのまま置く
@@ -282,7 +443,7 @@ def _scene_for(item: MappedObject, project: Project, commands: list[Command]) ->
     earliest = min((child.clip.timeline_start for child in item.children), default=0)
     commands.extend(
         InScene(scene.id, command)
-        for command in place(list(item.children), inside, at_frame=earliest)
+        for command in place(list(item.children), inside, at_frame=earliest, media=media)
     )
     return scene.id
 

@@ -125,6 +125,18 @@ _PORTABLE = QKeySequence.SequenceFormat.PortableText
 EXO_FILTER = "AviUtl オブジェクト (*.exo *.exa *.exo2 *.exa2);;すべてのファイル (*)"
 
 
+def _probe_or_none(path: Path) -> MediaItem | None:
+    """テンプレートの素材を開く 開けなければ ``None``
+
+    開けない素材が 1 つあるだけで配置全体を止めない 見つからない素材と同じく
+    数えて知らせ、ほかのアイテムは置く
+    """
+    try:
+        return probe_media(path)
+    except ProbeError:
+        return None
+
+
 class MainWindow(QMainWindow):
     """編集画面"""
 
@@ -1390,7 +1402,7 @@ class MainWindow(QMainWindow):
 
         「置く」と「着せる」で行き先が違うだけで、どちらも 1 回の Undo で戻る
         """
-        from sashimono.compat.catalog import place, restyle
+        from sashimono.compat.catalog import gather_media, place, restyle
         from sashimono.ui.template_dialog import TemplateDialog
 
         dialog = TemplateDialog(parent=self)
@@ -1414,12 +1426,25 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("テンプレートを適用した（文字と長さはそのまま）", 5000)
             return
 
-        commands = place(objects, self.view_project, at_frame=self._timeline.playhead)
+        # 画像・音声のアイテムは素材として登録してからクリップに結ぶ 結ばないと、
+        # 置いたクリップは描かれず鳴らない（素材の無いクリップになる）
+        plan = gather_media(objects, self.view_project, _probe_or_none, near=dialog.origin)
+        commands = place(
+            objects, self.view_project, at_frame=self._timeline.playhead, media=plan.media
+        )
         if not commands:
             self.statusBar().showMessage("置けるオブジェクトがありませんでした", 5000)
             return
-        self.execute_all(commands, "テンプレートを配置")
-        self.statusBar().showMessage(f"{len(commands)} 個を置いた", 5000)
+        # 素材の登録と配置を 1 回の Undo にまとめる 分けると、戻したときに
+        # 使われていない素材だけが一覧に残る
+        self.execute_all([*plan.commands, *commands], "テンプレートを配置")
+        for media in plan.added:
+            self._analyzer.request(media, on_ready=self._on_analysis_ready)
+            self._request_proxy(media)
+        note = f"{len(commands)} 個を置いた"
+        if plan.missing:
+            note += f"（素材 {len(plan.missing)} 件が見つかりません）"
+        self.statusBar().showMessage(note, 6000)
 
     def rescan_scripts(self) -> None:
         """スクリプトのフォルダを読み直す"""
