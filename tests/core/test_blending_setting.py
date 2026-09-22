@@ -49,6 +49,19 @@ class TestFile:
         data["version"] = 2
         assert project_from_dict(data).settings.blending == Blending.LINEAR
 
+    def test_a_new_file_without_blending_is_refused(self) -> None:
+        """版 3 のファイルで項目が無ければ壊れたファイルとして断る
+
+        版 3 は必ず書く 無いのに古いファイルと同じくリニアで補うと、sRGB で作った
+        作品が黙って明るく描かれる
+        """
+        data = _saved(Blending.SRGB)
+        settings = data["settings"]
+        assert isinstance(settings, dict)
+        del settings["blending"]
+        with pytest.raises(ProjectFileError, match="重ね合わせ"):
+            project_from_dict(data)
+
     @pytest.mark.parametrize("blending", Blending.ALL)
     def test_the_blending_survives_saving(self, blending: str) -> None:
         # 書き忘れると、sRGB で作った作品が開き直すたびにリニアへ戻る

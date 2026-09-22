@@ -369,6 +369,9 @@ class TestBlending:
         ("blending", "expected"), [(Blending.SRGB, 128), (Blending.LINEAR, 188)]
     )
     def test_half_white_on_black(self, blending: str, expected: int, tmp_path: Path) -> None:
+        # 見たいのは合成の明るさ エンコーダが入っていない機械の失敗と取り違えないよう飛ばす
+        if "libx264" not in available_video_codecs():
+            pytest.skip("libx264 が使えない")
         settings = ProjectSettings(width=64, height=64, frame_rate=FrameRate(30), blending=blending)
         project = Project.create(settings)
         track = Track(TrackKind.VIDEO, "V1")

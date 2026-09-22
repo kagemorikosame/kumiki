@@ -644,10 +644,12 @@ def _project_from_dict(data: object) -> Project:
         sample_rate=_get_int(settings_data, "sample_rate", 48000),
         channels=_get_int(settings_data, "channels", 2),
         color_space=_get_str(settings_data, "color_space", "rec709"),
-        # 項目が無いのは、重ね合わせを選べるようになる前に保存したファイル そのころは
+        # 版 2 までは項目が無い 重ね合わせを選べるようになる前のファイルで、そのころは
         # リニアで混ぜていたので、リニアで開く 新規作成の既定（sRGB）で開くと、
         # 半透明の文字やフェードが保存したときより暗くなる
-        blending=_get_str(settings_data, "blending", Blending.LINEAR),
+        # 版 3 は必ず書くので、無ければ壊れたファイル リニアで補うと sRGB の作品が
+        # 黙って明るくなるので、空の値として断る（モデルの検査が ProjectFileError にする）
+        blending=_get_str(settings_data, "blending", Blending.LINEAR if version <= 2 else ""),
     )
 
     timeline = _timeline_from_json(root.get("timeline", {"rate": "30/1"}))
