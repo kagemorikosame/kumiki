@@ -26,12 +26,23 @@ from kumiki.compat.aviutl.mapping import map_object
 from kumiki.compat.aviutl.report import CompatibilityReport, global_report
 from kumiki.compat.mapped import MappedObject, fitted_effect, fitted_value
 from kumiki.compat.ymm4.template import Ymm4ParseError, load_template, map_template
-from kumiki.core.commands import AddClip, AddEffect, AddTrack, Command, RemoveEffect, SetSource
+from kumiki.core.commands import (
+    AddClip,
+    AddEffect,
+    AddScene,
+    AddTrack,
+    Command,
+    InScene,
+    RemoveEffect,
+    SetSource,
+    new_scene,
+)
 from kumiki.core.commands.insert import DEFAULT_GENERATED_FRAMES
 from kumiki.core.model import (
     Clip,
     GeneratedSource,
     Project,
+    SceneId,
     Track,
     TrackId,
     TrackKind,
@@ -221,7 +232,7 @@ def place(
     """
     # 中身を持たないもの（エフェクトだけのテンプレート）は置けない
     # 空のクリップを置いても何も映らないので、:func:`restyle` で着せて使う
-    objects = [item for item in objects if item.clip.source is not None or item.media_path]
+    objects = [item for item in objects if item.has_picture]
     if not objects:
         return []
 
@@ -244,9 +255,36 @@ def place(
             timeline_start=item.clip.timeline_start - origin + max(0, at_frame),
             duration=max(1, duration),
         )
+        if item.children:
+            placed = replace(
+                placed,
+                scene_id=_scene_for(item, project, commands),
+                # シーンの中の時刻は秒で持つ（素材のクリップと同じ決まり）
+                source_in=item.scene_offset * project.rate.frame_duration,
+            )
         target = track_id if track_id is not None else tracks[item.layer].id
         commands.append(AddClip(target, placed))
     return commands
+
+
+def _scene_for(item: MappedObject, project: Project, commands: list[Command]) -> SceneId:
+    """まとめて 1 枚にする中身をシーンへ置き、そのシーンを返す
+
+    中身の位置はまとめた入れ物の頭からの時刻で持っているので、そのまま置く
+    （``at_frame`` を中身の一番早い位置にして、ずらさない） 頭へ詰めると、
+    遅れて出てくる中身が入れ物の頭から出てしまう
+    """
+    scene = new_scene(project, item.label or "まとめた絵")
+    commands.append(AddScene(scene))
+    # 中身を置くコマンドはシーンのタイムラインを相手に作る 置き先のトラックを
+    # 探すのにメインのトラックを見ると、シーンに無いトラックへ置こうとして落ちる
+    inside = replace(project, timeline=scene.timeline)
+    earliest = min((child.clip.timeline_start for child in item.children), default=0)
+    commands.extend(
+        InScene(scene.id, command)
+        for command in place(list(item.children), inside, at_frame=earliest)
+    )
+    return scene.id
 
 
 def restyle(objects: list[MappedObject], clip: Clip) -> list[Command]:
@@ -263,7 +301,7 @@ def restyle(objects: list[MappedObject], clip: Clip) -> list[Command]:
     if not objects:
         return []
 
-    effects_only = all(item.clip.source is None and not item.media_path for item in objects)
+    effects_only = not any(item.has_picture for item in objects)
     if effects_only:
         added = [
             fitted_effect(effect, item.clip.duration, clip.duration - 1)
@@ -274,8 +312,15 @@ def restyle(objects: list[MappedObject], clip: Clip) -> list[Command]:
             return []
         return [AddEffect(clip.id, effect) for effect in added]
 
+    # 文字はまとめた中身（合成するグループ）の中にあることがある 上だけを見ると、
+    # 吹き出しの字幕テンプレートが「文字の無いテンプレート」として断られる
     template = next(
-        (item for item in objects if item.clip.source and item.clip.source.kind == "text"),
+        (
+            inner
+            for item in objects
+            for inner in item.walk()
+            if inner.clip.source and inner.clip.source.kind == "text"
+        ),
         None,
     )
     if template is None or template.clip.source is None:

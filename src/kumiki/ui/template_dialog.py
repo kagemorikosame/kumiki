@@ -170,23 +170,26 @@ class TemplateDialog(QDialog):
         self._detail.setText(self._describe(entry))
         # 絵を持たないテンプレート（YMM4 のアニメーション効果など）は置けない
         # 着せることしかできないので、そちらだけを押せるようにする
-        self._place_button.setEnabled(
-            any(item.clip.source is not None or item.media_path for item in self._loaded)
-        )
+        self._place_button.setEnabled(any(item.has_picture for item in self._loaded))
         self._restyle_button.setEnabled(
-            any(item.clip.source and item.clip.source.kind == "text" for item in self._loaded)
+            any(
+                inner.clip.source and inner.clip.source.kind == "text"
+                for inner in self._walk_loaded()
+            )
             or self._is_effects_only()
         )
         self._notes.addItems(self._report.lines())
         self._show_preview()
 
+    def _walk_loaded(self) -> list[MappedObject]:
+        """まとめた中身（YMM4 の合成するグループ）も含めた全部 文字は中にあることがある"""
+        return [inner for item in self._loaded for inner in item.walk()]
+
     def _is_effects_only(self) -> bool:
-        return bool(self._loaded) and all(
-            item.clip.source is None and not item.media_path for item in self._loaded
-        )
+        return bool(self._loaded) and not any(item.has_picture for item in self._loaded)
 
     def _describe(self, entry: TemplateEntry) -> str:
-        effects = sum(len(item.clip.effects) for item in self._loaded)
+        effects = sum(len(item.clip.effects) for item in self._walk_loaded())
         if self._is_effects_only():
             return (
                 f"{entry.path}\n"
@@ -202,10 +205,15 @@ class TemplateDialog(QDialog):
         )
 
     def _show_preview(self) -> None:
-        """先頭のオブジェクトの中身だけを描く"""
+        """先頭のオブジェクトの中身だけを描く
+
+        まとめた中身（YMM4 の合成するグループ）の中まで探す 合成するグループは
+        それ自体が中身を持たないので、上だけを見ると吹き出しの字幕テンプレートの
+        下絵が何も出ない
+        """
         from kumiki.engine.sources import render_source
 
-        source = next((item.clip.source for item in self._loaded if item.clip.source), None)
+        source = next((item.clip.source for item in self._walk_loaded() if item.clip.source), None)
         if source is None:
             return
         # 1080p で描いてから縮める 文字の大きさは 1080p を前提に決められて
