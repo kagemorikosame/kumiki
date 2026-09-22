@@ -30,10 +30,12 @@ from sashimono.core.model import (
 )
 from sashimono.core.timebase import FrameRate
 from sashimono.engine.audio_shapes import (
-    SPECTRUM_SIZE,
-    WAVEFORM_LEAD,
+    SPECTRUM_WINDOW,
+    bar_mask,
     cell_mask,
+    spectrum_cells,
     spectrum_levels,
+    spectrum_window,
 )
 from sashimono.engine.gpu import GLContextError, OffscreenGLContext
 from sashimono.engine.render import FrameRenderer
@@ -78,9 +80,7 @@ def _source(**extra: ParamValue) -> GeneratedSource:
 
 def test_silence_is_a_flat_line_below_the_centre() -> None:
     # 無音の所は中心の下 2 行（実物の絵のまま）
-    image = render_source(
-        _source(), WIDTH, HEIGHT, audio=np.zeros(WAVEFORM_LEAD + 400, dtype=np.float32)
-    )
+    image = render_source(_source(), WIDTH, HEIGHT, audio=np.zeros(400, dtype=np.float32))
     assert image is not None
     assert list(_lit_rows(image, WIDTH // 2)) == [0, 1]
     # 横幅の外には出ない
@@ -107,7 +107,7 @@ class TestGrid:
     def test_a_coarse_grid_draws_the_line_two_cells_thick(self) -> None:
         # 縦 16 升では、無音の線が中心をまたぐ 2 升に乗る（高さ 200 なら 1 升 12.5 画素）
         source = _source(wave_rows=AnimatedValue(16.0))
-        audio = np.zeros(WAVEFORM_LEAD + 400, dtype=np.float32)
+        audio = np.zeros(400, dtype=np.float32)
         image = render_source(source, WIDTH, HEIGHT, audio=audio)
         assert image is not None
         rows = _lit_rows(image, WIDTH // 2)
@@ -119,7 +119,7 @@ class TestSpectrum:
     def test_a_tone_rises_at_its_frequency(self) -> None:
         # 横軸は 40Hz〜20kHz の対数 1kHz の音なら左から 0.51 の所が一番高い
         rate = 44100
-        time = np.arange(SPECTRUM_SIZE) / rate
+        time = np.arange(SPECTRUM_WINDOW) / rate
         levels = spectrum_levels(np.sin(2 * np.pi * 1000.0 * time), 800, rate, 100.0)
         peak = int(np.argmax(levels))
         assert peak / 800 == pytest.approx(np.log(1000 / 40) / np.log(20000 / 40), abs=0.01)
@@ -127,7 +127,7 @@ class TestSpectrum:
     def test_silence_draws_nothing(self) -> None:
         # 実物も音の無い頭の 25 フレームは何も出さなかった
         source = _source(wave_spectrum=True)
-        audio = np.zeros(WAVEFORM_LEAD + SPECTRUM_SIZE, dtype=np.float32)
+        audio = np.zeros(SPECTRUM_WINDOW, dtype=np.float32)
         image = render_source(source, WIDTH, HEIGHT, audio=audio)
         assert image is not None
         assert image[:, :, 3].max() == 0
@@ -135,12 +135,91 @@ class TestSpectrum:
     def test_bars_grow_from_the_bottom(self) -> None:
         # 下の辺から上へ塗る 中心から塗ると、実物の絵の上半分に棒が出る
         rate = 44100
-        time = np.arange(WAVEFORM_LEAD + SPECTRUM_SIZE) / rate
+        time = np.arange(SPECTRUM_WINDOW) / rate
         audio = (0.5 * np.sin(2 * np.pi * 200.0 * time)).astype(np.float32)
         image = render_source(_source(wave_spectrum=True), WIDTH, HEIGHT, audio=audio)
         assert image is not None
         lit = np.nonzero(image[:, :, 3].max(axis=1) > 128)[0] - HEIGHT // 2
         assert lit.max() == pytest.approx(99, abs=1)
+
+    def test_a_cell_is_lit_only_when_the_level_fills_it(self) -> None:
+        # 64x32 と 32x40 の見本は、升いっぱいまで届いた升だけが塗られていた
+        # 升の真ん中で塗ると、どの棒も実物より 1 升高く出ることが多い
+        assert list(spectrum_cells(np.array([0.07, 0.1, 0.19]), 10)) == [0, 1, 1]
+
+    def test_the_level_is_read_from_the_frame_only(self) -> None:
+        # 窓は時刻から 735 サンプル それより先で鳴り始めた音は、まだ棒に出ない
+        # （実物は 24 フレーム目に何も出さず、25 フレーム目から出した 前の作りは
+        # 1536 サンプル先まで読んでいて、24 フレーム目に棒を出していた）
+        rate = 44100
+        time = np.arange(2048) / rate
+        audio = 0.5 * np.sin(2 * np.pi * 200.0 * time)
+        audio[:SPECTRUM_WINDOW] = 0.0
+        assert spectrum_levels(audio, 64, rate, 100.0).max() == 0.0
+        assert spectrum_levels(np.roll(audio, -SPECTRUM_WINDOW), 64, rate, 100.0).max() > 0.05
+
+    def test_the_window_is_the_same_time_at_48khz(self) -> None:
+        # 窓を 735 サンプルのまま使うと、48kHz では 15.3 ミリ秒で切れる 800 サンプル目
+        # （16.7 ミリ秒の終わり際）で鳴り始めた音が、44.1kHz の同じ時刻の音と違って棒に出ない
+        assert spectrum_window(44100) == 735
+        assert spectrum_window(48000) == 800
+        rate = 48000
+        time = np.arange(1024) / rate
+        audio = 0.5 * np.sin(2 * np.pi * 1000.0 * time)
+        audio[:770] = 0.0
+        assert spectrum_levels(audio, 64, rate, 100.0).max() > 0.001
+
+    def test_a_tone_is_as_tall_at_any_rate(self) -> None:
+        # 周波数の刻みを 44.1kHz と同じにしないと、帯に入る周波数の数が変わって棒の高さが変わる
+        levels = []
+        for rate in (44100, 48000):
+            time = np.arange(spectrum_window(rate)) / rate
+            tone = 0.5 * np.sin(2 * np.pi * 1000.0 * time)
+            levels.append(spectrum_levels(tone, 16, rate, 100.0).max())
+        assert levels[1] == pytest.approx(levels[0], rel=0.05)
+
+
+class TestMirror:
+    def test_silence_leaves_one_cell_in_the_middle(self) -> None:
+        # Type5（40x40 ミラー）は音の無い頭の 25 フレームでも、真ん中に 1 升の棒を
+        # 上下 5 画素ずつ出した ミラーを読まないと何も描かれない
+        source = _source(wave_spectrum=True, wave_mirror=True, wave_rows=AnimatedValue(20.0))
+        image = render_source(
+            source, WIDTH, HEIGHT, audio=np.zeros(SPECTRUM_WINDOW, dtype=np.float32)
+        )
+        assert image is not None
+        # 高さ 200 を 20 升にすると 1 升 10 画素 真ん中の上 5 画素と下 5 画素
+        lit = np.nonzero(image[:, :, 3].max(axis=1) > 128)[0] - HEIGHT // 2
+        assert (int(lit.min()), int(lit.max())) == (-5, 4)
+
+    def test_a_mirrored_bar_is_centred(self) -> None:
+        # 下の辺から積むと、実物で真ん中に出る棒が枠の下半分に出る
+        rate = 44100
+        time = np.arange(SPECTRUM_WINDOW) / rate
+        audio = (0.5 * np.sin(2 * np.pi * 200.0 * time)).astype(np.float32)
+        source = _source(wave_spectrum=True, wave_mirror=True)
+        image = render_source(source, WIDTH, HEIGHT, audio=audio)
+        assert image is not None
+        lit = np.nonzero(image[:, :, 3].max(axis=1) > 128)[0] - HEIGHT // 2
+        assert lit.max() < 90
+        # 上の端と下の端が真ん中から同じだけ離れる（1 画素の升では半画素の丸めが残る）
+        assert abs(lit.min() + lit.max() + 1) <= 1
+
+    def test_an_odd_bar_sits_half_a_cell_off_the_grid(self) -> None:
+        # 40x40 の見本で、1 升の棒は升目の境目（190・200・210）ではなく 195〜205 に出た
+        # 3 升なら 185〜215 枠の升目に乗せると、奇数の棒が半升ずれる
+        mask = bar_mask(np.array([1, 2, 3]), 40, 3, 400, 0.0, 0.0, mirror=True)
+        rows = [
+            (int(lit[0]), int(lit[-1]))
+            for lit in (np.nonzero(mask[:, column])[0] for column in range(3))
+        ]
+        assert rows == [(195, 204), (190, 209), (185, 214)]
+
+    def test_bars_without_the_mirror_stay_on_the_grid(self) -> None:
+        # ミラーなしは下の辺から升目どおりに積む（すき間も升の境目に空く）
+        mask = bar_mask(np.array([2]), 40, 1, 400, 0.0, 20.0)
+        lit = np.nonzero(mask[:, 0])[0]
+        assert list(lit) == [*range(381, 389), *range(391, 399)]
 
 
 @pytest.fixture(scope="module")
@@ -326,7 +405,7 @@ class TestWhatTheReviewFound:
     def test_a_broken_width_does_not_stop_drawing(self) -> None:
         # 横幅が無限大でも round で落ちず、描ける範囲に収める
         source = _source(width=AnimatedValue(float("inf")), wave_rows=AnimatedValue(1e12))
-        audio = np.zeros(WAVEFORM_LEAD + 800, dtype=np.float32)
+        audio = np.zeros(800, dtype=np.float32)
         assert render_source(source, WIDTH, HEIGHT, audio=audio) is not None
 
     def test_a_plain_number_width_reads_enough_sound(
