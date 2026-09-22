@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from sashimono.effects.builtin import PRELUDE
 from sashimono.effects.definition import EffectDefinition, registry
-from sashimono.effects.spec import SelectSpec, TrackSpec
+from sashimono.effects.spec import CheckSpec, SelectSpec, TrackSpec
 
 __all__ = ["register_warp_effects"]
 
@@ -155,6 +155,98 @@ _SIDES = (("bottom", "下側"), ("top", "上側"), ("left", "左側"), ("right",
 _MAP_KINDS = (("circle", "円"), ("rect", "四角"), ("horizontal", "横"), ("vertical", "縦"))
 
 
+_KALEIDOSCOPE = _shader("""
+uniform float center_x;
+uniform float center_y;
+uniform float span;
+uniform float angle;
+uniform float corners;
+uniform float repeats;
+uniform float fixed_size;
+uniform bool circle_mask;
+uniform bool spin_pattern;
+uniform bool clip_outside;
+
+void main() {
+    vec2 origin = object_center();
+    vec2 p = v_uv * u_size - origin;
+
+    // 角数は偶数に丸める 鏡を交互に返して 1 周させるので、奇数では継ぎ目が合わない
+    // 下限を 4 にする 2 だと三角の頂角が 180 度になり、範囲の内接円の半径が 0 で何も描けない
+    // （AviUtl2 で 2 を描かせた見本はまだ無い 設定 UI も 4 からにしてある）
+    float n = max(4.0, floor(corners * 0.5 + 0.5) * 2.0);
+    float half_ = PI / n;
+    float length_ = max(span, 1.0);
+    // 覆う範囲は、鏡の三角を 繰り返し回数 + 1 段ぶん並べた正多角形
+    // 実測で 繰り返し 2・長さ 100 の端が 300、3・200 が 800 の辺に乗った
+    float outer = (max(floor(repeats + 0.5), 1.0) + 1.0) * length_;
+    // 固定サイズ は覆う範囲の差し渡しをその大きさへ縮める（実測 200 で半分）
+    float zoom = fixed_size > 0.0 ? fixed_size / (2.0 * outer) : 1.0;
+    p /= zoom;
+
+    // 回転 は元の絵を時計回りに回してから鏡に映す 範囲と鏡の向きは動かない
+    // 回転同期 を入れると、模様（範囲と鏡）もいっしょに時計回りに回る
+    // 実測 回転 30 で範囲は横 600 のまま（差 13.5 → 4.0）、同期ありで縦 600 に
+    // 変わった（差 14.9 → 4.0） 同期ありで元の絵を回さない読み方は差 12.8
+    float turn = radians(angle);
+    mat2 counter = mat2(cos(turn), sin(turn), -sin(turn), cos(turn));
+    if (spin_pattern) {
+        p = counter * p;
+    }
+
+    // 鏡の軸は真下 三角の頂点は軸から ±180/角数 の線の上に乗る
+    // 田の縦棒が軸に沿って残り、横棒は鏡の線に消えることから軸が縦だと読んだ
+    // 上か下かは、田の上半分と下半分の違いで決めた（真上だと差が 8.0、真下で 3.3）
+    const float AXIS = -PI * 0.5;
+
+    // 範囲の外は描かない 角を鏡の線へ畳んでから、軸へ下ろした長さで測る
+    // 畳む式は、もともと軸の側の三角にある角をそのまま返す形にする
+    // 符号を逆にすると軸の側の三角が左右に返り、底辺で折り返す回数の偶奇で
+    // 返ったり返らなかったりする 回した絵で模様が崩れる（差 8.6）
+    float phi = atan(p.y, p.x) - AXIS;
+    float folded = half_ - abs(mod(phi + half_, 4.0 * half_) - 2.0 * half_);
+    float along = length(p) * cos(folded);
+    float apothem = outer * cos(half_);
+    if (circle_mask ? length(p) > apothem : along > apothem) {
+        frag_color = vec4(0.0);
+        return;
+    }
+
+    // 畳む 角を 1 つの三角へ折り返し、三角の底辺を越えたら底辺で折り返す
+    // 繰り返せば、鏡を三角に組んだ万華鏡と同じ模様になる
+    float base = length_ * cos(half_);
+    for (int i = 0; i < 256; ++i) {
+        float radius = length(p);
+        // 中心ちょうどは角が決まらない（atan(0, 0) は実装しだいで NaN になる）
+        if (radius < 0.0001) break;
+        phi = atan(p.y, p.x) - AXIS;
+        folded = half_ - abs(mod(phi + half_, 4.0 * half_) - 2.0 * half_);
+        p = radius * vec2(cos(AXIS + folded), sin(AXIS + folded));
+        // 軸が真下なので、軸に沿った長さは -p.y
+        if (-p.y <= base) break;
+        p.y = -2.0 * base - p.y;
+    }
+
+    // 読む所を反時計回りに回すと、映る絵は時計回りに回る
+    p = counter * p;
+    // 下の三角は左右を返して読む 田の字では見分けが付かず、F の字で分かった
+    // （返さないと、三角の模様が中心の右へ逆向きに並んで差 4.4、返すと 2.6）
+    p.x = -p.x;
+
+    // 中心 は読む所をずらし、模様はオブジェクトの真ん中に置いたままにする
+    // 実測 中心X 60・中心Y 30 で、範囲の端は動かず差は 1.7
+    vec2 source = origin + vec2(center_x, center_y) + p;
+    if (!clip_outside) {
+        // 領域外を透過 を外すと、絵の外は縁の色を引き伸ばして埋める
+        // 実測 白い四角で外すと範囲いっぱいが白く（光る割合 25.4%）、入れると
+        // 四角の模様が並んだ（15.0%） どちらもこの読み方で差 0.1 未満
+        source = clamp(source, u_object.xy + 0.5, u_object.zw - 0.5);
+    }
+    frag_color = sample_pixel(source);
+}
+""")
+
+
 def register_warp_effects() -> None:
     definitions = (
         EffectDefinition(
@@ -194,6 +286,24 @@ def register_warp_effects() -> None:
                 SelectSpec("map_kind", "マップの種類", _MAP_KINDS, "circle"),
             ),
             fragment_shader=_DISPLACEMENT,
+        ),
+        EffectDefinition(
+            kind="kaleidoscope",
+            label="万華鏡",
+            category="変形",
+            parameters=(
+                TrackSpec("center_x", "中心 X", -4000, 4000, 0, step=1, unit="px"),
+                TrackSpec("center_y", "中心 Y", -4000, 4000, 0, step=1, unit="px"),
+                TrackSpec("span", "長さ", 1, 4000, 100, step=1, unit="px"),
+                TrackSpec("angle", "回転", -3600, 3600, 0, unit="度"),
+                TrackSpec("corners", "角数", 4, 64, 6, step=2),
+                TrackSpec("repeats", "繰り返し回数", 1, 32, 1, step=1),
+                TrackSpec("fixed_size", "固定サイズ", 0, 8000, 0, step=1, unit="px"),
+                CheckSpec("circle_mask", "円形マスク", False),
+                CheckSpec("spin_pattern", "回転同期", False),
+                CheckSpec("clip_outside", "領域外を透過", False),
+            ),
+            fragment_shader=_KALEIDOSCOPE,
         ),
     )
     for definition in definitions:

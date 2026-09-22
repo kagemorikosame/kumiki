@@ -390,6 +390,32 @@ _PARAMS: dict[str, dict[str, _Param]] = {
     "透明度": {"透明度": _Param("amount", _rest)},
     "回転": {"Z": _Param("rotation"), "X": _Param("rotation_x"), "Y": _Param("rotation_y")},
     "リサイズ": {"拡大率": _Param("scale", also="scale_y")},
+    # 万華鏡 長さ は鏡の三角の辺 繰り返し回数 は覆う範囲を三角何段ぶんにするか
+    # AviUtl2 に長さと繰り返しを変えた見本を描かせ、模様の間隔と端の位置から読んだ
+    "万華鏡": {
+        "中心X": _Param("center_x"),
+        "中心Y": _Param("center_y", _flip),
+        "長さ": _Param("span"),
+        "回転": _Param("angle"),
+        "角数(偶数)": _Param("corners"),
+        "繰り返し回数": _Param("repeats"),
+        "固定サイズ": _Param("fixed_size"),
+        "円形マスク": _Param("circle_mask"),
+        "回転同期": _Param("spin_pattern"),
+        "領域外を透過": _Param("clip_outside"),
+    },
+    # 個別オブジェクトの 2 つは、オブジェクト分割 で切ったマスの**位置**を動かす
+    # 分け方は :func:`map_object` が前にある オブジェクト分割 から渡す
+    "座標の拡大縮小(個別オブジェクト)": {
+        "拡大率": _Param("scale"),
+        "中心X": _Param("center_x"),
+        "中心Y": _Param("center_y", _flip),
+    },
+    "座標の回転(個別オブジェクト)": {
+        "角度": _Param("angle"),
+        "中心X": _Param("center_x"),
+        "中心Y": _Param("center_y", _flip),
+    },
 }
 
 #: AviUtl のフィルタ名と、こちらのエフェクト種別
@@ -464,7 +490,13 @@ _FILTERS: dict[str, str] = {
     "拡大率": "transform",
     "透明度": "opacity",
     "回転": "transform",
+    "万華鏡": "kaleidoscope",
+    "座標の拡大縮小(個別オブジェクト)": "split_pieces",
+    "座標の回転(個別オブジェクト)": "split_pieces",
 }
+
+#: 絵を切るだけで、それ自体は絵を変えないフィルタ 後ろの 個別オブジェクト の効果へ分け方を渡す
+_SPLIT = "オブジェクト分割"
 
 
 def media_paths(exo: ExoFile) -> tuple[str, ...]:
@@ -549,8 +581,14 @@ def map_object(
     # 中間点はオブジェクトの持ち物 トラックバーの値はこの点の数だけ並ぶ
     points = obj.relative_points()
     placement: dict[str, AnimatedValue] | None = None
+    # オブジェクト分割 の分け方 切らないうちは 1 マスなので、個別の効果は何も動かさない
+    # （AviUtl2 でも分割なしの 個別の拡大 50 は元の絵のままだった）
+    grid: dict[str, ParamValue] = {}
 
     for entry in obj.filters():
+        if entry.name == _SPLIT:
+            grid = _split_grid(entry, points, log)
+            continue
         if entry.name in _DRAW_NAMES:
             placement = _placement(entry, points, log)
             opacity = animated_value(
@@ -564,6 +602,12 @@ def map_object(
             continue
 
         effect = _filter(entry, points, log)
+        if effect is not None and effect.kind == "split_pieces":
+            effect = replace(effect, params={**effect.params, **grid})
+            merged = _merge_pieces(effects[-1], effect, log) if effects else None
+            if merged is not None:
+                effects[-1] = merged
+                continue
         if effect is not None:
             effects.append(effect)
 
@@ -608,6 +652,123 @@ def map_object(
         kind=kind,
         has_span=obj.span_given,
     )
+
+
+def _split_grid(
+    entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport
+) -> dict[str, ParamValue]:
+    """オブジェクト分割 の横と縦の数を、個別の効果のパラメータとして読む"""
+    grid: dict[str, ParamValue] = {}
+    for source_name, target in (("横分割数", "columns"), ("縦分割数", "rows")):
+        grid[target] = animated_value(
+            entry.params.get(source_name),
+            points=points,
+            log=log,
+            label=f"{_SPLIT}の{source_name}",
+            default=1.0,
+        )
+    # 横と縦の数のほかに使われている項目があれば記録する 黙って捨てると、
+    # 写せたつもりのまま違う絵が出る（ほかのフィルタと同じ扱い）
+    _note_dropped(entry, {"横分割数", "縦分割数"}, log)
+    return grid
+
+
+def _merge_pieces(previous: Effect, effect: Effect, log: CompatibilityReport) -> Effect | None:
+    """続けて積んだ 個別オブジェクト の拡大と回転を 1 つにまとめる
+
+    2 つ目の効果は、1 つ目で動いた後のマスを動かす こちらのエフェクトは
+    分けた升目の位置から動かすので、別々に並べると 2 つ目が元の升目を基準に
+    読み直し、動いた後の断片が欠けたり元の場所に残ったりする
+
+    値が動かなければ、マスの真ん中の行き先は「拡大・回転 + 平行移動」の 1 つの式に
+    畳める（軸の違う変形や、拡大どうしが続いても同じ） 値が動くときは、軸が同じで
+    片方が拡大だけ・もう片方が回転だけの組に限って畳む（順番を入れ替えても同じ所へ行く）
+    それ以外は畳めないので、分けて並べたうえで記録に残す
+    """
+    if previous.kind != "split_pieces":
+        return None
+    if any(previous.params.get(key) != effect.params.get(key) for key in ("columns", "rows")):
+        return None
+    first, second = _piece_stage(previous), _piece_stage(effect)
+    if first is not None and second is not None:
+        return replace(previous, params={**previous.params, **_compose(first, second)})
+    same = ("center_x", "center_y", "offset_x", "offset_y")
+    unit = {"scale": AnimatedValue(100.0), "angle": AnimatedValue(0.0)}
+    params = dict(previous.params)
+    merged = all(previous.params.get(key) == effect.params.get(key) for key in same)
+    for name, idle in unit.items():
+        mine, theirs = previous.params.get(name), effect.params.get(name)
+        if theirs is None or theirs == idle:
+            continue
+        if mine != idle:
+            merged = False
+        params[name] = theirs
+    if merged:
+        return replace(previous, params=params)
+    log.note_missing("個別オブジェクトの効果を、動く値で続けて積んだもの")
+    return None
+
+
+#: 分けたマスを動かす 1 段 拡大率（倍）・時計回りの角度（度）・軸・ずらし（画素 Y は上が正）
+_Stage = tuple[float, float, tuple[float, float], tuple[float, float]]
+
+
+def _piece_stage(effect: Effect) -> _Stage | None:
+    """動かない値だけでできていれば、その段の式を返す"""
+    numbers: dict[str, float] = {}
+    for name, idle in (
+        ("scale", 100.0),
+        ("angle", 0.0),
+        ("center_x", 0.0),
+        ("center_y", 0.0),
+        ("offset_x", 0.0),
+        ("offset_y", 0.0),
+    ):
+        value = effect.params.get(name, AnimatedValue(idle))
+        if not isinstance(value, AnimatedValue) or value.is_animated:
+            return None
+        numbers[name] = value.static
+    return (
+        numbers["scale"] / 100.0,
+        numbers["angle"],
+        (numbers["center_x"], numbers["center_y"]),
+        (numbers["offset_x"], numbers["offset_y"]),
+    )
+
+
+def _compose(first: _Stage, second: _Stage) -> dict[str, ParamValue]:
+    """2 段を続けたものを、軸をオブジェクトの中心に置いた 1 段で表す
+
+    1 段は ``c → P + s·R(θ)(c − P) + d``（R は時計回り） 続けると
+    ``c → s₂s₁·R(θ₂+θ₁)·c + b`` になり、``b = A₂b₁ + b₂``（``bₖ = Pₖ − AₖPₖ + dₖ``）
+    """
+
+    def linear(stage: _Stage) -> tuple[tuple[float, float, float, float], tuple[float, float]]:
+        scale, angle, (px, py), (dx, dy) = stage
+        turn = math.radians(angle)
+        # Y が上向きの座標で時計回りに回す行列
+        a, b, c, d = (
+            scale * math.cos(turn),
+            scale * math.sin(turn),
+            -scale * math.sin(turn),
+            scale * math.cos(turn),
+        )
+        return (a, b, c, d), (px - (a * px + b * py) + dx, py - (c * px + d * py) + dy)
+
+    _, shift1 = linear(first)
+    (a, b, c, d), shift2 = linear(second)
+    offset = (
+        a * shift1[0] + b * shift1[1] + shift2[0],
+        c * shift1[0] + d * shift1[1] + shift2[1],
+    )
+    return {
+        "scale": AnimatedValue(first[0] * second[0] * 100.0),
+        "angle": AnimatedValue(first[1] + second[1]),
+        "center_x": AnimatedValue(0.0),
+        "center_y": AnimatedValue(0.0),
+        "offset_x": AnimatedValue(offset[0]),
+        "offset_y": AnimatedValue(offset[1]),
+    }
 
 
 #: 変形エフェクトへ写す描画設定と、その既定値（既定のままなら変形を足さない）
