@@ -3,7 +3,9 @@ r"""同梱した部品が、この機械で本当に動くかを確かめる
     Kumiki.exe --self-check
     .venv\Scripts\python.exe -m kumiki --self-check
 
-画面は出さない 1 項目 1 行で結果を出し、どれか 1 つでも動かなければ終了コード 1
+編集画面は出さない 1 項目 1 行で結果を出し、どれか 1 つでも動かなければ終了コード 1
+結果は標準出力へ書く 標準出力が無いとき（窓だけの exe をパイプを付けずに起動した）は、
+Windows のメッセージ窓で見せる
 
 配った zip で一番起きやすい失敗は「組み立てたときに部品を積み忘れた」
 （動的に読み込む Lua の実体、FFmpeg の DLL、Qt の GL プラグイン）
@@ -104,16 +106,29 @@ def main() -> int:
     return 0 if passed else 1
 
 
+#: メッセージ窓の題
+MESSAGE_TITLE = "Kumiki の自己診断"
+
+
 def _show(text: str, passed: bool) -> None:
-    """結果を窓で見せる Qt の項目が落ちていたら、見せる手段が無いので諦める"""
-    try:
-        from PySide6.QtWidgets import QApplication, QMessageBox
-    except ImportError:
+    """結果を窓で見せる
+
+    **Qt には頼らない** Qt の項目が落ちた（Qt の DLL や窓の部品を積み忘れた）ときこそ
+    結果を見せたいのに、Qt の窓で出そうとすると何も出ない Windows 自身の
+    メッセージ窓（user32 の MessageBoxW）を使う
+    """
+    _native_message(text, MESSAGE_TITLE, warning=not passed)
+
+
+def _native_message(text: str, title: str, *, warning: bool) -> None:
+    """Windows のメッセージ窓 Windows 以外では何もしない（配るのは Windows 版だけ）"""
+    if sys.platform != "win32":
         return
-    if QApplication.instance() is None:
-        return
-    box = QMessageBox.information if passed else QMessageBox.warning
-    box(None, "Kumiki の自己診断", text)
+    import ctypes
+
+    # 0x40 は情報、0x30 は警告の印 落ちた項目があるときは目立つ方で出す
+    icon = 0x30 if warning else 0x40
+    ctypes.windll.user32.MessageBoxW(None, text, title, icon)
 
 
 def _version() -> str:

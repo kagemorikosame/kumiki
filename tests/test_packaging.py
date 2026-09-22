@@ -362,32 +362,47 @@ class TestWithoutAConsole:
     自己診断を頼んだ人には何も起きないように見える
     """
 
-    def test_the_result_is_shown_in_a_window(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from PySide6.QtWidgets import QMessageBox
+    def _capture(self, monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, bool]]:
+        shown: list[tuple[str, bool]] = []
 
-        shown: list[str] = []
+        def fake(text: str, title: str, *, warning: bool) -> None:
+            shown.append((text, warning))
+
+        monkeypatch.setattr("kumiki.selfcheck._native_message", fake)
         monkeypatch.setattr(sys, "stdout", None)
+        return shown
+
+    def test_the_result_is_shown_in_a_window(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        shown = self._capture(monkeypatch)
         monkeypatch.setattr(
             "kumiki.selfcheck.run_self_check", lambda: [CheckResult("GL で描く", True, "描けた")]
         )
-        monkeypatch.setattr(
-            QMessageBox, "information", lambda parent, title, text: shown.append(text)
-        )
         assert main(["kumiki", SELF_CHECK_FLAG]) == 0
-        assert shown and "GL で描く" in shown[0]
+        assert shown and "GL で描く" in shown[0][0]
+        assert shown[0][1] is False
 
     def test_a_failure_is_shown_as_a_warning(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # 落ちた項目があるときは目立つ形で出す 情報の窓だと読み流される
-        from PySide6.QtWidgets import QMessageBox
-
-        warned: list[str] = []
-        monkeypatch.setattr(sys, "stdout", None)
+        shown = self._capture(monkeypatch)
         monkeypatch.setattr(
             "kumiki.selfcheck.run_self_check", lambda: [CheckResult("GL で描く", False, "x")]
         )
-        monkeypatch.setattr(QMessageBox, "warning", lambda parent, title, text: warned.append(text))
         assert main(["kumiki", SELF_CHECK_FLAG]) == 1
-        assert warned
+        assert shown and shown[0][1] is True
+
+    def test_it_does_not_need_qt(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Qt が落ちていても結果は見せる
+
+        Qt の DLL を積み忘れたときこそ結果を見せたい Qt の窓で出そうとすると、
+        まさにそのときに何も出ない
+        """
+        shown = self._capture(monkeypatch)
+        monkeypatch.setitem(sys.modules, "PySide6.QtWidgets", None)
+        monkeypatch.setattr(
+            "kumiki.selfcheck.run_self_check", lambda: [CheckResult("Qt", False, "DLL が無い")]
+        )
+        assert main(["kumiki", SELF_CHECK_FLAG]) == 1
+        assert shown and "DLL が無い" in shown[0][0]
 
 
 class TestOnlyCheckedZipsRemain:
