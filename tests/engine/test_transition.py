@@ -278,9 +278,16 @@ def test_the_paint_transition_starts_from_black(gl_context: OffscreenGLContext) 
     # 頭から明るい灰色が出る（差 249）
     templates = load_template(PAINT)
     objects = map_template(list(templates[0].items), report=CompatibilityReport())
+    # 写せず何も置けないと、空のタイムラインは黒なので下の検査が素通りする
+    assert objects, "テンプレートから何も写せなかった"
     project = Project.create(SETTINGS)
-    for command in place(objects, project, at_frame=0):
+    commands = place(objects, project, at_frame=0)
+    assert commands, "置くものが無かった"
+    for command in commands:
         project = command.apply(project)
     for frame in (0, 2, 5):
         image = _render(project, gl_context, frame)
         assert float(image[..., :3].mean()) < 10, f"フレーム {frame} が明るい"
+    # 黒いのは頭だけ YMM4 の書き出しは 40 フレーム目で平均 190 前後まで明るくなる
+    # ここまで黒なら、前の場面ではなく絵そのものが描けていない
+    assert float(_render(project, gl_context, 40)[..., :3].mean()) > 100
