@@ -226,7 +226,7 @@ _PARAMS: dict[str, dict[str, _Param]] = {
         "強さ": _Param("strength"),
         "サイズ固定": _Param("fixed_size"),
     },
-    "グラデーションマップ": {"強さ": _Param("strength")},
+    "グラデーションマップ": {"強さ": _Param("strength"), "パターン画像": _Param("pattern")},
     # 拡張色調補正 1 つずつ動かした見本を AviUtl2 に描かせて意味を測った
     # ゲインは倍率、オフセットは足し算、リフトは黒の持ち上げ、ガンマは冪
     "拡張色調補正": {
@@ -1043,9 +1043,19 @@ _SELECT_PARAMS: dict[str, dict[str, tuple[str, dict[str, str]]]] = {
         "合成モード": ("blend", _BLEND_NAMES),
     },
     "マスク": {"種類": ("shape", {"矩形": "rect", "円": "ellipse", "楕円": "ellipse"})},
-    # 画像合成の 合成モード は、AviUtl2 が既定で入れた名前しか確かめていない
-    # ほかの名前は表に無いので記録に残る
-    "画像合成": {"合成モード": ("blend", {"色情報を上書き": "overwrite"})},
+    # 画像合成の 合成モード 名前は AviUtl2 v2.1.6a の一覧から読み、1 つずつ描かせた
+    "画像合成": {
+        "合成モード": (
+            "blend",
+            {
+                "前方から合成": "front",
+                "後方から合成": "back",
+                "色情報を上書き": "overwrite",
+                "輝度をアルファ値として上書き": "luma_alpha",
+                "輝度をアルファ値として乗算": "luma_multiply",
+            },
+        )
+    },
     "ミラー": {
         "ミラーの方向": ("side", {"下側": "bottom", "上側": "top", "左側": "left", "右側": "right"})
     },

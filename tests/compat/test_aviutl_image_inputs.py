@@ -82,6 +82,23 @@ class TestImageBlend:
         effect, _ = _mapped(_blend_block(str(picture)))
         assert _number(effect, "offset_y") == -30.0
 
+    @pytest.mark.parametrize(
+        ("name", "mode"),
+        [
+            ("前方から合成", "front"),
+            ("後方から合成", "back"),
+            ("色情報を上書き", "overwrite"),
+            ("輝度をアルファ値として上書き", "luma_alpha"),
+            ("輝度をアルファ値として乗算", "luma_multiply"),
+        ],
+    )
+    def test_every_blend_mode_is_carried_over(self, picture: Path, name: str, mode: str) -> None:
+        # 名前は AviUtl2 v2.1.6a の一覧から読んだ 表に無いと上書きとして描かれ、
+        # 後方から合成の文字が画像で塗り潰される
+        effect, report = _mapped(_blend_block(str(picture), mode=name))
+        assert effect.params["blend"] == mode
+        assert report.is_empty, report.lines()
+
     def test_an_unknown_blend_mode_is_recorded(self, picture: Path) -> None:
         # 名前と絵を確かめていない合成を上書きとして描くと、黙って違う絵が出る
         _, report = _mapped(_blend_block(str(picture), mode="未知の合成"))
@@ -121,6 +138,19 @@ class TestBorderPattern:
     def test_an_empty_pattern_is_not_recorded(self) -> None:
         # 手元の配布物 37 本の縁取りは、どれも パターン画像= が空
         _, report = _mapped("effect.name=縁取り\nサイズ=4\nぼかし=0\n縁色=000000\nパターン画像=")
+        assert report.is_empty, report.lines()
+
+
+class TestGradientMapPattern:
+    def test_the_pattern_image_is_carried_over(self, picture: Path) -> None:
+        # 以前は「グラデーションマップの項目: パターン画像」として記録に回り、
+        # 画像の色ではなく暗部色から明部色の帯で塗られていた
+        effect, report = _mapped(
+            "effect.name=グラデーションマップ\n強さ=100.0\n暗部色=000000\n明部色=ffffff\n"
+            f"パターン画像={picture}"
+        )
+        assert effect.kind == "gradient_map"
+        assert effect.params["pattern"] == str(picture)
         assert report.is_empty, report.lines()
 
 
@@ -193,6 +223,38 @@ class TestRealProbes:
         columns = _lit_columns(_render(renderer, "kumiki_p5_blend_noloop"))
         assert columns.size > 0
         assert columns.min() >= 855 and columns.max() <= 1065, (columns.min(), columns.max())
+
+    def test_the_pattern_starts_outside_the_border(self, renderer: object) -> None:
+        # 200 の四角形（860..1060）に縁 10 AviUtl2 では上の縁が 850 から赤、
+        # 950 から緑、1050 から赤に変わった 起点を四角形の左端にすると 10 ずれる
+        image = _render(renderer, "kumiki_p6_border_pattern_rect10")
+        row = image[435, :, :3].astype(int)
+        assert row[900, 0] > 200 and row[900, 1] < 60, "850..950 が赤でない"
+        assert row[1000, 1] > 200 and row[1000, 0] < 60, "950..1050 が緑でない"
+        assert row[1060, 0] > 200 and row[1060, 1] < 60, "1050 から赤に戻っていない"
+
+    def test_the_border_colour_does_not_tint_the_pattern(self, renderer: object) -> None:
+        # 縁色は赤 AviUtl2 では緑の所も緑のまま（赤と混ざらない）
+        image = _render(renderer, "kumiki_p6_border_pattern_red")
+        # 縁 20 の上の帯（420..440）
+        green = image[430, 1000, :3].astype(int)
+        assert green[1] > 200 and green[0] < 60, green
+
+    def test_the_gradient_map_reads_the_pattern(self, renderer: object) -> None:
+        # 黒から白の帯に、横で色相の変わる画像 左は赤、右は紫になった
+        image = _render(renderer, "kumiki_p6_gradmap_pattern")
+        left = image[540, 20, :3].astype(int)
+        right = image[540, 1900, :3].astype(int)
+        assert left[0] > 100 and left[1] < 40 and left[2] < 40, left
+        assert right[0] > 100 and right[2] > 100 and right[1] < 40, right
+
+    def test_front_covers_the_box_and_back_keeps_the_text(self, renderer: object) -> None:
+        # 前方は文字の上に画像、後方は文字の下に画像 どちらも文字の枠いっぱいに出る
+        front = _render(renderer, "kumiki_p7_blend_front")
+        back = _render(renderer, "kumiki_p7_blend_back")
+        # 真ん中の字の上の横棒（白い文字の上）
+        assert front[476, 930, 0] > 200 and front[476, 930, 1] < 60, "前方で文字が見えている"
+        assert back[476, 930, :3].min() > 200, "後方で文字が画像に隠れた"
 
     def test_the_border_is_painted_with_the_pattern(self, renderer: object) -> None:
         # 縁色は白 模様が効いていなければ縁は白一色になる

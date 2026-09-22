@@ -1,7 +1,7 @@
 """エフェクトが読む画像（画像合成の絵、縁取りの模様）
 
-絵の置き方は AviUtl2 v2.1.6a に描かせて測った（``kumiki_p5_blend_*`` と
-``kumiki_p5_border_pattern`` 200x200 の 4 色の画像を使った）
+絵の置き方は AviUtl2 v2.1.6a に描かせて測った（``kumiki_p5_*`` ``kumiki_p6_*``
+``kumiki_p7_blend_*`` 200x200 の 4 色の画像を使った）
 
 - 画像合成は画像の**中心**を絵の中心に合わせ、X と Y でずらす ずらす量は拡大率で縮まない
 - ループ画像を切ると画像の外は消える 半透明の所は絵の濃さと掛け算になる
@@ -224,10 +224,89 @@ class TestImageBlend:
             renderer.close()
 
 
+def disc() -> GeneratedSource:
+    """中央の白い円 入れ物の四角（50..150）の角は透明"""
+    return SHAPE.create(shape="ellipse", width=100, height=100, color=(1.0, 1.0, 1.0, 1.0))
+
+
+class TestBlendModes:
+    """合成モード AviUtl2 v2.1.6a の一覧の 5 つ（``kumiki_p7_blend_*`` で測った）"""
+
+    def test_front_puts_the_image_over_the_whole_box(
+        self, draw: Callable[..., np.ndarray], tmp_path: Path
+    ) -> None:
+        # 前方から合成 画像は文字の形で切り抜かれず、入れ物の四角いっぱいに文字の上へ出る
+        image = draw(disc(), (blend(quadrants(tmp_path / "q.png", 100), blend="front"),))
+        assert colour_at(image, 55, 55) == "赤", "円の外の角まで画像が出ていない"
+        assert colour_at(image, 75, 125) == "青", "文字の上に画像が来ていない"
+        assert colour_at(image, 20, 20) == "黒", "入れ物の外まで画像が広がった"
+
+    def test_back_puts_the_image_behind(
+        self, draw: Callable[..., np.ndarray], tmp_path: Path
+    ) -> None:
+        # 後方から合成 画像は入れ物の四角を埋め、文字（ここでは円）はその上に残る
+        image = draw(disc(), (blend(quadrants(tmp_path / "q.png", 100), blend="back"),))
+        assert colour_at(image, 55, 55) == "赤"
+        assert colour_at(image, 75, 125) == "白", "絵が画像の下に隠れた"
+        assert colour_at(image, 20, 20) == "黒"
+
+    def test_luma_multiplies_the_alpha_by_the_image_brightness(
+        self, draw: Callable[..., np.ndarray], tmp_path: Path
+    ) -> None:
+        # 輝度をアルファ値として乗算 色は絵のまま、濃さに画像の明るさ（Rec.601）を掛ける
+        # AviUtl2 では白い文字が 赤 74・緑 150・青 29 の灰色になった
+        def centre_value(colour: tuple[int, int, int, int], name: str) -> int:
+            picture = solid(tmp_path / f"{name}.png", colour)
+            image = draw(white_square(), (blend(picture, blend="luma_multiply"),))
+            r, g, b = (int(v) for v in image[100, 100, :3])
+            assert r == g == b, "色が絵の色（白）から変わった"
+            return r
+
+        white = centre_value(WHITE, "白")
+        green = centre_value(GREEN, "緑")
+        red = centre_value(RED, "赤")
+        blue = centre_value(BLUE, "青")
+        assert white > green > red > blue > 0
+
+    def test_luma_alpha_sets_the_alpha_even_where_the_object_was_see_through(
+        self, draw: Callable[..., np.ndarray], tmp_path: Path
+    ) -> None:
+        # 輝度をアルファ値として上書き 乗算と違い、元の濃さは見ない 円の中で
+        # 同じ明るさになれば、乗算との違いは元が透けていた所にだけ出る
+        picture = solid(tmp_path / "白.png", WHITE)
+        multiplied = draw(disc(), (blend(picture, blend="luma_multiply"),))
+        overwritten = draw(disc(), (blend(picture, blend="luma_alpha"),))
+        assert np.array_equal(multiplied[100, 100], overwritten[100, 100])
+
+
+class TestGradientMapPattern:
+    def test_brightness_picks_a_column_of_the_middle_row(
+        self, draw: Callable[..., np.ndarray], tmp_path: Path
+    ) -> None:
+        # 暗い所は左端、明るい所は右端の色 行は縦の真ん中 AviUtl2 に横で色相、
+        # 縦で明るさの変わる画像を渡して、出た色から読んだ
+        pattern = np.zeros((3, 4, 4), dtype=np.uint8)
+        pattern[:, :] = GREEN
+        pattern[1, :2] = RED
+        pattern[1, 2:] = BLUE
+        path = write_png(tmp_path / "帯.png", pattern)
+        mapping = registry.require("gradient_map").create(pattern=str(path))
+        black = SHAPE.create(shape="rect", width=100, height=100, color=(0.0, 0.0, 0.0, 1.0))
+        assert colour_at(draw(black, (mapping,)), 100, 100) == "赤"
+        assert colour_at(draw(white_square(), (mapping,)), 100, 100) == "青"
+
+    def test_without_a_pattern_the_two_colours_are_used(
+        self, draw: Callable[..., np.ndarray]
+    ) -> None:
+        mapping = registry.require("gradient_map").create(light_color=(1.0, 0.0, 0.0, 1.0))
+        assert colour_at(draw(white_square(), (mapping,)), 100, 100) == "赤"
+
+
 class TestBorderPattern:
     def test_the_pattern_replaces_the_border_colour(
         self, draw: Callable[..., np.ndarray], tmp_path: Path
     ) -> None:
+        # AviUtl2 で 縁色 を赤にして模様を付けても、縁は模様の色のまま（赤に染まらない）
         pattern = solid(tmp_path / "緑.png", GREEN)
         border = registry.require("border").create(
             width=8, color=(1.0, 0.0, 0.0, 1.0), pattern=str(pattern)
@@ -241,6 +320,7 @@ class TestBorderPattern:
     ) -> None:
         # 正方形は 50..150、縁 8 で外形は 42 から 模様の 1 マスは 10 画素
         # 中心から敷く（画像合成と同じ）と、左上の角が赤ではなく緑になる
+        # AviUtl2 の図形 200 で縁 10 と 30 を描かせると、起点はそれぞれ 850 と 830 だった
         pattern = quadrants(tmp_path / "q.png", 20)
         border = registry.require("border").create(width=8, pattern=str(pattern))
         image = draw(white_square(), (border,))

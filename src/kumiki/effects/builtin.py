@@ -415,9 +415,9 @@ uniform vec2 pattern_size;
 // 縁の色 模様の画像があれば色の代わりにそれで塗る
 //
 // 模様は**縁の分だけ広げた範囲の左上**から敷き詰める AviUtl2 に 200x200 の
-// 4 色の画像で サイズ 20 の縁を描かせると、色の変わり目が文字の外形から
-// 縁の太さぶん外へ出た所を起点に 200 画素おきに並んだ（中央を起点に
-// していた画像合成とは違う）
+// 4 色の画像で、200 の四角形へ縁 10 と 30 を描かせると、起点は 850 と 830
+// （四角形の左端 860 から縁の太さぶん外）だった 中央を起点にする画像合成とは違う
+// 縁色は模様に混ざらない 縁色を赤にしても、縁は模様の色のままだった
 vec4 edge_color() {
     if (pattern_size.x < 1.0 || pattern_size.y < 1.0) return color;
     vec2 origin = vec2(u_object.x - width, u_object.w + width);
@@ -475,11 +475,41 @@ void main() {
     // AviUtl2 に 200x200 の 4 色の画像を合成させると、ループ画像を切ったときに
     // 画像が文字の真ん中に 1 枚だけ出た ずらす量は画面の画素のまま（拡大率で
     // 縮まない） X=50 Y=30 拡大率 50 で、色の変わり目がちょうど 50 と 30 動いた
-    vec2 pixel = v_uv * u_size - object_center() - vec2(offset_x, offset_y);
+    vec2 screen = v_uv * u_size;
+    vec2 pixel = screen - object_center() - vec2(offset_x, offset_y);
     pixel /= max(zoom, 0.0001) * 0.01;
     vec2 p = vec2(pixel.x, -pixel.y) + image_file_size * 0.5;
     vec4 picture = image_pixel(image_file, image_file_size, p, loop);
 
+    // 合成モードの番号は AviUtl2 の一覧と同じ並び（SelectSpec の並びとも同じ）
+    // 0 前方から合成 1 後方から合成 2 色情報を上書き
+    // 3 輝度をアルファ値として上書き 4 輝度をアルファ値として乗算
+    // 入れ物（絵の置かれた四角）の外には何も出さない こちらのテキストは画面と
+    // 同じ大きさの絵で届くので、ここで切らないと画像が画面いっぱいに広がる
+    bool inside = screen.x >= u_object.x && screen.x <= u_object.z
+        && screen.y >= u_object.y && screen.y <= u_object.w;
+    if (blend != 2 && blend != 4 && !inside) {
+        frag_color = base;
+        return;
+    }
+    if (blend == 0 || blend == 1) {
+        // 画像は入れ物の四角いっぱいに出る（文字の形では切り抜かない）
+        // AviUtl2 では、文字の枠 551x180 が画像で塗られ、前方は文字の上へ、
+        // 後方は文字の下へ画像が来た
+        frag_color = blend == 0 ? over(picture, base) : over(base, picture);
+        return;
+    }
+    if (blend == 3 || blend == 4) {
+        // 画像の明るさ（Rec.601、符号化した値で測る）を濃さにする 色は絵のまま
+        // AviUtl2 で白い文字に 4 色の画像を掛けると、赤 74・緑 150・青 29 の灰色
+        // （0.299・0.587・0.114 倍）、半透明（128）の白は 128 になった
+        vec3 encoded = mix(picture.rgb * 12.92,
+                           1.055 * pow(clamp(picture.rgb, 0.0, 1.0), vec3(1.0 / 2.4)) - 0.055,
+                           step(0.0031308, picture.rgb));
+        float luma = dot(encoded, vec3(0.299, 0.587, 0.114)) * picture.a;
+        frag_color = vec4(base.rgb, blend == 4 ? base.a * luma : luma);
+        return;
+    }
     // 色情報を上書き 色は画像のもの、濃さは絵と画像の掛け算
     // AviUtl2 では、ループ画像を切ったときに画像の外の文字が消え、
     // 半透明（128）の白の所は黒の上で灰色（128）になった
@@ -1033,9 +1063,19 @@ def register_builtin_effects() -> None:
                 TrackSpec("offset_x", "X", -4000, 4000, 0, step=1, unit="px"),
                 TrackSpec("offset_y", "Y", -4000, 4000, 0, step=1, unit="px"),
                 TrackSpec("zoom", "拡大率", 0, 1000, 100, unit="%"),
-                # AviUtl2 の 合成モード のうち、名前と絵を確かめたものだけを並べる
-                # ほかの名前は推し量って足さない（写し間違えると別の絵になる）
-                SelectSpec("blend", "合成", (("overwrite", "色情報を上書き"),), "overwrite"),
+                # 並びは AviUtl2 v2.1.6a の一覧と同じ シェーダはこの番号で分ける
+                SelectSpec(
+                    "blend",
+                    "合成",
+                    (
+                        ("front", "前方から合成"),
+                        ("back", "後方から合成"),
+                        ("overwrite", "色情報を上書き"),
+                        ("luma_alpha", "輝度をアルファ値として上書き"),
+                        ("luma_multiply", "輝度をアルファ値として乗算"),
+                    ),
+                    "overwrite",
+                ),
                 CheckSpec("loop", "画像を敷き詰める", True),
             ),
             fragment_shader=_IMAGE_BLEND,
