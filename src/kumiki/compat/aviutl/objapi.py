@@ -825,8 +825,19 @@ class ObjApi:
         self.state.options[key] = values[0] if values else True
         if key == "drawtarget" and values and str(values[0]) == "tempbuffer" and len(values) >= 3:
             # 大きさを渡されたら、その大きさの透明な物で作り直す（仕様書どおり）
-            width = max(1, min(int(_as_float(values[1])), MAX_FIGURE_SIZE))
-            height = max(1, min(int(_as_float(values[2])), MAX_FIGURE_SIZE))
+            asked = (_as_float(values[1]), _as_float(values[2]))
+            if not all(math.isfinite(value) for value in asked):
+                self._report.note_missing("obj.setoption（仮想バッファの大きさが数ではない）")
+                return
+            width = max(1, min(int(asked[0]), MAX_FIGURE_SIZE))
+            height = max(1, min(int(asked[1]), MAX_FIGURE_SIZE))
+            if (width, height) != (int(asked[0]), int(asked[1])):
+                # 大きさはスクリプトが決める そのまま作ると 1 回で数 GB になりうるので
+                # 上限で切るが、黙って切ると指定どおりに描けたように見える
+                self._report.note_missing(
+                    f"obj.setoption（仮想バッファの大きさ {int(asked[0])}x{int(asked[1])} を"
+                    f" {width}x{height} に切った）"
+                )
             self.state.buffers["tmp"] = np.zeros((height, width, 4), dtype=np.uint8)
         if key not in ("drawtarget", "blend", "focus_mode", "culling", "billboard"):
             self._report.note_missing(f'obj.setoption("{key}")')

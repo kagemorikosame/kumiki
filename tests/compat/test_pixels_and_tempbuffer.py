@@ -15,7 +15,7 @@ from kumiki.compat.aviutl.mapping import _spec_value
 from kumiki.compat.aviutl.objapi import ObjectState
 from kumiki.compat.aviutl.report import CompatibilityReport
 from kumiki.compat.aviutl.runtime import LuaScriptRuntime
-from kumiki.core.model import GeneratedSource
+from kumiki.core.model import AnimatedValue, GeneratedSource, ParamValue
 from kumiki.effects.spec import ColorSpec
 from kumiki.engine.sources import render_source
 
@@ -23,15 +23,20 @@ YELLOW = (255, 212, 0, 255)
 
 
 def _source(kind: str, params: dict[str, object], width: int, height: int) -> np.ndarray:
-    """本物の描き方で図形を作る（大きさの扱いを確かめるため、偽物にしない）"""
-    from kumiki.core.model import AnimatedValue
+    """本物の描き方で図形を作る（大きさの扱いを確かめるため、偽物にしない）
 
-    wrapped = {
-        name: AnimatedValue(float(value)) if isinstance(value, int | float) else value
-        for name, value in params.items()
-        if not isinstance(value, bool)
-    } | {name: value for name, value in params.items() if isinstance(value, bool)}
-    image = render_source(GeneratedSource(kind=kind, params=wrapped), width, height)  # type: ignore[arg-type]
+    ``obj.load`` から来る値は素の数・文字・色の組 描く側が受ける形（数は
+    :class:`AnimatedValue`）へ直してから渡す
+    """
+    wrapped: dict[str, ParamValue] = {}
+    for name, value in params.items():
+        if isinstance(value, bool | str):
+            wrapped[name] = value
+        elif isinstance(value, int | float):
+            wrapped[name] = AnimatedValue(float(value))
+        elif isinstance(value, tuple):
+            wrapped[name] = tuple(float(part) for part in value)
+    image = render_source(GeneratedSource(kind=kind, params=wrapped), width, height)
     assert image is not None
     return image
 
@@ -320,3 +325,14 @@ class TestScriptColours:
         spec = ColorSpec("color", "背景色", (0.0, 0.0, 0.0, 1.0))
         value = _spec_value(spec, "ffd400", (), CompatibilityReport(), "背景色")
         assert spec.coerce(value) == pytest.approx((1.0, 212 / 255, 0.0, 1.0))
+
+
+class TestTheTempBufferSize:
+    def test_a_huge_size_is_cut_and_recorded(self) -> None:
+        """上限で切ったら記録する 黙って切ると、指定どおりに描けたように見える"""
+        report = CompatibilityReport()
+        runtime = LuaScriptRuntime(render_source=_source, report=report)
+        state = _state()
+        runtime.run('obj.setoption("drawtarget", "tempbuffer", 100000, 20)', state)
+        assert state.buffers["tmp"].shape[0] == 20
+        assert any("切った" in line for line in report.lines())

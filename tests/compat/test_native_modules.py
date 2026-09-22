@@ -308,3 +308,81 @@ class TestFromLua:
         runtime.run('second = obj.module("板")', _state())
         assert runtime._lua.globals()["first"] is not None
         assert runtime._lua.globals()["second"] is None
+
+
+class TestRoundTwo:
+    """レビューで見つかった穴 どれも直す前の作りで落ちることを確かめた"""
+
+    def test_a_kept_function_stops_when_turned_off(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """取っておいた関数も、切ったら呼べない
+
+        スクリプトが関数の表を大域変数へ取っておくと、設定を切ったあとも
+        同じ表から DLL を呼べてしまう（切った意味が無い）
+        """
+        (tmp_path / "板.mod2").write_bytes(b"MZ")
+        calls: list[str] = []
+
+        class Fake:
+            names = ("scan",)
+            path = tmp_path / "板.mod2"
+
+            def call(self, name: str, args: list[Any]) -> list[Any]:
+                calls.append(name)
+                return [1]
+
+        monkeypatch.setattr(native, "load", lambda path: Fake())
+        report = CompatibilityReport()
+        runtime = LuaScriptRuntime(report=report, instruction_limit=200_000)
+        runtime.set_roots((tmp_path,))
+        runtime.run('kept = obj.module("板")', _state())
+        native.set_enabled(False)
+        result = runtime.run("kept.scan()", _state())
+        assert calls == []
+        assert result.failed
+
+    def test_the_pe_header_can_be_far_away(self, tmp_path: Path) -> None:
+        """見出しが先頭から遠くにある正しい DLL も読む（前置きの長い DLL）"""
+        head = bytearray(0x1000)
+        head[:2] = b"MZ"
+        struct.pack_into("<I", head, 0x3C, 0x800)
+        head[0x800:0x804] = b"PE\0\0"
+        struct.pack_into("<H", head, 0x804, 0x8664)
+        path = tmp_path / "遠い.mod2"
+        path.write_bytes(bytes(head))
+        assert is_native_x64(path)
+
+    def test_the_same_name_in_two_folders_stays_apart(self, tmp_path: Path) -> None:
+        """別の配布物の同じ名前のモジュールは、それぞれ自分の物を受け取る
+
+        名前だけで控えると、後から走ったスクリプトにも先に読んだ方（DLL を含む）が渡る
+        """
+        first, second = tmp_path / "一", tmp_path / "二"
+        for folder, kind in ((first, "first"), (second, "second")):
+            folder.mkdir()
+            (folder / "共通.mod2").write_text(f'return {{ kind = "{kind}" }}', "utf-8")
+        runtime = LuaScriptRuntime(instruction_limit=200_000)
+        runtime.run('a = obj.module("共通").kind', _state(), folder=first)
+        runtime.run('b = obj.module("共通").kind', _state(), folder=second)
+        names = runtime._lua.globals()
+        assert (names["a"], names["b"]) == ("first", "second")
+
+    def test_a_module_without_a_list_is_refused(self) -> None:
+        """関数の一覧を持たない DLL は、落とさずに断る"""
+        with pytest.raises(NativeModuleError, match="一覧"):
+            NativeModule(Path("空.mod2"), None, _ModuleTable(information="", functions=None))
+
+    def test_a_list_without_an_end_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """終わりの印が無い一覧は、どこまでも読みに行かずに断る"""
+        monkeypatch.setattr(native, "MAX_FUNCTIONS", 2)
+        keep: list[Any] = []
+        entries = (_FunctionEntry * 3)()
+        for index in range(3):
+            function = _ModuleFunction(lambda param: None)
+            keep.append(function)
+            entries[index].name = f"f{index}"
+            entries[index].func = function
+        table = _ModuleTable(information="", functions=entries)
+        with pytest.raises(NativeModuleError, match="終わり"):
+            NativeModule(Path("長い.mod2"), None, table)

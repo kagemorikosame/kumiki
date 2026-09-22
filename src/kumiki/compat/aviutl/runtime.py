@@ -12,6 +12,7 @@ lupa が同梱している LuaJIT 2.1（5.1 互換）を使い、無ければ Lu
 
 from __future__ import annotations
 
+import ctypes
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -319,7 +320,13 @@ class LuaScriptRuntime:
         #: モジュールを探すフォルダ
         self._roots: tuple[Path, ...] = ()
         #: 読み込み済みのモジュール 名前ごとに 1 度だけ実行する
-        self._modules: dict[str, Any] = {}
+        #: 読んだモジュール **見つけたファイルの場所**で引く 名前で引くと、
+        #: 別の配布物の同じ名前のモジュール（DLL を含む）を、後から走った
+        #: スクリプトにも渡してしまう
+        self._modules: dict[tuple[object, ...], Any] = {}
+        #: どこで見つかったか スクリプトのフォルダと名前ごとに 1 度だけ探す
+        #: 毎コマ呼ばれる所なので、毎回フォルダを探し直すと重くなる
+        self._found: dict[tuple[object, ...], Path | None] = {}
 
     # --- 準備 ---
 
@@ -457,6 +464,15 @@ class LuaScriptRuntime:
     def set_roots(self, roots: tuple[Path, ...]) -> None:
         """モジュールを探すフォルダ スクリプトの置き場と同じ"""
         self._roots = roots
+        # 探す場所が変わったので、見つけた場所の控えは使えない
+        self._found.clear()
+
+    def _locate(self, name: str, suffixes: tuple[str, ...]) -> Path | None:
+        """モジュールの場所 スクリプトのフォルダと名前ごとに 1 度だけ探す"""
+        key = (self._folder, name, suffixes)
+        if key not in self._found:
+            self._found[key] = self._find_module(name, suffixes=suffixes)
+        return self._found[key]
 
     def load_module(self, name: str = "") -> Any:
         """``obj.module`` と ``require`` の実体
@@ -470,14 +486,18 @@ class LuaScriptRuntime:
         動かない」で終わるので、理由を記録に残す
         """
         key = str(name)
-        if key in self._modules:
-            return self._modules[key]
-
-        path = self._find_module(key)
+        path = self._locate(key, MODULE_SUFFIXES)
         if path is None:
-            self._report.note_missing(f'モジュール "{key}" が見つかりません')
-            self._modules[key] = None
+            missing = ("missing", self._folder, key)
+            if missing not in self._modules:
+                # 1 度だけ記録する 毎コマ記録すると、1 本の不足が何百回にも数えられる
+                self._report.note_missing(f'モジュール "{key}" が見つかりません')
+                self._modules[missing] = None
             return None
+
+        cache = ("lua", path.resolve())
+        if cache in self._modules:
+            return self._modules[cache]
 
         value = None
         if _is_native(path):
@@ -489,7 +509,7 @@ class LuaScriptRuntime:
             )
         else:
             value = self._run_file(path)
-        self._modules[key] = value
+        self._modules[cache] = value
         return value
 
     def _run_file(self, path: Path) -> Any:
@@ -518,15 +538,15 @@ class LuaScriptRuntime:
         で ``.lua`` を読んでいたスクリプトを壊さない
         """
         key = str(name)
-        # 設定の入り切りも鍵に入れる 入れないと、切ったあとも読んであった DLL の
-        # 関数が返り続け、切った意味が無い
-        cache = f"mod2:{key}:{native.enabled()}"
-        if cache in self._modules:
-            return self._modules[cache]
-
-        path = self._find_module(key, suffixes=(".mod2",))
+        path = self._locate(key, (".mod2",))
         if path is None:
             return self.load_module(key)
+
+        # 設定の入り切りも鍵に入れる 入れないと、切ったあとも読んであった DLL の
+        # 関数が返り続け、切った意味が無い
+        cache = ("mod2", path.resolve(), native.enabled())
+        if cache in self._modules:
+            return self._modules[cache]
 
         # 見つけた .mod2 そのものを読む 名前で探し直すと、同じ名前の .lua を拾う
         value = self._native_module(path, key) if _is_native(path) else self._run_file(path)
@@ -542,7 +562,9 @@ class LuaScriptRuntime:
             return None
         try:
             module = native.load(path)
-        except native.NativeModuleError as exc:
+        except (native.NativeModuleError, OSError, ValueError, ctypes.ArgumentError) as exc:
+            # 関数の一覧が壊れている DLL もある 投げ返すとスクリプトごと落ちるので、
+            # 読めなかったこととして記録して nil を返す
             self._report.note_missing(f'モジュール "{name}" を読めない: {exc}')
             return None
         functions = {function: self._native_function(module, function) for function in module.names}
@@ -552,6 +574,10 @@ class LuaScriptRuntime:
         """DLL の関数 1 つを、Lua から呼べる形にする"""
 
         def call(*args: Any) -> Any:
+            # 呼ぶたびに設定を見る スクリプトが関数の表を大域変数へ取っておくと、
+            # 設定を切ったあとも同じ表から DLL を呼べてしまう
+            if not native.enabled():
+                raise LuaError(f"{module.path.name} の {name}: DLL のモジュールを読まない設定")
             converted = [self._from_lua(value) for value in args]
             try:
                 results = module.call(name, converted)

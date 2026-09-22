@@ -49,6 +49,10 @@ __all__ = [
 #: 必要な版を出していれば、そちらを渡す 手元で見たモジュールは版を見ていない
 HOST_VERSION = 2003300
 
+#: 1 つのモジュールから受け取る関数の数の上限 終わりの印が無い一覧を、
+#: どこまでも読みに行かないため 手元の配布物は 1 つ（TVSubtitle は scan だけ）
+MAX_FUNCTIONS = 1024
+
 #: PE の機械の種類 x64 以外の DLL は 64bit の Kumiki へ読み込めない
 _MACHINE_AMD64 = 0x8664
 
@@ -320,13 +324,19 @@ class NativeModule:
         self._library = library
         self.information = table.information or ""
         self._functions: dict[str, Any] = {}
-        index = 0
-        while True:
+        if not table.functions:
+            raise NativeModuleError(f"{path.name} が関数の一覧を持っていない")
+        for index in range(MAX_FUNCTIONS):
             entry = table.functions[index]
             if not entry.name:
                 break
+            if not entry.func:
+                raise NativeModuleError(f"{path.name} の {entry.name} に中身が無い")
             self._functions[entry.name] = entry.func
-            index += 1
+        else:
+            # 終わりの印（名前が空の行）が無い一覧 読み続けると、関係の無い
+            # 場所まで関数として読みに行く
+            raise NativeModuleError(f"{path.name} の関数の一覧に終わりが無い")
         # 同じ DLL を描画と書き出しが同時に呼ぶことがある 中が同時に呼ばれる
         # ことに耐えるかは分からないので、1 つずつにする
         self._lock = threading.Lock()
@@ -361,15 +371,19 @@ def is_native_x64(path: Path) -> bool:
     """64bit の Windows の DLL か 違う物を読むと、読み込みの時点で落ちる"""
     try:
         with path.open("rb") as file:
-            head = file.read(1024)
+            head = file.read(0x40)
+            if head[:2] != b"MZ" or len(head) < 0x40:
+                return False
+            # PE の見出しの位置は先頭の 0x3C に書いてある 決まった範囲だけを
+            # 読んで探すと、前置き（DOS スタブ）の長い正しい DLL を断ることになる
+            offset = struct.unpack_from("<I", head, 0x3C)[0]
+            file.seek(offset)
+            header = file.read(6)
     except OSError:
         return False
-    if head[:2] != b"MZ" or len(head) < 0x40:
+    if len(header) < 6 or header[:4] != b"PE\0\0":
         return False
-    offset = struct.unpack_from("<I", head, 0x3C)[0]
-    if offset + 6 > len(head) or head[offset : offset + 4] != b"PE\0\0":
-        return False
-    machine: int = struct.unpack_from("<H", head, offset + 4)[0]
+    machine: int = struct.unpack_from("<H", header, 4)[0]
     return machine == _MACHINE_AMD64
 
 
