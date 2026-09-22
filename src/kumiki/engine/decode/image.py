@@ -12,6 +12,8 @@ import av
 import av.error
 import numpy as np
 
+from kumiki.engine.colorspace import to_rgb_array
+
 __all__ = ["read_image"]
 
 
@@ -29,7 +31,10 @@ def read_image(path: Path) -> np.ndarray | None:
             if not container.streams.video:
                 return None
             for frame in container.decode(video=0):
-                return np.ascontiguousarray(frame.to_ndarray(format="rgba"))
+                # 行列は素材の読み込みと同じ決め方にする 素の to_ndarray だと、
+                # 動画を渡されたときにタグの無い HD が BT.601 で読まれ、素材として
+                # 置いたときと画像合成で使ったときとで色が変わる
+                return np.ascontiguousarray(to_rgb_array(frame, "rgba"))
     except (av.error.FFmpegError, OSError, ValueError):
         return None
     return None
