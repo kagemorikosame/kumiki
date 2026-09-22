@@ -74,6 +74,7 @@ import numpy as np
 
 from kumiki.core.model import MediaId, MediaItem
 from kumiki.engine.cache.store import CacheStore, media_key
+from kumiki.engine.colorspace import tag_bt709, to_bt709, to_rgb_array
 from kumiki.engine.decode import ProbeError, VideoDecoder, probe_media
 
 __all__ = [
@@ -108,6 +109,10 @@ MIN_SOURCE_HEIGHT = 1081
 
 #: 控えの置き場（:class:`~kumiki.engine.cache.store.CacheStore` の名前空間）
 NAMESPACE = "proxy"
+
+#: 控えの中身の版 作り方を変えて、前の控えをそのまま読むと絵が違ってしまうときに上げる
+#: 2: BT.709 へ変換してタグを付けるようにした（#61）
+FORMAT_VERSION = 2
 
 #: 控えに使うコーデックの優先順 NVENC は CPU をほとんど使わないので、
 #: 変換しながら編集を続けられる 無い環境では CPU の libx264 へ落ちる
@@ -155,7 +160,9 @@ class ProxyStore:
 
     def key_for(self, media: MediaItem) -> str:
         # 縦の画素数を鍵に混ぜる 設定を変えたときに、前の大きさの控えを掴まない
-        return media_key(media.path, extra=f"proxy{self._height}")
+        # 書式の版も混ぜる 版 1 の控えはタグが無く元の行列のままなので、今の読み方では
+        # BT.601 とみなされて色がずれる 版を上げれば作り直される
+        return media_key(media.path, extra=f"proxy{self._height}v{FORMAT_VERSION}")
 
     def path_for(self, media: MediaItem) -> Path:
         """控えの置き場 まだ無くてもパスは返す"""
@@ -302,6 +309,7 @@ def _transcode(
             video.width = width
             video.height = scaled
             video.pix_fmt = "yuv420p"
+            tag_bt709(video)
             # 控えは見るためだけのもの 画質より、小ささと変換の速さを取る
             video.bit_rate = width * scaled * 4
             video.time_base = stream.time_base
@@ -332,14 +340,17 @@ def _shrunk(frame: av.VideoFrame, size: tuple[int, int], rotation: int) -> av.Vi
 
     回すのはここだけ 控えを作るときの 1 回で済み、再生のたびには走らない
     """
-    converted = frame.reformat(width=size[0], height=size[1], format="yuv420p")
+    # 元の行列のまま縮めてはいけない 控えは 540p なので、タグが無いと読む側は SD とみなして
+    # BT.601 で読む 元が HD の BT.709 なら、控えのときだけ色がずれる BT.709 へ変換して
+    # タグも付け（:func:`tag_bt709`）、控えの大きさに関係なく同じ色で読めるようにする
+    converted = to_bt709(frame, "yuv420p", width=size[0], height=size[1])
     if rotation == 0:
         return converted
     # 回すのは色の並びが素直な rgb24 で yuv420p のまま回すと、
     # 色差の面が半分の大きさなので縦横がずれる
-    image = np.rot90(converted.to_ndarray(format="rgb24"), k=-rotation // 90)
+    image = np.rot90(to_rgb_array(converted, "rgb24"), k=-rotation // 90)
     turned = av.VideoFrame.from_ndarray(np.ascontiguousarray(image), format="rgb24")
-    return turned.reformat(format="yuv420p")
+    return to_bt709(turned, "yuv420p")
 
 
 def _rotation_of(source: Path, stream_index: int) -> int:
