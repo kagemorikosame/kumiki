@@ -590,16 +590,15 @@ def shot_ymm4_shelf(context: Context) -> QImage:
 
 def _shelf(roots: tuple[Path, ...], preferred: Sequence[str]) -> QImage:
     """棚を開いて、中身のあるテンプレートを 1 つ選んだ状態で撮る"""
+    # 走査は棚（ダイアログ）に任せて 1 度だけにする 自分でも数えると、同じ
+    # `rglob` が 2 回走るうえ、選ぶ相手と画面に並んでいる物がずれる余地が残る
     catalog = TemplateCatalog()
-    entries = catalog.scan(roots)
-    if not entries:
-        raise ShotSkippedError(f"テンプレートが 1 つも見つからない: {', '.join(map(str, roots))}")
-
     dialog = TemplateDialog(catalog, roots=roots)
+    entries = catalog.all()
     tree = dialog.findChild(QTreeWidget)
-    if tree is None:  # pragma: no cover - 棚は必ず木を持つ
+    if not entries or tree is None:
         dialog.close()
-        raise ShotError("棚の一覧が見つからない")
+        raise ShotSkippedError(f"テンプレートが 1 つも見つからない: {', '.join(map(str, roots))}")
 
     chosen = _item_for(tree, _choose(entries, preferred, _has_text))
     if chosen is not None:
