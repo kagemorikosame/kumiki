@@ -23,6 +23,8 @@ from dataclasses import dataclass, field
 from importlib import metadata
 from pathlib import Path
 
+from sashimono.core import userdirs
+
 __all__ = [
     "FeaturePack",
     "PackStatus",
@@ -194,9 +196,7 @@ def runtime_target_dir() -> Path | None:
     """導入先の専用フォルダ 通常の実行では ``None``（動いている環境へ直接入れる）"""
     if not is_frozen():
         return None
-    base = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_DATA_HOME")
-    root = Path(base) if base else Path.home() / ".local" / "share"
-    return root / "Sashimono" / _RUNTIME_DIR
+    return userdirs.data_root() / _RUNTIME_DIR
 
 
 def activate_runtime() -> Path | None:

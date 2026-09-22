@@ -73,12 +73,15 @@ FORMAT_VERSION = 2
 #: プロジェクトファイルの拡張子
 SUFFIX = ".sme"
 
+# 旧名を残す: ここから（名前の一括置換でも書き換えない 古い版のファイルを読むのに要る）
 #: 読むときだけ受け付ける、昔の名前と拡張子
 #:
-#: 公開前に ``NovaEdit`` から改名した 手元に保存済みのものがあるかもしれないので、
-#: **読む側だけ**受ける 書くときは常に新しい名前で書く
-LEGACY_FORMAT_NAMES = ("novaedit-project",)
-LEGACY_SUFFIXES = (".nvep",)
+#: 公開前に ``NovaEdit`` から、公開後に商標の都合で ``Kumiki`` から改名した
+#: 手元に保存済みのものがあるので、**読む側だけ**受ける 書くときは常に新しい名前で
+#: 書く ここから消すと、改名前に作った作品が「プロジェクトファイルではない」で開けなくなる
+LEGACY_FORMAT_NAMES = ("kumiki-project", "novaedit-project")
+LEGACY_SUFFIXES = (".kmk", ".nvep")
+# 旧名を残す: ここまで
 
 
 class ProjectFileError(Exception):

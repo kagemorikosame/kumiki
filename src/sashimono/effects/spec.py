@@ -25,6 +25,8 @@ from sashimono.core.model import AnimatedValue, ParamValue
 type ParamInput = ParamValue | float | None
 
 __all__ = [
+    "IMAGE_FILTER",
+    "IMAGE_SUFFIXES",
     "CheckSpec",
     "ColorSpec",
     "FileSpec",
@@ -214,9 +216,28 @@ class TextSpec:
         return value if isinstance(value, str) else self.default
 
 
+#: エフェクトが画像として読む拡張子 素材の静止画
+#: （``sashimono.engine.decode.probe.STILL_SUFFIXES``）と同じにしてある（試験で見ている）
+#: ここだけ広げると、選べるのに読めない画像が出る
+IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff")
+
+#: 画像を選ばせるときのファイル選択ダイアログのフィルタ
+IMAGE_FILTER = f"画像 ({' '.join('*' + suffix for suffix in IMAGE_SUFFIXES)});;すべてのファイル (*)"
+
+
 @dataclass(frozen=True, slots=True)
 class FileSpec:
-    """ファイルまたはフォルダのパス"""
+    """ファイルまたはフォルダのパス
+
+    ``texture`` が真なら、そのパスの画像をシェーダへ 2 枚目の絵として渡す
+    （画像合成の絵、縁取りの模様） uniform は項目名の ``sampler2D`` と、
+    画像の大きさ（画素）の ``<項目名>_size`` 読めなかったときは大きさが 0 になる
+    ので、シェーダはそれを見て画像なしの描き方へ戻る
+
+    種類を分けずに旗にしたのは、AviUtl の ``--file@`` と同じく「パスを 1 つ持つ」
+    点は変わらないため 別の種類にすると、設定 UI・プリセット・読み込みの
+    どれもが同じ入力欄を 2 回書くことになる
+    """
 
     name: str
     label: str
@@ -225,6 +246,8 @@ class FileSpec:
     directory: bool = False
     #: ファイル選択ダイアログのフィルタ
     filter: str = ""
+    #: 真ならシェーダへ画像として渡す
+    texture: bool = False
 
     kind = ParameterKind.FILE
 

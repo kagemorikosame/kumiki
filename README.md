@@ -8,10 +8,25 @@ Python 製の動画編集ソフト AviUtl の表現力、Premiere の操作性�
 
 <br clear="left">
 
-名前は日本の木工技法「組木」から 釘を使わず、小さな木片を組み合わせて 1 つの形にする技法です
+名前は日本の木工技法「指物」から 釘を使わず、木の板を継手と仕口で組み合わせて箱や家具を作る技法です
 小さな素材を組み上げて 1 本の動画にすること、そして AviUtl のスクリプトや YMM4 のテンプレートと
 自作のものが同じ仕組みに嵌まることの両方を指しています
 ロゴの三本の棒は互いに組まれていて、中央の空きが再生の記号になっています
+
+<!-- 旧名を残す: ここから（名前の一括置換でも書き換えない 旧名を案内する所） -->
+> **旧名は Kumiki（組木）です** 商標の都合で Sashimono Edit に改名しました
+> 中身は同じソフトで、改名前のものはそのまま引き継げます
+>
+> - 改名前に保存したプロジェクト（`.kmk`）とプリセット（`.kmkp`）はそのまま開けます 保存すると新しい形式で書きます
+> - 設定・ショートカット・プリセット・自分で置いたスクリプトとテンプレート（`%APPDATA%\Kumiki`）は、
+>   新しい版を初めて起動したときに `%APPDATA%\Sashimono` へ写します 元のフォルダは残します
+> - 退避・バックアップ・キャッシュ・導入した字幕起こしなど（`%LOCALAPPDATA%\Kumiki`）は
+>   `%LOCALAPPDATA%\Sashimono` へ移します
+> - 配布版の zip は `SashimonoEdit-<版>-windows-x64.zip`、exe は `Sashimono.exe` になりました
+>   前の版の `Kumiki.exe` の隣の `scripts` フォルダへスクリプトを置いていた人は、
+>   新しい `Sashimono.exe` の隣の `scripts` へ移してください
+> - GitHub の置き場も `kagemorikosame/sashimono-edit` へ移りました 前の URL は転送されます
+<!-- 旧名を残す: ここまで -->
 
 ![編集画面](docs/screenshot.png)
 
@@ -391,4 +406,26 @@ PR は**フェーズ単位**で、CodeRabbit・Copilot・Sourcery・Qodo の 4 �
 
 ## ライセンス
 
-MIT License ただし PySide6 (LGPL) と ffmpeg を利用しているため、バイナリを配布する場合は各ライセンスの条件を確認してください
+**ソースコードは MIT License** です（[LICENSE](LICENSE)）
+
+**配る zip は全体として GPL の条件で配ります** zip には Sashimono を動かす部品を一緒に
+入れてあり、その中に GPL の部品があるためです
+
+- 書き出しに使う FFmpeg（PyAV の wheel に同梱の物）は、組み込みの表記が
+  「LGPL version 3 or later」ですが、同じ wheel に **libx264 と libx265（GPL）** が入っていて、
+  CPU での書き出しは libx264 を使います
+- Qt / PySide6 は LGPL-3.0 で使います zip はフォルダの形（PyInstaller の onedir）で組み立てて
+  あり、Qt の DLL は別のファイルのまま置かれるので、使う人が差し替えられます
+- Sashimono 本体の MIT は GPL と両立します 本体のソースは MIT のままです
+
+同梱している部品ごとの使用許諾とソースの入手先は
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) にまとめてあります zip の中では
+`THIRD_PARTY_NOTICES.txt` と `licenses` フォルダ（GNU の使用許諾の全文と、部品ごとの写し）に
+入っています GPL と LGPL の部品（FFmpeg・x264・x265・Qt など）の対応するソースは、zip と
+同じ [Release](../../releases) に添付します
+
+## 色の扱い
+
+いま扱うのは **SDR の sRGB / Rec.709 だけ**です HDR（PQ / HLG）と広色域（Rec.2020・
+Display P3 など）は対象外で、今後の課題です そうした素材を読み込んでも、色を正しく
+写すことは約束しません

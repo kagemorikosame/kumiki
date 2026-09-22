@@ -20,6 +20,8 @@ from typing import cast
 
 import numpy as np
 
+from sashimono.core import userdirs
+
 __all__ = ["CacheStore", "default_cache_root", "load_arrays", "media_key", "save_arrays"]
 
 
@@ -29,10 +31,7 @@ def default_cache_root() -> Path:
     Windows では ``%LOCALAPPDATA%`` ユーザーのプロジェクトフォルダに置くと、
     素材だけ移動したときに取り残される
     """
-    base = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_CACHE_HOME")
-    if base:
-        return Path(base) / "Sashimono" / "cache"
-    return Path.home() / ".cache" / "sashimono"
+    return userdirs.cache_root()
 
 
 def media_key(path: Path, *, extra: str = "") -> str:

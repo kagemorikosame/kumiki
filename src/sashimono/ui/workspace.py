@@ -10,12 +10,13 @@ Qt の既定の保存先（Windows ではレジストリ）は使わない 自�
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QSettings
 from PySide6.QtWidgets import QMainWindow
+
+from sashimono.core import userdirs
 
 __all__ = [
     "AUTO_QUALITY_HEIGHT",
@@ -37,10 +38,7 @@ LAYOUT_VERSION = 1
 
 def config_root() -> Path:
     """本人の設定を置く場所"""
-    base = os.environ.get("APPDATA") or os.environ.get("XDG_CONFIG_HOME")
-    if base:
-        return Path(base) / "Sashimono"
-    return Path.home() / ".config" / "sashimono"
+    return userdirs.config_root()
 
 
 class Workspace:

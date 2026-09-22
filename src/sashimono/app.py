@@ -18,6 +18,7 @@ from pathlib import Path
 
 # この 2 つは Qt を読まない（読まないことを試験で押さえている）
 from sashimono.asr import activate_runtime
+from sashimono.core.userdirs import migrate_legacy_folders
 from sashimono.runtime import pip_arguments, run_pip
 
 __all__ = ["SELF_CHECK_FLAG", "main"]
@@ -49,6 +50,15 @@ def main(argv: list[str] | None = None) -> int:
 
 def _start_editor(arguments: list[str]) -> int:
     """いつもの起動 Qt と編集画面はここで初めて読む"""
+    # 改名前の置き場（設定・退避・導入した実行環境）を引き継ぐ 何より先に行う
+    # 設定を読んだあとでは、既定の設定で新しい置き場ができてしまい、引き継ぎが
+    # 「もう在る」と見て何もしなくなる 実行環境の置き場も、次の行で探す前に移しておく
+    # 自己診断と pip の役では行わない どちらも本人の置き場を使わないので、そこで
+    # 移すと、画面を 1 度も出さないうちに旧版の置き場が消えることになる
+    for note in migrate_legacy_folders():
+        # 窓の無い配布版では誰も読まないが、コマンドから起動した人と開発者には手掛かりになる
+        print(f"置き場の引き継ぎ: {note.action} {note.source} → {note.target} {note.detail}")
+
     # ソフト内から導入した字幕起こしの実行環境を import できるようにする
     # 通常の実行では何もしない（パッケージ版のためだけの手当て）
     activate_runtime()

@@ -1121,7 +1121,7 @@ class MainWindow(QMainWindow):
     def open_project(self) -> None:
         if not self._confirm_discard():
             return
-        # 改名前（NovaEdit）に保存したものも開けるようにしておく
+        # 改名前の版で保存したもの（旧い拡張子）も開けるようにしておく
         patterns = " ".join(f"*{s}" for s in (SUFFIX, *LEGACY_SUFFIXES))
         name, _ = QFileDialog.getOpenFileName(
             self, "プロジェクトを開く", "", f"Sashimono Edit プロジェクト ({patterns})"

@@ -24,8 +24,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from sashimono.core import userdirs
 from sashimono.core.io.locks import HeldLock, is_held, try_hold
-from sashimono.core.io.serialize import SUFFIX, save_project
+from sashimono.core.io.serialize import LEGACY_SUFFIXES, SUFFIX, save_project
 from sashimono.core.model import Project
 
 __all__ = [
@@ -51,10 +52,7 @@ def default_state_root() -> Path:
     キャッシュ（``cache``）と同じ ``%LOCALAPPDATA%\\Sashimono`` の下だが、別のフォルダに
     分ける キャッシュは消してよいものとして案内するので、同じ所にあると一緒に消される
     """
-    base = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_STATE_HOME")
-    if base:
-        return Path(base) / "Sashimono"
-    return Path.home() / ".local" / "state" / "sashimono"
+    return userdirs.state_root()
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,16 +141,20 @@ def find_orphans(root: Path | None = None) -> list[RecoveryEntry]:
 
     # メモと中身のどちらか一方しか無いものも拾う 中身から先に書くので、最初の
     # 退避の途中で落ちると中身だけが残る メモだけを数えるとそれを見落とす
+    # 旧い拡張子の退避も拾う 改名前の版で落ちた退避は、置き場を引き継いだあと
+    # 旧い拡張子のまま残っている 拾わないと、その作業は復元を勧められずに埋もれる
     sessions = {path.stem for path in folder.glob("*.json")} | {
-        path.name.removesuffix(SUFFIX) for path in folder.glob(f"*{SUFFIX}")
+        path.name.removesuffix(suffix)
+        for suffix in (SUFFIX, *LEGACY_SUFFIXES)
+        for path in folder.glob(f"*{suffix}")
     }
     found: list[RecoveryEntry] = []
     for session in sessions:
         if _is_alive(folder, session):
             continue
         meta_path = folder / f"{session}.json"
-        project_path = folder / f"{session}{SUFFIX}"
-        if not project_path.is_file():
+        project_path = _saved_project(folder, session)
+        if project_path is None:
             meta_path.unlink(missing_ok=True)
             continue
         if meta_path.is_file():
@@ -190,6 +192,15 @@ def discard(entry: RecoveryEntry) -> None:
 
 def _is_alive(folder: Path, session: str) -> bool:
     return is_held(folder / f"{session}.lock")
+
+
+def _saved_project(folder: Path, session: str) -> Path | None:
+    """その起動の退避の中身 新しい拡張子を先に見る 無ければ ``None``"""
+    for suffix in (SUFFIX, *LEGACY_SUFFIXES):
+        path = folder / f"{session}{suffix}"
+        if path.is_file():
+            return path
+    return None
 
 
 def project_presence_dir(target: Path, root: Path | None = None) -> Path:
@@ -263,7 +274,11 @@ def backup_before_save(
     shutil.copyfile(target, copied)
     shutil.copystat(target, copied)
 
-    generations = sorted(folder.glob(f"*{SUFFIX}"))
+    # 旧い拡張子の控えも世代に数える 数えないと、改名前の控えはいつまでも消えずに残り、
+    # 20 本に保つ約束が崩れる 名前は時刻から始まるので、拡張子が混ざっても古い順に並ぶ
+    generations = sorted(
+        path for suffix in (SUFFIX, *LEGACY_SUFFIXES) for path in folder.glob(f"*{suffix}")
+    )
     for old in generations[: max(0, len(generations) - keep)]:
         old.unlink(missing_ok=True)
     return copied

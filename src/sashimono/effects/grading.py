@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from sashimono.effects.builtin import PRELUDE
 from sashimono.effects.definition import EffectDefinition, registry
-from sashimono.effects.spec import CheckSpec, ColorSpec, TrackSpec
+from sashimono.effects.spec import IMAGE_FILTER, CheckSpec, ColorSpec, FileSpec, TrackSpec
 
 __all__ = ["register_grading_effects"]
 
@@ -167,6 +167,8 @@ _GRADIENT_MAP = _shader(
 uniform float strength;
 uniform vec4 dark_color;
 uniform vec4 light_color;
+uniform sampler2D pattern;
+uniform vec2 pattern_size;
 
 void main() {
     // 明るさを 0..1 の位置と見て、暗部色から明部色へ並べた帯から色を拾う
@@ -174,6 +176,14 @@ void main() {
     vec3 rgb = to_srgb(base.rgb);
     float position = clamp(dot(rgb, LUMA601), 0.0, 1.0);
     vec3 mapped = mix(to_srgb(dark_color.rgb), to_srgb(light_color.rgb), position);
+    if (pattern_size.x >= 1.0 && pattern_size.y >= 1.0) {
+        // 模様の画像があれば、帯の代わりに画像の**縦の真ん中の行**を左から右へ使う
+        // 暗部色と明部色は使わない AviUtl2 に横で色相、縦で明るさの変わる画像を
+        // 渡すと、暗い所が左端の色、明るい所が右端の色になり、明るさはどこも
+        // 真ん中の行の値（0.625）だった 端の画素の中心より外は読まない
+        float column = (position * (pattern_size.x - 1.0) + 0.5) / pattern_size.x;
+        mapped = to_srgb(texture(pattern, vec2(column, 0.5)).rgb);
+    }
     float amount = clamp(strength * 0.01, 0.0, 1.0);
     frag_color = vec4(to_linear(mix(rgb, mapped, amount)), base.a);
 }
@@ -337,6 +347,7 @@ def register_grading_effects() -> None:
                 # ここに透明度を置いても描くときに使い道が無い
                 ColorSpec("dark_color", "暗部色", (0.0, 0.0, 0.0, 1.0), with_alpha=False),
                 ColorSpec("light_color", "明部色", (1.0, 1.0, 1.0, 1.0), with_alpha=False),
+                FileSpec("pattern", "模様の画像", filter=IMAGE_FILTER, texture=True),
             ),
             fragment_shader=_GRADIENT_MAP,
         ),

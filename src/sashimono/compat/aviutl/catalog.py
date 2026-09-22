@@ -29,6 +29,7 @@ from pathlib import Path
 from sashimono.compat.aviutl.control import ScriptHeader, ScriptSection, split_scripts
 from sashimono.compat.aviutl.encoding import read_text
 from sashimono.compat.aviutl.report import CompatibilityReport, global_report
+from sashimono.core import userdirs
 from sashimono.effects.definition import EffectDefinition, registry
 from sashimono.runtime import app_dir
 
@@ -123,9 +124,9 @@ def default_script_roots() -> tuple[Path, ...]:
     beside = app_dir()
     if beside is not None:
         roots.append(beside / PORTABLE_SCRIPTS_DIR)
-    appdata = os.environ.get("APPDATA")
-    if appdata:
-        roots.append(Path(appdata) / "Sashimono" / "scripts")
+    # APPDATA の有無で分けない 置き場は userdirs が XDG まで見て決めるので、ここで
+    # APPDATA だけを条件にすると、引き継ぎで写した先とここで探す先が食い違う
+    roots.append(userdirs.config_root() / "scripts")
 
     program_data = os.environ.get("PROGRAMDATA")
     if program_data:

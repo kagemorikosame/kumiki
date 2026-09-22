@@ -15,6 +15,7 @@ from PySide6.QtWidgets import QApplication
 
 from sashimono.core.commands import AddClip, AddTrack
 from sashimono.core.model import Clip, MediaId, Project, Track, TrackKind
+from sashimono.effects import registry
 from sashimono.engine.cache.proxy import ProxyStore
 from sashimono.engine.render import Invalidation
 from sashimono.ui.preview import SLOW_FRAME_MS, PreviewWidget
@@ -25,6 +26,12 @@ class StubRenderer:
 
     def __init__(self) -> None:
         self.reopened: list[Collection[MediaId] | None] = []
+        #: 書き換わったことにする画像のパス
+        self.stale: frozenset[str] = frozenset()
+
+    def stale_images(self) -> frozenset[str]:
+        found, self.stale = self.stale, frozenset()
+        return found
 
     def set_project(self, project: Project) -> None:
         pass
@@ -177,6 +184,64 @@ class TestWhatItThrowsAway:
         widget, stub = preview
         widget.reload_sources()
         assert [thrown.everything for thrown in stub.thrown] == [True]
+
+    def test_a_rewritten_image_drops_stale_frames_but_keeps_unrelated_prefetch(
+        self, preview: tuple[PreviewWidget, StubCache]
+    ) -> None:
+        """画像を別のソフトで描き直しても、プロジェクトは変わらない
+
+        編集の差分では気付けないので、見張りが書き換わりを拾って捨てる
+        捨てないと、先読みした所だけ古い模様のまま残る 画像を読まないクリップ
+        まで捨てると、描き直すたびに先読みが消えて貯まらない
+        """
+        widget, stub = preview
+        project, near, _ = _project()
+        track = project.timeline.tracks[0]
+        border = registry.require("border").create(pattern="模様.png")
+        painted = replace(near, effects=(border,))
+        others = tuple(clip for clip in track.clips if clip.id != near.id)
+        project = replace(
+            project,
+            timeline=project.timeline.replace_track(track.with_clips((painted, *others))),
+        )
+        widget.set_project(project)
+        stub.thrown.clear()
+        renderer = widget.renderer
+        assert isinstance(renderer, StubRenderer)
+        renderer.stale = frozenset({"模様.png"})
+        widget.check_images()
+        assert len(stub.thrown) == 1
+        assert stub.thrown[0].contains(10)
+        assert not stub.thrown[0].contains(100), "画像を読んでいないクリップまで捨てている"
+
+    def test_the_watch_does_not_touch_the_gl_context(
+        self, preview: tuple[PreviewWidget, StubCache], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """タイマーからの見張りは、current にできない（窓が隠れている）ときにも走る
+
+        そこで doneCurrent を呼ぶとほかのコンテキストを外してしまう 捨てるだけなら
+        GL は要らないので、current にせずに捨てる
+        """
+        widget, stub = preview
+
+        def refuse() -> None:
+            raise AssertionError("見張りが GL のコンテキストを触った")
+
+        monkeypatch.setattr(widget, "makeCurrent", refuse)
+        monkeypatch.setattr(widget, "doneCurrent", refuse)
+        renderer = widget.renderer
+        assert isinstance(renderer, StubRenderer)
+        renderer.stale = frozenset({"模様.png"})
+        widget.check_images()
+        assert len(stub.thrown) == 1
+
+    def test_nothing_rewritten_throws_nothing(
+        self, preview: tuple[PreviewWidget, StubCache]
+    ) -> None:
+        # 1 秒おきに見張るので、何も変わっていないときに捨てると先読みが貯まらない
+        widget, stub = preview
+        widget.check_images()
+        assert stub.thrown == []
 
 
 class TestTheBudget:

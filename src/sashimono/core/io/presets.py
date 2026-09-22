@@ -11,11 +11,11 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from sashimono.core import userdirs
 from sashimono.core.io.serialize import (
     ProjectFileError,
     effect_from_json,
@@ -27,6 +27,8 @@ from sashimono.core.model import Effect, GeneratedSource
 
 __all__ = [
     "FORMAT_NAME",
+    "LEGACY_FORMAT_NAMES",
+    "LEGACY_SUFFIXES",
     "SUFFIX",
     "Preset",
     "PresetStore",
@@ -36,6 +38,14 @@ __all__ = [
 FORMAT_NAME = "sashimono-preset"
 FORMAT_VERSION = 1
 SUFFIX = ".smep"
+
+#: 読むときだけ受け付ける、昔の名前と拡張子 書くときは常に新しい名前で書く
+#: プリセットは作り直せない物なので、改名前に保存したものが一覧から消えると、
+#: 本人には「プリセットが全部消えた」に見える
+# 旧名を残す: ここから（名前の一括置換でも書き換えない 古い版のファイルを読むのに要る）
+LEGACY_FORMAT_NAMES = ("kumiki-preset", "novaedit-preset")
+LEGACY_SUFFIXES = (".kmkp", ".nvpreset")
+# 旧名を残す: ここまで
 
 #: ファイル名に使えない文字 Windows の制限に合わせる
 _UNSAFE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -66,7 +76,7 @@ class Preset:
     def from_dict(cls, data: object) -> Preset:
         if not isinstance(data, dict):
             raise ProjectFileError("プリセットがオブジェクトではない")
-        if data.get("format") != FORMAT_NAME:
+        if data.get("format") not in (FORMAT_NAME, *LEGACY_FORMAT_NAMES):
             raise ProjectFileError("Sashimono のプリセットではない")
         version = data.get("version", 0)
         if not isinstance(version, int) or version > FORMAT_VERSION:
@@ -101,10 +111,7 @@ def default_preset_root() -> Path:
 
     キャッシュと違い、消えると作り直せない ``%APPDATA%`` に置く
     """
-    base = os.environ.get("APPDATA") or os.environ.get("XDG_CONFIG_HOME")
-    if base:
-        return Path(base) / "Sashimono" / "presets"
-    return Path.home() / ".config" / "sashimono" / "presets"
+    return userdirs.config_root() / "presets"
 
 
 @dataclass(slots=True)
@@ -145,7 +152,7 @@ class PresetStore:
         found: list[Preset] = []
         if not self.root.exists():
             return ()
-        for path in sorted(self.root.rglob(f"*{SUFFIX}")):
+        for path in self._files():
             try:
                 found.append(self.load(path))
             except ProjectFileError:
@@ -153,7 +160,26 @@ class PresetStore:
         return tuple(found)
 
     def delete(self, preset: Preset) -> None:
-        self.path_for(preset).unlink(missing_ok=True)
+        # 旧い拡張子の同じ名前も消す 残すと、消したはずのプリセットが一覧に戻ってくる
+        current = self.path_for(preset)
+        for path in (current, *(current.with_suffix(suffix) for suffix in LEGACY_SUFFIXES)):
+            path.unlink(missing_ok=True)
+
+    def _files(self) -> list[Path]:
+        """一覧に出すファイル 旧い拡張子のものも拾う
+
+        同じ名前が新旧両方にあるときは新しい方だけを出す 改名前のプリセットを
+        上書き保存すると新しい拡張子で書かれ、旧いファイルは残る 両方出すと、
+        同じ名前が 2 つ並び、選んだ方によって中身が違う
+        """
+        current = set(self.root.rglob(f"*{SUFFIX}"))
+        legacy = {
+            path
+            for suffix in LEGACY_SUFFIXES
+            for path in self.root.rglob(f"*{suffix}")
+            if path.with_suffix(SUFFIX) not in current
+        }
+        return sorted(current | legacy)
 
 
 def _safe_name(name: str) -> str:

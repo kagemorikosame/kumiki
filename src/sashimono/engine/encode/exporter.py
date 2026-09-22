@@ -24,16 +24,33 @@ import numpy as np
 
 from sashimono.core.model import Project, TrackKind
 from sashimono.engine.audio import AudioMixer
+from sashimono.engine.colorspace import tag_bt709, to_bt709
 from sashimono.engine.gpu import OffscreenGLContext
 from sashimono.engine.render import FULL_QUALITY, FrameRenderer
 
-__all__ = ["ExportError", "ExportSettings", "available_video_codecs", "export_project"]
+__all__ = [
+    "COLOR_OPTIONS",
+    "ExportError",
+    "ExportSettings",
+    "available_video_codecs",
+    "export_project",
+]
 
 #: 優先順に並べた映像コーデック 前にあるものから、使えるものを選ぶ
 #: NVENC は CPU をほとんど使わないので、長尺でも編集を続けながら書き出せる
 VIDEO_CODEC_PREFERENCE = ("h264_nvenc", "h264_qsv", "libx264")
 
 _LAYOUTS = {1: "mono", 2: "stereo", 6: "5.1", 8: "7.1"}
+
+#: 色のタグを決めるコーデックのオプション名 :attr:`ExportSettings.options` には入れられない
+COLOR_OPTIONS = frozenset({"color_primaries", "color_trc", "colorspace", "color_range"})
+
+#: エンコーダ自身の設定をまとめて渡すオプション この中にも色の指定を書ける
+_ENCODER_PARAM_OPTIONS = frozenset({"x264-params", "x264opts", "x265-params"})
+#: まとめ書きの中で色のタグを決める名前（x264 と x265 で共通）
+_ENCODER_COLOR_PARAMS = frozenset(
+    {"colorprim", "transfer", "colormatrix", "range", "fullrange", "input-range"}
+)
 
 
 class ExportError(RuntimeError):
@@ -55,6 +72,7 @@ class ExportSettings:
     #: 書き出すフレーム範囲 ``None`` なら全体
     frame_range: tuple[int, int] | None = None
     #: コーデックへ渡す追加オプション プリセットや品質指定を通す口
+    #: 色のタグ（:data:`COLOR_OPTIONS`）は BT.709 に固定しているので受け付けない
     options: dict[str, str] = field(default_factory=dict)
 
 
@@ -67,6 +85,23 @@ def available_video_codecs() -> list[str]:
         except Exception:
             continue
         found.append(name)
+    return found
+
+
+def _color_options_in(options: dict[str, str]) -> list[str]:
+    """``options`` のうち、色のタグを変えてしまう指定の名前
+
+    x264 / x265 はまとめ書きのオプション（``x264-params`` など）の中でも色を指定できる
+    こちらはビットストリームの VUI だけを書き換え、MP4 の colr は BT.709 のまま残るので、
+    コンテナとビットストリームでタグが食い違ったファイルになる（再生側によって読み方が変わる）
+    """
+    found = sorted(COLOR_OPTIONS & options.keys())
+    for name in sorted(_ENCODER_PARAM_OPTIONS & options.keys()):
+        # 項目の区切りは ``:`` 、名前と値は ``=`` x264opts だけは ``,`` で区切った書き方も通る
+        for item in options[name].replace(",", ":").split(":"):
+            key = item.split("=", 1)[0].strip().lower()
+            if key in _ENCODER_COLOR_PARAMS:
+                found.append(f"{name} の {key}")
     return found
 
 
@@ -91,6 +126,15 @@ def export_project(
     codec = settings.video_codec or next(iter(available_video_codecs()), None)
     if codec is None:
         raise ExportError("使える映像コーデックが見つからない")
+
+    # 色のタグは options で上書きできてしまう（コーデックを開くときに options が後から効く）
+    # 画素は必ず BT.709 / limited で変換するので、別のタグを通すと中身と食い違う
+    # 黙って捨てると頼んだ指定が効かない理由が分からないので、始める前に断る
+    conflicting = _color_options_in(settings.options)
+    if conflicting:
+        raise ExportError(
+            f"色のタグは BT.709 に固定している オプションでは変えられない: {', '.join(conflicting)}"
+        )
 
     settings.path.parent.mkdir(parents=True, exist_ok=True)
     context = OffscreenGLContext()
@@ -140,6 +184,9 @@ def _encode(
         video.width = width
         video.height = height
         video.pix_fmt = settings.pixel_format
+        # 付けないと再生側が行列を推測する HD なら BT.709 と当てる再生ソフトが多いが、
+        # ブラウザや編集ソフトの一部は BT.601 で読み、書いた値と違う色になる
+        tag_bt709(video)
         if settings.video_bitrate:
             video.bit_rate = settings.video_bitrate
         if settings.options:
@@ -179,7 +226,7 @@ def _encode(
             frame = av.video.frame.VideoFrame.from_ndarray(
                 np.ascontiguousarray(image[:, :, :3]), format="rgb24"
             )
-            frame = frame.reformat(format=settings.pixel_format)
+            frame = to_bt709(frame, settings.pixel_format)
             frame.pts = index
             frame.time_base = frame_time_base
             container.mux(video.encode(frame))
