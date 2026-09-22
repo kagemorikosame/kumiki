@@ -15,7 +15,7 @@ from sashimono.compat.aviutl.report import CompatibilityReport
 from sashimono.compat.mapped import MappedObject
 from sashimono.core.model import AnimatedValue, GeneratedSource, ParamValue
 from sashimono.core.timebase import FrameRate
-from sashimono.engine.sources import format_time, render_source, timer_text
+from sashimono.engine.sources import format_time, render_source, source_canvas, timer_text
 
 RATE = FrameRate(60)
 
@@ -278,6 +278,25 @@ class TestTheOutline:
         # 既定を内側にしたので、幅 400 の図形の外形が 400（±200）になる
         # 中央のままだと 420（±210）に広がり、指定した幅と見た目が食い違う
         assert abs(self._native(None) - 199) <= 2
+
+    def test_the_canvas_does_not_grow_for_an_inside_line(self) -> None:
+        # 内側の線は外形を超えないので、絵を太さぶん広げる必要が無い
+        # 広げたままだと、線の太い大きな図形で毎フレーム余分に大きな絵を作る
+        def params(align: str) -> dict[str, ParamValue]:
+            return {
+                "shape": "rect",
+                "width": AnimatedValue(2000.0),
+                "height": AnimatedValue(2000.0),
+                "line_width": AnimatedValue(200.0),
+                "outline_only": True,
+                "line_align": align,
+            }
+
+        inside = source_canvas(GeneratedSource(kind="shape", params=params("inside")), 1920, 1080)
+        centred = source_canvas(GeneratedSource(kind="shape", params=params("center")), 1920, 1080)
+        assert inside[0] < centred[0]
+        # 外形は 2000x2000 の対角線 回しても収まる大きさで足りる
+        assert inside[0] == 2830
 
     def test_the_centred_line_is_still_available(self) -> None:
         # 前の版の見た目に戻せること ここが落ちると、古い作品を直す手立てが無くなる

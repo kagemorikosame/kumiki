@@ -174,6 +174,10 @@ def source_canvas(
     shape_width = max(1.0, float(values.get("width", 400)))  # type: ignore[arg-type]
     shape_height = max(1.0, float(values.get("height", 400)))  # type: ignore[arg-type]
     line = float(values.get("line_width", 0.0))  # type: ignore[arg-type]
+    if str(values.get("line_align", "center")) == "inside":
+        # 内側に引く線は外形を超えない 太さぶん広げたままだと、線の太い大きな図形で
+        # 毎フレーム必要のない大きさの絵を作ることになる
+        line = 0.0
     # 回しても収まるよう、対角線の長さで見積もる
     reach = (shape_width**2 + shape_height**2) ** 0.5 / 2.0 + line
     needed_width = 2.0 * (abs(float(values.get("pos_x", 0.0))) + reach)  # type: ignore[arg-type]
