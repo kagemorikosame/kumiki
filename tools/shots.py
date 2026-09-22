@@ -34,7 +34,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from PySide6.QtCore import QEvent, QEventLoop, QPoint, QRect, Qt
-from PySide6.QtGui import QImage, QPainter, QSurfaceFormat
+from PySide6.QtGui import QIcon, QImage, QPainter, QSurfaceFormat
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtWidgets import (
     QApplication,
@@ -104,6 +104,9 @@ SETTLE_MS = 25
 #: 真っ黒と見なす明るさ GL の中身が写らなかったときは 0 が並ぶ
 BLACK_LEVEL = 8
 
+#: 見本の素材を作る ffmpeg を待つ上限（秒）
+FFMPEG_TIMEOUT = 300
+
 #: 写したい配布物の名前（一部でよい） README の本文がこの名前を引き合いに
 #: 出しているので、同じ物が写るようにしておく 無い機械では使える物の先頭に落ちる
 PREFERRED_ALIAS = ("13_金ピカテキスト",)
@@ -131,8 +134,8 @@ class ShotSkippedError(RuntimeError):
 class Context:
     """1 回の撮影で共有するもの"""
 
-    #: 見本の素材（ffmpeg で作ったもの）
-    media: Path
+    #: 見本の素材（ffmpeg で作ったもの） 作れなかったときは ``None``
+    media: Path | None
     #: AviUtl2 のエイリアスの置き場 無ければ ``None``
     alias_root: Path | None
     #: YMM4 のアイテムテンプレートの置き場 無ければ ``None``
@@ -149,6 +152,10 @@ class Shot:
     #: README のどこに出るか 一覧に出して、撮り直す前に見当が付くようにする
     caption: str
     take: Callable[[Context], QImage]
+    #: 見本の素材（ffmpeg で作る映像）が要るか
+    #: 要らない写真まで ffmpeg に付き合わせない ffmpeg の無い機械で棚や
+    #: スクリプトの写真だけを撮りたいことがある
+    needs_media: bool = True
 
 
 # --- 見本の素材とスクリプト ---
@@ -171,34 +178,41 @@ def make_sample_media(directory: Path) -> Path:
         f"sine=frequency=440:duration={SAMPLE_SECONDS}:sample_rate=48000"
         ",tremolo=f=1.5:d=0.9,volume=14dB"
     )
-    subprocess.run(
-        [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-            "-f",
-            "lavfi",
-            "-i",
-            video,
-            "-f",
-            "lavfi",
-            "-i",
-            audio,
-            "-c:v",
-            "libx264",
-            "-pix_fmt",
-            "yuv420p",
-            "-c:a",
-            "aac",
-            "-ac",
-            "2",
-            str(path),
-        ],
-        check=True,
-        capture_output=True,
-    )
+    command = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        video,
+        "-f",
+        "lavfi",
+        "-i",
+        audio,
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-ac",
+        "2",
+        str(path),
+    ]
+    # 出力を捨てない 捨てると、素材が作れなかったときに終了コードしか残らず、
+    # 何が悪いのか（PATH に無い・codec が無い）が分からない
+    # 待ち時間にも上限を置く ffmpeg が固まると、撮影がそこで止まったままになる
+    try:
+        subprocess.run(command, check=True, capture_output=True, text=True, timeout=FFMPEG_TIMEOUT)
+    except FileNotFoundError as exc:
+        raise ShotError("ffmpeg が PATH に無いので見本の素材を作れない") from exc
+    except subprocess.CalledProcessError as exc:
+        raise ShotError(f"見本の素材を作れない: {(exc.stderr or '').strip()}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise ShotError("見本の素材を作る ffmpeg が終わらない") from exc
     return path
 
 
@@ -313,19 +327,28 @@ def brightest(image: QImage, rect: QRect) -> int:
     return peak
 
 
-def require_preview(image: QImage, window: QWidget) -> None:
-    """プレビューの中身が写っているか確かめる
-
-    GL の面が撮れないと、気付かないまま真っ黒なプレビューの写真が
-    README に載る 黙って出さず、ここで止める
-    """
+def preview_rect(window: QWidget) -> QRect | None:
+    """窓の中でプレビューが占める範囲 **窓を閉じる前に呼ぶ**"""
     preview = window.findChild(PreviewWidget)
     if preview is None:
-        return
-    top_left = preview.mapTo(window, QPoint(0, 0))
-    rect = QRect(top_left, preview.size())
-    if brightest(image, rect) < BLACK_LEVEL:
+        return None
+    return QRect(preview.mapTo(window, QPoint(0, 0)), preview.size())
+
+
+def take_editor_shot(window: MainWindow) -> QImage:
+    """編集画面を写して、プレビューの中身まで写っているか確かめる
+
+    GL の面が撮れないと、気付かないまま真っ黒なプレビューの写真が README に
+    載る 黙って出さず、ここで止める
+
+    **窓を閉じる前に確かめる** 閉じたあとでは位置も大きさも当てにならず、
+    真っ黒を見つけられないまま通ってしまう
+    """
+    image = grab(window)
+    rect = preview_rect(window)
+    if rect is not None and brightest(image, rect) < BLACK_LEVEL:
         raise ShotError("プレビューが真っ黒 GL の中身が撮れていない")
+    return image
 
 
 @contextmanager
@@ -377,7 +400,7 @@ def build_sample_timeline(window: MainWindow, context: Context) -> None:
     README の先頭に出る絵なので、この 1 枚で「素材・波形・テロップ・
     エフェクトの設定」が一度に見えるようにしてある
     """
-    window.import_media([context.media])
+    window.import_media([sample_media(context)])
     settle(window)
 
     text = TEXT.create(
@@ -442,17 +465,27 @@ def sample_transcript() -> Transcript:
 # --- 写真ごとの組み立て ---
 
 
+def sample_media(context: Context) -> Path:
+    """見本の素材 作れていなければ、この写真は失敗として数える
+
+    飛ばす（``ShotSkippedError``）にしないのは、ffmpeg は開発環境の前提だから
+    配布物と違って「無くて当たり前」ではなく、直すべき手落ちとして出す
+    素材の要らない写真（棚・スクリプト）はこの失敗に巻き込まれず撮れる
+    """
+    if context.media is None:
+        raise ShotError("見本の素材が無い（ffmpeg が PATH に要る）")
+    return context.media
+
+
 def shot_editor(context: Context) -> QImage:
     with editor(sample_project()) as window:
         build_sample_timeline(window, context)
-        image = grab(window)
-    require_preview(image, window)
-    return image
+        return take_editor_shot(window)
 
 
 def shot_subtitle(context: Context) -> QImage:
     with editor(sample_project()) as window:
-        window.import_media([context.media])
+        window.import_media([sample_media(context)])
         settle(window)
         media = window.project.media[0]
         window.apply_commands([SetTranscript(media.id, sample_transcript())], "字幕を更新")
@@ -462,9 +495,7 @@ def shot_subtitle(context: Context) -> QImage:
             panel.select_media(media.id)
         window.seek(100)
         settle(window)
-        image = grab(window)
-    require_preview(image, window)
-    return image
+        return take_editor_shot(window)
 
 
 def shot_ai(context: Context) -> QImage:
@@ -475,7 +506,7 @@ def shot_ai(context: Context) -> QImage:
     （書いただけで送っていない状態は、実際に画面で作れる状態そのもの）
     """
     with editor(sample_project()) as window:
-        window.import_media([context.media])
+        window.import_media([sample_media(context)])
         settle(window)
         window.show_chat()
         for box in window.findChildren(QPlainTextEdit):
@@ -483,9 +514,7 @@ def shot_ai(context: Context) -> QImage:
                 box.setPlainText("冒頭 1 秒を切って 画面下に黄色いテロップを 3 秒入れて")
                 break
         settle(window)
-        image = grab(window)
-    require_preview(image, window)
-    return image
+        return take_editor_shot(window)
 
 
 def shot_aviutl(context: Context) -> QImage:
@@ -502,9 +531,7 @@ def shot_aviutl(context: Context) -> QImage:
         # 設定パネルを下まで送る 見せたいのは、制御行から組み上がったスクリプトの
         # 設定欄 上のままだとテキストの項目だけが写り、肝心の所が切れる
         _scroll_to_end(window.findChild(InspectorPanel))
-        image = grab(window)
-    require_preview(image, window)
-    return image
+        return take_editor_shot(window)
 
 
 def _scroll_to_end(panel: QWidget | None) -> None:
@@ -626,9 +653,7 @@ def shot_ymm4(context: Context) -> QImage:
         window.apply_commands(restyle(entry.load(), located[1]), "テンプレートを適用")
         window.seek(10)
         settle(window)
-        image = grab(window)
-    require_preview(image, window)
-    return image
+        return take_editor_shot(window)
 
 
 def shot_ymm4_template(context: Context) -> QImage:
@@ -647,9 +672,7 @@ def shot_ymm4_template(context: Context) -> QImage:
         window.apply_commands(list(commands), "テンプレートを配置")
         window.seek(YMM4_TEMPLATE_FRAME)
         settle(window)
-        image = grab(window)
-    require_preview(image, window)
-    return image
+        return take_editor_shot(window)
 
 
 def _find_entry(roots: tuple[Path, ...], preferred: Sequence[str]) -> TemplateEntry | None:
@@ -661,11 +684,13 @@ SHOTS: tuple[Shot, ...] = (
     Shot("screenshot", "README の先頭（編集画面）", shot_editor),
     Shot("subtitle", "字幕パネル", shot_subtitle),
     Shot("ai", "AI アシスタント", shot_ai),
-    Shot("aviutl", "AviUtl スクリプト", shot_aviutl),
-    Shot("templates", "テンプレートの棚（AviUtl2 のエイリアス）", shot_templates),
-    Shot("ymm4", "テンプレートを着せたところ", shot_ymm4),
-    Shot("ymm4-shelf", "テンプレートの棚（YMM4）", shot_ymm4_shelf),
-    Shot("ymm4-template", "YMM4 のテンプレートの再現", shot_ymm4_template),
+    Shot("aviutl", "AviUtl スクリプト", shot_aviutl, needs_media=False),
+    Shot(
+        "templates", "テンプレートの棚（AviUtl2 のエイリアス）", shot_templates, needs_media=False
+    ),
+    Shot("ymm4", "テンプレートを着せたところ", shot_ymm4, needs_media=False),
+    Shot("ymm4-shelf", "テンプレートの棚（YMM4）", shot_ymm4_shelf, needs_media=False),
+    Shot("ymm4-template", "YMM4 のテンプレートの再現", shot_ymm4_template, needs_media=False),
 )
 
 
@@ -689,13 +714,19 @@ def isolate_user_folders(base: Path) -> None:
 
 
 def build_application() -> QApplication:
-    """本番と同じ見た目で出す 配色が違うと写真だけ別のソフトに見える"""
+    """本番と同じ見た目で出す 配色が違うと写真だけ別のソフトに見える
+
+    名前と絵も本番（``app.py``）と同じにする 写真そのものには窓の飾りが
+    入らないが、撮っている間に出る窓が別のソフトのように見えるのを避ける
+    """
     from sashimono.engine.gpu import preferred_surface_format
+    from sashimono.resources import ICON_FILE, path_to
 
     QSurfaceFormat.setDefaultFormat(preferred_surface_format())
     existing = QApplication.instance()
     application = existing if isinstance(existing, QApplication) else QApplication([])
     application.setApplicationName("Sashimono")
+    application.setWindowIcon(QIcon(str(path_to(ICON_FILE))))
     application.setStyleSheet(STYLE_SHEET)
     return application
 
@@ -703,7 +734,9 @@ def build_application() -> QApplication:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="README の画面写真を撮り直す")
     parser.add_argument("--output", type=Path, default=ROOT / "docs", help="書き出し先")
-    parser.add_argument("--only", nargs="*", default=None, help="撮る写真の名前")
+    # nargs は "+" 名前を 1 つも書かない ``--only`` は使い方の誤りとして断る
+    # "*" だと空の指定が「全部」に化け、絞ったつもりで全部を撮り直すことになる
+    parser.add_argument("--only", nargs="+", default=None, help="撮る写真の名前")
     parser.add_argument("--list", action="store_true", help="撮れる写真を並べる")
     parser.add_argument(
         "--ymm4-root",
@@ -726,7 +759,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{shot.name:<14} {shot.caption}")
         return 0
 
-    names = set(arguments.only) if arguments.only else None
+    names = set(arguments.only) if arguments.only is not None else None
     if names is not None:
         unknown = names - {shot.name for shot in SHOTS}
         if unknown:
@@ -742,12 +775,29 @@ def main(argv: list[str] | None = None) -> int:
         isolate_user_folders(work / "user")
         build_application()
         context = Context(
-            media=make_sample_media(work / "media"),
+            # 素材を作るのは、要る写真が選ばれているときだけ 要らない写真まで
+            # ffmpeg に付き合わせると、ffmpeg の無い機械では棚の写真も撮れない
+            media=_media_or_none(work / "media", needed=any(shot.needs_media for shot in targets)),
             alias_root=_existing(arguments.alias_root or _program_data_aliases()),
             ymm4_root=_with_templates(arguments.ymm4_root),
             script_root=work / "scripts",
         )
         return run(targets, context, output)
+
+
+def _media_or_none(directory: Path, *, needed: bool) -> Path | None:
+    """見本の素材 作れなければ理由を出して ``None``
+
+    ここで止めない 素材の要らない写真は撮れるので、素材が作れないことは
+    その写真だけの失敗として :func:`run` が数える
+    """
+    if not needed:
+        return None
+    try:
+        return make_sample_media(directory)
+    except ShotError as exc:
+        print(f"見本の素材を作れない: {exc}", file=sys.stderr)
+        return None
 
 
 def run(shots: Sequence[Shot], context: Context, output: Path) -> int:

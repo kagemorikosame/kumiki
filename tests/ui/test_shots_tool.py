@@ -15,7 +15,6 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
-from PySide6.QtCore import QRect
 from PySide6.QtWidgets import QApplication, QTreeWidget
 
 from sashimono.compat.catalog import TemplateCatalog
@@ -92,6 +91,8 @@ class TestChoosingTemplates:
         assert chosen.name == "13_金ピカテキスト"
 
     def test_without_the_named_one_it_falls_back(self, shots: ModuleType, tmp_path: Path) -> None:
+        # 名指しの配布物が無い機械でも、文字を持つ物の先頭に落ちること 落ちないと
+        # 棚の写真は何も選ばれていない状態で写り、着せた写真は撮られずに飛ぶ
         (tmp_path / "あ.object").write_text(SAMPLE_ALIAS, encoding="utf-8")
         entries = TemplateCatalog().scan((tmp_path,))
 
@@ -117,10 +118,12 @@ class TestTakingTheEditorShot:
     def test_the_editor_shot_shows_the_preview(
         self, shots: ModuleType, qt_application: QApplication, tmp_path: Path
     ) -> None:
-        """撮れた絵のプレビューが真っ黒でないこと
+        """撮れた絵の**プレビューの場所**が真っ黒でないこと
 
         ``QWidget.grab()`` は環境によって GL の中身を拾わない 拾えていないと、
         気付かないまま真っ黒なプレビューの写真が README に載る
+        窓全体の明るさで見ると、メニューやタイムラインが明るいだけで通ってしまう
+        ので、プレビューの占める範囲だけを切って見る
         """
         del qt_application
         if not ffmpeg_available():
@@ -132,8 +135,11 @@ class TestTakingTheEditorShot:
             ymm4_root=None,
             script_root=tmp_path / "scripts",
         )
-        image = shots.shot_editor(context)
+        with shots.editor(shots.sample_project()) as window:
+            shots.build_sample_timeline(window, context)
+            image = shots.take_editor_shot(window)
+            rect = shots.preview_rect(window)
 
         assert (image.width(), image.height()) == shots.WINDOW_SIZE
-        whole = QRect(0, 0, image.width(), image.height())
-        assert shots.brightest(image, whole) > shots.BLACK_LEVEL
+        assert rect is not None
+        assert shots.brightest(image, rect) > shots.BLACK_LEVEL
