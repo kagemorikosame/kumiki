@@ -60,7 +60,7 @@ from sashimono.engine.render.scripts import (
     script_effects,
     split_effects,
 )
-from sashimono.engine.sources import MAX_CANVAS, render_source, source_canvas
+from sashimono.engine.sources import MAX_CANVAS, Frame, render_source_framed, source_canvas
 
 __all__ = ["FrameRenderer", "RenderQuality"]
 
@@ -79,8 +79,30 @@ def _content_box(image: np.ndarray) -> tuple[int, int, int, int] | None:
     return int(columns[0]), int(rows[0]), int(columns[-1]) + 1, int(rows[-1]) + 1
 
 
+def _object_box(image: np.ndarray, framed: Frame | None = None) -> Frame | None:
+    """オブジェクトの入れ物（画素、左・上・右・下）
+
+    ふつうは色の付いた範囲 文字の枠を持つテキスト（AviUtl2 の組み方）は、その枠と
+    色の付いた範囲を合わせた範囲にする AviUtl2 のテキストの入れ物は送り幅 x 行の高さの
+    枠で、字の形より上下左右に 20 画素ほど広い 字の形で代わりにすると、画像合成が出る
+    範囲・万華鏡の中心・分割したマスの動く量がその分ずれる 字が枠からはみ出すとき
+    （斜体の張り出しや縁取り）に切れないよう、色の付いた範囲も含める
+    """
+    box = _content_box(image)
+    if framed is None:
+        return None if box is None else (float(box[0]), float(box[1]), float(box[2]), float(box[3]))
+    if box is None:
+        return framed
+    return (
+        min(framed[0], box[0]),
+        min(framed[1], box[1]),
+        max(framed[2], box[2]),
+        max(framed[3], box[3]),
+    )
+
+
 def _placed_bounds(
-    box: tuple[int, int, int, int] | None,
+    box: tuple[float, float, float, float] | None,
     image: np.ndarray | None,
     placement: Placement,
     image_width: int = 0,
@@ -102,17 +124,26 @@ def _placed_bounds(
     )
 
 
-def _object_sized(image: np.ndarray) -> tuple[np.ndarray, tuple[float, float]]:
-    """色の付いた所だけを切り出した絵と、画面の中心からのずれ（画素、Y は下が正）
+def _object_sized(
+    image: np.ndarray, framed: Frame | None = None
+) -> tuple[np.ndarray, tuple[float, float]]:
+    """入れ物（:func:`_object_box`）だけを切り出した絵と、画面の中心からのずれ
+    （画素、Y は下が正）
 
     AviUtl のスクリプトは ``obj.w`` ``obj.h`` をオブジェクト自身の大きさとして読む
     画面と同じ大きさの絵を渡すと、画面の幅で位置を計算してしまう
     """
-    box = _content_box(image)
-    if box is None:
+    found = _object_box(image, framed)
+    if found is None:
         return image, (0.0, 0.0)
-    left, top, right, bottom = box
     height, width = int(image.shape[0]), int(image.shape[1])
+    # 枠は小数で届く 内側へ丸めると枠の端の字が欠けるので外側へ広げ、絵の中に収める
+    left = max(0, math.floor(found[0]))
+    top = max(0, math.floor(found[1]))
+    right = min(width, math.ceil(found[2]))
+    bottom = min(height, math.ceil(found[3]))
+    if right <= left or bottom <= top:
+        return image, (0.0, 0.0)
     if (left, top, right, bottom) == (0, 0, width, height):
         return image, (0.0, 0.0)
     offset = ((left + right) / 2.0 - width / 2.0, (top + bottom) / 2.0 - height / 2.0)
@@ -296,7 +327,10 @@ class FrameRenderer:
         #: フレームバッファのクリップが画面を写し取る先 使うまで作らない
         self._grab: Framebuffer | None = None
         #: クリップごとに作った絵 同じ設定と同じフレームなら作り直さない
-        self._generated: OrderedDict[ClipId, tuple[object, np.ndarray]] = OrderedDict()
+        #: 3 つ目は文字の枠（AviUtl2 の組み方のテキストだけが持つ :func:`_object_box`）
+        self._generated: OrderedDict[ClipId, tuple[object, np.ndarray, Frame | None]] = (
+            OrderedDict()
+        )
         #: 入れ子のシーンを描く合成先 深さごとに 1 つ 使うまで作らない
         self._nested: dict[int, Compositor] = {}
         #: クリップを下のクリップの形で切り抜くときに使う合成先（役目と深さごと）
@@ -348,7 +382,7 @@ class FrameRenderer:
             self._audio_missing.clear()
             # 音が無くて空で描いた波形の絵も忘れる 鍵（設定とフレーム）は同じなので、
             # 残しておくと素材を置いた後も空の絵を使い回す
-            for clip_id in [cid for cid, (key, _) in self._generated.items() if _hears(key)]:
+            for clip_id in [cid for cid, (key, _, _) in self._generated.items() if _hears(key)]:
                 del self._generated[clip_id]
 
         # 使われなくなったエフェクトの画像を GPU から手放す 手放さないと、模様を
@@ -691,7 +725,11 @@ class FrameRenderer:
             # スクリプトは渡した絵を書き換えることがある 覚えておいた絵は渡さない
             # 生成オブジェクトは画面と同じ大きさで作るので、AviUtl と同じ「自分の大きさ」
             # （obj.w / obj.h）になるよう、色の付いた所だけを切り出して渡す
-            cropped, offset = _object_sized(image) if _is_generated(clip) else (image, (0.0, 0.0))
+            cropped, offset = (
+                _object_sized(image, self._frame_of(clip, image))
+                if _is_generated(clip)
+                else (image, (0.0, 0.0))
+            )
             self._draw_scripted(
                 track,
                 clip,
@@ -729,7 +767,9 @@ class FrameRenderer:
             fps=float(rate.fps),
             source_rect=placement.to_clip(self._compositor.width, self._compositor.height),
             duration=clip.duration,
-            bounds=_placed_bounds(_content_box(image), image, placement),
+            bounds=_placed_bounds(
+                _object_box(image, self._frame_of(clip, image)), image, placement
+            ),
         )
         # エフェクトを通した結果は画面いっぱいで GL の向き 収め直しも反転も要らない
         self._compositor.draw_handle(
@@ -822,16 +862,13 @@ class FrameRenderer:
             return
         self._effects.resize(texture.width, texture.height)
         try:
-            box = _content_box(image)
             result = self._effects.apply(
                 texture,
                 gpu_effects,
                 frame=local_frame,
                 fps=float(rate.fps),
                 duration=clip.duration,
-                bounds=None
-                if box is None
-                else (float(box[0]), float(box[1]), float(box[2]), float(box[3])),
+                bounds=_object_box(image),
             )
             self._compositor.draw_handle(
                 result.color, placed, opacity=opacity, flip=False, blend=clip.blend_mode
@@ -1328,7 +1365,7 @@ class FrameRenderer:
         if cached is not None and cached[0] == key:
             return cached[1]
         heard = self._waveform_audio(clip, source, local_frame, rate)
-        image = render_source(
+        image, framed = render_source_framed(
             source,
             width,
             height,
@@ -1343,9 +1380,20 @@ class FrameRenderer:
             # 入れ替えのときは減らない 先に捨てると、関係ないクリップの絵が消える
             if clip.id not in self._generated and len(self._generated) >= MAX_GENERATED_CACHE:
                 self._generated.popitem(last=False)
-            self._generated[clip.id] = (key, image)
+            self._generated[clip.id] = (key, image, framed)
             self._generated.move_to_end(clip.id)
         return image
+
+    def _frame_of(self, clip: Clip, image: np.ndarray) -> Frame | None:
+        """いま描いた生成オブジェクトの文字の枠 無ければ ``None``
+
+        覚えた絵と同じ物を描いているときだけ返す 違う絵（入れ替わった直後など）に
+        前の枠を当てると、別の大きさの入れ物で効果を掛けてしまう
+        """
+        cached = self._generated.get(clip.id)
+        if cached is None or cached[1] is not image:
+            return None
+        return cached[2]
 
     def _decode(self, clip: Clip, frame: int, rate: FrameRate) -> np.ndarray | None:
         assert clip.media_id is not None

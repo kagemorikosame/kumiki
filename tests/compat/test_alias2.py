@@ -174,6 +174,14 @@ class TestDecoration:
         assert source.params["border_width"].at(0) == pytest.approx(60.0 * 0.09)
 
 
+class TestLayout:
+    def test_aviutl_text_is_laid_out_like_aviutl2(self) -> None:
+        # 標準の組み方のままだと入れ物が字の形になり、画像合成や万華鏡の基準が
+        # AviUtl2 より 22〜24 画素内側になる 太字も右へ 4〜5 画素寄る（#64）
+        source = mapped(SUBTITLE).clip.source  # type: ignore[attr-defined]
+        assert source.params["layout"] == "aviutl"
+
+
 class TestAlignment:
     def test_the_combined_alignment_splits_into_two(self) -> None:
         # ``中央揃え[下]`` は横が中央、縦が下

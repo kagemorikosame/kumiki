@@ -941,6 +941,11 @@ def _text(entry: ExoEntry, log: CompatibilityReport) -> GeneratedSource:
         "letter_spacing": AnimatedValue(entry.numeric("字間", "spacing_x")),
         "align": align,
         "valign": valign,
+        # 入れ物と太字を AviUtl2 に合わせる 字の形を入れ物にすると、画像合成や
+        # 万華鏡の基準が AviUtl2 より 22〜24 画素内側になる（#64）
+        # AviUtl1 は測っていないので標準のまま 推測で AviUtl2 の決まりを当てると、
+        # 今まで読めていた AviUtl1 の字幕の位置が黙って動く
+        "layout": "aviutl" if entry.generation >= 2 else "native",
     }
     font = entry.value("フォント", "font")
     if font:
@@ -1141,6 +1146,8 @@ def _counter(entry: ExoEntry, log: CompatibilityReport) -> GeneratedSource:
         "timer_start": AnimatedValue(entry.number("初期値")),
         # 速度は 1 秒あたりの進み方 こちらは百分率で持つ
         "timer_rate": AnimatedValue(entry.number("速度", 1.0) * 100.0),
+        # テキストと同じく AviUtl2 の入れ物で組む
+        "layout": "aviutl",
     }
     # 装飾はテキストと同じ仕組みで写す（縁取りや影が消えないように）
     params.update(_decoration_of(entry, entry.number("サイズ", 34.0), log))
