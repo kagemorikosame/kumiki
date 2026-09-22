@@ -14,6 +14,7 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from fractions import Fraction
+from pathlib import Path
 
 from kumiki.compat.aviutl.encoding import decode_utf16_hex
 from kumiki.compat.aviutl.exo import ExoEntry, ExoFile, ExoObject
@@ -41,7 +42,15 @@ from kumiki.core.model import (
 )
 from kumiki.core.timebase import FrameRate
 from kumiki.effects.definition import EffectDefinition, registry
-from kumiki.effects.spec import ColorSpec, ParameterSpec, ParamInput, TrackSpec, ValueSpec
+from kumiki.effects.spec import (
+    IMAGE_SUFFIXES,
+    ColorSpec,
+    FileSpec,
+    ParameterSpec,
+    ParamInput,
+    TrackSpec,
+    ValueSpec,
+)
 
 __all__ = ["MappedObject", "map_exo", "map_object", "media_paths"]
 
@@ -177,8 +186,18 @@ _PARAMS: dict[str, dict[str, _Param]] = {
     },
     # AviUtl2 の縁取りは ``サイズ`` ``ぼかし`` ``縁色`` 色は数値ではないので
     # 対応表とは別に扱う（:func:`_filter` を参照）
-    "縁取り": {"サイズ": _Param("width")},
+    # パターン画像 は縁を塗る模様 パスをそのまま渡し、描くときに読む
+    "縁取り": {"サイズ": _Param("width"), "パターン画像": _Param("pattern")},
     "枠線": {"サイズ": _Param("width")},
+    # 画像合成 X と Y は画像をずらす量（画面の画素のまま、拡大率で縮まない）
+    # AviUtl2 に X=50 Y=30 を描かせると、画像は右へ 50、**下へ** 30 動いた
+    "画像合成": {
+        "X": _Param("offset_x"),
+        "Y": _Param("offset_y", _flip),
+        "拡大率": _Param("zoom"),
+        "画像": _Param("image_file"),
+        "ループ画像": _Param("loop"),
+    },
     "グラデーション": {
         "強さ": _Param("strength"),
         "中心X": _Param("center_x"),
@@ -383,6 +402,7 @@ _FILTERS: dict[str, str] = {
     "クロマキー": "chroma_key",
     "縁取り": "border",
     "枠線": "border",
+    "画像合成": "image_blend",
     "影": "shadow",
     "シャドー": "shadow",
     "ドロップシャドウ": "shadow",
@@ -1023,6 +1043,9 @@ _SELECT_PARAMS: dict[str, dict[str, tuple[str, dict[str, str]]]] = {
         "合成モード": ("blend", _BLEND_NAMES),
     },
     "マスク": {"種類": ("shape", {"矩形": "rect", "円": "ellipse", "楕円": "ellipse"})},
+    # 画像合成の 合成モード は、AviUtl2 が既定で入れた名前しか確かめていない
+    # ほかの名前は表に無いので記録に残る
+    "画像合成": {"合成モード": ("blend", {"色情報を上書き": "overwrite"})},
     "ミラー": {
         "ミラーの方向": ("side", {"下側": "bottom", "上側": "top", "左側": "left", "右側": "right"})
     },
@@ -1305,8 +1328,42 @@ def _filter(entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport) 
             if spec is not None:
                 params[spec.name] = spec.coerce(chosen)
 
+    _check_images(entry, definition, params, handled, log)
     _note_dropped(entry, handled, log)
     return Effect(kind=kind, params=params)
+
+
+def _check_images(
+    entry: ExoEntry,
+    definition: EffectDefinition,
+    params: dict[str, ParamValue],
+    handled: set[str],
+    log: CompatibilityReport,
+) -> None:
+    """画像として読むパス（画像合成の 画像、縁取りの パターン画像）を確かめる
+
+    中身は開かない（開くのは描くとき） 在るかどうかと拡張子だけを見る
+    エイリアスは作った人の機械のパスをそのまま持っているので、別の機械では
+    見つからないことが多い 描くときは画像なしで描くので、黙っていると
+    模様の消えた絵が出たことに気付けない
+
+    ``ループ再生`` は動画を繰り返すかどうか 静止画か画像なしなら絵は変わらないので
+    写せたことにする 動画は先頭のコマしか使わないので、そのときは項目ごと記録に残る
+    """
+    movie = False
+    for spec in definition.parameters:
+        if not (isinstance(spec, FileSpec) and spec.texture):
+            continue
+        path = params.get(spec.name)
+        if not isinstance(path, str) or not path:
+            continue
+        if Path(path).suffix.lower() not in IMAGE_SUFFIXES:
+            movie = True
+            log.note_missing(f"{entry.name}の画像が静止画でない（先頭のコマだけ使う）")
+        if not Path(path).is_file():
+            log.note_missing(f"{entry.name}の画像が見つからない")
+    if not movie:
+        handled.add("ループ再生")
 
 
 #: 値ではなく並びの区切りに使われる項目 写せなくても困らない

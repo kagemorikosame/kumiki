@@ -1190,6 +1190,15 @@ class FrameRenderer:
         found, self._discarded = self._discarded, set()
         return found
 
+    def stale_images(self) -> frozenset[str]:
+        """エフェクトが読む画像のうち、前に読んだときから書き換わったもののパス
+
+        プロジェクトは同じままなので、編集の差分からは分からない 呼ぶ側が
+        :func:`~kumiki.engine.render.image_spans` でその画像を使う範囲を出し、
+        先読みした絵を捨てる GL は触らない
+        """
+        return self._effects.stale_images()
+
     def reopen_sources(self, media_ids: Collection[MediaId] | None = None) -> None:
         """デコーダを閉じる 次に要るときに開き直す
 

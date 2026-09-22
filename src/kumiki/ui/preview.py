@@ -24,6 +24,7 @@ from kumiki.engine.render import (
     PreviewCache,
     RenderQuality,
     changed_spans,
+    image_spans,
 )
 
 __all__ = ["SLOW_FRAME_MS", "PreviewWidget"]
@@ -35,6 +36,14 @@ __all__ = ["SLOW_FRAME_MS", "PreviewWidget"]
 #: 1 コマ 2 秒 測った値は kumiki.engine.cache.proxy）では、貯まる値打ちより
 #: 固まる方が大きい 0.2 秒は、押してから反応するまでに引っかかりを感じ始める辺り
 SLOW_FRAME_MS = 200.0
+
+#: エフェクトが読む画像（画像合成の絵、縁取りの模様）が書き換わったかを見る間隔（ミリ秒）
+#:
+#: 画像はパスで指すだけなので、別のソフトで描き直してもプロジェクトは変わらず、
+#: 先読みした絵が古いまま残る 見るのは更新時刻と大きさだけ（1 枚あたり数十
+#: マイクロ秒）なので、1 秒おきでも手間にならない 描き直してから画面へ
+#: 戻ってくるまでの間には気付ける
+IMAGE_WATCH_MS = 1000
 
 
 class PreviewWidget(QOpenGLWidget):
@@ -74,6 +83,9 @@ class PreviewWidget(QOpenGLWidget):
         #: 再生中は先読みを止める 出す側と同じ GPU を奪い合って、
         #: いま出すべきコマが遅れる
         self._playing = False
+        self._image_watch = QTimer(self)
+        self._image_watch.setInterval(IMAGE_WATCH_MS)
+        self._image_watch.timeout.connect(self.check_images)
         self.setMinimumSize(240, 135)
 
     @property
@@ -161,6 +173,23 @@ class PreviewWidget(QOpenGLWidget):
         self.update()
         self._restart_prefetch()
 
+    def check_images(self) -> None:
+        """エフェクトが読む画像が書き換わっていたら、それを使う所を描き直す
+
+        取ってある絵を捨てるだけで GL は触らないが、ほかの捨て方と同じく
+        コンテキストを current にしてから捨てる
+        """
+        if self._renderer is None:
+            return
+        changed = self._renderer.stale_images()
+        if not changed:
+            return
+        self.makeCurrent()
+        self._invalidate(image_spans(self._project, changed))
+        self.doneCurrent()
+        self.update()
+        self._restart_prefetch()
+
     def set_prefetch_bytes(self, prefetch_bytes: int) -> None:
         """先読みに使えるメモリを変える 0 で止める
 
@@ -193,6 +222,7 @@ class PreviewWidget(QOpenGLWidget):
         解放ができない
         """
         self._idle.stop()
+        self._image_watch.stop()
         if self._renderer is None:
             return
         self.makeCurrent()
@@ -213,6 +243,7 @@ class PreviewWidget(QOpenGLWidget):
             proxies=self._proxies,
         )
         self._cache = PreviewCache(self._renderer, budget_bytes=self._prefetch_bytes)
+        self._image_watch.start()
         self.ready.emit()
         self._restart_prefetch()
 

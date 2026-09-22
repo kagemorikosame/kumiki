@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from dataclasses import dataclass, replace
 
 from kumiki.core.model import (
@@ -23,8 +23,9 @@ from kumiki.core.model import (
     Track,
     TrackKind,
 )
+from kumiki.effects import FileSpec, registry
 
-__all__ = ["Invalidation", "changed_spans"]
+__all__ = ["Invalidation", "changed_spans", "image_spans"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,15 +245,74 @@ def _changed_scenes(before: Project, after: Project, media: set[MediaId]) -> set
         if _media_used(timeline) & media
     }
 
-    # 変わったシーンを置いているシーンも、外から見れば変わっている
-    # 数えきるまで繰り返す（シーンの入れ子は循環しないことがモデル側で保証されている）
+    return _with_containers(changed, old, new)
+
+
+def _with_containers(changed: set[SceneId], *sides: dict[SceneId, Timeline]) -> set[SceneId]:
+    """変わったシーンと、それを（入れ子で）置いているシーン
+
+    変わったシーンを置いているシーンも、外から見れば変わっている
+    数えきるまで繰り返す（シーンの入れ子は循環しないことがモデル側で保証されている）
+    """
+    changed = set(changed)
     while True:
         spread = {
             scene_id
-            for timelines in (old, new)
+            for timelines in sides
             for scene_id, timeline in timelines.items()
             if scene_id not in changed and timeline.scene_references() & changed
         }
         if not spread:
             return changed
         changed |= spread
+
+
+def image_spans(project: Project, paths: Collection[str]) -> Invalidation:
+    """エフェクトが読む画像（画像合成の絵、縁取りの模様）が書き換わったときに捨てる範囲
+
+    画像はパスで指すだけなので、ファイルを書き換えてもプロジェクトは変わらない
+    編集の差分（:func:`changed_spans`）には出てこないので、別に求める
+    シーンの中で使っていれば、そのシーンを置いたクリップ全体を捨てる
+    """
+    wanted = frozenset(path for path in paths if path)
+    if not wanted:
+        return Invalidation.nothing()
+    timelines = {scene.id: scene.timeline for scene in project.scenes}
+    scenes = _with_containers(
+        {key for key, timeline in timelines.items() if _timeline_reads(timeline, wanted)},
+        timelines,
+    )
+    return Invalidation.over(
+        _span(clip)
+        for track in project.timeline.active_tracks(TrackKind.VIDEO)
+        for clip in track.clips
+        if _reads_image(clip, wanted) or (clip.scene_id is not None and clip.scene_id in scenes)
+    )
+
+
+def _timeline_reads(timeline: Timeline, paths: frozenset[str]) -> bool:
+    return any(
+        _reads_image(clip, paths)
+        for track in timeline.active_tracks(TrackKind.VIDEO)
+        for clip in track.clips
+    )
+
+
+def _reads_image(clip: Clip, paths: frozenset[str]) -> bool:
+    """そのクリップのエフェクトが ``paths`` のどれかを画像として読むか
+
+    切ってあるエフェクトも数える 捨てすぎても作り直すだけで済むが、
+    切り替えの途中で見落とすと古い絵が残る
+    """
+    for effect in clip.effects:
+        definition = registry.get(effect.kind)
+        if definition is None:
+            continue
+        for spec in definition.parameters:
+            if (
+                isinstance(spec, FileSpec)
+                and spec.texture
+                and effect.params.get(spec.name) in paths
+            ):
+                return True
+    return False
