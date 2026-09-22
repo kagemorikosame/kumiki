@@ -835,9 +835,17 @@ class FrameRenderer:
     def _capture(
         self, track: Track, clip: Clip, frame: int, rate: FrameRate, depth: int
     ) -> Compositor:
-        """上のクリップに切り抜きの形として使わせるため、このクリップだけを別に描く"""
+        """上のクリップに切り抜きの形として使わせるため、このクリップだけを別に描く
+
+        **不透明度は当てない** 切り抜く形は、その絵が下へ重なるときの薄さではなく
+        形そのもの 当てると、薄い形で切り抜かれた上のクリップまで同じだけ薄くなる
+        （木製看板テロップは、板の下に不透明度 56.4 の陰の図形を敷いている
+        当てていたころは板が 56.4% しか出ず、下の木枠が透けて見えていた）
+        不透明度は、この形で切り抜いたクリップ自身を描くときに当たる
+        """
         layer = self._layer("below", depth)
-        self._draw_into(layer, track, clip, frame, rate, depth)
+        shape = replace(clip, opacity=AnimatedValue(1.0))
+        self._draw_into(layer, track, shape, frame, rate, depth)
         return layer
 
     def _draw_clipped(

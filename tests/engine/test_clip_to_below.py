@@ -53,9 +53,14 @@ def _shape(color: tuple[float, float, float, float], size: float | None) -> Gene
     )
 
 
-def _project(*, clipped: bool) -> Project:
+def _project(*, clipped: bool, below_opacity: float = 1.0) -> Project:
     base = Project.create(SETTINGS)
-    square = Clip(timeline_start=0, duration=10, source=_shape((0.0, 0.0, 1.0, 1.0), 20.0))
+    square = Clip(
+        timeline_start=0,
+        duration=10,
+        source=_shape((0.0, 0.0, 1.0, 1.0), 20.0),
+        opacity=AnimatedValue(below_opacity),
+    )
     cover = Clip(
         timeline_start=0,
         duration=10,
@@ -79,6 +84,29 @@ def test_the_cover_shows_only_inside_the_shape_below(gl_context: OffscreenGLCont
     # 形の中は上の赤、外は下地の黒のまま（覆われない）
     assert image[32, 32, 0] > 200 and image[32, 32, 2] < 50
     assert image[2, 2, 0] < 30
+
+
+def test_a_faint_shape_below_still_clips_at_full_strength(gl_context: OffscreenGLContext) -> None:
+    image = _render(_project(clipped=True, below_opacity=0.5), gl_context)
+    # 切り抜く形に下のクリップの不透明度まで当てると、上の赤が半分しか出ず、
+    # 下の青が透けて紫になる（木製看板テロップの板が 56.4% しか出なかった不具合）
+    assert image[32, 32, 0] > 200, "切り抜かれた側が形の薄さぶん薄くなっている"
+    assert image[32, 32, 2] < 50, "下の絵が透けている"
+
+
+def test_the_shape_below_keeps_its_own_faintness(gl_context: OffscreenGLContext) -> None:
+    # 不透明度は形としては使わないが、その絵自身を描くときには当たる
+    # 当たらないと、薄く重ねたつもりの絵が濃いまま出る
+    base = Project.create(SETTINGS)
+    square = Clip(
+        timeline_start=0,
+        duration=10,
+        source=_shape((0.0, 0.0, 1.0, 1.0), 20.0),
+        opacity=AnimatedValue(0.5),
+    )
+    tracks = (Track(TrackKind.VIDEO, "V1", (square,)),)
+    image = _render(base.with_timeline(replace(base.timeline, tracks=tracks)), gl_context)
+    assert 90 < image[32, 32, 2] < 165
 
 
 def test_without_clipping_the_cover_fills_the_screen(gl_context: OffscreenGLContext) -> None:
