@@ -213,6 +213,27 @@ class TestWhatItThrowsAway:
         assert stub.thrown[0].contains(10)
         assert not stub.thrown[0].contains(100), "画像を読んでいないクリップまで捨てている"
 
+    def test_the_watch_does_not_touch_the_gl_context(
+        self, preview: tuple[PreviewWidget, StubCache], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """タイマーからの見張りは、current にできない（窓が隠れている）ときにも走る
+
+        そこで doneCurrent を呼ぶとほかのコンテキストを外してしまう 捨てるだけなら
+        GL は要らないので、current にせずに捨てる
+        """
+        widget, stub = preview
+
+        def refuse() -> None:
+            raise AssertionError("見張りが GL のコンテキストを触った")
+
+        monkeypatch.setattr(widget, "makeCurrent", refuse)
+        monkeypatch.setattr(widget, "doneCurrent", refuse)
+        renderer = widget.renderer
+        assert isinstance(renderer, StubRenderer)
+        renderer.stale = frozenset({"模様.png"})
+        widget.check_images()
+        assert len(stub.thrown) == 1
+
     def test_nothing_rewritten_throws_nothing(
         self, preview: tuple[PreviewWidget, StubCache]
     ) -> None:

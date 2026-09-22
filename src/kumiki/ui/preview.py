@@ -176,17 +176,19 @@ class PreviewWidget(QOpenGLWidget):
     def check_images(self) -> None:
         """エフェクトが読む画像が書き換わっていたら、それを使う所を描き直す
 
-        取ってある絵を捨てるだけで GL は触らないが、ほかの捨て方と同じく
-        コンテキストを current にしてから捨てる
+        **コンテキストを current にしない** タイマーから呼ばれるので、窓が隠れて
+        いると current にならないまま戻り、そこで doneCurrent を呼ぶとほかが使って
+        いるコンテキストを外してしまう ここで捨てる絵は描画先を空きへ回すだけで
+        （:meth:`FrameCache.invalidate` は GL を呼ばない）、current でなくてよい
+        current にできなかったからと捨てずに戻ると、書き換わりは 1 度しか
+        伝わらないので、古い絵が残ったままになる
         """
-        if self._renderer is None:
+        if self._renderer is None or self._cache is None:
             return
         changed = self._renderer.stale_images()
         if not changed:
             return
-        self.makeCurrent()
-        self._invalidate(image_spans(self._project, changed))
-        self.doneCurrent()
+        self._cache.invalidate(image_spans(self._project, changed))
         self.update()
         self._restart_prefetch()
 

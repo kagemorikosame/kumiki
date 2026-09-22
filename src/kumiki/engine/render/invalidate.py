@@ -303,8 +303,11 @@ def _reads_image(clip: Clip, paths: frozenset[str]) -> bool:
 
     切ってあるエフェクトも数える 捨てすぎても作り直すだけで済むが、
     切り替えの途中で見落とすと古い絵が残る
+
+    場面切り替えの後の場面に掛けるエフェクト（``after_effects``）も見る
+    前の場面だけを見ると、後の場面の模様を描き直しても古い絵が残る
     """
-    for effect in clip.effects:
+    for effect in (*clip.effects, *clip.after_effects):
         definition = registry.get(effect.kind)
         if definition is None:
             continue

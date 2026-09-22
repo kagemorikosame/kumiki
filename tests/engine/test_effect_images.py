@@ -419,6 +419,33 @@ class TestTheImageStore:
         assert images.get(str(path)) is not None
         assert images.missing == frozenset()
 
+    def test_a_swapped_in_file_with_the_same_time_and_size_is_noticed(self, tmp_path: Path) -> None:
+        # 別のファイルへ書いてから差し替える保存で、更新時刻と大きさが元と同じ
+        # 時刻と大きさだけで見ると気付けず、古い模様が残り続ける
+        path = solid(tmp_path / "a.png", RED)
+        images = _images(_Reader())
+        images.get(str(path))
+        before = path.stat()
+        replacement = solid(tmp_path / "b.png", GREEN)
+        os.utime(replacement, ns=(before.st_atime_ns, before.st_mtime_ns))
+        assert replacement.stat().st_size == before.st_size
+        replacement.replace(path)
+        if path.stat().st_ino == before.st_ino or path.stat().st_ino == 0:
+            pytest.skip("このファイルシステムはファイルの番号を返さない")
+        assert images.stale() == {str(path)}
+
+    def test_a_missing_image_is_reported_again_after_release(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # 伝えたことを覚えたままだと、次のレンダラで同じ画像が無くても黙る
+        path = str(tmp_path / "無い.png")
+        images = _images(_Reader())
+        with caplog.at_level("WARNING", logger="kumiki.engine.gpu.images"):
+            images.get(path)
+            images.release()
+            images.get(path)
+        assert sum("見つからない" in record.getMessage() for record in caplog.records) == 2
+
     def test_an_unreadable_file_is_not_an_error(self, tmp_path: Path) -> None:
         # 壊れた画像 1 枚でプレビューも書き出しも止めない
         path = tmp_path / "壊れた.png"
@@ -478,6 +505,13 @@ class TestWhatToRedraw:
             scenes=(scene,),
         )
         assert image_spans(project, {"a.png"}).spans == ((30, 45),)
+
+    def test_the_scene_after_a_transition_is_looked_at_too(self) -> None:
+        # 場面切り替えの後の場面だけが画像を読むクリップ 前の場面だけを見ると
+        # 捨てる範囲が空になり、先読みした古い模様が残る
+        border = registry.require("border").create(pattern="a.png")
+        clip = Clip(timeline_start=5, duration=10, after_effects=(border,))
+        assert image_spans(_project(clip), {"a.png"}).spans == ((5, 15),)
 
     def test_nothing_changed_drops_nothing(self) -> None:
         project = _project(self._clip(0, "a.png"))
