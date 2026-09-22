@@ -107,6 +107,17 @@ TEXT = SourceDefinition(
         ValueSpec("timer_length", "数え下げる長さ", 0, minimum=0, maximum=10**9),
         TrackSpec("pos_x", "X", -4000, 4000, 0, step=1, unit="px"),
         TrackSpec("pos_y", "Y", -4000, 4000, 0, step=1, unit="px"),
+        # 組み方 AviUtl2 から読んだテキストだけが ``aviutl`` を持つ
+        # AviUtl2 はテキストの入れ物を字の形ではなく文字の枠（送り幅 x 行の高さ）にし、
+        # 太字の太らせ方も Qt と違う 画像合成・縁取りの模様・万華鏡・オブジェクト分割は
+        # この入れ物を基準に動くので、字の形で代わりにすると位置も大きさもずれる（#64）
+        # 既定の ``native`` は今までの組み方のまま 既にある作品の見た目を変えない
+        SelectSpec(
+            "layout",
+            "組み方",
+            (("native", "標準"), ("aviutl", "AviUtl2 と同じ")),
+            "native",
+        ),
     ),
 )
 

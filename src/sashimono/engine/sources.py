@@ -13,7 +13,7 @@ import math
 from collections.abc import Callable
 
 import numpy as np
-from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtCore import QPointF, QRectF, Qt, QTextBoundaryFinder
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -42,7 +42,7 @@ from sashimono.engine.audio_shapes import (
 )
 from sashimono.engine.motion_shapes import TrailPath, TrailPaths, sample_value, star_field, trail
 
-__all__ = ["render_source", "waveform_points"]
+__all__ = ["Frame", "render_source", "render_source_framed", "waveform_points"]
 
 #: 縦の基準ごとに、指定した位置より上へ出す割合 ``下`` なら全部が上に出る
 _VERTICAL_SHARE = {"top": 0.0, "middle": 0.5, "bottom": 1.0}
@@ -70,9 +70,43 @@ def render_source(
     1 チャンネルのサンプル） ``audio_rate`` はそのレート（スペクトラムの周波数に使う）
     音を読むのはレンダラの仕事 ここは渡された数を線にするだけ
     """
+    return render_source_framed(
+        source,
+        width,
+        height,
+        frame=frame,
+        fps=fps,
+        duration=duration,
+        audio=audio,
+        audio_rate=audio_rate,
+        trail_paths=trail_paths,
+    )[0]
+
+
+#: 絵の中のオブジェクトの枠（画素、左・上・右・下 小数のまま）
+Frame = tuple[float, float, float, float]
+
+
+def render_source_framed(
+    source: GeneratedSource,
+    width: int,
+    height: int,
+    *,
+    frame: int = 0,
+    fps: float = 30.0,
+    duration: int = 0,
+    audio: np.ndarray | None = None,
+    audio_rate: int = 44100,
+    trail_paths: TrailPaths | None = None,
+) -> tuple[np.ndarray | None, Frame | None]:
+    """:func:`render_source` と同じ絵と、オブジェクトの枠
+
+    枠は、字の形ではなく**文字の枠**を入れ物にする物（AviUtl2 の組み方のテキスト）
+    だけが返す それ以外は ``None`` で、入れ物は色の付いた範囲から求める
+    """
     definition = source_registry.get(source.kind)
     if definition is None:
-        return None
+        return None, None
 
     values = _resolve(definition, source.params, frame)
     values["_seconds"] = frame / max(fps, 1e-6)
@@ -93,15 +127,16 @@ def render_source(
     painter = QPainter(image)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
     painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+    framed: Frame | None = None
     try:
         if source.kind == "text":
-            _draw_text(painter, values, width, height)
+            framed = _draw_text(painter, values, width, height)
         elif source.kind == "shape":
             _draw_shape(painter, values, width, height)
     finally:
         painter.end()
 
-    return _to_array(image)
+    return _to_array(image), framed
 
 
 #: 画面より大きい絵を作るときの一辺の上限（画素） GPU のテクスチャの上限より十分小さく
@@ -263,17 +298,33 @@ def format_time(value: float, pattern: str) -> str:
     return sign + "".join(out)
 
 
-def _draw_text(painter: QPainter, values: dict[str, object], width: int, height: int) -> None:
+#: AviUtl2 の太字が字を太らせる量（文字サイズに対する割合）
+#: MS UI Gothic（太字の書体を持たない）の 180 で、字の外形が右と上へ約 3.7 画素ずつ
+#: 広がり、1 文字の送り幅も同じだけ広がっていた（枠は 540 から 551） 1/48 はその量
+#: Qt の太字は同じ書体で右へ約 10 画素太らせ送り幅は 1 しか広げないので、字が太く、
+#: 中央揃えでも右へ 4〜5 画素寄る
+_AVIUTL_BOLD = 1.0 / 48.0
+
+
+def _draw_text(
+    painter: QPainter, values: dict[str, object], width: int, height: int
+) -> Frame | None:
+    """横書きと縦書きを描き分ける AviUtl2 の組み方なら文字の枠を返す"""
     raw = str(values.get("text", ""))
     if str(values.get("timer_format", "")):
         raw = timer_text(values)[:200]
     text = _revealed(raw, values)
     if not text:
-        return
+        return None
 
+    aviutl = values.get("layout") == "aviutl"
+    bold = bool(values.get("bold", False))
+    size = max(1, int(float(values.get("size", 64))))  # type: ignore[arg-type]
     font = QFont(str(values.get("font", "Yu Gothic UI")))
-    font.setPixelSize(max(1, int(float(values.get("size", 64)))))  # type: ignore[arg-type]
-    font.setBold(bool(values.get("bold", False)))
+    font.setPixelSize(size)
+    # AviUtl2 の組み方の太字は、細字の輪郭を自分で太らせる（:func:`_emboldened`）
+    # Qt に太字を頼むと太り方も送り幅も AviUtl2 と違う
+    font.setBold(bold and not aviutl)
     font.setItalic(bool(values.get("italic", False)))
     letter_spacing = float(values.get("letter_spacing", 0.0))  # type: ignore[arg-type]
     if letter_spacing:
@@ -282,8 +333,9 @@ def _draw_text(painter: QPainter, values: dict[str, object], width: int, height:
     metrics = QFontMetricsF(font)
     if bool(values.get("vertical", False)):
         _draw_vertical_text(painter, text, font, metrics, values, width, height)
-        return
+        return None
 
+    embolden = size * _AVIUTL_BOLD if aviutl and bold else 0.0
     lines = text.split(chr(10))
     line_height = metrics.height() + float(values.get("line_spacing", 0.0))  # type: ignore[arg-type]
     block_height = line_height * len(lines)
@@ -293,21 +345,73 @@ def _draw_text(painter: QPainter, values: dict[str, object], width: int, height:
     centre_y = height / 2.0 - float(values.get("pos_y", 0.0))  # type: ignore[arg-type]
     top = centre_y - block_height * _VERTICAL_SHARE.get(str(values.get("valign", "middle")), 0.5)
 
+    def advance(line: str) -> float:
+        if not aviutl:
+            return metrics.horizontalAdvance(line)
+        return sum(metrics.horizontalAdvance(part) + embolden for part in _graphemes(line))
+
+    widest = max((advance(line) for line in lines), default=0.0)
+
     # 文字を輪郭（パス）として組み立てる 縁取りを外側だけに出すには、
     # 塗りとは別に輪郭を太らせる必要があり、それはパスでしかできない
     path = QPainterPath()
     for index, line in enumerate(lines):
-        line_width = metrics.horizontalAdvance(line)
+        line_width = advance(line)
         if align == "left":
-            x = centre_x - _widest(metrics, lines) / 2.0
+            x = centre_x - widest / 2.0
         elif align == "right":
-            x = centre_x + _widest(metrics, lines) / 2.0 - line_width
+            x = centre_x + widest / 2.0 - line_width
         else:
             x = centre_x - line_width / 2.0
         baseline = top + line_height * index + metrics.ascent()
-        path.addText(QPointF(x, baseline), font, line)
+        if not aviutl:
+            path.addText(QPointF(x, baseline), font, line)
+            continue
+        # 1 文字ずつ置く 太字の分だけ送り幅を広げるのは文字ごとで、行をまとめて
+        # 置くと 2 文字目から先が太った分だけ前の字に食い込む
+        for part in _graphemes(line):
+            path.addText(QPointF(x, baseline), font, part)
+            x += metrics.horizontalAdvance(part) + embolden
 
+    if embolden > 0.0:
+        path = _emboldened(path, embolden)
     _paint_glyphs(painter, path, values, width, height)
+    if not aviutl:
+        return None
+    return (centre_x - widest / 2.0, top, centre_x + widest / 2.0, top + block_height)
+
+
+def _graphemes(line: str) -> list[str]:
+    """見た目の 1 文字ずつに分ける
+
+    コードポイントで分けると、サロゲートペアや結合文字（濁点の付く仮名、絵文字の
+    修飾）が 2 つに割れ、別々に置かれて崩れる
+    """
+    finder = QTextBoundaryFinder(QTextBoundaryFinder.BoundaryType.Grapheme, line)
+    # 境目の位置は UTF-16 の数え方で返る Python の文字列の添字（コードポイント）で
+    # 切ると、絵文字より後ろの位置が 1 つずつずれる
+    units = line.encode("utf-16-le")
+    parts: list[str] = []
+    start = 0
+    while (end := finder.toNextBoundary()) != -1:
+        if end > start:
+            parts.append(units[2 * start : 2 * end].decode("utf-16-le"))
+        start = end
+    return parts
+
+
+def _emboldened(path: QPainterPath, amount: float) -> QPainterPath:
+    """字の輪郭を右と上へ ``amount`` だけ太らせる（AviUtl2 の太字）
+
+    左端と下端（ベースライン）は動かさない 両側へ太らせると、左の余白と下の位置が
+    AviUtl2 とずれる 角は丸めない 丸めると「田」の角が AviUtl2 より甘くなる
+    """
+    stroker = QPainterPathStroker()
+    stroker.setWidth(amount)
+    stroker.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
+    grown = path.united(stroker.createStroke(path))
+    grown.translate(amount / 2.0, -amount / 2.0)
+    return grown
 
 
 def _revealed(text: str, values: dict[str, object]) -> str:
@@ -476,10 +580,6 @@ def _box_blur(values: np.ndarray, span: int) -> np.ndarray:
         lower = np.take(cumulative, range(0, length), axis=axis)
         result = (upper - lower) / (2 * span + 1)
     return result
-
-
-def _widest(metrics: QFontMetricsF, lines: list[str]) -> float:
-    return max((metrics.horizontalAdvance(line) for line in lines), default=0.0)
 
 
 def _draw_shape(painter: QPainter, values: dict[str, object], width: int, height: int) -> None:
