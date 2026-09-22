@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from sashimono.compat.aviutl.report import CompatibilityReport
 from sashimono.compat.catalog import gather_media, place
 from sashimono.compat.mapped import MappedObject
 from sashimono.core.commands import AddTrack, Command
@@ -67,6 +68,16 @@ def sound(path: Path) -> MediaItem:
     )
 
 
+def movie(path: Path) -> MediaItem:
+    """映像と音声を両方持つ素材"""
+    return MediaItem(
+        path=path,
+        duration=Fraction(2),
+        video_streams=still(path).video_streams,
+        audio_streams=sound(path).audio_streams,
+    )
+
+
 class FakeProbe:
     """拡張子で素材の形を決める偽物 開いた回数を数える"""
 
@@ -79,6 +90,8 @@ class FakeProbe:
             return still(path)
         if path.suffix == ".mp3":
             return sound(path)
+        if path.suffix == ".mp4":
+            return movie(path)
         return None
 
 
@@ -322,6 +335,24 @@ def test_audio_avoids_a_muted_audio_track(files: tuple[Path, Path]) -> None:
     tracks = list(project.timeline.audio_tracks())
     assert [len(track.clips) for track in tracks] == [0, 1]
     assert not tracks[1].muted
+
+
+def test_a_video_with_sound_is_counted_as_unsupported(tmp_path: Path) -> None:
+    """音も持つ動画を置くと、鳴らないことが互換性レポートに数えて残る
+
+    テンプレートの配置は映像トラックへ 1 本置くだけで音声のクリップを作らない
+    （素材の読み込み ``insert_media`` は映像と音声へ分ける） 握り潰すと、
+    置いたのに鳴らない理由がどこにも残らず、直す順番も決められない（Issue #89）
+    """
+    clip = tmp_path / "映像.mp4"
+    clip.write_bytes(b"")
+    objects = [media_object(clip, "動画ファイル")]
+    project = Project.create()
+    report = CompatibilityReport()
+    plan = gather_media(objects, project, FakeProbe())
+    place(objects, project, media=plan.media, report=report)
+
+    assert any("動画の音" in line for line in report.lines())
 
 
 def test_audio_uses_an_existing_track_when_it_is_free_there(files: tuple[Path, Path]) -> None:

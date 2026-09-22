@@ -327,6 +327,7 @@ def place(
     track_id: TrackId | None = None,
     default_duration: int = DEFAULT_GENERATED_FRAMES,
     media: Mapping[str, MediaItem] | None = None,
+    report: CompatibilityReport | None = None,
 ) -> list[Command]:
     """写した結果をタイムラインへ置くコマンドの列
 
@@ -344,6 +345,7 @@ def place(
         return []
 
     known = media or {}
+    _note_silent_videos(objects, known, report if report is not None else global_report)
     heard = [item for item in objects if _is_sound(item, known)]
     seen = [item for item in objects if not _is_sound(item, known)]
 
@@ -395,6 +397,23 @@ def _media_of(item: MappedObject, known: Mapping[str, MediaItem]) -> MediaItem |
     return known.get(item.media_path)
 
 
+def _note_silent_videos(
+    objects: list[MappedObject], known: Mapping[str, MediaItem], log: CompatibilityReport
+) -> None:
+    """音も持つ動画を置いても鳴らないことを、互換性レポートへ数えて残す
+
+    こちらの素材の読み込み（:func:`~sashimono.core.commands.insert_media`）は映像と
+    音声を別のクリップへ分けてリンクするが、テンプレートの配置は映像トラックへ
+    1 本置くだけで音声のクリップを作らない YMM4 の動画アイテムは配布物 230 本で
+    1 度も使われておらず、実物で確かめるまで分ける側へ寄せない（Issue #89）
+    握り潰すと、置いたのに鳴らない理由がどこにも残らない
+    """
+    for item in objects:
+        linked = _media_of(item, known)
+        if linked is not None and linked.has_video and linked.has_audio:
+            log.note_missing("テンプレートの動画の音（映像トラックにだけ置くので鳴らない）")
+
+
 def _is_sound(item: MappedObject, known: Mapping[str, MediaItem]) -> bool:
     """音声トラックへ置くものか
 
@@ -402,10 +421,6 @@ def _is_sound(item: MappedObject, known: Mapping[str, MediaItem]) -> bool:
     見つからなければ種類の名前で決める 素材の無い音声を映像トラックへ置くと、
     あとで素材を足しても映像トラックでは鳴らない
     """
-    # 音も持つ動画は映像トラックへ置くだけで、音声のクリップは作っていない
-    # （こちらの素材の読み込み :func:`insert_media` は映像と音声へ分けてリンクする）
-    # YMM4 の動画アイテムは配布物 230 本で 1 度も使われておらず、実物で確かめるまでは
-    # 分ける側へ寄せない 形式の推測で書くと外れる（Issue #89）
     linked = _media_of(item, known)
     if linked is not None:
         return not (linked.has_video or linked.is_still)

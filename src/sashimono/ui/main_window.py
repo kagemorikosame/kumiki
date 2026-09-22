@@ -11,7 +11,7 @@ import contextlib
 import functools
 import threading
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from PySide6.QtCore import QBuffer, QIODevice, Qt, QTimer, QUrl, Signal
@@ -137,6 +137,26 @@ def _probe_or_none(path: Path) -> MediaItem | None:
         return probe_media(path)
     except ProbeError:
         return None
+
+
+@dataclass(frozen=True, slots=True)
+class _ExoMedia:
+    """``.exo`` が参照している素材を読んだ結果 登録はまだしていない
+
+    登録をクリップの配置と同じ 1 回の :meth:`MainWindow.execute_all` で行うため、
+    ここではコマンドを作るだけにする 先に登録すると、配置を断られたときに
+    使われない素材と、その解析・控えの重い処理だけが残る
+    （テンプレートの棚の :func:`~sashimono.compat.catalog.gather_media` と同じ作り）
+    """
+
+    #: 書かれていたパス → 結ぶ素材の id
+    ids: dict[str, MediaId]
+    #: 見つからないか開けなかったパス
+    missing: list[str]
+    #: 素材一覧へ入れるコマンド
+    commands: list[Command]
+    #: 入ったあとに解析と控えを頼む素材
+    items: list[MediaItem]
 
 
 class MainWindow(QMainWindow):
@@ -1382,52 +1402,52 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "読み込めない", str(exc))
             return
 
-        media, missing = self._resolve_exo_media(exo, source)
-        commands = map_exo(exo, self.view_project, media=media)
+        found = self._resolve_exo_media(exo, source)
+        commands = map_exo(exo, self.view_project, media=found.ids)
         if not commands:
             self.statusBar().showMessage("読み込めるオブジェクトがありませんでした", 5000)
             return
 
-        if not self.execute_all(commands, f"AviUtl から読み込み: {source.name}"):
+        # 素材の登録と配置を 1 回の Undo にまとめる 分けると、配置を断られたときに
+        # 使われていない素材だけが一覧に残る
+        if not self.execute_all(
+            [*found.commands, *commands], f"AviUtl から読み込み: {source.name}"
+        ):
             # 断られた理由は execute_all がステータスバーに出している 上書きしない
             return
+        # 解析と控えは取り消しても止まらない 入ったことを確かめてから頼む
+        for media in found.items:
+            self._analyzer.request(media, on_ready=self._on_analysis_ready)
+            self._request_proxy(media)
         note = f"{source.name} から {len(exo.objects)} 個を読み込んだ"
-        if missing:
-            note += f"（素材 {len(missing)} 件が見つかりません）"
+        if found.missing:
+            note += f"（素材 {len(found.missing)} 件が見つかりません）"
         self.statusBar().showMessage(note, 6000)
 
-    def _resolve_exo_media(
-        self, exo: ExoFile, source: Path
-    ) -> tuple[dict[str, MediaId], list[str]]:
-        """``.exo`` が参照している素材を読み込む
+    def _resolve_exo_media(self, exo: ExoFile, source: Path) -> _ExoMedia:
+        """``.exo`` が参照している素材を読む 一覧へ入れるのは呼んだ側
 
         相対パスは ``.exo`` のある場所からも探す AviUtl のファイルは素材と
         一緒に配られることがある
         """
         from sashimono.compat.aviutl.mapping import media_paths
 
-        found: dict[str, MediaId] = {}
-        missing: list[str] = []
+        found = _ExoMedia(ids={}, missing=[], commands=[], items=[])
         for raw in media_paths(exo):
             candidates = [Path(raw), source.parent / Path(raw).name]
             path = next((c for c in candidates if c.exists()), None)
             if path is None:
-                missing.append(raw)
+                found.missing.append(raw)
                 continue
             try:
                 media = probe_media(path)
             except ProbeError:
-                missing.append(raw)
+                found.missing.append(raw)
                 continue
-            if not self.execute(AddMedia(media)):
-                # 入っていない素材の id をクリップに結ぶと、素材の無いクリップになり
-                # 何も映らない 見つからなかったのと同じ扱いにして数に出す
-                missing.append(raw)
-                continue
-            self._analyzer.request(media, on_ready=self._on_analysis_ready)
-            self._request_proxy(media)
-            found[raw] = media.id
-        return found, missing
+            found.commands.append(AddMedia(media))
+            found.items.append(media)
+            found.ids[raw] = media.id
+        return found
 
     def show_templates(self) -> None:
         """テンプレートの棚を開いて、選ばれたものを反映する

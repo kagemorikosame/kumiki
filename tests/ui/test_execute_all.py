@@ -205,26 +205,45 @@ def test_a_refused_exo_import_does_not_claim_it_read_anything(
     assert "読み込んだ" not in window.statusBar().currentMessage()
 
 
-def test_a_refused_media_registration_from_an_exo_counts_as_missing(
+def test_a_refused_exo_placement_leaves_no_media_behind(
     window: MainWindow, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # 入らなかった素材の id をクリップに結ぶと、素材の無いクリップになって何も映らない
-    # 見つかった数に入れて解析まで頼むと、一覧に無い素材のために裏で重い処理が走る
+    # 素材の登録を配置と別の段で先に済ませると、配置を断られたときに素材だけが
+    # 一覧に残り、その解析と控えの重い処理も裏で走り続ける
     picture = tmp_path / "絵.png"
     picture.write_bytes(b"")
     source = _write_exo(tmp_path / "素材つき.exo", _EXO_IMAGE.format(path=picture))
     _chosen_file(monkeypatch, source)
     monkeypatch.setattr(main_window_module, "probe_media", lambda path: MediaItem(path=path))
-    # 素材を足す側（execute）だけ断らせる クリップを置く側はそのまま通す
-    monkeypatch.setattr(window, "execute", lambda _command: False)
+    monkeypatch.setattr(window, "execute_all", lambda *_args, **_kwargs: False)
     asked: list[MediaItem] = []
     monkeypatch.setattr(window, "_request_proxy", asked.append)
     monkeypatch.setattr(window._analyzer, "request", lambda media, **_kwargs: asked.append(media))
     window.statusBar().clearMessage()
 
     window.import_exo()
+    assert window.document.project.media == ()
     assert asked == []
-    assert "素材 1 件が見つかりません" in window.statusBar().currentMessage()
+    assert "読み込んだ" not in window.statusBar().currentMessage()
+
+
+def test_an_exo_registers_its_media_together_with_the_clips(
+    window: MainWindow, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # 1 回の取り消しで素材もクリップも戻る 分けて実行すると、戻したときに
+    # 使われていない素材だけが一覧に残る
+    picture = tmp_path / "絵.png"
+    picture.write_bytes(b"")
+    source = _write_exo(tmp_path / "素材つき.exo", _EXO_IMAGE.format(path=picture))
+    _chosen_file(monkeypatch, source)
+    monkeypatch.setattr(main_window_module, "probe_media", lambda path: MediaItem(path=path))
+    monkeypatch.setattr(window, "_request_proxy", lambda _media: None)
+    monkeypatch.setattr(window._analyzer, "request", lambda _media, **_kwargs: None)
+
+    window.import_exo()
+    assert len(window.document.project.media) == 1
+    window.document.undo()
+    assert len(window.document.project.media) == 0
 
 
 def test_a_refused_media_import_does_not_claim_it_loaded_anything(
