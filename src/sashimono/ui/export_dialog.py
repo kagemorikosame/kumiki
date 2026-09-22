@@ -43,6 +43,10 @@ CODEC_LABELS = {
     "libx265": "H.265 (CPU)",
 }
 
+#: 「自動」の項目に持たせる値 ``None`` は「コーデックが 1 つも無く書き出せない」項目が
+#: 使っているので分ける 同じにすると、自動を選んで書き出しを押しても何も起きない
+AUTO_CODEC = ""
+
 
 class _ExportWorker(QObject):
     """別スレッドで書き出しを回す"""
@@ -99,6 +103,11 @@ class ExportDialog(QDialog):
 
         self._codec = QComboBox(self)
         codecs = available_video_codecs()
+        if codecs:
+            # 既定は名指しせず書き出し側に選ばせる 先頭を名指しで渡すと、試しには開けても
+            # 作品の大きさで断られたとき（NVENC は幅 4096 まで）に次の候補へ落ちられない
+            first = CODEC_LABELS.get(codecs[0], codecs[0])
+            self._codec.addItem(f"自動（{first}、使えなければ次の候補）", AUTO_CODEC)
         for name in codecs:
             self._codec.addItem(CODEC_LABELS.get(name, name), name)
         if not codecs:
@@ -141,6 +150,9 @@ class ExportDialog(QDialog):
         layout.addStretch(1)
         layout.addWidget(self._buttons)
 
+        if not codecs:
+            # 押せるままにすると、押しても何も起きず理由が分からない 理由はコーデックの欄に出ている
+            self._buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(False)
         if project.duration <= 0:
             self._buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(False)
             form.addRow("", QLabel("タイムラインが空なので書き出せない", self))
@@ -152,18 +164,23 @@ class ExportDialog(QDialog):
         if name:
             self._path.setText(name)
 
+    def _settings(self) -> ExportSettings | None:
+        """画面の選択から書き出しの設定を作る 使えるコーデックが無ければ ``None``"""
+        codec = self._codec.currentData()
+        if codec is None:
+            return None
+        return ExportSettings(
+            path=Path(self._path.text()),
+            video_codec=str(codec) or None,
+            video_bitrate=self._bitrate.value() * 1_000_000,
+        )
+
     def _start(self) -> None:
         if self._thread is not None:
             return
-        codec = self._codec.currentData()
-        if codec is None:
+        settings = self._settings()
+        if settings is None:
             return
-
-        settings = ExportSettings(
-            path=Path(self._path.text()),
-            video_codec=str(codec),
-            video_bitrate=self._bitrate.value() * 1_000_000,
-        )
 
         self._progress.setVisible(True)
         self._progress.setValue(0)
