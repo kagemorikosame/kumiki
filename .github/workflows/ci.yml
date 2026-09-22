@@ -31,18 +31,64 @@ jobs:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v7
+        id: python
         with:
           python-version: ${{ matrix.python }}
-          cache: pip
+
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          # 解いた依存と展開したホイールを持ち越す pip の cache はダウンロードだけで、
+          # 解決と展開は毎回やり直していた（1 分近く）
+          enable-cache: true
+          cache-dependency-glob: pyproject.toml
+          cache-suffix: py${{ matrix.python }}
 
       - name: 依存を入れる
-        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+        # setup-python の Python へ入れる 検証の手順は素の python を呼ぶので、uv の
+        # 仮想環境に入れると別の Python から見えなくなる
+        run: uv pip install --python "${{ steps.python.outputs.python-path }}" -e ".[dev]"
+
+      - name: ffmpeg の置き場を持ち越す
+        id: ffmpeg-cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/ffmpeg
+          # 版を鍵にする 版を上げるときは下の FFMPEG_VERSION と一緒に変える
+          key: ffmpeg-${{ runner.os }}-9.0.2-essentials
 
       - name: ffmpeg を入れる
         # 素材を使うテストが要る 無くても各テストが自分で飛ばすので、
         # ここが失敗しても CI 全体は止めない
+        # choco は毎回 35 秒ほどかかっていた 版を決めた静的ビルドを 1 度だけ取り、
+        # 以降は持ち越した置き場を PATH に足すだけにする
         continue-on-error: true
-        run: choco install ffmpeg -y --no-progress
+        shell: pwsh
+        env:
+          FFMPEG_VERSION: 9.0.2
+          FFMPEG_DIR: ${{ runner.temp }}/ffmpeg
+          CACHE_HIT: ${{ steps.ffmpeg-cache.outputs.cache-hit }}
+        run: |
+          if ($env:CACHE_HIT -ne 'true') {
+            $name = "ffmpeg-$env:FFMPEG_VERSION-essentials_build"
+            $zip = Join-Path $env:RUNNER_TEMP "$name.zip"
+            Invoke-WebRequest "https://github.com/GyanD/codexffmpeg/releases/download/$env:FFMPEG_VERSION/$name.zip" -OutFile $zip
+            Expand-Archive $zip -DestinationPath $env:RUNNER_TEMP
+            New-Item -ItemType Directory -Force $env:FFMPEG_DIR | Out-Null
+            Copy-Item (Join-Path $env:RUNNER_TEMP "$name/bin/*.exe") $env:FFMPEG_DIR
+          }
+          Add-Content $env:GITHUB_PATH $env:FFMPEG_DIR
+          & (Join-Path $env:FFMPEG_DIR "ffmpeg.exe") -hide_banner -version | Select-Object -First 1
+
+      - name: mypy の控えを持ち越す
+        # strict の mypy は毎回まっさらな状態から全ファイルを読んでいた 控えがあれば
+        # 中身の変わらないモジュールを読み直さない 鍵にコミットを入れて毎回保存し、
+        # 読むときは同じ Python と設定の一番新しい控えを使う
+        uses: actions/cache@v6
+        with:
+          path: .mypy_cache
+          key: mypy-${{ runner.os }}-py${{ matrix.python }}-${{ hashFiles('pyproject.toml') }}-${{ github.sha }}
+          restore-keys: |
+            mypy-${{ runner.os }}-py${{ matrix.python }}-${{ hashFiles('pyproject.toml') }}-
 
       - name: 検証
         # GPU が無いので OpenGL のテストは自分で飛ぶ ruff・mypy と、
