@@ -205,7 +205,12 @@ class TemplateDialog(QDialog):
         )
 
     def _show_preview(self) -> None:
-        """先頭のオブジェクトの中身だけを描く"""
+        """先頭のオブジェクトの中身だけを描く
+
+        まとめた中身（YMM4 の合成するグループ）の中まで探す 合成するグループは
+        それ自体が中身を持たないので、上だけを見ると吹き出しの字幕テンプレートの
+        下絵が何も出ない
+        """
         from kumiki.engine.sources import render_source
 
         source = next((item.clip.source for item in self._walk_loaded() if item.clip.source), None)
