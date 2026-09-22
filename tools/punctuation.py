@@ -61,7 +61,10 @@ SKIP_PARTS = {
 #: フォルダ（``src/sashimono/build/`` など）まで黙って検査から抜ける
 #: ``build/`` ``dist/`` は配る zip を組み立てた残り（tools/build_package.py）
 #: 部品の中には UTF-8 でない文字列ファイルもあり、読んだ時点で検査が落ちる
-SKIP_PREFIXES = ("tests/fixtures/", "build/", "dist/")
+#: ``.claude/`` は Claude Code が別のブランチを並行して作業する置き場（git の
+#: worktree） 中身は別のブランチの写しなので、ここで数えると main の検査が
+#: まだ直していない古い句点や、組み立てた残りの UTF-8 でないファイルで落ちる
+SKIP_PREFIXES = ("tests/fixtures/", "build/", "dist/", ".claude/")
 
 #: 文字列リテラルがデータとして句点を持つファイル リテラルだけ見逃す
 DATA_LITERAL_FILES = {"src/sashimono/asr/cleanup.py"}
