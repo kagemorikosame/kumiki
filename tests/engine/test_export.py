@@ -20,6 +20,7 @@ from kumiki.core.model import Project, ProjectSettings
 from kumiki.core.timebase import FrameRate
 from kumiki.engine.decode import VideoDecoder, probe_media
 from kumiki.engine.encode import (
+    COLOR_OPTIONS,
     ExportError,
     ExportSettings,
     available_video_codecs,
@@ -226,6 +227,10 @@ def bars_project(tmp_path: Path) -> Project:
     return document.project
 
 
+#: GPU が無いと開けないエンコーダ この失敗だけは環境の都合として飛ばす
+HARDWARE_CODECS = frozenset({"h264_nvenc", "h264_qsv"})
+
+
 class TestColor:
     """書き出しの色は BT.709 / limited で、同じ値のタグが付く（#61）
 
@@ -245,7 +250,10 @@ class TestColor:
                 bars_project, ExportSettings(path=output, video_codec=codec, frame_range=(0, 3))
             )
         except av.error.FFmpegError as exc:
-            # QSV はコーデックとしては入っていても、Intel の GPU が無い機械では開けない
+            # ハードウェアのエンコーダは、コーデックとしては入っていても GPU が無い機械では
+            # 開けない（QSV なら Intel の GPU） libx264 の失敗は本物の回帰なので飛ばさない
+            if codec not in HARDWARE_CODECS:
+                raise
             pytest.skip(f"{codec} を開けない: {exc}")
 
         with av.open(str(output)) as container:
@@ -259,6 +267,20 @@ class TestColor:
             frame = next(container.decode(stream))
         # ハードウェアのエンコーダは非可逆なので少し幅を持たせる BT.601 との差は 10 以上ある
         assert_close(yuv_at_bars(frame), BT709_YUV, tolerance=3)
+
+    @pytest.mark.parametrize("name", sorted(COLOR_OPTIONS))
+    def test_color_options_are_refused(
+        self, name: str, bars_project: Project, tmp_path: Path
+    ) -> None:
+        # options はコーデックを開くときに効くので、付けたタグを後から書き換えてしまう
+        # 画素は BT.709 のまま、タグだけ bt470bg などになったファイルができる
+        output = tmp_path / "out.mp4"
+        settings = ExportSettings(
+            path=output, video_codec="libx264", frame_range=(0, 3), options={name: "bt470bg"}
+        )
+        with pytest.raises(ExportError, match=name):
+            export_project(bars_project, settings)
+        assert not output.exists()
 
     def test_colors_survive_a_round_trip(self, bars_project: Project, tmp_path: Path) -> None:
         # 書いたタグどおりに読み直せば、元の色へ戻る

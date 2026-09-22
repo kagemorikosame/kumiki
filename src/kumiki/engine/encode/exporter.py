@@ -28,13 +28,22 @@ from kumiki.engine.colorspace import tag_bt709, to_bt709
 from kumiki.engine.gpu import OffscreenGLContext
 from kumiki.engine.render import FULL_QUALITY, FrameRenderer
 
-__all__ = ["ExportError", "ExportSettings", "available_video_codecs", "export_project"]
+__all__ = [
+    "COLOR_OPTIONS",
+    "ExportError",
+    "ExportSettings",
+    "available_video_codecs",
+    "export_project",
+]
 
 #: 優先順に並べた映像コーデック 前にあるものから、使えるものを選ぶ
 #: NVENC は CPU をほとんど使わないので、長尺でも編集を続けながら書き出せる
 VIDEO_CODEC_PREFERENCE = ("h264_nvenc", "h264_qsv", "libx264")
 
 _LAYOUTS = {1: "mono", 2: "stereo", 6: "5.1", 8: "7.1"}
+
+#: 色のタグを決めるコーデックのオプション名 :attr:`ExportSettings.options` には入れられない
+COLOR_OPTIONS = frozenset({"color_primaries", "color_trc", "colorspace", "color_range"})
 
 
 class ExportError(RuntimeError):
@@ -56,6 +65,7 @@ class ExportSettings:
     #: 書き出すフレーム範囲 ``None`` なら全体
     frame_range: tuple[int, int] | None = None
     #: コーデックへ渡す追加オプション プリセットや品質指定を通す口
+    #: 色のタグ（:data:`COLOR_OPTIONS`）は BT.709 に固定しているので受け付けない
     options: dict[str, str] = field(default_factory=dict)
 
 
@@ -92,6 +102,15 @@ def export_project(
     codec = settings.video_codec or next(iter(available_video_codecs()), None)
     if codec is None:
         raise ExportError("使える映像コーデックが見つからない")
+
+    # 色のタグは options で上書きできてしまう（コーデックを開くときに options が後から効く）
+    # 画素は必ず BT.709 / limited で変換するので、別のタグを通すと中身と食い違う
+    # 黙って捨てると頼んだ指定が効かない理由が分からないので、始める前に断る
+    conflicting = sorted(COLOR_OPTIONS & settings.options.keys())
+    if conflicting:
+        raise ExportError(
+            f"色のタグは BT.709 に固定している オプションでは変えられない: {', '.join(conflicting)}"
+        )
 
     settings.path.parent.mkdir(parents=True, exist_ok=True)
     context = OffscreenGLContext()

@@ -11,13 +11,14 @@ from fractions import Fraction
 from pathlib import Path
 
 import av
+import numpy as np
 import pytest
 from av.video.reformatter import ColorPrimaries, ColorRange, Colorspace, ColorTrc
 
 from kumiki.core.model import MediaItem
 from kumiki.engine.cache.proxy import ProxyStore, create_proxy, proxy_codecs
 from kumiki.engine.cache.store import CacheStore, media_key
-from kumiki.engine.colorspace import source_matrix, tag_bt709, to_bt709
+from kumiki.engine.colorspace import source_matrix, tag_bt709, to_bt709, to_rgb_array
 from kumiki.engine.decode import VideoDecoder
 from tests.color_bars import (
     AVCOL_SPC_BT470BG,
@@ -127,6 +128,57 @@ class TestReading:
             image = decoder.frame_at(Fraction(0))
         assert image is not None
         assert_close(rgb_at_bars(image), COLORS, tolerance=3)
+
+
+def gray_steps(color_range: ColorRange) -> av.VideoFrame:
+    """Y が 16 / 128 / 235 の 3 段の灰色 範囲のタグだけを変えて使う
+
+    16 と 235 は limited なら黒と白、full なら暗い灰と明るい灰 範囲を取り違えると
+    ここが 0 と 255 に潰れるので、どちらで読んだかが値で分かる
+    """
+    width, height = 1280, 720
+    frame = av.VideoFrame(width, height, "yuv420p")
+    luma = np.empty((height, width), np.uint8)
+    for index, value in enumerate((16, 128, 235)):
+        luma[:, index * width // 3 : (index + 1) * width // 3] = value
+    frame.planes[0].update(luma.tobytes())
+    for plane in frame.planes[1:]:
+        plane.update(bytes([128]) * plane.buffer_size)
+    frame.colorspace = AVCOL_SPC_BT709
+    frame.color_range = color_range
+    return frame
+
+
+def gray_levels(image: np.ndarray) -> list[int]:
+    width = image.shape[1]
+    return [int(image[image.shape[0] // 2, x]) for x in (width // 6, width // 2, width * 5 // 6)]
+
+
+class TestRange:
+    """範囲（full / limited）のタグが効いていること
+
+    PyAV の変換はフレームに付いた範囲をそのまま swscale へ渡す ここで指定し直さなくても
+    効いていることを、値で押さえておく
+    """
+
+    def test_full_range_is_read_as_full(self) -> None:
+        image = to_rgb_array(gray_steps(ColorRange.JPEG), "rgb24")
+        assert gray_levels(image[:, :, 0]) == [16, 128, 235]
+
+    def test_limited_range_is_read_as_limited(self) -> None:
+        image = to_rgb_array(gray_steps(ColorRange.MPEG), "rgb24")
+        assert gray_levels(image[:, :, 0]) == [0, 130, 255]
+
+    def test_full_range_is_squeezed_into_limited(self) -> None:
+        # 控えは limited で書く full の 16 は limited の 30 あたり（16 + 16 * 219 / 255）
+        converted = to_bt709(gray_steps(ColorRange.JPEG), "yuv420p")
+        luma = converted.to_ndarray()[: converted.height]
+        assert_close(
+            [(value, 0, 0) for value in gray_levels(luma)],
+            [(30, 0, 0), (126, 0, 0), (218, 0, 0)],
+            tolerance=1,
+        )
+        assert converted.color_range == ColorRange.MPEG
 
 
 @pytest.mark.skipif(not proxy_codecs(), reason="控えを作れるコーデックが無い")
