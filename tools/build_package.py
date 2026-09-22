@@ -104,7 +104,8 @@ AviUtl2 が入っている機械では、AviUtl2 の Script フォルダも同�
 """
 
 #: 使用許諾の写しを置くフォルダ exe の隣とリポジトリの直下で同じ名前にする
-#: リポジトリの方には、どの包みも写しを持っていない GNU の全文を置いてある
+#: リポジトリの方には、どの包みも写しを持っていない物（GNU の全文、PyAV の wheel に
+#: 入っている DLL と LuaJIT の写し）を置いてある 出どころは THIRD_PARTY_NOTICES.md
 LICENSES_DIR = "licenses"
 
 #: 同梱した部品の一覧 リポジトリの THIRD_PARTY_NOTICES.md を、Windows で開きやすい名前で置く
@@ -168,15 +169,20 @@ def assemble(bundle: Path) -> None:
     (bundle / "README.txt").write_text(README_TEXT, encoding="utf-8")
     shutil.copyfile(ROOT / "LICENSE", bundle / "LICENSE.txt")
     shutil.copyfile(NOTICES_SOURCE, bundle / NOTICES_NAME)
-    texts = bundle / LICENSES_DIR
-    texts.mkdir(exist_ok=True)
-    for text in sorted((ROOT / LICENSES_DIR).glob("*.txt")):
-        shutil.copyfile(text, texts / text.name)
+    for relative in repository_license_files():
+        destination = bundle / LICENSES_DIR / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / LICENSES_DIR / relative, destination)
 
 
-def gnu_license_names() -> list[str]:
-    """リポジトリに置いた GNU の全文の名前 zip から確かめるときの見本にする"""
-    return sorted(text.name for text in (ROOT / LICENSES_DIR).glob("*.txt"))
+def repository_license_files() -> list[str]:
+    """リポジトリの ``licenses`` に置いた写し（``licenses`` からの相対の綴り）
+
+    GNU の全文と、wheel が写しを持っていない部品（av.libs の DLL・LuaJIT）の写し
+    zip から確かめるときの見本にもする
+    """
+    root = ROOT / LICENSES_DIR
+    return sorted(path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file())
 
 
 def bundled_sources(record: Path) -> list[Path]:
@@ -311,7 +317,7 @@ def missing_notices(home: Path) -> list[str]:
         "LICENSE.txt",
         NOTICES_NAME,
         f"{LICENSES_DIR}/Python/LICENSE.txt",
-        *(f"{LICENSES_DIR}/{name}" for name in gnu_license_names()),
+        *(f"{LICENSES_DIR}/{name}" for name in repository_license_files()),
     ]
     return [name for name in expected if not (home / name).is_file()]
 

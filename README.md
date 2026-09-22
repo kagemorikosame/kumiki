@@ -405,8 +405,9 @@ PR は**フェーズ単位**で、CodeRabbit・Copilot・Sourcery・Qodo の 4 �
 
 同梱している部品ごとの使用許諾とソースの入手先は
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) にまとめてあります zip の中では
-`THIRD_PARTY_NOTICES.txt` と `licenses` フォルダ（GNU の使用許諾の全文と、Python の包みごとの
-写し）に入っています
+`THIRD_PARTY_NOTICES.txt` と `licenses` フォルダ（GNU の使用許諾の全文と、部品ごとの写し）に
+入っています GPL と LGPL の部品（FFmpeg・x264・x265・Qt など）の対応するソースは、zip と
+同じ [Release](../../releases) に添付します
 
 ## 色の扱い
 

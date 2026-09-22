@@ -335,6 +335,43 @@ class TestTheNotices:
         for text in ("GPL-2.0.txt", "GPL-3.0.txt", "LGPL-2.1.txt", "LGPL-3.0.txt"):
             assert f"Kumiki/licenses/{text}" in names, f"{text} の全文が zip に無い"
 
+    def test_the_dll_licenses_the_wheel_lacks_go_in(
+        self, builder: ModuleType, tmp_path: Path
+    ) -> None:
+        """PyAV の wheel の DLL と LuaJIT の写しは、リポジトリに置いた物を zip へ入れる
+
+        wheel が写しを持っていないので、dist-info から集めるだけでは入らない
+        BSD や MIT もバイナリと一緒に表記を渡す条件なので、欠けたまま配れない
+        """
+        bundle = tmp_path / "bundle"
+        bundle.mkdir()
+        builder.assemble(bundle)
+        archive = builder.make_zip(bundle, tmp_path / "out.zip")
+        with zipfile.ZipFile(archive) as opened:
+            names = set(opened.namelist())
+        for copy in (
+            "ffmpeg-8.1.2/LICENSE.md",
+            "x264-b35605ac/COPYING",
+            "x265-4.2/COPYING",
+            "dav1d-1.5.3/COPYING",
+            "opus-1.6.1/COPYING",
+            "SVT-AV1-4.1.0/LICENSE.md",
+            "libvpx-1.16.0/LICENSE",
+            "libwebp-1.6.0/COPYING",
+            "libvpl-2.16.0/LICENSE",
+            "lame-3.100/COPYING",
+            "opencore-amr-0.1.6/LICENSE",
+            "zlib-1.3.2/LICENSE",
+            "libiconv-1.19/COPYING.LIB",
+            "gcc-16.1.0/COPYING.RUNTIME",
+            "winpthreads-mingw-w64-14.0.0/COPYING",
+            "LuaJIT-2.0-e4c7d8b3/COPYRIGHT",
+            "LuaJIT-2.1-18b087cd/COPYRIGHT",
+        ):
+            assert f"Kumiki/licenses/{copy}" in names, f"{copy} が zip に無い"
+        # zip から確かめる段も、リポジトリに置いた写しを全部見本にする
+        assert "x264-b35605ac/COPYING" in builder.repository_license_files()
+
     def test_the_gnu_texts_are_the_real_ones(self) -> None:
         # 名前だけの空のファイルや別の版の全文を置いても、有無の確認は通ってしまう
         for name, title, version in (

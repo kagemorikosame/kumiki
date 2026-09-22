@@ -434,6 +434,10 @@ CPU での書き出しは libx264 を使う **zip は全体として GPL の条�
 - 部品ごとの使用許諾とソースの入手先は `THIRD_PARTY_NOTICES.md` に手で書く
   zip には `THIRD_PARTY_NOTICES.txt` として入る
 - GNU の使用許諾の全文は `licenses/` に置く（どの包みも dist-info に持っていないため）
+- PyAV の wheel の DLL（FFmpeg・x264・x265 ほか）と LuaJIT も写しを持っていないので、
+  上流から積んだのと同じ版の写しを取ってきて `licenses/<部品>-<版>/` に置いてある
+  版と取得元は `THIRD_PARTY_NOTICES.md` の表に書く PyAV を上げたら、pyav-ffmpeg の
+  組み立て設定（`scripts/pkg.py`）で版を確かめて取り直す
 - Python の包みの使用許諾は、組み立てのたびに dist-info から `licenses\<名前>-<版>\` へ写す
   **包みの名前は決め打ちにしない** 組み立ての記録（PyInstaller の TOC）から、積んだ
   ファイル 1 つずつの出どころを辿って数える PyInstaller は入っていれば拾うので、組み立てる
@@ -448,6 +452,27 @@ CPU での書き出しは libx264 を使う **zip は全体として GPL の条�
 - zip から確かめる段でも、一覧と全文が入っているかを見る
 - Qt は LGPL-3.0 で使う onedir で組み立てるので Qt の DLL は別のファイルのまま残り、
   使う人が差し替えられる 1 つの exe へまとめる形（onefile）に変えるときは、これを考え直す
+
+### リリースにソースを添付する
+
+GPL と LGPL の部品（FFmpeg・x264・x265・LAME・libiconv・Qt・PySide6）は、配る側が
+対応するソースを渡せる状態を保たなければならない 上流の置き場は消えたり移ったりするので、
+**zip と同じ GitHub Release に、積んだのと同じ版のソースを添付する**
+
+```
+.venv\Scripts\python.exe tools\collect_sources.py --check
+.venv\Scripts\python.exe tools\collect_sources.py
+gh release upload <タグ> dist\Kumiki-<版>-windows-x64.zip dist\sources\*
+```
+
+- `--check` は入手先に届くかだけを見る（中身は落とさない） 落とすと 700 MB を超える
+  （qtwebengine だけで 500 MB 超）
+- 落とすと `dist\sources` にアーカイブと `sources-SHA256SUMS.txt` `sources-manifest.json`
+  （取得元・版・sha256）ができる 上流が sha256 を公開している物は照合し、合わなければ止まる
+- 版は `tools/collect_sources.py` に手で書いてある 入っている PyAV（の FFmpeg）と PySide6 の
+  版と食い違うと落とす前に止まる 上げたら一覧と `THIRD_PARTY_NOTICES.md` を一緒に直す
+- x264 の本家（code.videolan.org）は道具からの取得をボット避けの画面で断るので、同じ
+  コミットを持つ GitHub の写しから落とす
 
 ### 色の範囲
 
