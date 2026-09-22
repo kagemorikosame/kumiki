@@ -214,14 +214,20 @@ def breakdown(
         started = time.perf_counter()
         packets = video.encode(None)
         container.mux(packets)
-        container.close()
+        # 旗は閉じる**前**に立てる 閉じるのに失敗したとき、後始末の側がもう 1 度
+        # 閉じにいくと、本当の失敗が閉じ直しの例外で隠れる
         closed = True
+        container.close()
         times["吐き出し"].append((time.perf_counter() - started) * 1000)
     finally:
-        # 途中で投げたときだけ閉じる 上で閉じた後にもう 1 度閉じない
-        if not closed:
-            container.close()
-        renderer.close()
+        try:
+            # 途中で投げたときだけ閉じる 上で閉じた後にもう 1 度閉じない
+            if not closed:
+                container.close()
+        finally:
+            # 閉じるのに失敗しても、GPU とデコーダは必ず手放す
+            # ここを飛ばすと、測るたびにテクスチャとデコーダが残る
+            renderer.close()
     return times
 
 
