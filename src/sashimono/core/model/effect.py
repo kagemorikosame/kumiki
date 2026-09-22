@@ -69,6 +69,10 @@ class Keyframe:
             raise ValueError("BEZIER には control_points が必要")
         if self.curve and self.curve not in CURVES:
             raise ValueError(f"未知の曲線: {self.curve!r}")
+        if self.curve and self.interpolation not in _CURVE_MODES:
+            # 直線や瞬間移動では曲線を読まない 持たせると、効かない名前がファイルに残り、
+            # 読んだ人が「Back で動くはず」と取り違える
+            raise ValueError(f"曲線の名前はイージングの点にだけ付く: {self.interpolation.value}")
 
 
 @dataclass(frozen=True, slots=True)

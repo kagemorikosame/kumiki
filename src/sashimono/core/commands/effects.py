@@ -157,12 +157,16 @@ class SetKeyframe(Command):
         return f"{self.path.name} にキーフレーム"
 
     def _keyframe(self, existing: Keyframe | None) -> Keyframe:
-        if self.interpolation is None and existing is not None:
-            return replace(existing, value=self.value)
+        if self.interpolation is None:
+            # 出方を渡さない呼び方は値だけを直すもの 新しい点は直線で置き、
+            # 渡された制御点や曲線の名前は使わない（直線の点に持たせても効かない）
+            if existing is not None:
+                return replace(existing, value=self.value)
+            return Keyframe(frame=self.frame, value=self.value)
         return Keyframe(
             frame=self.frame,
             value=self.value,
-            interpolation=self.interpolation or Interpolation.LINEAR,
+            interpolation=self.interpolation,
             control_points=self.control_points,
             curve=self.curve,
         )

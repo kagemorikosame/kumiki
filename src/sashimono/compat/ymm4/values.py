@@ -32,6 +32,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from sashimono.compat.aviutl.report import CompatibilityReport, global_report
 from sashimono.core.model import AnimatedValue, Interpolation, Keyframe
 from sashimono.core.model.easing import CURVES
 
@@ -117,18 +118,31 @@ def interpolation_of(name: str) -> Interpolation:
     return Interpolation.LINEAR
 
 
-def curve_of(name: str) -> str:
+#: 形の名前を持たなくてよい英語のイージング 直線は補間方法そのもの、Jump は
+#: 終わりで一気に行き着く形で、キーフレームの曲線には持たせていない
+_PLAIN_EASINGS = frozenset({"linear", "jump"})
+
+
+def curve_of(name: str, report: CompatibilityReport | None = None) -> str:
     """英語のイージング名（``Back_InOut`` など）の曲線の名前 無ければ空
 
     向き（``_InOut``）は :func:`interpolation_of` が補間方法として読む ここでは
     ``Back`` ``Expo`` のような形の名前だけを取る 取らずに向きだけで描くと、
     どの曲線も同じ加減速になり、行き過ぎて戻る Back や急に立ち上がる Expo が消える
+
+    知らない形の名前は記録してから空を返す（向きだけの加減速で描く） 黙って丸めると、
+    YMM4 が形を足したときに動きが違うことに誰も気付けない ``report`` を省くと、
+    アプリ全体の記録へ書く
     """
     kind, separator, _ = name.partition("_")
     if not separator:
         return ""
     lowered = kind.lower()
-    return lowered if lowered in CURVES else ""
+    if lowered in CURVES:
+        return lowered
+    if lowered not in _PLAIN_EASINGS:
+        (report or global_report).note_missing(f"YMM4 の移動方法の形: {kind}")
+    return ""
 
 
 def frame_positions(keyframes: Any, length: int, count: int) -> list[int]:
@@ -153,6 +167,10 @@ def frame_positions(keyframes: Any, length: int, count: int) -> list[int]:
     return [round(span * index / max(1, count - 1)) for index in range(count)]
 
 
+#: 形の名前（``Keyframe.curve``）を持てる補間方法
+_EASINGS = frozenset({Interpolation.EASE_IN, Interpolation.EASE_OUT, Interpolation.EASE_IN_OUT})
+
+
 def animated(
     value: Any,
     default: float = 0.0,
@@ -160,6 +178,7 @@ def animated(
     length: int = 1,
     keyframes: Any = None,
     scale: float = 1.0,
+    report: CompatibilityReport | None = None,
 ) -> AnimatedValue:
     """アニメーションを :class:`AnimatedValue` へ
 
@@ -184,7 +203,9 @@ def animated(
     style = str(value.get("AnimationType") or "")
     interpolation = interpolation_of(style)
     control = (0.42, 0.0, 0.58, 1.0) if interpolation is Interpolation.BEZIER else None
-    curve = curve_of(style)
+    # 形の名前はイージング 3 種にだけ付く 向きの読めない名前（``Back_Sideways``）は
+    # 直線で描くので、形も持たせない
+    curve = curve_of(style, report) if interpolation in _EASINGS else ""
 
     positions = frame_positions(keyframes, length, len(numbers))
     built: list[Keyframe] = []

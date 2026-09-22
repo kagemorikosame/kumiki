@@ -34,7 +34,7 @@ def tool() -> ModuleType:
     return module
 
 
-def test_the_first_exported_frame_is_frame_zero(tool: ModuleType) -> None:
+def test_without_the_start_time_ymm4_would_lag_one_frame_behind(tool: ModuleType) -> None:
     """YMM4 の書き出しは最初の 1 枚の時刻が 1 フレーム後ろから始まる
 
     時刻をそのまま番号にすると YMM4 の絵が 1 枚ずつ遅れて並び、場面の切れ目で
@@ -47,7 +47,7 @@ def test_the_first_exported_frame_is_frame_zero(tool: ModuleType) -> None:
     assert tool.frame_index(3000, None, base, 30.0) == 3
 
 
-def test_references_are_read_in_order_without_keeping_them_all(tool: ModuleType) -> None:
+def test_keeping_every_frame_would_run_out_of_memory_so_they_stream(tool: ModuleType) -> None:
     # 1 万枚を超える書き出しを全部持つとメモリに載らない 若い順に進めて読み、
     # 比べる 1 枚だけを配列へ変換する（読み飛ばす絵まで変換すると数分かかる）
     converted: list[int] = []
@@ -70,7 +70,7 @@ def test_references_are_read_in_order_without_keeping_them_all(tool: ModuleType)
     assert converted == [1, 4]
 
 
-def test_asking_for_an_earlier_frame_is_an_error(tool: ModuleType) -> None:
+def test_asking_backwards_fails_instead_of_silently_skipping_a_comparison(tool: ModuleType) -> None:
     # 読み進めた動画は戻せない 黙って None を返すと、並べ間違いが
     # 「比べる絵が無い」に化けて、比べた枚数が減ったことに気付けない
     references = tool.References(iter([(5, lambda: np.zeros((1, 1, 3), dtype=np.uint8))]))
@@ -79,7 +79,9 @@ def test_asking_for_an_earlier_frame_is_an_error(tool: ModuleType) -> None:
         references.get(2)
 
 
-def test_every_frame_of_a_slot_can_be_compared(tool: ModuleType) -> None:
+def test_three_samples_miss_a_one_frame_glitch_so_every_frame_can_be_compared(
+    tool: ModuleType,
+) -> None:
     # 3 枚だけだと、切れ目のように一瞬だけずれる所を見落とす
     case = tool.Case(name="n", file="f", index=0, start=100, length=60)
     assert case.sample_frames() == [102, 129, 156]

@@ -231,6 +231,17 @@ class TestKeyframes:
         assert first.interpolation is Interpolation.EASE_IN_OUT
         assert first.curve == "back"
 
+    def test_a_new_point_without_an_interpolation_is_straight(self, placed: Project) -> None:
+        # 出方を渡さずに新しい点を置いたら直線 渡された曲線の名前を持たせると、
+        # 直線の点に効かない名前が残る
+        project, path = self._path(placed)
+        project = SetKeyframe(path, 0, 0.0, curve="back").apply(project)
+
+        value = resolve_param(project, path)
+        assert isinstance(value, AnimatedValue)
+        assert value.keyframes[0].interpolation is Interpolation.LINEAR
+        assert value.keyframes[0].curve == ""
+
     def test_choosing_an_interpolation_replaces_the_curve(self, placed: Project) -> None:
         # 出方を選び直したら、前の曲線の名前は持ち越さない（グラフエディタの切り替え）
         project, path = self._path(placed)

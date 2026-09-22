@@ -165,6 +165,16 @@ class TestValidation:
         with pytest.raises(ProjectFileError, match="未知の曲線"):
             project_from_dict(data)
 
+    def test_rejects_a_curve_on_a_straight_point(self, rich_project: Project) -> None:
+        # 直線の点に曲線を書いたファイルは、描くと曲線が効かない 壊れたことに気付けるよう弾く
+        data = project_to_dict(rich_project)
+        clip = data["timeline"]["tracks"][0]["clips"][0]
+        keyframe = clip["effects"][0]["params"]["radius"]["keyframes"][0]
+        keyframe["interpolation"] = "linear"
+        keyframe["curve"] = "back"
+        with pytest.raises(ProjectFileError, match="イージングの点にだけ"):
+            project_from_dict(data)
+
     def test_rejects_a_non_numeric_keyframe_that_would_crash_the_audio_mix(
         self, rich_project: Project
     ) -> None:

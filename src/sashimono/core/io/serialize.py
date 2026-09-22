@@ -168,6 +168,10 @@ def _get_list(data: dict[str, Any], key: str) -> list[Any]:
 # --- エフェクト -----------------------------------------------------------
 
 
+#: 曲線の名前（``curve``）を持てる補間方法
+_EASINGS = frozenset({Interpolation.EASE_IN, Interpolation.EASE_OUT, Interpolation.EASE_IN_OUT})
+
+
 def _keyframe_to_json(keyframe: Keyframe) -> dict[str, Any]:
     data: dict[str, Any] = {
         "frame": keyframe.frame,
@@ -204,6 +208,8 @@ def _keyframe_from_json(raw: object) -> Keyframe:
     curve = _get_str(data, "curve", "")
     if curve and curve not in CURVES:
         raise ProjectFileError(f"未知の曲線: {curve!r}")
+    if curve and interpolation not in _EASINGS:
+        raise ProjectFileError(f"曲線の名前はイージングの点にだけ付く: {name!r} に {curve!r}")
 
     return Keyframe(
         frame=_get_int(data, "frame"),

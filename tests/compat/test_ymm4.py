@@ -301,6 +301,18 @@ class TestInterpolationNames:
         # Back_InOut は頭で逆へ振れる（YMM4 の書き出しでも 6 度ほど逆へ回った）
         assert value.at(15) < 0.0
 
+    def test_an_unknown_easing_shape_is_recorded_before_it_is_rounded(self) -> None:
+        # 知らない形は向きだけの加減速で描く 記録しないと、YMM4 が形を足したときに
+        # 動きが違うことに誰も気付けない 直線と Jump は形を持たないので記録しない
+        report = CompatibilityReport()
+        value = animated(moving(0.0, 1.0, style="Magic_In"), length=30, report=report)
+        assert value.keyframes[0].curve == ""
+        assert value.keyframes[0].interpolation is Interpolation.EASE_IN
+        assert any("Magic" in line for line in report.lines())
+        quiet = CompatibilityReport()
+        animated(moving(0.0, 1.0, style="Jump_In"), length=30, report=quiet)
+        assert not quiet.lines()
+
 
 class TestValues:
     def test_a_bare_number(self) -> None:

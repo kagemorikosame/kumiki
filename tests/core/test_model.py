@@ -233,6 +233,12 @@ class TestAnimatedValue:
         )
         assert value.at(25) == pytest.approx(0.25**4)
 
+    def test_a_curve_on_a_straight_point_is_rejected(self) -> None:
+        # 直線や瞬間移動の点は曲線を読まない 持たせると効かない名前がファイルに残り、
+        # 読んだ人が「Back で動くはず」と取り違える
+        with pytest.raises(ValueError, match="イージング"):
+            Keyframe(frame=0, value=0.0, interpolation=Interpolation.LINEAR, curve="back")
+
     def test_an_unknown_curve_is_rejected(self) -> None:
         # 知らない名前を通すと、描くときに直線へ落ちて誰も気付かない
         with pytest.raises(ValueError, match="曲線"):

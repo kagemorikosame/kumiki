@@ -67,6 +67,7 @@ class _Reader:
             length=self.length,
             keyframes=self.keyframes,
             scale=-1.0 if flip else 1.0,
+            report=self.report,
         )
 
     def plain(self, key: str, default: float = 0.0) -> float:
