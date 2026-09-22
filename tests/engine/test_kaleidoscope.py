@@ -153,23 +153,27 @@ class TestKaleidoscope:
         assert self._lit_at(image, 12, -64)
         assert not self._lit_at(image, -12, -64)
 
-    def test_four_corners_read_the_wedge_shrunk_along_the_axis(
-        self, draw: Callable[..., np.ndarray]
+    @pytest.mark.parametrize("corners", [4, 6, 8, 10, 12])
+    def test_the_axis_is_read_at_the_equilateral_scale(
+        self, draw: Callable[..., np.ndarray], corners: int
     ) -> None:
-        """角数 4 の三角は、辺 長さ の正三角形を軸に沿って縮めた絵を映す
+        """真下 d の画素は、元の絵の真下 d·cos 30/cos(180/角数) を読む
 
-        真下 d の画素は、元の絵の真下 d·cos 30/cos 45（1.22 倍）を読む
-        読む中心を四角の下端の 30px 上へずらすと、真下 22 は 27 を読んで四角の中、
-        真下 27 は 33 を読んで四角の外になる 角数 4 の三角をそのまま読むと 27 も光る
+        鏡の三角を辺 長さ の正三角形へ引き伸ばして読むので、角数 4 は 1.22 倍先、
+        8 は 0.94 倍、12 は 0.90 倍の所を読む 角数 6 は 1 倍で今までと変わらない
+        四角の下端（読む中心から 60 下）の 2.5px 手前を読む画素は光り、2.5px 先を読む
+        画素は光らない 角数によらず 1 倍で読むと、角数 6 以外はどちらかが外れる
         AviUtl2 の角数 4 では中心の田が 0.8 倍に縮み、縮めないと差が 10.4 だった
+        （角数 8 と 10 は書き出しで確かめていない 同じ式の続きとして固定しておく）
         """
+        scale = math.cos(math.pi / 6) / math.cos(math.pi / corners)
+        edge = SQUARE / 2
         image = draw(
-            _kaleidoscope(
-                span=80.0, repeats=1.0, corners=4.0, center_y=-(SQUARE / 2 - 30), clip_outside=True
-            )
+            _kaleidoscope(span=100.0, repeats=1.0, corners=float(corners), clip_outside=True)
         )
-        assert self._lit_at(image, 0, -22)
-        assert not self._lit_at(image, 0, -27)
+        # 画素の中心は整数の位置から 0.5 下にある
+        assert self._lit_at(image, 0, -round((edge - 2.5) / scale - 0.5))
+        assert not self._lit_at(image, 0, -round((edge + 2.5) / scale - 0.5))
 
     def test_four_corners_read_the_wedge_narrowed_across_the_axis(
         self, draw: Callable[..., np.ndarray]
