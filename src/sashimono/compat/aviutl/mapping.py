@@ -60,11 +60,16 @@ _FIGURES = ("ellipse", "rect", "triangle", "pentagon", "hexagon", "star", "backg
 #: AviUtl2 の図形の種類 **名前で書かれる**（``図形の種類=ハート``）
 #: AviUtl2 に図形を置いたエイリアスを作らせて読み取った
 #: ハート に当たる形はこちらに無いので、記録に残して矩形にする
+#:
+#: 三角形は**円に内接する形**（頂点が上） AviUtl2 に描かせて測ると、サイズ 400 で
+#: 頂点が中心の 200 上・底辺が 100 下・底辺の幅 346 だった（縦横比 ±50 でも同じ形を
+#: 縦か横に縮めただけ） 四角に合わせた三角形で写すと、底辺が 100 下へはみ出して
+#: 幅も 54 広がる
 _FIGURE_NAMES: dict[str, str] = {
     "背景": "background",
     "円": "ellipse",
     "四角形": "rect",
-    "三角形": "triangle",
+    "三角形": "inscribed_triangle",
     "五角形": "pentagon",
     "六角形": "hexagon",
     "星型": "star",
@@ -499,6 +504,16 @@ _FILTERS: dict[str, str] = {
 _SPLIT = "オブジェクト分割"
 
 
+#: 絵や音をそのまま素材として持つ中身 素材一覧へ載せる側（media_paths）と、
+#: クリップを素材と結ぶ側（_content）の両方がここを見る 片方だけに足すと、
+#: 一覧には載るのにクリップが空のまま、ということが起きる
+_MEDIA_NAMES = frozenset({"動画ファイル", "画像ファイル", "音声ファイル"})
+
+#: 素材一覧へ載せる中身 音声波形表示は自分では素材にならないが、``ファイル`` の音を描く
+#: 読み込ませないと、別の機械へ持っていったときに探し直せない
+_LISTED_NAMES = _MEDIA_NAMES | {"音声波形表示"}
+
+
 def media_paths(exo: ExoFile) -> tuple[str, ...]:
     """このファイルが参照している素材のパス
 
@@ -508,19 +523,23 @@ def media_paths(exo: ExoFile) -> tuple[str, ...]:
     found: list[str] = []
     for obj in exo.objects:
         content = obj.content
-        if content is None:
+        if content is None or content.name not in _LISTED_NAMES:
             continue
-        if content.name in ("動画ファイル", "画像ファイル", "音声ファイル"):
-            path = content.params.get("file", "")
-            if path and path not in found:
-                found.append(path)
-        elif content.name == "音声波形表示":
-            # 波形は自分の ``ファイル`` の音を描く 素材として読み込ませないと、
-            # 別の機械へ持っていったときに探し直せない
-            path = content.value("ファイル", "file").strip()
-            if path and path not in found:
-                found.append(path)
+        path = _media_file(content)
+        if path and path not in found:
+            found.append(path)
     return tuple(found)
+
+
+def _media_file(entry: ExoEntry) -> str:
+    """中身が読み込む素材ファイルのパス
+
+    AviUtl2 は ``ファイル=``、AviUtl1 は ``file=`` と書く（AviUtl2 v2.1.6a に動画・画像・
+    音声ファイルを置いて保存させ、3 つとも ``ファイル=`` だと確かめた） ``file`` だけを
+    見ていたので、AviUtl2 の素材は素材一覧にもクリップにも載らず、中身の無い
+    クリップになっていた
+    """
+    return entry.value("ファイル", "file").strip()
 
 
 def map_exo(
@@ -897,10 +916,10 @@ def _content(
     if entry.name == "星":
         return _star_field(entry, points, log), "", "shape"
     if entry.name == "音声波形表示":
-        path = entry.value("ファイル", "file").strip()
+        path = _media_file(entry)
         return _waveform(entry, path, points, log), path, "shape"
-    if entry.name in ("動画ファイル", "画像ファイル", "音声ファイル"):
-        return None, entry.params.get("file", ""), entry.name
+    if entry.name in _MEDIA_NAMES:
+        return None, _media_file(entry), entry.name
 
     if entry.name not in _CONTENT_NAMES:
         log.note_missing(f"オブジェクト: {entry.name}")
@@ -941,6 +960,11 @@ def _text(entry: ExoEntry, log: CompatibilityReport) -> GeneratedSource:
         "letter_spacing": AnimatedValue(entry.numeric("字間", "spacing_x")),
         "align": align,
         "valign": valign,
+        # 入れ物と太字を AviUtl2 に合わせる 字の形を入れ物にすると、画像合成や
+        # 万華鏡の基準が AviUtl2 より 22〜24 画素内側になる（#64）
+        # AviUtl1 は測っていないので標準のまま 推測で AviUtl2 の決まりを当てると、
+        # 今まで読めていた AviUtl1 の字幕の位置が黙って動く
+        "layout": "aviutl" if entry.generation >= 2 else "native",
     }
     font = entry.value("フォント", "font")
     if font:
@@ -1141,6 +1165,8 @@ def _counter(entry: ExoEntry, log: CompatibilityReport) -> GeneratedSource:
         "timer_start": AnimatedValue(entry.number("初期値")),
         # 速度は 1 秒あたりの進み方 こちらは百分率で持つ
         "timer_rate": AnimatedValue(entry.number("速度", 1.0) * 100.0),
+        # テキストと同じく AviUtl2 の入れ物で組む
+        "layout": "aviutl",
     }
     # 装飾はテキストと同じ仕組みで写す（縁取りや影が消えないように）
     params.update(_decoration_of(entry, entry.number("サイズ", 34.0), log))
