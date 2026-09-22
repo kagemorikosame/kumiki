@@ -7,11 +7,14 @@
 
 from __future__ import annotations
 
+import queue
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from fractions import Fraction
 from functools import cache
 from pathlib import Path
+from types import TracebackType
 from typing import cast
 
 import av
@@ -26,17 +29,39 @@ import numpy as np
 
 from sashimono.core.model import Project, TrackKind
 from sashimono.engine.audio import AudioMixer
-from sashimono.engine.colorspace import tag_bt709, to_bt709
+from sashimono.engine.colorspace import VideoReformatter, tag_bt709, to_bt709
 from sashimono.engine.gpu import OffscreenGLContext
 from sashimono.engine.render import FULL_QUALITY, FrameRenderer
 
 __all__ = [
     "COLOR_OPTIONS",
+    "DEFAULT_PIPELINE_DEPTH",
+    "MAX_PIPELINE_DEPTH",
+    "MEASURED_EXPORT_MS",
+    "MEASURED_EXPORT_TOTAL_MS",
     "ExportError",
     "ExportSettings",
     "available_video_codecs",
     "export_project",
 ]
+
+#: 合成の先へ何枚ぶん進めてよいか（0 で直列）
+#: 1 枚は画面 1 枚ぶんの RGBA（1080p で 8MB、4K で 33MB） 深くしても、
+#: 合成と書き込みのどちらか遅い方より速くはならない 2 枚あれば片方の揺れを吸える
+DEFAULT_PIPELINE_DEPTH = 2
+#: 設定で選べる上限 これ以上はメモリを食うだけで速くならない
+MAX_PIPELINE_DEPTH = 8
+
+#: 1920x1080 を 3 枚重ねて 60 枚書き出したときの 1 枚あたりの内訳（ミリ秒）
+#: 合成 / 読み戻し / 色変換 / エンコード + mux の順（NVENC・NVIDIA GPU）
+#: 前の 2 つは GPU の側で、後ろの 2 つが別スレッドへ逃がせる分
+#: 測り直すときは tools\bench_export.py
+MEASURED_EXPORT_MS = (17.0, 7.4, 6.1, 0.8)
+
+#: 同じ素材を書き出し切ったときの 1 枚あたりの実測（ミリ秒） 1 枚ずつ / 2 枚先まで
+#: 内訳の差（6.9ms）ほど縮まないのは、色変換の前半（画素を PyAV へ写す所）が
+#: GIL を握ったままで、合成の側の Python の処理と取り合うため
+MEASURED_EXPORT_TOTAL_MS = (41.5, 38.0)
 
 #: 優先順に並べた映像コーデック 前にあるものから、使えるものを選ぶ
 #: NVENC は CPU をほとんど使わないので、長尺でも編集を続けながら書き出せる
@@ -76,6 +101,9 @@ class ExportSettings:
     #: コーデックへ渡す追加オプション プリセットや品質指定を通す口
     #: 色のタグ（:data:`COLOR_OPTIONS`）は BT.709 に固定しているので受け付けない
     options: dict[str, str] = field(default_factory=dict)
+    #: GPU の合成を、色変換・エンコード・mux の何枚ぶん先へ進めてよいか
+    #: 0 なら 1 枚ずつ直列に処理する（スレッドを使わない）
+    pipeline_depth: int = DEFAULT_PIPELINE_DEPTH
 
 
 #: 開けるかを試すときの大きさ NVENC は小さすぎる画を断る（64x64 では開けない）ので、
@@ -274,36 +302,181 @@ def _encode(
         frame_time_base = Fraction(rate.den, rate.num)
 
         total = end - start
-        #: 音声の書き込み位置 出力レートでの通し番号で、そのまま PTS になる
-        audio_cursor = 0
+        writer = _FrameWriter(
+            container=container,
+            video=video,
+            audio=audio,
+            fifo=fifo,
+            mixer=mixer,
+            frame_time_base=frame_time_base,
+            pixel_format=settings.pixel_format,
+            total=total,
+            progress=progress,
+        )
 
-        for index, frame_number in enumerate(range(start, end)):
-            if should_cancel is not None and should_cancel():
-                raise ExportError("書き出しを中止した")
-
-            # 音声を先に流す AAC は先頭にプライミングを持つため最初のパケットの
-            # DTS が負になり、映像を先に入れると多重化の順序が逆転して弾かれる
-            if audio is not None and fifo is not None:
-                audio_cursor = _write_audio(
-                    container, audio, fifo, mixer, frame_number, audio_cursor
-                )
-
-            image = renderer.render(frame_number)
-            frame = av.video.frame.VideoFrame.from_ndarray(
-                np.ascontiguousarray(image[:, :, :3]), format="rgb24"
-            )
-            frame = to_bt709(frame, settings.pixel_format)
-            frame.pts = index
-            frame.time_base = frame_time_base
-            container.mux(video.encode(frame))
-
-            if progress is not None:
-                progress((index + 1) / total)
+        # 書き込み（色変換・エンコード・mux）は別スレッドへ逃がす 渡す順序は
+        # そのままなので、出来上がるファイルは直列のときと 1 バイトも変わらない
+        with _WritePipeline(writer.write, settings.pipeline_depth) as pipeline:
+            for index, frame_number in enumerate(range(start, end)):
+                if should_cancel is not None and should_cancel():
+                    raise ExportError("書き出しを中止した")
+                # 書き込み側が落ちていたら、そこで合成をやめる 続けても捨てられるだけで、
+                # 本当の失敗（閉じるときに投げ直す）が後ろへ遠ざかる
+                if pipeline.failed:
+                    break
+                pipeline.submit(index, frame_number, renderer.render(frame_number))
 
         # エンコーダに溜まっている分を吐き出す これを忘れると末尾が欠ける
+        # ここへ来るのは書き込みスレッドが終わった後だけ（`with` が待って join する）
         if audio is not None and fifo is not None:
             _flush_audio(container, audio, fifo)
         container.mux(video.encode(None))
+
+
+class _FrameWriter:
+    """合成済みの 1 枚を、色変換してエンコードし mux する
+
+    音声もここで流す 音声と映像の mux は同じコンテナへの書き込みで、
+    別のスレッドから触ると FFmpeg の側で順序が壊れる 片側だけ逃がさない
+    """
+
+    def __init__(
+        self,
+        *,
+        container: av.container.OutputContainer,
+        video: av.video.stream.VideoStream,
+        audio: av.audio.stream.AudioStream | None,
+        fifo: av.audio.fifo.AudioFifo | None,
+        mixer: AudioMixer,
+        frame_time_base: Fraction,
+        pixel_format: str,
+        total: int,
+        progress: Callable[[float], None] | None,
+    ) -> None:
+        self._container = container
+        self._video = video
+        self._audio = audio
+        self._fifo = fifo
+        self._mixer = mixer
+        self._frame_time_base = frame_time_base
+        self._pixel_format = pixel_format
+        self._total = total
+        self._progress = progress
+        #: 音声の書き込み位置 出力レートでの通し番号で、そのまま PTS になる
+        self._audio_cursor = 0
+        # swscale の変換表を書き出しの間ずっと使い回す 毎フレーム作り直すと
+        # 1920x1080 で 1 枚 10ms ほど増える（色変換 15.6ms のうち 10ms 近く）
+        # 大きさも書式も書き出しの間は変わらないので、1 つで足りる
+        self._reformatter = VideoReformatter()
+
+    def write(self, index: int, frame_number: int, image: np.ndarray) -> None:
+        # 音声を先に流す AAC は先頭にプライミングを持つため最初のパケットの
+        # DTS が負になり、映像を先に入れると多重化の順序が逆転して弾かれる
+        if self._audio is not None and self._fifo is not None:
+            self._audio_cursor = _write_audio(
+                self._container,
+                self._audio,
+                self._fifo,
+                self._mixer,
+                frame_number,
+                self._audio_cursor,
+            )
+
+        # 合成結果は RGBA のまま渡す rgb24 へ詰め直すと、飛び飛びの読み出しで
+        # 6MB を写す手間が増えるだけ（1920x1080 で 1 枚 3ms）
+        # swscale は RGBA の A を捨てるので、出る画素は rgb24 から変換したものと同じ
+        frame = av.video.frame.VideoFrame.from_ndarray(image, format="rgba")
+        frame = to_bt709(frame, self._pixel_format, reformatter=self._reformatter)
+        frame.pts = index
+        frame.time_base = self._frame_time_base
+        self._container.mux(self._video.encode(frame))
+
+        # 進み具合は**書けた枚数**で出す 合成した枚数で出すと、パイプラインの
+        # 深さのぶんだけ先へ進んで見え、100% になってから実際の書き込みを待つ
+        if self._progress is not None:
+            self._progress((index + 1) / self._total)
+
+
+#: 書き込みスレッドへ渡す品物 ``None`` は「もう来ない」の合図
+_Item = tuple[int, int, np.ndarray] | None
+
+
+class _WritePipeline:
+    """GPU の合成と、CPU の書き込みを別のスレッドで重ねる
+
+    書き出しの内訳は :data:`MEASURED_EXPORT_MS` を見る 前の 2 つ（合成・読み戻し）が
+    GPU を待つ所で、後ろの 2 つ（色変換・エンコード + mux）が CPU の所
+    直列にすると、CPU が動いている間ずっと GPU が遊んでいる
+
+    ``depth`` が 0 なら、スレッドを作らずその場で書く（設定で切れるようにするため）
+
+    失敗したときに**黙って取りこぼさない**のがこの作りの肝
+    - 書き込みスレッドが投げた例外は覚えておき、:meth:`close` で投げ直す
+    - 失敗した後も品物を受け取り続ける 受け取りをやめると、合成の側が
+      いっぱいのキューへ ``put`` したまま永久に止まる
+    """
+
+    def __init__(self, write: Callable[[int, int, np.ndarray], None], depth: int) -> None:
+        self._write = write
+        self._depth = max(0, depth)
+        self._error: BaseException | None = None
+        self._queue: queue.Queue[_Item] = queue.Queue(maxsize=max(1, self._depth))
+        self._thread: threading.Thread | None = None
+
+    @property
+    def failed(self) -> bool:
+        """書き込み側が失敗したか 真なら合成を続けても意味が無い"""
+        return self._error is not None
+
+    def __enter__(self) -> _WritePipeline:
+        if self._depth > 0:
+            self._thread = threading.Thread(
+                target=self._run, name="sashimono-export-writer", daemon=True
+            )
+            self._thread.start()
+        return self
+
+    def __exit__(
+        self,
+        kind: type[BaseException] | None,
+        value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        # 合成の側が中止や例外で抜けたときも、必ずスレッドを終わらせてから戻る
+        # 終わらせないと、書きかけのファイルを消す側とスレッドが同じコンテナを
+        # 取り合い、FFmpeg の中で落ちる
+        self.close(reraise=kind is None)
+
+    def submit(self, index: int, frame_number: int, image: np.ndarray) -> None:
+        if self._thread is None:
+            self._write(index, frame_number, image)
+            return
+        # キューが埋まっていれば、ここで待つ これが合成の側の速さの上限になり、
+        # 溜め込みすぎてメモリを食うのを防ぐ
+        self._queue.put((index, frame_number, image))
+
+    def close(self, *, reraise: bool = True) -> None:
+        if self._thread is not None:
+            self._queue.put(None)
+            self._thread.join()
+            self._thread = None
+        if reraise and self._error is not None:
+            error = self._error
+            self._error = None
+            raise error
+
+    def _run(self) -> None:
+        while True:
+            item = self._queue.get()
+            if item is None:
+                return
+            if self._error is not None:
+                # すでに失敗している 捨てるだけ 受け取りは続ける（上の説明のとおり）
+                continue
+            try:
+                self._write(*item)
+            except BaseException as error:
+                self._error = error
 
 
 def _write_audio(

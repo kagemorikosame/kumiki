@@ -15,6 +15,7 @@ import av
 import av.codec.codec
 import av.error
 import av.video.codeccontext
+import numpy as np
 import pytest
 from av.video.reformatter import ColorPrimaries, ColorRange, ColorTrc
 
@@ -318,6 +319,118 @@ class TestExport:
         output = tmp_path / "深い" / "階層" / "out.mp4"
         export_project(ready_project, ExportSettings(path=output, video_codec="libx264"))
         assert output.exists()
+
+
+def _decoded(path: Path) -> list[np.ndarray]:
+    """書き出したファイルのフレームを全部読む"""
+    with av.open(str(path)) as container:
+        return [frame.to_ndarray(format="rgb24") for frame in container.decode(video=0)]
+
+
+def _export_both(project: Project, serial: Path, pipelined: Path) -> None:
+    """同じ範囲を、1 枚ずつと重ねた場合の 2 通りで書き出す"""
+    for path, depth in ((serial, 0), (pipelined, 3)):
+        export_project(
+            project,
+            ExportSettings(
+                path=path, video_codec="libx264", frame_range=(0, 8), pipeline_depth=depth
+            ),
+        )
+
+
+class TestPipeline:
+    """合成と書き込みを重ねても、出来上がる物が変わらないこと（#56）"""
+
+    def test_the_pipeline_makes_the_same_frames(
+        self, ready_project: Project, tmp_path: Path
+    ) -> None:
+        # 速くするために絵が変わったら本末転倒 順番も内容も 1 枚ずつのときと同じでなければならない
+        serial = tmp_path / "serial.mp4"
+        pipelined = tmp_path / "pipelined.mp4"
+        _export_both(ready_project, serial, pipelined)
+
+        left, right = _decoded(serial), _decoded(pipelined)
+        assert len(left) == len(right) == 8
+        for number, (a, b) in enumerate(zip(left, right, strict=True)):
+            assert np.array_equal(a, b), f"{number} 枚目の絵が違う"
+
+    def test_the_pipeline_keeps_the_audio(self, ready_project: Project, tmp_path: Path) -> None:
+        # 音声も同じスレッドで流す 片側だけ別スレッドにすると多重化の順序が崩れ、
+        # 音の無いファイルや再生できないファイルができる
+        serial = tmp_path / "serial.mp4"
+        pipelined = tmp_path / "pipelined.mp4"
+        _export_both(ready_project, serial, pipelined)
+
+        def samples(path: Path) -> int:
+            with av.open(str(path)) as container:
+                return sum(frame.samples for frame in container.decode(audio=0))
+
+        assert samples(pipelined) == samples(serial) > 0
+
+    def test_a_failure_in_the_writer_surfaces(
+        self, ready_project: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 別スレッドの失敗を握り潰すと、途中までしか書けていないファイルが
+        # 「書き出せた」として残る
+        output = tmp_path / "broken.mp4"
+        original = exporter._FrameWriter.write
+        calls = [0]
+
+        def failing(self: object, index: int, frame_number: int, image: np.ndarray) -> None:
+            calls[0] += 1
+            if calls[0] == 3:
+                raise RuntimeError("書き込みで失敗した")
+            original(self, index, frame_number, image)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(exporter._FrameWriter, "write", failing)
+        with pytest.raises(RuntimeError, match="書き込みで失敗した"):
+            export_project(
+                ready_project,
+                ExportSettings(path=output, video_codec="libx264", pipeline_depth=2),
+            )
+        assert not output.exists()
+
+    def test_a_failure_in_the_writer_does_not_hang(
+        self, ready_project: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 失敗した後に受け取りをやめると、合成の側がキューで止まって書き出しが固まる
+        def failing(self: object, index: int, frame_number: int, image: np.ndarray) -> None:
+            raise RuntimeError("書き込みで失敗した")
+
+        monkeypatch.setattr(exporter._FrameWriter, "write", failing)
+        finished = threading.Event()
+
+        def run() -> None:
+            with pytest.raises(RuntimeError):
+                export_project(
+                    ready_project,
+                    ExportSettings(
+                        path=tmp_path / "hang.mp4", video_codec="libx264", pipeline_depth=1
+                    ),
+                )
+            finished.set()
+
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        assert finished.wait(120), "書き込みが失敗した後、書き出しが戻ってこない"
+
+    def test_progress_counts_written_frames(self, ready_project: Project, tmp_path: Path) -> None:
+        # 合成した枚数で数えると、深さのぶんだけ先に 100% になり、
+        # そこから実際の書き込みを待つ
+        seen: list[float] = []
+        export_project(
+            ready_project,
+            ExportSettings(
+                path=tmp_path / "p.mp4",
+                video_codec="libx264",
+                frame_range=(0, 8),
+                pipeline_depth=3,
+            ),
+            progress=seen.append,
+        )
+        assert len(seen) == 8
+        assert seen == sorted(seen)
+        assert seen[-1] == pytest.approx(1.0)
 
 
 class TestRoundTrip:

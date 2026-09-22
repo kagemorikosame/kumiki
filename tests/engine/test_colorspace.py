@@ -13,7 +13,13 @@ from pathlib import Path
 import av
 import numpy as np
 import pytest
-from av.video.reformatter import ColorPrimaries, ColorRange, Colorspace, ColorTrc
+from av.video.reformatter import (
+    ColorPrimaries,
+    ColorRange,
+    Colorspace,
+    ColorTrc,
+    VideoReformatter,
+)
 
 from sashimono.core.model import MediaItem
 from sashimono.engine.cache.proxy import ProxyStore, create_proxy, proxy_codecs
@@ -51,6 +57,37 @@ class TestWriting:
         assert converted.color_range == ColorRange.MPEG
         assert converted.color_primaries == ColorPrimaries.BT709
         assert converted.color_trc == ColorTrc.BT709
+
+    def test_a_reused_reformatter_gives_the_same_pixels(self) -> None:
+        # 書き出しは swscale の表を使い回して 1 枚 10ms を削っている（#56）
+        # 使い回した表が別の設定で作られていると、色だけが静かにずれる
+        reformatter = VideoReformatter()
+        image = bars(320, 240)
+        fresh = to_bt709(av.VideoFrame.from_ndarray(image, format="rgb24"), "yuv420p")
+        for _ in range(3):
+            reused = to_bt709(
+                av.VideoFrame.from_ndarray(image, format="rgb24"),
+                "yuv420p",
+                reformatter=reformatter,
+            )
+            assert reused.colorspace == fresh.colorspace
+            assert reused.color_range == fresh.color_range
+            assert reused.color_primaries == fresh.color_primaries
+            assert reused.color_trc == fresh.color_trc
+            for plane, expected in zip(reused.planes, fresh.planes, strict=True):
+                assert bytes(plane) == bytes(expected)
+
+    def test_rgba_and_rgb24_give_the_same_pixels(self) -> None:
+        # 書き出しは合成結果を RGBA のまま渡し、rgb24 へ詰め直す手間を省いている
+        # swscale が A を混ぜるようになったら、半透明の所の色が変わって出る
+        image = bars(320, 240)
+        with_alpha = np.dstack([image, np.full(image.shape[:2], 128, dtype=np.uint8)])
+        plain = to_bt709(av.VideoFrame.from_ndarray(image, format="rgb24"), "yuv420p")
+        rgba = to_bt709(
+            av.VideoFrame.from_ndarray(np.ascontiguousarray(with_alpha), format="rgba"), "yuv420p"
+        )
+        for plane, expected in zip(rgba.planes, plain.planes, strict=True):
+            assert bytes(plane) == bytes(expected)
 
     def test_an_rgb_target_is_left_alone(self) -> None:
         # 行列の無い書式へ行列を持ち込むと、値が YUV の式で曲げられる

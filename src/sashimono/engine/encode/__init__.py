@@ -2,6 +2,10 @@
 
 from sashimono.engine.encode.exporter import (
     COLOR_OPTIONS,
+    DEFAULT_PIPELINE_DEPTH,
+    MAX_PIPELINE_DEPTH,
+    MEASURED_EXPORT_MS,
+    MEASURED_EXPORT_TOTAL_MS,
     ExportError,
     ExportSettings,
     available_video_codecs,
@@ -10,6 +14,10 @@ from sashimono.engine.encode.exporter import (
 
 __all__ = [
     "COLOR_OPTIONS",
+    "DEFAULT_PIPELINE_DEPTH",
+    "MAX_PIPELINE_DEPTH",
+    "MEASURED_EXPORT_MS",
+    "MEASURED_EXPORT_TOTAL_MS",
     "ExportError",
     "ExportSettings",
     "available_video_codecs",

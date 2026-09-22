@@ -1343,7 +1343,11 @@ class MainWindow(QMainWindow):
 
     def export(self) -> None:
         self._playback.stop()
-        ExportDialog(self._document.project, self).exec()
+        ExportDialog(
+            self._document.project,
+            self,
+            pipeline_depth=self._preferences.export_pipeline_depth,
+        ).exec()
 
     # --- AviUtl 互換 ---
 
