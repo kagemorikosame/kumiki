@@ -7,21 +7,21 @@ YMM4 のテンプレートは、値の意味を配布物の並びから読み取
 
 1. ``build``   テンプレートを時間をずらして並べた YMM4 のプロジェクト（.ymmp）と、
                どこに何を置いたかの一覧（manifest.json）を作る
-2. YMM4 でそのプロジェクトを開き、同じフォルダへ ``ymm4.mp4`` として書き出す（手作業）
+2. YMM4 でそのプロジェクトを開き、同じフォルダへ ``ymm4.mp4`` として書き出す（手作業か道具）
 3. ``compare`` 書き出した動画と、同じアイテムを Sashimono で描いた絵を並べ、差の大きい順に
                一覧（report.html）と並べた絵（PNG）を作る
 
 音は絵と別の 2 段（Issue #89 の残り）
 
 1. ``audio-build``   正弦波を並べた探り用のプロジェクト（audio-probe.ymmp）を作る
-2. YMM4 でそれを開き、同じフォルダへ ``audio-probe.mp4`` として書き出す（手作業）
+2. YMM4 でそれを開き、同じフォルダへ ``audio-probe.mp4`` として書き出す（手作業か道具）
 3. ``audio-measure`` 書き出した音を枠ごとに測り、音量の曲線・定位の向き・
                      再生速度 0 の意味を表にする
 
 格子の点の並びも別の 2 段（Issue #107）
 
 1. ``mesh-build``   格子の点を 1 つずつ動かした探り用のプロジェクト（mesh-probe.ymmp）を作る
-2. YMM4 でそれを開き、同じフォルダへ ``mesh-probe.mp4`` として書き出す（手作業）
+2. YMM4 でそれを開き、同じフォルダへ ``mesh-probe.mp4`` として書き出す（手作業か道具）
 3. ``mesh-measure`` 枠ごとに、動いた点が画面のどこに出たかを YMM4 と Sashimono で並べ、
                     ``Points`` が行ごとか列ごとかを表にする
 
@@ -29,9 +29,12 @@ YMM4 のテンプレートは、値の意味を配布物の並びから読み取
 
 1. ``video-rate-build``   フレームごとに絵が変わる動画を、``PlaybackRate`` を変えて並べた
                           探り用のプロジェクト（video-rate-probe.ymmp）を作る
-2. YMM4 でそれを開き、同じフォルダへ ``video-rate-probe.mp4`` として書き出す（手作業）
+2. YMM4 でそれを開き、同じフォルダへ ``video-rate-probe.mp4`` として書き出す（手作業か道具）
 3. ``video-rate-measure`` 書き出しの各フレームが素材の何フレーム目かを枠ごとに並べ、
                           経過フレームに対する傾き（1 で等倍・0 で止まる）を表にする
+
+``tools/ymm4_export.py`` は YMM4 の画面を操作して書き出す 動かしている間はマウスと
+キーボードを取り合うので、本人に断ってから走らせる 各 ``*-build`` がその命令を出す
 
 作業フォルダは既定で ``.work/ymm4-compare`` リポジトリには入れない
 （配布物の絵が入るため）
@@ -310,7 +313,33 @@ def command_build(arguments: argparse.Namespace) -> int:
         f" 飛ばした {len(skipped)} 本"
     )
     print(f"YMM4 で {work / 'compare.ymmp'} を開き、{work / 'ymm4.mp4'} へ書き出してください")
+    print_export_hint(work / "compare.ymmp", work / "ymm4.mp4")
     return 0
+
+
+def export_arguments(project: Path, video: Path, *, no_compressor: bool = False) -> list[str]:
+    """``tools/ymm4_export.py`` へ渡す引数 案内の命令と試験で読ませる引数を 1 か所で作る
+
+    パスは絶対にする 案内はリポジトリの根から走らせる形なので、作業フォルダが相対の
+    ままだと、別の所で走らせた道具が違う .ymmp を開き、違う所へ書き出す
+    """
+    arguments = [
+        r"tools\ymm4_export.py",
+        "--project",
+        str(project.resolve()),
+        "--output",
+        str(video.resolve()),
+    ]
+    if no_compressor:
+        arguments.append("--no-compressor")
+    return arguments
+
+
+def print_export_hint(project: Path, video: Path, *, no_compressor: bool = False) -> None:
+    """YMM4 で書き出す所を道具に任せる命令を並べる"""
+    command = subprocess.list2cmdline(export_arguments(project, video, no_compressor=no_compressor))
+    print("自動で書き出すなら（YMM4 がマウスとキーボードを取り合うので、本人に断ってから）")
+    print(rf"  .venv\Scripts\python.exe {command}")
 
 
 def _shrink(image: np.ndarray) -> np.ndarray:
@@ -695,6 +724,8 @@ def command_audio_build(arguments: argparse.Namespace) -> int:
         # `audio-measure` は書き出しが一覧より古ければ止めるが、ここでも言っておく
         print(f"{video} は前の探りの書き出しです 作り直した方で書き出し直してください")
     print(f"YMM4 で {project} を開き、{video} として書き出してください")
+    # 既定のコンプレッサー（自動）は音量の比を潰す 切って書き出さないと測れない
+    print_export_hint(project, video, no_compressor=True)
     return 0
 
 
@@ -1229,6 +1260,7 @@ def command_mesh_build(arguments: argparse.Namespace) -> int:
         print(f"{video} は前の探りの書き出しです 作り直した方で書き出し直してください")
     print(f"YMM4 で {project} を開き、{video} として書き出してください")
     print(f"書き出しは {WIDTH}x{HEIGHT}・{FPS}fps・頭から終わりまで（範囲を絞らない）")
+    print_export_hint(project, video)
     return 0
 
 
@@ -1664,6 +1696,7 @@ def command_video_rate_build(arguments: argparse.Namespace) -> int:
         print(f"{video} は前の探りの書き出しです 作り直した方で書き出し直してください")
     print(f"YMM4 で {project} を開き、{video} として書き出してください")
     print(f"書き出しは {WIDTH}x{HEIGHT}・{FPS}fps・頭から終わりまで（範囲を絞らない）")
+    print_export_hint(project, video)
     return 0
 
 
