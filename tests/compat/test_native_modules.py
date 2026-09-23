@@ -424,3 +424,47 @@ class TestRoundThree:
         )
         assert calls == []
         assert result.failed
+
+
+class TestEditSection:
+    """``SCRIPT_MODULE_PARAM.edit`` の先 plugin2.h の ``EDIT_SECTION`` の並び
+
+    DLL と同じ読み方をする 先頭の枠を ``EDIT_INFO*`` として読み、関数の枠は
+    番地として読む（呼ぶと落ちうるので、中身は番地の一致で確かめる）
+    """
+
+    @staticmethod
+    def _seen_by_dll() -> dict[str, Any]:
+        seen: dict[str, Any] = {}
+
+        def body(p: _Param) -> None:
+            section = ctypes.cast(p.edit, ctypes.POINTER(ctypes.c_void_p * 83)).contents
+            # EDIT_INFO は int が 15 個 float int float int と 4 バイトの色（80 バイト）
+            info = ctypes.cast(section[0] or 0, ctypes.POINTER(ctypes.c_int * 20)).contents
+            seen["ints"] = list(info[:15])
+            seen["first_function"] = section[1]
+            seen["last_function"] = section[82]
+            # 同じ関数を呼んで 0 が返ることも見る 先頭の関数は必ず表の中にある
+            stub = ctypes.CFUNCTYPE(ctypes.c_int64)(section[1] or 0)
+            seen["returned"] = stub()
+
+        module, _keep = _module({"f": body})
+        module.call("f", [])
+        return seen
+
+    def test_the_first_slot_is_edit_info_not_a_function(self) -> None:
+        """先頭に関数の番地を置くと、``edit->info->width`` を読むプラグインが
+        関数の機械語を解像度として読み、でたらめな大きさで組む
+        """
+        ints = self._seen_by_dll()["ints"]
+        assert ints[:13] == [0] * 13
+
+    def test_no_selection_is_minus_one(self) -> None:
+        """0 にすると「0 フレーム目を選んでいる」と読まれる plugin2.h では未選択は -1"""
+        assert self._seen_by_dll()["ints"][13:15] == [-1, -1]
+
+    def test_the_last_function_slot_is_inside_the_table(self) -> None:
+        """枠を 1 つ少なく作ると、最後の関数を引くプラグインは表の外の番地へ飛ぶ"""
+        seen = self._seen_by_dll()
+        assert seen["last_function"] == seen["first_function"]
+        assert seen["returned"] == 0

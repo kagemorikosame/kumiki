@@ -206,11 +206,62 @@ class TestPluginModules:
         assert text == "10"
 
 
+def _library(required: int | None) -> Any:
+    """``RequiredVersion`` だけを持つ DLL の代わり"""
+
+    class _Library:
+        pass
+
+    library = _Library()
+    if required is not None:
+
+        def required_version() -> int:
+            return required
+
+        library.RequiredVersion = required_version  # type: ignore[attr-defined]
+    return library
+
+
+class TestHostVersion:
+    """``RequiredVersion`` とこちらが名乗る版"""
+
+    def test_a_plugin_asking_for_a_newer_host_is_refused(self) -> None:
+        """求められた版をそのまま名乗ると、その版で増えた枠があるものとして
+        表の外を呼ばれ、Sashimono ごと落ちる
+        """
+        with pytest.raises(native.NativeModuleError, match="求めている"):
+            native.host_version_for(_library(native.HOST_VERSION + 1), Path("新しい.aux2"))
+
+    def test_what_we_claim_is_what_we_copied(self) -> None:
+        """プラグインが求めた版をそのまま名乗ると、写した並び（v2.1.6a）と
+        違う版だと伝えることになり、版で振る舞いを変えるプラグインが
+        こちらの表と合わない前提で動く
+        """
+        claimed = native.host_version_for(_library(2010100), Path("comfont.aux2"))
+        assert claimed == native.HOST_VERSION == 2010601
+
+    def test_no_required_version_is_accepted(self) -> None:
+        """``RequiredVersion`` は任意 無いだけで断ると、WhisperAutoSub や
+        テレビ字幕のモジュールが読めなくなる
+        """
+        assert native.host_version_for(_library(None), Path("無印.aux2")) == native.HOST_VERSION
+
+    def test_the_plugins_seen_in_the_wild_are_accepted(self) -> None:
+        """手元の配布物が求める版（comfont 2010100、AIEdit 2010400 ほか）を
+        断ると、今まで動いていた合成フォントやテレビ字幕が消える
+        """
+        for required in (2003300, 2004900, 2010100, 2010400):
+            native.host_version_for(_library(required), Path("手元.aux2"))
+
+
 @pytest.mark.skipif(not _REAL_PLUGIN.is_file(), reason="comfont.aux2 が入っていない")
 class TestRealPlugin:
     """実物の ``comfont.aux2`` 形式の推測ではなく、配布されている物で確かめる"""
 
     def test_registers_the_composite_font_module(self) -> None:
+        """登録を受け取れないと ``obj.module("compositefont")`` が nil になり、
+        配布エイリアスが 1 行目で落ちて真っ黒になる
+        """
         modules = plugin.script_modules(roots=(_REAL_PLUGIN.parent,))
         assert "compositefont" in modules
         assert "decorate_layout" in modules["compositefont"].names

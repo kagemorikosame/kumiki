@@ -12,7 +12,8 @@
 読み方は AviUtl ExEdit2 Plugin SDK の ``plugin2.h``（MIT ライセンス
 Copyright (c) 2025 Kenkun）に従う
 
-1. ``RequiredVersion()``（任意）で必要な本体の版を聞く
+1. ``RequiredVersion()``（任意）で必要な本体の版を聞く こちらが写した並び
+   （:data:`native.HOST_VERSION`）より新しい版を求めるプラグインは読まない
 2. ``InitializeLogger`` ``InitializeConfig``（任意）で記録と設定の窓口を渡す
 3. ``InitializePlugin(版)`` で初期化する
 4. ``RegisterPlugin(HOST_APP_TABLE*)`` で本体側の窓口を渡す プラグインはここで
@@ -56,10 +57,10 @@ from pathlib import Path
 from typing import Any
 
 from sashimono.compat.aviutl.native import (
-    HOST_VERSION,
     NativeModule,
     NativeModuleError,
     enabled,
+    host_version_for,
     is_native_x64,
 )
 from sashimono.compat.aviutl.report import CompatibilityReport, global_report
@@ -270,9 +271,10 @@ def plugin_files(root: Path) -> tuple[Path, ...]:
     それぞれ自分のフォルダの中 直下しか見ないと、フォルダごと配られた
     プラグインが 1 つも見つからない
 
-    2 段以上下も AviUtl2 が見るのかは分からない 手元の配布物に例が無いので、
-    読み取れた範囲（1 段下まで）にとどめる 深く潜るほど、関係の無い DLL を
-    掴んで走らせる危険も増える
+    SDK の更新履歴（2026/1/25）にも「プラグインの配置場所を Plugin フォルダの
+    一つ下のフォルダも対象とするようにした」とある 2 段以上下は SDK にも
+    書かれておらず、手元の配布物にも例が無いので見ない 深く潜るほど、
+    関係の無い DLL を掴んで走らせる危険も増える
     """
     if not root.is_dir():
         return ()
@@ -331,11 +333,8 @@ def _load(path: Path) -> dict[str, NativeModule]:
 
 
 def _register(library: Any, path: Path) -> dict[str, NativeModule]:
-    version = HOST_VERSION
-    required = getattr(library, "RequiredVersion", None)
-    if required is not None:
-        required.restype = ctypes.c_uint32
-        version = max(version, int(required()))
+    # こちらより新しい本体を求めるプラグインは、ここで断る（理由は _scan が記録する）
+    version = host_version_for(library, path)
 
     # 窓口の構造体そのものも抱えておく 渡すのはその番地なので、ここで手放すと
     # 初期化のあとに記録や設定を引きに来たプラグインが、解放済みの所を読む

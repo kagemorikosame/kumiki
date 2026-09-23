@@ -412,6 +412,10 @@ AviUtl の乱数ものは、エイリアスではなくスクリプト（`obj.ra
 - `SCRIPT_MODULE_PARAM.edit` は空にしない 空のまま渡すと、編集の情報を見に来た
   モジュールが nullptr の先を読んで Sashimono ごと落ちる（合成フォントに書体名を
   渡すと `get_font` を引きに来る） 何も返さない関数を並べた `EDIT_SECTION` を渡す
+  先頭の枠だけは関数ではなく `EDIT_INFO*` なので、0 で埋めた `EDIT_INFO` を指す
+- 名乗る本体の版は `native.HOST_VERSION`（2010601＝v2.1.6a） 写した表の並びが
+  どの版まで含むかを表す それより新しい版を `RequiredVersion` で求める DLL は、
+  こちらの表の外を呼びうるので読まずに断り、理由を記録する
 
 ---
 
