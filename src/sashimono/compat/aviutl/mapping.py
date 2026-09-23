@@ -11,14 +11,13 @@ AviUtl のオブジェクトは「中身 1 つ + フィルタの列」ででき�
 from __future__ import annotations
 
 import math
-import re
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from fractions import Fraction
 from pathlib import Path
 
 from sashimono.compat.aviutl.catalog import ScriptEntry
-from sashimono.compat.aviutl.control import lua_string
+from sashimono.compat.aviutl.control import lua_string, split_dialog
 from sashimono.compat.aviutl.encoding import decode_utf16_hex
 from sashimono.compat.aviutl.exo import ExoEntry, ExoFile, ExoObject
 from sashimono.compat.aviutl.motion import (
@@ -1925,17 +1924,25 @@ def _find_script(name: str, kind: str) -> ScriptEntry | None:
     from sashimono.compat.aviutl.catalog import script_catalog
 
     label, separator, owner = name.partition("@")
-    for item in script_catalog().of_kind(kind):
-        if separator:
-            if item.label == label and item.path.stem in (f"@{owner}", owner):
-                return item
-        elif not item.name and item.path.stem == label:
-            return item
-    return None
-
-
-#: ``--dialog`` の値の区切り 引用符と ``[[ ]]`` の中の ``;`` では切らない
-_DIALOG_ITEM = re.compile(r"""(?:"[^"]*"|'[^']*'|\[\[.*?\]\]|[^;])+""")
+    candidates = script_catalog().of_kind(kind)
+    if separator:
+        return next(
+            (
+                item
+                for item in candidates
+                if item.label == label and item.path.stem in (f"@{owner}", owner)
+            ),
+            None,
+        )
+    # ``@`` が無ければ、ファイル名がそのまま表示名になる 1 本きりのスクリプト
+    # 何本も入れるファイルは名前が ``@`` で始まる（配布物の 9 本はどれもそうで、
+    # エイリアスはそれを ``表示名@ファイル名`` と書く） なので見るのはファイル名だけで、
+    # 中に ``@表示名`` の行があるかどうかでは選ばない 以前は中の見出しが空のものに
+    # 限っていたので、``ゆれ.anm`` の頭に ``@ゆれ`` と書いたスクリプトが見つからなかった
+    singles = [item for item in candidates if item.path.stem == label]
+    return next((item for item in singles if item.label == label), None) or next(
+        iter(singles), None
+    )
 
 
 def _dialog_values(
@@ -1952,7 +1959,7 @@ def _dialog_values(
     ``nil`` は「値なし」で、スクリプトの既定のままにする（``TRACK,_0=nil`` は
     sigma のスクリプトがダイアログの終わりの印に置いている）
     """
-    for chunk in _DIALOG_ITEM.findall(raw):
+    for chunk in split_dialog(raw):
         variable, separator, value = chunk.strip().partition("=")
         variable = variable.strip()
         value = value.strip()

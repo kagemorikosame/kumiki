@@ -326,3 +326,43 @@ class TestPackage:
         )
         assert not result.failed
         assert state.ox == 1.0
+
+
+class TestSourceryFindings:
+    """PR #131 のレビューで見つかった 2 つ"""
+
+    def test_a_semicolon_inside_a_long_string_default_stays(self) -> None:
+        # 本文を ``split(";")`` で切ると ``[[a;b]]`` が割れ、初期値が ``[[a`` になって
+        # ``b]]`` が次の項目として読まれ、後ろの色の欄まで崩れる
+        header = parse_control("--dialog:パターン画像,_2=[[a;b]];色/col,_1=0x102030;")
+        assert [spec.name for spec in header.parameters] == ["_2", "_1"]
+        text = header.parameters[0]
+        assert isinstance(text, TextSpec)
+        assert text.default == "a;b"
+
+    def test_a_single_script_file_is_found_by_its_file_name(self, tmp_path: Path) -> None:
+        # ``@`` の無い ``name=ゆれ`` は、ファイル名がそのまま表示名の 1 本きりのスクリプト
+        # 中に ``@ゆれ`` の見出しを書いたものまで「見つからない」にしていた
+        root = tmp_path / "scripts"
+        root.mkdir()
+        (root / "ゆれ.anm").write_text("@ゆれ\n--track0:幅,0,100,10\nobj.ox = 0\n", "cp932")
+        # 何本も入れるファイル（名前が @ で始まる）の同じ表示名は、@ の無い名前では選ばない
+        (root / "@束.anm").write_text("@ゆれ\n--track0:別物,0,1,0\nobj.ox = 0\n", "cp932")
+        saved = catalog_module._catalog
+        created = ScriptCatalog(roots=(root,))
+        created.scan()
+        set_script_catalog(created)
+        try:
+            report = CompatibilityReport()
+            alias = "[vo.0]\n_name=アニメーション効果\nname=ゆれ\ntrack0=40.00\nparam=\n"
+            mapped = map_object(parse_exo(alias).objects[0], RATE, report=report)
+            assert mapped is not None
+            assert not report.missing
+            (effect,) = mapped.clip.effects
+            entry = created.get(effect.kind)
+            assert entry is not None
+            assert entry.path.name == "ゆれ.anm"
+        finally:
+            catalog_module._catalog = saved
+            if saved is not None:
+                saved.register_all()

@@ -48,6 +48,7 @@ __all__ = [
     "lua_string",
     "lua_value",
     "parse_control",
+    "split_dialog",
     "split_scripts",
 ]
 
@@ -320,7 +321,7 @@ def _dialog(body: str) -> list[ParameterSpec]:
     仕様がここだけ独特なので、素直に書き下す
     """
     specs: list[ParameterSpec] = []
-    for chunk in body.split(";"):
+    for chunk in split_dialog(body):
         item = chunk.strip()
         if not item:
             continue
@@ -346,6 +347,21 @@ def _dialog(body: str) -> list[ParameterSpec]:
 
         specs.append(_dialog_item(name, label, suffix, default))
     return specs
+
+
+#: ``--dialog`` の 1 項目 引用符と ``[[ ]]`` の中の ``;`` では切らない
+_DIALOG_ITEM = re.compile(r"""(?:"[^"]*"|'[^']*'|\[\[.*?\]\]|[^;])+""")
+
+
+def split_dialog(body: str) -> list[str]:
+    """``--dialog`` の本文や ``.exa`` の ``param=`` を項目ごとに切る
+
+    どちらも ``;`` 区切りだが、Lua の文字（``"…"`` ``[[…]]``）の中にも ``;`` は書ける
+    素直に ``split(";")`` すると ``[[a;b]]`` が ``[[a`` と ``b]]`` に割れ、初期値が
+    壊れたうえ後ろの半分が別の項目として読まれる 制御文字とエイリアスの値で
+    切り方がずれないよう、どちらもここを通す
+    """
+    return [chunk for chunk in _DIALOG_ITEM.findall(body) if chunk.strip()]
 
 
 def _dialog_item(name: str, label: str, suffix: str, default: str) -> ParameterSpec:
