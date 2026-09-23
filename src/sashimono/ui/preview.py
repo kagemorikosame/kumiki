@@ -247,7 +247,12 @@ class PreviewWidget(QOpenGLWidget):
             return
         self._prefetch_bytes = prefetch_bytes
         self._pending_budget = prefetch_bytes
-        if self._background is not None:
+        if prefetch_bytes == 0:
+            # 切ったら走り係ごと止める 予算 0 を渡すだけでは、スレッド・レンダラ・
+            # デコーダ（素材のファイルを掴んだまま）・共有したコンテキスト・効果の
+            # GPU の資源が窓を閉じるまで残る 入れ直せば次の空き時間に作り直す
+            self._close_background()
+        elif self._background is not None:
             # 走り係は自分のスレッドで描画先を手放すので、その場で渡してよい
             self._background.set_budget(prefetch_bytes, self._frame)
         self.update()

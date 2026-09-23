@@ -20,7 +20,15 @@ import pytest
 from OpenGL import GL
 from PySide6.QtCore import QCoreApplication
 
-from sashimono.core.commands import AddClip, AddMedia, AddTrack
+from sashimono.core.commands import (
+    AddClip,
+    AddMedia,
+    AddScene,
+    AddTrack,
+    InScene,
+    insert_scene,
+    new_scene,
+)
 from sashimono.core.model import (
     AnimatedValue,
     Clip,
@@ -36,7 +44,7 @@ from sashimono.core.timebase import FrameRate
 from sashimono.engine.decode import VideoDecoder, probe_media
 from sashimono.engine.gpu import Framebuffer, OffscreenGLContext
 from sashimono.engine.render import FULL_QUALITY, FrameRenderer, Invalidation
-from sashimono.engine.render.background import BackgroundPrefetch, _Worker
+from sashimono.engine.render.background import WAIT_FOR_WORKER_S, BackgroundPrefetch, _Worker
 from sashimono.engine.render.prefetch import PreviewCache
 from tests.media_fixtures import make_sample
 
@@ -239,6 +247,71 @@ class TestWhatItHandsOver:
         assert np.array_equal(shown, screen.direct(0, edited))
 
 
+class TestWaitingForTheWorker:
+    def test_a_frame_the_worker_is_about_to_finish_is_waited_for(
+        self,
+        screen_context: OffscreenGLContext,
+        screen: _Screen,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """走り係がすぐ描き終えるコマは待って受け取る
+
+        待たずに画面の側でも描くと、同じコマを 2 つのスレッドで描いて取り合う
+        """
+        started = threading.Event()
+        original = FrameRenderer.compose
+
+        def quick(renderer: FrameRenderer, frame: int) -> None:
+            if threading.current_thread() is not threading.main_thread():
+                started.set()
+                time.sleep(0.05)
+            original(renderer, frame)
+
+        monkeypatch.setattr(FrameRenderer, "compose", quick)
+        background = _start(_gray_project(), screen_context, 1)
+        try:
+            assert started.wait(10)
+            shown = screen.shown(background, 0)
+        finally:
+            background.close()
+        assert shown is not None, "描き終わる直前のコマを待たずに諦めた"
+
+    def test_a_slow_worker_is_not_waited_for_past_the_frame_budget(
+        self,
+        screen_context: OffscreenGLContext,
+        screen: _Screen,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """走り係がなかなか描き終えないなら、上限で諦めて画面の側で描く
+
+        待つ間は画面のスレッドが止まり、クリックもキーも受け付けない 上限が
+        長いと、走り係が固まったときに操作がその間ずっと止まる
+        """
+        started = threading.Event()
+        resume = threading.Event()
+        original = FrameRenderer.compose
+
+        def stuck(renderer: FrameRenderer, frame: int) -> None:
+            if threading.current_thread() is not threading.main_thread() and not resume.is_set():
+                started.set()
+                resume.wait(10)
+            original(renderer, frame)
+
+        monkeypatch.setattr(FrameRenderer, "compose", stuck)
+        background = _start(_gray_project(), screen_context, 1)
+        try:
+            assert started.wait(10)
+            began = time.perf_counter()
+            shown = screen.shown(background, 0)
+            waited = time.perf_counter() - began
+        finally:
+            resume.set()
+            background.close()
+        assert shown is None, "描けていないコマを出したことになっている"
+        assert waited < 0.5, f"画面のスレッドを {waited:.1f} 秒止めた"
+        assert waited >= WAIT_FOR_WORKER_S * 0.9, "走り係を待たずに諦めた"
+
+
 class TestWhoTouchesTheDecoders:
     def test_each_decoder_stays_on_one_thread(
         self,
@@ -299,8 +372,64 @@ def _video_project(media_dir: Path, name: str) -> Project:
     return AddClip(track.id, Clip(timeline_start=0, duration=40, media_id=media.id)).apply(project)
 
 
+def _nested_video_project(media_dir: Path, name: str, *, at_frame: int) -> Project:
+    """素材を入れたシーンを ``at_frame`` から置いたプロジェクト
+
+    外と中の時刻をずらす そろっていると、外のフレームのまま中の素材を頼む
+    誤りでも、たまたま同じ時刻になって気付けない
+    """
+    sample = make_sample(media_dir, name, width=64, height=64, audio=False)
+    media = probe_media(sample.path)
+    project = AddMedia(media).apply(Project.create(SETTINGS))
+    scene = new_scene(project, "中")
+    project = AddScene(scene).apply(project)
+    track = Track(TrackKind.VIDEO, "S1")
+    project = InScene(scene.id, AddTrack(track)).apply(project)
+    project = InScene(
+        scene.id, AddClip(track.id, Clip(timeline_start=0, duration=40, media_id=media.id))
+    ).apply(project)
+    for command in insert_scene(project, scene.id, at_frame=at_frame, duration=40):
+        project = command.apply(project)
+    return project
+
+
 class TestPriming:
     """再生を始めたときに、貯めた所の端を画面の側のデコーダで裏から読ませる"""
+
+    def test_a_nested_scene_is_primed_at_its_own_time(
+        self,
+        screen_context: OffscreenGLContext,
+        media_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """入れ子のシーンの中の素材も、シーンの中の時刻で裏から読ませる
+
+        一番外のトラックだけを見ると、シーンの中の素材は端を越えた所で画面の
+        スレッドが鍵フレームから読み直し、再生がそこで引っかかる 中の時刻を
+        外の時刻のまま頼んでも、描くときに時刻が合わずに読み直しになる
+        """
+        project = _nested_video_project(media_dir, "prime-nested.mp4", at_frame=10)
+        calls: list[threading.Thread] = []
+        original = VideoDecoder.frame_at
+
+        def recorded(decoder: VideoDecoder, when: object) -> object:
+            calls.append(threading.current_thread())
+            return original(decoder, when)  # type: ignore[arg-type]
+
+        renderer = FrameRenderer(project, context=screen_context, decode_threads=2)
+        try:
+            with screen_context:
+                renderer.compose(10)
+            monkeypatch.setattr(VideoDecoder, "frame_at", recorded)
+            renderer.prime(35)
+            with screen_context:
+                renderer.compose(35)
+        finally:
+            renderer.close()
+        assert calls, "シーンの中の素材を読んでいない"
+        assert all(thread is not threading.main_thread() for thread in calls), (
+            "シーンの中の素材を、描くときに画面のスレッドで読み直している"
+        )
 
     def test_the_primed_frame_is_decoded_off_the_screen_thread(
         self,

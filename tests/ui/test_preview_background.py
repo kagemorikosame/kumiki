@@ -448,6 +448,32 @@ class TestWhenItCannotRun:
         assert background.closed == 0
         assert stopped == []
 
+    def test_turning_prefetch_off_stops_the_worker_and_on_starts_a_new_one(
+        self,
+        running: tuple[PreviewWidget, StubCache, StubBackground],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """先読みを切ったら走り係ごと止め、入れ直したら作り直す
+
+        予算 0 を渡すだけだと、スレッド・レンダラ・素材を掴んだデコーダ・共有した
+        GL・効果の GPU の資源が窓を閉じるまで残る 切った意味が無い
+        """
+        widget, _, background = running
+        widget.set_prefetch_bytes(0)
+        assert background.closed == 1, "切ったのに走り係が動いたまま"
+        assert not widget.prefetch_in_background
+        made: list[StubBackground] = []
+
+        def make(*args: object, **kwargs: object) -> StubBackground:
+            made.append(StubBackground())
+            return made[-1]
+
+        _patch_preview(monkeypatch, "BackgroundPrefetch", make)
+        widget.set_prefetch_bytes(512 * 1024 * 1024)
+        widget._prefetch_step()
+        assert len(made) == 1, "入れ直したのに走り係を作り直していない"
+        assert widget.prefetch_in_background
+
     def test_turning_it_back_on_tries_again(
         self,
         parts: tuple[PreviewWidget, StubCache, list[str]],
