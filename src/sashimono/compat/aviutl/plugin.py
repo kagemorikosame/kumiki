@@ -68,10 +68,12 @@ from sashimono.compat.aviutl.report import CompatibilityReport, global_report
 
 __all__ = [
     "PLUGIN_SUFFIX",
+    "app_data_path",
     "default_plugin_roots",
     "forget",
     "plugin_files",
     "script_modules",
+    "set_app_data_path",
 ]
 
 #: 汎用プラグインの拡張子
@@ -230,6 +232,33 @@ def default_plugin_roots() -> tuple[Path, ...]:
 
 #: プラグインへ渡した窓口の置き場 プロセスが終わるまで放さない
 _keep: list[Any] = []
+
+#: プラグインへ渡す ``app_data_path`` の差し替え先 ``None`` なら利用者の AviUtl2 の置き場
+_app_data: Path | None = None
+
+
+def set_app_data_path(path: Path | None) -> None:
+    """プラグインへ渡す ``app_data_path`` を差し替える ``None`` で元へ戻す
+
+    合成フォントの見本の設定を試すための口 利用者の
+    ``%PROGRAMDATA%\\aviutl2\\compositefont\\profiles.json`` を書き換えずに、
+    作業フォルダの設定で組ませて確かめられる
+
+    **まだ読んでいないプラグインにだけ効く** 渡した道はプラグインが初期化で
+    受け取って持ち続け、同じ DLL は 2 度初期化しない（:func:`forget` を参照）
+    読んだ後に差し替えても、プラグインは前の道を見続ける
+    """
+    global _app_data
+    with _lock:
+        _app_data = path
+
+
+def app_data_path() -> Path | None:
+    """プラグインへ渡す ``app_data_path`` 差し替えが無ければ利用者の AviUtl2 の置き場"""
+    if _app_data is not None:
+        return _app_data
+    program_data = os.environ.get("PROGRAMDATA")
+    return Path(program_data) / "aviutl2" if program_data else None
 
 
 _modules: dict[str, NativeModule] | None = None
@@ -453,10 +482,9 @@ def _config() -> _ConfigHandle:
     合成フォントはここを起点に自分の設定（``compositefont\\profiles.json``）を
     読む 別の場所を指すと、利用者が AviUtl2 で作った書体の組み合わせが
     見えなくなる 残りの窓口（翻訳・配色・配置）は画面用なので 0 を返す
+    見本の設定を試すときだけ :func:`set_app_data_path` で作業フォルダを指す
     """
-    program_data = os.environ.get("PROGRAMDATA")
-    path = str(Path(program_data) / "aviutl2") if program_data else ""
-    values: dict[str, Any] = {"app_data_path": path}
+    values: dict[str, Any] = {"app_data_path": str(app_data_path() or "")}
     for name, kind in _CONFIG_SLOTS:
         function = kind(_refuse(kind))
         _keep.append(function)
