@@ -39,6 +39,7 @@ __all__ = [
     "start_path",
     "trail",
     "trail_path",
+    "unit_randoms",
 ]
 
 #: その時刻（クリップ頭からのフレーム 小数も取る）での位置 Y は下が正
@@ -445,14 +446,47 @@ def _rand(low: float, high: float, seed: np.ndarray, lap: np.ndarray) -> np.ndar
     """
     key = seed.astype(np.int64).astype(np.uint64) * np.uint64(0x9E3779B97F4A7C15)
     key ^= lap.astype(np.int64).astype(np.uint64) * np.uint64(0xC2B2AE3D27D4EB4F)
-    # splitmix64 の混ぜ方 種が 1 つ違うだけでも、まったく別の値になるようにする
+    unit = _splitmix(key)
+    lo, hi = math.ceil(low), math.floor(high)
+    if hi < lo:
+        return np.full(seed.shape, float(lo))
+    return np.floor(lo + unit * (hi - lo + 1)).astype(np.float64)
+
+
+def _splitmix(key: np.ndarray) -> np.ndarray:
+    """splitmix64 の混ぜ方で、64 ビットの鍵を 0 以上 1 未満の値へ
+
+    種が 1 つ違うだけでも、まったく別の値になるようにする 掛け算の順と
+    ずらす幅は splitmix64 の定数そのままで、変えると並びが総入れ替わりになる
+    """
+    key = key.copy()
     key ^= key >> np.uint64(30)
     key *= np.uint64(0xBF58476D1CE4E5B9)
     key ^= key >> np.uint64(27)
     key *= np.uint64(0x94D049BB133111EB)
     key ^= key >> np.uint64(31)
-    unit = (key >> np.uint64(11)).astype(np.float64) / float(1 << 53)
-    lo, hi = math.ceil(low), math.floor(high)
-    if hi < lo:
-        return np.full(seed.shape, float(lo))
-    return np.floor(lo + unit * (hi - lo + 1)).astype(np.float64)
+    # 上位 53 ビットだけを使う float64 に収まる桁で、丸めで 1.0 にならない
+    return (key >> np.uint64(11)).astype(np.float64) / float(1 << 53)
+
+
+def unit_randoms(seed: int, count: int, streams: int = 1) -> np.ndarray:
+    """種から 0 以上 1 未満の値を ``(count, streams)`` 個 同じ種なら必ず同じ並び
+
+    ``np.random.default_rng`` を使わない NumPy の ``Generator`` は版をまたいで
+    同じ並びを出すと約束していない（NEP 19 で凍結されているのは ``RandomState``
+    の方だけ） 乱数ものの絵は画素では合わせないが、**道具を上げただけで
+    集中線の走り方が変わる**のは別の話で、開き直すたびに絵が動くのと同じことになる
+    ここは splitmix64 で自前に固定して、版に依らず同じ絵にする
+
+    列（``streams``）は用途ごとに分ける 1 本の並びから順に取り出す作りにすると、
+    途中で 1 つ取る・取らないが分かれたときに、その先の値が全部ずれる
+    """
+    if count <= 0 or streams <= 0:
+        return np.zeros((max(count, 0), max(streams, 0)), dtype=np.float64)
+    index = np.arange(count, dtype=np.uint64).reshape(count, 1)
+    salt = np.arange(streams, dtype=np.uint64).reshape(1, streams)
+    # 掛け算は配列のまま行う NumPy のスカラ同士だと、桁あふれで警告が出る
+    base = np.array([[(seed & 0xFFFFFFFFFFFFFFFF) + 1]], dtype=np.uint64)
+    key = base * np.uint64(0x9E3779B97F4A7C15)
+    key = key ^ (index * np.uint64(0xC2B2AE3D27D4EB4F)) ^ (salt * np.uint64(0xD6E8FEB86659FD93))
+    return _splitmix(np.broadcast_to(key, (count, streams)))

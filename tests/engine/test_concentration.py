@@ -109,3 +109,37 @@ def test_without_fill_frame_it_stays_the_ymm4_shape() -> None:
     )
     assert image[:, 0].max() <= 8.0
     assert image[0, :].max() <= 8.0
+
+
+def test_the_lines_do_not_come_from_the_numpy_generator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """線の並びを ``np.random`` に任せない
+
+    NumPy の ``Generator`` は版をまたいで同じ並びを出すと約束していない
+    任せたままだと、NumPy を上げただけで集中線の走り方が変わり、
+    前に書き出した動画と絵が合わなくなる
+    """
+
+    def refuse(*args: object, **kwargs: object) -> object:
+        raise AssertionError("集中線が np.random.default_rng を使っている")
+
+    monkeypatch.setattr(np.random, "default_rng", refuse)
+    image = _drawn(
+        center_gap=AnimatedValue(120.0),
+        density=AnimatedValue(64.0),
+        line_thickness=AnimatedValue(33.0),
+        flicker=AnimatedValue(0.0),
+    )
+    assert image.max() > 8.0
+
+
+def test_the_same_frame_draws_the_same_lines() -> None:
+    # 描き直すたびに線が変わると、止めたプレビューでも集中線がちらつく
+    settings: dict[str, object] = {
+        "center_gap": AnimatedValue(120.0),
+        "density": AnimatedValue(64.0),
+        "line_thickness": AnimatedValue(33.0),
+        "flicker": AnimatedValue(25.0),
+    }
+    assert np.array_equal(_drawn(**settings), _drawn(**settings))

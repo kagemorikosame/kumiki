@@ -42,7 +42,14 @@ from sashimono.engine.audio_shapes import (
     waveform_cells,
     waveform_points,
 )
-from sashimono.engine.motion_shapes import TrailPath, TrailPaths, sample_value, star_field, trail
+from sashimono.engine.motion_shapes import (
+    TrailPath,
+    TrailPaths,
+    sample_value,
+    star_field,
+    trail,
+    unit_randoms,
+)
 
 __all__ = ["Frame", "render_source", "render_source_framed", "waveform_points"]
 
@@ -826,7 +833,8 @@ def _draw_concentration(
     flicker = float(values.get("flicker", 5.0))  # type: ignore[arg-type]
     seconds = float(values.get("_seconds", 0.0))  # type: ignore[arg-type]
     tick = int(seconds * flicker) if flicker > 0 else 0
-    random = np.random.default_rng(tick * 7919 + 17)
+    # 線の向き・太さ・根元の位置 切り替えの回ごとに引き直す
+    dice = unit_randoms(tick * 7919 + 17, count, 3)
 
     inner = radius * (1.0 - length)
     far = radius * (1.0 + soft * 2.0) if soft > 0 else radius
@@ -850,10 +858,10 @@ def _draw_concentration(
         gradient.setColorAt(1.0, clear)
     path = QPainterPath()
     spacing = 2.0 * np.pi / count
-    for _ in range(count):
-        angle = random.uniform(0.0, 2.0 * np.pi)
-        half = spacing * thickness * random.uniform(0.2, 1.0) * 0.5
-        start_radius = inner * random.uniform(0.8, 1.2) if soft <= 0 else 0.0
+    for line in range(count):
+        angle = dice[line, 0] * 2.0 * np.pi
+        half = spacing * thickness * (0.2 + dice[line, 1] * 0.8) * 0.5
+        start_radius = inner * (0.8 + dice[line, 2] * 0.4) if soft <= 0 else 0.0
         end_radius = radius if soft <= 0 else reach
         tip_x = centre_x + np.cos(angle) * start_radius
         tip_y = centre_y + np.sin(angle) * start_radius
@@ -907,7 +915,8 @@ def _draw_concentration_frame(
     flicker = _number(values, "flicker", 25.0)
     seconds = _number(values, "_seconds", 0.0)
     tick = int(seconds * flicker) if flicker > 0 else 0
-    random = np.random.default_rng(tick * 7919 + 17)
+    # 線の向きと太さ 切り替えの回ごとに引き直す
+    dice = unit_randoms(tick * 7919 + 17, count, 2)
 
     colour = _color(values.get("color"))
     # 実測に合わせた 1 本あたりの薄さ 不透明で描くと、同じ占有率でも真っ白な絵になる
@@ -919,9 +928,9 @@ def _draw_concentration_frame(
     painter.setPen(Qt.PenStyle.NoPen)
     painter.setBrush(QBrush(colour))
     spacing = 2.0 * np.pi / count
-    for _ in range(count):
-        angle = random.uniform(0.0, 2.0 * np.pi)
-        half = spacing * thickness * random.uniform(0.2, 1.0) * 0.5
+    for line in range(count):
+        angle = dice[line, 0] * 2.0 * np.pi
+        half = spacing * thickness * (0.2 + dice[line, 1] * 0.8) * 0.5
         lo, hi = angle - half, angle + half
         # 内も外も円弧で閉じる 直線（弦）で閉じると中心寄りに食い込み、
         # 太い線では空けたはずの真ん中に線が入る（外側の弦は中心を横切る）

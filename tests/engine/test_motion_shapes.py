@@ -23,6 +23,7 @@ from sashimono.engine.motion_shapes import (
     star_field,
     trail,
     trail_path,
+    unit_randoms,
 )
 from sashimono.engine.sources import render_source
 
@@ -324,3 +325,25 @@ def test_a_broken_current_position_stays_finite() -> None:
     assert all(math.isfinite(value) for value in shape.last)
     assert shape.head is not None
     assert all(math.isfinite(value) for value in shape.head)
+
+
+def test_the_unit_randoms_repeat_for_the_same_seed() -> None:
+    # 種が同じなら同じ並び ここが揺れると、開き直すたびに乱数ものの絵が変わる
+    assert np.array_equal(unit_randoms(17, 64, 3), unit_randoms(17, 64, 3))
+
+
+def test_the_unit_random_streams_do_not_follow_each_other() -> None:
+    # 列ごとに別の値 同じ並びを使い回すと、向きと太さが連動して、
+    # 太い線ほど一方向に寄った絵になる
+    dice = unit_randoms(17, 512, 2)
+    assert not np.array_equal(dice[:, 0], dice[:, 1])
+    assert abs(float(np.corrcoef(dice[:, 0], dice[:, 1])[0, 1])) < 0.2
+
+
+def test_the_unit_randoms_spread_over_the_whole_range() -> None:
+    # 一様でないと、線の向きが偏って集中線が片側だけ濃くなる
+    dice = unit_randoms(3, 4096, 1)[:, 0]
+    assert dice.min() >= 0.0 and dice.max() < 1.0
+    assert float(np.mean(dice)) == pytest.approx(0.5, abs=0.02)
+    counts = np.histogram(dice, bins=8, range=(0.0, 1.0))[0]
+    assert counts.min() > 4096 / 8 * 0.8
