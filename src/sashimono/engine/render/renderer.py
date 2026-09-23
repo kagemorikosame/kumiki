@@ -61,6 +61,7 @@ from sashimono.engine.render.scripts import (
     script_catalog,
     script_effects,
     split_effects,
+    text_font,
 )
 from sashimono.engine.sources import MAX_CANVAS, Frame, render_source_framed, source_canvas
 
@@ -1441,7 +1442,14 @@ class FrameRenderer:
             stage = self._script_stage()
             if stage is not None:
                 expanded = stage.expand_text(
-                    text, frame=local_frame, fps=float(rate.fps), duration=clip.duration
+                    text,
+                    frame=local_frame,
+                    fps=float(rate.fps),
+                    duration=clip.duration,
+                    # 設定欄の書体を ``obj.getfont`` から読めるようにする
+                    # 渡さないと、合成フォントのエイリアスが大きさも字間も
+                    # 既定値で組み、設定欄をいじっても絵が変わらない
+                    font=text_font(source.params, local_frame),
                 )
                 source = source.with_param("text", expanded)
         width, height = source_canvas(

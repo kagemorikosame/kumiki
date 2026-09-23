@@ -35,19 +35,34 @@ from typing import Any
 import numpy as np
 
 __all__ = [
+    "EDIT_SECTION_SLOTS",
     "HOST_VERSION",
     "NativeModule",
     "NativeModuleError",
     "PixelData",
     "enabled",
+    "host_version_for",
     "load",
     "set_enabled",
 ]
 
-#: 初期化（``InitializePlugin``）へ渡す本体の版 SDK は番号の付け方を定めていない
-#: 見本（WindowClient.cpp の ``RequiredVersion``）が返す値を使う モジュールが
-#: 必要な版を出していれば、そちらを渡す 手元で見たモジュールは版を見ていない
-HOST_VERSION = 2003300
+#: こちらが名乗る本体の版 ``InitializePlugin`` へ渡し、``RequiredVersion`` と比べる
+#:
+#: **写した表の並びが、どの版の本体まで含むか**を表す 2010601 は AviUtl2 v2.1.6a
+#: 根拠は実物だけ
+#:
+#: - v2.1.6a の ``aviutl2.exe`` に 32bit の定数 2010601 が 6 か所あり、同じ版が書いた
+#:   プロジェクト（.aup2）の見出しも ``version=2010601``
+#: - SDK の見本（WindowClient.cpp）の ``RequiredVersion`` は 2003300 で、SDK に
+#:   ``RequiredVersion`` が足された日（2026/2/14）は本体の「2.00 beta33」の日
+#: - 手元の配布物の値 2003300 2004900 2010100 2010400 も、上の読み方
+#:   （2 / 01 / 06 / 01＝a）で本体の履歴にある版に当たる VariableFont の 2004900
+#:   （beta49 2026/6/7）は、SDK が ``register_font_collection`` を足した日と同じ
+#:
+#: 写した SDK（2026/9/19 までの履歴）は v2.1.6a（2026/8/22）より新しいので、
+#: v2.1.6a までに足された枠は全部並んでいる 9/19 の分がどの版の番号に当たるかは
+#: 手元の本体の履歴に無く分からないため、名乗るのは確かめられる v2.1.6a までにする
+HOST_VERSION = 2010601
 
 #: 1 つのモジュールから受け取る関数の数の上限 終わりの印が無い一覧を、
 #: どこまでも読みに行かないため 手元の配布物は 1 つ（TVSubtitle は scan だけ）
@@ -55,6 +70,14 @@ MAX_FUNCTIONS = 1024
 
 #: PE の機械の種類 x64 以外の DLL は 64bit の Sashimono へ読み込めない
 _MACHINE_AMD64 = 0x8664
+
+#: ``EDIT_SECTION``（plugin2.h）の枠の数 先頭の 1 つは ``EDIT_INFO* info``
+#: （データへの番地）で、残りの 82 は関数 中身は編集中のプロジェクトを触る物なので、
+#: こちらには無い 関数の枠を 82 と数えて表を作ると、先頭をデータとして読む
+#: プラグインが関数の機械語を読み、末尾の関数を引くプラグインは表の外を読む
+#: 合成フォントが落ちた番地 0x170 が ``get_font``（46 番目の枠 8 バイト刻み）と
+#: 一致することで、この並びが実物と合っていることも確かめてある
+EDIT_SECTION_SLOTS = 83
 
 
 class NativeModuleError(RuntimeError):
@@ -210,8 +233,10 @@ _SLOTS: tuple[tuple[str, Any], ...] = (
     ("push_result_array_boolean", _F(None, ctypes.POINTER(_b), _i)),
     ("push_result_table_boolean", _F(None, ctypes.POINTER(_c_str), ctypes.POINTER(_b), _i)),
     # 編集の情報・関数の返却・メタテーブルは使わない（手元の配布物は呼ばない）
-    # 空のまま渡すと、呼ばれた時点で DLL が落ちる 呼ばれたら落とさずに断れるよう、
-    # 呼ばれたことを記録して何もしない関数を置く
+    # 空のまま渡すと、呼ばれた時点で DLL が落ちる 関数の返却とメタテーブルの枠には、
+    # 呼ばれたら失敗として記録する関数を置く（:func:`_handlers` の ``refuse``）
+    # ``edit`` には :data:`_EDIT_SECTION` を置く こちらは記録せず 0 を返すだけ
+    # （描画の 1 コマごとに呼ばれうるので、記録すると数が膨らむだけで役に立たない）
     ("edit", _ptr),
     ("push_result_function", _F(None, _ptr, _ptr)),
     ("deprecated_push_result_meta_table", _F(None, _ptr, _ptr, _ptr)),
@@ -301,13 +326,90 @@ def _handlers(call: _Call) -> dict[str, Any]:
     }
 
 
+class _Color(ctypes.Structure):
+    """``EDIT_INFO::COLOR``（plugin2.h） 1 バイトずつの r g b a"""
+
+    _fields_ = [(name, ctypes.c_ubyte) for name in ("r", "g", "b", "a")]
+
+
+class _EditInfo(ctypes.Structure):
+    """``EDIT_INFO``（plugin2.h） ``EDIT_SECTION`` の先頭の枠が指す先
+
+    並びは plugin2.h の宣言どおり 大きさが違うと、後ろの項目を読むプラグインが
+    領域の外を読む
+    """
+
+    _fields_ = [
+        ("width", ctypes.c_int),
+        ("height", ctypes.c_int),
+        ("rate", ctypes.c_int),
+        ("scale", ctypes.c_int),
+        ("sample_rate", ctypes.c_int),
+        ("frame", ctypes.c_int),
+        ("layer", ctypes.c_int),
+        ("frame_max", ctypes.c_int),
+        ("layer_max", ctypes.c_int),
+        ("display_frame_start", ctypes.c_int),
+        ("display_layer_start", ctypes.c_int),
+        ("display_frame_num", ctypes.c_int),
+        ("display_layer_num", ctypes.c_int),
+        ("select_range_start", ctypes.c_int),
+        ("select_range_end", ctypes.c_int),
+        ("grid_bpm_tempo", ctypes.c_float),
+        ("grid_bpm_beat", ctypes.c_int),
+        ("grid_bpm_offset", ctypes.c_float),
+        ("scene_id", ctypes.c_int),
+        ("background", _Color),
+    ]
+
+
+#: ``EDIT_SECTION`` の代わりに渡す表
+#:
+#: 空（nullptr）のまま渡すと、編集の情報を見に来たモジュールが nullptr の
+#: 先を読んで Sashimono ごと落ちる（合成フォントの ``decorate_layout`` に
+#: 書体名を渡すと、``get_font`` を引きに来て落ちた）
+#:
+#: 先頭の枠（``info``）は 0 で埋めた ``EDIT_INFO`` を指す 関数の番地を置くと、
+#: ``edit->info->width`` を読むプラグインが関数の機械語を解像度として読む
+#: 範囲選択の 2 つだけは -1 にする plugin2.h で「未選択の場合は -1」と
+#: 決まっていて、0 にすると 0 フレーム目を選んでいることになる
+#:
+#: 残りの 82 の関数の枠は、どれも同じ「何もせず 0 を返す」関数を指す
+#: x64 の呼び出し規約では引数はレジスタに載り、後始末は呼ぶ側がするので、
+#: 引数を取らない関数をどの枠に置いても安全に戻れる 返すのは 0＝「無い・
+#: 失敗した」で、plugin2.h のどの関数もこの値を「取れなかった」として扱える
+#: （返り値は最大 8 バイト 小数を返す関数は EDIT_SECTION に無い）
+_EditStub = ctypes.CFUNCTYPE(ctypes.c_int64)
+
+
+def _edit_section_stub() -> ctypes.Array[ctypes.c_void_p]:
+    info = _EditInfo()
+    info.select_range_start = -1
+    info.select_range_end = -1
+    stub = _EditStub(lambda: 0)
+    address = ctypes.cast(stub, ctypes.c_void_p).value
+    slots = [ctypes.addressof(info)] + [address] * (EDIT_SECTION_SLOTS - 1)
+    table = (ctypes.c_void_p * EDIT_SECTION_SLOTS)(*slots)
+    # 関数と EDIT_INFO を表にぶら下げて、表が生きている間は回収されないようにする
+    # 表に入っているのは番地だけなので、これが無いと指す先だけが先に消える
+    table._stub = stub  # type: ignore[attr-defined]
+    table._info = info  # type: ignore[attr-defined]
+    return table
+
+
+_EDIT_SECTION = _edit_section_stub()
+
+
 def _build_param(call: _Call) -> tuple[_Param, list[Any]]:
     """表を組み立てる 返す 2 つ目は、呼び出しが終わるまで生かしておく物"""
     keep: list[Any] = []
     handlers = _handlers(call)
     values: dict[str, Any] = {}
     for name, kind in _SLOTS:
-        if name in ("edit", "userdata"):
+        if name == "edit":
+            values[name] = ctypes.cast(_EDIT_SECTION, ctypes.c_void_p)
+            continue
+        if name == "userdata":
             values[name] = None
             continue
         function = kind(handlers[name])
@@ -342,6 +444,16 @@ class NativeModule:
         # 同じ DLL を描画と書き出しが同時に呼ぶことがある 中が同時に呼ばれる
         # ことに耐えるかは分からないので、1 つずつにする
         self._lock = threading.Lock()
+
+    @classmethod
+    def from_address(cls, path: Path, library: Any, address: int) -> NativeModule:
+        """``SCRIPT_MODULE_TABLE*`` の番地から作る
+
+        汎用プラグイン（``.aux2``）は表をファイルから出さず、登録の引数として
+        渡してくる :mod:`sashimono.compat.aviutl.plugin` がそれを受け取る
+        """
+        table = ctypes.cast(address, ctypes.POINTER(_ModuleTable)).contents
+        return cls(path, library, table)
 
     @property
     def names(self) -> tuple[str, ...]:
@@ -419,13 +531,29 @@ def load(path: Path) -> NativeModule:
         return module
 
 
-def _initialize(library: Any, path: Path) -> None:
-    """初期化を呼ぶ 断られたら使わない（使える状態ではない、という意味）"""
+def host_version_for(library: Any, path: Path) -> int:
+    """初期化へ渡す本体の版 こちらより新しい本体を求める DLL は断る
+
+    求められた版をそのまま名乗ると、DLL はその版で増えた枠（表の後ろ）が
+    あるものとして、こちらの表の外を呼ぶかもしれない 呼ばれた先は
+    でたらめな番地で、Sashimono ごと落ちる 読まずに断る方がましで、
+    断った理由は呼ぶ側が記録へ残す
+    """
     required = getattr(library, "RequiredVersion", None)
-    version = HOST_VERSION
     if required is not None:
         required.restype = ctypes.c_uint32
-        version = max(version, int(required()))
+        needed = int(required())
+        if needed > HOST_VERSION:
+            raise NativeModuleError(
+                f"{path.name} は本体の版 {needed} 以降を求めている"
+                f"（こちらが写した並びは {HOST_VERSION} まで）"
+            )
+    return HOST_VERSION
+
+
+def _initialize(library: Any, path: Path) -> None:
+    """初期化を呼ぶ 断られたら使わない（使える状態ではない、という意味）"""
+    version = host_version_for(library, path)
     initialize = getattr(library, "InitializePlugin", None)
     if initialize is None:
         return

@@ -421,6 +421,26 @@ AviUtl の乱数ものは、エイリアスではなくスクリプト（`obj.ra
   渡し、DLL と同じ作法で引数を読み結果を積ませて確かめる 実物での確認は、DLL が
   入っている機械でだけ走る試験（無ければ飛ぶ）に分ける
 
+### `obj.module` の相手は、ファイルとは限らない
+
+**汎用プラグイン（`.aux2`）が名前を付けて登録したモジュール**がある
+合成フォントの `obj.module("compositefont")` がそれで、`compositefont.mod2` という
+ファイルはどこにも無い 名前でファイルを探すだけだと、永遠に見つからない
+
+- 読む側は `compat/aviutl/plugin.py` 作法は SDK の `plugin2.h` に従う
+  `InitializePlugin` → `RegisterPlugin(HOST_APP_TABLE*)` の順で呼び、プラグインが
+  `register_script_module_name(表, 名前)` で登録してきた表を受け取る
+  **`GetCommonPluginTable` は `InitializePlugin` より後**（実物はそうしないと初期化に失敗する）
+- `HOST_APP_TABLE` の 29 の窓口は、どれも「登録を受け取るが何もしない」で返す
+  編集中のプロジェクトもメニューもこちらには無い
+- `SCRIPT_MODULE_PARAM.edit` は空にしない 空のまま渡すと、編集の情報を見に来た
+  モジュールが nullptr の先を読んで Sashimono ごと落ちる（合成フォントに書体名を
+  渡すと `get_font` を引きに来る） 何も返さない関数を並べた `EDIT_SECTION` を渡す
+  先頭の枠だけは関数ではなく `EDIT_INFO*` なので、0 で埋めた `EDIT_INFO` を指す
+- 名乗る本体の版は `native.HOST_VERSION`（2010601＝v2.1.6a） 写した表の並びが
+  どの版まで含むかを表す それより新しい版を `RequiredVersion` で求める DLL は、
+  こちらの表の外を呼びうるので読まずに断り、理由を記録する
+
 ---
 
 ## 6. Git の使い方

@@ -20,7 +20,7 @@ from typing import Any
 
 import numpy as np
 
-from sashimono.compat.aviutl import native
+from sashimono.compat.aviutl import native, plugin
 from sashimono.compat.aviutl.control import ScriptHeader
 from sashimono.compat.aviutl.embedded import EMIT, build_source, has_embedded, literal_text
 from sashimono.compat.aviutl.encoding import read_text
@@ -313,6 +313,9 @@ class LuaScriptRuntime:
         self._bind_obj = self._lua.eval(_BIND_OBJ)
         self._guard = self._lua.eval(_GUARD)
         self._limit_emit = self._lua.eval(_LIMIT_EMIT)
+        #: Lua の ``tostring`` いま取っておく スクリプトが差し替えたあとに引くと、
+        #: 差し替えた方で文字にしてしまう（書き出しは本体の決まりに従わせる）
+        self._tostring = self._lua.eval("tostring")
         #: 前回置いた大域変数 次の実行で消すために覚えておく
         self._injected: set[str] = set()
         #: いま走らせているスクリプトのフォルダ モジュールの探索に使う
@@ -370,11 +373,15 @@ class LuaScriptRuntime:
         header: ScriptHeader | None = None,
         script: str = "",
         folder: Path | None = None,
+        emit: Any = None,
     ) -> ScriptResult:
         """スクリプトを 1 回走らせる
 
         失敗しても例外にしない 1 つのスクリプトの失敗でフレーム全体が真っ黒に
         なるより、そのオブジェクトだけ素通しで出る方が編集を続けられる
+
+        ``emit`` を渡すと ``obj.mes`` が絵ではなく本文を書き出す
+        テキスト欄に埋め込んだ Lua（:meth:`expand_text`）だけが使う
         """
         api = ObjApi(
             state,
@@ -383,6 +390,7 @@ class LuaScriptRuntime:
             render_source=self._render_source,
             load_module=self.load_module,
             load_script_module=self.load_script_module,
+            emit=emit,
         )
         with self._lock:
             self._folder = folder
@@ -420,9 +428,19 @@ class LuaScriptRuntime:
                     raise LuaError(f"書き出す文字が多すぎます（{EMBEDDED_TEXT_LIMIT} 文字まで）")
                 output.append(piece)
 
+            def emit_value(value: Any) -> None:
+                """``obj.mes`` の値を Lua の決まりで文字にしてから書き出す
+
+                ``mes``（:func:`~sashimono.compat.aviutl.embedded.build_source` が
+                作る方）は Lua の ``tostring`` を通る 同じテキスト欄の中で
+                ``obj.mes`` だけ Python の ``str`` を通すと、``true`` が
+                ``True``、``nil`` が ``None`` と出て、書き方で結果が変わる
+                """
+                emit(self._tostring(value))
+
             globals_table[EMIT] = self._limit_emit(emit, EMBEDDED_TEXT_LIMIT * 4)
             try:
-                result = self.run(build_source(text), state, script=script)
+                result = self.run(build_source(text), state, script=script, emit=emit_value)
             finally:
                 # 残すと、次に走るスクリプトの ``mes`` がテキストの書き出しを呼ぶ
                 globals_table[EMIT] = None
@@ -538,6 +556,9 @@ class LuaScriptRuntime:
         で ``.lua`` を読んでいたスクリプトを壊さない
         """
         key = str(name)
+        provided = self._plugin_module(key)
+        if provided is not None:
+            return provided
         path = self._locate(key, (".mod2",))
         if path is None:
             return self.load_module(key)
@@ -552,6 +573,34 @@ class LuaScriptRuntime:
         value = self._native_module(path, key) if _is_native(path) else self._run_file(path)
         self._modules[cache] = value
         return value
+
+    def _plugin_module(self, name: str) -> Any:
+        """汎用プラグイン（``.aux2``）が名前を付けて登録したモジュール
+
+        ファイルとしては存在しないので、先にここを見ないと
+        「見つかりません」で終わる（合成フォントの ``compositefont``）
+        プラグインを読まない設定のときと、AviUtl2 が入っていないときは ``None``
+        で、ファイルを探す従来の道へ落ちる
+        """
+        if not native.enabled():
+            return None
+        try:
+            modules = plugin.script_modules(report=self._report)
+        except Exception as exc:  # pragma: no cover - 読み込みは実物が要る
+            # プラグインの読み込みは他人の DLL を走らせる 何が出てくるか
+            # 分からないので、ここで止めてスクリプト側は素の道へ進ませる
+            self._report.note_missing(f"汎用プラグインを読めない: {exc}")
+            return None
+        module = modules.get(name)
+        if module is None:
+            return None
+        cache = ("aux2", module.path.resolve(), name)
+        if cache not in self._modules:
+            functions = {
+                function: self._native_function(module, function) for function in module.names
+            }
+            self._modules[cache] = self._lua.table_from(functions)
+        return self._modules[cache]
 
     def _native_module(self, path: Path, name: str) -> Any:
         """DLL のモジュールを読み、Lua から呼べる表にする 読めなければ ``nil``"""
