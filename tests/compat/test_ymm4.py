@@ -1459,15 +1459,25 @@ class TestItemSound:
         assert any("PlaybackRate" in line for line in report.lines())
 
     @pytest.mark.parametrize("rate", [50.0, 200.0])
-    def test_a_video_rate_is_counted_while_the_picture_is_unmeasured(self, rate: float) -> None:
-        """動画アイテムの速さは絵にも効く 測っていないので数えて残す
+    def test_a_measured_video_rate_is_not_counted_as_missing(self, rate: float) -> None:
+        """動画アイテムの絵の速さは YMM4 と一致した 写せない物として数えない
 
-        数えないと、YMM4 と違うかもしれない絵の速さを黙って変えたことになる
+        YMM4 4.56.1.1 に書き出させると 50 で 0.50 倍・200 で 2.00 倍（2026-09-23）
+        数え続けると、直し終えた物が互換性レポートの上位に残り、直す順番を誤る
         """
         report = CompatibilityReport()
         (mapped,) = map_template([self.video(PlaybackRate=rate)], report=report)
         assert mapped.clip.speed == Fraction(repr(rate)) / 100
-        assert any("絵の速さは未確認" in line for line in report.lines())
+        assert not report.lines()
+
+    def test_a_stopped_video_is_counted_until_it_can_be_stopped(self) -> None:
+        """YMM4 は 0 で素材の頭の絵に止める こちらは止めた絵を表せないので数えて残す
+
+        数えないと、止まるはずの絵が動いていることに互換性レポートから気付けない
+        """
+        report = CompatibilityReport()
+        map_template([self.video(PlaybackRate=0.0)], report=report)
+        assert any("止まった絵" in line for line in report.lines())
 
     def test_the_newer_rate_fields_as_written_add_nothing(self) -> None:
         """新しい版の書き出しの形（``PlaybackRate2`` と ``Resampling``）は数えない
