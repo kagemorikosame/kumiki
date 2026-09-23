@@ -78,6 +78,23 @@ class TestIssueTemplates:
             assert f"{label}:" in about_text()
             assert f"「{label}」" in text
 
+    def test_the_compat_report_asks_for_the_copied_template_notes(self, tmp_path: Path) -> None:
+        # 雛形がテンプレートの注意書きを手で打ち写させたままだと、写し漏れと写し間違いが
+        # そのまま届く 棚のボタンの名前を変えたら雛形も直さないと、案内したボタンが無い
+        from sashimono.compat.catalog import TemplateCatalog
+        from sashimono.ui.template_dialog import TemplateDialog
+
+        text = (TEMPLATES / "compat_report.yml").read_text(encoding="utf-8")
+        assert "書き写" not in text
+        dialog = TemplateDialog(TemplateCatalog(), roots=(tmp_path,))
+        try:
+            label = dialog._copy_button.text()
+        finally:
+            dialog.close()
+        guide = [line for line in text.splitlines() if "〔互換〕→〔テンプレート…〕" in line]
+        assert guide
+        assert all(f"〔{label}〕" in line for line in guide)
+
     def test_the_menu_paths_in_the_templates_exist(self, menu_paths: set[str]) -> None:
         # 雛形は〔メニュー〕→〔項目〕の形で操作を案内する 項目の名前を変えたり、
         # 別のメニューへ移したりしたら雛形も直さないと、案内どおりに探しても見つからない

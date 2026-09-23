@@ -25,9 +25,12 @@
 
 from __future__ import annotations
 
+import importlib
 import json
+import lzma
 import math
 import zipfile
+import zlib
 from dataclasses import dataclass, field, replace
 from fractions import Fraction
 from pathlib import Path
@@ -138,6 +141,12 @@ class ItemTemplate:
     #: ``["アニメーション効果", "振り子"]`` のような分類
     path: tuple[str, ...] = ()
     items: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    #: ファイルの中のどこにあったか（``ItemTemplates の 2 本目`` など） 空なら
+    #: ファイル全体が 1 本（古い形やアイテムだけを書き出したもの）
+    #:
+    #: 並ぶ順の番号では原本と照らし合わせられない アイテムの入っていない物を
+    #: 除いた後の番号で、アイテムとエフェクトの 2 つの一覧を続けて数えているため
+    origin: str = ""
 
     @property
     def folder(self) -> str:
@@ -145,13 +154,62 @@ class ItemTemplate:
         return self.path[0] if len(self.path) > 1 else ""
 
 
+def _zstd_errors() -> tuple[type[Exception], ...]:
+    """Zstandard の展開の失敗 Python 3.14 から ZIP の中身に使える
+
+    3.14 より前には無いので名前で引く 3.12 や 3.13 では、Zstandard の中身は
+    ``zipfile`` が「対応していない圧縮方式」（``NotImplementedError``）として断る
+    """
+    try:
+        module = importlib.import_module("compression.zstd")
+    except ImportError:
+        return ()
+    error = getattr(module, "ZstdError", None)
+    return (error,) if isinstance(error, type) and issubclass(error, Exception) else ()
+
+
+#: ZIP の中身を取り出すときに ``zipfile`` が投げうる物のうち、``OSError`` でない物
+#: どれもファイルの側の事情で、ここで「読めない」に変えないと棚の走査ごと落ち、
+#: ほかのテンプレートまで並ばない（``zipfile`` の実装を読んで拾った）
+#:
+#: * ``BadZipFile`` — 目録や見出しが壊れている・CRC が合わない
+#: * ``RuntimeError`` — 暗号化されていてパスワードが要る・展開に要るモジュールが無い
+#: * ``NotImplementedError`` — 対応していない圧縮方式・強い暗号化・ZIP の版が新しすぎる
+#: * ``EOFError`` — 中身が途中で切れている
+#: * ``zlib.error`` ``lzma.LZMAError`` と Zstandard の失敗 — 圧縮された中身が壊れている
+#:   （bz2 の失敗は ``OSError`` で来る）
+#:
+#: ``NotImplementedError`` は ``RuntimeError`` の仲間だが、分けて書いておく
+#: 暗号化と未知の圧縮方式のどちらを受けるつもりかが、並びから読めるように
+_ARCHIVE_ERRORS: tuple[type[Exception], ...] = (
+    zipfile.BadZipFile,
+    RuntimeError,
+    NotImplementedError,
+    EOFError,
+    zlib.error,
+    lzma.LZMAError,
+    *_zstd_errors(),
+)
+
+
 def load_template(path: Path) -> list[ItemTemplate]:
-    """ファイルを読んで、入っているテンプレートの列を返す"""
+    """ファイルを読んで、入っているテンプレートの列を返す
+
+    ファイルの側の事情で読めない物は、どれも :class:`Ymm4ParseError` にして返す
+    棚はこれだけを受けて「読めません」の項目にする 棚の側で何でも受けると、
+    こちらの誤り（型の取り違えなど）まで「ファイルが壊れている」に見えて気付けない
+    """
     target = Path(path)
     try:
         raw = _read_catalog(target)
     except OSError as exc:
         raise Ymm4ParseError(f"開けない: {target} ({exc})") from exc
+    except _ARCHIVE_ERRORS as exc:
+        raise Ymm4ParseError(f"{target.name}: ZIP として読めない ({exc})") from exc
+    # UTF-8 でない物は ``ValueError`` の仲間で来る OSError ではないので、受けないと
+    # 棚の走査ごと落ちる
+    except UnicodeDecodeError as exc:
+        raise Ymm4ParseError(f"{target.name}: UTF-8 の文字として読めない ({exc})") from exc
 
     try:
         document = json.loads(raw)
@@ -182,14 +240,19 @@ def _templates_of(document: Any, path: Path) -> list[ItemTemplate]:
         catalogued = document.get("ItemTemplates")
         effect_templates = document.get("VideoEffectTemplates")
         if isinstance(catalogued, list) or isinstance(effect_templates, list):
+            # 位置は除く前の原本の並びで数える 報告を受けた側が原本で同じ物を探せるように
             built = [
-                _template_of(entry)
-                for entry in (catalogued if isinstance(catalogued, list) else [])
+                replace(_template_of(entry), origin=f"ItemTemplates の {number} 本目")
+                for number, entry in enumerate(
+                    catalogued if isinstance(catalogued, list) else [], start=1
+                )
                 if isinstance(entry, dict)
             ]
             built.extend(
-                _effect_template_of(entry)
-                for entry in (effect_templates if isinstance(effect_templates, list) else [])
+                replace(_effect_template_of(entry), origin=f"VideoEffectTemplates の {number} 本目")
+                for number, entry in enumerate(
+                    effect_templates if isinstance(effect_templates, list) else [], start=1
+                )
                 if isinstance(entry, dict)
             )
             found = [item for item in built if item.items]

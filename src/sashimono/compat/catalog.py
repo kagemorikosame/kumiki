@@ -99,6 +99,16 @@ class TemplateEntry:
     #: AviUtl のエイリアスは 1 ファイル 1 本だが、YMM4 のアイテムテンプレートは
     #: **1 ファイルに何本も入っている**（手元の配布物は 17 本と 106 本だった）
     index: int = 0
+    #: 棚を作るときに読めなかった理由 読めた物は空
+    #:
+    #: YMM4 のファイルは中を開かないと何本入っているか分からないので、読めない物は
+    #: 本数を出せない それでも棚から消すと、壊れた・形の違うファイルを本人が選べず、
+    #: 何が起きたかを報告することもできない ファイル 1 つを 1 項目として並べ、
+    #: 選んだときに AviUtl のエイリアスと同じく「読み込めません」と理由を出す
+    error: str = ""
+    #: ``.ymmt`` の原本の中の位置（:attr:`ItemTemplate.origin`） 報告に書く
+    #: ``index`` は読める物だけを数えた番号で、原本と照らし合わせるのには使えない
+    origin: str = ""
 
     @property
     def label(self) -> str:
@@ -108,6 +118,8 @@ class TemplateEntry:
         """中身を読んで、写した結果を返す"""
         log = report if report is not None else global_report
         if self.source == "ymm4":
+            if self.error:
+                raise Ymm4ParseError(self.error)
             templates = load_template(self.path)
             if not 0 <= self.index < len(templates):
                 return []
@@ -175,10 +187,18 @@ def _entries_for(path: Path, root: Path) -> list[TemplateEntry]:
 
     try:
         templates = load_template(path)
-    except (Ymm4ParseError, OSError):
-        # 読めないものは棚に出さない 開くまで中身が分からない形式なので、
-        # 一覧に並べてから「読めません」と言うより出さないほうが分かりやすい
-        return []
+    except (Ymm4ParseError, OSError) as exc:
+        # 黙って捨てない 捨てると、壊れた・形の違うファイルは棚に出ず、本人は
+        # 置いたはずの物が無い理由も分からず、互換の報告にも写せない
+        # AviUtl のエイリアスと同じく並べておき、選んだときに理由を出す
+        # 受けるのはファイルの側の事情だけ（ZIP や文字の失敗は load_template が
+        # Ymm4ParseError に変えて渡す） ここで何でも受けると、読み方の誤り（型の
+        # 取り違えなど）まで「ファイルが壊れている」と出て、直すきっかけを失う
+        return [
+            TemplateEntry(
+                name=path.stem, path=path, folder=path.stem, source="ymm4", error=str(exc)
+            )
+        ]
 
     return [
         TemplateEntry(
@@ -189,6 +209,7 @@ def _entries_for(path: Path, root: Path) -> list[TemplateEntry]:
             folder=f"{path.stem} / {template.folder}" if template.folder else path.stem,
             source="ymm4",
             index=index,
+            origin=template.origin,
         )
         for index, template in enumerate(templates)
     ]
