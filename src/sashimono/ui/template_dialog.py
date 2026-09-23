@@ -71,7 +71,10 @@ def notes_text(
     伏せ方は互換性レポートと同じ物を使う 棚の置き場は本人が決めた場所で、
     ホームの外なら利用者名を含みうるので、外にある物は ``<探索先1>`` の印にする
     """
-    if entry.source == "ymm4":
+    if entry.source == "ymm4" and entry.error:
+        # 読めないファイルは本数が分からない 1 本目と書くと、残りは読めたと読まれる
+        kind = "YMM4 のアイテムテンプレート（ファイルを読めず、本数は不明）"
+    elif entry.source == "ymm4":
         kind = f"YMM4 のアイテムテンプレート（ファイルの {entry.index + 1} 本目）"
     else:
         kind = "AviUtl のエイリアス"

@@ -11,6 +11,7 @@ import io
 import json
 import re
 import zipfile
+import zlib
 from pathlib import Path
 
 import pytest
@@ -104,7 +105,13 @@ def _corrupt_zip() -> bytes:
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("catalog.json", json.dumps({"ItemTemplates": []}) * 50)
     data = bytearray(buffer.getvalue())
-    data[40:60] = bytes(20)
+    # ローカルの見出しは固定の 30 バイトの後ろに名前と拡張の欄が続き、その後ろが中身
+    # 決め打ちの位置で壊すと名前まで壊れ、見出しの食い違い（BadZipFile）で先に落ちる
+    # 0 で埋めると展開は通って CRC の食い違いになるので、展開できない値で埋める
+    name_length = int.from_bytes(data[26:28], "little")
+    extra_length = int.from_bytes(data[28:30], "little")
+    start = 30 + name_length + extra_length
+    data[start + 2 : start + 12] = b"\xff" * 10
     return bytes(data)
 
 
@@ -209,6 +216,7 @@ class TestScanning:
         [
             pytest.param(_rewritten_zip(flags=0x1), RuntimeError, id="暗号化"),
             pytest.param(_rewritten_zip(method=99), NotImplementedError, id="知らない圧縮方式"),
+            pytest.param(_corrupt_zip(), zlib.error, id="中の壊れた ZIP"),
         ],
     )
     def test_the_rewritten_zips_fail_where_intended(

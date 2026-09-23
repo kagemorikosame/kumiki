@@ -552,6 +552,9 @@ class TestTemplateNotesCopy:
         assert "読んだ結果: 読み込めません: 壊れ.ymmt: JSON として読めない" in text
         assert "ファイル: <探索先1>\\壊れ.ymmt" in text.replace("/", "\\")
         assert "kagemori" not in text.casefold()
+        # 読めないファイルは本数が分からない 「1 本目」と書くと、残りは読めたと読まれる
+        assert "種類: YMM4 のアイテムテンプレート（ファイルを読めず、本数は不明）" in text
+        assert "本目" not in text
         # 読めない物は置くことも着せることもできない
         assert not placeable
         assert not restylable
