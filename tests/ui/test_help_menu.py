@@ -6,8 +6,10 @@
 
 from __future__ import annotations
 
+import ctypes
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PySide6.QtCore import QUrl
@@ -18,6 +20,7 @@ from sashimono import __version__
 from sashimono.compat.aviutl.report import CompatibilityReport
 from sashimono.core import userdirs
 from sashimono.links import MANUAL_URL, REPORT_URL
+from sashimono.ui import compat_dialog
 from sashimono.ui.compat_dialog import (
     HOME_PLACEHOLDER,
     CompatibilityDialog,
@@ -130,6 +133,57 @@ class TestCompatibilityCopy:
             rf"開けない: {roaming.lower()}\Sashimono\scripts\a.anm2", user_folders(tmp_path)
         )
         assert text == r"開けない: %APPDATA%\Sashimono\scripts\a.anm2"
+
+    def test_the_short_8dot3_name_of_the_home_is_hidden(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 古い API や DLL は場所を 8.3 形式で返す 短い形にも名前の頭が残るので、
+        # 長い形だけを伏せると公開の Issue に名前が出る 実機の 8.3 の有無に依らないよう、
+        # 短い形を求める所を差し替える
+        long_home = r"C:\Users\kagemori"
+        shorts = {long_home: r"C:\Users\KAGEMO~1"}
+        monkeypatch.delenv("APPDATA", raising=False)
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+        monkeypatch.setattr(compat_dialog, "short_path", shorts.get)
+        text = mask_user_folders(
+            r"開けない: c:\users\kagemo~1\scripts\a.anm2", user_folders(Path(long_home))
+        )
+        assert "kagemo" not in text.lower()
+        assert text == r"開けない: %USERPROFILE%\scripts\a.anm2"
+
+    def test_a_short_name_equal_to_the_long_one_is_not_added_twice(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 8.3 を切ってある置き場では、短い形を聞いても同じ形が返る
+        monkeypatch.delenv("APPDATA", raising=False)
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+        monkeypatch.setattr(compat_dialog, "short_path", lambda folder: folder.upper())
+        assert user_folders(Path(r"C:\Users\kagemori")) == [
+            (r"C:\Users\kagemori", HOME_PLACEHOLDER)
+        ]
+
+    def test_without_the_windows_api_only_the_long_names_are_used(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Windows 以外では windll が無い 求められないからとコピーまで落ちると、報告できない
+        monkeypatch.delattr(ctypes, "windll", raising=False)
+        assert compat_dialog.short_path(r"C:\Users\kagemori") is None
+        assert report_text(CompatibilityReport(), 0)
+
+    def test_a_failing_call_falls_back_to_the_long_names(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 呼び出しが失敗しても、長い形だけで続ける
+        def broken(*_arguments: object) -> int:
+            raise OSError("呼べない")
+
+        fake = SimpleNamespace(kernel32=SimpleNamespace(GetShortPathNameW=broken))
+        monkeypatch.setattr(ctypes, "windll", fake, raising=False)
+        assert compat_dialog.short_path(r"C:\Users\kagemori") is None
+
+    def test_a_missing_folder_has_no_short_name(self, tmp_path: Path) -> None:
+        # 無い場所では API が 0 を返す それを空の名前として足すと、何も伏せない行が混ざる
+        assert compat_dialog.short_path(str(tmp_path / "無い")) is None
 
     def test_the_settings_folder_is_named_rather_than_the_home(
         self, monkeypatch: pytest.MonkeyPatch

@@ -9,6 +9,7 @@ AviUtl の ``obj`` API は広い 全部を一度に実装することはでき�
 
 from __future__ import annotations
 
+import ctypes
 import os
 import re
 from collections.abc import Sequence
@@ -30,7 +31,7 @@ from sashimono.compat.aviutl.catalog import script_catalog
 from sashimono.compat.aviutl.report import CompatibilityReport, global_report
 from sashimono.ui.theme import Colors
 
-__all__ = ["CompatibilityDialog", "mask_user_folders", "report_text", "user_folders"]
+__all__ = ["CompatibilityDialog", "mask_user_folders", "report_text", "short_path", "user_folders"]
 
 #: 写した文面で、本人のホームフォルダの代わりに置く文字
 #: 失敗の記録には OS の文言がそのまま入り、ファイルの場所（ユーザー名を含む）が混じる
@@ -55,13 +56,49 @@ _FOLDER_END = r"(?![^\\/\s\"'<>|:;,)\]}])"
 
 
 def user_folders(home: Path | None = None) -> list[tuple[str, str]]:
-    """伏せる置き場と、その代わりに置く文字"""
-    folders = [(str(home if home is not None else Path.home()), HOME_PLACEHOLDER)]
+    r"""伏せる置き場と、その代わりに置く文字
+
+    Windows では 8.3 形式の短い名前（``C:\Users\KAGEMO~1``）も足す 古い API や
+    一部の DLL は場所を短い形で返し、それが失敗の文言にそのまま入る 短い形にも
+    利用者名の頭が残るので、長い形だけを伏せると公開の Issue に名前が出る
+    """
+    longs = [(str(home if home is not None else Path.home()), HOME_PLACEHOLDER)]
     for variable, placeholder in _FOLDER_VARIABLES:
         value = os.environ.get(variable)
         if value:
-            folders.append((value, placeholder))
+            longs.append((value, placeholder))
+    folders = list(longs)
+    for folder, placeholder in longs:
+        short = short_path(folder)
+        # 同じ形を重ねても害は無いが、伏せる回数が増えるだけなので足さない
+        if short and short.casefold() != folder.casefold():
+            folders.append((short, placeholder))
     return folders
+
+
+def short_path(folder: str) -> str | None:
+    """8.3 形式の短い名前 求められなければ ``None``
+
+    Windows 以外・8.3 を切ってある置き場・無い場所・呼び出しの失敗は、どれも
+    ``None`` にして長い形だけで続ける 伏せる対象を足すための手当てで、取れない
+    からといってコピーそのものを止めるほどのことではない
+    """
+    windll = getattr(ctypes, "windll", None)
+    if windll is None:
+        return None
+    try:
+        get_short = windll.kernel32.GetShortPathNameW
+        # 1 回目で要る長さを聞き、2 回目で受け取る 長さを決め打ちすると、深い置き場で切れる
+        size = int(get_short(folder, None, 0))
+        if size <= 0:
+            return None
+        buffer = ctypes.create_unicode_buffer(size)
+        written = int(get_short(folder, buffer, size))
+    except (AttributeError, OSError, ValueError):
+        return None
+    if written <= 0 or written >= size:
+        return None
+    return buffer.value or None
 
 
 def mask_user_folders(text: str, folders: Sequence[tuple[str, str]]) -> str:
