@@ -309,8 +309,8 @@ YMM4 の絵が 1 枚遅れて並び、動きのある所で差が 8〜24 跳ね�
 確かめ、0 以外は YMM4 と一致した 0 は YMM4 が素材の頭の絵で止めるので、クリップの
 `hold_at`（絵を止める素材の時刻）を `source_in` にして止める（#115）
 新しい版の書き出しは動く値の `PlaybackRate2` と `PlaybackRateAudioProcessingMode` も持つ
-実物はどれも `PlaybackRate` と同じ値・`Resampling` だった 食い違いや動き・ほかの変え方は
-どちらが効くのか測っていないので数えて残す
+実物はどれも `PlaybackRate` と同じ値・`Resampling` だった どちらが効くのかは、下の
+「`PlaybackRate` と `PlaybackRate2` の食い違い」で測った
 
 ### 絵の速さを測る
 
@@ -379,6 +379,48 @@ Sashimono の列は、止めた絵を写す前（#114 の時点）と、写し�
   長さの分からない素材・静止画・`IsLooped` の物は止めない（繰り返しは互換性レポートに数えて残す）
 - 保存形式の版を 4 に上げた 3 までの本体は項目を知らず、止めた絵が動き出すうえ保存し直すと
   消える 3 までのファイルは止めないクリップとして開く
+
+### `PlaybackRate` と `PlaybackRate2` の食い違い
+
+新しい版の `PlaybackRate2`（動く値）と `PlaybackRateAudioProcessingMode` がどう効くかを
+測る（Issue #117） 上の 2 つの探り（`video-rate-build` と `audio-build`）は、前からある枠の
+後ろに、2 つをわざと食い違わせた枠を持つ 前からある枠は形も位置も変えていないので、
+前の測り結果とそのまま比べられる
+
+`PlaybackRateAudioProcessingMode` の取りうる値は実物に `Resampling` しか無かったので、
+YMM4 本体（4.56.1.1）の `YukkuriMovieMaker.dll` のメタデータの表から列挙
+`YukkuriMovieMaker.Project.Items.PlaybackRateAudioProcessingMode` を読んだ
+`Resampling = 0` と `Sola = 1` の 2 つだけ
+
+`video-rate-measure` は 30 フレームごとに傾きを区切って出し、`PlaybackRate` の値が効いた
+ときと `PlaybackRate2` の値が効いたときの予想と並べて、近い方を書く `audio-measure` は
+鳴っている長さと中心の周波数で同じように読む（`Sola` の枠は高さを保つかどうか）
+
+2026-09-23 に YMM4 4.56.1.1 で測った結果（書き出しは `tools/ymm4_export.py` で自動）
+
+| 枠 | 絵（30 フレームごとの傾き） | 音（長さ・中心の周波数） | 効いた値 |
+|---|---|---|---|
+| `PlaybackRate` 100 / `PlaybackRate2` 50 | 1.00・1.00・1.00・1.00 | 2.00 秒・440Hz | `PlaybackRate` |
+| `PlaybackRate` 50 / `PlaybackRate2` 100 | 0.50 が 6 区間 | 3.98 秒・220Hz | `PlaybackRate` |
+| `PlaybackRate` 100 / `PlaybackRate2` 50→200 | 1.06・1.25・1.41・1.50 | （測っていない） | どちらとも合わない |
+| `PlaybackRate` 50 / `Sola` | - | 3.97 秒・440Hz | 高さを保つ |
+| `PlaybackRate` 200 / `Sola` | - | 1.00 秒・440Hz | 高さを保つ |
+
+止まった値が食い違うときは、絵も音も `PlaybackRate` が効いた 読み込み
+（`compat/ymm4/template.py` の `_playback_rate`）は `PlaybackRate` を読み、食い違いは数えない
+
+`PlaybackRate2` を動かした枠は、`PlaybackRate` の 100 一定とも、`PlaybackRate2` の
+50→200 とも合わなかった 頭の値を `PlaybackRate`（100）・終わりの値を `PlaybackRate2` の
+最後（200）とした直線なら、各 30 フレームの予想は 1.08・1.25・1.42・(1.58) になり、
+はじめの 3 区間が ±0.01 で合う（4 つ目は素材を読み切る所にかかる） **1 つの枠からの読み
+なので決め打ちしない** `video-rate-measure` はこの読みも 3 つ目の予想として並べるので、
+次に別の値で測るときに合うかを確かめる こちらの `speed` は動かせないので、読み込みは
+頭の値（`PlaybackRate`）で置き、動く速さは写せないと互換性レポートに数えて残す
+
+`Sola` は長さだけを速さどおりに変え、高さを保った（WSOLA のような変え方） こちらの
+`speed` はミキサーの線形の並べ直しで、高さを保つ変え方を持たない 読み込みは長さを
+`speed` で合わせ、高さも変わることを数えて残す（等倍と 0 は高さが変わらないので数えない）
+`Resampling` と `Sola` 以外の値は、まだ見ていない変え方として数えて残す
 
 YMM4 が読み込みで断った設定（列挙型の名前の間違いなど）は、ダイアログが別の窓に
 隠れて見えないことがある そのときは YMM4 を前に出して Ctrl+C を押すと、

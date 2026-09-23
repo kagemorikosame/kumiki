@@ -756,7 +756,7 @@ def test_the_rate_slots_never_overlap_and_outlast_the_source(tool: ModuleType) -
     読み切った後の絵（止まるのか消えるのか）も見えない
     """
     slots = tool.build_rate_slots()
-    assert [slot.rate for slot in slots] == [100.0, 50.0, 200.0, 0.0]
+    assert [slot.rate for slot in slots[:4]] == [100.0, 50.0, 200.0, 0.0]
     for before, after in itertools.pairwise(slots):
         assert after.start >= before.start + tool.RATE_SLOT + tool.RATE_GAP
     assert tool.RATE_SLOT > tool.RATE_SOURCE_SECONDS * tool.FPS
@@ -824,7 +824,7 @@ def test_the_rate_probe_writes_an_absolute_path_for_the_source(
     assert "前の探りの書き出し" in capsys.readouterr().out
     raw = (tmp_path / "work" / "video-rate-probe.ymmp").read_bytes().decode("utf-8-sig")
     paths = [item["FilePath"] for item in json.loads(raw)["Timelines"][0]["Items"]]
-    assert len(paths) == len(tool.RATE_CONDITIONS)
+    assert len(paths) == len(tool.build_rate_slots())
     assert all(Path(path).is_absolute() for path in paths)
 
 
@@ -970,6 +970,327 @@ def test_a_rate_export_at_another_frame_rate_is_refused(
     assert tool.command_video_rate_measure(arguments) == 0
     assert "一覧は 30fps 書き出しは 60fps" in capsys.readouterr().out
     assert not (tmp_path / "video-rate-report.json").exists()
+
+
+# PlaybackRate と PlaybackRate2 を食い違わせた枠（Issue #117）
+
+
+def test_the_mismatched_rate_slots_follow_the_old_ones_so_old_results_still_line_up(
+    tool: ModuleType,
+) -> None:
+    """食い違わせた枠を間に挟むと、前の測り結果と枠の番号と位置がずれて比べられない"""
+    slots = tool.build_rate_slots()
+    old = slots[: len(tool.RATE_CONDITIONS)]
+    step = tool.RATE_SLOT + tool.RATE_GAP
+    assert [(slot.name, slot.rate, slot.start) for slot in old] == [
+        (f"PlaybackRate={rate:g}", rate, index * step)
+        for index, rate in enumerate(tool.RATE_CONDITIONS)
+    ]
+    # 前からある枠は、前と同じく両方に同じ速さを書く
+    for slot in old:
+        item = tool.rate_video_item(slot, Path("C:/work/source.mp4"))
+        assert item["PlaybackRate2"] == {
+            "Values": [{"Value": slot.rate}],
+            "Span": 0.0,
+            "AnimationType": "なし",
+        }
+    added = slots[len(tool.RATE_CONDITIONS) :]
+    assert [(slot.name, slot.rate, slot.second) for slot in added] == [
+        ("PlaybackRate=100 PlaybackRate2=50", 100.0, (50.0,)),
+        ("PlaybackRate=50 PlaybackRate2=100", 50.0, (100.0,)),
+        ("PlaybackRate=100 PlaybackRate2=50→200", 100.0, (50.0, 200.0)),
+    ]
+    for before, after in itertools.pairwise(slots):
+        assert after.start >= before.start + step
+
+
+def test_the_mismatched_rate_items_carry_both_values_into_the_project(
+    tool: ModuleType, tmp_path: Path
+) -> None:
+    # 一覧だけ食い違っていて .ymmp が同じ値だと、YMM4 はどちらも同じに読み、何も分からない
+    slots = tool.build_rate_slots()
+    manifest = tool.rate_manifest(slots, tmp_path / "source.mp4")
+    target = tmp_path / "video-rate-probe.ymmp"
+    tool.write_document([entry["item"] for entry in manifest["slots"]], 2000, target)
+    items = json.loads(target.read_bytes().decode("utf-8-sig"))["Timelines"][0]["Items"]
+    by_name = {item["Remark"]: item for item in items}
+    first = by_name["PlaybackRate=100 PlaybackRate2=50"]
+    assert first["PlaybackRate"] == 100.0
+    assert first["PlaybackRate2"]["Values"] == [{"Value": 50.0}]
+    second = by_name["PlaybackRate=50 PlaybackRate2=100"]
+    assert second["PlaybackRate"] == 50.0
+    assert second["PlaybackRate2"]["Values"] == [{"Value": 100.0}]
+    entry = manifest["slots"][-1]
+    assert entry["rate"] == 100.0
+    assert entry["rate2"] == [50.0, 200.0]
+
+
+def test_the_moving_rate2_is_written_like_the_real_moving_values(tool: ModuleType) -> None:
+    """動く値は実物（この機械のプロジェクトの ``Zoom``）と同じ形で書く
+
+    ``KeyFrames`` を空にして ``Values`` を 2 つ ``直線移動`` で持つ 推測の形で書くと
+    YMM4 が開けないか、止まった値として読んで何も測れない こちらの読み込みも
+    同じ形を頭から終わりへ動く値と読むので、YMM4 と同じ意味で書けている
+    """
+    from sashimono.compat.ymm4.values import animated
+
+    slot = tool.build_rate_slots()[-1]
+    item = tool.rate_video_item(slot, Path("C:/work/source.mp4"))
+    moving = item["PlaybackRate2"]
+    assert moving["Values"] == [{"Value": 50.0}, {"Value": 200.0}]
+    assert moving["AnimationType"] == "直線移動"
+    assert moving["Span"] == 0.0
+    assert moving["Bezier"]["Points"][1]["Point"] == {"X": 1.0, "Y": 1.0}
+    assert item["KeyFrames"] == {"Frames": [], "Count": 0}
+    assert item["PlaybackRate"] == 100.0
+    read = animated(moving, 100.0, length=item["Length"], keyframes=item["KeyFrames"])
+    assert [(point.frame, point.value) for point in read.keyframes] == [
+        (0, 50.0),
+        (tool.RATE_SLOT, 200.0),
+    ]
+
+
+def _accumulated(values: tuple[float, float], length: int, last: int) -> list[int | None]:
+    """フレームごとに速さを積み上げて素材を進めた番号 読み切ったら最後で止める"""
+    first, final = values
+    position = 0.0
+    indices: list[int | None] = []
+    for frame in range(length):
+        indices.append(min(int(position), last))
+        position += (first + (final - first) * frame / length) / 100.0
+    return indices
+
+
+def test_window_slopes_show_the_speed_changing_midway(tool: ModuleType) -> None:
+    """全体の傾き 1 つでは、途中で速さが変わったのか一定なのか見分けられない
+
+    50→200 と動いた速さも、全体の傾きでは 1 倍前後の一定の速さと同じに見える
+    """
+    length, last = tool.RATE_SLOT, 400
+    indices = _accumulated((50.0, 200.0), length, last)
+    windows = tool.window_slopes(indices, last)
+    assert len(windows) == length // tool.RATE_WINDOW
+    assert all(value is not None for value in windows)
+    assert windows == sorted(windows)
+    expected = tool.expected_windows([50.0, 200.0], length)
+    assert windows == pytest.approx(expected, abs=0.03)
+    entry = {"length": length, "rate": 100.0, "rate2": [50.0, 200.0]}
+    nearer, gaps = tool.nearer_rate(windows, tool.rate_expectations(entry))
+    assert nearer == "PlaybackRate2"
+    assert gaps["PlaybackRate2"] < gaps["PlaybackRate"]
+    steady = tool.window_slopes(_accumulated((100.0, 100.0), length, last), last)
+    assert tool.nearer_rate(steady, tool.rate_expectations(entry))[0] == "PlaybackRate"
+
+
+def test_a_window_after_the_source_runs_out_is_not_read_as_stopped(tool: ModuleType) -> None:
+    """読み切った後の区切りを 0 と読むと、PlaybackRate2 が途中で 0 へ落ちたように見える"""
+    last = 60
+    indices = _accumulated((200.0, 200.0), 90, last)
+    windows = tool.window_slopes(indices, last)
+    assert windows[0] == pytest.approx(2.0, abs=0.05)
+    assert windows[-1] is None
+
+
+def test_the_nearer_value_is_read_for_a_still_mismatch(tool: ModuleType) -> None:
+    """止まった値の食い違いでは、区切りの傾きが近い方の値を名指す
+
+    取り違えると YMM4 で効いた値を誤って読み、互換層の ``_playback_rate`` を
+    誤った測り結果に合わせて直すことになる
+    """
+    entry = {"length": 60, "rate": 100.0, "rate2": [50.0]}
+    expectations = tool.rate_expectations(entry)
+    assert tool.nearer_rate([0.5, 0.49], expectations)[0] == "PlaybackRate2"
+    assert tool.nearer_rate([1.0, 1.01], expectations)[0] == "PlaybackRate"
+    # どちらとも違う（止まった）ときに近い方を名指すと、効いた値を取り違える
+    assert tool.nearer_rate([0.0, 0.0], expectations)[0] == "どちらとも合わない"
+    assert tool.nearer_rate([None, None], expectations)[0] == "測れない"
+
+
+def test_an_old_slot_says_it_cannot_tell_the_two_apart(tool: ModuleType) -> None:
+    """同じ値を書いた枠で近い方を名指すと、測っていない読み方を測ったように見せる
+
+    前の版の一覧（``rate2`` が無い）も同じ値を書いていた枠として読む
+    """
+    entry = {"length": 60, "rate": 50.0}
+    nearer, _ = tool.nearer_rate([0.5, 0.5], tool.rate_expectations(entry))
+    assert nearer == "見分けられない（同じ値）"
+
+
+def test_the_rate_row_and_table_show_both_guesses_for_a_mismatch(
+    tool: ModuleType, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """YMM4 の行と Sashimono の行で、それぞれ近い予想を名指し、表にも予想を並べる
+
+    2 つの行で近い予想を取り違えると、YMM4 で効いた値を誤って読み、互換層の
+    直し方を誤る 表に予想が出ないと、次に測る人が実測をどの読みと比べるのか
+    読み取れない
+    """
+    sources = _sources(200)
+    entry = {
+        "index": 6,
+        "name": "PlaybackRate=100 PlaybackRate2=50→200",
+        "rate": 100.0,
+        "rate2": [50.0, 200.0],
+        "length": 120,
+    }
+    last = len(sources) - 1
+    played: list[np.ndarray | None] = [
+        None if index is None else sources[index]
+        for index in _accumulated((50.0, 200.0), 120, last)
+    ]
+    sides = [("ymm4", played), ("sashimono", _played(sources, 1.0, 120))]
+    row = tool.rate_row(entry, sides, sources, tool.RATE_MATCH_LIMIT)
+    assert row["ymm4"]["nearer"] == "PlaybackRate2"
+    assert row["sashimono"]["nearer"] == "PlaybackRate"
+    # 素材との突き合わせの差は前と同じ名前のまま残る
+    assert len(row["ymm4"]["distances"]) == 120
+    tool._print_rate_rows([row])
+    out = capsys.readouterr().out
+    assert "PlaybackRate2 予想" in out
+    assert "→ PlaybackRate2" in out
+
+
+# 新しい版の音声アイテム（Issue #117）
+
+#: この機械のプロジェクトにあった新しい版の AudioItem 42 個の項目の並び
+NEWER_AUDIO_KEYS = [
+    "$type",
+    "IsWaveformEnabled",
+    "FilePath",
+    "AudioTrackIndex",
+    "Volume",
+    "Pan",
+    "PlaybackRate2",
+    "PlaybackRateAudioProcessingMode",
+    "ContentOffset",
+    "FadeIn",
+    "FadeOut",
+    "IsLooped",
+    "EchoIsEnabled",
+    "EchoInterval",
+    "EchoAttenuation",
+    "AudioEffects",
+    "Group",
+    "Frame",
+    "Layer",
+    "KeyFrames",
+    "Length",
+    "PlaybackRate",
+    "Remark",
+    "IsLocked",
+    "IsHidden",
+]
+
+
+def test_the_newer_audio_slots_follow_the_old_ones_in_the_old_form(tool: ModuleType) -> None:
+    """前からある枠の形や位置を変えると、前の測り結果と比べられない"""
+    slots = tool.build_audio_slots()
+    old = [slot for slot in slots if slot.playback_rate2 is None]
+    assert slots[: len(old)] == old
+    for slot in old:
+        item = tool.audio_item(slot, Path("tone.wav"))
+        assert "PlaybackRate2" not in item
+        assert "PlaybackRateAudioProcessingMode" not in item
+    added = slots[len(old) :]
+    assert [(s.kind, s.playback_rate, s.playback_rate2, s.mode) for s in added] == [
+        ("rate2", 100.0, 50.0, "Resampling"),
+        ("rate2", 50.0, 100.0, "Resampling"),
+        ("mode", 50.0, 50.0, "Sola"),
+        ("mode", 200.0, 200.0, "Sola"),
+    ]
+    for before, after in itertools.pairwise(slots):
+        assert after.start - before.start >= tool.AUDIO_SLOT + tool.AUDIO_GAP
+
+
+def test_the_newer_audio_items_are_written_like_the_real_newer_ones(
+    tool: ModuleType, tmp_path: Path
+) -> None:
+    # 形を推測すると YMM4 がプロジェクトを開けない 実物の新しい版の並びに合わせる
+    every = tool.build_audio_slots()
+    slots = [slot for slot in every if slot.playback_rate2 is not None]
+    target = tmp_path / "audio-probe.ymmp"
+    items = [tool.audio_item(slot, tmp_path / "tone.wav") for slot in slots]
+    tool.write_document(items, 100, target)
+    written = json.loads(target.read_bytes().decode("utf-8-sig"))["Timelines"][0]["Items"]
+    for slot, item in zip(slots, written, strict=True):
+        assert list(item) == NEWER_AUDIO_KEYS
+        assert item["PlaybackRate"] == slot.playback_rate
+        assert item["PlaybackRate2"]["Values"] == [{"Value": slot.playback_rate2}]
+        assert item["PlaybackRateAudioProcessingMode"] == slot.mode
+    manifest = tool.audio_manifest(every, tmp_path / "tone.wav")
+    entries = [entry for entry in manifest["slots"] if entry["playback_rate2"] is not None]
+    assert [(e["playback_rate"], e["playback_rate2"], e["mode"]) for e in entries] == [
+        (100.0, 50.0, "Resampling"),
+        (50.0, 100.0, "Resampling"),
+        (50.0, 50.0, "Sola"),
+        (200.0, 200.0, "Sola"),
+    ]
+
+
+def _sound_entry(tool: ModuleType, name: str) -> dict[str, object]:
+    manifest = tool.audio_manifest(tool.build_audio_slots(), Path("tone.wav"))
+    found: dict[str, object] = next(entry for entry in manifest["slots"] if entry["name"] == name)
+    return found
+
+
+def test_the_sound_says_which_rate_it_followed(tool: ModuleType) -> None:
+    """長さと高さの両方で読む 長さだけだと、枠で頭打ちになった 4 秒を取り違える"""
+    rate = 48000
+    entry = _sound_entry(tool, "PlaybackRate=100 PlaybackRate2=50")
+    base = tool.measure_block(tone(rate, 4.0), rate)
+    # PlaybackRate2 の 50 が効いたなら 4 秒・220Hz
+    slow = tool.measure_block(tone(rate, 4.0, hz=220.0), rate)
+    assert tool._audio_row(entry, slow, base)["nearer"] == "PlaybackRate2"
+    # PlaybackRate の 100 が効いたなら 2 秒・440Hz
+    block = np.zeros((2, rate * 4), dtype=np.float32)
+    block[:, : rate * 2] = tone(rate, 2.0)
+    row = tool._audio_row(entry, tool.measure_block(block, rate), base)
+    assert row["nearer"] == "PlaybackRate"
+    assert set(row["expected"]) == {"PlaybackRate", "PlaybackRate2"}
+
+
+def test_sola_is_told_apart_by_the_pitch_it_keeps(tool: ModuleType) -> None:
+    """Sola と Resampling は長さが同じ 高さを見ないと見分けられない"""
+    rate = 48000
+    entry = _sound_entry(tool, "PlaybackRate=50 PlaybackRate2=50 Sola")
+    base = tool.measure_block(tone(rate, 4.0), rate)
+    kept = tool._audio_row(entry, tool.measure_block(tone(rate, 4.0), rate), base)
+    assert kept["nearer"] == "高さを保つ"
+    lowered = tool._audio_row(entry, tool.measure_block(tone(rate, 4.0, hz=220.0), rate), base)
+    assert lowered["nearer"] == "高さも変わる"
+    silent = tool.measure_block(np.zeros((2, rate * 4), dtype=np.float32), rate)
+    assert tool._audio_row(entry, silent, base)["nearer"] == "鳴らない"
+
+
+def test_the_old_audio_rows_carry_no_guess(
+    tool: ModuleType, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # 前からある枠に予想を付けると、前の表と列が変わって比べにくい
+    rate = 48000
+    base = tool.measure_block(tone(rate, 4.0), rate)
+    manifest = tool.audio_manifest(tool.build_audio_slots(), Path("tone.wav"))
+    rows = [tool._audio_row(entry, base, base) for entry in manifest["slots"]]
+    assert ["expected" in row for row in rows] == [
+        entry["playback_rate2"] is not None for entry in manifest["slots"]
+    ]
+    tool._print_audio_rows(rows)
+    assert "新しい版の形" in capsys.readouterr().out
+
+
+def test_the_moving_slot_also_lists_the_reading_that_matched_ymm4(tool: ModuleType) -> None:
+    """動く PlaybackRate2 を測ると、頭が PlaybackRate・終わりが PlaybackRate2 の最後の
+    直線に合った（2026-09-23） 予想に並べないと、次に測る人が表から読み取れない
+
+    1 枠からの読みなので、止まった値の枠には足さない（足すと 2 つの予想の間の値を名指す）
+    """
+    length, last = tool.RATE_SLOT, 400
+    entry = {"length": length, "rate": 100.0, "rate2": [50.0, 200.0]}
+    expectations = tool.rate_expectations(entry)
+    assert expectations[tool.HEAD_TO_LAST][:3] == pytest.approx([1.08, 1.25, 1.42], abs=0.01)
+    windows = tool.window_slopes(_accumulated((100.0, 200.0), length, last), last)
+    assert tool.nearer_rate(windows, expectations)[0] == tool.HEAD_TO_LAST
+    still = tool.rate_expectations({"length": length, "rate": 100.0, "rate2": [50.0]})
+    assert tool.HEAD_TO_LAST not in still
 
 
 def _export_tool() -> ModuleType:
