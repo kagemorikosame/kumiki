@@ -20,7 +20,9 @@
 
 測っていない所は読まずに文字のまま残す（``<@+B>`` のようなスタイルの足し引き、``<r>`` ``<p>``
 などほかの制御文字） 黙って捨てると、描けていないことに気付けない
-文字装飾の番号（``<@メイリオ,3>`` の ``3``）とスタイルの文字は、書体だけを読んで捨てる
+文字装飾の番号（``<@メイリオ,3>`` の ``3``）と ``<s>`` のスタイル・縁取りの太さは、書体と
+大きさだけを読んで捨てる 捨てたことは互換性の記録（:class:`CompatibilityReport`）に種類ごとに
+数える 数えないと、縁取りの付くはずの字が素の字で出ていることに本人が気付けない
 
 GUI に依存しない 書体の引き当てと組版は描く側（``engine.sources``）の仕事
 """
@@ -30,7 +32,23 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field, replace
 
-__all__ = ["PRESET_COLORS", "TaggedLine", "TextRun", "TextStyle", "parse_tags"]
+from sashimono.compat.aviutl.report import CompatibilityReport, global_report
+
+__all__ = [
+    "DROPPED_DECORATION",
+    "DROPPED_SIZE_STYLE",
+    "PRESET_COLORS",
+    "TaggedLine",
+    "TextRun",
+    "TextStyle",
+    "parse_tags",
+]
+
+#: 読まずに捨てた所の記録の名前 互換性の一覧に種類ごとに並ぶ
+DROPPED_DECORATION = "テキストの制御文字 <@書体,文字装飾>（文字装飾・スタイルは読まない）"
+DROPPED_SIZE_STYLE = (
+    "テキストの制御文字 <s大きさ,書体,スタイル,縁取り>（スタイル・縁取りの太さは読まない）"
+)
 
 #: 色の名前 AviUtl2 v2.1.6a の既定のプリセット色（``ProgramData\\aviutl2\\Default\\default.palette``
 #: で名前の付いた 8 色） ``<#red>`` が ff0000 で描かれることは書き出して確かめた
@@ -83,7 +101,7 @@ class TaggedLine:
 
 _FONT = re.compile(r"<@([^<>,+\-][^<>,]*)?(?:,([^<>]*))?>")
 _COLOR = re.compile(r"<#([^<>,]*)(?:,([^<>,]*))?>")
-_SIZE = re.compile(r"<s([+\-*]?\d+(?:\.\d+)?)?(?:,([^<>,]*)(?:,[^<>]*)?)?>")
+_SIZE = re.compile(r"<s([+\-*]?\d+(?:\.\d+)?)?(?:,([^<>,]*)(?:,([^<>]*))?)?>")
 _HEX = re.compile(r"[0-9a-fA-F]{6}")
 
 
@@ -104,12 +122,16 @@ def _sized(current: float, value: str) -> float:
     return float(value)
 
 
-def _apply(match: re.Match[str], style: TextStyle, base_size: float) -> TextStyle | None:
+def _apply(
+    match: re.Match[str], style: TextStyle, base_size: float, report: CompatibilityReport
+) -> TextStyle | None:
     """制御文字 1 つを見た目へ効かせる 読めない中身なら ``None``（文字のまま残す）"""
     whole = match.group(0)
     if whole.startswith("<@"):
         if whole == "<@>":
             return replace(style, font=None)
+        if (match.group(2) or "").strip():
+            report.note_missing(DROPPED_DECORATION)
         name = (match.group(1) or "").strip()
         # ``<@,3>`` のように書体名が空なら書体は変えない 文字装飾は読まない
         return replace(style, font=name) if name else style
@@ -125,6 +147,8 @@ def _apply(match: re.Match[str], style: TextStyle, base_size: float) -> TextStyl
     if whole == "<s>":
         return replace(style, size=None, font=None)
     value, font = match.group(1), match.group(2)
+    if (match.group(3) or "").strip(", "):
+        report.note_missing(DROPPED_SIZE_STYLE)
     size = style.size
     if value:
         size = max(1.0, _sized(base_size if size is None else size, value))
@@ -134,8 +158,14 @@ def _apply(match: re.Match[str], style: TextStyle, base_size: float) -> TextStyl
     return new
 
 
-def parse_tags(text: str, base_size: float) -> list[TaggedLine]:
-    """本文を、行ごとの同じ見た目の並びへ ``base_size`` は設定欄の大きさ（相対の大きさの元）"""
+def parse_tags(
+    text: str, base_size: float, report: CompatibilityReport | None = None
+) -> list[TaggedLine]:
+    """本文を、行ごとの同じ見た目の並びへ ``base_size`` は設定欄の大きさ（相対の大きさの元）
+
+    ``report`` は読まずに捨てた所を数える先 省略するとアプリ全体の記録
+    """
+    log = report if report is not None else global_report
     lines = [TaggedLine()]
     style = TextStyle()
     pending: list[str] = []
@@ -160,7 +190,7 @@ def parse_tags(text: str, base_size: float) -> list[TaggedLine]:
                 match = pattern.match(text, index)
                 if match is None:
                     continue
-                changed = _apply(match, style, base_size)
+                changed = _apply(match, style, base_size, log)
                 if changed is not None:
                     flush()
                     style = changed

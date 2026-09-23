@@ -160,9 +160,10 @@ def _own_length(head: list[str]) -> int:
         key, _, value = line.partition("=")
         if key.strip() != "frame":
             continue
-        first, _, last = value.partition(",")
+        # 中間点があると ``frame=開始,中間点…,終了`` と並ぶ 終わりは最後の値
+        parts = value.split(",")
         try:
-            span = int(last) - int(first) + 1
+            span = int(parts[-1]) - int(parts[0]) + 1
         except ValueError:
             return SLOT
         return span if span >= 1 else SLOT

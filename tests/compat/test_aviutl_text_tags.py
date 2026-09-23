@@ -7,7 +7,13 @@ AviUtl2 と違う所で切り替わる
 
 from __future__ import annotations
 
-from sashimono.compat.aviutl.text_tags import TextStyle, parse_tags
+from sashimono.compat.aviutl.report import CompatibilityReport
+from sashimono.compat.aviutl.text_tags import (
+    DROPPED_DECORATION,
+    DROPPED_SIZE_STYLE,
+    TextStyle,
+    parse_tags,
+)
 
 
 def runs(text: str, size: float = 100.0) -> list[list[tuple[str, TextStyle]]]:
@@ -106,3 +112,27 @@ class TestColor:
     def test_an_unreadable_colour_stays_as_text(self) -> None:
         (line,) = runs("A<#zzz>B")
         assert [part for part, _style in line] == ["A<#zzz>B"]
+
+
+class TestDroppedParts:
+    """読まずに捨てた所を互換性の記録に数える
+
+    数えないと、縁取りの付くはずの字が素の字で出ていても本人が気付けない
+    """
+
+    def test_a_decoration_number_is_counted(self) -> None:
+        report = CompatibilityReport()
+        parse_tags("<@メイリオ,3>H<@>H<@メイリオ,6BI>H", 100.0, report)
+        assert report.missing[DROPPED_DECORATION] == 2
+        assert any(DROPPED_DECORATION in line for line in report.lines())
+
+    def test_a_size_style_and_outline_are_counted(self) -> None:
+        report = CompatibilityReport()
+        parse_tags("<s80,メイリオ,B,3>H<s>H<s80,メイリオ>H<s50>H", 100.0, report)
+        # 書体までの指定は読めているので数えない
+        assert report.missing[DROPPED_SIZE_STYLE] == 1
+
+    def test_tags_that_are_read_whole_leave_no_record(self) -> None:
+        report = CompatibilityReport()
+        parse_tags("<@メイリオ>H<@><#ff0000,0000ff>H<#><s*2>H<s>", 100.0, report)
+        assert report.is_empty

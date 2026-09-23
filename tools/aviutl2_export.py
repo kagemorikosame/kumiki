@@ -164,6 +164,11 @@ def project_frames(text: str) -> int:
     354 フレームのプロジェクトで frame000〜frame353 が出た） 数え違うと、枚数が揃うのを
     待ち続けるか、書き終える前に止めてしまう オブジェクトの節（``[0]`` ``[1]`` …）の
     ``frame=`` だけを数え、中のフィルタの節（``[0.1]``）やシーンの節は見ない
+
+    中間点のあるオブジェクトは ``frame=開始,中間点…,終了`` と同じ行に並ぶ（AviUtl2 に
+    作らせた ``kumiki_motion_probe.object`` の ``frame=244,333,423``、読み手は
+    ``compat/aviutl/exo.py``） 2 つ目だけを終わりとして読むと、中間点のある
+    オブジェクトの終わりを数え落とし、書き出された PNG が見込みより多いとして失敗する
     """
     last = -1
     in_object = False
@@ -174,11 +179,11 @@ def project_frames(text: str) -> int:
             continue
         if not in_object or not line.startswith("frame="):
             continue
-        _, _, end = line.partition(",")
-        try:
-            last = max(last, int(end))
-        except ValueError:
-            continue
+        for part in line.removeprefix("frame=").split(","):
+            try:
+                last = max(last, int(part))
+            except ValueError:
+                continue
     return last + 1
 
 

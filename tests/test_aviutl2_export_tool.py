@@ -59,6 +59,20 @@ class TestFrames:
         # [0.1] のようなフィルタの節の値まで拾うと、書き出されない枚数を待つ
         assert tool.project_frames("[0]\nframe=0,9\n[0.1]\nframe=0,500\n") == 10
 
+    def test_intermediate_points_are_read_to_the_end(self, tool: ModuleType) -> None:
+        # 中間点のあるオブジェクトは frame=開始,中間点,終了 と並ぶ（AviUtl2 に作らせた
+        # kumiki_motion_probe.object は frame=244,333,423） 2 つ目を終わりと読むと
+        # 334 枚を待ち、424 枚書き出されたところで多すぎるとして失敗する
+        text = "[0]\nframe=0,100\n[1]\nframe=244,333,423\n"
+        assert tool.project_frames(text) == 424
+
+    def test_the_real_alias_with_intermediate_points_is_counted_to_its_end(
+        self, tool: ModuleType
+    ) -> None:
+        probe = ROOT / "tests" / "fixtures" / "aviutl" / "probes" / "kumiki_motion_probe.object"
+        header = probe.read_text(encoding="utf-8-sig").replace("[Object]", "[0]", 1)
+        assert tool.project_frames(header) == 424
+
     def test_an_empty_project_has_no_frames(self, tool: ModuleType) -> None:
         assert tool.project_frames("[project]\nversion=2010601\n") == 0
 
