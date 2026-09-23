@@ -249,7 +249,7 @@ class TestObjectBox:
         # 分割したマスや並べる間隔が AviUtl2 より 3〜8% 狭くなる
         image = np.zeros((100, 200, 4), np.uint8)
         image[40:60, 80:120, 3] = 255
-        cropped, offset = _object_sized(image, (60.5, 30.0, 140.5, 70.0))
+        cropped, offset = _object_sized(image, _object_box(image, (60.5, 30.0, 140.5, 70.0)))
         assert cropped.shape[:2] == (40, 81)
         assert offset == pytest.approx((0.5, 0.0))
 
