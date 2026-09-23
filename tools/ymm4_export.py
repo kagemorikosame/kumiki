@@ -286,9 +286,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("YMM4 を閉じてから走らせてください")
         return 1
     output.parent.mkdir(parents=True, exist_ok=True)
-    # 前の書き出しはここでは消さない ymm4_export.ps1 が YMM4 の開いていないことを
-    # 確かめ直した直後に消す ここで消すと、上の確かめから PowerShell が起動するまでの
-    # 間に本人が YMM4 を開いたとき、止まったのに前の書き出しだけ消えている
+    # 前の書き出しは消さない ymm4_export.ps1 は一時の名前（<出力の名前>.part.mp4）へ
+    # 書き出し、書き終えたと確かめてから置き換える 途中で失敗すれば前の物が残る
     print("YMM4 を動かします 終わるまでマウスとキーボードに触らないでください")
     command = powershell_command(
         ymm4,

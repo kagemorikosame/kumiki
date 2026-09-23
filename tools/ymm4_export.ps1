@@ -2,7 +2,7 @@
 YMM4 に .ymmp を書き出させる UI Automation の本体（tools/ymm4_export.py から呼ぶ）
 
 手で走らせず、入口の ymm4_export.py を使う 入口が YMM4 の場所を探し、既に開いて
-いないかを確かめ、前の書き出しを片付けてからここを呼ぶ
+いないかを確かめてからここを呼ぶ
 
 YMM4 4.56.1.1 で確かめた手順（Issue #116）
   1. YukkuriMovieMaker.exe "<.ymmp>" で起動し、下の帯にプロジェクトの名前が出るまで待つ
@@ -10,6 +10,9 @@ YMM4 4.56.1.1 で確かめた手順（Issue #116）
   3. 「名前を付けて保存」の名前の欄へ WM_SETTEXT で書き、〔保存〕を BM_CLICK で押す
   4. 進み具合の窓が消え、出力の大きさが止まって書き手が手放すまで待つ
   5. 主の窓を閉じる
+
+書き出しは同じ置き場の一時の名前（<出力の名前>.part.mp4）へ行い、書き終えたと確かめて
+から出力の名前へ置き換える 途中で失敗しても前の書き出しは残る
 
 Windows PowerShell 5.1 の罠
   - BOM の無い .ps1 は Shift_JIS として読まれ、日本語の名前が全部化ける このファイルは
@@ -72,6 +75,10 @@ $BM_CLICK = 0x00F5
 
 $ProcessName = [System.IO.Path]::GetFileNameWithoutExtension($Ymm4)
 $ProjectStem = [System.IO.Path]::GetFileNameWithoutExtension($Project)
+# 書き出している間の名前 拡張子は mp4 のままにする 保存の窓の種類（mp4）と違う拡張子だと、
+# 窓が .mp4 を足したり種類の違いで弾いたりして、見張る名前と書かれる名前が食い違う
+# 出力へ直に書くと、前の書き出しを先に消すことになり、失敗したら前の物まで失う
+$Partial = [System.IO.Path]::Combine([System.IO.Path]::GetDirectoryName($Output), [System.IO.Path]::GetFileNameWithoutExtension($Output) + '.part.mp4')
 $ProgressName = 'YukkuriMovieMaker.ViewModels.ProgressViewModel'
 $SaveDialogName = '名前を付けて保存'
 $CompressorGroup = '音量調整 / 音割れ対策（コンプレッサー）'
@@ -328,10 +335,10 @@ function Save-As($Main) {
         $saveDialog.FindFirst($Scope::Descendants, (New-AndCondition (New-Condition $Uia::AutomationIdProperty '1001') (New-Condition $Uia::ClassNameProperty 'Edit')))
     } $DialogSeconds '保存の名前の欄'
     $nameHandle = [System.IntPtr]$nameBox.Current.NativeWindowHandle
-    [void]$NativeApi::SendText($nameHandle, $WM_SETTEXT, [System.IntPtr]::Zero, $Output)
+    [void]$NativeApi::SendText($nameHandle, $WM_SETTEXT, [System.IntPtr]::Zero, $Partial)
     $buffer = New-Object System.Text.StringBuilder 4096
     [void]$NativeApi::ReadText($nameHandle, $WM_GETTEXT, [System.IntPtr]$buffer.Capacity, $buffer)
-    if ($buffer.ToString() -ne $Output) {
+    if ($buffer.ToString() -ne $Partial) {
         # 違う名前のまま保存すると、別の所へ書き出して「見つからない」で終わる
         throw "保存の名前の欄に書けない（読み返すと「$($buffer.ToString())」）"
     }
@@ -343,7 +350,7 @@ function Save-As($Main) {
 function Test-Released {
     # 書き手が開いたままなら、共有なしでは開けない 開けたら YMM4 は書き終えて手放している
     try {
-        $stream = [System.IO.File]::Open($Output, 'Open', 'Read', 'None')
+        $stream = [System.IO.File]::Open($Partial, 'Open', 'Read', 'None')
         $stream.Dispose()
         return $true
     } catch {
@@ -354,7 +361,7 @@ function Test-Released {
 function Wait-Written($Main) {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     [void](Wait-For {
-        ($Main.FindFirst($Scope::Children, (New-Condition $Uia::NameProperty $ProgressName))) -or (Test-Path -LiteralPath $Output)
+        ($Main.FindFirst($Scope::Children, (New-Condition $Uia::NameProperty $ProgressName))) -or (Test-Path -LiteralPath $Partial)
     } $DialogSeconds '書き出しの始まり（進み具合の窓か出力のファイル）')
     Say '書き出しています'
     while ($Main.FindFirst($Scope::Children, (New-Condition $Uia::NameProperty $ProgressName))) {
@@ -366,7 +373,7 @@ function Wait-Written($Main) {
     while ($true) {
         if ((Get-Date) -gt $deadline) { throw "書き出しが $TimeoutSeconds 秒で終わらない（出力の大きさが止まらない）" }
         $size = -1
-        if (Test-Path -LiteralPath $Output) { $size = (Get-Item -LiteralPath $Output).Length }
+        if (Test-Path -LiteralPath $Partial) { $size = (Get-Item -LiteralPath $Partial).Length }
         if ($size -gt 0 -and $size -eq $lastSize) {
             if (-not $stableSince) { $stableSince = Get-Date }
             if (((Get-Date) - $stableSince).TotalSeconds -ge $SettleSeconds -and (Test-Released)) { return }
@@ -402,18 +409,15 @@ if (@(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue).Count) {
     exit 1
 }
 
-if (Test-Path -LiteralPath $Output) {
-    # 残っていると保存の窓が「上書きしますか」で止まり、大きさの見張りも前の物を見る
-    # 消すのは開いていないと確かめた直後のここ 入口で消すと、入口の確かめからここまでの間に
-    # 本人が YMM4 を開いた場合、ここで止まっても前の書き出しはもう消えている
-    # 確かめてから消すまでの隙は無くしきれないが、この 2 行の間まで縮める
+if (Test-Path -LiteralPath $Partial) {
+    # 前に失敗した残り 残っていると保存の窓が「上書きしますか」で止まり、大きさの見張りも
+    # 前の物を見る 前の書き出し（出力の名前の方）はここでは触らない
     try {
-        Remove-Item -LiteralPath $Output -Force
+        Remove-Item -LiteralPath $Partial -Force
     } catch {
-        Say "前の書き出し $Output を消せません（$($_.Exception.Message)） 開いている物を閉じてください"
+        Say "前の一時の書き出し $Partial を消せません（$($_.Exception.Message)） 開いている物を閉じてください"
         exit 1
     }
-    Say "前の書き出し $Output を消しました"
 }
 
 $exitCode = 1
@@ -443,6 +447,8 @@ try {
     $exportButton.GetCurrentPattern($InvokePattern).Invoke()
     Save-As $main
     Wait-Written $main
+    # 書き終えたと確かめてから置き換える 前の書き出しが消えるのはここが初めて
+    Move-Item -LiteralPath $Partial -Destination $Output -Force
     Say "書き出しました $Output"
     $exitCode = 0
 } catch {
@@ -478,6 +484,15 @@ try {
         } catch {
             Say "YMM4 を閉じられませんでした $($_.Exception.Message)"
             if ($exitCode -eq 0) { $exitCode = 1 }
+        }
+    }
+    # 書き終えなかった一時の書き出しは捨てる 前の書き出しは出力の名前のまま残っている
+    # YMM4 を閉じたあとに消す 書いている最中は YMM4 が掴んでいて消せない
+    if ((Test-Path -LiteralPath $Partial) -and $exitCode -ne 0) {
+        try {
+            Remove-Item -LiteralPath $Partial -Force
+        } catch {
+            Say "一時の書き出し $Partial を消せませんでした $($_.Exception.Message)"
         }
     }
 }

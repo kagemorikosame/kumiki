@@ -8,6 +8,8 @@ YMM4 そのものは起動しない（本人の画面を取り合うので、実
 from __future__ import annotations
 
 import importlib.util
+import json
+import os
 import re
 import shutil
 import subprocess
@@ -20,7 +22,6 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "tools" / "ymm4_export.ps1"
-NEWLINE = chr(10)
 
 
 def _load(name: str) -> ModuleType:
@@ -375,6 +376,8 @@ def test_the_script_loads_its_types_and_fails_cleanly_without_ymm4(
     missing = tmp_path / "NotYmm4AtAll.exe"
     earlier = tmp_path / "a.mp4"
     earlier.write_bytes(b"earlier")
+    leftover = tmp_path / "a.part.mp4"
+    leftover.write_bytes(b"leftover")
     command = tool.powershell_command(
         missing, tmp_path / "a.ymmp", earlier, no_compressor=True, timeout=5
     )
@@ -382,8 +385,10 @@ def test_the_script_loads_its_types_and_fails_cleanly_without_ymm4(
     lines = [tool.decode_line(raw) for raw in completed.stdout.splitlines()]
     assert completed.returncode == 1, lines
     assert any("書き出せませんでした" in line for line in lines), lines
-    # 開いていないと確かめたので、前の書き出しは消える（残ると保存の窓が上書きを尋ねて止まる）
-    assert not earlier.exists(), lines
+    # 書き出せなかったので、前の書き出しはそのまま残る 先に消すと失敗で前の物まで失う
+    assert earlier.read_bytes() == b"earlier", lines
+    # 前に失敗した一時の書き出しは消える 残ると保存の窓が上書きを尋ねて止まる
+    assert not leftover.exists(), lines
     # 変える前に落ちたので、戻す所は通らない（通れば YMM4 の無い所で戻そうとして 2 になる）
     assert not any("戻せませんでした" in line for line in lines), lines
 
@@ -392,13 +397,15 @@ def test_the_script_loads_its_types_and_fails_cleanly_without_ymm4(
 def test_an_open_program_found_by_the_script_keeps_the_previous_export(
     tool: ModuleType, tmp_path: Path
 ) -> None:
-    """PowerShell 側でも開いていると分かったら、前の書き出しを消す前に止まる
+    """PowerShell 側でも開いていると分かったら、何も消さずに止まる
 
     YMM4 は起動しない 動いているのが確かな powershell.exe（この試験が走らせている物）を
     YMM4 の代わりに名指しする
     """
     earlier = tmp_path / "a.mp4"
     earlier.write_bytes(b"earlier")
+    leftover = tmp_path / "a.part.mp4"
+    leftover.write_bytes(b"leftover")
     command = tool.powershell_command(
         Path("powershell.exe"), tmp_path / "a.ymmp", earlier, no_compressor=False, timeout=5
     )
@@ -407,22 +414,91 @@ def test_an_open_program_found_by_the_script_keeps_the_previous_export(
     assert completed.returncode == 1, lines
     assert any("既に開いています" in line for line in lines), lines
     assert earlier.read_bytes() == b"earlier"
+    assert leftover.read_bytes() == b"leftover"
 
 
-def _function_body(text: str, name: str) -> str:
-    # 関数の閉じ括弧は行の頭に置いてある そこまでを本体とする
-    start = text.index(f"function {name} ")
-    return text[start : text.index(NEWLINE + "}" + NEWLINE, start)]
+#: PowerShell 自身に構文木を作らせ、関数ごとの本体を JSON で返させる 括弧を自前で数えると、
+#: 文字列やコメントの中の括弧・行の頭に置いた入れ子の閉じ括弧で本体の終わりを取り違える
+_BODIES = r"""
+$errors = $null
+$language = 'System.Management.Automation.Language'
+$tree = [System.Management.Automation.Language.Parser]::ParseFile(
+    $env:SASHIMONO_PS1, [ref]$null, [ref]$errors)
+if ($errors.Count) { exit 1 }
+$bodies = @{}
+$isFunction = { param($node) $node -is ($language + '.FunctionDefinitionAst' -as [type]) }
+foreach ($found in $tree.FindAll($isFunction, $true)) {
+    $bodies[$found.Name] = $found.Body.Extent.Text
+}
+$bytes = [System.Text.Encoding]::UTF8.GetBytes(($bodies | ConvertTo-Json -Compress))
+$out = [Console]::OpenStandardOutput()
+$out.Write($bytes, 0, $bytes.Length)
+"""
 
 
+def _function_bodies(script: Path) -> dict[str, str]:
+    completed = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", _BODIES],
+        capture_output=True,
+        check=False,
+        env={**os.environ, "SASHIMONO_PS1": str(script)},
+        timeout=120,
+    )
+    assert completed.returncode == 0, completed.stderr.decode("cp932", errors="replace")
+    bodies: dict[str, str] = json.loads(completed.stdout.decode("utf-8"))
+    return bodies
+
+
+#: 起動した process の窓だけを相手にする関数
+_WINDOW_FUNCTIONS = ("Get-TopWindows", "Wait-MainWindow", "Close-Ymm4")
+
+
+def _counting_by_name(script: Path) -> list[str]:
+    bodies = _function_bodies(script)
+    return [name for name in _WINDOW_FUNCTIONS if "Get-Process" in bodies[name]]
+
+
+@_WINDOWS_ONLY
 def test_only_the_windows_of_the_started_ymm4_are_touched() -> None:
     """名前で process を数えると、道具が動いている間に本人が開いた YMM4 まで操作して閉じる
 
     起動した process の Id の窓だけを探し、閉じたかもその process で見る
     """
+    assert _counting_by_name(SCRIPT) == []
+    assert "$script:Ymm4Process.Id" in _function_bodies(SCRIPT)["Get-TopWindows"]
+    assert "$script:Ymm4Process = Start-Process" in SCRIPT.read_text(encoding="utf-8-sig")
+
+
+@_WINDOWS_ONLY
+def test_counting_by_name_late_in_a_function_is_still_caught(tmp_path: Path) -> None:
+    """関数の後半に戻ってきた名前での数え方も見落とさない
+
+    行の頭の閉じ括弧で本体を切ると、その後ろに足した ``Get-Process -Name`` が検査から外れた
+    """
     text = SCRIPT.read_text(encoding="utf-8-sig")
-    for name in ("Get-TopWindows", "Wait-MainWindow", "Close-Ymm4"):
-        body = _function_body(text, name)
-        assert "Get-Process" not in body, name
-    assert "$script:Ymm4Process.Id" in _function_body(text, "Get-TopWindows")
-    assert "$script:Ymm4Process = Start-Process" in text
+    late = "\nif ($false) {\n}\n    [void](Get-Process -Name $ProcessName)\n"
+    for name, anchor in (
+        ("Wait-MainWindow", '    throw "YMM4 の下の帯の'),
+        ("Close-Ymm4", '    throw "YMM4 が $DialogSeconds 秒で閉じない'),
+    ):
+        start = text.index(f"function {name} ")
+        at = text.index(anchor, start)
+        text = text[:at] + late + text[at:]
+    tampered = tmp_path / "tampered.ps1"
+    tampered.write_bytes(b"\xef\xbb\xbf" + text.encode("utf-8"))
+    assert _counting_by_name(tampered) == ["Wait-MainWindow", "Close-Ymm4"]
+
+
+@_WINDOWS_ONLY
+def test_the_export_is_written_under_the_temporary_name() -> None:
+    """出力の名前へ直に書くと、前の書き出しを先に消すことになり、失敗で前の物まで失う
+
+    保存の名前・書き手が手放したかの確かめ・大きさの見張りは一時の名前で行う
+    """
+    bodies = _function_bodies(SCRIPT)
+    for name in ("Save-As", "Test-Released", "Wait-Written"):
+        assert "$Partial" in bodies[name], name
+        assert "$Output" not in bodies[name], name
+    text = SCRIPT.read_text(encoding="utf-8-sig")
+    assert "'.part.mp4'" in text
+    assert "Move-Item -LiteralPath $Partial -Destination $Output" in text
