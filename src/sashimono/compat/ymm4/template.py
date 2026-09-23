@@ -925,6 +925,11 @@ def _readable_number(value: Any) -> bool:
     if isinstance(value, bool):
         return False
     if isinstance(value, int | float):
+        # float に直せない桁の整数は、`number` が既定へ丸める 読めない値として扱う
+        try:
+            float(value)
+        except OverflowError:
+            return False
         return True
     if isinstance(value, str):
         try:

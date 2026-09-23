@@ -1343,6 +1343,16 @@ class TestTheContentOffset:
         assert any("ContentOffset" in line for line in report.lines())
 
 
+def test_a_huge_integer_does_not_stop_reading() -> None:
+    """数百桁の整数を float へ直すと例外になる 数を読む所で落ちると、同じ
+    テンプレートの正常なアイテムまで読めなくなる 既定へ戻して先へ進む
+    """
+    from sashimono.compat.ymm4.values import number
+
+    assert number(10**400, 7.0) == 7.0
+    assert number({"Values": [{"Value": -(10**400)}]}, 7.0) == 7.0
+
+
 class TestItemSound:
     """アイテムの音の設定（Issue #89）
 
@@ -1467,6 +1477,9 @@ class TestItemSound:
             ("PlaybackRate", True),
             ("PlaybackRate2", "broken"),
             ("PlaybackRate2", {"Values": [], "AnimationType": "なし"}),
+            # float に直すと OverflowError になる桁の整数 読み込みごと止めてはいけない
+            ("PlaybackRate", 10**400),
+            ("PlaybackRate2", {"Values": [{"Value": 10**400}], "AnimationType": "なし"}),
         ],
     )
     def test_an_unreadable_rate_is_counted_not_silently_normal(self, key: str, raw: object) -> None:
