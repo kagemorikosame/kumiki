@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import platform
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from PySide6.QtCore import QBuffer, QIODevice, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QBuffer, QIODevice, Qt, QTimer, QUrl, Signal, qVersion
 from PySide6.QtGui import (
     QAction,
     QCloseEvent,
@@ -35,9 +36,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sashimono import __version__
 from sashimono.ai.host import ToolError
 from sashimono.compat.aviutl import native, plugin
 from sashimono.compat.aviutl.exo import ExoFile
+from sashimono.core import userdirs
 from sashimono.core.commands import (
     AddClip,
     AddMedia,
@@ -88,6 +91,7 @@ from sashimono.engine.cache import MediaAnalyzer
 from sashimono.engine.cache.proxy import ProxyBuilder, ProxyStore
 from sashimono.engine.decode import ProbeError, probe_media
 from sashimono.engine.render import FrameRenderer, RenderQuality
+from sashimono.links import MANUAL_URL, REPORT_URL
 from sashimono.ui.chat import ChatPanel
 from sashimono.ui.export_dialog import ExportDialog
 from sashimono.ui.graph_editor import GraphEditor
@@ -109,7 +113,7 @@ from sashimono.ui.workspace import (
     Workspace,
 )
 
-__all__ = ["MainWindow"]
+__all__ = ["MainWindow", "about_text"]
 
 #: 解析の完了を画面へ反映する間隔（ミリ秒）
 #: 解析はワーカースレッドで終わるので、その通知を待って毎回描き直すのではなく、
@@ -125,6 +129,28 @@ _PORTABLE = QKeySequence.SequenceFormat.PortableText
 
 #: AviUtl のオブジェクトファイル
 EXO_FILTER = "AviUtl オブジェクト (*.exo *.exa *.exo2 *.exa2);;すべてのファイル (*)"
+
+
+def about_text() -> str:
+    """バージョン情報の文面 不具合の報告の「版」と「環境」の欄にそのまま写せる形
+
+    置き場は環境変数の形ではなく実際の場所で出す 開発版と配った zip、Windows と
+    それ以外で場所が違い、``%APPDATA%`` と書くだけでは本人の機械でどこなのかが
+    分からない
+    """
+    return "\n".join(
+        (
+            f"Sashimono Edit {__version__}",
+            f"Python {platform.python_version()} / Qt {qVersion()} / {platform.platform()}",
+            "",
+            f"設定・スクリプト・テンプレート: {userdirs.config_root()}",
+            f"退避・バックアップ: {userdirs.state_root()}",
+            f"キャッシュ: {userdirs.cache_root()}",
+            "",
+            f"使い方: {MANUAL_URL}",
+            f"不具合・要望: {REPORT_URL}",
+        )
+    )
 
 
 def _probe_or_none(path: Path) -> MediaItem | None:
@@ -523,6 +549,14 @@ class MainWindow(QMainWindow):
 
         playback_menu = self._menu("再生")
         self._add(playback_menu, "再生 / 停止", QKeySequence("Space"), self._playback.toggle)
+
+        # ソフトの中から受け口へ辿れるようにする 辿れないと、困った人は検索で
+        # 別の場所（古い配布先や無関係の掲示板）に書き、こちらには届かない
+        help_menu = self._menu("ヘルプ")
+        self._add(help_menu, "使い方", QKeySequence("F1"), self.open_manual)
+        self._add(help_menu, "不具合・要望を送る", QKeySequence(), self.open_report_page)
+        help_menu.addSeparator()
+        self._add(help_menu, "バージョン情報…", QKeySequence(), self.show_about)
 
         self._update_history_actions()
 
@@ -1547,6 +1581,26 @@ class MainWindow(QMainWindow):
         from sashimono.ui.compat_dialog import CompatibilityDialog
 
         CompatibilityDialog(parent=self).exec()
+
+    # --- ヘルプ ---
+
+    def open_manual(self) -> None:
+        """使い方をブラウザで開く"""
+        self._open_link(MANUAL_URL)
+
+    def open_report_page(self) -> None:
+        """不具合・要望の受け口をブラウザで開く"""
+        self._open_link(REPORT_URL)
+
+    def _open_link(self, url: str) -> None:
+        # 既定のブラウザが決まっていない機械では開けない 黙ると押しても何も
+        # 起きないように見えるので、打ち込めるように URL を出しておく
+        if not QDesktopServices.openUrl(QUrl(url)):
+            self.statusBar().showMessage(f"ブラウザを開けませんでした: {url}", 10000)
+
+    def show_about(self) -> None:
+        """版と置き場を出す 不具合の報告で最初に聞くことを 1 か所で見られるようにする"""
+        QMessageBox.about(self, "バージョン情報", about_text())
 
     # --- AI 連携（EditorHost の実装）---
     #
