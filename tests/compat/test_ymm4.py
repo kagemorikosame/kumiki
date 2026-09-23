@@ -1458,6 +1458,28 @@ class TestItemSound:
         assert [item.clip.speed for item in mapped] == [1, 1]
         assert any("PlaybackRate" in line for line in report.lines())
 
+    @pytest.mark.parametrize(
+        ("key", "raw"),
+        [
+            ("PlaybackRate", "broken"),
+            ("PlaybackRate", {"Values": [], "AnimationType": "なし"}),
+            ("PlaybackRate", {"Values": [{"Value": "x"}], "AnimationType": "なし"}),
+            ("PlaybackRate", True),
+            ("PlaybackRate2", "broken"),
+            ("PlaybackRate2", {"Values": [], "AnimationType": "なし"}),
+        ],
+    )
+    def test_an_unreadable_rate_is_counted_not_silently_normal(self, key: str, raw: object) -> None:
+        """数として読めない形は「読めない値」として数える
+
+        既定値へ丸めた後では、書かれていたのが 100 なのか壊れていたのか見分けられず、
+        壊れた値が等倍として写っても互換性レポートに出ない
+        """
+        report = CompatibilityReport()
+        (mapped,) = map_template([self.audio(**{key: raw})], report=report)
+        assert mapped.clip.speed == 1
+        assert any(key in line and "読めない値" in line for line in report.lines())
+
     @pytest.mark.parametrize("rate", [50.0, 200.0])
     def test_a_measured_video_rate_is_not_counted_as_missing(self, rate: float) -> None:
         """動画アイテムの絵の速さは YMM4 と一致した 写せない物として数えない

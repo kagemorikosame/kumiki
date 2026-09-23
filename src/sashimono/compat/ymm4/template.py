@@ -872,6 +872,11 @@ def _playback_rate(
     if name not in _SOUND_ITEMS:
         return Fraction(1), False
     raw = item.get("PlaybackRate")
+    if raw is not None and not _readable_number(raw):
+        # 文字や中身の無い Values は number が既定の 100 へ丸めるので、黙っていると
+        # 壊れた値が等倍として写り、互換性レポートにも出ない NaN と同じく数えて残す
+        log.note_missing(f"YMM4 の再生速度（PlaybackRate）が読めない値: {raw!r}")
+        return Fraction(1), False
     rate = number(raw, 100.0)
 
     # 動きはほかの項目と同じくアイテムの長さと中間点で読む 既定の長さ 1 で読むと、
@@ -882,7 +887,9 @@ def _playback_rate(
     if any(point.value != rate for point in read(raw, 100.0).keyframes):
         log.note_missing("YMM4 の再生速度（PlaybackRate）の動き（先頭の値で写した）")
     newer = item.get("PlaybackRate2")
-    if newer is not None:
+    if newer is not None and not _readable_number(newer):
+        log.note_missing(f"YMM4 の再生速度（PlaybackRate2）が読めない値: {newer!r}")
+    elif newer is not None:
         moving = read(newer, rate)
         if moving.keyframes and any(point.value != rate for point in moving.keyframes):
             log.note_missing("YMM4 の再生速度（PlaybackRate2）の動き")
@@ -906,6 +913,35 @@ def _playback_rate(
         return Fraction(1), False
     # 2 進の小数のまま分数にすると 102.1 が長い分母の分数になる 書かれた 10 進で持つ
     return Fraction(repr(rate)) / 100, False
+
+
+def _readable_number(value: Any) -> bool:
+    """数として読める形か ただの数・数の文字・値を 1 つ以上持つ動く値
+
+    ``number`` と ``animated`` は読めない形を既定値へ丸める 丸めた後では、書かれて
+    いた値が既定だったのか壊れていたのか見分けられないので、丸める前に見る
+    真偽値は数に読めるが（``True`` が 1）、速さとして書かれることは無いので断る
+    """
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int | float):
+        return True
+    if isinstance(value, str):
+        try:
+            float(value)
+        except ValueError:
+            return False
+        return True
+    if isinstance(value, dict):
+        values = value.get("Values")
+        return (
+            isinstance(values, list)
+            and bool(values)
+            and all(
+                isinstance(entry, dict) and _readable_number(entry.get("Value")) for entry in values
+            )
+        )
+    return False
 
 
 #: YMM4 の切り替えの種類と、場面切り替えの切り替え方

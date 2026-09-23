@@ -891,3 +891,82 @@ def test_a_broken_rate_source_explains_itself(
     arguments = SimpleNamespace(work=tmp_path, skip_sashimono=True)
     assert tool.command_video_rate_measure(arguments) == 0
     assert "video-rate-build を走らせ直して" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("command", "maker", "failed", "stem", "report"),
+    [
+        ("command_audio_build", "make_tone", False, "audio-probe", "audio-report.json"),
+        (
+            "command_video_rate_build",
+            "make_rate_source",
+            "ffmpeg が無い",
+            "video-rate-probe",
+            "video-rate-report.json",
+        ),
+    ],
+)
+def test_a_failed_rebuild_drops_the_old_probe_so_it_is_not_measured_as_new(
+    tool: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+    maker: str,
+    failed: object,
+    stem: str,
+    report: str,
+) -> None:
+    """作り直しに失敗したら、前の一覧とプロジェクトも捨てる
+
+    残すと、前に成功していた作業フォルダでは measure が古い一覧と古い書き出しの組を
+    今回の物として測る 書き出しは本人が作った物なので残す
+    """
+    for name in (f"{stem}.json", f"{stem}.ymmp", f"{stem}.mp4", report):
+        (tmp_path / name).write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(tool, maker, lambda _target: failed)
+    assert getattr(tool, command)(SimpleNamespace(work=tmp_path)) == 0
+    assert not (tmp_path / f"{stem}.json").exists()
+    assert not (tmp_path / f"{stem}.ymmp").exists()
+    assert not (tmp_path / report).exists()
+    assert (tmp_path / f"{stem}.mp4").exists()
+
+
+def _refuse_reading(*_args: object) -> None:
+    raise AssertionError("フレームレートの違う書き出しを読み進めた")
+
+
+def test_a_mesh_export_at_another_frame_rate_is_refused(
+    tool: ModuleType,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """一覧の枠の番号は 30fps で数えている 60fps の書き出しにそのまま当てると、
+    枠の真ん中のつもりで前の方の絵を切り出し、別の点を動かした絵を測る
+    """
+    _mesh_manifest_and_video(tool, tmp_path)
+    monkeypatch.setattr(tool, "has_video_stream", lambda _video: True)
+    monkeypatch.setattr(tool, "export_fps", lambda _video: 60.0)
+    monkeypatch.setattr(tool, "_read_ymm4_slots", _refuse_reading)
+    assert tool.command_mesh_measure(SimpleNamespace(work=tmp_path)) == 0
+    assert "一覧は 30fps 書き出しは 60fps" in capsys.readouterr().out
+    assert not (tmp_path / "mesh-report.json").exists()
+
+
+def test_a_rate_export_at_another_frame_rate_is_refused(
+    tool: ModuleType,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 60fps の書き出しを 30fps の番号で数えると、等倍が 0.5 倍と出る
+    (tmp_path / "video-rate-source.mp4").write_bytes(b"")
+    monkeypatch.setattr(tool, "_read_source", lambda _media: _sources())
+    _rate_manifest_and_video(tool, tmp_path)
+    monkeypatch.setattr(tool, "has_video_stream", lambda _video: True)
+    monkeypatch.setattr(tool, "export_fps", lambda _video: 60.0)
+    monkeypatch.setattr(tool, "_read_rate_slots", _refuse_reading)
+    arguments = SimpleNamespace(work=tmp_path, skip_sashimono=True)
+    assert tool.command_video_rate_measure(arguments) == 0
+    assert "一覧は 30fps 書き出しは 60fps" in capsys.readouterr().out
+    assert not (tmp_path / "video-rate-report.json").exists()

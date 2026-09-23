@@ -675,6 +675,7 @@ def command_audio_build(arguments: argparse.Namespace) -> int:
     if not make_tone(media):
         # 測れない環境で「壊れた」と読まれないように、落とさずに終える
         # （tools/bench_export.py と同じ作法）
+        _drop_probe(work, "audio-probe", "audio-report.json")
         print("ffmpeg が無いか正弦波を作れないので、探りのプロジェクトは作れない")
         return 0
     slots = build_audio_slots()
@@ -695,6 +696,41 @@ def command_audio_build(arguments: argparse.Namespace) -> int:
         print(f"{video} は前の探りの書き出しです 作り直した方で書き出し直してください")
     print(f"YMM4 で {project} を開き、{video} として書き出してください")
     return 0
+
+
+def _drop_probe(work: Path, stem: str, report: str) -> None:
+    """作り直しに失敗したとき、前の探りの一覧・プロジェクト・測り結果を捨てる
+
+    残すと、前に成功していた作業フォルダでは measure が古い一覧と古い書き出しの組を
+    今回の物として測る 一覧が無ければ measure は「先に build」と案内して止まる
+    書き出し（mp4）は本人が YMM4 で作った物なので残す
+    """
+    for name in (f"{stem}.json", f"{stem}.ymmp", report):
+        (work / name).unlink(missing_ok=True)
+
+
+def export_fps(video: Path) -> float | None:
+    """書き出しの映像のフレームレート 映像の道が無いか読めなければ ``None``"""
+    import av
+
+    with av.open(str(video)) as container:
+        if not container.streams.video:
+            return None
+        rate = container.streams.video[0].average_rate
+        return None if rate is None else float(rate)
+
+
+def _fps_differs(video: Path, fps: int) -> bool:
+    """書き出しが一覧と違うフレームレートか 違えば案内する
+
+    一覧の枠の番号は一覧の fps で数えている 書き出しを別の fps で数えた番号に
+    そのまま当てると、60fps の書き出しでは枠が前半へずれ、等倍が 0.5 倍と出る
+    """
+    found = export_fps(video)
+    if found is None or abs(found - fps) < 0.01:
+        return False
+    print(f"一覧は {fps}fps 書き出しは {found:g}fps です {fps}fps で書き出し直してください")
+    return True
 
 
 def sample_index(
@@ -890,6 +926,8 @@ def command_audio_measure(arguments: argparse.Namespace) -> int:
         # 「再生速度 0 で止まる」と読み違える
         print(f"{video} の音が空です 音が入る形式で書き出してください")
         return 0
+    # 音は書き出しのフレームレートに左右されない 枠の頭は一覧の fps で秒へ直し、
+    # 書き出しの音は自分の時刻で並べるので、60fps で書き出しても同じ秒の音を切り出す
     fps = int(manifest.get("fps", FPS))
     measured: list[tuple[dict[str, Any], AudioMeasure]] = []
     for entry in manifest["slots"]:
@@ -1349,6 +1387,8 @@ def command_mesh_measure(arguments: argparse.Namespace) -> int:
         if not has_video_stream(video):
             print(f"{video} に映像の道がありません 映像が入る形式で書き出してください")
             return 0
+        if _fps_differs(video, int(manifest.get("fps", FPS))):
+            return 0
         # 頭は開けても途中で切れた書き出しは、読み進めた所で復号が失敗する
         # 開けるかどうかだけを見ても、その穴は塞がらない
         theirs = _read_ymm4_slots(video, entries)
@@ -1605,6 +1645,7 @@ def command_video_rate_build(arguments: argparse.Namespace) -> int:
     problem = make_rate_source(media)
     if problem:
         # 測れない環境で「壊れた」と読まれないように、落とさずに終える
+        _drop_probe(work, "video-rate-probe", "video-rate-report.json")
         print(problem)
         return 0
     slots = build_rate_slots()
@@ -1827,6 +1868,8 @@ def command_video_rate_measure(arguments: argparse.Namespace) -> int:
     try:
         if not has_video_stream(video):
             print(f"{video} に映像の道がありません 映像が入る形式で書き出してください")
+            return 0
+        if _fps_differs(video, int(manifest.get("fps", FPS))):
             return 0
         # 頭は開けても途中で切れた書き出しは、読み進めた所で復号が失敗する
         theirs = _read_rate_slots(video, entries)
