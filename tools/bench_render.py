@@ -220,7 +220,9 @@ def make_video(directory: Path, width: int, height: int, seconds: float) -> Path
         "-preset",
         "veryfast",
         "-pix_fmt",
-        "yuv420p",
+        # yuv420p は色を縦横とも 2 画素ずつまとめるので、奇数の大きさでは焼けない
+        # そのときは色を間引かない yuv444p にして、指定どおりの大きさで測る
+        "yuv420p" if width % 2 == 0 and height % 2 == 0 else "yuv444p",
         str(path),
     ]
     # 組み立てているのは固定の文字列と argparse が受けた数値、一時フォルダの中の
