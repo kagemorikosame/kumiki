@@ -314,7 +314,7 @@ class TestAudioDecoder:
         assert error / signal < 0.05, f"相対 RMS 誤差 {error / signal:.3%}"
 
     def test_a_seek_near_the_head_reads_from_before_the_origin(
-        self, sample_av: SampleMedia, tmp_path: Path
+        self, sample_av: SampleMedia, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """頭の近くへ飛ぶときも、原点より手前から余らせて読み始める（#124 のレビュー）
 
@@ -334,9 +334,10 @@ class TestAudioDecoder:
                 def __getattr__(self, name: str) -> Any:
                     return getattr(real, name)
 
-            decoder._container = _Recording()  # type: ignore[assignment]
+            # PyAV のコンテナへ委ねるだけの代わり 型は違うので monkeypatch で差し替える
+            monkeypatch.setattr(decoder, "_container", _Recording())
             decoder._seek(4800)
-            decoder._container = real
+            monkeypatch.setattr(decoder, "_container", real)
             assert decoder._stream.time_base is not None
             time_base = Fraction(decoder._stream.time_base)
             origin = decoder._origin
