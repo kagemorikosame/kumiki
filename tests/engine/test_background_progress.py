@@ -99,6 +99,7 @@ class TestJobBoard:
         assert first == second
 
     def test_settling_restarts_the_count(self) -> None:
+        # 数え直さないと、前のひと続きの本数が次のひと続きに残り、「n 本のうち m 本」が膨らむ
         board = JobBoard()
         board.start("x", A)
         board.finish("x", "開けない")
@@ -128,6 +129,7 @@ class TestJobBoard:
         assert board.poll().total == 1
 
     def test_a_failure_stays_on_the_row_until_asked_again(self) -> None:
+        # 頼み直しても前の失敗を残すと、作り直している最中の素材に「作れなかった」が出続ける
         board = JobBoard()
         board.start("x", A)
         board.finish("x", "開けない")
@@ -171,6 +173,7 @@ class TestJobBoard:
         assert board.poll().failed == 0
 
     def test_nothing_asked_is_complete(self) -> None:
+        # 何も頼んでいないのに終わっていない扱いだと、読み込み直後から進み具合の棒が出たまま消えない
         assert ProgressSnapshot().fraction == 1.0
         assert not ProgressSnapshot().busy
 
@@ -179,6 +182,7 @@ class TestProxyProgress:
     def test_the_progress_and_the_end_are_counted(
         self, video_media: MediaItem, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # 控えの割合が板へ届かないと、4K を読み込んだ直後に重い理由が画面から分からない
         release = threading.Event()
 
         def fake(source: Path, target: Path, **kwargs: object) -> Path:
@@ -223,6 +227,7 @@ class TestProxyProgress:
     def test_nothing_made_is_a_failure(
         self, video_media: MediaItem, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # 作れなかった（None が返った）控えを失敗と数えないと、控えが無いまま「終わった」と出る
         monkeypatch.setattr(proxy_module, "create_proxy", lambda *_args, **_kwargs: None)
         builder = ProxyBuilder(ProxyStore(CacheStore(tmp_path), height=120))
         media = _tall(video_media)
@@ -265,6 +270,7 @@ class TestAnalysisProgress:
     def test_the_progress_reaches_the_board(
         self, video_media: MediaItem, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # 解析の割合が板へ届かないと、波形とサムネイルを作っている間ずっと 0% のまま出る
         release = threading.Event()
 
         def slow(path: Path, **kwargs: object) -> None:
@@ -288,6 +294,7 @@ class TestAnalysisProgress:
     def test_an_unreadable_media_is_a_failure(
         self, video_media: MediaItem, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # 開けない素材を失敗と数えないと、波形が出ない理由が画面に出ない
         def unreadable(path: Path, **kwargs: object) -> None:
             raise ProbeError(f"素材を開けない: {path}")
 
@@ -328,6 +335,7 @@ class TestProbeBatch:
         assert [item.path for item in results if isinstance(item, MediaItem)] == paths
 
     def test_it_runs_off_the_calling_thread(self, tmp_path: Path) -> None:
+        # 呼んだスレッドで調べると、素材を読み込む間また画面が固まる（この PR で直したい所そのもの）
         seen: list[threading.Thread] = []
 
         def probe(path: Path) -> MediaItem:
@@ -377,6 +385,7 @@ class TestProbeBatch:
             batch.results()
 
     def test_cancel_skips_what_has_not_started(self, tmp_path: Path) -> None:
+        # 取り消した後もまだ始まっていない素材を調べ続けると、取り消しても待たされ、裏で無駄に開く
         release = threading.Event()
         probed: list[Path] = []
 

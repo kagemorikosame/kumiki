@@ -131,6 +131,7 @@ class TestImportDoesNotFreeze:
         tmp_path: Path,
         qt_application: QApplication,
     ) -> None:
+        # 読み込み中の表示が出ないと、調べている間に画面は動くのに何が起きているか分からない
         gate = _Gate(video_media)
         monkeypatch.setattr(main_window_module, "probe_media", gate)
         window.import_media([tmp_path / "a.mp4", tmp_path / "b.mp4"])
@@ -153,6 +154,8 @@ class TestImportDoesNotFreeze:
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
+        # 取り消した後に調べ終わった素材を置くと、取り消したはずの物が
+        # タイムラインに入り、履歴にも残る
         gate = _Gate(video_media)
         monkeypatch.setattr(main_window_module, "probe_media", gate)
         window.import_media([tmp_path / "a.mp4", tmp_path / "b.mp4"])
@@ -224,6 +227,8 @@ class TestImportDoesNotFreeze:
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
+        # 1 本開けないだけで全部を止めると、良い素材まで置かれない
+        # 開けない素材を黙って落とすと理由が分からない
         gate = _Gate(video_media, broken=("壊れた.mp4",))
         gate.release.set()
         monkeypatch.setattr(main_window_module, "probe_media", gate)
@@ -290,6 +295,7 @@ class TestBackgroundProgress:
     def test_the_status_bar_and_the_row_show_it(
         self, window: MainWindow, video_media: MediaItem
     ) -> None:
+        # ステータスバーと行に割合が出ないと、どの素材の解析を待っているのか分からない
         self._place(window, video_media)
         board = window._analyzer._board
         board.start(("waveform", video_media.id), video_media.id)
@@ -307,6 +313,7 @@ class TestBackgroundProgress:
     def test_the_end_and_the_failure_are_told(
         self, window: MainWindow, video_media: MediaItem
     ) -> None:
+        # 終わりと失敗を知らせないと、波形が出ない理由が分からないまま待ち続ける
         self._place(window, video_media)
         board = window._analyzer._board
         key = ("waveform", video_media.id)
@@ -357,6 +364,7 @@ class TestBackgroundProgress:
     def test_turning_the_rows_off_clears_them_at_once(
         self, window: MainWindow, video_media: MediaItem
     ) -> None:
+        # 切っても次の更新まで行の注記が残ると、切ったのに効いていないように見える
         self._place(window, video_media)
         board = window._analyzer._board
         board.start(("waveform", video_media.id), video_media.id)
@@ -474,6 +482,7 @@ class TestBackgroundProgress:
 
 class TestWording:
     def test_both_kinds_are_listed(self) -> None:
+        # 控えと解析の片方しか出さないと、もう片方を待っている間の重さの理由が分からない
         media = MediaId("m")
         proxy, analysis = JobBoard(), JobBoard()
         proxy.start("p", media)
@@ -484,6 +493,7 @@ class TestWording:
         assert text == "控え 0/1 本 0%・波形とサムネイル 1/2 件 50% 失敗 1 件"
 
     def test_a_row_without_work_has_no_note(self) -> None:
+        # 仕事の無い行に注記を付けると、終わった素材まで何かを作っているように見える
         assert row_notes(ProgressSnapshot(), ProgressSnapshot()) == {}
 
 
@@ -493,16 +503,19 @@ class TestPreference:
         assert Preferences().pool_progress is True
 
     def test_it_comes_back(self, tmp_path: Path) -> None:
+        # 保存して読み直せないと、行の注記を切った人が起動のたびに切り直すことになる
         store = PreferenceStore(tmp_path / "preferences.json")
         store.save(Preferences(pool_progress=False))
         assert store.load().pool_progress is False
 
     def test_a_broken_value_falls_back(self, tmp_path: Path) -> None:
+        # 壊れた値で既定へ戻らないと、設定ファイルが壊れただけで起動に失敗する
         path = tmp_path / "preferences.json"
         path.write_text('{"pool_progress": "off"}', encoding="utf-8")
         assert PreferenceStore(path).load().pool_progress is True
 
     def test_the_dialog_shows_and_returns_it(self, qt_application: QApplication) -> None:
+        # 設定画面が値を出し入れしないと、画面で切り替えても効かない
         del qt_application
         from sashimono.ui.preferences_dialog import PreferencesDialog
 
