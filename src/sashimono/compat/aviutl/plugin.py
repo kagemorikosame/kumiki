@@ -303,7 +303,7 @@ def _scan(roots: tuple[Path, ...], report: CompatibilityReport) -> dict[str, Nat
                 return found
             count += 1
             try:
-                found.update(_load(path))
+                loaded = _load(path)
             except (NativeModuleError, OSError, ValueError, ctypes.ArgumentError) as exc:
                 # 読めないプラグインは飛ばす 1 つの失敗で残り全部を
                 # 諦めると、関係の無いプラグインのせいで合成フォントが消える
@@ -311,6 +311,17 @@ def _scan(roots: tuple[Path, ...], report: CompatibilityReport) -> dict[str, Nat
                 # どのプラグインがどう失敗したかを残す
                 report.note_missing(f"汎用プラグイン {path.name} を読めない: {exc}")
                 continue
+            for name, module in loaded.items():
+                if name in found:
+                    # 先に見つけた方（直下が先）を残す 後から上書きすると、
+                    # 1 段下のプラグインが同じ名前を登録しただけで obj.module に
+                    # 別の実装が渡る どちらを本体が選ぶかは SDK に書かれていないので、
+                    # 取り違えに気付けるよう記録に残す
+                    report.note_missing(
+                        f"汎用プラグイン {path.name} のモジュール {name} は名前が重なるので使わない"
+                    )
+                    continue
+                found[name] = module
     return found
 
 

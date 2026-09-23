@@ -180,6 +180,24 @@ class TestPluginModules:
         (tmp_path / "ひとつ.aux2").write_bytes(b"MZ")
         assert len(plugin.plugin_files(tmp_path)) == 1
 
+    def test_a_name_registered_twice_keeps_the_first_one(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        """後から上書きすると、1 段下のプラグインが同じ名前を登録しただけで
+        obj.module に別の実装が渡る 直下（先に並ぶ方）を残し、重なりは記録する
+        """
+        (tmp_path / "直下.aux2").write_bytes(b"MZ")
+        nested = tmp_path / "なにか"
+        nested.mkdir()
+        (nested / "一段下.aux2").write_bytes(b"MZ")
+        monkeypatch.setattr("sys.platform", "win32")
+        monkeypatch.setattr(plugin, "_load", lambda path: {"compositefont": path.name})
+        report = CompatibilityReport()
+        # 偽の読み込みは名前の代わりにファイル名を返す 型は NativeModule ではない
+        found: dict[str, Any] = plugin._scan((tmp_path,), report)
+        assert found == {"compositefont": "直下.aux2"}
+        assert any("一段下.aux2" in line for line in report.lines())
+
     def test_switched_off_gives_no_modules(self, tmp_path: Path) -> None:
         """切っても読むなら、設定に意味が無い"""
         native.set_enabled(False)
