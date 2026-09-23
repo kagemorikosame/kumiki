@@ -460,6 +460,11 @@ class LuaScriptRuntime:
 
     def _prepare(self, api: ObjApi, header: ScriptHeader | None, state: ObjectState) -> None:
         """``obj`` を繋ぎ、名前付きの値を大域変数へ置き、``--param`` を流し込む"""
+        # ``package`` はスクリプトごとに空の物へ戻す 同じランタイムでエフェクトを順に走らせる
+        # ので、戻さないと前のスクリプトが ``package.loaded`` に置いた物が後のスクリプトに見え、
+        # 積んだ順で結果が変わる 読み込んだモジュールは ``require`` の側がパスごとに覚えている
+        # （``package.loaded`` を使わない）ので、戻しても読み込みの速さは変わらない
+        self._lua.execute("package = { loaded = {} }")
         self._bind_obj(api.get, api.set)
         self._install_values(state)
         if header is None or not header.setup:

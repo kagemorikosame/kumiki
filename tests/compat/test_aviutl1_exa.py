@@ -327,6 +327,17 @@ class TestPackage:
         assert not result.failed
         assert state.ox == 1.0
 
+    def test_package_loaded_does_not_leak_between_scripts(self) -> None:
+        # 同じランタイムでエフェクトを順に走らせるので、前のスクリプトが
+        # ``package.loaded`` に置いた物が見えると、積んだ順で結果が変わる
+        runtime = LuaScriptRuntime(instruction_limit=100_000)
+        state = ObjectState(image=blank_image(8, 8))
+        first = runtime.run("package.loaded.leak = 1", state)
+        assert not first.failed
+        second = runtime.run("if package.loaded.leak == nil then obj.ox = 1 end", state)
+        assert not second.failed
+        assert state.ox == 1.0
+
 
 class TestQodoFindings:
     """PR #131 の 2 度目のレビュー（Qodo）で見つかった 2 つ"""
