@@ -1207,14 +1207,18 @@ class TestTheContentOffset:
             "1.24:00:00",
             "00:00:01.12345678",
             "99999999999999999999.00:00:00",
+            "0:00:06",
+            "0:0:0",
+            "10675200.00:00:00",
         ],
     )
     def test_a_shape_dot_net_never_writes_is_not_taken(self, offset: str) -> None:
         """.NET が書かない形は受けない
 
-        受けると、書き間違い（``00:60:00`` など）から別の場面が再生される
+        受けると、書き間違い（``00:60:00`` や ``0:0:0`` など）から別の場面が再生される
         桁を無制限にすると、長い数字で ``int`` が桁数の上限に当たって投げ、
-        テンプレートの読み込みごと止まる
+        テンプレートの読み込みごと止まる 日の上限（``TimeSpan.MaxValue``）を
+        超える値も .NET からは出てこない
         """
         report = CompatibilityReport()
         (mapped,) = map_template([self.video(offset)], report=report)
