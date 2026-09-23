@@ -320,6 +320,25 @@ class TestCompatibilityCopy:
         finally:
             dialog.close()
 
+    def test_the_same_folder_written_differently_shows_its_marker_twice(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        r"""まとめる側と画面で引く側の見分け方が違うと、`D:\kagemori\Script` と
+        `d:/kagemori/script` が並んだとき、後の方の行に印が付かず、本人が印の指す
+        場所を画面で答えられない
+        """
+        _clear_folder_variables(monkeypatch)
+        first = Path(r"D:\kagemori\Script")
+        second = "d:/kagemori/script"
+        monkeypatch.setattr(catalog_module, "_catalog", ScriptCatalog(roots=(first, Path(second))))
+        dialog = CompatibilityDialog(CompatibilityReport())
+        try:
+            lines = [line.strip() for line in dialog._scripts.text().splitlines()]
+            marked = [line for line in lines if line.startswith("<探索先1>")]
+            assert len(marked) == 2
+        finally:
+            dialog.close()
+
     def test_the_button_puts_the_text_on_the_clipboard(self, qt_application: QApplication) -> None:
         # 壊れると、一覧を 1 行ずつしか選べず、報告に貼れない
         report = CompatibilityReport()

@@ -36,6 +36,7 @@ __all__ = [
     "CompatibilityDialog",
     "mask_user_folders",
     "report_text",
+    "root_key",
     "root_lines",
     "root_markers",
     "short_path",
@@ -156,6 +157,16 @@ def mask_user_folders(text: str, folders: Sequence[tuple[str, str]]) -> str:
     return text
 
 
+def root_key(text: str) -> str:
+    """探索先が同じ場所かを見分ける鍵 大文字小文字と区切りの違いは同じ場所
+
+    頭の区切り（`\a` と `a` の違い）とドライブは残す 捨てると、絶対の場所と
+    同じ名前の相対の場所を同じ物とみなし、片方に印が付かない
+    まとめる側（`root_markers`）と画面で引く側で同じ物を使う 別々に書くと食い違う
+    """
+    return ntpath.normcase(ntpath.normpath(text))
+
+
 def root_markers(
     roots: Sequence[Path | str], folders: Sequence[tuple[str, str]]
 ) -> list[tuple[str, str]]:
@@ -178,7 +189,7 @@ def root_markers(
         # 大文字小文字と区切りの違いは同じ場所として扱う（Windows では同じ場所を指す）
         # 頭の区切り（`\a` と `a` の違い）とドライブは残す 捨てると、絶対の場所と
         # 同じ名前の相対の場所を同じ物とみなし、片方に印が付かない
-        key = ntpath.normcase(ntpath.normpath(text))
+        key = root_key(text)
         if key in seen:
             continue
         seen.add(key)
@@ -281,9 +292,15 @@ class CompatibilityDialog(QDialog):
 
         # 貼る文で印に置き換える探索先は、画面では印を添えて出す 報告を受けた側が
         # 「<探索先1> が何か」を聞いたときに、本人が画面で答えられるように
-        markers = dict(root_markers(catalog.roots, user_folders()))
+        # 引くときも、まとめたときと同じ見分け方で引く 生の文字で引くと、
+        # `D:\山田\Script` と `d:/山田/script` が並んだとき後の方に印が付かない
+        markers = {
+            root_key(root): marker for root, marker in root_markers(catalog.roots, user_folders())
+        }
         labels = [
-            f"{markers[str(root)]} {root}" if str(root) in markers else str(root)
+            f"{markers[root_key(str(root))]} {root}"
+            if root_key(str(root)) in markers
+            else str(root)
             for root in catalog.roots
         ]
         self._scripts.setText(
