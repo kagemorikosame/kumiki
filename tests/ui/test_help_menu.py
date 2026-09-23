@@ -108,7 +108,9 @@ class TestCompatibilityCopy:
         report = CompatibilityReport()
         report.note_failure("ゆらゆら.anm2", f"開けない: {home / 'scripts' / 'ゆらゆら.anm2'}")
         text = report_text(report, 3, user_folders(home))
-        assert str(home) not in text
+        # 場所の文字列が無いだけでは、一部だけが置き換わって名前が残っても通る
+        # 名前そのものが消えたことを見る
+        assert "kagemori" not in text.casefold()
         assert HOME_PLACEHOLDER in text
 
     @pytest.mark.parametrize(
@@ -124,7 +126,7 @@ class TestCompatibilityCopy:
         # Windows の場所は大文字小文字も区切りも揺れる 完全一致で探すと、OS の文言に
         # 入った別の書き方が素通りし、公開の Issue に利用者名が残る
         text = mask_user_folders(f"開けない: {written}", [(r"C:\Users\kagemori", "%USERPROFILE%")])
-        assert "kagemori" not in text.lower()
+        assert "kagemori" not in text.casefold()
         assert text.startswith("開けない: %USERPROFILE%")
         assert text.endswith("a.anm2")
 
@@ -173,7 +175,7 @@ class TestCompatibilityCopy:
         text = mask_user_folders(
             r"開けない: c:\users\kagemo~1\scripts\a.anm2", user_folders(Path(long_home))
         )
-        assert "kagemo" not in text.lower()
+        assert "kagemo" not in text.casefold()
         assert text == r"開けない: %USERPROFILE%\scripts\a.anm2"
 
     def test_a_short_name_equal_to_the_long_one_is_not_added_twice(
@@ -197,13 +199,49 @@ class TestCompatibilityCopy:
     def test_a_failing_call_falls_back_to_the_long_names(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # 呼び出しが失敗しても、長い形だけで続ける
+        # 呼び出しが失敗しても、長い形だけで続ける 短い形が取れないときに長い形まで
+        # 伏せ損ねると、公開の文に名前が残る なので報告の文まで通して確かめる
         def broken(*_arguments: object) -> int:
             raise OSError("呼べない")
 
         fake = SimpleNamespace(kernel32=SimpleNamespace(GetShortPathNameW=broken))
         monkeypatch.setattr(ctypes, "windll", fake, raising=False)
+        _clear_folder_variables(monkeypatch)
         assert compat_dialog.short_path(r"C:\Users\kagemori") is None
+        home = Path(r"C:\Users\kagemori")
+        assert user_folders(home) == [(str(home), HOME_PLACEHOLDER)]
+        report = CompatibilityReport()
+        report.note_failure("a.anm2", r"開けない: c:/users/KAGEMORI\scripts\a.anm2")
+        text = report_text(report, 1, user_folders(home))
+        assert "kagemori" not in text.casefold()
+        assert r"開けない: %USERPROFILE%\scripts\a.anm2" in text
+
+    def test_every_script_folder_in_the_list_is_hidden(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # 探索先は「、」でつないで書く 「、」を場所の終わりと認めないと、
+        # 最後以外の探索先が伏せられず、公開の Issue に名前が出る
+        _clear_folder_variables(monkeypatch)
+        roots = [r"D:\kagemori\aviutl\Script", r"E:\kagemori2\scripts", r"F:\山田\素材"]
+        text = report_text(CompatibilityReport(), 0, user_folders(tmp_path), roots=roots)
+        assert "探索先: <探索先1>、<探索先2>、<探索先3>" in text
+        for name in ("kagemori", "山田"):
+            assert name not in text.casefold()
+
+    @pytest.mark.parametrize("after", ["、", "。", "，", "．", "）", "」", "』", "】", "〕", "　"])
+    def test_a_japanese_delimiter_ends_the_folder(self, after: str) -> None:
+        # 日本語の文では、場所の直後に句読点や閉じ括弧が来る そこで伏せ損ねると名前が残る
+        text = mask_user_folders(
+            rf"（C:\Users\kagemori{after}ほか", [(r"C:\Users\kagemori", "%USERPROFILE%")]
+        )
+        assert text == f"（%USERPROFILE%{after}ほか"
+
+    def test_a_middle_dot_is_part_of_the_name(self) -> None:
+        # カタカナの名前では「・」の後ろに名前の続きが来る 頭だけを伏せると残りが読める
+        text = mask_user_folders(
+            r"C:\Users\ジョン・スミス\a", [(r"C:\Users\ジョン", "%USERPROFILE%")]
+        )
+        assert text == r"C:\Users\ジョン・スミス\a"
 
     def test_a_missing_folder_has_no_short_name(self, tmp_path: Path) -> None:
         # 無い場所では API が 0 を返す それを空の名前として足すと、何も伏せない行が混ざる
@@ -242,7 +280,7 @@ class TestCompatibilityCopy:
         report = CompatibilityReport()
         report.note_failure("ゆらゆら.anm2", rf"開けない: [Errno 13] {outside}\ゆらゆら.anm2")
         text = report_text(report, 1, user_folders(tmp_path), roots=[outside])
-        assert "kagemori" not in text.lower()
+        assert "kagemori" not in text.casefold()
         assert r"ゆらゆら.anm2: 開けない: [Errno 13] <探索先1>\ゆらゆら.anm2" in text
         assert "探索先: <探索先1>" in text
 
@@ -268,7 +306,7 @@ class TestCompatibilityCopy:
         try:
             assert f"<探索先1> {outside}" in dialog._scripts.text()
             dialog.copy_to_clipboard()
-            assert str(outside) not in QApplication.clipboard().text()
+            assert "kagemori" not in QApplication.clipboard().text().casefold()
         finally:
             dialog.close()
             set_script_catalog(before)

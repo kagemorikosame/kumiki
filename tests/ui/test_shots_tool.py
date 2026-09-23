@@ -22,8 +22,10 @@ from PySide6.QtCore import QRect
 from PySide6.QtGui import QColor, QImage
 from PySide6.QtWidgets import QApplication, QLabel, QTreeWidget, QWidget
 
-from sashimono.compat.aviutl.catalog import script_catalog, set_script_catalog
+from sashimono.compat.aviutl import catalog as catalog_module
+from sashimono.compat.aviutl.catalog import ScriptCatalog, set_script_catalog
 from sashimono.compat.catalog import TemplateCatalog
+from sashimono.core import userdirs
 from sashimono.effects.definition import registry
 from tests.media_fixtures import libx264_available
 
@@ -187,7 +189,28 @@ class TestCompatibilityShot:
                 dialog.close()
         assert str(tmp_path) not in shown
         assert str(Path.home()) not in shown
+        # 場所の文字列が無いだけでは、一部だけが写って名前が残っても通る 名前そのものも見る
+        assert Path.home().name.casefold() not in shown.casefold()
         assert "スクリプト 1 本" in shown
+
+    def test_scripts_in_the_default_folder_are_not_kept(
+        self, qt_application: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """後始末の基準に、既定の探索先のスクリプトを混ぜない
+
+        一覧がまだ無い所で基準を取ると、既定の探索先を走査して登録した定義が基準に
+        入り、試験のあとも登録簿に残る
+        """
+        del qt_application, tmp_path
+        # 探索先は設定の置き場（conftest が一時フォルダへ向けている）だけにする
+        monkeypatch.delenv("PROGRAMDATA", raising=False)
+        monkeypatch.setattr(catalog_module, "_catalog", None)
+        scripts = userdirs.config_root() / "scripts"
+        scripts.mkdir(parents=True)
+        (scripts / "既定の置き場の見本.anm2").write_text("--track0:量,0,100,50\n", "utf-8")
+        with _restored_scripts():
+            pass
+        assert not [d.kind for d in registry.all() if "既定の置き場の見本" in d.kind]
 
     def test_the_report_shot_leaves_no_sample_behind(
         self, shots: ModuleType, qt_application: QApplication, tmp_path: Path
@@ -216,15 +239,20 @@ def _restored_scripts() -> Iterator[None]:
     モジュールの終わりにまとめて外す ``forget_scripts`` を待つと、同じモジュールの
     後の試験が見本を見る
     """
-    catalog = script_catalog()
+    # 基準を取る前に一覧を空の物にしておく 一覧がまだ無いまま ``script_catalog()`` を
+    # 呼ぶと既定の探索先を走査して定義を登録し、それが基準に入って片付けから漏れる
+    # 前の一覧は ``_catalog`` から直に取る 関数で取ると、同じ走査が起きる
+    previous = catalog_module._catalog
+    set_script_catalog(ScriptCatalog(roots=()))
     kinds = {definition.kind for definition in registry.all()}
     try:
         yield
     finally:
-        set_script_catalog(catalog)
         for definition in registry.all():
             if definition.kind not in kinds:
                 registry.unregister(definition.kind)
+        # 前の一覧の定義は基準を取る前から登録されているので、差し戻すだけでよい
+        catalog_module._catalog = previous
 
 
 @pytest.mark.usefixtures("gpu")
