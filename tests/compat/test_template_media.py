@@ -16,13 +16,14 @@ from pathlib import Path
 
 import pytest
 
-from sashimono.compat.aviutl.report import CompatibilityReport
 from sashimono.compat.catalog import gather_media, place
 from sashimono.compat.mapped import MappedObject
 from sashimono.core.commands import AddTrack, Command
 from sashimono.core.model import (
+    AnimatedValue,
     AudioStreamInfo,
     Clip,
+    Effect,
     GeneratedSource,
     MediaItem,
     Project,
@@ -95,12 +96,22 @@ class FakeProbe:
         return None
 
 
-def media_object(path: Path | str, kind: str, *, layer: int = 1, start: int = 0) -> MappedObject:
+def media_object(
+    path: Path | str,
+    kind: str,
+    *,
+    layer: int = 1,
+    start: int = 0,
+    with_sound: bool = False,
+    audio_effects: tuple[Effect, ...] = (),
+) -> MappedObject:
     return MappedObject(
         clip=Clip(timeline_start=start, duration=30),
         layer=layer,
         media_path=str(path),
         kind=kind,
+        with_sound=with_sound,
+        audio_effects=audio_effects,
     )
 
 
@@ -337,40 +348,85 @@ def test_audio_avoids_a_muted_audio_track(files: tuple[Path, Path]) -> None:
     assert not tracks[1].muted
 
 
-def test_a_video_with_sound_is_counted_as_unsupported(tmp_path: Path) -> None:
-    """音も持つ動画を置くと、鳴らないことが互換性レポートに数えて残る
+def test_a_video_with_sound_also_lands_on_an_audio_track(tmp_path: Path) -> None:
+    """音も持つ動画は、映像と音のクリップへ分けて置く（Issue #89）
 
-    テンプレートの配置は映像トラックへ 1 本置くだけで音声のクリップを作らない
-    （素材の読み込み ``insert_media`` は映像と音声へ分ける） 握り潰すと、
-    置いたのに鳴らない理由がどこにも残らず、直す順番も決められない（Issue #89）
+    映像トラックへ 1 本置くだけだと、映像トラックの音は混ぜない決まりなので
+    置いた動画の音が鳴らない 素材の読み込み（``insert_media``）と同じ形にする
     """
-    clip = tmp_path / "映像.mp4"
-    clip.write_bytes(b"")
-    objects = [media_object(clip, "動画ファイル")]
-    project = Project.create()
-    report = CompatibilityReport()
-    plan = gather_media(objects, project, FakeProbe())
-    place(objects, project, media=plan.media, report=report)
+    movie_file = tmp_path / "映像.mp4"
+    movie_file.write_bytes(b"")
+    project = put(
+        [media_object(movie_file, "動画ファイル", with_sound=True)], Project.create(), FakeProbe()
+    )
 
-    assert any("動画の音" in line for line in report.lines())
+    (picture,) = clips_of(project, TrackKind.VIDEO)
+    (sound,) = clips_of(project, TrackKind.AUDIO)
+    assert picture.media_id == sound.media_id == project.media[0].id
+    assert (sound.timeline_start, sound.duration) == (picture.timeline_start, picture.duration)
 
 
-def test_a_video_with_sound_inside_a_group_is_counted_too(tmp_path: Path) -> None:
-    """まとめた中身の動画の音も、呼んだ側のレポートに残る
+def test_the_two_halves_of_a_video_are_linked(tmp_path: Path) -> None:
+    """分けた映像と音はリンクで結ぶ 結ばないと片方を動かしただけで絵と音がずれる"""
+    movie_file = tmp_path / "映像.mp4"
+    movie_file.write_bytes(b"")
+    project = put(
+        [media_object(movie_file, "動画ファイル", with_sound=True)], Project.create(), FakeProbe()
+    )
 
-    シーンへ置く再帰にレポートを渡さないと、合成グループの中の動画だけが
-    共通のレポートへ紛れ、渡したレポートには何も出ない
+    (picture,) = clips_of(project, TrackKind.VIDEO)
+    (sound,) = clips_of(project, TrackKind.AUDIO)
+    assert picture.link_group is not None
+    assert picture.link_group == sound.link_group
+    assert picture.id != sound.id
+    # 使うストリームは素材から引く 0 のままだと、映像が 0 番の素材で音が鳴らない
+    assert picture.stream_index == movie(movie_file).video_streams[0].index
+    assert sound.stream_index == movie(movie_file).audio_streams[0].index
+
+
+def test_a_video_without_sound_of_its_own_stays_one_clip(tmp_path: Path) -> None:
+    """``with_sound`` を立てていない動画は分けない
+
+    AviUtl は同じ動画を「動画ファイル」と「音声ファイル」の 2 つのオブジェクトで
+    書き出す 分けると音声のオブジェクトと合わせて音が二重に鳴る
     """
-    clip = tmp_path / "映像.mp4"
-    clip.write_bytes(b"")
-    inner = media_object(clip, "動画ファイル")
+    movie_file = tmp_path / "映像.mp4"
+    movie_file.write_bytes(b"")
+    project = put([media_object(movie_file, "動画ファイル")], Project.create(), FakeProbe())
+
+    assert len(clips_of(project, TrackKind.VIDEO)) == 1
+    assert clips_of(project, TrackKind.AUDIO) == []
+
+
+def test_the_sound_of_a_video_carries_the_volume(tmp_path: Path) -> None:
+    """音量は音のクリップに付く 映像のクリップに付けても音は変わらない"""
+    movie_file = tmp_path / "映像.mp4"
+    movie_file.write_bytes(b"")
+    volume = Effect(kind="audio_volume", params={"volume": AnimatedValue(50.0)})
+    objects = [media_object(movie_file, "動画ファイル", with_sound=True, audio_effects=(volume,))]
+    project = put(objects, Project.create(), FakeProbe())
+
+    (picture,) = clips_of(project, TrackKind.VIDEO)
+    (sound,) = clips_of(project, TrackKind.AUDIO)
+    assert [effect.kind for effect in sound.effects] == ["audio_volume"]
+    assert picture.effects == ()
+
+
+def test_a_video_with_sound_inside_a_group_is_split_too(tmp_path: Path) -> None:
+    """まとめた中身の動画も、シーンの中で映像と音へ分ける
+
+    シーンへ置く再帰は同じ :func:`place` を通る ここで分け忘れると、
+    合成グループに入れた動画だけが無音になる
+    """
+    movie_file = tmp_path / "映像.mp4"
+    movie_file.write_bytes(b"")
+    inner = media_object(movie_file, "動画ファイル", with_sound=True)
     group = MappedObject(clip=Clip(timeline_start=0, duration=30), layer=1, children=(inner,))
-    project = Project.create()
-    report = CompatibilityReport()
-    plan = gather_media([group], project, FakeProbe())
-    place([group], project, media=plan.media, report=report)
+    project = put([group], Project.create(), FakeProbe())
 
-    assert any("動画の音" in line for line in report.lines())
+    (scene,) = project.scenes
+    kinds = [track.kind for track in scene.timeline.tracks for _ in track.clips]
+    assert kinds == [TrackKind.VIDEO, TrackKind.AUDIO]
 
 
 def test_audio_uses_an_existing_track_when_it_is_free_there(files: tuple[Path, Path]) -> None:
