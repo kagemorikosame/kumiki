@@ -18,6 +18,7 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
 
+import numpy as np
 import pytest
 
 from sashimono.compat.aviutl import plugin
@@ -340,3 +341,18 @@ def test_the_real_plugin_composes_with_the_sample(tool: ModuleType, tmp_path: Pa
     decorated = json.loads(result.stdout.strip().splitlines()[-1])[0]
     for _kind, family, _file in tool.COMPOSITE_FONTS[:5]:
         assert f"<@{family}>" in decorated
+
+
+class TestSavingPictures:
+    def test_a_failed_save_is_reported(self, tool: ModuleType, tmp_path: Path) -> None:
+        """Qt は保存に失敗しても例外を投げない 見ないと「書いた」と出したのに絵が無い"""
+        image = np.zeros((4, 4, 3), dtype=np.uint8)
+        assert tool._save_png(image, tmp_path / "書ける.png") is True
+        assert tool._save_png(image, tmp_path / "無いフォルダ" / "書けない.png") is False
+
+    def test_a_long_alias_name_still_fits(self, tool: ModuleType) -> None:
+        """番号と拡張子を足すとファイル名の上限を超え、絵が作られない"""
+        case = SimpleNamespace(start=12, name="長" * 300)
+        name = tool.preview_name(case)
+        assert len(name) <= 255
+        assert name.startswith("000012_")

@@ -418,7 +418,12 @@ def profile_guide(sample: Path, target: Path | None) -> list[str]:
     if backup.exists() or (target.exists() and not placed):
         lines.append(f'  Move-Item -Force "{backup}" "{target}"')
     else:
-        lines.append("  （控えが無いので、見本を置く前は設定が無かったものとして見本を消す）")
+        # 見本と同じ中身を元から持っていた場合と見分けられない 控えが無いのは
+        # 見本を置く前に設定が無かったときだけのはずだが、決め打ちせず本人に確かめさせる
+        lines.append(
+            "  （控えが無い 見本を置く前に設定が無かったなら消す 元から同じ中身を"
+            "持っていたなら消さない）"
+        )
         lines.append(f'  Remove-Item "{target}"')
     return lines
 
@@ -438,13 +443,19 @@ def command_profile(arguments: argparse.Namespace) -> int:
     return 0
 
 
+#: 見本の絵の名前に使うエイリアスの名前の長さ 頭の番号と拡張子を足しても、
+#: ファイル名の上限（NTFS で 255 文字）に収まるようにする 番号で見分けが付くので、
+#: 切っても別のエイリアスの絵と取り違えない
+PREVIEW_NAME_LIMIT = 200
+
+
 def preview_name(case: Case) -> str:
     """見本の絵の名前 並べた位置（``compare`` の ``images/`` と同じ）を頭に付ける
 
     名前だけにすると、別のフォルダにある同じ名前のエイリアスの絵が先の絵を
     上書きし、描いたはずの 1 本が黙って消える 並べた位置は 1 本ごとに違う
     """
-    return f"{case.start:06d}_{case.name}.png"
+    return f"{case.start:06d}_{case.name[:PREVIEW_NAME_LIMIT]}.png"
 
 
 def command_preview(arguments: argparse.Namespace) -> int:
@@ -467,6 +478,7 @@ def command_preview(arguments: argparse.Namespace) -> int:
     target.mkdir(parents=True, exist_ok=True)
     report = CompatibilityReport()
     renderer: FrameRenderer | None = None
+    failed = 0
     try:
         for case in cases:
             objects = [
@@ -487,7 +499,12 @@ def command_preview(arguments: argparse.Namespace) -> int:
             # 真っ黒を「描けた」と取り違えないよう、光っている画素を数えて出す
             lit = int((image.max(axis=2) > 8).sum())
             out = target / preview_name(case)
-            _save_png(np.ascontiguousarray(image), out)
+            if not _save_png(np.ascontiguousarray(image), out):
+                failed += 1
+                print(
+                    f"{case.name}: フレーム {frame} 光っている画素 {lit} → 保存できなかった {out}"
+                )
+                continue
             print(f"{case.name}: フレーム {frame} 光っている画素 {lit} → {out}")
     finally:
         if renderer is not None:
@@ -496,7 +513,8 @@ def command_preview(arguments: argparse.Namespace) -> int:
         print(f"  飛ばした: {line}")
     for line in (*report.lines(), *global_report.lines()):
         print(f"  記録: {line}")
-    return 0
+    # 絵が書けなかったのに 0 で終えると、描けたものとして次の手順へ進んでしまう
+    return 1 if failed else 0
 
 
 def _use_app_data(path: Path | None) -> None:
@@ -520,13 +538,18 @@ def _shrink(image: np.ndarray) -> np.ndarray:
     return cropped.reshape(COMPARE_HEIGHT, fy, COMPARE_WIDTH, fx, 3).mean(axis=(1, 3))
 
 
-def _save_png(image: np.ndarray, target: Path) -> None:
-    """RGB の配列を PNG へ 画像のためだけに Pillow を足さず、入っている Qt で書く"""
+def _save_png(image: np.ndarray, target: Path) -> bool:
+    """RGB の配列を PNG へ 画像のためだけに Pillow を足さず、入っている Qt で書く
+
+    書けたかを返す Qt は失敗しても例外を投げないので、見ないと「書いた」と
+    出したのに絵が無い、になる（名前が長すぎる・置き場に書けない など）
+    """
     from PySide6.QtGui import QImage
 
     height, width = image.shape[:2]
     data = np.ascontiguousarray(image)
-    QImage(data.data, width, height, width * 3, QImage.Format.Format_RGB888).save(str(target))
+    image_ = QImage(data.data, width, height, width * 3, QImage.Format.Format_RGB888)
+    return bool(image_.save(str(target)))
 
 
 def _video_frames(video: Path, wanted: set[int]) -> dict[int, np.ndarray]:
@@ -621,8 +644,10 @@ def command_compare(arguments: argparse.Namespace) -> int:
                 difference = float(np.abs(a - b).mean())
                 stem = f"{case.start:06d}_{frame:06d}"
                 side = np.concatenate([a, b, np.abs(a - b) * 3.0], axis=1)
-                _save_png(np.clip(side, 0, 255).astype(np.uint8), images / f"{stem}.png")
                 note = case.note
+                if not _save_png(np.clip(side, 0, 255).astype(np.uint8), images / f"{stem}.png"):
+                    # 表には載るのに絵が無い、を見分けられるよう、備考に残す
+                    note = (note + " " if note else "") + "並べた絵を保存できなかった"
                 if random_based:
                     note = (note + " " if note else "") + RANDOM_NOTE
                 rows.append((difference, case.name, case.file, frame, stem, note))
