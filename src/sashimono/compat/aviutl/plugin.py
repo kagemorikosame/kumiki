@@ -53,6 +53,7 @@ import ctypes
 import os
 import sys
 import threading
+import weakref
 from pathlib import Path
 from typing import Any
 
@@ -227,6 +228,14 @@ _keep: list[Any] = []
 
 
 _modules: dict[str, NativeModule] | None = None
+#: 読んだときに記録した「読めなかった理由」と回数 読み結果と一緒に覚えておく
+#: 覚えないと、2 つ目からの記録の器（別のスクリプトの実行）には理由が届かず、
+#: 「モジュールが見つかりません」だけが残って原因を追えない
+_diagnostics: list[tuple[str, int]] = []
+#: 理由をもう伝えた記録の器 器は数を数えるので、描くたびに流し直すと回数が
+#: 膨らむ 同じ器には 1 度だけ伝える 器は比べる作り（eq）で hash を持たないので、
+#: id を鍵に器そのものを弱く持つ（器が消えれば外れ、同じ id の別の器と取り違えない）
+_told: weakref.WeakValueDictionary[int, CompatibilityReport] = weakref.WeakValueDictionary()
 _loaded: dict[Path, Any] = {}
 _lock = threading.RLock()
 
@@ -237,9 +246,11 @@ def forget() -> None:
     すでに読み込んだ DLL は放さない 同じ DLL を 2 度初期化すると、
     プラグインの中の状態が二重になる
     """
-    global _modules
+    global _modules, _diagnostics
     with _lock:
         _modules = None
+        _diagnostics = []
+        _told.clear()
 
 
 def script_modules(
@@ -250,16 +261,21 @@ def script_modules(
     一度だけ読む 見つからない・読めない場合は空の辞書で、呼ぶ側は
     「そういうモジュールは無い」として先へ進む
     """
-    global _modules
+    global _modules, _diagnostics
+    target = report if report is not None else global_report
     with _lock:
-        if _modules is None or roots is not None:
-            found = _scan(
-                roots if roots is not None else default_plugin_roots(),
-                report if report is not None else global_report,
-            )
-            if roots is not None:
-                return found
-            _modules = found
+        if roots is not None:
+            return _scan(roots, target)
+        if _modules is None:
+            collector = CompatibilityReport()
+            _modules = _scan(default_plugin_roots(), collector)
+            _diagnostics = list(collector.missing.items())
+            _told.clear()
+        if _told.get(id(target)) is not target:
+            for line, count in _diagnostics:
+                for _ in range(count):
+                    target.note_missing(line)
+            _told[id(target)] = target
         return _modules
 
 

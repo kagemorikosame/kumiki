@@ -198,6 +198,32 @@ class TestPluginModules:
         assert found == {"compositefont": "直下.aux2"}
         assert any("一段下.aux2" in line for line in report.lines())
 
+    def test_a_refusal_reaches_every_report_once(self, tmp_path: Path, monkeypatch: Any) -> None:
+        """読んだ結果は覚えて使い回すので、理由を最初の器にしか書かないと、
+        2 つ目からのスクリプトには「見つかりません」だけが残って原因を追えない
+        同じ器へ描くたびに書き直すと、回数が膨らんで多い順の並びが狂う
+        """
+        (tmp_path / "新しすぎる.aux2").write_bytes(b"MZ")
+        monkeypatch.setattr(plugin, "default_plugin_roots", lambda: (tmp_path,))
+        monkeypatch.setattr("sys.platform", "win32")
+
+        def refuse(path: Path) -> dict[str, Any]:
+            raise native.NativeModuleError(f"{path.name} は本体の版 9999999 を求めている")
+
+        monkeypatch.setattr(plugin, "_load", refuse)
+        plugin.forget()
+        try:
+            first, second = CompatibilityReport(), CompatibilityReport()
+            plugin.script_modules(report=first)
+            plugin.script_modules(report=second)
+            plugin.script_modules(report=second)
+            for report in (first, second):
+                lines = [line for line in report.missing if "新しすぎる.aux2" in line]
+                assert len(lines) == 1
+                assert report.missing[lines[0]] == 1
+        finally:
+            plugin.forget()
+
     def test_switched_off_gives_no_modules(self, tmp_path: Path) -> None:
         """切っても読むなら、設定に意味が無い"""
         native.set_enabled(False)
