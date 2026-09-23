@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
@@ -117,7 +118,7 @@ class TestMergingTheBase:
         in_base: set[str],
         compares: dict[str, list[dict[str, str]]],
         trees: dict[str, dict[str, tuple[str, str]]] | None = None,
-    ) -> object:
+    ) -> Callable[[str], dict[str, object]]:
         """GitHub の API の代わり 比べる向きも本物と同じにする
 
         ``compare/{base}...{sha}`` は右側が左側から見てどうかを返す 向きを取り違えたまま
@@ -145,7 +146,12 @@ class TestMergingTheBase:
                     }
                 return {
                     "tree": [
-                        {"path": name, "type": "blob", "mode": mode, "sha": blob}
+                        {
+                            "path": name,
+                            "type": "commit" if mode == "160000" else "blob",
+                            "mode": mode,
+                            "sha": blob,
+                        }
                         for name, (mode, blob) in entries.items()
                     ]
                 }
@@ -274,9 +280,22 @@ class TestMergingTheBase:
         call = self.api({self.MERGE: [self.BRANCH, self.MAIN]}, {self.MAIN}, {})
 
         def truncated(path: str) -> dict[str, object]:
-            answer = call(path)  # type: ignore[operator]
-            return {"truncated": True} if path.startswith("git/trees/") else answer
+            return {"truncated": True} if path.startswith("git/trees/") else call(path)
 
         assert not gate.only_base_merges_since(
             self.MERGE, "main", lambda s: s == self.BRANCH, truncated
         )
+
+    def test_changing_a_submodule_does_not_pass(self, gate: ModuleType) -> None:
+        # 木から blob だけを拾うと、参照先を変えたサブモジュールが「両方に無い」と
+        # 見なされて通る そこは誰も見ていない
+        call = self.api(
+            {self.MERGE: [self.BRANCH, self.MAIN]},
+            {self.MAIN},
+            {f"{self.BRANCH}...{self.MERGE}": [{"filename": "vendor", "sha": "cc"}]},
+            trees={
+                self.MERGE: {"vendor": ("160000", "cc")},
+                self.MAIN: {"vendor": ("160000", "aa")},
+            },
+        )
+        assert not gate.only_base_merges_since(self.MERGE, "main", lambda s: s == self.BRANCH, call)

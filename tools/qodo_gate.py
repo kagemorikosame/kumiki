@@ -76,8 +76,9 @@ MAX_MERGE_WALK = 20
 #: 比べる API が 1 回に返すファイルの数 GitHub の上限は 300 だが、頁をめくって集める
 PER_PAGE = 100
 
-#: めくる頁の数の上限 これを超える大きさの取り込みは、諦めて Qodo の見直しを待つ
-MAX_MERGED_PAGES = 5
+#: めくる頁の数の上限 比べる API が返すファイルは 300 までなので、100 × 3 頁で足りる
+#: 足りない大きさの取り込みは、諦めて Qodo の見直しを待つ
+MAX_MERGED_PAGES = 3
 
 
 def only_base_merges_since(
@@ -157,9 +158,9 @@ def _matches_base(
 def _changed_files(left: str, right: str, api: Callable[[str], Any]) -> set[str] | None:
     """2 つのコミットの間で変わったファイルの道
 
-    比べる API は 1 回に 300 ファイルまでしか返さない 返ってきた数だけを見ると、
-    打ち切られた後ろに main 由来でない変更があっても通してしまう そこで頁をめくって
-    集め、上限を超えたら ``None``（＝分からないので通さない）を返す
+    比べる API は 1 頁に 100、全部で 300 ファイルまでしか返さない 返ってきた数だけを
+    見ると、打ち切られた後ろに main 由来でない変更があっても通してしまう そこで頁を
+    めくって集め、めくり切れなければ ``None``（＝分からないので通さない）を返す
     名前を変えたファイルは、元の名前も見る 元の側の変更を見落とさないため
     """
     names: set[str] = set()
@@ -182,10 +183,12 @@ def _tree(sha: str, api: Callable[[str], Any]) -> dict[str, tuple[str, str]] | N
     tree = api(f"git/trees/{sha}?recursive=1")
     if tree.get("truncated"):
         return None
+    # blob だけに絞らない サブモジュール（type が commit、mode 160000）を外すと、
+    # 参照先だけを変えた取り込みが「両方に無い」として通る
     return {
         str(e["path"]): (str(e["mode"]), str(e.get("sha", "")))
         for e in tree.get("tree") or []
-        if e.get("type") == "blob"
+        if e.get("type") != "tree"
     }
 
 
