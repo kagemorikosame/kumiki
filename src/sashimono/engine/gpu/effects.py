@@ -22,6 +22,7 @@ from sashimono.effects.spec import (
     CheckSpec,
     ColorSpec,
     FileSpec,
+    GridSpec,
     SelectSpec,
     TrackSpec,
     ValueSpec,
@@ -299,8 +300,27 @@ class EffectProcessor:
                 program.set_bool(spec.name, spec.coerce(value))
             elif isinstance(spec, ValueSpec):
                 program.set_int(spec.name, spec.coerce(value))
+            elif isinstance(spec, GridSpec):
+                self._set_grid(program, spec, spec.coerce(value))
             elif isinstance(spec, FileSpec) and spec.texture:
                 unit = self._bind_image(program, spec, spec.coerce(value), unit)
+
+    def _set_grid(self, program: Program, spec: GridSpec, value: tuple[float, ...]) -> None:
+        """格子の点を uniform へ 点数は**毎回**渡す
+
+        uniform の値はプログラムに残るので、格子の無いクリップが、前に描いた
+        別のクリップの点数を引き継いで、覚えのない歪み方をする
+
+        点をスカラーの uniform にしないのは、9x9 で 162 個になるため
+        ``vec2`` の配列 1 本なら、点数が増えても送り方が変わらない
+        """
+        columns, rows = spec.size(value)
+        program.set_int(f"{spec.name}_columns", columns)
+        program.set_int(f"{spec.name}_rows", rows)
+        if columns < 2 or rows < 2:
+            return
+        points = [(value[2 + index * 2], value[3 + index * 2]) for index in range(columns * rows)]
+        program.set_vec2_array(f"{spec.name}_points", points)
 
     def _bind_image(self, program: Program, spec: FileSpec, path: str, unit: int) -> int:
         """画像を次の空いたテクスチャユニットへ繋ぐ 次に使うユニットを返す
