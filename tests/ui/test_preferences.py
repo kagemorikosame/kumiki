@@ -19,6 +19,7 @@ from sashimono.core.timebase import FrameRate
 from sashimono.ui.export_dialog import ExportDialog
 from sashimono.ui.main_window import MainWindow
 from sashimono.ui.preferences_dialog import (
+    DECODE_THREADS,
     PIPELINE_DEPTHS,
     PREFETCH_BUDGETS,
     PROXY_HEIGHTS,
@@ -558,5 +559,59 @@ class TestTheNativeModuleSetting:
         window = MainWindow(Project.create(), confirm_unsaved=False)
         try:
             assert native.enabled() is False
+        finally:
+            window.close()
+
+
+class TestTheParallelDecodeSetting:
+    """重ねたレイヤーのデコードを、同時に何本まで走らせるか（#56）
+
+    速さとメモリの釣り合いで、機械のコア数によって答えが変わる
+    """
+
+    def test_the_default_is_in_the_choices(self) -> None:
+        # 既定が一覧に無いと、設定を開いて閉じただけで値が変わる
+        assert Preferences().decode_threads in [threads for _, threads in DECODE_THREADS]
+
+    def test_it_comes_back(self, tmp_path: Path) -> None:
+        """保存して読み直しても同じ 落ちると、起動のたびに設定し直しになる"""
+        store = PreferenceStore(tmp_path / "preferences.json")
+        chosen = Preferences(decode_threads=1)
+        store.save(chosen)
+        assert store.load() == chosen
+
+    def test_an_absurd_count_falls_back(self, tmp_path: Path) -> None:
+        """0 や負は既定へ スレッドを 1 本も作れない走り係になり、先読みで戻らなくなる"""
+        path = tmp_path / "preferences.json"
+        for written in (
+            '{"decode_threads": 0}',
+            '{"decode_threads": -1}',
+            '{"decode_threads": 99}',
+        ):
+            path.write_text(written, encoding="utf-8")
+            assert PreferenceStore(path).load().decode_threads == Preferences().decode_threads
+
+    def test_the_dialog_shows_what_is_set(self, qt_application: QApplication) -> None:
+        """画面が今の設定を映す 映らないと、開いて OK を押しただけで別の値になる"""
+        del qt_application
+        chosen = Preferences(decode_threads=1)
+        assert PreferencesDialog(chosen).preferences() == chosen
+
+    def test_the_window_passes_the_count_on(self, qt_application: QApplication) -> None:
+        """選んだ本数が書き出しの設定まで届く 届かないと、切っても並んだまま"""
+        del qt_application
+        window = MainWindow(Project.create(), confirm_unsaved=False)
+        try:
+            window._apply_preferences(Preferences(decode_threads=1))
+            dialog = ExportDialog(
+                window._document.project,
+                decode_threads=window._preferences.decode_threads,
+            )
+            try:
+                settings = dialog._settings()
+                assert settings is not None
+                assert settings.decode_threads == 1
+            finally:
+                dialog.close()
         finally:
             window.close()

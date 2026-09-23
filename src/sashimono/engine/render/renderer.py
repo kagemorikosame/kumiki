@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 from collections import OrderedDict
 from collections.abc import Collection
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from fractions import Fraction
 from pathlib import Path
@@ -170,6 +171,19 @@ MAX_OPEN_DECODERS = 8
 #: 作った絵を覚えておくクリップの数 1 枚で画面 1 枚ぶんのメモリを使う
 MAX_GENERATED_CACHE = 48
 
+#: レイヤーごとの並列デコードに使うスレッドの数の既定 1 なら並べない
+#: PyAV のデコードは GIL を解放するので、別の素材どうしなら本当に重なる
+#: （1080p 3 枚重ねで 1.80 倍、4K 2 枚重ねで 1.50 倍 ``tools/bench_export.py``）
+DEFAULT_DECODE_THREADS = 4
+
+#: 並列デコードのスレッド数として受け付ける上限 デコーダ 1 つが
+#: :data:`MAX_OPEN_DECODERS` 本までしか開かないので、それを超えて並べても相手がいない
+MAX_DECODE_THREADS = MAX_OPEN_DECODERS
+
+#: デコーダ 1 つを指す鍵（素材とストリーム番号） 先読みはこの鍵ごとに 1 本だけ走らせる
+#: 同じデコーダを 2 スレッドから触ると、コンテナの位置が食い違って絵が壊れる
+_DecodeKey = tuple[MediaId, int]
+
 
 #: 値が止まっていても時計で絵が変わる図形
 #: 星空は粒が時間で流れ、移動軌跡は線が時間で伸びる（固定速度） 載せ忘れると、
@@ -189,6 +203,18 @@ def _is_generated(clip: Clip) -> bool:
     return (
         source is not None and source.kind == "shape" and source.params.get("shape") == "waveform"
     )
+
+
+def _source_time(clip: Clip, media: MediaItem, frame: int, rate: FrameRate) -> Fraction:
+    """``clip`` を ``frame`` に描くとき、素材のどの時刻を読むか
+
+    先読みと本番で同じ式を使う ずれると先読みが当たらず、並べた意味が消える
+    """
+    if media.is_still:
+        # 静止画は時間を持たない 常に先頭を返す
+        return Fraction(0)
+    local_frame = frame - clip.timeline_start
+    return clip.source_in + local_frame * rate.frame_duration * clip.speed
 
 
 #: 音声波形の音を読むデコーダの鍵 素材の道・音声ストリームの番号・読むレート
@@ -306,6 +332,7 @@ class FrameRenderer:
         context: GLScope | None = None,
         quality: RenderQuality = FULL_QUALITY,
         proxies: ProxyStore | None = None,
+        decode_threads: int = DEFAULT_DECODE_THREADS,
     ) -> None:
         self._project = project
         self._quality = quality
@@ -325,7 +352,14 @@ class FrameRenderer:
             self._effects = EffectProcessor(width, height, self._compositor.quad)
             self._effects.canvas_encoded = self._encoded
         #: 素材ごとのデコーダ 最近使ったものを残す
-        self._decoders: OrderedDict[tuple[MediaId, int], VideoDecoder] = OrderedDict()
+        self._decoders: OrderedDict[_DecodeKey, VideoDecoder] = OrderedDict()
+        #: レイヤーごとの並列デコードに使うスレッドの数 1 なら並べない
+        self._decode_threads = max(1, min(int(decode_threads), MAX_DECODE_THREADS))
+        #: 先読みの走り係 並べないなら作らない
+        self._decode_pool: ThreadPoolExecutor | None = None
+        #: いま先読み中のデコーダ 鍵ごとに 1 本だけ 値は（頼んだ時刻, 結果）
+        #: 鍵ごとに 1 本に絞ることが、同じデコーダを 2 スレッドから触らない保証になる
+        self._decoding: dict[_DecodeKey, tuple[Fraction, Future[np.ndarray | None]]] = {}
         #: トラックごとの転送用テクスチャ 毎フレーム作り直すと確保と解放で時間を食う
         self._textures: dict[str, Texture] = {}
         #: AviUtl スクリプトを走らせる係 使うまで作らない
@@ -366,6 +400,9 @@ class FrameRenderer:
         """
         previous = self._project
         self._project = project
+        # 先読みが走ったままデコーダを閉じると、走っているスレッドが解放済みの
+        # コンテナを触る 閉じる前に必ず受け取り終える
+        self._settle_decodes()
 
         if project.settings.resolution != previous.settings.resolution:
             self._resize(*self._quality.apply(*project.settings.resolution))
@@ -402,6 +439,18 @@ class FrameRenderer:
         with self._context:
             self._effects.retain_images(image_paths(project))
 
+    def set_decode_threads(self, threads: int) -> None:
+        """レイヤーごとの並列デコードのスレッド数を変える 1 で並べない
+
+        走り係は畳んでから作り直す 減らしたのに前の本数のまま走り続けると、
+        設定で減らした意味が無い
+        """
+        wanted = max(1, min(int(threads), MAX_DECODE_THREADS))
+        if wanted == self._decode_threads:
+            return
+        self._shutdown_decodes()
+        self._decode_threads = wanted
+
     def set_quality(self, quality: RenderQuality) -> None:
         self._quality = quality
         self._resize(*quality.apply(*self._project.settings.resolution))
@@ -434,7 +483,16 @@ class FrameRenderer:
         # 下に何も無い所でも黒と混ざる（YMM4 は透明な所では上の絵をそのまま出す）
         # 写し取る絵（フレームバッファ）は、写すときに黒を敷く（YMM4 と同じ）
         self._compositor.begin((0.0, 0.0, 0.0, 0.0))
-        self._compose_timeline(self._project.timeline, frame, depth=0)
+        try:
+            self._compose_timeline(self._project.timeline, frame, depth=0)
+        except BaseException:
+            # 描く側が投げたときは、先読みを受け取るだけにして元の失敗を残す
+            # ここで先読みの失敗を投げ直すと、本当の原因がそれに置き換わって消える
+            self._settle_decodes()
+            raise
+        # 使われなかった先読みを必ず回収する 置き去りにすると、次のフレームで
+        # 同じデコーダへ頼んだときに前の走りと重なり、例外も誰も受け取らない
+        self._drain_decodes()
         self._compositor.underlay((0.0, 0.0, 0.0, 1.0))
 
     def _compose_timeline(self, timeline: Timeline, frame: int, *, depth: int) -> None:
@@ -462,6 +520,9 @@ class FrameRenderer:
             and clip.enabled
             and (started_before is None or clip.timeline_start < started_before)
         ]
+        # 描き始める前に、この段のクリップぶんのデコードを走らせておく
+        # 描きながら 1 本ずつデコードすると、重ねた枚数だけ待ちが直列に並ぶ
+        self._prefetch_decodes([clip for _, _, clip in visible], frame, rate)
         below: Compositor | None = None
         for position, (index, track, clip) in enumerate(visible):
             if clip.source is not None and clip.source.kind == "transition":
@@ -711,6 +772,10 @@ class FrameRenderer:
         if self._closed:
             return
         self._closed = True
+        # 走っている先読みを先に片付ける デコーダを閉じてからスレッドが動くと、
+        # 解放済みのコンテナを触って落ちる 例外は握り潰す ここは後始末で、
+        # 読めなかった素材より「必ず手放す」方が大事
+        self._shutdown_decodes()
         # 覚えた移動軌跡の道も手放す 閉じたレンダラのぶんを次のプロジェクトまで残さない
         self._trail_paths.clear()
         for decoder in self._decoders.values():
@@ -1444,16 +1509,129 @@ class FrameRenderer:
         if media is None or not media.has_video:
             return None
 
-        decoder = self._decoder_for(clip.media_id, clip.stream_index)
+        key = (clip.media_id, clip.stream_index)
+        source_time = _source_time(clip, media, frame, rate)
+        pending = self._decoding.pop(key, None)
+        if pending is not None:
+            when, future = pending
+            # 必ず受け取ってから自分で触る 受け取らずに触ると、同じデコーダを
+            # 2 スレッドが同時に進めることになり、絵が飛ぶ
+            # 例外もここで投げ直す 握り潰すと、読めない素材が黒いまま書き出される
+            image = future.result()
+            if when == source_time:
+                return image
+
+        decoder = self._decoder_for(*key)
         if decoder is None:
             return None
-
-        local_frame = frame - clip.timeline_start
-        source_time = clip.source_in + local_frame * rate.frame_duration * clip.speed
-        if media.is_still:
-            # 静止画は時間を持たない 常に先頭を返す
-            source_time = Fraction(0)
         return decoder.frame_at(source_time)
+
+    def _pool(self) -> ThreadPoolExecutor:
+        """先読みの走り係 使うまで作らない"""
+        if self._decode_pool is None:
+            self._decode_pool = ThreadPoolExecutor(
+                max_workers=self._decode_threads, thread_name_prefix="sashimono-decode"
+            )
+        return self._decode_pool
+
+    def _decode_request(
+        self, clip: Clip, frame: int, rate: FrameRate
+    ) -> tuple[_DecodeKey, Fraction] | None:
+        """``clip`` を描くときに素材から取り出すフレーム 先読みに向かないものは ``None``
+
+        向かないのは、絵を素材から取らないもの（生成オブジェクト・入れ子のシーン・
+        場面切り替え・画面の写し取り）と、**残像を積んだもの** 残像は同じデコーダへ
+        前のフレームを先に頼むので、いまのフレームを先読みしても読み直しになり、
+        戻る向きのシークまで増える
+        """
+        if clip.media_id is None or clip.scene_id is not None or _is_generated(clip):
+            return None
+        source = clip.source
+        if source is not None and source.kind in ("transition", "framebuffer"):
+            return None
+        if any(effect.enabled and effect.kind == "after_image" for effect in clip.effects):
+            return None
+        media = self._project.find_media(clip.media_id)
+        if media is None or not media.has_video:
+            return None
+        return (clip.media_id, clip.stream_index), _source_time(clip, media, frame, rate)
+
+    def _prefetch_decodes(self, clips: list[Clip], frame: int, rate: FrameRate) -> None:
+        """この段で描くクリップのデコードを、デコーダごとに分けて先に走らせる
+
+        並べてよいのは**別々のデコーダ**の間だけなので、同じ鍵の 2 本目は出さない
+        結果は変わらない :meth:`VideoDecoder.frame_at` は、いまの読み位置に関係なく
+        同じ時刻には同じ絵を返す（届かなければシークして読み直す）
+        先に走らせた絵が使われずに終わっても、捨てるだけで絵には出ない
+        """
+        if self._decode_threads <= 1:
+            return
+        requests: list[tuple[_DecodeKey, Fraction]] = []
+        taken = set(self._decoding)
+        for clip in clips:
+            request = self._decode_request(clip, frame, rate)
+            if request is None or request[0] in taken:
+                continue
+            taken.add(request[0])
+            requests.append(request)
+        if len(requests) < 2:
+            # 相手がいないなら走り係を起こさない 1 本だけ渡しても、受け渡しの分だけ遅い
+            return
+        # 走り係の本数より多く頼まない 多く頼んでも順番待ちになるだけで、その間
+        # デコーダを開いたまま抱え込み、開けるデコーダの上限（8 本）を押し上げる
+        # あふれた分は、描く順に :meth:`_decode` がそのまま読む
+        requests = requests[: self._decode_threads]
+        pool = self._pool()
+        for key, when in requests:
+            # デコーダを開くのはこちらの側 開く所（ファイルを掴み、控えを見に行く）まで
+            # スレッドへ出すと、同じ鍵を 2 回開いて別のデコーダを 2 つ持つことがある
+            decoder = self._decoder_for(*key)
+            if decoder is None:
+                continue
+            self._decoding[key] = (when, pool.submit(decoder.frame_at, when))
+
+    def _drain_decodes(self) -> None:
+        """使われずに残った先読みを、全部受け取ってから捨てる
+
+        受け取らずに捨てると、失敗した先読みの例外が誰にも届かず、素材が読めない
+        まま黒い絵が書き出される 走ったままのスレッドが次のフレームの先読みと
+        同じデコーダで重なることにもなる
+        """
+        pending = list(self._decoding.values())
+        self._decoding.clear()
+        error: Exception | None = None
+        for _, future in pending:
+            try:
+                future.result()
+            except Exception as exc:
+                # 最初の失敗を覚えて、残りも必ず受け取ってから投げ直す
+                # ここで抜けると、受け取っていない先読みが残る
+                if error is None:
+                    error = exc
+        # 受け取り終えた所で、先読みを守るために超えていた分を閉じる
+        # ここで減らさないと、同じ素材を描き続ける間は誰も減らす者がいない
+        # （:meth:`_decoder_for` は既にある鍵ならすぐ返るので通らない）
+        self._trim_decoders()
+        if error is not None:
+            raise error
+
+    def _settle_decodes(self) -> None:
+        """走っている先読みを受け取り終える デコーダを閉じ替える前に必ず呼ぶ
+
+        例外は投げ直さない 絵を作る道ではなく後始末なので、ここで投げると
+        デコーダを掴んだままファイルを差し替えられなくなる
+        """
+        try:
+            self._drain_decodes()
+        except Exception:
+            self._decoding.clear()
+
+    def _shutdown_decodes(self) -> None:
+        """先読みを止めて走り係を畳む デコーダを閉じる前に必ず通る"""
+        self._settle_decodes()
+        if self._decode_pool is not None:
+            self._decode_pool.shutdown(wait=True)
+            self._decode_pool = None
 
     def _decoder_for(self, media_id: MediaId, stream_index: int) -> VideoDecoder | None:
         key = (media_id, stream_index)
@@ -1470,10 +1648,24 @@ class FrameRenderer:
             return None
 
         self._decoders[key] = decoder
-        while len(self._decoders) > MAX_OPEN_DECODERS:
-            _, evicted = self._decoders.popitem(last=False)
-            evicted.close()
+        # **いま開いたもの自身**は閉じない 先に開いた分が全部先読み中だと、
+        # 残る相手が自分だけになり、開いた直後に閉じたデコーダを呼ぶ側へ返してしまう
+        # （9 本以上の別素材が同時に映るフレームでそうなる）
+        self._trim_decoders(keep=key)
         return decoder
+
+    def _trim_decoders(self, *, keep: _DecodeKey | None = None) -> None:
+        """開いたままのデコーダを上限まで減らす
+
+        **先読みが走っているデコーダは閉じない** 読んでいる最中に閉じると、
+        走っているスレッドが解放済みのコンテナを触って落ちる
+        閉じる相手がいなければ、上限を一時的に超えたままにする 上限は
+        「開きっぱなしを増やさない」ための目安で、正しさの条件ではない
+        超えた分は :meth:`_drain_decodes` が受け取り終えた所で閉じる
+        """
+        spare = [k for k in self._decoders if k not in self._decoding and k != keep]
+        for old in spare[: max(0, len(self._decoders) - MAX_OPEN_DECODERS)]:
+            self._decoders.pop(old).close()
 
     def _open(self, media: MediaItem, stream_index: int) -> VideoDecoder | None:
         """素材を開く 控えが使えなければ捨てて、元の素材で開き直す
@@ -1557,6 +1749,8 @@ class FrameRenderer:
         別の素材の控えができるたびに再生中のクリップまで開き直しと
         シークが走り、素材の本数だけ再生が途切れる
         """
+        # 先読みが走ったまま閉じると、走っているスレッドが解放済みのコンテナを触る
+        self._settle_decodes()
         for key in [k for k in self._decoders if media_ids is None or k[0] in media_ids]:
             self._decoders.pop(key).close()
 
