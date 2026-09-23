@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import copy
 import html
+import itertools
 import json
 import shutil
 import subprocess
@@ -648,7 +649,10 @@ def make_tone(target: Path) -> bool:
 
 
 def command_audio_build(arguments: argparse.Namespace) -> int:
-    work: Path = arguments.work
+    # 絶対パスにしてから書く YMM4 はこの道具の作業フォルダを知らないので、
+    # 相対のまま `.ymmp` へ書くと正弦波を見つけられず、全部の枠が無音になる
+    # 無音の書き出しを測ると「再生速度 0 で止まる」「音量の比が 0」と読めてしまう
+    work: Path = arguments.work.resolve()
     work.mkdir(parents=True, exist_ok=True)
     media = work / "audio-probe-tone.wav"
     if not make_tone(media):
@@ -664,6 +668,8 @@ def command_audio_build(arguments: argparse.Namespace) -> int:
     (work / "audio-probe.json").write_text(
         json.dumps(audio_manifest(slots, media), ensure_ascii=False, indent=1), encoding="utf-8"
     )
+    # 前の測り結果は捨てる 残すと、新しい枠の一覧に対応しない表を読んでしまう
+    (work / "audio-report.json").unlink(missing_ok=True)
     print(f"{len(slots)} 枠を並べた（{length} フレーム、{length / FPS:.0f} 秒）")
     video = work / "audio-probe.mp4"
     if video.exists():
@@ -679,8 +685,11 @@ def sample_index(pts: int, start: int | None, time_base: Fraction, rate: int) ->
 
     YMM4 の書き出しは最初の一切れの時刻が 0 から始まらない 時刻をそのまま位置に
     すると、枠がまるごとずれて隣の枠の音を測る
+
+    分数のまま掛ける 先に ``float`` へ落とすと、長い書き出しの終わりの方で
+    丸めが 1 サンプルずれ、そこだけ隣の枠の音が混じる
     """
-    return round(float((pts - (start or 0)) * time_base) * rate)
+    return round((pts - (start or 0)) * time_base * rate)
 
 
 def decode_audio(video: Path) -> tuple[np.ndarray, int] | None:
@@ -703,8 +712,9 @@ def decode_audio(video: Path) -> tuple[np.ndarray, int] | None:
         # 何本の音か）で測り方が変わらないようにする
         resampler = AudioResampler(format="fltp", layout="stereo", rate=rate)
         pieces: list[tuple[int, np.ndarray]] = []
-        frames = list(container.decode(stream))
-        for frame in [*frames, None]:
+        # 1 枚ずつ流す 全部を先に list へ溜めると、長い書き出しで
+        # 復号した音を 2 重に抱えることになる 末尾の None は残りを吐かせる合図
+        for frame in itertools.chain(container.decode(stream), [None]):
             for converted in resampler.resample(frame):
                 if converted.pts is None or converted.time_base is None:
                     continue
@@ -787,9 +797,11 @@ def command_audio_measure(arguments: argparse.Namespace) -> int:
         print(f"YMM4 で {work / 'audio-probe.ymmp'} を開き、そこへ書き出してから走らせてください")
         return 0
 
-    if video.stat().st_mtime < manifest_path.stat().st_mtime:
+    if video.stat().st_mtime <= manifest_path.stat().st_mtime:
         # 探りを作り直したのに書き出しが前のままだと、新しい枠の一覧で
         # 古い音を切り出して、まるで別の条件を測ったような表が出る
+        # 同じ時刻も断る 置き場によっては時刻が 2 秒刻みでしか残らず、
+        # 同じ時刻は「あとで書き出した」証しにならない
         print(f"{video} は探りを作り直す前の書き出しです")
         print(f"YMM4 で {work / 'audio-probe.ymmp'} を開き直し、書き出してから走らせてください")
         return 0
@@ -799,6 +811,11 @@ def command_audio_measure(arguments: argparse.Namespace) -> int:
         print(f"{video} に音の道がありません 音が入る形式で書き出してください")
         return 0
     samples, rate = decoded
+    if samples.shape[1] == 0:
+        # 音の道はあるのに中身が無い書き出し 測ると全部の枠が 0 秒・比 0 になり、
+        # 「再生速度 0 で止まる」と読み違える
+        print(f"{video} の音が空です 音が入る形式で書き出してください")
+        return 0
     fps = int(manifest.get("fps", FPS))
     measured: list[tuple[dict[str, Any], AudioMeasure]] = []
     for entry in manifest["slots"]:

@@ -12,6 +12,7 @@ from __future__ import annotations
 import importlib.util
 import itertools
 import json
+import os
 import sys
 from fractions import Fraction
 from pathlib import Path
@@ -227,14 +228,19 @@ def test_measuring_before_the_export_explains_itself_instead_of_crashing(
     assert "まだ書き出されていません" in capsys.readouterr().out
 
 
-def _manifest_and_video(tool: ModuleType, work: Path) -> Path:
-    """枠の一覧と、中身の無い書き出しを置く 一覧は書き出しより新しくしない"""
+def _manifest_and_video(tool: ModuleType, work: Path, *, newer: int = 60) -> Path:
+    """枠の一覧と、中身の無い書き出しを置く
+
+    書き出しの時刻は ``newer`` 秒だけ先にする 置き場によっては時刻が 2 秒刻みで
+    しか残らず、続けて書くと同じ時刻になって「古い書き出し」と見なされる
+    """
     slots = tool.build_audio_slots()
-    (work / "audio-probe.json").write_text(
-        json.dumps(tool.audio_manifest(slots, work / "tone.wav")), encoding="utf-8"
-    )
+    manifest = work / "audio-probe.json"
+    manifest.write_text(json.dumps(tool.audio_manifest(slots, work / "tone.wav")), encoding="utf-8")
     video = work / "audio-probe.mp4"
     video.write_bytes(b"")
+    stamp = manifest.stat()
+    os.utime(video, (stamp.st_atime + newer, stamp.st_mtime + newer))
     return video
 
 
@@ -246,14 +252,39 @@ def test_an_export_older_than_the_probe_is_refused(
     枠の並びが変わっているのに気付けないので、`Pan` の向きを読み違えたまま
     実装を直してしまう
     """
-    video = _manifest_and_video(tool, tmp_path)
-    manifest = tmp_path / "audio-probe.json"
-    # 書き出しが一覧より 1 分古い状態を作る
-    import os
-
-    os.utime(video, (manifest.stat().st_atime - 60, manifest.stat().st_mtime - 60))
+    _manifest_and_video(tool, tmp_path, newer=-60)
     assert tool.command_audio_measure(SimpleNamespace(work=tmp_path)) == 0
     assert "作り直す前の書き出し" in capsys.readouterr().out
+
+
+def test_an_export_with_the_same_time_as_the_probe_is_refused(
+    tool: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """同じ時刻は「あとで書き出した」証しにならない
+
+    置き場によっては時刻が 2 秒刻みでしか残らず、作り直した直後の書き出しと
+    一覧が同じ時刻になる そこを通すと、古い音を新しい枠で切り出す
+    """
+    _manifest_and_video(tool, tmp_path, newer=0)
+    assert tool.command_audio_measure(SimpleNamespace(work=tmp_path)) == 0
+    assert "作り直す前の書き出し" in capsys.readouterr().out
+
+
+def test_an_export_whose_sound_is_empty_explains_itself(
+    tool: ModuleType,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """音の道はあるが中身が無い書き出しを測ると、全部の枠が 0 秒・比 0 になり
+    「再生速度 0 で止まる」と読み違える
+    """
+    _manifest_and_video(tool, tmp_path)
+    empty = np.zeros((2, 0), dtype=np.float32)
+    monkeypatch.setattr(tool, "decode_audio", lambda _video: (empty, tool.AUDIO_RATE))
+    assert tool.command_audio_measure(SimpleNamespace(work=tmp_path)) == 0
+    assert "音が空です" in capsys.readouterr().out
+    assert not (tmp_path / "audio-report.json").exists()
 
 
 def test_an_export_without_sound_explains_itself(
@@ -278,5 +309,23 @@ def test_the_build_warns_about_a_stale_export(
     """作り直したことに気付かないまま measure へ進むと、古い音を測る"""
     monkeypatch.setattr(tool, "make_tone", lambda target: target.write_bytes(b"") or True)
     (tmp_path / "audio-probe.mp4").write_bytes(b"")
+    (tmp_path / "audio-report.json").write_text("{}", encoding="utf-8")
     assert tool.command_audio_build(SimpleNamespace(work=tmp_path)) == 0
     assert "前の探りの書き出し" in capsys.readouterr().out
+    # 前の測り結果が残ると、新しい枠の一覧に対応しない表を読んでしまう
+    assert not (tmp_path / "audio-report.json").exists()
+
+
+def test_the_probe_writes_an_absolute_path_for_the_tone(
+    tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """相対のまま書くと YMM4 が正弦波を見つけられず、全部の枠が無音になる
+
+    無音を測ると「再生速度 0 で止まる」「音量の比が 0」と読めてしまう
+    """
+    monkeypatch.setattr(tool, "make_tone", lambda target: target.write_bytes(b"") or True)
+    monkeypatch.chdir(tmp_path)
+    assert tool.command_audio_build(SimpleNamespace(work=Path("work"))) == 0
+    raw = (tmp_path / "work" / "audio-probe.ymmp").read_bytes().decode("utf-8-sig")
+    paths = [item["FilePath"] for item in json.loads(raw)["Timelines"][0]["Items"]]
+    assert paths and all(Path(path).is_absolute() for path in paths)
