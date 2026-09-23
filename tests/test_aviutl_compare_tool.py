@@ -104,10 +104,23 @@ class TestSampleProfile:
             assert adjustment["baseline_shift_em"] == 0.0
             assert adjustment["tracking_adjust_em"] == 0.0
 
-    @pytest.mark.skipif(sys.platform != "win32", reason="Windows の書体で確かめる")
-    def test_fonts_are_installed(self, tool: ModuleType) -> None:
-        """無い書体を指すと、AviUtl2 も Sashimono も既定の書体で描き、組み替えが見えない"""
-        assert tool.missing_fonts() == []
+    def test_missing_fonts_are_named(
+        self, tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """無い書体を指すと、AviUtl2 も Sashimono も既定の書体で描き、組み替えが見えない
+
+        その PC に書体が入っているかは機械ごとに違う（CI の英語版 Windows には
+        游明朝もメイリオも無い） 入っているかそのものではなく、足りない物を
+        言い当てられるかを偽の Fonts フォルダで確かめる 言い当てられれば、
+        `profile` がその場で警告を出す
+        """
+        fonts = tmp_path / "Fonts"
+        fonts.mkdir()
+        (_key, first, file), *rest = tool.COMPOSITE_FONTS
+        (fonts / file).write_bytes(b"")
+        monkeypatch.setenv("WINDIR", str(tmp_path))
+        assert tool.missing_fonts() == [family for _k, family, _f in rest]
+        assert first not in tool.missing_fonts()
 
 
 class TestProfileCommand:
