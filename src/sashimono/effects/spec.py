@@ -316,7 +316,12 @@ def _finite_floats(value: tuple[object, ...]) -> list[float] | None:
     for item in value:
         if isinstance(item, bool) or not isinstance(item, int | float):
             return None
-        number = float(item)
+        try:
+            number = float(item)
+        except OverflowError:
+            # Python の整数には桁の上限が無い 10**1000 のような値が保存ファイルに
+            # 入っていると、float へ直す所で落ちて設定画面も描画も開けなくなる
+            return None
         if not math.isfinite(number):
             return None
         numbers.append(number)

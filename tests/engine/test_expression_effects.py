@@ -346,6 +346,10 @@ class TestMeshGrid:
         assert spec.coerce((float("nan"), 2.0, *([0.0] * 8))) == ()
         assert spec.coerce((float("inf"), 2.0, *([0.0] * 8))) == ()
         assert spec.coerce((2.0, 2.0, *empties)) == ()
+        # Python の整数には桁の上限が無い float へ直す所で落ちると、
+        # 設定画面も描画も開けなくなる
+        huge: Any = (10**1000,) * 8
+        assert spec.coerce((2.0, 2.0, *huge)) == ()
 
     def test_a_flat_grid_leaves_the_picture_alone(
         self, gl_context: OffscreenGLContext, processor: EffectProcessor
