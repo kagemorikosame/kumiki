@@ -73,7 +73,10 @@ FORMAT_NAME = "sashimono-project"
 #: 3 で重ね合わせの方法（``settings.blending``）を足した（Issue #65） 2 までの本体は項目を
 #: 知らないので、sRGB で混ぜる作品をリニアで描き、保存し直すと項目ごと消えて見た目が変わる
 #: 黙って変えるより「更新してください」で止める方がよいので、版を上げた
-FORMAT_VERSION = 3
+#: 4 で絵を止める時刻（``Clip.hold_at``）を足した（Issue #115） 3 までの本体は項目を
+#: 知らないので、止めた絵が動き出す（素材の終わりの後は何も映らなくなる）うえ、保存し直すと
+#: 項目ごと消える 3 と同じ理由で版を上げた 3 までのファイルは止めないクリップとして開く
+FORMAT_VERSION = 4
 
 #: プロジェクトファイルの拡張子
 SUFFIX = ".sme"
@@ -454,6 +457,7 @@ def _clip_to_json(clip: Clip) -> dict[str, Any]:
         "source_in": _fraction_to_json(clip.source_in),
         "stream_index": clip.stream_index,
         "speed": _fraction_to_json(clip.speed),
+        "hold_at": _fraction_to_json(clip.hold_at) if clip.hold_at is not None else None,
         "opacity": _param_to_json(clip.opacity),
         "blend_mode": clip.blend_mode,
         "link_group": clip.link_group,
@@ -486,6 +490,8 @@ def _clip_from_json(raw: object) -> Clip:
         raise ProjectFileError(f"opacity がアニメーション値ではない: {opacity!r}")
 
     source_raw = data.get("source")
+    # 版 3 までは項目が無い そのころは絵を止める仕組みが無かったので、止めないで開く
+    hold_raw = data.get("hold_at")
     return Clip(
         timeline_start=_get_int(data, "timeline_start"),
         duration=_get_int(data, "duration"),
@@ -494,6 +500,7 @@ def _clip_from_json(raw: object) -> Clip:
         source_in=_fraction_from_json(data.get("source_in", 0), "source_in"),
         stream_index=_get_int(data, "stream_index", 0),
         speed=_fraction_from_json(data.get("speed", 1), "speed"),
+        hold_at=_fraction_from_json(hold_raw, "hold_at") if hold_raw is not None else None,
         effects=tuple(effect_from_json(e) for e in _get_list(data, "effects")),
         after_effects=tuple(effect_from_json(e) for e in _get_list(data, "after_effects")),
         opacity=opacity,

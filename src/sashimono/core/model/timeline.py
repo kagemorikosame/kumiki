@@ -73,6 +73,20 @@ class Clip:
     stream_index: int = 0
     #: 再生速度 2 なら 2 倍速で、同じ長さに 2 倍のソース範囲が入る
     speed: Fraction = Fraction(1)
+    #: 絵を止める素材の時刻（秒） 読む時刻がここを越えたら、ここの絵を出し続ける
+    #: ``None`` なら止めない（素材の終わりを越えた所は何も映らない）
+    #:
+    #: 素材の長さを越えた所で最後の絵を出し続ける（YMM4 の素材より長い動画アイテム）なら
+    #: 最後のフレームの時刻、頭の絵で止める（YMM4 の再生速度 0）なら ``source_in`` を持つ
+    #: 「止める時刻」ではなく**素材の中の時刻の上限**で持つのは、分割・トリム・速さの
+    #: 変更で ``source_in`` と ``speed`` が変わっても、そのまま写すだけで同じ絵が出るため
+    #: 分割した後半が上限より後から始まれば、後半はずっと止まった絵になる
+    #: クリップの中の経過で持つと、編集の命令がそれぞれ計算し直す必要があり、1 つでも
+    #: 忘れると止まる位置がずれる
+    #:
+    #: **絵だけに効く** 音は止めない（止めた絵の間も素材は進む） YMM4 でも、素材の
+    #: 終わりを越えた所は無音で、再生速度 0 の音は鳴らない（音量 0 で写している）
+    hold_at: Fraction | None = None
     effects: tuple[Effect, ...] = ()
     #: 場面切り替え（生成オブジェクト ``transition``）で、後の場面に掛けるエフェクト
     #: 前の場面には :attr:`effects` が掛かる ほかのクリップでは使わない
@@ -102,6 +116,8 @@ class Clip:
             raise ValueError(f"素材内の開始位置が負: {self.source_in}")
         if self.speed <= 0:
             raise ValueError(f"再生速度は正でなければならない: {self.speed}")
+        if self.hold_at is not None and self.hold_at < 0:
+            raise ValueError(f"絵を止める時刻が負: {self.hold_at}")
         if self.scene_id is not None and (self.media_id is not None or self.source is not None):
             # 両方を持つと、どちらを描くのかが決まらない
             raise ValueError("シーンを置いたクリップは素材や生成オブジェクトを持てない")
@@ -118,6 +134,18 @@ class Clip:
     def source_out(self, rate: FrameRate) -> Fraction:
         """素材内の終了位置（秒、この位置は含まない）"""
         return self.source_in + self.source_duration(rate)
+
+    def picture_time(self, local_frame: int, rate: FrameRate) -> Fraction:
+        """クリップの頭から ``local_frame`` 進んだ所で、絵を素材のどの時刻から取るか
+
+        絵を止めていれば :attr:`hold_at` を越えない 音はこれを使わない（止めない）
+        描画・先読み・タイムラインの絵の並びが同じ式を使う ずれると先読みが当たらず、
+        タイムラインに並ぶ絵とプレビューが食い違う
+        """
+        seconds = self.source_in + local_frame * rate.frame_duration * self.speed
+        if self.hold_at is not None and seconds > self.hold_at:
+            return self.hold_at
+        return seconds
 
     def contains(self, frame: int) -> bool:
         return self.timeline_start <= frame < self.timeline_end

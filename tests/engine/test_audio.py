@@ -286,6 +286,50 @@ class TestMixer:
         # 2 倍速側の 1 サンプルが等倍側の 2 サンプルに対応する
         assert rms(sped) == pytest.approx(rms(normal), rel=0.15)
 
+    def test_a_held_clip_keeps_its_sound_moving(self, audio_project: Project) -> None:
+        """絵を止めた（Issue #115）クリップでも、音は止めずに素材を読み進める
+
+        音まで止めると、止めた時刻のサンプルを伸ばした音（うなり）が鳴る YMM4 でも
+        素材の終わりの後は無音で、再生速度 0 は鳴らない（音量 0 で写している）
+        """
+        track = audio_project.timeline.tracks[0]
+        held = replace(track.clips[0], hold_at=Fraction(0))
+        project = audio_project.with_timeline(
+            audio_project.timeline.replace_track(track.with_clips((held,)))
+        )
+
+        mixer = AudioMixer(project)
+        try:
+            sounded = mixer.render(24000, 4800)
+        finally:
+            mixer.close()
+        mixer = AudioMixer(audio_project)
+        try:
+            normal = mixer.render(24000, 4800)
+        finally:
+            mixer.close()
+
+        assert np.array_equal(sounded, normal)
+
+    def test_a_held_clip_is_silent_past_the_end_of_its_source(self, audio_project: Project) -> None:
+        # 素材 2 秒を 3 秒の枠へ 素材の終わりの後に最後のサンプルを伸ばして鳴らすと、
+        # YMM4 に無い音が出る
+        track = audio_project.timeline.tracks[0]
+        media = audio_project.media[0]
+        held = replace(track.clips[0], duration=90, hold_at=media.duration - Fraction(1, 30))
+        project = audio_project.with_timeline(
+            audio_project.timeline.replace_track(track.with_clips((held,)))
+        )
+
+        mixer = AudioMixer(project)
+        try:
+            # 2.5 秒目から 0.25 秒
+            tail = mixer.render(120000, 12000)
+        finally:
+            mixer.close()
+
+        assert rms(tail) == 0.0
+
     def test_render_frames(self, audio_project: Project) -> None:
         mixer = AudioMixer(audio_project)
         try:

@@ -17,8 +17,10 @@ from pathlib import Path
 
 import pytest
 
+from sashimono.compat.aviutl.report import CompatibilityReport
 from sashimono.compat.catalog import gather_media, place
 from sashimono.compat.mapped import MappedObject
+from sashimono.compat.ymm4.template import map_template
 from sashimono.core.commands import AddTrack, Command
 from sashimono.core.model import (
     AnimatedValue,
@@ -459,3 +461,125 @@ def test_audio_uses_an_existing_track_when_it_is_free_there(files: tuple[Path, P
 
     (track,) = project.timeline.audio_tracks()
     assert len(track.clips) == 2
+
+
+def _held_video(movie_file: Path, clip: Clip) -> MappedObject:
+    """素材の終わりの後も最後の絵を出す印を立てた動画（YMM4 の動画アイテム）"""
+    return replace(
+        media_object(movie_file, "動画ファイル", with_sound=True), clip=clip, hold_last_frame=True
+    )
+
+
+def test_a_video_longer_than_its_source_holds_the_last_picture(tmp_path: Path) -> None:
+    """素材より長い動画は、素材の最後のフレームの時刻で絵を止める（Issue #115）
+
+    素材は 2 秒・30fps なので最後の絵は 59/30 秒 止めないと、素材の終わりから後が
+    何も映らない（YMM4 は最後の絵を枠の終わりまで出す）
+    音のクリップには持たせない 音は素材の終わりの後は無音で、止める物ではない
+    """
+    movie_file = tmp_path / "映像.mp4"
+    movie_file.write_bytes(b"")
+    project = put(
+        [_held_video(movie_file, Clip(timeline_start=0, duration=90))],
+        Project.create(),
+        FakeProbe(),
+    )
+
+    (picture,) = clips_of(project, TrackKind.VIDEO)
+    (heard,) = clips_of(project, TrackKind.AUDIO)
+    assert picture.hold_at == Fraction(59, 30)
+    assert heard.hold_at is None
+
+
+def test_the_offset_counts_toward_running_past_the_end(tmp_path: Path) -> None:
+    # 切り出した位置から先の残りで比べる 素材の長さだけで比べると、途中から使う動画が
+    # 素材の終わりを越えても止まらない
+    movie_file = tmp_path / "映像.mp4"
+    movie_file.write_bytes(b"")
+    clip = Clip(timeline_start=0, duration=45, source_in=Fraction(1))
+    project = put([_held_video(movie_file, clip)], Project.create(), FakeProbe())
+
+    (picture,) = clips_of(project, TrackKind.VIDEO)
+    assert picture.hold_at == Fraction(59, 30)
+
+
+def test_a_video_within_its_source_is_not_held(tmp_path: Path) -> None:
+    # 止まらないクリップに持たせると、設定画面に「絵を止める」が出て何を止めたのか分からない
+    movie_file = tmp_path / "映像.mp4"
+    movie_file.write_bytes(b"")
+    project = put(
+        [_held_video(movie_file, Clip(timeline_start=0, duration=60))],
+        Project.create(),
+        FakeProbe(),
+    )
+
+    (picture,) = clips_of(project, TrackKind.VIDEO)
+    assert picture.hold_at is None
+
+
+def test_a_video_without_the_mark_is_not_held(tmp_path: Path) -> None:
+    # AviUtl の動画ファイルは印を立てない 素材の終わりの後をどう描くかは測っていない
+    movie_file = tmp_path / "映像.mp4"
+    movie_file.write_bytes(b"")
+    unmarked = replace(
+        media_object(movie_file, "動画ファイル"), clip=Clip(timeline_start=0, duration=90)
+    )
+    project = put([unmarked], Project.create(), FakeProbe())
+
+    (picture,) = clips_of(project, TrackKind.VIDEO)
+    assert picture.hold_at is None
+
+
+def test_a_video_of_unknown_length_is_not_held(tmp_path: Path) -> None:
+    """長さの分からない素材（0 と読めた物）は止めない
+
+    どこが最後か決められない 0 から 1 フレーム引くと負になり、クリップが作れず
+    置く所で落ちる
+    """
+    movie_file = tmp_path / "映像.mp4"
+    movie_file.write_bytes(b"")
+
+    def unknown(path: Path) -> MediaItem:
+        return replace(movie(path), duration=Fraction(0))
+
+    objects = [_held_video(movie_file, Clip(timeline_start=0, duration=90))]
+    project = Project.create()
+    plan = gather_media(objects, project, unknown)
+    project = apply(project, [*plan.commands, *place(objects, project, media=plan.media)])
+
+    (picture,) = clips_of(project, TrackKind.VIDEO)
+    assert picture.hold_at is None
+
+
+def test_a_stopped_video_keeps_its_own_hold(tmp_path: Path) -> None:
+    # 再生速度 0 で頭に止めた物を、最後の絵で止め直さない 止める絵が頭から最後へ変わる
+    movie_file = tmp_path / "映像.mp4"
+    movie_file.write_bytes(b"")
+    clip = Clip(timeline_start=0, duration=90, source_in=Fraction(1, 2), hold_at=Fraction(1, 2))
+    project = put([_held_video(movie_file, clip)], Project.create(), FakeProbe())
+
+    (picture,) = clips_of(project, TrackKind.VIDEO)
+    (heard,) = clips_of(project, TrackKind.AUDIO)
+    assert picture.hold_at == Fraction(1, 2)
+    assert heard.hold_at is None
+
+
+def test_a_ymm4_video_longer_than_its_source_is_held_without_a_report(tmp_path: Path) -> None:
+    """YMM4 の動画アイテムを読んで置くまで通す 素材 2 秒・枠 90 フレーム（3 秒）"""
+    movie_file = tmp_path / "映像.mp4"
+    movie_file.write_bytes(b"")
+    item = {
+        "$type": "YukkuriMovieMaker.Project.Items.VideoItem, YukkuriMovieMaker",
+        "FilePath": str(movie_file),
+        "PlaybackRate": 100.0,
+        "ContentOffset": "00:00:00",
+        "IsLooped": False,
+        "Length": 90,
+    }
+    report = CompatibilityReport()
+    objects = map_template([item], report=report)
+    project = put(objects, Project.create(), FakeProbe())
+
+    (picture,) = clips_of(project, TrackKind.VIDEO)
+    assert picture.hold_at == Fraction(59, 30)
+    assert not report.lines()

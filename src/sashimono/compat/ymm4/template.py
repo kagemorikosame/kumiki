@@ -686,13 +686,17 @@ def _map_item(item: dict[str, Any], log: CompatibilityReport) -> MappedObject | 
     effects.extend(final)
 
     speed, silenced = _playback_rate(item, name, log, length=length, keyframes=keyframes)
+    source_in = _content_offset(item, log) if media_path else Fraction(0)
     return MappedObject(
         clip=Clip(
             timeline_start=max(0, int(number(item.get("Frame"), 0.0))),
             duration=length,
             source=source,
-            source_in=_content_offset(item, log) if media_path else Fraction(0),
+            source_in=source_in,
             speed=speed,
+            # 再生速度 0 の動画アイテムは、素材の頭（ContentOffset の位置）の絵で止まる
+            # （:func:`_playback_rate` の測り） 鳴らさない（``silenced``）のは 0 のときだけ
+            hold_at=source_in if silenced and name == "VideoItem" else None,
             effects=tuple(effects),
             opacity=animated(
                 item.get("Opacity"), 100.0, length=length, keyframes=keyframes, scale=0.01
@@ -711,6 +715,12 @@ def _map_item(item: dict[str, Any], log: CompatibilityReport) -> MappedObject | 
         audio_effects=_audio_effects(
             item, name, log, length=length, keyframes=keyframes, silenced=silenced
         ),
+        # 素材より長い動画アイテムは、素材の最後の絵を枠の終わりまで出し続ける
+        # （2026-09-23 YMM4 4.56.1.1 素材 120 フレーム・枠 180 フレームで、0→119 のあと
+        # 119 が 60 回 頭へ戻って繰り返さない） 素材の長さは置く側が素材を読んでから
+        # 分かるので、印だけ立てる 繰り返し（IsLooped）の物は止めずに、繰り返しを写せない
+        # ことを数えて残す（:func:`_audio_effects`） 止めると繰り返すはずの所が止まった絵になる
+        hold_last_frame=name == "VideoItem" and item.get("IsLooped") is not True,
     )
 
 
@@ -847,10 +857,11 @@ def _playback_rate(
     100 で 1.00 倍・50 で 0.50 倍・200 で 2.00 倍と、こちらの ``speed`` と一致したので
     数えない 映像と音で分けないのは、リンクした 2 本の速さが違うと絵と音がずれていくため
 
-    **動画アイテムの 0 は、素材の頭（``ContentOffset`` の位置）の絵で止まる**（同じ測り）
-    こちらには止めた絵を表す仕組みが無い（``speed`` は正の数だけで、止める効果も
-    クリップの持ち方も無い 静止画の素材だけが時刻 0 を読む）ので、絵は等倍で動かし、
-    数えて残す 実物の 0 は 5 個あり、どれも動画アイテム（mp4 4 個・webp 1 個）
+    **動画アイテムの 0 は、素材の頭（``ContentOffset`` の位置）の絵で止まる**（同じ測り
+    枠の 180 フレームすべてが素材の 0 フレーム目） 絵はクリップの
+    :attr:`~sashimono.core.model.Clip.hold_at` を ``source_in`` にして止める（呼ぶ側
+    :func:`_map_item`） ``speed`` は 1 のままなので、音の側は素材を等倍で読むが、
+    音量 0 で鳴らない 実物の 0 は 5 個あり、どれも動画アイテム（mp4 4 個・webp 1 個）
 
     NaN や無限大は分数にできないので、等倍として置き数えて残す
 
@@ -904,8 +915,6 @@ def _playback_rate(
         log.note_missing(f"YMM4 の再生速度（PlaybackRate）が読めない値: {rate!r}")
         return Fraction(1), False
     if rate == 0:
-        if name == "VideoItem":
-            log.note_missing("YMM4 の再生速度 0 の動画の止まった絵（等倍で動かした）")
         return Fraction(1), True
     if rate < 0:
         # 負の値は実物に無く、YMM4 でどう鳴るかも測っていない

@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
+from fractions import Fraction
 from pathlib import Path, PureWindowsPath
 
 from sashimono.compat.aviutl.exo import ExoParseError, load_exo
@@ -378,6 +379,8 @@ def place(
         linked = _media_of(item, known)
         if linked is not None:
             placed = replace(placed, media_id=linked.id)
+            if item.hold_last_frame and placed.hold_at is None:
+                placed = replace(placed, hold_at=_held_at_end(placed, linked, project.rate))
         if item.children:
             placed = replace(
                 placed,
@@ -386,7 +389,9 @@ def place(
                 source_in=item.scene_offset * project.rate.frame_duration,
             )
         if _is_sound(item, known):
-            prepared.append((item, None, _with_audio_effects(placed, item)))
+            # 音だけの素材を読む動画アイテムでも、止めるのは絵だけ 音のクリップには持たせない
+            heard = replace(placed, hold_at=None)
+            prepared.append((item, None, _with_audio_effects(heard, item)))
             continue
         prepared.append((item, *_split_sound(placed, item, linked)))
 
@@ -406,6 +411,29 @@ def place(
         if sound is not None:
             commands.append(AddClip(sound_tracks[id(sound)].id, sound))
     return commands
+
+
+def _held_at_end(clip: Clip, media: MediaItem, rate: FrameRate) -> Fraction | None:
+    """素材の終わりを越えて読むクリップの、最後の絵の時刻 越えなければ ``None``
+
+    越えないクリップに持たせないのは、止まらないのに設定画面へ「絵を止める」が出て、
+    何を止めているのか分からなくなるため
+
+    最後の絵の時刻は、素材の長さから映像のフレーム 1 つ分を引いた所 デコーダは
+    「その時刻を越えない最後のフレーム」を返し、素材の長さちょうどでは何も返さない
+    素材の長さはコンテナの長さなので、映像が音より短い素材でも、映像の最後のフレームより
+    後ろを指すだけで、同じ最後の絵が出る
+
+    長さの分からない素材（0 と読めた物）と静止画は止めない 静止画はもともと
+    いつでも同じ絵で、長さの分からない素材はどこが最後か決められない
+    """
+    if media.is_still or media.duration <= 0 or not media.video_streams:
+        return None
+    if clip.source_out(rate) <= media.duration:
+        return None
+    # 映像のクリップが読むのは最初の映像ストリーム（:func:`_split_sound` と同じ）
+    frame = media.video_streams[0].frame_rate.frame_duration
+    return max(Fraction(0), media.duration - frame)
 
 
 def _with_audio_effects(clip: Clip, item: MappedObject) -> Clip:
@@ -439,6 +467,9 @@ def _split_sound(
         opacity=AnimatedValue(1.0),
         blend_mode="normal",
         clip_to_below=False,
+        # 音は止めない（ミキサーは読まない） 持たせたままだと、音のクリップの設定画面に
+        # 効かない「絵を止める」が出る
+        hold_at=None,
         id=new_clip_id(),
     )
     return picture, sound

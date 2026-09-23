@@ -390,7 +390,9 @@ class SetClipProperty(Command):
 
     #: 変更を許す項目 任意の属性を書き換えられると、位置や長さを
     #: 検査なしで壊せてしまう
-    ALLOWED = ("blend_mode", "speed", "enabled", "stream_index")
+    #: ``hold_at`` はインスペクタの「解除」が ``None`` を書く 止める時刻の値そのものは
+    #: 素材の中の時刻なので、検査はクリップ自身（負を断る）に任せる
+    ALLOWED = ("blend_mode", "speed", "enabled", "stream_index", "hold_at")
 
     @property
     def label(self) -> str:
