@@ -151,7 +151,8 @@ class TemplateDialog(QDialog):
         self._tree.expandAll()
         if not groups:
             self._detail.setText(
-                "テンプレートが見つかりません"
+                # 区切りの空白が無いと、2 つの文が 1 つにつながって読める
+                "テンプレートが見つかりません "
                 "AviUtl2 の Alias フォルダか、YMM4 の ItemTemplate フォルダを探します"
             )
         self._on_selected()

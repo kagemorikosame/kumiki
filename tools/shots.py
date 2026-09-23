@@ -1,4 +1,4 @@
-r"""README に載せる画面写真を、アプリ自身に撮らせる
+r"""README と Wiki に載せる画面写真を、アプリ自身に撮らせる
 
     .venv\Scripts\python.exe tools\shots.py
     .venv\Scripts\python.exe tools\shots.py --list
@@ -46,7 +46,13 @@ from PySide6.QtWidgets import (
 )
 
 from sashimono.ai.host import ToolError
-from sashimono.compat.aviutl.catalog import ScriptCatalog, set_script_catalog
+from sashimono.compat.aviutl.catalog import (
+    PORTABLE_SCRIPTS_DIR,
+    ScriptCatalog,
+    script_catalog,
+    set_script_catalog,
+)
+from sashimono.compat.aviutl.report import CompatibilityReport
 from sashimono.compat.catalog import (
     TemplateCatalog,
     TemplateEntry,
@@ -73,8 +79,10 @@ from sashimono.core.model import (
 from sashimono.core.timebase import FrameRate
 from sashimono.effects.definition import registry
 from sashimono.effects.sources import TEXT
+from sashimono.ui.compat_dialog import CompatibilityDialog
 from sashimono.ui.inspector import InspectorPanel
 from sashimono.ui.main_window import MainWindow
+from sashimono.ui.preferences_dialog import PreferencesDialog
 from sashimono.ui.preview import PreviewWidget
 from sashimono.ui.subtitle import SubtitlePanel
 from sashimono.ui.template_dialog import TemplateDialog
@@ -717,6 +725,49 @@ def _find_entry(roots: tuple[Path, ...], preferred: Sequence[str]) -> TemplateEn
     return _choose(catalog.scan(roots), preferred, _has_text)
 
 
+#: 互換性レポートの写真に並べる記録 （名前, 回数）
+#: 本物のスクリプトを走らせて集めない 配布スクリプトはリポジトリに入れられず、
+#: 撮る機械に何が入っているかで写る物が変わる 名前は README が「大きな穴」として
+#: 挙げている、実際にまだ無い関数にする（在る関数を並べると写真が嘘になる）
+SAMPLE_MISSING = (("obj.getpixeldata", 24), ("obj.putpixeldata", 24))
+
+
+def shot_preferences(context: Context) -> QImage:
+    """〔表示〕→〔設定…〕 既定の値のまま開いたところ"""
+    del context
+    dialog = PreferencesDialog(Preferences())
+    return _grab_dialog(dialog)
+
+
+def compatibility_dialog(context: Context) -> CompatibilityDialog:
+    """写真に出す互換性レポート 見本のスクリプト 1 本と、見本の記録を持つ
+
+    探索先は相対の名前に差し替える 見本のスクリプトは一時フォルダに置くので、
+    そのまま出すと撮った人のユーザー名を含む場所が写真に写る
+    """
+    install_sample_script(context.script_root)
+    script_catalog().roots = (Path(PORTABLE_SCRIPTS_DIR),)
+    report = CompatibilityReport()
+    for name, count in SAMPLE_MISSING:
+        for _ in range(count):
+            report.note_missing(name)
+    return CompatibilityDialog(report)
+
+
+def shot_compat_report(context: Context) -> QImage:
+    """〔互換〕→〔互換性レポート…〕"""
+    return _grab_dialog(compatibility_dialog(context))
+
+
+def _grab_dialog(dialog: QWidget) -> QImage:
+    dialog.show()
+    settle(dialog)
+    image = grab(dialog)
+    dialog.close()
+    QApplication.processEvents()
+    return image
+
+
 SHOTS: tuple[Shot, ...] = (
     Shot("screenshot", "README の先頭（編集画面）", shot_editor),
     Shot("subtitle", "字幕パネル", shot_subtitle),
@@ -728,6 +779,8 @@ SHOTS: tuple[Shot, ...] = (
     Shot("ymm4", "テンプレートを着せたところ", shot_ymm4, needs_media=False),
     Shot("ymm4-shelf", "テンプレートの棚（YMM4）", shot_ymm4_shelf, needs_media=False),
     Shot("ymm4-template", "YMM4 のテンプレートの再現", shot_ymm4_template, needs_media=False),
+    Shot("preferences", "Wiki の設定のページ", shot_preferences, needs_media=False),
+    Shot("compat-report", "Wiki の困ったときのページ", shot_compat_report, needs_media=False),
 )
 
 
