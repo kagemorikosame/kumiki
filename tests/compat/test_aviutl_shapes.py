@@ -13,9 +13,9 @@ from sashimono.compat.aviutl.exo import parse_exo
 from sashimono.compat.aviutl.mapping import map_object
 from sashimono.compat.aviutl.report import CompatibilityReport
 from sashimono.compat.mapped import MappedObject
-from sashimono.core.model import AnimatedValue, GeneratedSource
+from sashimono.core.model import AnimatedValue, GeneratedSource, ParamValue
 from sashimono.core.timebase import FrameRate
-from sashimono.engine.sources import format_time, render_source, timer_text
+from sashimono.engine.sources import format_time, render_source, source_canvas, timer_text
 
 RATE = FrameRate(60)
 
@@ -148,6 +148,159 @@ class TestTheTriangle:
         assert abs(right - expected[3]) <= 2
         # 面積は圧縮で縁がにじむ分だけずれる 1% に収まれば同じ形
         assert abs(area - expected[4]) <= expected[4] * 0.01
+
+
+def _spans(body: str, row: int = 0) -> list[tuple[int, int]]:
+    """1920x1080 に描いた図形の、中心から ``row`` 画素下の行で塗られた帯
+
+    返すのは ``(左端, 右端)`` の並び どちらも画面の中心から測る
+    """
+    image = render_source(_source(body), 1920, 1080)
+    assert image is not None
+    mask = image[540 + row, :, 3] > 128
+    columns = np.nonzero(mask)[0]
+    found: list[tuple[int, int]] = []
+    start = previous = -10
+    for column in columns:
+        if column != previous + 1:
+            if start >= 0:
+                found.append((start - 960, previous - 960))
+            start = int(column)
+        previous = int(column)
+    if start >= 0:
+        found.append((start - 960, previous - 960))
+    return found
+
+
+class TestTheOutline:
+    """AviUtl2 の図形のライン幅は**図形の内側**に引かれる
+
+    ``kumiki_p8_tri_s400_line20`` を AviUtl2 v2.1.6a に 1920x1080 で書き出させて、
+    白い画素の位置を測った 外形は塗りつぶしたときと同じで、中心の行を横に切ると
+    左右それぞれ 24 画素（= 20 / sin 60 度）の帯だった
+    """
+
+    _TRIANGLE = "図形\n図形の種類=三角形\nサイズ=400\n縦横比=0.00\n色=ffffff\nライン幅=20"
+
+    def test_the_outline_does_not_grow_the_shape(self) -> None:
+        # 輪郭の中央に引くと、外形が太さの半分（20 なら約 10 画素）外へ広がり、
+        # 塗りつぶした同じ図形より一回り大きく見える
+        top, bottom, left, right, _ = _bounds(self._TRIANGLE)
+        assert abs(top - -199) <= 2
+        assert abs(bottom - 99) <= 2
+        assert abs(left - -173) <= 2
+        assert abs(right - 172) <= 2
+
+    def test_the_band_lies_inside_the_contour(self) -> None:
+        # 中央に引くと帯が外へずれ、左の帯が -126..-104 まで出る
+        bands = _spans(self._TRIANGLE)
+        assert len(bands) == 2
+        (left_start, left_end), (right_start, right_end) = bands
+        assert abs(left_start - -116) <= 2
+        assert abs(right_end - 115) <= 2
+        assert abs((left_end - left_start + 1) - 24) <= 2
+        assert abs((right_end - right_start + 1) - 24) <= 2
+
+    @pytest.mark.parametrize(
+        ("body", "expected"),
+        [
+            # 四角形 サイズ 400 ライン幅 20 外形は ±200 のまま、帯は内側の 20 画素
+            ("図形\n図形の種類=四角形\nサイズ=400\n色=ffffff\nライン幅=20", (-200, -181, 180, 199)),
+            ("図形\n図形の種類=四角形\nサイズ=400\n色=ffffff\nライン幅=60", (-200, -141, 140, 199)),
+            # 円も同じ 半径 200 の円の内側に帯が入る
+            ("図形\n図形の種類=円\nサイズ=400\n色=ffffff\nライン幅=20", (-200, -180, 179, 199)),
+            ("図形\n図形の種類=円\nサイズ=400\n色=ffffff\nライン幅=60", (-200, -140, 139, 199)),
+        ],
+    )
+    def test_every_shape_draws_the_line_inside(
+        self, body: str, expected: tuple[int, int, int, int]
+    ) -> None:
+        # AviUtl2 v2.1.6a に 1920x1080 で書き出させた kumiki_p9_* を測った値
+        # 中央に引くと外形が太さの半分ぶん広がり、どの図形も一回り大きく見える
+        bands = _spans(body)
+        assert len(bands) == 2
+        measured = (bands[0][0], bands[0][1], bands[1][0], bands[1][1])
+        assert all(abs(a - b) <= 2 for a, b in zip(measured, expected, strict=True)), measured
+
+    def test_the_fan_ring_sits_inside_too(self) -> None:
+        # 扇型（カスタムオブジェクト）の輪も内側 円のときと同じ位置に出る
+        # 中央に引いたままだと見本との差が 6.7 残る（内側にすると 2.0）
+        # 残りの差は輪郭の引き方とは別の所（中心の角の丸め方と 中心角 の基準）
+        bands = _spans("扇型\n中心角=360.0\nサイズ=400.0\nライン幅=40.0\n色=ffffff")
+        assert abs(bands[0][0] - -200) <= 2
+        assert abs(bands[0][1] - -160) <= 2
+        assert abs(bands[-1][0] - 159) <= 2
+        assert abs(bands[-1][1] - 199) <= 2
+
+    def test_the_polygon_keeps_its_centred_line(self) -> None:
+        # 多角形（カスタムオブジェクト）だけは輪郭の中央に引かれる 図形と同じにすると
+        # ±150 の四角形の外形が ±170 から ±150 へ縮む（kumiki_p9_poly_sq_l40 で確かめた）
+        bands = _spans(
+            "多角形\n色=ffffff\nライン幅=40\n頂点数=4\n"
+            "座標=-150,-150,150,-150,150,150,-150,150\n簡易塗り潰し=0"
+        )
+        assert len(bands) == 2
+        assert abs(bands[0][0] - -170) <= 2
+        assert abs(bands[1][1] - 169) <= 2
+
+    def test_the_line_align_comes_from_the_mapping(self) -> None:
+        # ここが落ちると、読み込んだ図形が今までどおり輪郭の中央に線を引く
+        assert _source(self._TRIANGLE).params["line_align"] == "inside"
+
+    @pytest.mark.parametrize("name", ["図形", "扇型"])
+    def test_the_first_generation_keeps_the_centred_line(self, name: str) -> None:
+        # 内側に引くと確かめられたのは AviUtl2 だけ AviUtl1 のファイルにも当てると、
+        # 今まで読めていた絵が測らないまま一回り小さくなる
+        body = f"[0]\nstart=1\nend=30\nlayer=1\n[0.0]\n_name={name}\nサイズ=400\nライン幅=20\n"
+        report = CompatibilityReport()
+        item = map_object(parse_exo(body).objects[0], RATE, report=report)
+        assert item is not None
+        assert item.clip.source is not None
+        assert item.clip.source.params["line_align"] == "center"
+
+    def _native(self, align: str | None) -> int:
+        """Sashimono で作った幅 400 の輪郭だけの四角形の、右端の画素"""
+        params: dict[str, ParamValue] = {
+            "shape": "rect",
+            "width": AnimatedValue(400.0),
+            "height": AnimatedValue(400.0),
+            "color": (1.0, 1.0, 1.0, 1.0),
+            "line_width": AnimatedValue(20.0),
+            "outline_only": True,
+        }
+        if align is not None:
+            params["line_align"] = align
+        image = render_source(GeneratedSource(kind="shape", params=params), 1920, 1080)
+        assert image is not None
+        return int(np.nonzero(image[540, :, 3] > 128)[0].max()) - 960
+
+    def test_a_native_shape_draws_the_line_inside_by_default(self) -> None:
+        # 既定を内側にしたので、幅 400 の図形の外形が 400（±200）になる
+        # 中央のままだと 420（±210）に広がり、指定した幅と見た目が食い違う
+        assert abs(self._native(None) - 199) <= 2
+
+    def test_the_canvas_does_not_grow_for_an_inside_line(self) -> None:
+        # 内側の線は外形を超えないので、絵を太さぶん広げる必要が無い
+        # 広げたままだと、線の太い大きな図形で毎フレーム余分に大きな絵を作る
+        def params(align: str) -> dict[str, ParamValue]:
+            return {
+                "shape": "rect",
+                "width": AnimatedValue(2000.0),
+                "height": AnimatedValue(2000.0),
+                "line_width": AnimatedValue(200.0),
+                "outline_only": True,
+                "line_align": align,
+            }
+
+        inside = source_canvas(GeneratedSource(kind="shape", params=params("inside")), 1920, 1080)
+        centred = source_canvas(GeneratedSource(kind="shape", params=params("center")), 1920, 1080)
+        assert inside[0] < centred[0]
+        # 外形は 2000x2000 の対角線 回しても収まる大きさで足りる
+        assert inside[0] == 2830
+
+    def test_the_centred_line_is_still_available(self) -> None:
+        # 前の版の見た目に戻せること ここが落ちると、古い作品を直す手立てが無くなる
+        assert abs(self._native("center") - 209) <= 2
 
 
 class TestTheFirstGeneration:

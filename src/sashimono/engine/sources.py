@@ -174,6 +174,10 @@ def source_canvas(
     shape_width = max(1.0, float(values.get("width", 400)))  # type: ignore[arg-type]
     shape_height = max(1.0, float(values.get("height", 400)))  # type: ignore[arg-type]
     line = float(values.get("line_width", 0.0))  # type: ignore[arg-type]
+    if str(values.get("line_align", "center")) == "inside":
+        # 内側に引く線は外形を超えない 太さぶん広げたままだと、線の太い大きな図形で
+        # 毎フレーム必要のない大きさの絵を作ることになる
+        line = 0.0
     # 回しても収まるよう、対角線の長さで見積もる
     reach = (shape_width**2 + shape_height**2) ** 0.5 / 2.0 + line
     needed_width = 2.0 * (abs(float(values.get("pos_x", 0.0))) + reach)  # type: ignore[arg-type]
@@ -710,18 +714,40 @@ def _draw_shape(painter: QPainter, values: dict[str, object], width: int, height
 
     color = _color(values.get("color"))
     line_width = float(values.get("line_width", 0.0))  # type: ignore[arg-type]
+    inside = str(values.get("line_align", "center")) == "inside"
 
     if bool(values.get("outline_only", False)):
+        edge = max(line_width, 1.0)
+        if inside:
+            painter.fillPath(_inside_outline(path, edge), color)
+            return
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.setPen(QPen(color, max(line_width, 1.0)))
+        painter.setPen(QPen(color, edge))
         painter.drawPath(path)
         return
 
     painter.fillPath(path, color)
-    if line_width > 0:
+    if line_width > 0 and not inside:
+        # 内側に引くときは塗りつぶしの中に収まるので、引き直す意味が無い
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.setPen(QPen(color, line_width))
         painter.drawPath(path)
+
+
+def _inside_outline(path: QPainterPath, width: float) -> QPainterPath:
+    """輪郭を図形の**内側**だけに引いた形
+
+    AviUtl2 の図形のライン幅は内側に引かれる 外形は塗りつぶしたときと同じで、
+    太さを増やすと内側の穴が小さくなる（三角形 サイズ 400 ライン幅 20 を
+    AviUtl2 に描かせると、外形は塗りつぶしと同じ x±173・y -200..+99 のまま、
+    横に切った線の帯が 24 画素 = 20 / sin60 だった）
+
+    輪郭の中央に太さぶんを引いて図形と重ねる 塗りの上に線を引くやり方では
+    外へ太さの半分（20 なら約 10 画素）はみ出し、図形が一回り大きく見える
+    ``QPainter`` の切り抜き（``setClipPath``）だと外形の縁がぎざぎざになるので、
+    形どうしを重ねてから塗る
+    """
+    return _stroke(path, width).intersected(path)
 
 
 def polyline_points(text: str) -> list[tuple[float, float]]:

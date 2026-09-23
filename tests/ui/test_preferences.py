@@ -16,8 +16,14 @@ from PySide6.QtWidgets import QApplication, QLabel
 from sashimono.core.commands import AddMedia
 from sashimono.core.model import MediaItem, Project, VideoStreamInfo
 from sashimono.core.timebase import FrameRate
+from sashimono.ui.export_dialog import ExportDialog
 from sashimono.ui.main_window import MainWindow
-from sashimono.ui.preferences_dialog import PREFETCH_BUDGETS, PROXY_HEIGHTS, PreferencesDialog
+from sashimono.ui.preferences_dialog import (
+    PIPELINE_DEPTHS,
+    PREFETCH_BUDGETS,
+    PROXY_HEIGHTS,
+    PreferencesDialog,
+)
 from sashimono.ui.workspace import AUTO_QUALITY_HEIGHT, Preferences, PreferenceStore
 
 
@@ -420,6 +426,69 @@ class TestThePrefetchSetting:
         try:
             window._apply_preferences(Preferences(prefetch_budget_mb=512))
             assert window._preview._prefetch_bytes == 512 * 1024 * 1024
+        finally:
+            window.close()
+
+
+class TestTheExportPipelineSetting:
+    """書き出しで、合成と書き込みを何枚ぶん重ねるか（#56）
+
+    速さとメモリの釣り合いなので、機械によって答えが変わる
+    """
+
+    def test_the_default_is_in_the_choices(self) -> None:
+        # 既定が一覧に無いと、設定を開いて閉じただけで値が変わる
+        assert Preferences().export_pipeline_depth in [depth for _, depth in PIPELINE_DEPTHS]
+
+    def test_it_comes_back(self, tmp_path: Path) -> None:
+        """保存して読み直しても同じ 落ちると、起動のたびに設定し直しになる"""
+        store = PreferenceStore(tmp_path / "preferences.json")
+        chosen = Preferences(export_pipeline_depth=0)
+        store.save(chosen)
+        assert store.load() == chosen
+
+    def test_an_absurd_depth_falls_back(self, tmp_path: Path) -> None:
+        """負や大きすぎる値は既定へ 溜め込むだけでメモリを使い切る"""
+        path = tmp_path / "preferences.json"
+        path.write_text('{"export_pipeline_depth": -1}', encoding="utf-8")
+        assert (
+            PreferenceStore(path).load().export_pipeline_depth
+            == Preferences().export_pipeline_depth
+        )
+        path.write_text('{"export_pipeline_depth": 10000}', encoding="utf-8")
+        assert (
+            PreferenceStore(path).load().export_pipeline_depth
+            == Preferences().export_pipeline_depth
+        )
+
+    def test_zero_is_allowed(self, tmp_path: Path) -> None:
+        """0 は「重ねない」 既定へ戻してしまうと、切れない設定になる"""
+        path = tmp_path / "preferences.json"
+        path.write_text('{"export_pipeline_depth": 0}', encoding="utf-8")
+        assert PreferenceStore(path).load().export_pipeline_depth == 0
+
+    def test_the_dialog_shows_what_is_set(self, qt_application: QApplication) -> None:
+        """画面が今の設定を映す 映らないと、開いて OK を押しただけで別の値になる"""
+        del qt_application
+        chosen = Preferences(export_pipeline_depth=0)
+        assert PreferencesDialog(chosen).preferences() == chosen
+
+    def test_the_window_passes_the_depth_on(self, qt_application: QApplication) -> None:
+        """選んだ深さが書き出しの設定まで届く 届かないと、切っても重ねたまま"""
+        del qt_application
+        window = MainWindow(Project.create(), confirm_unsaved=False)
+        try:
+            window._apply_preferences(Preferences(export_pipeline_depth=0))
+            dialog = ExportDialog(
+                window._document.project,
+                pipeline_depth=window._preferences.export_pipeline_depth,
+            )
+            try:
+                settings = dialog._settings()
+                assert settings is not None
+                assert settings.pipeline_depth == 0
+            finally:
+                dialog.close()
         finally:
             window.close()
 
