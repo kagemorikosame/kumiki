@@ -668,6 +668,19 @@ AviUtl の乱数ものは、エイリアスではなくスクリプト（`obj.ra
   `InitializePlugin` → `RegisterPlugin(HOST_APP_TABLE*)` の順で呼び、プラグインが
   `register_script_module_name(表, 名前)` で登録してきた表を受け取る
   **`GetCommonPluginTable` は `InitializePlugin` より後**（実物はそうしないと初期化に失敗する）
+- **読むのは、名前を出すと確かめたプラグインだけ**（`plugin.KNOWN_PROVIDERS`
+  いまは `compositefont` → `comfont.aux2`） 何を登録するかは初期化するまで分からないので、
+  前は `obj.module` が引かれるたびに `Plugin` フォルダの全部を初期化していた テレビ字幕
+  （`TVSubtitle` は `.mod2` のファイル）を描くだけで WhisperAutoSub が Python を起動し、
+  `Plugin\WhisperAutoSub\whisper_subtitle` の `whisper_subtitle.ini`・`temp\probe_env.py`・
+  `whisper_debug.log` を書いていた（Issue #135） 表に無いプラグインのモジュールを使いたい人は
+  `表示 → 設定…` の「AviUtl2 の汎用プラグインを全部読んで探す」で全部を読む作りへ戻せる
+  （既定は切） 見つからなかった名前には、その設定で探せることを互換性レポートに残す
+  表へ足すのは、実物を読んで登録を確かめた物だけ
+- 試験は本人の `Plugin` フォルダを読まない `tests/conftest.py` が既定の置き場と
+  プラグインへ渡す設定の置き場を一時フォルダへ向け、本物の置き場の DLL を読もうとしたら
+  `pytest.fail` で落とす 実物を使う試験は `real_comfont` で `comfont.aux2` だけを
+  一時フォルダへ写して読む（無ければ飛ぶ）
 - `HOST_APP_TABLE` の 29 の窓口は、どれも「登録を受け取るが何もしない」で返す
   編集中のプロジェクトもメニューもこちらには無い
 - `SCRIPT_MODULE_PARAM.edit` は空にしない 空のまま渡すと、編集の情報を見に来た

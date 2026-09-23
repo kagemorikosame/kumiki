@@ -246,6 +246,7 @@ class MainWindow(QMainWindow):
         self._preferences = PreferenceStore().load()
         # 描画と書き出しの両方が見るので、窓を組み立てる前に決めておく
         native.set_enabled(self._preferences.native_modules)
+        plugin.set_scan_all(self._preferences.all_aviutl_plugins)
         #: プレビュー用の控えを作る係 **書き出しには渡さない**
         #: 渡すと、画面では気付かないまま低解像度の絵が最終出力に入る
         self._proxies = ProxyBuilder(ProxyStore(height=self._preferences.proxy_height))
@@ -686,6 +687,10 @@ class MainWindow(QMainWindow):
             # モジュールを捨てないと、切ったあとも同じ表が返り続ける
             plugin.forget()
             # 読む・読まないで絵が変わる 先読みした絵は全部使えない
+            self._preview.refresh_all()
+        if plugin.scan_all() != preferences.all_aviutl_plugins:
+            # 探す範囲が変わると、見つかるモジュールが変わって絵が変わる
+            plugin.set_scan_all(preferences.all_aviutl_plugins)
             self._preview.refresh_all()
         for media in self.view_project.media:
             self._request_proxy(media)

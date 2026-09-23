@@ -123,7 +123,9 @@ class ProbeBatch:
             outcome: MediaItem | BaseException
             try:
                 outcome = self._probe(self._paths[index])
-            except Exception as exc:  # 投げ直すのは results（画面のスレッド）の側
+            # BaseException まで受けて結果に残す 数えずに抜けると finished が真にならず、
+            # 読み込みの表示が消えないまま、後に待つ読み込みも始まらない
+            except BaseException as exc:  # 投げ直すのは results（画面のスレッド）の側
                 outcome = exc
             with self._lock:
                 self._outcomes[index] = outcome

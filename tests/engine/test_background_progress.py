@@ -119,6 +119,8 @@ class TestJobBoard:
         assert board.poll().failed == 1
 
     def test_settling_while_running_keeps_the_count(self) -> None:
+        # 走っている最中に数え直すと、走っている 1 本だけの割合になり、全体の割合が巻き戻って
+        # 「n 本のうち m 本」の数も崩れる
         board = JobBoard()
         board.start("x", A)
         assert not board.settle(board.poll())
@@ -356,6 +358,20 @@ class TestProbeBatch:
         batch = ProbeBatch([tmp_path / "1.mp4"], probe)
         assert _wait(lambda: batch.finished)
         with pytest.raises(ZeroDivisionError):
+            batch.results()
+
+    def test_a_base_exception_still_finishes_the_batch(self, tmp_path: Path) -> None:
+        # Exception だけを受けると、BaseException（試験の pytest.fail など）で係が数えずに
+        # 抜け、finished がずっと偽のまま 読み込みの表示が消えず、後に待つ読み込みも始まらない
+        class Stop(BaseException):
+            pass
+
+        def probe(path: Path) -> MediaItem:
+            raise Stop
+
+        batch = ProbeBatch([tmp_path / "1.mp4"], probe)
+        assert _wait(lambda: batch.finished)
+        with pytest.raises(Stop):
             batch.results()
 
     def test_cancel_skips_what_has_not_started(self, tmp_path: Path) -> None:
