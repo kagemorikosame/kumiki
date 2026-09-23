@@ -187,6 +187,9 @@ def _entries_for(path: Path, root: Path) -> list[TemplateEntry]:
         # 黙って捨てない 捨てると、壊れた・形の違うファイルは棚に出ず、本人は
         # 置いたはずの物が無い理由も分からず、互換の報告にも写せない
         # AviUtl のエイリアスと同じく並べておき、選んだときに理由を出す
+        # 受けるのはファイルの側の事情だけ（ZIP や文字の失敗は load_template が
+        # Ymm4ParseError に変えて渡す） ここで何でも受けると、読み方の誤り（型の
+        # 取り違えなど）まで「ファイルが壊れている」と出て、直すきっかけを失う
         return [
             TemplateEntry(
                 name=path.stem, path=path, folder=path.stem, source="ymm4", error=str(exc)

@@ -25,9 +25,12 @@
 
 from __future__ import annotations
 
+import importlib
 import json
+import lzma
 import math
 import zipfile
+import zlib
 from dataclasses import dataclass, field, replace
 from fractions import Fraction
 from pathlib import Path
@@ -145,17 +148,60 @@ class ItemTemplate:
         return self.path[0] if len(self.path) > 1 else ""
 
 
+def _zstd_errors() -> tuple[type[Exception], ...]:
+    """Zstandard の展開の失敗 Python 3.14 から ZIP の中身に使える
+
+    3.14 より前には無いので名前で引く 3.12 や 3.13 では、Zstandard の中身は
+    ``zipfile`` が「対応していない圧縮方式」（``NotImplementedError``）として断る
+    """
+    try:
+        module = importlib.import_module("compression.zstd")
+    except ImportError:
+        return ()
+    error = getattr(module, "ZstdError", None)
+    return (error,) if isinstance(error, type) and issubclass(error, Exception) else ()
+
+
+#: ZIP の中身を取り出すときに ``zipfile`` が投げうる物のうち、``OSError`` でない物
+#: どれもファイルの側の事情で、ここで「読めない」に変えないと棚の走査ごと落ち、
+#: ほかのテンプレートまで並ばない（``zipfile`` の実装を読んで拾った）
+#:
+#: * ``BadZipFile`` — 目録や見出しが壊れている・CRC が合わない
+#: * ``RuntimeError`` — 暗号化されていてパスワードが要る・展開に要るモジュールが無い
+#: * ``NotImplementedError`` — 対応していない圧縮方式・強い暗号化・ZIP の版が新しすぎる
+#: * ``EOFError`` — 中身が途中で切れている
+#: * ``zlib.error`` ``lzma.LZMAError`` と Zstandard の失敗 — 圧縮された中身が壊れている
+#:   （bz2 の失敗は ``OSError`` で来る）
+#:
+#: ``NotImplementedError`` は ``RuntimeError`` の仲間だが、分けて書いておく
+#: 暗号化と未知の圧縮方式のどちらを受けるつもりかが、並びから読めるように
+_ARCHIVE_ERRORS: tuple[type[Exception], ...] = (
+    zipfile.BadZipFile,
+    RuntimeError,
+    NotImplementedError,
+    EOFError,
+    zlib.error,
+    lzma.LZMAError,
+    *_zstd_errors(),
+)
+
+
 def load_template(path: Path) -> list[ItemTemplate]:
-    """ファイルを読んで、入っているテンプレートの列を返す"""
+    """ファイルを読んで、入っているテンプレートの列を返す
+
+    ファイルの側の事情で読めない物は、どれも :class:`Ymm4ParseError` にして返す
+    棚はこれだけを受けて「読めません」の項目にする 棚の側で何でも受けると、
+    こちらの誤り（型の取り違えなど）まで「ファイルが壊れている」に見えて気付けない
+    """
     target = Path(path)
     try:
         raw = _read_catalog(target)
     except OSError as exc:
         raise Ymm4ParseError(f"開けない: {target} ({exc})") from exc
-    # ZIP の形だけ整って中が壊れている物や、UTF-8 でない物もある どちらも OSError では
-    # ないので、ここで受けないと棚の走査ごと落ち、ほかのテンプレートまで並ばない
-    except zipfile.BadZipFile as exc:
+    except _ARCHIVE_ERRORS as exc:
         raise Ymm4ParseError(f"{target.name}: ZIP として読めない ({exc})") from exc
+    # UTF-8 でない物は ``ValueError`` の仲間で来る OSError ではないので、受けないと
+    # 棚の走査ごと落ちる
     except UnicodeDecodeError as exc:
         raise Ymm4ParseError(f"{target.name}: UTF-8 の文字として読めない ({exc})") from exc
 

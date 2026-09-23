@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from sashimono.compat.catalog import TemplateCatalog, TemplateError, place, restyle
+from sashimono.compat.ymm4.template import Ymm4ParseError, load_template
 from sashimono.core.commands import AddClip, AddEffect, AddTrack, RemoveEffect, SetSource
 from sashimono.core.model import AnimatedValue, Clip, GeneratedSource, Project
 from sashimono.effects import registry
@@ -107,6 +108,29 @@ def _corrupt_zip() -> bytes:
     return bytes(data)
 
 
+def _rewritten_zip(*, flags: int = 0, method: int | None = None) -> bytes:
+    """見出しの汎用フラグと圧縮方式を書き換えた ZIP
+
+    標準の ``zipfile`` は暗号化した物や知らない圧縮方式の物を書けないので、普通に
+    書いてから、ローカルの見出しと中央の目録の両方を書き換える ``zipfile`` は
+    目録の値で展開のしかたを決め、ローカルの見出しとの食い違いも見るので、
+    片方だけでは別の理由（見出しの食い違い）で読めなくなり、狙った道を通らない
+    """
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
+        archive.writestr("catalog.json", json.dumps({"ItemTemplates": []}))
+    data = bytearray(buffer.getvalue())
+    # ローカルの見出しは頭から 6 バイト目に汎用フラグ、8 バイト目に圧縮方式
+    # 中央の目録はそれぞれ 8 バイト目と 10 バイト目
+    for signature, flag_at in ((b"PK\x03\x04", 6), (b"PK\x01\x02", 8)):
+        start = data.index(signature)
+        flag = int.from_bytes(data[start + flag_at : start + flag_at + 2], "little") | flags
+        data[start + flag_at : start + flag_at + 2] = flag.to_bytes(2, "little")
+        if method is not None:
+            data[start + flag_at + 2 : start + flag_at + 4] = method.to_bytes(2, "little")
+    return bytes(data)
+
+
 @pytest.fixture
 def shelf(tmp_path: Path) -> tuple[TemplateCatalog, Path]:
     root = tmp_path / "テンプレート"
@@ -157,6 +181,8 @@ class TestScanning:
             pytest.param("{これは JSON ではない".encode(), id="壊れた JSON"),
             pytest.param(b"\xff\xfe\x00\x81", id="UTF-8 でない"),
             pytest.param(_corrupt_zip(), id="中の壊れた ZIP"),
+            pytest.param(_rewritten_zip(flags=0x1), id="暗号化された ZIP"),
+            pytest.param(_rewritten_zip(method=99), id="知らない圧縮方式の ZIP"),
             pytest.param(json.dumps({"ItemTemplates": []}).encode(), id="中身が空"),
         ],
     )
@@ -177,6 +203,24 @@ class TestScanning:
             broken.load()
         # 読めない物が 1 つあっても、ほかのテンプレートは並ぶ
         assert catalog.find("強調") is not None
+
+    @pytest.mark.parametrize(
+        ("content", "cause"),
+        [
+            pytest.param(_rewritten_zip(flags=0x1), RuntimeError, id="暗号化"),
+            pytest.param(_rewritten_zip(method=99), NotImplementedError, id="知らない圧縮方式"),
+        ],
+    )
+    def test_the_rewritten_zips_fail_where_intended(
+        self, tmp_path: Path, content: bytes, cause: type[Exception]
+    ) -> None:
+        # 書き換えを誤ると、見出しの食い違い（BadZipFile）のような別の理由で読めなく
+        # なり、上の試験は暗号化や圧縮方式を受ける所を通らないまま通ってしまう
+        path = tmp_path / "書き換え.ymmt"
+        path.write_bytes(content)
+        with pytest.raises(Ymm4ParseError) as raised:
+            load_template(path)
+        assert type(raised.value.__cause__) is cause
 
 
 class TestPlacing:
