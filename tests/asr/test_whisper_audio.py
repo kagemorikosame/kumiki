@@ -234,3 +234,15 @@ def test_a_broken_sound_fails_instead_of_passing_silence(
     monkeypatch.setattr(AudioDecoder, "decode_error", property(lambda self: "Invalid data"))
     with pytest.raises(AsrError, match="読めない所がある"):
         _transcribe(sample_av.path, monkeypatch)
+
+
+def test_the_broken_place_is_told_where_it_is(
+    sample_av: SampleMedia, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 読んだ塊の頭を出すと、実際より最大 60 秒手前から読めないように見える
+    monkeypatch.setattr(AudioDecoder, "decode_error", property(lambda self: "Invalid data"))
+    monkeypatch.setattr(
+        AudioDecoder, "decode_error_at", property(lambda self: 45 * WHISPER_SAMPLE_RATE)
+    )
+    with pytest.raises(AsrError, match="音声の 45 秒から先"):
+        _transcribe(sample_av.path, monkeypatch)

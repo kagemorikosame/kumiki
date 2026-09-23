@@ -180,7 +180,10 @@ def _media_audio(source: Path, should_cancel: ShouldCancel | None) -> np.ndarray
                     # 壊れた所から先は無音で返ってくる そのまま渡すと、そこから先の字幕が
                     # 欠けたのに起こしは成功したように見える
                     if decoder.decode_error is not None:
-                        seconds = start / WHISPER_SAMPLE_RATE
+                        # 失敗した位置が分かればそこを出す 読んだ塊の頭を出すと、
+                        # 実際より最大で 1 塊（60 秒）手前から読めないように見える
+                        at = decoder.decode_error_at
+                        seconds = (start if at is None else at) / WHISPER_SAMPLE_RATE
                         raise AsrError(
                             f"音声の {seconds:.0f} 秒から先に読めない所がある: "
                             f"{decoder.decode_error}"

@@ -363,6 +363,10 @@ class TestAudioDecoder:
             sound = decoder.read(0, 48000)
             assert decoder.decode_error is not None
             assert "Invalid data" in decoder.decode_error
+            # 失敗した位置は読めた所の終わり（最初の 1 フレーム分）
+            assert decoder.decode_error_at is not None
+            assert 0 < decoder.decode_error_at < 24000
+            assert float(np.abs(sound[: decoder.decode_error_at]).max()) > 0.0
         # 失敗した所から先は無音
         assert float(np.abs(sound[24000:]).max()) == 0.0
 
