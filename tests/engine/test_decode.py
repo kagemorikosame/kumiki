@@ -25,6 +25,26 @@ from tests.media_fixtures import (
 )
 
 
+def _short_picture(directory: Path) -> Path:
+    """映像 1 秒・音 2 秒の素材 音の方が長い素材の、映像の終わりの後を見るため"""
+    if not libx264_available():
+        pytest.skip("ffmpeg に libx264 が無いので実素材のテストを飛ばす")
+    path = directory / "short-picture.mp4"
+    if not path.exists():
+        subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=30:duration=1",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=2:sample_rate=44100",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+        )  # fmt: skip
+    return path
+
+
 class TestProbe:
     def test_reads_video_and_audio(self, sample_av: SampleMedia) -> None:
         item = probe_media(sample_av.path)
@@ -59,22 +79,7 @@ class TestProbe:
         コンテナの長さだけだと、最後の絵で止める時刻が映像の最後のフレームより後ろになり、
         止めた後もデコーダが毎フレーム終わり付近を読み直す
         """
-        if not libx264_available():
-            pytest.skip("ffmpeg に libx264 が無いので実素材のテストを飛ばす")
-        path = media_dir / "short-picture.mp4"
-        if not path.exists():
-            subprocess.run(
-                [
-                    "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                    "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=30:duration=1",
-                    "-f", "lavfi", "-i", "sine=frequency=440:duration=2:sample_rate=44100",
-                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
-                    str(path),
-                ],
-                check=True,
-                capture_output=True,
-            )  # fmt: skip
-        item = probe_media(path)
+        item = probe_media(_short_picture(media_dir))
         end = item.video_streams[0].end_time
         assert end is not None
         assert float(end) == pytest.approx(1.0, abs=0.05)
@@ -150,6 +155,29 @@ class TestVideoDecoder:
             assert decoder.frame_at(Fraction(6)) is not None
             assert decoder.frame_at(Fraction(7) - Fraction(1, 1000)) is not None
             assert decoder.frame_at(Fraction(8)) is None
+
+    def test_a_late_file_shows_no_picture_where_only_its_sound_goes_on(
+        self, media_dir: Path, tmp_path: Path
+    ) -> None:
+        """頭 5 秒・映像 1 秒・音 2 秒の素材で、映像の終わり（6 秒）の後は絵を出さない
+
+        コンテナの終わり（7 秒）まで出すと、音だけの区間に直前の絵が静止画で残る
+        最後の絵を出し続けたいクリップは ``hold_at`` で止める（Issue #115）
+        """
+        late = make_delayed(tmp_path, "late-short.mp4", _short_picture(media_dir), 5.0)
+        with VideoDecoder(late) as decoder:
+            assert decoder.frame_at(Fraction(11, 2)) is not None
+            assert decoder.frame_at(Fraction(6) - Fraction(1, 1000)) is not None
+            assert decoder.frame_at(Fraction(13, 2)) is None
+
+    def test_a_file_whose_sound_runs_longer_shows_no_picture_after_its_picture_ends(
+        self, media_dir: Path
+    ) -> None:
+        # 頭が 0 の素材も同じ 音だけの区間に最後の絵を出すと、映像トラックに置いた動画が
+        # 映像の終わりの後も止まった絵のまま、下の層を隠し続ける
+        with VideoDecoder(_short_picture(media_dir)) as decoder:
+            assert decoder.frame_at(Fraction(1) - Fraction(1, 1000)) is not None
+            assert decoder.frame_at(Fraction(3, 2)) is None
 
     def test_past_the_end_returns_none(self, sample_av: SampleMedia) -> None:
         with VideoDecoder(sample_av.path) as decoder:
