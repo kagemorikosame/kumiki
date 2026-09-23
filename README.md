@@ -24,7 +24,8 @@ Python 製の動画編集ソフト AviUtl の表現力、Premiere の操作性�
 >   `%LOCALAPPDATA%\Sashimono` へ移します
 > - 配布版の zip は `SashimonoEdit-<版>-windows-x64.zip`、exe は `Sashimono.exe` になりました
 >   前の版の `Kumiki.exe` の隣の `scripts` フォルダへスクリプトを置いていた人は、
->   新しい `Sashimono.exe` の隣の `scripts` へ移してください
+>   〔互換〕→〔スクリプトフォルダを開く〕で開く `%APPDATA%\Sashimono\scripts` へ移してください
+>   exe の隣の `scripts` は、新しい版へフォルダごと入れ替えると中身が消えます
 > - GitHub の置き場も `kagemorikosame/sashimono-edit` へ移りました 前の URL は転送されます
 <!-- 旧名を残す: ここまで -->
 

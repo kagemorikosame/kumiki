@@ -51,11 +51,20 @@ def builder() -> ModuleType:
 
 class TestTheScriptFolderBesideTheExe:
     def test_it_comes_first_in_the_package(self, frozen: Path) -> None:
-        """zip を展開した人が最初に目にする所へ置けば読まれる
+        """同梱の見本と、前の版の案内どおりそこへ置いた人のスクリプトを読み続ける
 
-        ``%APPDATA%`` は隠しフォルダなので、そこだけだと見つけられない
+        外すと、置き場を移していない人のスクリプトが更新の前から読まれなくなる
+        置き場として案内するのは ``%APPDATA%`` の側（Issue #138）
         """
         assert default_script_roots()[0] == frozen.parent / PORTABLE_SCRIPTS_DIR
+
+    def test_the_readme_points_to_the_folder_an_update_keeps(self, builder: ModuleType) -> None:
+        # exe の隣を置き場として案内すると、新しい版へフォルダごと入れ替えた人の
+        # スクリプトが消える 案内は入れ替えても残る %APPDATA% の側にする（Issue #138）
+        text = builder.README_TEXT
+        assert "%APPDATA%\\Sashimono\\scripts" in text
+        assert "スクリプトフォルダを開く" in text
+        assert "中身が消えます" in text
 
     def test_it_is_not_looked_at_in_development(self) -> None:
         # 開発環境で .venv の隣を探しに行くと、関係の無いフォルダを読む

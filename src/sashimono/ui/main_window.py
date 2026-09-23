@@ -1778,15 +1778,19 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"スクリプトを {count} 本読み込んだ", 4000)
 
     def open_script_folder(self) -> None:
-        """スクリプトを置く場所をエクスプローラで開く"""
-        from sashimono.compat.aviutl.catalog import script_catalog
+        """スクリプトを置く場所をエクスプローラで開く
 
-        roots = script_catalog().roots
-        if not roots:
-            self.statusBar().showMessage("スクリプトフォルダが設定されていません", 4000)
+        開くのは ``%APPDATA%\\Sashimono\\scripts``（:func:`userdirs.config_root` の下） 配布版の
+        ``Sashimono.exe`` の隣の ``scripts`` も読むが、新しい版の zip でフォルダごと入れ替えると
+        中身が消える（Issue #138） 置き場として案内するのは、入れ替えても残る側にする
+        ``%APPDATA%`` は隠しフォルダで見つけにくいが、ここから開けばその心配は無い
+        """
+        target = userdirs.config_root() / "scripts"
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            self.statusBar().showMessage(f"スクリプトフォルダを作れなかった: {exc}", 5000)
             return
-        target = roots[0]
-        target.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(target)))
 
     def show_compatibility(self) -> None:
