@@ -119,17 +119,41 @@ def _container_duration(container: av.container.InputContainer, origin: Fraction
     終わりの後なので何も映らない 原点より前の区間は長さから除く 頭が 0 以下の素材は
     もとから原点が 0 なので、長さは変わらない
     """
+    streams = (*container.streams.video, *container.streams.audio)
     if container.duration is not None:
         whole = Fraction(container.duration, av.time_base)
-        start = Fraction(container.start_time or 0, av.time_base)
-        return max(Fraction(0), whole - max(Fraction(0), origin - max(Fraction(0), start)))
+        if container.start_time is not None:
+            start: Fraction | None = Fraction(container.start_time, av.time_base)
+        else:
+            # コンテナが頭を書いていなければ、道の頭の最小で代える どちらも無いときは
+            # 長さの数え始めが分からないので原点を引かない 引くと長さが 0 まで縮み、
+            # 素材を置いてもクリップができない
+            known = [start for start in map(_stream_start, streams) if start is not None]
+            start = min(known) if known else None
+        return max(Fraction(0), _relative_end(start, whole, origin))
 
     longest = Fraction(0)
-    for stream in (*container.streams.video, *container.streams.audio):
+    for stream in streams:
         if stream.duration is not None and stream.time_base is not None:
-            start = max(Fraction(0), _stream_start(stream) or Fraction(0))
-            longest = max(longest, start + Fraction(stream.duration) * stream.time_base - origin)
+            length = Fraction(stream.duration) * stream.time_base
+            longest = max(longest, _relative_end(_stream_start(stream), length, origin))
     return longest
+
+
+def _relative_end(start: Fraction | None, length: Fraction, origin: Fraction) -> Fraction:
+    """頭が ``start`` で長さ ``length`` の区間の終わりを、原点から数えた時刻にする
+
+    頭を 0 に丸めてから原点を引くと、負の頭から始まる音（前置き）と正の映像の頭を
+    持つ素材で、負の区間の分だけ長くなり、終わりに何も無い区間ができる
+    原点が 0 の素材（頭が 0 以下）は、この修正の前と同じく負の頭を 0 に丸める
+    丸めないと、B フレームの並べ替えで頭が負になっていた素材の長さがすべて縮む
+    頭が分からないときは原点から始まるものと見る 0 から始まるものと見ると、
+    原点の分だけ短くなる
+    """
+    if origin <= 0:
+        return max(Fraction(0), start or Fraction(0)) + length
+    head = start if start is not None else origin
+    return head + length - origin
 
 
 def _video_info(
@@ -156,10 +180,13 @@ def _stream_end(stream: av.video.stream.VideoStream, origin: Fraction) -> Fracti
     デコーダと同じく素材の原点（:func:`media_origin`）から数える 道の長さは道の頭から
     数えてあるので、道の頭を足してから原点を引く 映像より早く始まる音がある素材では、
     道の長さそのものとは道の頭と原点の差の分だけ違う（映像の原点では差は 0）
+
+    道の頭が分からないときも ``None`` にして素材の長さで見る 0 から始まるものと見て
+    原点を引くと、原点の分だけ終わりが早まり、最後のフレームより前から絵が出なくなる
     """
-    if stream.duration is None or stream.time_base is None:
+    if stream.duration is None or stream.time_base is None or stream.start_time is None:
         return None
-    start = stream.start_time or 0
+    start = stream.start_time
     end = Fraction(start + stream.duration) * Fraction(stream.time_base) - origin
     return end if end > 0 else None
 

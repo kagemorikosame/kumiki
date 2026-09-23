@@ -12,7 +12,10 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from fractions import Fraction
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
 import pytest
@@ -23,6 +26,7 @@ from sashimono.core.timebase import FrameRate
 from sashimono.engine.audio import AudioMixer, analyze_waveform
 from sashimono.engine.cache.thumbnails import build_filmstrip
 from sashimono.engine.decode import probe_media
+from sashimono.engine.decode.probe import _container_duration, _stream_end, media_origin
 from sashimono.engine.gpu import GLContextError, OffscreenGLContext
 from sashimono.engine.render import FrameRenderer
 from tests.media_fixtures import SampleMedia, make_delayed
@@ -154,3 +158,76 @@ def test_the_waveform_starts_at_the_clip_head(sample_av: SampleMedia, late: Path
     heard = float(np.abs(actual.levels[0].peaks[:per_second]).max())
     assert loudest > 0.01
     assert heard == pytest.approx(loudest, rel=0.05)
+
+
+# 頭の時刻が欠けていたり負だったりする素材（#124 のレビュー） 実物をこの形に作るのは
+# 難しいので、コンテナと道の書いてある値だけを持つ代わりの物で長さの決め方を見る
+
+#: PyAV のコンテナの時刻の刻み（マイクロ秒）
+MICRO = 1_000_000
+
+
+def _stream(start: Fraction | None, length: Fraction, base: Fraction) -> Any:
+    """道の代わり 頭と長さを ``base`` の刻みで持つ"""
+    return SimpleNamespace(
+        start_time=None if start is None else int(start / base),
+        duration=int(length / base),
+        time_base=base,
+    )
+
+
+def _container(
+    start: Fraction | None,
+    length: Fraction | None,
+    video: list[Any],
+    audio: list[Any],
+) -> Any:
+    return SimpleNamespace(
+        start_time=None if start is None else int(start * MICRO),
+        duration=None if length is None else int(length * MICRO),
+        streams=SimpleNamespace(video=video, audio=audio),
+    )
+
+
+def test_a_negative_sound_head_is_not_counted_into_the_length() -> None:
+    # 音の前置きが -0.02 秒・映像の頭が 0.1 秒 負の頭を 0 に丸めると、クリップが
+    # 0.02 秒長くなり、終わりに絵も音も無い区間ができる
+    base = Fraction(1, 1000)
+    video = _stream(Fraction(1, 10), Fraction(2), base)
+    audio = _stream(Fraction(-1, 50), Fraction(212, 100), base)
+    container = _container(Fraction(-1, 50), Fraction(212, 100), [video], [audio])
+    origin = media_origin(container)
+    assert origin == Fraction(1, 10)
+    assert _container_duration(container, origin) == Fraction(2)
+
+
+def test_an_unknown_container_head_does_not_shrink_the_media_away() -> None:
+    # コンテナが頭を書いていないのに原点だけ引くと、長さが 0 まで縮み、置いても
+    # クリップができない
+    base = Fraction(1, 1000)
+    video = _stream(Fraction(5), Fraction(2), base)
+    container = _container(None, Fraction(2), [video], [])
+    assert _container_duration(container, media_origin(container)) == Fraction(2)
+    nothing = _container(None, Fraction(2), [_stream(None, Fraction(2), base)], [])
+    assert _container_duration(nothing, Fraction(5)) == Fraction(2)
+
+
+def test_a_zero_origin_keeps_the_old_length() -> None:
+    # 上の 2 つを直すときに崩しやすい所の押さえ（前の作りでも通る）
+    # B フレームの並べ替えで頭が負の素材は原点 0 で、この修正の前から正しく映っていた
+    # 負の区間を引くと、そういう素材の長さがすべて縮む
+    base = Fraction(1, 1000)
+    video = _stream(Fraction(-1, 25), Fraction(2), base)
+    container = _container(Fraction(-1, 25), Fraction(2), [video], [])
+    assert media_origin(container) == 0
+    assert _container_duration(container, Fraction(0)) == Fraction(2)
+
+
+def test_a_video_stream_without_a_head_falls_back_to_the_media_length() -> None:
+    # 道の頭が無いのに 0 から始まると見て原点を引くと、終わりが原点の分だけ早まり、
+    # 最後のフレームより前から絵が出なくなる
+    base = Fraction(1, 1000)
+    headless = _stream(None, Fraction(2), base)
+    # 原点 1 秒（音の頭から取った）なら、0 から始まると見た終わりは 1 秒で、2 秒の映像の半分で消える
+    assert _stream_end(headless, Fraction(1)) is None
+    assert _stream_end(_stream(Fraction(5), Fraction(2), base), Fraction(5)) == Fraction(2)
