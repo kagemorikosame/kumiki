@@ -181,25 +181,27 @@ def root_markers(
     番号は画面の「探索先」の並びの順 どの印がどの場所かは画面にだけ出し、貼る文には出さない
     """
     markers: list[tuple[str, str]] = []
-    seen: set[str] = set()
+    numbers: dict[str, str] = {}
+    written: set[str] = set()
     for root in roots:
         text = str(root)
-        # 同じ探索先が 2 度並ぶと、印が 2 つ付いて画面（後の印）と貼る文（先の印）で
-        # 食い違い、報告者が印の指す場所を確かめられない 1 つの場所に 1 つの印
-        # 大文字小文字と区切りの違いは同じ場所として扱う（Windows では同じ場所を指す）
-        # 頭の区切り（`\a` と `a` の違い）とドライブは残す 捨てると、絶対の場所と
-        # 同じ名前の相対の場所を同じ物とみなし、片方に印が付かない
-        key = root_key(text)
-        if key in seen:
-            continue
-        seen.add(key)
         # 1 段だけの相対の名前（写真の道具が出す ``scripts`` など）は場所を明かさない
         # 印にすると、文面の中のただの単語まで置き換わる（伏せる側も 1 段は飛ばす）
         if len([part for part in re.split(_SEPARATORS, text) if part]) < 2:
             continue
         if mask_user_folders(text, folders) != text:
             continue
-        markers.append((text, f"<探索先{len(markers) + 1}>"))
+        # 同じ場所には同じ印 印が 2 つ付くと、画面と貼る文で違う印が出て、報告者が
+        # 印の指す場所を確かめられない 同じ場所かは `root_key` で見る
+        key = root_key(text)
+        if key not in numbers:
+            numbers[key] = f"<探索先{len(numbers) + 1}>"
+        # ただし書き方ごとに全部並べる 同じ場所の別の書き方（`..` を含む・大文字小文字
+        # が違う など）を落とすと、そちらは伏せる相手から外れ、貼る文に名前が残る
+        if text in written:
+            continue
+        written.add(text)
+        markers.append((text, numbers[key]))
     return markers
 
 

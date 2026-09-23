@@ -358,7 +358,22 @@ def test_a_search_folder_listed_twice_gets_one_marker() -> None:
     from sashimono.ui.compat_dialog import root_markers
 
     markers = root_markers([r"D:\山田\Script", r"d:/山田/script", r"E:\別\Script"], [])
-    assert [marker for _root, marker in markers] == ["<探索先1>", "<探索先2>"]
+    # 同じ場所の 2 つの書き方は同じ印 別の場所は次の番号
+    assert [marker for _root, marker in markers] == ["<探索先1>", "<探索先1>", "<探索先2>"]
+
+
+def test_every_spelling_of_the_same_folder_is_hidden() -> None:
+    r"""同じ場所の別の書き方をまとめるときに片方を落とすと、そちらが伏せる相手から
+    外れ、`D:\work\..\kagemori\Script` のような書き方で貼る文に名前が残る
+    """
+    from sashimono.ui.compat_dialog import mask_user_folders, root_markers
+
+    plain = r"D:\kagemori\Script"
+    winding = r"D:\work\..\kagemori\Script"
+    markers = root_markers([plain, winding], [])
+    text = mask_user_folders(f"開けない: {winding}\\a.anm2\n開けない: {plain}\\b.anm2", markers)
+    assert "kagemori" not in text.casefold()
+    assert {marker for _root, marker in markers} == {"<探索先1>"}
 
 
 def test_a_rooted_and_a_relative_folder_are_not_merged() -> None:
