@@ -181,13 +181,17 @@ def _stream_end(stream: av.video.stream.VideoStream, origin: Fraction) -> Fracti
     数えてあるので、道の頭を足してから原点を引く 映像より早く始まる音がある素材では、
     道の長さそのものとは道の頭と原点の差の分だけ違う（映像の原点では差は 0）
 
-    道の頭が分からないときも ``None`` にして素材の長さで見る 0 から始まるものと見て
-    原点を引くと、原点の分だけ終わりが早まり、最後のフレームより前から絵が出なくなる
+    道の頭が分からないときは、原点から始まるものと見て道の長さを終わりにする
+    （:func:`_relative_end` と同じ見方） 0 から始まるものと見て原点を引くと、原点の分だけ
+    終わりが早まり、最後のフレームより前から絵が出なくなる 終わりを捨てて素材の長さで
+    見ると、音の方が長い素材で映像の後も音が続く間ずっと最後の絵が残る
     """
-    if stream.duration is None or stream.time_base is None or stream.start_time is None:
+    if stream.duration is None or stream.time_base is None:
         return None
-    start = stream.start_time
-    end = Fraction(start + stream.duration) * Fraction(stream.time_base) - origin
+    length = Fraction(stream.duration) * Fraction(stream.time_base)
+    if stream.start_time is None:
+        return length if length > 0 else None
+    end = Fraction(stream.start_time) * Fraction(stream.time_base) + length - origin
     return end if end > 0 else None
 
 

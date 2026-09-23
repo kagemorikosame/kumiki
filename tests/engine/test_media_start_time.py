@@ -223,11 +223,12 @@ def test_a_zero_origin_keeps_the_old_length() -> None:
     assert _container_duration(container, Fraction(0)) == Fraction(2)
 
 
-def test_a_video_stream_without_a_head_falls_back_to_the_media_length() -> None:
+def test_a_video_stream_without_a_head_ends_at_its_own_length() -> None:
     # 道の頭が無いのに 0 から始まると見て原点を引くと、終わりが原点の分だけ早まり、
-    # 最後のフレームより前から絵が出なくなる
+    # 最後のフレームより前から絵が出なくなる 終わりを捨てて素材の長さで見ると、
+    # 音の方が長い素材で映像の後も最後の絵が残る 原点から始まるものと見て道の長さで切る
     base = Fraction(1, 1000)
     headless = _stream(None, Fraction(2), base)
-    # 原点 1 秒（音の頭から取った）なら、0 から始まると見た終わりは 1 秒で、2 秒の映像の半分で消える
-    assert _stream_end(headless, Fraction(1)) is None
+    assert _stream_end(headless, Fraction(1)) == Fraction(2)
+    assert _stream_end(headless, Fraction(0)) == Fraction(2)
     assert _stream_end(_stream(Fraction(5), Fraction(2), base), Fraction(5)) == Fraction(2)
