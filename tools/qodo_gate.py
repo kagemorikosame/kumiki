@@ -140,29 +140,53 @@ def _matches_base(
     """見たコミットから先頭までに変わったファイルが、どれも main 側と同じ中身か
 
     衝突を手で直したときは、どちらの側とも違う中身になるのでここで落ちる
-    ファイルの中身は blob の SHA で比べる 中身が 1 バイトでも違えば別の SHA になる
+    比べるのは木の項目（実行権限などの種類と、中身の SHA）の組 中身だけで比べると、
+    main と同じ中身のまま実行権限だけを変えた取り込みが、誰も見ないまま通る
     """
     changed = _changed_files(reviewed_sha, head_sha, api)
-    from_base = _changed_files(reviewed_sha, merged_from, api)
-    if changed is None or from_base is None:
+    if changed is None:
         return False
-    return all(from_base.get(name) == blob for name, blob in changed.items())
+    head_tree = _tree(head_sha, api)
+    base_tree = _tree(merged_from, api)
+    if head_tree is None or base_tree is None:
+        return False
+    # 消えたファイルは両方に無い＝どちらも None で一致する
+    return all(head_tree.get(name) == base_tree.get(name) for name in changed)
 
 
-def _changed_files(left: str, right: str, api: Callable[[str], Any]) -> dict[str, str] | None:
-    """2 つのコミットの間で変わったファイルと、その中身の SHA
+def _changed_files(left: str, right: str, api: Callable[[str], Any]) -> set[str] | None:
+    """2 つのコミットの間で変わったファイルの道
 
     比べる API は 1 回に 300 ファイルまでしか返さない 返ってきた数だけを見ると、
     打ち切られた後ろに main 由来でない変更があっても通してしまう そこで頁をめくって
     集め、上限を超えたら ``None``（＝分からないので通さない）を返す
+    名前を変えたファイルは、元の名前も見る 元の側の変更を見落とさないため
     """
-    files: dict[str, str] = {}
+    names: set[str] = set()
     for page in range(1, MAX_MERGED_PAGES + 1):
         batch = api(f"compare/{left}...{right}?per_page={PER_PAGE}&page={page}").get("files") or []
-        files.update({f["filename"]: f["sha"] for f in batch})
+        for entry in batch:
+            names.add(str(entry["filename"]))
+            if entry.get("previous_filename"):
+                names.add(str(entry["previous_filename"]))
         if len(batch) < PER_PAGE:
-            return files
+            return names
     return None
+
+
+def _tree(sha: str, api: Callable[[str], Any]) -> dict[str, tuple[str, str]] | None:
+    """コミットの木 道ごとに（種類, 中身の SHA）
+
+    木が大きすぎて GitHub が切り詰めたときは ``None``（＝分からないので通さない）
+    """
+    tree = api(f"git/trees/{sha}?recursive=1")
+    if tree.get("truncated"):
+        return None
+    return {
+        str(e["path"]): (str(e["mode"]), str(e.get("sha", "")))
+        for e in tree.get("tree") or []
+        if e.get("type") == "blob"
+    }
 
 
 def last_base_change(events: list[dict[str, Any]]) -> datetime | None:

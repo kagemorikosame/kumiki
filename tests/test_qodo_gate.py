@@ -116,22 +116,45 @@ class TestMergingTheBase:
         commits: dict[str, list[str]],
         in_base: set[str],
         compares: dict[str, list[dict[str, str]]],
+        trees: dict[str, dict[str, tuple[str, str]]] | None = None,
     ) -> object:
         """GitHub の API の代わり 比べる向きも本物と同じにする
 
         ``compare/{base}...{sha}`` は右側が左側から見てどうかを返す 向きを取り違えたまま
         通る作りにしないよう、試験の側も本物の向きで答える
+        木を渡さないときは、比べた結果の中身の SHA から木を作る（種類はどれも同じ）
         """
+        trees = trees or {}
+
+        def files_of(pair: str) -> list[dict[str, str]]:
+            return compares.get(pair, [])
 
         def call(path: str) -> dict[str, object]:
             if path.startswith("commits/"):
                 return {"parents": [{"sha": s} for s in commits[path.split("/", 1)[1]]]}
+            if path.startswith("git/trees/"):
+                sha = path.removeprefix("git/trees/").split("?")[0]
+                entries = trees.get(sha)
+                if entries is None:
+                    # 木を渡していないときは、その側の比べた結果から組み立てる
+                    entries = {
+                        f["filename"]: ("100644", f["sha"])
+                        for pair, listed in compares.items()
+                        if pair.endswith(f"...{sha}")
+                        for f in listed
+                    }
+                return {
+                    "tree": [
+                        {"path": name, "type": "blob", "mode": mode, "sha": blob}
+                        for name, (mode, blob) in entries.items()
+                    ]
+                }
             pair = path.removeprefix("compare/").split("?")[0]
             left, right = pair.split("...")
             if left in ("main", "master"):
                 return {"status": "behind" if right in in_base else "ahead"}
             page = int(path.split("page=")[-1]) if "page=" in path else 1
-            files = compares.get(pair, [])
+            files = files_of(pair)
             per_page = 100
             return {"files": files[(page - 1) * per_page : page * per_page]}
 
@@ -147,7 +170,11 @@ class TestMergingTheBase:
                 f"{self.BRANCH}...{self.MAIN}": [{"filename": "a.py", "sha": "aa"}],
             },
         )
-        assert gate.only_base_merges_since(self.MERGE, "main", lambda s: s == self.BRANCH, call)
+        # 返す SHA まで見る 別のコミットを返す作りに変わると、判定の説明文も間違える
+        assert (
+            gate.only_base_merges_since(self.MERGE, "main", lambda s: s == self.BRANCH, call)
+            == self.BRANCH
+        )
 
     def test_a_commit_of_its_own_does_not_pass(self, gate: ModuleType) -> None:
         # 自分のコミットが積まれていれば、Qodo の見ていない中身が入っている
@@ -203,7 +230,11 @@ class TestMergingTheBase:
                 f"{self.BRANCH}...{self.MAIN}": [{"filename": "a.py", "sha": "aa"}],
             },
         )
-        assert gate.only_base_merges_since(self.MERGE, "main", lambda s: s == self.BRANCH, call)
+        # 返す SHA まで見る 別のコミットを返す作りに変わると、判定の説明文も間違える
+        assert (
+            gate.only_base_merges_since(self.MERGE, "main", lambda s: s == self.BRANCH, call)
+            == self.BRANCH
+        )
 
     def test_a_branch_outside_main_is_not_taken_as_merged(self, gate: ModuleType) -> None:
         # 比べる向きを取り違えると、main より先にある未レビューの枝を取り込んだ PR が通る
@@ -220,3 +251,32 @@ class TestMergingTheBase:
             {f"{self.BRANCH}...{self.MERGE}": many, f"{self.BRANCH}...{self.MAIN}": many},
         )
         assert not gate.only_base_merges_since(self.MERGE, "main", lambda s: s == self.BRANCH, call)
+
+    def test_changing_only_the_file_mode_does_not_pass(self, gate: ModuleType) -> None:
+        # 中身の SHA だけで比べると、main と同じ中身のまま実行権限を変えた取り込みが、
+        # 誰も見ないまま通る
+        call = self.api(
+            {self.MERGE: [self.BRANCH, self.MAIN]},
+            {self.MAIN},
+            {
+                f"{self.BRANCH}...{self.MERGE}": [{"filename": "a.py", "sha": "aa"}],
+                f"{self.BRANCH}...{self.MAIN}": [{"filename": "a.py", "sha": "aa"}],
+            },
+            trees={
+                self.MERGE: {"a.py": ("100755", "aa")},
+                self.MAIN: {"a.py": ("100644", "aa")},
+            },
+        )
+        assert not gate.only_base_merges_since(self.MERGE, "main", lambda s: s == self.BRANCH, call)
+
+    def test_a_truncated_tree_does_not_pass(self, gate: ModuleType) -> None:
+        # 木が切り詰められたら、見えていない所は分からない 分からない物は通さない
+        call = self.api({self.MERGE: [self.BRANCH, self.MAIN]}, {self.MAIN}, {})
+
+        def truncated(path: str) -> dict[str, object]:
+            answer = call(path)  # type: ignore[operator]
+            return {"truncated": True} if path.startswith("git/trees/") else answer
+
+        assert not gate.only_base_merges_since(
+            self.MERGE, "main", lambda s: s == self.BRANCH, truncated
+        )
