@@ -263,6 +263,7 @@ class MainWindow(QMainWindow):
             self,
             proxies=self._proxies.store if self._preferences.use_proxy else None,
             prefetch_bytes=self._preferences.prefetch_bytes(),
+            decode_threads=self._preferences.decode_threads,
         )
         self._transport = TransportBar(project.rate, self)
         self._timeline = TimelineView(project, self._analyzer, self)
@@ -598,6 +599,7 @@ class MainWindow(QMainWindow):
             self._proxies = ProxyBuilder(ProxyStore(height=preferences.proxy_height))
         self._preview.set_proxies(self._proxies.store if preferences.use_proxy else None)
         self._preview.set_prefetch_bytes(preferences.prefetch_bytes())
+        self._preview.set_decode_threads(preferences.decode_threads)
         if native.enabled() != preferences.native_modules:
             native.set_enabled(preferences.native_modules)
             # 読む・読まないで絵が変わる 先読みした絵は全部使えない
@@ -1380,6 +1382,7 @@ class MainWindow(QMainWindow):
             self._document.project,
             self,
             pipeline_depth=self._preferences.export_pipeline_depth,
+            decode_threads=self._preferences.decode_threads,
         ).exec()
 
     # --- AviUtl 互換 ---

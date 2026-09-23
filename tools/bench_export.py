@@ -17,6 +17,9 @@ r"""書き出しの重さの内訳を測る（Issue #56 の 1 と 2）
 パイプラインの深さを変えて測り、出来上がったファイルのフレームが
 一致するかまで見る
 
+``--decode-threads 1`` でレイヤーごとの並列デコードを切れる 並べた場合と
+比べるとき（同じ機械・同じ素材で 2 回回す）に使う
+
 ffmpeg が無いか GPU が使えない環境では、何も測らずに終わる（終了コード 0）
 """
 
@@ -72,7 +75,11 @@ from sashimono.engine.encode import (  # noqa: E402
     export_project,
 )
 from sashimono.engine.gpu import GLContextError, OffscreenGLContext  # noqa: E402
-from sashimono.engine.render import FULL_QUALITY, FrameRenderer  # noqa: E402
+from sashimono.engine.render import (  # noqa: E402
+    DEFAULT_DECODE_THREADS,
+    FULL_QUALITY,
+    FrameRenderer,
+)
 
 
 def _make_source(
@@ -150,14 +157,19 @@ def _measure(step: Callable[[], None], frames: int) -> list[float]:
 
 
 def breakdown(
-    project: Project, context: OffscreenGLContext, codec: str, frames: int, output: Path
+    project: Project,
+    context: OffscreenGLContext,
+    codec: str,
+    frames: int,
+    output: Path,
+    threads: int,
 ) -> dict[str, list[float]]:
     """1 フレームの内訳（ミリ秒） 書き出しと同じ順序で 1 段ずつ測る
 
     合成のあとに ``glFinish`` を入れる 入れないと命令を投げた時間だけを測り、
     実際の待ちが読み戻しの側へ寄って見える
     """
-    renderer = FrameRenderer(project, context=context, quality=FULL_QUALITY)
+    renderer = FrameRenderer(project, context=context, quality=FULL_QUALITY, decode_threads=threads)
     width, height = project.settings.resolution
     container = av.open(str(output), mode="w")
     # 書き出しの本体（_FrameWriter）と同じく、swscale の表を使い回す
@@ -232,14 +244,21 @@ def breakdown(
 
 
 def decode_by_layers(
-    sources: list[Path], width: int, height: int, frames: int, context: OffscreenGLContext
+    sources: list[Path],
+    width: int,
+    height: int,
+    frames: int,
+    context: OffscreenGLContext,
+    threads: int,
 ) -> None:
     """レイヤー数ごとの合成時間 1 枚ずつ増やして、増え方を見る"""
     print("\nレイヤー数ごとの合成（読み戻しを含まない GPU 合成 デコードはこの中）")
     previous = 0.0
     for count in range(1, len(sources) + 1):
         project = _project(sources[:count], width, height, frames + 2)
-        renderer = FrameRenderer(project, context=context, quality=FULL_QUALITY)
+        renderer = FrameRenderer(
+            project, context=context, quality=FULL_QUALITY, decode_threads=threads
+        )
         number = [0]
         try:
 
@@ -319,7 +338,12 @@ def _frames_of(path: Path, limit: int) -> list[np.ndarray]:
 
 
 def compare_pipeline(
-    project: Project, codec: str, frames: int, directory: Path, depths: list[int]
+    project: Project,
+    codec: str,
+    frames: int,
+    directory: Path,
+    depths: list[int],
+    threads: int,
 ) -> None:
     """パイプラインの深さを変えて書き出し、時間と中身を比べる"""
     print("\n書き出し全体（パイプラインの深さごと）")
@@ -331,6 +355,7 @@ def compare_pipeline(
             video_codec=codec,
             frame_range=(0, frames),
             pipeline_depth=depth,
+            decode_threads=threads,
         )
         started = time.perf_counter()
         export_project(project, settings)
@@ -361,14 +386,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--layers", type=int, default=3, help="重ねる素材の枚数")
     parser.add_argument("--codec", default=None, help="使う映像コーデック 既定は先頭の候補")
     parser.add_argument(
+        "--decode-threads",
+        type=int,
+        default=DEFAULT_DECODE_THREADS,
+        help="レイヤーごとの並列デコードのスレッド数 1 で並べない",
+    )
+    parser.add_argument(
         "--compare",
         action="store_true",
         help="書き出しそのものを、パイプラインの深さを変えて測って比べる",
     )
     arguments = parser.parse_args(argv)
-    for name in ("width", "height", "frames", "layers"):
+    for name in ("width", "height", "frames", "layers", "decode_threads"):
         if getattr(arguments, name) <= 0:
-            parser.error(f"--{name} は 1 以上にしてください")
+            parser.error(f"--{name.replace('_', '-')} は 1 以上にしてください")
 
     if shutil.which("ffmpeg") is None:
         print("ffmpeg が無いので測れない")
@@ -378,6 +409,7 @@ def main(argv: list[str] | None = None) -> int:
         print("使える映像コーデックが無いので測れない")
         return 0
     codec = arguments.codec or codecs[0]
+    threads = arguments.decode_threads
 
     seconds = max(2.0, (arguments.frames + 4) / 30)
     # 層ごとに別のファイルにする 同じファイルだとレンダラがデコーダを使い回し、
@@ -403,24 +435,29 @@ def main(argv: list[str] | None = None) -> int:
 
     print(
         f"素材 {arguments.width}x{arguments.height} testsrc2 30fps を {arguments.layers} 枚重ね / "
-        f"{arguments.frames} 枚 / コーデック {codec}"
+        f"{arguments.frames} 枚 / コーデック {codec} / "
+        f"デコードの並列 {threads} 本"
     )
     project = _project(sources, arguments.width, arguments.height, arguments.frames + 2)
     try:
-        times = breakdown(project, context, codec, arguments.frames, _base / "breakdown.mp4")
+        times = breakdown(
+            project, context, codec, arguments.frames, _base / "breakdown.mp4", threads
+        )
         print("\n1 フレームの内訳")
         total = sum(sum(values) for values in times.values())
         for name, values in times.items():
             share = sum(values) / total * 100 if total else 0.0
             print(f"  {name:<8} {_summary(values)}  {share:5.1f} %")
         print(f"  {'合計':<8} {total / arguments.frames:6.2f} ms/枚")
-        decode_by_layers(sources, arguments.width, arguments.height, arguments.frames, context)
+        decode_by_layers(
+            sources, arguments.width, arguments.height, arguments.frames, context, threads
+        )
     finally:
         context.release()
 
     gil_release(sources, min(arguments.frames, 30))
     if arguments.compare:
-        compare_pipeline(project, codec, arguments.frames, _base, [0, 2, 4])
+        compare_pipeline(project, codec, arguments.frames, _base, [0, 2, 4], threads)
     return 0
 
 

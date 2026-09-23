@@ -18,6 +18,7 @@ from PySide6.QtWidgets import QMainWindow
 
 from sashimono.core import userdirs
 from sashimono.engine.encode import DEFAULT_PIPELINE_DEPTH, MAX_PIPELINE_DEPTH
+from sashimono.engine.render import DEFAULT_DECODE_THREADS, MAX_DECODE_THREADS
 
 __all__ = [
     "AUTO_QUALITY_HEIGHT",
@@ -155,6 +156,12 @@ class Preferences:
     #: メモリの少ない機械では減らせるようにする 実測は
     #: :data:`sashimono.engine.encode.MEASURED_EXPORT_MS`
     export_pipeline_depth: int = DEFAULT_PIPELINE_DEPTH
+    #: 重ねたレイヤーの映像デコードを、同時にいくつまで走らせるか 1 で並べない
+    #: PyAV のデコードは GIL を解放するので、別の素材どうしなら本当に重なる
+    #: 既定は 4 デコード中の絵を素材の数だけ抱えるので（4K で 1 枚 33MB）、
+    #: メモリの少ない機械では減らせるようにする 実測は
+    #: :data:`sashimono.engine.encode.MEASURED_DECODE_MS`
+    decode_threads: int = DEFAULT_DECODE_THREADS
     #: AviUtl2 のスクリプトモジュール（``.mod2`` の中身が DLL の物）を読む
     #: 既定は入 テレビ字幕のように、DLL が無いと絵が出ない配布スクリプトがある
     #: 読んだ DLL は Sashimono と同じ権限で動く（Lua の閉じ込めの外） 読むのは
@@ -214,6 +221,7 @@ class PreferenceStore:
             export_pipeline_depth=_depth(
                 data.get("export_pipeline_depth"), plain.export_pipeline_depth
             ),
+            decode_threads=_threads(data.get("decode_threads"), plain.decode_threads),
             native_modules=_flag(data.get("native_modules"), plain.native_modules),
         )
 
@@ -260,6 +268,17 @@ def _depth(value: object, default: int) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         return default
     return value if 0 <= value <= MAX_PIPELINE_DEPTH else default
+
+
+def _threads(value: object, default: int) -> int:
+    """デコードの並列数 範囲の外は既定へ戻す
+
+    0 や負だと走り係がスレッドを 1 本も作れず、先読みを頼んだ所で返らなくなる
+    大きすぎてもデコーダの本数（:data:`MAX_DECODE_THREADS`）より相手がいない
+    """
+    if not isinstance(value, int) or isinstance(value, bool):
+        return default
+    return value if 1 <= value <= MAX_DECODE_THREADS else default
 
 
 def _divisor(value: object, default: int) -> int:

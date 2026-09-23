@@ -18,6 +18,7 @@ from sashimono.core.model import MediaId, Project
 from sashimono.engine.cache.proxy import ProxyStore
 from sashimono.engine.gpu import CurrentGLContext
 from sashimono.engine.render import (
+    DEFAULT_DECODE_THREADS,
     FULL_QUALITY,
     FrameRenderer,
     Invalidation,
@@ -62,6 +63,7 @@ class PreviewWidget(QOpenGLWidget):
         *,
         proxies: ProxyStore | None = None,
         prefetch_bytes: int = 0,
+        decode_threads: int = DEFAULT_DECODE_THREADS,
     ) -> None:
         super().__init__(parent)  # type: ignore[arg-type]
         self._project = project
@@ -72,6 +74,8 @@ class PreviewWidget(QOpenGLWidget):
         self._proxies = proxies
         #: 先読みに使えるバイト数 0 なら先読みしない
         self._prefetch_bytes = max(0, prefetch_bytes)
+        #: レイヤーごとの並列デコードのスレッド数 GL を作る前に決まっていることがある
+        self._decode_threads = decode_threads
         self._cache: PreviewCache | None = None
         #: まだ置き場へ渡していないメモリの量 GL を確実に使える所で渡す
         self._pending_budget: int | None = None
@@ -208,6 +212,18 @@ class PreviewWidget(QOpenGLWidget):
         self.update()
         self._restart_prefetch()
 
+    def set_decode_threads(self, threads: int) -> None:
+        """レイヤーごとの並列デコードのスレッド数を変える 1 で並べない
+
+        GL を触らないので、その場でレンダラへ渡してよい まだ GL ができていない
+        （``initializeGL`` の前）なら、覚えておいて作るときに渡す
+        """
+        if threads == self._decode_threads:
+            return
+        self._decode_threads = threads
+        if self._renderer is not None:
+            self._renderer.set_decode_threads(threads)
+
     def set_playing(self, playing: bool) -> None:
         """再生中かどうか 再生中は先読みを止める"""
         self._playing = playing
@@ -244,6 +260,7 @@ class PreviewWidget(QOpenGLWidget):
             context=CurrentGLContext(),
             quality=self._quality,
             proxies=self._proxies,
+            decode_threads=self._decode_threads,
         )
         self._cache = PreviewCache(self._renderer, budget_bytes=self._prefetch_bytes)
         self._image_watch.start()

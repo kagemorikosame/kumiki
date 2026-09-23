@@ -35,6 +35,7 @@ from sashimono.engine.encode import (
     available_video_codecs,
 )
 from sashimono.engine.encode import export_project as run_export
+from sashimono.engine.render import DEFAULT_DECODE_THREADS
 
 __all__ = ["ExportDialog"]
 
@@ -94,6 +95,7 @@ class ExportDialog(QDialog):
         parent: QWidget | None = None,
         *,
         pipeline_depth: int = DEFAULT_PIPELINE_DEPTH,
+        decode_threads: int = DEFAULT_DECODE_THREADS,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("書き出し")
@@ -104,6 +106,7 @@ class ExportDialog(QDialog):
         # 画面には出さない 書き出しごとに変える物ではなく、その機械の持ち物なので
         # 本人の設定（表示 → 設定…）から来る
         self._pipeline_depth = pipeline_depth
+        self._decode_threads = decode_threads
         self._thread: QThread | None = None
         self._worker: _ExportWorker | None = None
 
@@ -188,6 +191,7 @@ class ExportDialog(QDialog):
             video_codec=str(codec) or None,
             video_bitrate=self._bitrate.value() * 1_000_000,
             pipeline_depth=self._pipeline_depth,
+            decode_threads=self._decode_threads,
         )
 
     def _start(self) -> None:

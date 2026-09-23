@@ -116,6 +116,22 @@ class TestCompositor:
         assert result[8, 8, 0] == pytest.approx(expected, abs=2)
         assert result[8, 8, 0] > 80, "符号化されたまま混ざっている"
 
+    def test_reading_back_keeps_the_top_row_on_top(self, gl_context: OffscreenGLContext) -> None:
+        # GL は左下から行を返す 上下を返し忘れると、書き出した動画が丸ごと逆さまになる
+        # 読み戻しは GPU 側で返しているので、ここが唯一それを押さえる所
+        with gl_context:
+            compositor = Compositor(8, 8)
+            texture = Texture.from_array(solid(8, 8, (255, 0, 0)))
+            compositor.begin((0.0, 0.0, 1.0, 1.0))
+            # 上半分だけ赤で塗る 画面の Y は下が正なので、上端が 0
+            compositor.draw(texture, placement=Placement(0.0, 0.0, 8.0, 4.0))
+            result = compositor.read()
+            compositor.release()
+            texture.release()
+
+        assert result[1, 4, :3].tolist() == [255, 0, 0], "上下が逆さまになっている"
+        assert result[6, 4, 0] < 128, "上下が逆さまになっている"
+
     def test_layers_stack_in_draw_order(self, gl_context: OffscreenGLContext) -> None:
         with gl_context:
             compositor = Compositor(16, 16)

@@ -24,11 +24,16 @@ from sashimono.engine.cache.proxy import (
     MEASURED_PREFETCH_MS,
     MEASURED_THREE_LAYERS_MS,
 )
-from sashimono.engine.encode import MEASURED_EXPORT_MS, MEASURED_EXPORT_TOTAL_MS
+from sashimono.engine.encode import (
+    MEASURED_DECODE_MS,
+    MEASURED_EXPORT_MS,
+    MEASURED_EXPORT_TOTAL_MS,
+)
 from sashimono.engine.render.prefetch import BYTES_PER_FRAME_PIXEL
 from sashimono.ui.workspace import Preferences
 
 __all__ = [
+    "DECODE_THREADS",
     "PIPELINE_DEPTHS",
     "PREFETCH_BUDGETS",
     "PROXY_HEIGHTS",
@@ -63,6 +68,15 @@ PIPELINE_DEPTHS: tuple[tuple[str, int], ...] = (
     ("重ねない（1 枚ずつ）", 0),
     ("2 枚先まで（既定）", 2),
     ("4 枚先まで", 4),
+)
+
+#: 重ねたレイヤーの映像デコードを、同時にいくつまで走らせるか
+#: 1 なら並べない 相手になるのは**別の素材**なので、重ねた枚数より多くしても効かない
+DECODE_THREADS: tuple[tuple[str, int], ...] = (
+    ("並べない（1 本ずつ）", 1),
+    ("2 本まで", 2),
+    ("4 本まで（既定）", 4),
+    ("8 本まで", 8),
 )
 
 
@@ -146,6 +160,18 @@ class PreferencesDialog(QDialog):
         )
         form.addRow("書き出しの先読み", self._pipeline_depth)
 
+        self._decode_threads = QComboBox(self)
+        for label, threads in DECODE_THREADS:
+            self._decode_threads.addItem(label, threads)
+        self._select(self._decode_threads, preferences.decode_threads)
+        self._decode_threads.setToolTip(
+            "重ねたクリップの映像デコードを、素材ごとに分けて同時に走らせる "
+            "並べられるのは別の素材どうしだけなので、重ねた枚数より多くしても増えない "
+            "デコード中の絵を素材の数だけ抱える（4K で 1 枚 33MB）ので、"
+            "メモリの少ない機械では減らす 書き出しとプレビューの両方に効く"
+        )
+        form.addRow("レイヤーの並列デコード", self._decode_threads)
+
         self._native_modules = QCheckBox("AviUtl2 のスクリプトモジュール（DLL）を読み込む", self)
         self._native_modules.setChecked(preferences.native_modules)
         self._native_modules.setToolTip(
@@ -163,6 +189,7 @@ class PreferencesDialog(QDialog):
         filling, showing = MEASURED_PREFETCH_MS
         compose, readback, convert, muxing = MEASURED_EXPORT_MS
         serial_ms, pipelined_ms = MEASURED_EXPORT_TOTAL_MS
+        one_thread, many_threads = MEASURED_DECODE_MS
         note = QLabel(
             f"4K を 3 枚重ねたときの実測（1 コマ {BUDGET_MS:.1f}ms が 60fps の目安）\n"
             f"元のまま {plain}ms ／ 控えを使う {proxied}ms ／ さらに画質を下げる {both}ms\n"
@@ -177,7 +204,9 @@ class PreferencesDialog(QDialog):
             f" 色変換 {convert}ms ／ エンコード + 多重化 {muxing}ms"
             "（1920x1080 を 3 枚重ね、NVIDIA GPU）\n"
             f"後ろの 2 つを重ねると、書き出し全体で 1 枚 {serial_ms:.1f}ms の所が"
-            f" {pipelined_ms:.1f}ms になる この機械で測るには tools\\bench_export.py",
+            f" {pipelined_ms:.1f}ms になる\n"
+            f"レイヤーを並べてデコードすると、同じ素材の合成が 1 枚 {one_thread:.1f}ms の所が"
+            f" {many_threads:.1f}ms になる この機械で測るには tools\\bench_export.py",
             self,
         )
         note.setWordWrap(True)
@@ -224,5 +253,6 @@ class PreferencesDialog(QDialog):
             prefetch=self._prefetch.isChecked(),
             prefetch_budget_mb=int(self._prefetch_budget.currentData()),
             export_pipeline_depth=int(self._pipeline_depth.currentData()),
+            decode_threads=int(self._decode_threads.currentData()),
             native_modules=self._native_modules.isChecked(),
         )
