@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
@@ -94,3 +95,211 @@ def test_only_pull_requests_are_looked_at(
 ) -> None:
     # Issue のコメントでも走る そこへ status を書こうとすると、PR ではないので落ちる
     assert gate._pull_number(event) == number
+
+
+class TestMergingTheBase:
+    """main を取り込んだだけのときに通すか
+
+    main の保護は「最新の main を取り込んでからマージ」なので、ほかの PR が入るたびに
+    先頭の SHA が変わる Qodo は中身の同じ差分を見直さないので、ここで通さないと
+    並行して進めている PR が順番待ちで止まり続ける
+    一方で、取り込みに見せかけて中身を変えた PR まで通すと、Qodo の見ていないコードが
+    main へ入る
+    """
+
+    BRANCH = "1111111111111111111111111111111111111111"
+    MERGE = "2222222222222222222222222222222222222222"
+    MAIN = "3333333333333333333333333333333333333333"
+    OWN = "4444444444444444444444444444444444444444"
+
+    def api(
+        self,
+        commits: dict[str, list[str]],
+        in_base: set[str],
+        compares: dict[str, list[dict[str, str]]],
+        trees: dict[str, dict[str, tuple[str, str]]] | None = None,
+    ) -> Callable[[str], dict[str, object]]:
+        """GitHub の API の代わり 比べる向きも本物と同じにする
+
+        ``compare/{base}...{sha}`` は右側が左側から見てどうかを返す 向きを取り違えたまま
+        通る作りにしないよう、試験の側も本物の向きで答える
+        木を渡さないときは、比べた結果の中身の SHA から木を作る（種類はどれも同じ）
+        """
+        trees = trees or {}
+
+        def gate_max_files() -> int:
+            return 300
+
+        def call(path: str) -> dict[str, object]:
+            if path.startswith("commits/"):
+                sha = path.split("/", 1)[1]
+                # 木の API はコミットではなく木の SHA を受け取る 本物と同じ形で答える
+                return {
+                    "parents": [{"sha": s} for s in commits.get(sha, [])],
+                    "commit": {"tree": {"sha": f"tree-{sha}"}},
+                }
+            if path.startswith("git/trees/"):
+                sha = path.removeprefix("git/trees/tree-").split("?")[0]
+                entries = trees.get(sha)
+                if entries is None:
+                    # 木を渡していないときは、その側の比べた結果から組み立てる
+                    entries = {
+                        f["filename"]: ("100644", f["sha"])
+                        for pair, listed in compares.items()
+                        if pair.endswith(f"...{sha}")
+                        for f in listed
+                    }
+                return {
+                    "tree": [
+                        {
+                            "path": name,
+                            "type": "commit" if mode == "160000" else "blob",
+                            "mode": mode,
+                            "sha": blob,
+                        }
+                        for name, (mode, blob) in entries.items()
+                    ]
+                }
+            pair = path.removeprefix("compare/").split("?")[0]
+            left, right = pair.split("...")
+            if left in ("main", "master"):
+                return {"status": "behind" if right in in_base else "ahead"}
+            # 本物はファイルの一覧を 1 頁目にだけ、全体で 300 件まで返す
+            return {"files": compares.get(pair, [])[: gate_max_files()]}
+
+        return call
+
+    def test_a_merge_of_main_passes(self, gate: ModuleType) -> None:
+        # 通さないと、ほかの PR が入るたびに Qodo の見た差分のままなのに待ちへ戻る
+        call = self.api(
+            {self.MERGE: [self.BRANCH, self.MAIN]},
+            {self.MAIN},
+            {
+                f"{self.BRANCH}...{self.MERGE}": [{"filename": "a.py", "sha": "aa"}],
+                f"{self.BRANCH}...{self.MAIN}": [{"filename": "a.py", "sha": "aa"}],
+            },
+        )
+        # 返す SHA まで見る 別のコミットを返す作りに変わると、判定の説明文も間違える
+        assert (
+            gate.only_base_merges_since(self.MERGE, "main", lambda s: s == self.BRANCH, call)
+            == self.BRANCH
+        )
+
+    def test_a_commit_of_its_own_does_not_pass(self, gate: ModuleType) -> None:
+        # 自分のコミットが積まれていれば、Qodo の見ていない中身が入っている
+        call = self.api({self.OWN: [self.BRANCH]}, {self.MAIN}, {})
+        assert not gate.only_base_merges_since(self.OWN, "main", lambda s: s == self.BRANCH, call)
+
+    def test_merging_something_outside_main_does_not_pass(self, gate: ModuleType) -> None:
+        # main に入っていない物を取り込めば、その中身は誰も見ていない
+        call = self.api({self.MERGE: [self.BRANCH, self.OWN]}, {self.MAIN}, {})
+        assert not gate.only_base_merges_since(self.MERGE, "main", lambda s: s == self.BRANCH, call)
+
+    def test_resolving_a_conflict_by_hand_does_not_pass(self, gate: ModuleType) -> None:
+        # 衝突を手で直すと、main 側とも枝側とも違う中身になる そこは Qodo が見ていない
+        call = self.api(
+            {self.MERGE: [self.BRANCH, self.MAIN]},
+            {self.MAIN},
+            {
+                f"{self.BRANCH}...{self.MERGE}": [{"filename": "a.py", "sha": "cc"}],
+                f"{self.BRANCH}...{self.MAIN}": [{"filename": "a.py", "sha": "aa"}],
+            },
+        )
+        assert not gate.only_base_merges_since(self.MERGE, "main", lambda s: s == self.BRANCH, call)
+
+    def test_a_file_only_the_branch_changed_does_not_pass(self, gate: ModuleType) -> None:
+        # main が触っていないファイルが変わっているなら、取り込みでは説明が付かない
+        call = self.api(
+            {self.MERGE: [self.BRANCH, self.MAIN]},
+            {self.MAIN},
+            {
+                f"{self.BRANCH}...{self.MERGE}": [{"filename": "b.py", "sha": "bb"}],
+                f"{self.BRANCH}...{self.MAIN}": [{"filename": "a.py", "sha": "aa"}],
+            },
+        )
+        assert not gate.only_base_merges_since(self.MERGE, "main", lambda s: s == self.BRANCH, call)
+
+    def test_too_many_merges_stop_the_walk(self, gate: ModuleType) -> None:
+        # 上限が無いと、作られたコミットの連なりを延々と辿って API を叩き続ける
+        chain = {f"{i:040x}": [f"{i + 1:040x}", self.MAIN] for i in range(50)}
+        call = self.api(chain, {self.MAIN}, {})
+        assert not gate.only_base_merges_since(f"{0:040x}", "main", lambda s: False, call)
+
+    def test_merging_main_twice_passes(self, gate: ModuleType) -> None:
+        # 2 回目の取り込みを古い方と比べると、その後 main へ入った変更が差として残り、
+        # 取り込んだだけなのに通らなくなる
+        first = "5555555555555555555555555555555555555555"
+        newer_main = "6666666666666666666666666666666666666666"
+        call = self.api(
+            {self.MERGE: [first, newer_main], first: [self.BRANCH, self.MAIN]},
+            {self.MAIN, newer_main},
+            {
+                f"{self.BRANCH}...{self.MERGE}": [{"filename": "a.py", "sha": "bb"}],
+                f"{self.BRANCH}...{newer_main}": [{"filename": "a.py", "sha": "bb"}],
+                f"{self.BRANCH}...{self.MAIN}": [{"filename": "a.py", "sha": "aa"}],
+            },
+        )
+        # 返す SHA まで見る 別のコミットを返す作りに変わると、判定の説明文も間違える
+        assert (
+            gate.only_base_merges_since(self.MERGE, "main", lambda s: s == self.BRANCH, call)
+            == self.BRANCH
+        )
+
+    def test_a_branch_outside_main_is_not_taken_as_merged(self, gate: ModuleType) -> None:
+        # 比べる向きを取り違えると、main より先にある未レビューの枝を取り込んだ PR が通る
+        ahead = "7777777777777777777777777777777777777777"
+        call = self.api({self.MERGE: [self.BRANCH, ahead]}, {self.MAIN}, {})
+        assert not gate.only_base_merges_since(self.MERGE, "main", lambda s: s == self.BRANCH, call)
+
+    def test_a_list_cut_off_by_the_api_does_not_pass(self, gate: ModuleType) -> None:
+        # 一覧は 1 頁目にしか出ず 300 件で打ち切られる 数だけを見ると、その後ろに
+        # main 由来でない変更があっても通る
+        many = [{"filename": f"f{i}.py", "sha": "aa"} for i in range(gate.MAX_COMPARE_FILES + 5)]
+        call = self.api(
+            {self.MERGE: [self.BRANCH, self.MAIN]},
+            {self.MAIN},
+            {f"{self.BRANCH}...{self.MERGE}": many, f"{self.BRANCH}...{self.MAIN}": many},
+        )
+        assert not gate.only_base_merges_since(self.MERGE, "main", lambda s: s == self.BRANCH, call)
+
+    def test_changing_only_the_file_mode_does_not_pass(self, gate: ModuleType) -> None:
+        # 中身の SHA だけで比べると、main と同じ中身のまま実行権限を変えた取り込みが、
+        # 誰も見ないまま通る
+        call = self.api(
+            {self.MERGE: [self.BRANCH, self.MAIN]},
+            {self.MAIN},
+            {
+                f"{self.BRANCH}...{self.MERGE}": [{"filename": "a.py", "sha": "aa"}],
+                f"{self.BRANCH}...{self.MAIN}": [{"filename": "a.py", "sha": "aa"}],
+            },
+            trees={
+                self.MERGE: {"a.py": ("100755", "aa")},
+                self.MAIN: {"a.py": ("100644", "aa")},
+            },
+        )
+        assert not gate.only_base_merges_since(self.MERGE, "main", lambda s: s == self.BRANCH, call)
+
+    def test_a_truncated_tree_does_not_pass(self, gate: ModuleType) -> None:
+        # 木が切り詰められたら、見えていない所は分からない 分からない物は通さない
+        call = self.api({self.MERGE: [self.BRANCH, self.MAIN]}, {self.MAIN}, {})
+
+        def truncated(path: str) -> dict[str, object]:
+            return {"truncated": True} if path.startswith("git/trees/") else call(path)
+
+        assert not gate.only_base_merges_since(
+            self.MERGE, "main", lambda s: s == self.BRANCH, truncated
+        )
+
+    def test_changing_a_submodule_does_not_pass(self, gate: ModuleType) -> None:
+        # 木から blob だけを拾うと、参照先を変えたサブモジュールが「両方に無い」と
+        # 見なされて通る そこは誰も見ていない
+        call = self.api(
+            {self.MERGE: [self.BRANCH, self.MAIN]},
+            {self.MAIN},
+            {f"{self.BRANCH}...{self.MERGE}": [{"filename": "vendor", "sha": "cc"}]},
+            trees={
+                self.MERGE: {"vendor": ("160000", "cc")},
+                self.MAIN: {"vendor": ("160000", "aa")},
+            },
+        )
+        assert not gate.only_base_merges_since(self.MERGE, "main", lambda s: s == self.BRANCH, call)
