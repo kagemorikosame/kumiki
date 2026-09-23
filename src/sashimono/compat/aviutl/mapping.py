@@ -1052,6 +1052,10 @@ def _figure(entry: ExoEntry, log: CompatibilityReport) -> GeneratedSource:
             "color": _color(entry.value("色", "color", default="ffffff")),
             "line_width": AnimatedValue(0.0 if filled else line),
             "outline_only": not filled,
+            # AviUtl2 は輪郭を図形の内側に引く 中央に引くと外へ太さの半分はみ出す（#87）
+            # AviUtl1 は測っていないので今までどおり中央 AviUtl1 の図形に
+            # ライン幅 は無いが、書き足したファイルがあっても見た目を変えない
+            "line_align": "inside" if entry.generation >= 2 else "center",
         },
     )
 
@@ -1088,6 +1092,12 @@ def _fan(entry: ExoEntry, log: CompatibilityReport) -> GeneratedSource:
             "color": _color(entry.value("色", default="ffffff")),
             "line_width": AnimatedValue(0.0 if filled else line),
             "outline_only": not filled,
+            # 図形と同じく輪郭は内側（#87） kumiki_p9_fan_s400_l40 を AviUtl2 に
+            # 描かせると、中心の行の帯が -200..-160 で円のときと 1 画素も変わらなかった
+            # 中央に引いたままだと差が 6.7 残る（内側にすると 2.0）
+            # AviUtl1 に 扇型 は無く、同じ名前で出てくるのは別人の配布スクリプト
+            # 測っていないものへ AviUtl2 の決まりを当てると、今まで読めていた絵が黙って変わる
+            "line_align": "inside" if entry.generation >= 2 else "center",
         },
     )
 

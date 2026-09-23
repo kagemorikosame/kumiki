@@ -28,7 +28,12 @@ from PySide6.QtWidgets import (
 )
 
 from sashimono.core.model import Project
-from sashimono.engine.encode import ExportError, ExportSettings, available_video_codecs
+from sashimono.engine.encode import (
+    DEFAULT_PIPELINE_DEPTH,
+    ExportError,
+    ExportSettings,
+    available_video_codecs,
+)
 from sashimono.engine.encode import export_project as run_export
 
 __all__ = ["ExportDialog"]
@@ -83,13 +88,22 @@ class _ExportWorker(QObject):
 class ExportDialog(QDialog):
     """書き出しの設定と実行"""
 
-    def __init__(self, project: Project, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        project: Project,
+        parent: QWidget | None = None,
+        *,
+        pipeline_depth: int = DEFAULT_PIPELINE_DEPTH,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("書き出し")
         self.setModal(True)
         self.resize(480, 260)
 
         self._project = project
+        # 画面には出さない 書き出しごとに変える物ではなく、その機械の持ち物なので
+        # 本人の設定（表示 → 設定…）から来る
+        self._pipeline_depth = pipeline_depth
         self._thread: QThread | None = None
         self._worker: _ExportWorker | None = None
 
@@ -173,6 +187,7 @@ class ExportDialog(QDialog):
             path=Path(self._path.text()),
             video_codec=str(codec) or None,
             video_bitrate=self._bitrate.value() * 1_000_000,
+            pipeline_depth=self._pipeline_depth,
         )
 
     def _start(self) -> None:

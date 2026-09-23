@@ -11,7 +11,7 @@ import contextlib
 import functools
 import threading
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from PySide6.QtCore import QBuffer, QIODevice, Qt, QTimer, QUrl, Signal
@@ -137,6 +137,26 @@ def _probe_or_none(path: Path) -> MediaItem | None:
         return probe_media(path)
     except ProbeError:
         return None
+
+
+@dataclass(frozen=True, slots=True)
+class _ExoMedia:
+    """``.exo`` が参照している素材を読んだ結果 登録はまだしていない
+
+    登録をクリップの配置と同じ 1 回の :meth:`MainWindow.execute_all` で行うため、
+    ここではコマンドを作るだけにする 先に登録すると、配置を断られたときに
+    使われない素材と、その解析・控えの重い処理だけが残る
+    （テンプレートの棚の :func:`~sashimono.compat.catalog.gather_media` と同じ作り）
+    """
+
+    #: 書かれていたパス → 結ぶ素材の id（:func:`map_exo` がそのまま受ける形）
+    ids: dict[str, MediaId]
+    #: 見つからないか開けなかったパス
+    missing: tuple[str, ...]
+    #: 素材一覧へ入れるコマンド
+    commands: tuple[Command, ...]
+    #: 入ったあとに解析と控えを頼む素材
+    items: tuple[MediaItem, ...]
 
 
 class MainWindow(QMainWindow):
@@ -673,18 +693,22 @@ class MainWindow(QMainWindow):
 
     # --- コマンドの実行 ---
 
-    def execute(self, command: Command) -> None:
+    def execute(self, command: Command) -> bool:
         """コマンドを 1 つ実行して、画面を更新する
 
         失敗しても落とさず、状況をステータスバーへ出す 編集操作は思いどおりに
         いかないことが普通にあり、そのたびにダイアログが出ると邪魔になる
+
+        断られたときは偽を返す :meth:`execute_all` と同じで、成功した前提で
+        続きを進めると、入っていない素材を参照したり「置いた」と出したりする
         """
         try:
             self._document.execute(self._in_active_scene(command))
         except (ValueError, KeyError) as exc:
             self.statusBar().showMessage(str(exc), 4000)
-            return
+            return False
         self._on_project_changed()
+        return True
 
     def execute_all(self, commands: list[Command], label: str, *, merge: bool = False) -> bool:
         """複数のコマンドを 1 回の Undo で戻せるようにまとめて実行する
@@ -895,6 +919,7 @@ class MainWindow(QMainWindow):
         """
         commands: list[Command] = []
         failures: list[str] = []
+        loaded: list[MediaItem] = []
         project = self.view_project
 
         for path in paths:
@@ -907,11 +932,16 @@ class MainWindow(QMainWindow):
             for command in batch:
                 project = command.apply(project)
             commands.extend(batch)
+            loaded.append(media)
+
+        if commands and not self.execute_all(commands, f"素材を読み込み: {len(paths)} 件"):
+            # 断られるとまとめて戻る 一覧に無い素材の解析と控えを頼まないために、
+            # 頼むのは通ってからにする 理由は execute_all が出しているので上書きしない
+            return
+        # 解析と控えは、取り消しても止められない裏の処理 入ったことを確かめてから頼む
+        for media in loaded:
             self._analyzer.request(media, on_ready=self._on_analysis_ready)
             self._request_proxy(media)
-
-        if commands:
-            self.execute_all(commands, f"素材を読み込み: {len(paths)} 件")
         if failures:
             self.statusBar().showMessage(failures[0], 5000)
         elif commands:
@@ -930,7 +960,10 @@ class MainWindow(QMainWindow):
 
     def _insert_generated(self, source: GeneratedSource, label: str) -> None:
         commands = insert_generated(self.view_project, source, at_frame=self._timeline.playhead)
-        self.execute_all(commands, label)
+        if not self.execute_all(commands, label):
+            # 断られたら選ばない 選ぶと再生ヘッドの位置に元からあったクリップが
+            # 選ばれ、設定パネルが開いて、追加できたように見える
+            return
         # 置いたものをすぐ選ぶ 設定パネルが開いていないと、
         # 追加したのに何も起きていないように見える
         placed = self._last_added_clip()
@@ -1343,7 +1376,11 @@ class MainWindow(QMainWindow):
 
     def export(self) -> None:
         self._playback.stop()
-        ExportDialog(self._document.project, self).exec()
+        ExportDialog(
+            self._document.project,
+            self,
+            pipeline_depth=self._preferences.export_pipeline_depth,
+        ).exec()
 
     # --- AviUtl 互換 ---
 
@@ -1369,30 +1406,39 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "読み込めない", str(exc))
             return
 
-        media, missing = self._resolve_exo_media(exo, source)
-        commands = map_exo(exo, self.view_project, media=media)
+        found = self._resolve_exo_media(exo, source)
+        commands = map_exo(exo, self.view_project, media=found.ids)
         if not commands:
             self.statusBar().showMessage("読み込めるオブジェクトがありませんでした", 5000)
             return
 
-        self.execute_all(commands, f"AviUtl から読み込み: {source.name}")
+        # 素材の登録と配置を 1 回の Undo にまとめる 分けると、配置を断られたときに
+        # 使われていない素材だけが一覧に残る
+        if not self.execute_all(
+            [*found.commands, *commands], f"AviUtl から読み込み: {source.name}"
+        ):
+            # 断られた理由は execute_all がステータスバーに出している 上書きしない
+            return
+        # 解析と控えは取り消しても止まらない 入ったことを確かめてから頼む
+        for media in found.items:
+            self._analyzer.request(media, on_ready=self._on_analysis_ready)
+            self._request_proxy(media)
         note = f"{source.name} から {len(exo.objects)} 個を読み込んだ"
-        if missing:
-            note += f"（素材 {len(missing)} 件が見つかりません）"
+        if found.missing:
+            note += f"（素材 {len(found.missing)} 件が見つかりません）"
         self.statusBar().showMessage(note, 6000)
 
-    def _resolve_exo_media(
-        self, exo: ExoFile, source: Path
-    ) -> tuple[dict[str, MediaId], list[str]]:
-        """``.exo`` が参照している素材を読み込む
+    def _resolve_exo_media(self, exo: ExoFile, source: Path) -> _ExoMedia:
+        """``.exo`` が参照している素材を読む 一覧へ入れるのは呼んだ側
 
         相対パスは ``.exo`` のある場所からも探す AviUtl のファイルは素材と
         一緒に配られることがある
         """
         from sashimono.compat.aviutl.mapping import media_paths
 
-        found: dict[str, MediaId] = {}
+        ids: dict[str, MediaId] = {}
         missing: list[str] = []
+        items: list[MediaItem] = []
         for raw in media_paths(exo):
             candidates = [Path(raw), source.parent / Path(raw).name]
             path = next((c for c in candidates if c.exists()), None)
@@ -1404,11 +1450,14 @@ class MainWindow(QMainWindow):
             except ProbeError:
                 missing.append(raw)
                 continue
-            self.execute(AddMedia(media))
-            self._analyzer.request(media, on_ready=self._on_analysis_ready)
-            self._request_proxy(media)
-            found[raw] = media.id
-        return found, missing
+            items.append(media)
+            ids[raw] = media.id
+        return _ExoMedia(
+            ids=ids,
+            missing=tuple(missing),
+            commands=tuple(AddMedia(media) for media in items),
+            items=tuple(items),
+        )
 
     def show_templates(self) -> None:
         """テンプレートの棚を開いて、選ばれたものを反映する

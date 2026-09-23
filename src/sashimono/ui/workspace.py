@@ -17,6 +17,7 @@ from PySide6.QtCore import QByteArray, QSettings
 from PySide6.QtWidgets import QMainWindow
 
 from sashimono.core import userdirs
+from sashimono.engine.encode import DEFAULT_PIPELINE_DEPTH, MAX_PIPELINE_DEPTH
 
 __all__ = [
     "AUTO_QUALITY_HEIGHT",
@@ -148,6 +149,12 @@ class Preferences:
     #: 上限を置くのは、デコードと効果の側が使う GPU のメモリを残すため
     #: 使い切ると、先読みではなくプレビューそのものが描けなくなる
     prefetch_budget_mb: int = 1024
+    #: 書き出しで、GPU の合成を書き込み（色変換・エンコード・mux）の何枚ぶん先へ進めるか
+    #: 0 で直列（1 枚ずつ、スレッドを使わない）
+    #: 既定は 2 1 枚ぶんは画面 1 枚の RGBA（1080p で 8MB、4K で 33MB）なので、
+    #: メモリの少ない機械では減らせるようにする 実測は
+    #: :data:`sashimono.engine.encode.MEASURED_EXPORT_MS`
+    export_pipeline_depth: int = DEFAULT_PIPELINE_DEPTH
     #: AviUtl2 のスクリプトモジュール（``.mod2`` の中身が DLL の物）を読む
     #: 既定は入 テレビ字幕のように、DLL が無いと絵が出ない配布スクリプトがある
     #: 読んだ DLL は Sashimono と同じ権限で動く（Lua の閉じ込めの外） 読むのは
@@ -204,6 +211,9 @@ class PreferenceStore:
             ),
             prefetch=_flag(data.get("prefetch"), plain.prefetch),
             prefetch_budget_mb=_budget(data.get("prefetch_budget_mb"), plain.prefetch_budget_mb),
+            export_pipeline_depth=_depth(
+                data.get("export_pipeline_depth"), plain.export_pipeline_depth
+            ),
             native_modules=_flag(data.get("native_modules"), plain.native_modules),
         )
 
@@ -239,6 +249,17 @@ def _budget(value: object, default: int) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         return default
     return value if MIN_PREFETCH_MB <= value <= MAX_PREFETCH_MB else default
+
+
+def _depth(value: object, default: int) -> int:
+    """書き出しのパイプラインの深さ 範囲の外は既定へ戻す
+
+    負だと ``queue`` の作り方が変わって意味が通らず、大きすぎると合成済みの絵を
+    溜め込むだけでメモリを食う（4K なら 1 枚 33MB） 0 は「直列」なので許す
+    """
+    if not isinstance(value, int) or isinstance(value, bool):
+        return default
+    return value if 0 <= value <= MAX_PIPELINE_DEPTH else default
 
 
 def _divisor(value: object, default: int) -> int:

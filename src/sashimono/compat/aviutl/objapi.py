@@ -643,6 +643,8 @@ class ObjApi:
                 "color": color,
                 "line_width": line,
                 "outline_only": line > 0,
+                # 図形オブジェクトと同じ描き方をする API なので、輪郭も内側（#87）
+                "line_align": "inside",
             },
             max(width, state.screen_w),
             max(height, state.screen_h),
