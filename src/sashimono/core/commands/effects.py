@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from enum import Enum
+from fractions import Fraction
 from typing import cast
 
 from sashimono.core.commands.base import Command
@@ -401,6 +402,10 @@ class SetClipProperty(Command):
     def apply(self, project: Project) -> Project:
         if self.name not in self.ALLOWED:
             raise ValueError(f"変更できない項目: {self.name}")
+        if self.name == "hold_at" and not (self.value is None or isinstance(self.value, Fraction)):
+            # 整数や小数を通すと、モデルには入るが保存の所で分数として書けずに落ちる
+            # 保存できないプロジェクトを作るより、変える所で断る
+            raise ValueError(f"絵を止める時刻は分数か None: {self.value!r}")
         return _update_clip(
             project, self.clip_id, lambda clip: _replace_named(clip, **{self.name: self.value})
         )

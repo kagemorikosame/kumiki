@@ -30,12 +30,20 @@ class VideoStreamInfo:
     pixel_format: str = ""
     #: コンテナに記録された回転角（0 / 90 / 180 / 270） スマホ撮影で頻出する
     rotation: int = 0
+    #: 映像の道の終わりの時刻（秒 フレームの表示時刻と同じ数え方） 分からなければ ``None``
+    #:
+    #: :attr:`MediaItem.duration` はコンテナ全体の長さで、音の方が長い素材では映像の
+    #: 終わりより後ろを指す 最後の絵で止める時刻（``Clip.hold_at``）をそこから決めると、
+    #: 映像の最後のフレームより後ろを読みに行き、止めた後も毎フレームデコーダを動かす
+    end_time: Fraction | None = None
 
     def __post_init__(self) -> None:
         if self.width <= 0 or self.height <= 0:
             raise ValueError(f"解像度が不正: {self.width}x{self.height}")
         if self.rotation not in (0, 90, 180, 270):
             raise ValueError(f"回転角が不正: {self.rotation}")
+        if self.end_time is not None and self.end_time < 0:
+            raise ValueError(f"映像の終わりの時刻が負: {self.end_time}")
 
     @property
     def display_size(self) -> tuple[int, int]:

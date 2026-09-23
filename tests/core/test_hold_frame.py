@@ -10,12 +10,18 @@ YMM4 は素材より長い動画アイテムで最後の絵を、再生速度 0 
 
 from __future__ import annotations
 
+from dataclasses import replace
 from fractions import Fraction
 
 import pytest
 
 from sashimono.core.commands import AddClip, RippleCut, SetClipProperty, SplitClip, TrimClip
-from sashimono.core.io import FORMAT_VERSION, project_from_dict, project_to_dict
+from sashimono.core.io import (
+    FORMAT_VERSION,
+    ProjectFileError,
+    project_from_dict,
+    project_to_dict,
+)
 from sashimono.core.model import Clip, MediaItem, Project
 from sashimono.core.timebase import FrameRate
 
@@ -56,6 +62,7 @@ class TestPictureTime:
         assert clip.picture_time(120, RATE) == Fraction(5)
 
     def test_the_picture_never_reads_past_the_hold(self) -> None:
+        # 越えて読むと、止まるはずの絵が動き出す（素材の終わりの後なら何も映らない）
         clip = Clip(timeline_start=0, duration=300, source_in=Fraction(1), hold_at=Fraction(5))
         assert clip.picture_time(121, RATE) == Fraction(5)
         assert clip.picture_time(299, RATE) == Fraction(5)
@@ -96,6 +103,7 @@ class TestEditing:
         assert _times(left) + _times(right) == _times(clip)
 
     def test_trimming_the_head_past_the_hold_freezes_the_rest(self, held: Project) -> None:
+        # 止める位置が付いていかないと、頭を削っただけで止まっていた絵が動き出す
         (clip,) = _clips(held)
         (trimmed,) = _clips(TrimClip(clip.id, head_delta=150).apply(held))
         assert set(_times(trimmed)) == {Fraction(5)}
@@ -133,6 +141,7 @@ class TestFile:
         assert clip.hold_at == Fraction(5)
 
     def test_a_clip_without_a_hold_reopens_without_one(self, held: Project) -> None:
+        # 解除した止め方が開き直すと戻ると、動かしたはずの絵が止まって見える
         (clip,) = _clips(held)
         loose = SetClipProperty(clip.id, "hold_at", None).apply(held)
         (reopened,) = _clips(project_from_dict(project_to_dict(loose)))
@@ -164,3 +173,54 @@ class TestFile:
         split = SplitClip(clip.id, 200).apply(held)
         reopened = project_from_dict(project_to_dict(split))
         assert [c.hold_at for c in _clips(reopened)] == [Fraction(5), Fraction(5)]
+
+    def test_a_true_in_a_broken_file_is_not_read_as_one_second(self, held: Project) -> None:
+        """壊れたファイルの ``true`` は断る 1 秒として読むと、どこで止めたのか分からない絵になる
+
+        真偽値は ``int`` の仲間なので、分数の項目を読む所で断らないと 1 として通る
+        こちらは分数の項目へ真偽値を書かないので、どの項目でも壊れたファイル
+        """
+        data = project_to_dict(held)
+        timeline = data["timeline"]
+        assert isinstance(timeline, dict)
+        timeline["tracks"][0]["clips"][0]["hold_at"] = True
+        with pytest.raises(ProjectFileError, match="hold_at"):
+            project_from_dict(data)
+
+    def test_a_true_speed_is_refused_too(self, held: Project) -> None:
+        # 速さの true を 1 倍と読むと、壊れた所に気付かないまま保存し直して直ってしまう
+        data = project_to_dict(held)
+        timeline = data["timeline"]
+        assert isinstance(timeline, dict)
+        timeline["tracks"][0]["clips"][0]["speed"] = True
+        with pytest.raises(ProjectFileError, match="speed"):
+            project_from_dict(data)
+
+    def test_the_end_of_the_picture_survives_saving(self, held: Project) -> None:
+        # 映像の終わりが消えると、開き直した後に置いた動画はコンテナの長さで止まる
+        media = held.media[0]
+        (stream,) = media.video_streams
+        marked = held.replace_media(
+            replace(media, video_streams=(replace(stream, end_time=Fraction(9)),))
+        )
+        reopened = project_from_dict(project_to_dict(marked))
+        assert reopened.media[0].video_streams[0].end_time == Fraction(9)
+
+    def test_media_saved_without_the_end_of_the_picture_still_opens(self, held: Project) -> None:
+        # 映像の終わりを覚える前に取り込んだ素材が開けないと、今までのプロジェクトが開けない
+        data = project_to_dict(held)
+        media_list = data["media"]
+        assert isinstance(media_list, list)
+        for media in media_list:
+            for stream in media["video_streams"]:
+                del stream["end_time"]
+        reopened = project_from_dict(data)
+        assert reopened.media[0].video_streams[0].end_time is None
+
+
+class TestCommand:
+    def test_a_number_that_is_not_a_fraction_is_refused(self, held: Project) -> None:
+        # 整数や小数を通すと、モデルには入るが保存の所で分数として書けずに落ちる
+        (clip,) = _clips(held)
+        with pytest.raises(ValueError, match="止める時刻"):
+            SetClipProperty(clip.id, "hold_at", 2).apply(held)

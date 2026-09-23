@@ -89,7 +89,21 @@ def _video_info(stream: av.video.stream.VideoStream, rotation: int) -> VideoStre
         codec=stream.codec_context.name,
         pixel_format=stream.format.name if stream.format else "",
         rotation=rotation,
+        end_time=_stream_end(stream),
     )
+
+
+def _stream_end(stream: av.video.stream.VideoStream) -> Fraction | None:
+    """映像の道の終わりの時刻（秒） 道が長さを書いていなければ ``None``
+
+    デコーダはフレームの表示時刻を PTS そのもので数える（頭の ``start_time`` を
+    引かない） 同じ数え方にするため、長さに頭の時刻を足す
+    """
+    if stream.duration is None or stream.time_base is None:
+        return None
+    start = stream.start_time or 0
+    end = Fraction(start + stream.duration) * Fraction(stream.time_base)
+    return end if end > 0 else None
 
 
 def _audio_info(stream: av.audio.stream.AudioStream) -> AudioStreamInfo:

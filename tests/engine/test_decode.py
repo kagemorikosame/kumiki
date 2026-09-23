@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from fractions import Fraction
 from pathlib import Path
 
@@ -14,7 +15,13 @@ import pytest
 
 from sashimono.core.timebase import FrameRate
 from sashimono.engine.decode import AudioDecoder, ProbeError, VideoDecoder, probe_media
-from tests.media_fixtures import SampleMedia, decode_all_frames, make_rotated, make_sample
+from tests.media_fixtures import (
+    SampleMedia,
+    decode_all_frames,
+    libx264_available,
+    make_rotated,
+    make_sample,
+)
 
 
 class TestProbe:
@@ -44,6 +51,33 @@ class TestProbe:
         # 29.97 が 2997/100 に化けると 1 時間で 3 フレーム以上ずれる
         item = probe_media(sample_ntsc.path)
         assert item.video_streams[0].frame_rate == FrameRate(30000, 1001)
+
+    def test_the_end_of_the_picture_is_read_apart_from_the_sound(self, media_dir: Path) -> None:
+        """音の方が長い素材で、映像の道の終わりをコンテナの長さと分けて取る（#115）
+
+        コンテナの長さだけだと、最後の絵で止める時刻が映像の最後のフレームより後ろになり、
+        止めた後もデコーダが毎フレーム終わり付近を読み直す
+        """
+        if not libx264_available():
+            pytest.skip("ffmpeg に libx264 が無いので実素材のテストを飛ばす")
+        path = media_dir / "short-picture.mp4"
+        if not path.exists():
+            subprocess.run(
+                [
+                    "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=30:duration=1",
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=2:sample_rate=44100",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                    str(path),
+                ],
+                check=True,
+                capture_output=True,
+            )  # fmt: skip
+        item = probe_media(path)
+        end = item.video_streams[0].end_time
+        assert end is not None
+        assert float(end) == pytest.approx(1.0, abs=0.05)
+        assert item.duration > end + Fraction(1, 2)
 
     def test_video_only_media(self, sample_long: SampleMedia) -> None:
         item = probe_media(sample_long.path)

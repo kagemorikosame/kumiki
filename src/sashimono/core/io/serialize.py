@@ -104,6 +104,14 @@ def _fraction_to_json(value: Fraction) -> str:
 
 
 def _fraction_from_json(value: object, field: str) -> Fraction:
+    """分数の項目を読む 書くのは常に ``"分子/分母"`` の文字、既定値だけ整数
+
+    真偽値は ``int`` の仲間なので、断らないと ``true`` が 1（秒・倍・分の 1 秒）として
+    読めてしまう こちらが真偽値を書くことは無く、どの分数の項目（時刻・速さ・長さ・
+    時間の単位・フレームレート）でも壊れたファイルなので、読み替えずに断る
+    """
+    if isinstance(value, bool):
+        raise ProjectFileError(f"{field} が分数ではない: {value!r}")
     if isinstance(value, str):
         try:
             return Fraction(value)
@@ -377,6 +385,9 @@ def _media_to_json(item: MediaItem) -> dict[str, Any]:
                 "codec": stream.codec,
                 "pixel_format": stream.pixel_format,
                 "rotation": stream.rotation,
+                "end_time": (
+                    _fraction_to_json(stream.end_time) if stream.end_time is not None else None
+                ),
             }
             for stream in item.video_streams
         ],
@@ -402,6 +413,8 @@ def _media_from_json(raw: object) -> MediaItem:
     video_streams = []
     for s in _get_list(data, "video_streams"):
         stream_data = _require(s, "video_stream")
+        # 項目が無いのは、映像の終わりを覚える前に取り込んだ素材 コンテナの長さで代わりにする
+        end_raw = stream_data.get("end_time")
         video_streams.append(
             VideoStreamInfo(
                 index=_get_int(stream_data, "index"),
@@ -412,6 +425,9 @@ def _media_from_json(raw: object) -> MediaItem:
                 codec=_get_str(stream_data, "codec"),
                 pixel_format=_get_str(stream_data, "pixel_format"),
                 rotation=_get_int(stream_data, "rotation", 0),
+                end_time=(
+                    _fraction_from_json(end_raw, "end_time") if end_raw is not None else None
+                ),
             )
         )
 

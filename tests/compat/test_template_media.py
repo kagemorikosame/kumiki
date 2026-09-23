@@ -583,3 +583,29 @@ def test_a_ymm4_video_longer_than_its_source_is_held_without_a_report(tmp_path: 
     (picture,) = clips_of(project, TrackKind.VIDEO)
     assert picture.hold_at == Fraction(59, 30)
     assert not report.lines()
+
+
+def test_a_video_whose_sound_runs_longer_holds_its_last_picture(tmp_path: Path) -> None:
+    """音の方が長い素材は、映像の道の終わりで止める（#115 のレビュー）
+
+    素材は音 3 秒・映像 2 秒 コンテナの長さ（3 秒）で止める時刻を決めると、映像の
+    最後のフレームより後ろを読みに行き、止めた後もデコーダが毎フレーム動く
+    2.5 秒の枠はコンテナの中に収まるが、映像の終わりは越える
+    """
+    movie_file = tmp_path / "映像.mp4"
+    movie_file.write_bytes(b"")
+
+    def longer_sound(path: Path) -> MediaItem:
+        made = movie(path)
+        (stream,) = made.video_streams
+        return replace(
+            made, duration=Fraction(3), video_streams=(replace(stream, end_time=Fraction(2)),)
+        )
+
+    objects = [_held_video(movie_file, Clip(timeline_start=0, duration=75))]
+    project = Project.create()
+    plan = gather_media(objects, project, longer_sound)
+    project = apply(project, [*plan.commands, *place(objects, project, media=plan.media)])
+
+    (picture,) = clips_of(project, TrackKind.VIDEO)
+    assert picture.hold_at == Fraction(59, 30)
