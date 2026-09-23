@@ -14,7 +14,9 @@ from typing import Any
 
 import pytest
 
-from sashimono.compat.aviutl.control import lua_string, parse_control
+from sashimono.compat.aviutl.control import lua_string, lua_value, parse_control
+from sashimono.compat.aviutl.objapi import ObjectState
+from sashimono.compat.aviutl.runtime import LuaScriptRuntime, blank_image
 from sashimono.effects.spec import TextSpec
 
 #: LuaJIT がそのまま読める書き方 どれも引用符の中身（``\\`` は Lua の逆斜線 1 つ）
@@ -36,7 +38,19 @@ ESCAPES = (
 )
 
 #: LuaJIT が読み込みで止める書き方 引用符ごと書かれたまま返る決まり
-BAD_ESCAPES = ("\\q", "\\256", "\\x4", "\\xg0", "\\u41", "\\u{}", "a\\")
+BAD_ESCAPES = (
+    "\\q",
+    "\\256",
+    "\\x4",
+    "\\xg0",
+    "\\u41",
+    "\\u{}",
+    "a\\",
+    # 代用符号の範囲と U+10FFFF より先 LuaJIT は invalid escape sequence で止める
+    "\\u{D800}",
+    "\\u{DFFF}",
+    "\\u{110000}",
+)
 
 
 def _luajit() -> Any:
@@ -87,3 +101,35 @@ def test_a_dialog_default_is_unescaped() -> None:
     (spec,) = parse_control('--dialog:本文,_1="\\065\\r";').parameters
     assert isinstance(spec, TextSpec)
     assert spec.default == "A\r"
+
+
+#: 文字の中身をバイトの番号の並びにする Lua の書き方 LuaJIT とソフトの Lua の両方で走らせる
+_BYTES_OF = (
+    "local t = {} for i = 1, #s do t[#t + 1] = string.byte(s, i) end return table.concat(t, ',')"
+)
+
+
+@pytest.mark.parametrize("body", ["a\\255b", "\\xFF\\xFE", "\\xe3\\x81", "あ\\128"])
+def test_a_high_byte_reaches_the_script_as_the_same_bytes(body: str) -> None:
+    """ダイアログの値が、LuaJIT が持つのと同じバイト列でスクリプトに届く
+
+    読めないバイトを持つ値をそのまま lupa へ渡すと UTF-8 へ直せずに例外になり、
+    スクリプトが 1 行も走らなかった 大域変数と ``obj.名前`` の両方の入口を見る
+    """
+    (spec,) = parse_control(f'--dialog:本文,_1="{body}";').parameters
+    value = lua_value(spec, spec.default_value())
+    runtime = LuaScriptRuntime(instruction_limit=100_000)
+    state = ObjectState(image=blank_image(8, 8))
+    state.values["_1"] = value
+    script = (
+        "local function bytes(s) " + _BYTES_OF + " end "
+        "obj.global_bytes = bytes(_1) obj.field_bytes = bytes(obj._1)"
+    )
+    result = runtime.run(script, state)
+    assert not result.failed, result.message
+    got = state.values["global_bytes"]
+    assert got == state.values["field_bytes"]
+    if LUAJIT is None:
+        pytest.skip("LuaJIT が無い")
+    expected = LUAJIT.execute(('local s = "' + body + '" ' + _BYTES_OF).encode("utf-8"))
+    assert str(got).encode("ascii") == expected

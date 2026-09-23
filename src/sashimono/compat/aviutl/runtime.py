@@ -29,6 +29,7 @@ from sashimono.compat.aviutl.objapi import (
     ObjApi,
     ObjectState,
     hsv_to_number,
+    lua_text,
     rgb_to_number,
 )
 from sashimono.compat.aviutl.report import CompatibilityReport, global_report
@@ -480,7 +481,8 @@ class LuaScriptRuntime:
             globals_table[name] = None
         self._injected = set(state.values)
         for name, value in state.values.items():
-            globals_table[name] = value
+            # 読めないバイトを持つ文字は、元のバイト列にして置く（lua_text を参照）
+            globals_table[name] = lua_text(value)
 
     # --- モジュール ---
 

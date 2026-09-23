@@ -569,10 +569,12 @@ def _unicode_escape(body: str, index: int, out: bytearray) -> int:
     if not digits or not all(c in "0123456789abcdefABCDEF" for c in digits):
         raise _BadEscapeError(body)
     number = int(digits, 16)
-    if number >= 0x110000:
+    # 代用符号（サロゲート U+D800..U+DFFF）と U+10FFFF より先は、LuaJIT 2.1 が
+    # invalid escape sequence で読み込みを止める（lupa の LuaJIT で確かめた）
+    # UTF-8 の形に作って通すと、AviUtl1 では読めない値がこちらでは読めてしまう
+    if number >= 0x110000 or 0xD800 <= number <= 0xDFFF:
         raise _BadEscapeError(body)
-    # 代用符号（サロゲート）の範囲も LuaJIT はそのまま UTF-8 の形で作る
-    out += chr(number).encode("utf-8", "surrogatepass")
+    out += chr(number).encode("utf-8")
     return close + 1
 
 

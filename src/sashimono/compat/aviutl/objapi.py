@@ -26,7 +26,24 @@ from sashimono.compat.aviutl import raster
 from sashimono.compat.aviutl.native import PixelData
 from sashimono.compat.aviutl.report import CompatibilityReport, global_report
 
-__all__ = ["DrawCall", "EffectRequest", "ObjApi", "ObjectState"]
+__all__ = ["DrawCall", "EffectRequest", "ObjApi", "ObjectState", "lua_text"]
+
+
+def lua_text(value: Any) -> Any:
+    """Lua へ渡す値 UTF-8 で表せない文字を含む文字だけ、元のバイト列にして渡す
+
+    ダイアログの ``"\\255"`` や ``"\\xFF"`` は、Lua では 1 バイトの 0xFF を持つ文字になる
+    こちらでは読めないバイトを ``surrogateescape`` の形で文字の中に持っているので、
+    そのまま lupa へ渡すと UTF-8 へ直せずに例外になり、スクリプトが 1 行も走らない
+    バイト列にして渡せば、LuaJIT が持つのと同じバイトになる
+    """
+    if isinstance(value, str):
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            return value.encode("utf-8", "surrogateescape")
+    return value
+
 
 #: AviUtl のフィルタ名と、こちらのエフェクト種別の対応
 #: 名前が同じでも中身は完全には一致しない 見た目の系統を合わせるための対応表
@@ -310,7 +327,7 @@ class ObjApi:
         if name.startswith("check") and name[5:].isdigit():
             return 1 if state.check0 else 0
         if name in state.values:
-            return state.values[name]
+            return lua_text(state.values[name])
         if name in _IDENTIFIERS:
             return state.index
 
@@ -905,7 +922,7 @@ class ObjApi:
         name = str(target)
         for candidate in (name, name.split(".", 1)[-1]):
             if candidate in self.state.values:
-                return self.state.values[candidate]
+                return lua_text(self.state.values[candidate])
             value = self.get(candidate)
             if value is not None and not callable(value):
                 return value
