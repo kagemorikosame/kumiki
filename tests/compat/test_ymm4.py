@@ -1505,14 +1505,50 @@ class TestItemSound:
         assert mapped.clip.speed == Fraction(repr(rate)) / 100
         assert not report.lines()
 
-    def test_a_stopped_video_is_counted_until_it_can_be_stopped(self) -> None:
-        """YMM4 は 0 で素材の頭の絵に止める こちらは止めた絵を表せないので数えて残す
+    def test_a_stopped_video_does_not_play_from_its_offset(self) -> None:
+        """YMM4 は 0 で素材の頭（``ContentOffset`` の位置）の絵に止める（Issue #115）
 
-        数えないと、止まるはずの絵が動いていることに互換性レポートから気付けない
+        2026-09-23 YMM4 4.56.1.1 で測ると、枠の 180 フレームすべてが素材の 0 フレーム目
+        止めないと、止まるはずの絵が等倍で動く 写せたので互換性レポートにも出さない
         """
         report = CompatibilityReport()
-        map_template([self.video(PlaybackRate=0.0)], report=report)
-        assert any("止まった絵" in line for line in report.lines())
+        (mapped,) = map_template(
+            [self.video(PlaybackRate=0.0, ContentOffset="00:00:01.5000000")], report=report
+        )
+        assert mapped.clip.source_in == Fraction(3, 2)
+        assert mapped.clip.hold_at == Fraction(3, 2)
+        assert not report.lines()
+
+    def test_a_silent_audio_item_has_no_picture_to_stop(self) -> None:
+        # 音声アイテムは絵を持たない 止める時刻を持たせると、設定画面に効かない項目が出る
+        (mapped,) = map_template([self.audio(PlaybackRate=0.0)], report=CompatibilityReport())
+        assert mapped.clip.hold_at is None
+
+    def test_a_playing_video_is_not_stopped(self) -> None:
+        # 0 以外で止めると、動くはずの動画が頭の絵のまま動かない
+        (mapped,) = map_template([self.video(PlaybackRate=50.0)], report=CompatibilityReport())
+        assert mapped.clip.hold_at is None
+
+    def test_a_video_item_holds_its_last_picture_past_the_end(self) -> None:
+        """素材より長い動画アイテムは最後の絵を出し続ける印を持つ（Issue #115）
+
+        2026-09-23 YMM4 4.56.1.1 で測ると、素材 120 フレーム・枠 180 フレームで 0→119 の
+        あと 119 が 60 回 印が無いと、素材の終わりから後が何も映らない
+        """
+        (mapped,) = map_template([self.video()], report=CompatibilityReport())
+        assert mapped.hold_last_frame is True
+
+    def test_a_looped_video_is_not_held_at_its_end(self) -> None:
+        # 繰り返す動画を止めると、頭へ戻るはずの所が止まった絵になる（繰り返しは数えて残す）
+        report = CompatibilityReport()
+        (mapped,) = map_template([self.video(IsLooped=True)], report=report)
+        assert mapped.hold_last_frame is False
+        assert any("IsLooped" in line for line in report.lines())
+
+    def test_an_audio_item_is_not_held_at_its_end(self) -> None:
+        # 音は止めない 素材の終わりの後は YMM4 でも無音
+        (mapped,) = map_template([self.audio()], report=CompatibilityReport())
+        assert mapped.hold_last_frame is False
 
     def test_the_newer_rate_fields_as_written_add_nothing(self) -> None:
         """新しい版の書き出しの形（``PlaybackRate2`` と ``Resampling``）は数えない
@@ -1726,8 +1762,9 @@ class TestItemSound:
         assert mapped.clip.speed == 1
         (effect,) = mapped.audio_effects
         assert value_at(effect.params["volume"]) == 0.0
-        # 絵がどうなるかは測っていない 等倍で動かしたことを数えて残す
-        assert any("再生速度 0" in line for line in report.lines())
+        # 絵は素材の頭で止めて写せる（Issue #115） 数え続けると、直し終えた物が
+        # 互換性レポートの上位に残る
+        assert not report.lines()
 
     def test_a_moving_rate_uses_its_first_value(self) -> None:
         """動く値の形で来たら先頭の値を使い、動きは数えて残す

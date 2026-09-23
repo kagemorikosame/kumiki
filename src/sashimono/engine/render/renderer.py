@@ -210,12 +210,14 @@ def _source_time(clip: Clip, media: MediaItem, frame: int, rate: FrameRate) -> F
     """``clip`` を ``frame`` に描くとき、素材のどの時刻を読むか
 
     先読みと本番で同じ式を使う ずれると先読みが当たらず、並べた意味が消える
+    絵を止めたクリップ（:attr:`Clip.hold_at`）は止めた時刻より先を読まない 先読みも
+    同じ時刻を頼むので、止めた後の時刻をデコードしに行かず、デコーダも同じ位置に
+    留まって読み直さない
     """
     if media.is_still:
         # 静止画は時間を持たない 常に先頭を返す
         return Fraction(0)
-    local_frame = frame - clip.timeline_start
-    return clip.source_in + local_frame * rate.frame_duration * clip.speed
+    return clip.picture_time(frame - clip.timeline_start, rate)
 
 
 #: 音声波形の音を読むデコーダの鍵 素材の道・音声ストリームの番号・読むレート
@@ -994,10 +996,10 @@ class FrameRenderer:
         scene = self._project.find_scene(clip.scene_id) if clip.scene_id else None
         if scene is None or depth >= MAX_SCENE_DEPTH:
             return
+        # 秒のまま足してから 1 度だけフレームへ落とす 別々に切り捨てると端数が 2 回落ち、
+        # 1 フレーム前の絵になることがある 絵を止めた時刻も素材のクリップと同じく効かせる
         local_frame = frame - clip.timeline_start
-        # 別々に切り捨てると端数が 2 回落ち、1 フレーム前の絵になることがある
-        elapsed = Fraction(local_frame) * rate.frame_duration * Fraction(clip.speed)
-        scene_frame = seconds_to_frame(Fraction(clip.source_in) + elapsed, rate)
+        scene_frame = seconds_to_frame(clip.picture_time(local_frame, rate), rate)
 
         width, height = self._compositor.width, self._compositor.height
         nested = self._nested.get(depth + 1)

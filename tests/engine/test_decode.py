@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from fractions import Fraction
 from pathlib import Path
 
@@ -14,7 +15,34 @@ import pytest
 
 from sashimono.core.timebase import FrameRate
 from sashimono.engine.decode import AudioDecoder, ProbeError, VideoDecoder, probe_media
-from tests.media_fixtures import SampleMedia, decode_all_frames, make_rotated, make_sample
+from tests.media_fixtures import (
+    SampleMedia,
+    decode_all_frames,
+    libx264_available,
+    make_delayed,
+    make_rotated,
+    make_sample,
+)
+
+
+def _short_picture(directory: Path) -> Path:
+    """映像 1 秒・音 2 秒の素材 音の方が長い素材の、映像の終わりの後を見るため"""
+    if not libx264_available():
+        pytest.skip("ffmpeg に libx264 が無いので実素材のテストを飛ばす")
+    path = directory / "short-picture.mp4"
+    if not path.exists():
+        subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=30:duration=1",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=2:sample_rate=44100",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+        )  # fmt: skip
+    return path
 
 
 class TestProbe:
@@ -44,6 +72,18 @@ class TestProbe:
         # 29.97 が 2997/100 に化けると 1 時間で 3 フレーム以上ずれる
         item = probe_media(sample_ntsc.path)
         assert item.video_streams[0].frame_rate == FrameRate(30000, 1001)
+
+    def test_the_end_of_the_picture_is_read_apart_from_the_sound(self, media_dir: Path) -> None:
+        """音の方が長い素材で、映像の道の終わりをコンテナの長さと分けて取る（#115）
+
+        コンテナの長さだけだと、最後の絵で止める時刻が映像の最後のフレームより後ろになり、
+        止めた後もデコーダが毎フレーム終わり付近を読み直す
+        """
+        item = probe_media(_short_picture(media_dir))
+        end = item.video_streams[0].end_time
+        assert end is not None
+        assert float(end) == pytest.approx(1.0, abs=0.05)
+        assert item.duration > end + Fraction(1, 2)
 
     def test_video_only_media(self, sample_long: SampleMedia) -> None:
         item = probe_media(sample_long.path)
@@ -104,6 +144,40 @@ class TestVideoDecoder:
         assert at_start is not None
         assert midway is not None
         assert np.array_equal(at_start, midway)
+
+    def test_a_late_starting_file_shows_its_whole_picture(
+        self, sample_av: SampleMedia, tmp_path: Path
+    ) -> None:
+        # 素材の時刻は PTS そのまま 終わりを頭の時刻抜きの長さで切ると、頭が 5 秒の
+        # 2 秒の素材は 2 秒から先（映像のすべて）が何も映らない
+        late = make_delayed(tmp_path, "late.mp4", sample_av.path, 5.0)
+        with VideoDecoder(late) as decoder:
+            assert decoder.frame_at(Fraction(6)) is not None
+            assert decoder.frame_at(Fraction(7) - Fraction(1, 1000)) is not None
+            assert decoder.frame_at(Fraction(8)) is None
+
+    def test_a_late_file_shows_no_picture_where_only_its_sound_goes_on(
+        self, media_dir: Path, tmp_path: Path
+    ) -> None:
+        """頭 5 秒・映像 1 秒・音 2 秒の素材で、映像の終わり（6 秒）の後は絵を出さない
+
+        コンテナの終わり（7 秒）まで出すと、音だけの区間に直前の絵が静止画で残る
+        最後の絵を出し続けたいクリップは ``hold_at`` で止める（Issue #115）
+        """
+        late = make_delayed(tmp_path, "late-short.mp4", _short_picture(media_dir), 5.0)
+        with VideoDecoder(late) as decoder:
+            assert decoder.frame_at(Fraction(11, 2)) is not None
+            assert decoder.frame_at(Fraction(6) - Fraction(1, 1000)) is not None
+            assert decoder.frame_at(Fraction(13, 2)) is None
+
+    def test_a_file_whose_sound_runs_longer_shows_no_picture_after_its_picture_ends(
+        self, media_dir: Path
+    ) -> None:
+        # 頭が 0 の素材も同じ 音だけの区間に最後の絵を出すと、映像トラックに置いた動画が
+        # 映像の終わりの後も止まった絵のまま、下の層を隠し続ける
+        with VideoDecoder(_short_picture(media_dir)) as decoder:
+            assert decoder.frame_at(Fraction(1) - Fraction(1, 1000)) is not None
+            assert decoder.frame_at(Fraction(3, 2)) is None
 
     def test_past_the_end_returns_none(self, sample_av: SampleMedia) -> None:
         with VideoDecoder(sample_av.path) as decoder:

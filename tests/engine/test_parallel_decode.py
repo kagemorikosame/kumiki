@@ -129,6 +129,20 @@ class _Failing:
         return None
 
 
+class _Recording:
+    """頼まれた時刻を書き留めるデコーダの代役 先読みがどこを読みに行ったかを見る"""
+
+    def __init__(self, asked: list[Fraction]) -> None:
+        self._asked = asked
+
+    def frame_at(self, seconds: Fraction) -> np.ndarray:
+        self._asked.append(seconds)
+        return _DUMMY
+
+    def close(self) -> None:
+        return None
+
+
 @pytest.fixture
 def context() -> Iterator[OffscreenGLContext]:
     """テストごとのオフスクリーン GL コンテキスト 作れない環境では飛ばす"""
@@ -386,3 +400,30 @@ class TestDecoderLifetime:
         assert not finished.is_set(), "代役が待たずに返った 試験になっていない"
         renderer.close()
         assert finished.is_set()
+
+
+class TestHeldClips:
+    def test_the_prefetch_does_not_read_past_the_hold(
+        self, two_sources: tuple[SampleMedia, SampleMedia], context: OffscreenGLContext
+    ) -> None:
+        """絵を止めたクリップ（Issue #115）の先読みは、止めた時刻より先を頼まない
+
+        先へ読みに行くと、使わない絵のためにデコーダを素材の奥まで進め、止めた絵へ
+        戻るたびにシークし直す 素材の終わりの後なら、読めずに空振りする
+        """
+        project = _stacked(two_sources)
+        hold = Fraction(2, 30)
+        for track in project.timeline.tracks:
+            held = tuple(replace(clip, hold_at=hold) for clip in track.clips)
+            project = project.with_timeline(project.timeline.replace_track(track.with_clips(held)))
+        renderer = FrameRenderer(project, context=context, decode_threads=4)
+        asked: list[Fraction] = []
+        try:
+            _use_stubs(renderer, project, lambda: _Recording(asked))
+            with context:
+                for number in range(8):
+                    renderer.compose(number)
+        finally:
+            renderer.close()
+        assert asked
+        assert max(asked) == hold
