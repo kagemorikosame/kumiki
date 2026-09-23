@@ -185,7 +185,7 @@ def _media_audio(source: Path, should_cancel: ShouldCancel | None) -> np.ndarray
                         at = decoder.decode_error_at
                         seconds = (start if at is None else at) / WHISPER_SAMPLE_RATE
                         raise AsrError(
-                            f"音声の {seconds:.0f} 秒から先に読めない所がある: "
+                            f"音声の {seconds:.1f} 秒から先に読めない所がある: "
                             f"{decoder.decode_error}"
                         )
     except ProbeError as exc:

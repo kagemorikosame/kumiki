@@ -9,6 +9,7 @@ faster-whisper にパスを渡すと、音の最初のサンプルを 0 秒と�
 
 from __future__ import annotations
 
+import re
 import subprocess
 from dataclasses import replace
 from fractions import Fraction
@@ -242,7 +243,8 @@ def test_the_broken_place_is_told_where_it_is(
     # 読んだ塊の頭を出すと、実際より最大 60 秒手前から読めないように見える
     monkeypatch.setattr(AudioDecoder, "decode_error", property(lambda self: "Invalid data"))
     monkeypatch.setattr(
-        AudioDecoder, "decode_error_at", property(lambda self: 45 * WHISPER_SAMPLE_RATE)
+        AudioDecoder, "decode_error_at", property(lambda self: 45 * WHISPER_SAMPLE_RATE + 6400)
     )
-    with pytest.raises(AsrError, match="音声の 45 秒から先"):
+    # 整数秒に丸めると、0.4 秒で失敗した物が 0 秒から読めないように見える
+    with pytest.raises(AsrError, match=re.escape("音声の 45.4 秒から先")):
         _transcribe(sample_av.path, monkeypatch)
