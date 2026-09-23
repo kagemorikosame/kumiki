@@ -49,6 +49,7 @@ def _tall(media: MediaItem) -> MediaItem:
 
 class TestJobBoard:
     def test_it_counts_the_finished_and_the_failed(self) -> None:
+        # 失敗を終わった数と理由に入れないと、開けない素材があっても画面に何も出ず気付けない
         board = JobBoard()
         board.start("x", A)
         board.start("y", B)
@@ -146,6 +147,7 @@ class TestJobBoard:
         assert board.poll().failures == {A: "波形を作れなかった"}
 
     def test_forgetting_a_media_drops_its_failures(self) -> None:
+        # 素材を外した後も失敗を残すと、もう無い素材の失敗が数だけ知らせに残り、理由は出ない
         board = JobBoard()
         board.start("x", A)
         board.finish("x", "開けない")
