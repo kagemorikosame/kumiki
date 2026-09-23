@@ -10,25 +10,39 @@ r"""1 フレームの合成の速さを測る
 書き出しと同じ道（GPU から CPU へ読み戻す）になる 4K ではこの読み戻しだけで
 10ms ほど掛かるので、混ぜるとプレビューの速さを見誤る
 
+どの場面でも、そのうち**入れ物の走査**（絵の α から色の付いた範囲を探す
+``_content_box``）に掛かった分を別に出す エフェクトを積んだクリップは描くたびに
+これを求めるので、4K では 1 枚ごとに 10ms 近く掛かっていた（Issue #128）
+
+動画の場面（``--videos``）は、ffmpeg で作った素材をエフェクト無しと有りで重ねる
+ffmpeg が無ければ動画の場面だけ飛ばす
+
 GPU が無い環境では作れないので、何も測らずに終わる（終了コード 0）
 """
 
 from __future__ import annotations
 
 import argparse
+import atexit
 import io
 import os
+import shutil
 import statistics
+import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
+
+import numpy as np
 
 if isinstance(sys.stdout, io.TextIOWrapper):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 # 開発者本人の設定やキャッシュに触らない
 _base = Path(tempfile.mkdtemp(prefix="sashimono-bench-"))
+# 終わったら捨てる 動画の場面は 4K の素材を置くので、回すたびに残すと溜まる
+atexit.register(shutil.rmtree, _base, True)
 os.environ["APPDATA"] = str(_base / "roaming")
 os.environ["LOCALAPPDATA"] = str(_base / "local")
 
@@ -37,6 +51,7 @@ from OpenGL import GL  # noqa: E402
 from sashimono.core.commands import (  # noqa: E402
     AddClip,
     AddEffect,
+    AddMedia,
     AddScene,
     AddTrack,
     Command,
@@ -56,18 +71,52 @@ from sashimono.core.model import (  # noqa: E402
 from sashimono.core.timebase import FrameRate  # noqa: E402
 from sashimono.effects.definition import registry  # noqa: E402
 from sashimono.effects.sources import TEXT  # noqa: E402
+from sashimono.engine.decode import probe_media  # noqa: E402
 from sashimono.engine.gpu import (  # noqa: E402
     Framebuffer,
     GLContextError,
     OffscreenGLContext,
 )
 from sashimono.engine.render import FrameRenderer  # noqa: E402
+from sashimono.engine.render import renderer as renderer_module  # noqa: E402
 
 #: 30fps の 1 コマ（ミリ秒） プレビューの目標
 BUDGET_MS = 1000 / 30
 
 #: 画面へ出す先の大きさ プレビューの枠は画面の実寸で、素材の大きさではない
 PREVIEW_WIDTH, PREVIEW_HEIGHT = 1920, 1080
+
+
+class ScanMeter:
+    """入れ物の走査（``renderer._content_box``）に掛かった時間を足し上げる
+
+    関数を差し替えて測る 走査はクリップを描く道のあちこち（エフェクトの範囲・
+    スクリプトへ渡す大きさ）から呼ばれるので、呼ぶ側で囲むと取りこぼす
+    """
+
+    def __init__(self) -> None:
+        self.elapsed_ms = 0.0
+
+    def install(self) -> None:
+        original = renderer_module._content_box
+
+        def timed(image: np.ndarray) -> tuple[int, int, int, int] | None:
+            started = time.perf_counter()
+            try:
+                return original(image)
+            finally:
+                self.elapsed_ms += (time.perf_counter() - started) * 1000
+
+        renderer_module._content_box = timed
+
+    def take(self) -> float:
+        """ここまでの分を返して 0 へ戻す"""
+        elapsed, self.elapsed_ms = self.elapsed_ms, 0.0
+        return elapsed
+
+
+#: 走査の時間を数える 1 つだけ ``main`` で差し替える
+SCAN = ScanMeter()
 
 
 def _shape(colour: tuple[float, float, float, float], size: float) -> GeneratedSource:
@@ -132,6 +181,72 @@ def busy_project(settings: ProjectSettings, tracks: int, effects: int, length: i
     return project
 
 
+def make_video(directory: Path, width: int, height: int, seconds: float) -> Path | None:
+    """測る用の動画を ffmpeg で作る 作れなければ ``None``
+
+    動きのある絵にして、圧縮で楽をさせない 外の ffmpeg に libx264 が
+    入っているかは分からないので、落とさずに動画の場面だけ飛ばす
+    """
+    if shutil.which("ffmpeg") is None:
+        return None
+    path = directory / f"source-{width}x{height}.mp4"
+    if path.exists():
+        return path
+    command = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        f"testsrc2=size={width}x{height}:rate=30:duration={seconds}",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-pix_fmt",
+        "yuv420p",
+        str(path),
+    ]
+    # 組み立てているのは固定の文字列と argparse が受けた数値、一時フォルダの中の
+    # パスだけで、外から来る文字列は混ざらない shell は通さない（list 渡し）
+    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
+    if subprocess.run(command, check=False).returncode != 0:
+        return None
+    return path
+
+
+def video_project(
+    settings: ProjectSettings, source: Path, count: int, effects: int, length: int
+) -> Project:
+    """同じ動画を ``count`` 本重ね、それぞれへエフェクトを ``effects`` 個積む
+
+    どれも少し薄くして、下の絵も描かせる 不透明のまま重ねると、
+    隠れた分を飛ばす作りになったときに重ねた意味が無くなる
+    """
+    project = Project.create(settings)
+    media = probe_media(source)
+    project = AddMedia(media).apply(project)
+    blur = registry.get("blur")
+    glow = registry.get("glow")
+    assert blur is not None and glow is not None
+    for index in range(count):
+        track = Track(TrackKind.VIDEO, f"V{index + 1}")
+        project = AddTrack(track).apply(project)
+        clip = Clip(
+            timeline_start=0,
+            duration=length,
+            media_id=media.id,
+            opacity=AnimatedValue(0.7),
+        )
+        project = AddClip(track.id, clip).apply(project)
+        for number in range(effects):
+            definition = blur if number % 2 == 0 else glow
+            project = AddEffect(clip.id, definition.create()).apply(project)
+    return project
+
+
 def text_project(settings: ProjectSettings, count: int, length: int) -> Project:
     """テキストを ``count`` 本重ねたプロジェクト 文字は毎フレーム描き直される"""
     project = Project.create(settings)
@@ -149,8 +264,9 @@ def text_project(settings: ProjectSettings, count: int, length: int) -> Project:
 
 def measure(
     project: Project, context: OffscreenGLContext, frames: int, *, readback: bool = False
-) -> list[float]:
-    """1 フレームにかかる時間（ミリ秒） 1 回目は温まっていないので捨てる
+) -> tuple[list[float], list[float]]:
+    """1 フレームにかかる時間と、そのうち入れ物の走査の分（どちらもミリ秒）
+    1 回目は温まっていないので捨てる
 
     測るのは既定で**プレビューと同じ道** 合成（``compose``）と、その結果を
     画面へ出す所（``present``）を測る 出す先は自前の 1920x1080 の描画先で、
@@ -166,21 +282,25 @@ def measure(
     """
     renderer = FrameRenderer(project, context=context)
     times: list[float] = []
+    scans: list[float] = []
     try:
         if readback:
             for frame in range(frames + 1):
+                SCAN.take()
                 started = time.perf_counter()
                 # 書き出しと同じ呼び方 コンテキストは render の中で取る
                 renderer.render(frame % max(project.duration, 1))
                 elapsed = (time.perf_counter() - started) * 1000
                 if frame:
                     times.append(elapsed)
-            return times
+                    scans.append(SCAN.take())
+            return times, scans
 
         with context:
             screen = Framebuffer(PREVIEW_WIDTH, PREVIEW_HEIGHT, internal_format=GL.GL_RGBA8)
             try:
                 for frame in range(frames + 1):
+                    SCAN.take()
                     started = time.perf_counter()
                     renderer.compose(frame % max(project.duration, 1))
                     renderer.compositor.present(
@@ -190,11 +310,12 @@ def measure(
                     elapsed = (time.perf_counter() - started) * 1000
                     if frame:
                         times.append(elapsed)
+                        scans.append(SCAN.take())
             finally:
                 screen.release()
     finally:
         renderer.close()
-    return times
+    return times, scans
 
 
 def percentile95(times: list[float]) -> float:
@@ -208,13 +329,15 @@ def percentile95(times: list[float]) -> float:
     return statistics.quantiles(times, n=20, method="inclusive")[18]
 
 
-def report(name: str, times: list[float]) -> bool:
+def report(name: str, measured: tuple[list[float], list[float]]) -> bool:
+    times, scans = measured
     worst = max(times)
     p95 = percentile95(times)
     ok = p95 <= BUDGET_MS
     print(
         f"{name:<24} 中央 {statistics.median(times):7.2f} ms  95% {p95:7.2f} ms  "
-        f"最悪 {worst:7.2f} ms  {'OK' if ok else '予算超え'}"
+        f"最悪 {worst:7.2f} ms  うち入れ物の走査 {statistics.median(scans):6.2f} ms  "
+        f"{'OK' if ok else '予算超え'}"
     )
     return ok
 
@@ -227,6 +350,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tracks", type=int, default=20, help="重ねるトラックの数")
     parser.add_argument("--effects", type=int, default=2, help="1 クリップのエフェクト数")
     parser.add_argument("--texts", type=int, default=20, help="重ねるテキストの数")
+    parser.add_argument(
+        "--videos", type=int, default=3, help="重ねる動画の数 0 で動画の場面を飛ばす"
+    )
     parser.add_argument("--frames", type=int, default=20, help="測るフレーム数")
     parser.add_argument(
         "--readback",
@@ -239,6 +365,8 @@ def main(argv: list[str] | None = None) -> int:
         # 0 や負の値は「測れた」と言いながら何も測らない
         if getattr(arguments, name) <= 0:
             parser.error(f"--{name} は 1 以上にしてください")
+    if arguments.videos < 0:
+        parser.error("--videos は 0 以上にしてください")
     settings = ProjectSettings(
         width=arguments.width, height=arguments.height, frame_rate=FrameRate(30)
     )
@@ -261,6 +389,7 @@ def main(argv: list[str] | None = None) -> int:
         # ここでの「予算超え」は速さの比べ方であって、不合格ではない
         # 合否にも混ぜない 混ぜると、正常な測定で終了コードが 1 になる
         print("  （目標はプレビューの値 書き出しは実時間で動かなくてよい 比べるための表示）")
+    SCAN.install()
     passed = True
     try:
         for depth in range(1, arguments.depth + 1):
@@ -279,6 +408,17 @@ def main(argv: list[str] | None = None) -> int:
             f"テキスト {arguments.texts} 本",
             measure(project, context, arguments.frames, readback=arguments.readback),
         )
+        if arguments.videos:
+            source = make_video(_base, arguments.width, arguments.height, length / 30 + 1)
+            if source is None:
+                print("ffmpeg（libx264）で素材を作れないので、動画の場面は測らない")
+            else:
+                for effects in (0, arguments.effects):
+                    project = video_project(settings, source, arguments.videos, effects, length)
+                    passed &= report(
+                        f"動画 {arguments.videos} 本 × エフェクト {effects}",
+                        measure(project, context, arguments.frames, readback=arguments.readback),
+                    )
     finally:
         context.release()
     # 読み戻しの道は比べるための表示 予算はプレビューのものなので合否に使わない
