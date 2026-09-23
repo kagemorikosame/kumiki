@@ -72,13 +72,21 @@ class Tally:
     animated: int = 0
     #: 何も置かずに終わったオブジェクト 読めても 0 個なら、読み手が節の名前を知らない
     empty_files: int = 0
+    #: 読めなかった理由 1 本の中で何個ものオブジェクトが落ちると、同じファイルが何度も並ぶ
     broken: list[tuple[Path, str]] = field(default_factory=list)
     missing: Counter[str] = field(default_factory=Counter)
+
+    @property
+    def broken_files(self) -> int:
+        """読めなかったファイルの本数 理由の数で数えると、1 本が何本にも見える"""
+        return len({path for path, _ in self.broken})
 
 
 def count(targets: list[Path], rate: FrameRate) -> dict[str, Tally]:
     """ファイルを全部通して、拡張子ごとに数える キーの ``*`` は全体"""
-    tallies: dict[str, Tally] = {}
+    # 全体の行は、読むファイルが 0 本でも出す 空の置き場を指したのか、道具が
+    # 何も数えなかったのかを、出力を見ただけで見分けられるように
+    tallies: dict[str, Tally] = {"*": Tally()}
     for path in targets:
         for key in ("*", path.suffix.lower()):
             tallies.setdefault(key, Tally())
@@ -147,7 +155,7 @@ def main() -> int:
         tally = tallies[suffix]
         print(
             f"  {suffix:8s} {tally.files:5d} {tally.objects:13d} {tally.animated:7d}"
-            f" {tally.empty_files:13d} {len(tally.broken):9d}"
+            f" {tally.empty_files:13d} {tally.broken_files:9d}"
             f"  {len(tally.missing)}/{sum(tally.missing.values())}"
         )
 
@@ -155,7 +163,7 @@ def main() -> int:
         tally = tallies[suffix]
         title = "全体" if suffix == "*" else suffix
         print(f"[{title}] オブジェクト {tally.objects} 個 うち中間点を持つもの {tally.animated} 個")
-        print(f"[{title}] 読めなかったファイル {len(tally.broken)} 本")
+        print(f"[{title}] 読めなかったファイル {tally.broken_files} 本")
         for path, reason in tally.broken[: args.top]:
             print(f"  {path.name}: {reason}")
         print(f"[{title}] 写せない所 {len(tally.missing)} 種")

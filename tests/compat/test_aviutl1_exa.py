@@ -410,3 +410,44 @@ class TestSourceryFindings:
             catalog_module._catalog = saved
             if saved is not None:
                 saved.register_all()
+
+
+class TestCodeRabbitFindings:
+    """PR #131 の CodeRabbit のレビューで見つかったもの"""
+
+    def test_an_unknown_figure_falls_back_and_is_recorded(self) -> None:
+        # 一覧に無い図形名をそのまま既定値にすると SelectSpec が例外を投げる
+        header = parse_control('--dialog:角図形/fig,_1="ハート";色/col,_2=0x0;')
+        figure = header.parameters[0]
+        assert figure.default_value() == "円"
+        assert [spec.name for spec in header.parameters] == ["_1", "_2"]
+        assert "--dialog の図形: ハート" in header.unknown
+
+    def test_a_non_finite_number_does_not_break_the_header(self) -> None:
+        # nan はスライダーの範囲の検査で例外になる
+        header = parse_control("--dialog:値,_1=nan;")
+        (spec,) = header.parameters
+        assert spec.default_value() == AnimatedValue(0.0)
+        assert any("_1=nan" in line for line in header.unknown)
+
+    def test_one_broken_script_does_not_stop_the_scan(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 走査が 1 本の例外で止まると、ほかのスクリプトが全部使えなくなる
+        (tmp_path / "図形.anm").write_text('--dialog:角図形/fig,_1="ハート";\n', "cp932")
+        (tmp_path / "良い.anm").write_text("--track0:量,0,10,1\n", "cp932")
+        report = CompatibilityReport()
+        catalog = ScriptCatalog(roots=(tmp_path,), report=report)
+        assert {entry.label for entry in catalog.scan()} == {"図形", "良い"}
+
+        from sashimono.compat.aviutl import catalog as module
+        from sashimono.compat.aviutl.control import split_scripts as real
+
+        def fussy(text: str) -> tuple[object, ...]:
+            if "ハート" in text:
+                raise ValueError("壊れた制御文字")
+            return real(text)
+
+        monkeypatch.setattr(module, "split_scripts", fussy)
+        assert {entry.label for entry in catalog.scan()} == {"良い"}
+        assert "図形.anm" in report.failures

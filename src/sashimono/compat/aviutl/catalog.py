@@ -208,7 +208,14 @@ class ScriptCatalog:
             return
 
         relative = _relative(root, path)
-        for index, section in enumerate(split_scripts(text)):
+        try:
+            sections = split_scripts(text)
+        except ValueError as exc:
+            # 制御文字から設定欄を作れない（範囲の崩れた値など） 1 本のために一覧の
+            # 走査ごと止まると、ほかの数百本も使えなくなるので、このファイルだけ飛ばす
+            self._report.note_failure(path.name, f"制御文字を読めない: {exc}")
+            return
+        for index, section in enumerate(sections):
             yield _entry(relative, kind, index, section, path.parent)
 
 

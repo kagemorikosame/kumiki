@@ -68,3 +68,29 @@ def test_a_file_that_places_nothing_is_counted(tool: ModuleType, files: list[Pat
     assert tallies[".exa"].empty_files == 1
     assert tallies[".exa"].objects == 1
     assert not tallies["*"].broken
+
+
+def test_an_empty_place_still_prints_the_totals(tool: ModuleType) -> None:
+    # 空の置き場を指したとき、全体の行が出ないと、道具が何も数えなかったように見える
+    tallies = tool.count([], FrameRate(30))
+    assert set(tallies) == {"*"}
+    assert tallies["*"].files == 0
+
+
+def test_a_file_is_counted_once_however_many_objects_fail(
+    tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 理由を 1 オブジェクトごとに足していくので、本数を理由の数で数えると 1 本が 2 本になる
+    path = tmp_path / "二つ.exo"
+    path.write_text(
+        "[0]\nstart=1\nend=30\n[0.0]\n_name=図形\n[1]\nstart=1\nend=30\n[1.0]\n_name=図形\n",
+        encoding="cp932",
+    )
+
+    def broken(*_: object, **__: object) -> None:
+        raise RuntimeError("写せない")
+
+    monkeypatch.setattr(tool, "map_object", broken)
+    tallies = tool.count([path], FrameRate(30))
+    assert len(tallies["*"].broken) == 2
+    assert tallies["*"].broken_files == 1

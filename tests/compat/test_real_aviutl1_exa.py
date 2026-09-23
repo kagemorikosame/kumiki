@@ -33,6 +33,24 @@ from sashimono.engine.render.scripts import _apply_params
 ROOT = Path(__file__).resolve().parent.parent / "fixtures" / "aviutl" / "aviutl1"
 FILES = sorted(ROOT.rglob("*.exa")) if ROOT.is_dir() else []
 SIGMA = ROOT / "sigma_aviutl_scripts"
+PSDTOOLKIT = ROOT / "aviutl_psdtoolkit"
+LOCALFONT = ROOT / "aviutl_localfont2"
+
+#: 配布物ごとのアニメーション効果の数（手元の 67 本を数えた）
+#: 4 つのうち一部だけを置いた機械でも、置いた分だけで数を合わせる
+EFFECTS_IN = {SIGMA: 30, PSDTOOLKIT: 6}
+
+
+def _require(folder: Path) -> Path:
+    """その配布物が置かれていなければ飛ばす
+
+    一部だけを置いた機械で、置いていない配布物の数を当てにして落ちると、
+    読み手の不具合と置き場の不足の見分けが付かない
+    """
+    if not folder.is_dir():
+        pytest.skip(f"{folder.name} が手元に無い")
+    return folder
+
 
 pytestmark = pytest.mark.skipif(not FILES, reason="AviUtl1 の配布エイリアスが手元に無い")
 
@@ -91,10 +109,10 @@ def test_every_animation_effect_finds_its_script(
     items, report = mapped
     lost = [line for line in report.missing if line.startswith("アニメーション効果")]
     assert lost == []
-    # 67 本の中のアニメーション効果は 36 個（日本語版 34・英語版 2） 何も読めずに
-    # 記録も空、という形で通らないよう、繋がった数そのものを見る
+    # 4 つそろえば 36 個（日本語版 34・英語版 2） 何も読めずに記録も空、という形で
+    # 通らないよう、繋がった数そのものを見る
     connected = [e for _, item in items for e in item.clip.effects if e.kind.startswith("aviutl:")]
-    assert len(connected) == 36
+    assert len(connected) == sum(n for folder, n in EFFECTS_IN.items() if folder.is_dir())
 
 
 def test_what_is_left_is_only_the_scripted_contents(
@@ -106,7 +124,16 @@ def test_what_is_left_is_only_the_scripted_contents(
     """
     _, report = mapped
     kinds = {line.split(":", 1)[0] for line in report.missing}
-    assert kinds == {"カスタムオブジェクト", "シーンチェンジ", "フィルタ"}, report.missing
+    # どの穴が出るかは置いた配布物で決まる カスタムオブジェクトは sigma と PSDToolKit、
+    # シーンチェンジは sigma、スクリプト制御は localfont2 にある
+    expected = set()
+    if SIGMA.is_dir() or PSDTOOLKIT.is_dir():
+        expected.add("カスタムオブジェクト")
+    if SIGMA.is_dir():
+        expected.add("シーンチェンジ")
+    if LOCALFONT.is_dir():
+        expected.add("フィルタ")
+    assert kinds == expected, report.missing
     assert {line for line in report.missing if line.startswith("フィルタ")} <= {
         "フィルタ: スクリプト制御"
     }
@@ -129,7 +156,7 @@ def test_the_english_twins_read_the_same(
 
     違ってよいのはフォントと、作者が変えた 透明度 だけ（行ごとに突き合わせて確かめた）
     """
-    twins = [path for path in FILES if path.stem.endswith("_en")]
+    twins = sorted(_require(PSDTOOLKIT).rglob("*_en.exa"))
     assert twins
     for english in twins:
         japanese = english.with_name(english.name.replace("_en.exa", ".exa"))
@@ -151,6 +178,7 @@ def test_the_slider_stays_still(
     """
     items, report = mapped
     assert not [line for line in report.missing if "移動方法" in line or "中間点" in line]
+    _require(PSDTOOLKIT)
     sliders = [item for path, item in items if path.stem.startswith("MultiPurposeSlider")]
     assert len(sliders) == 2
 
@@ -165,7 +193,7 @@ def test_the_sigma_effects_run(scripts: ScriptCatalog) -> None:
     runtime = LuaScriptRuntime(report=report)
     runtime.set_roots(scripts.roots)
     ran = 0
-    for path in sorted((SIGMA / "exa" / "anm").glob("*.exa")):
+    for path in sorted((_require(SIGMA) / "exa" / "anm").glob("*.exa")):
         item = map_object(load_exo(path).objects[0], FrameRate(30), report=CompatibilityReport())
         assert item is not None
         for effect in item.clip.effects:
