@@ -700,7 +700,83 @@ def _map_item(item: dict[str, Any], log: CompatibilityReport) -> MappedObject | 
         media_path=media_path,
         kind=kind,
         has_span="Length" in item,
+        # 動画アイテムは 1 つで映像と音の両方を持つ 音声トラックへも展開しないと鳴らない
+        with_sound=name == "VideoItem",
+        audio_effects=_audio_effects(item, name, log, length=length, keyframes=keyframes),
     )
+
+
+#: 音を持つアイテム 映像を持つのは ``VideoItem`` だけ
+_SOUND_ITEMS = frozenset({"VideoItem", "AudioItem", "VoiceItem"})
+
+
+def _audio_effects(
+    item: dict[str, Any],
+    name: str,
+    log: CompatibilityReport,
+    *,
+    length: int,
+    keyframes: Any,
+) -> tuple[Effect, ...]:
+    """音の設定を、音声トラックのクリップへ掛けるエフェクトにする
+
+    項目の並びは YMM4 自身が書いたものを数えて決めた 手元の YMM4（4.48.0.3）が
+    ``user/setting/…/ItemSettings.json`` の ``DefaultItems.VideoItem`` へ書き出す
+    既定の動画アイテムと、実際のプロジェクト 16 本に入っていた動画アイテム 214 個・
+    音声アイテム 125 個が同じ並びだった（``Volume`` ``Pan`` ``PlaybackRate``
+    ``ContentOffset`` ``IsLooped`` ``AudioTrackIndex`` ``AudioEffects`` ``Echo*``）
+    アイテムテンプレートの中身も同じ形で入る（同じ設定ファイルの ``Templates`` が、
+    ``.ymmt`` の ``catalog.json`` と同じ ``Name`` ``Path`` ``Items`` を持つ）
+
+    ``Volume`` は百分率で、0 が無音・100 がそのままの大きさ YMM4 に音を消す印は無く、
+    実物でも音を消した 18 個は ``Volume`` が 0 だった（``IsAudioEnabled`` のような
+    項目はどの版のファイルにも出てこない） こちらの ``audio_volume`` も百分率なので
+    そのまま渡す
+
+    写せないものは数えて残す 定位（``Pan``）は向きの意味を実物で確かめられていない
+    （実物 339 個すべて 0 だった） 再生速度（``PlaybackRate``）は 0 のものが実際に
+    あり（動画アイテム 5 個）、こちらの ``speed`` は正の数しか受け取らない
+    """
+    if name not in _SOUND_ITEMS:
+        return ()
+
+    def differs(key: str, default: float) -> bool:
+        """既定と違う値を持つか 動く値は途中の点まで見る
+
+        先頭の値だけを見ると（``number``）、0 から動き出す定位のように、
+        始まりが既定と同じものを数え落とす
+        """
+        read = animated(item.get(key), default, length=length, keyframes=keyframes)
+        if read.keyframes:
+            return any(point.value != default for point in read.keyframes)
+        return read.static != default
+
+    if differs("Pan", 0.0):
+        log.note_missing("YMM4 の音の定位（Pan）")
+    if differs("PlaybackRate", 100.0):
+        log.note_missing("YMM4 の再生速度（PlaybackRate）")
+    if str(item.get("ContentOffset") or "00:00:00") != "00:00:00":
+        log.note_missing("YMM4 の素材の開始位置（ContentOffset）")
+    if int(number(item.get("AudioTrackIndex"), 0.0)) != 0:
+        log.note_missing("YMM4 の音声トラックの選択（AudioTrackIndex）")
+    if item.get("IsLooped") is True:
+        log.note_missing("YMM4 の素材の繰り返し（IsLooped）")
+    if item.get("EchoIsEnabled") is True:
+        log.note_missing("YMM4 のエコー")
+    for entry in item.get("AudioEffects") or []:
+        # 切ってあるエフェクトは鳴り方に関わらない 数えると、直す順番を決めるときに
+        # 効いていないものが上位に来る 映像エフェクトの読み方（map_video_effects）と同じ
+        # 実物の音声エフェクト 3 個はどれも IsEnabled を持っていた
+        if isinstance(entry, dict) and entry.get("IsEnabled") is not False:
+            log.note_missing(f"YMM4 の音声エフェクト: {type_name(entry) or '種類不明'}")
+
+    volume = animated(item.get("Volume"), 100.0, length=length, keyframes=keyframes)
+    if volume == AnimatedValue(100.0):
+        # 既定のままなら何も掛けない 音量 100% のエフェクトが並ぶと、
+        # 何を変えたテンプレートなのかが設定画面から読めなくなる
+        return ()
+    definition = registry.get("audio_volume")
+    return () if definition is None else (definition.create(volume=volume),)
 
 
 #: YMM4 の切り替えの種類と、場面切り替えの切り替え方

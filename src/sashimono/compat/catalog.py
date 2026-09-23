@@ -42,6 +42,7 @@ from sashimono.core.commands import (
 )
 from sashimono.core.commands.insert import DEFAULT_GENERATED_FRAMES
 from sashimono.core.model import (
+    AnimatedValue,
     Clip,
     GeneratedSource,
     MediaItem,
@@ -50,6 +51,8 @@ from sashimono.core.model import (
     Track,
     TrackId,
     TrackKind,
+    new_clip_id,
+    new_group_id,
 )
 from sashimono.core.timebase import FrameRate
 
@@ -337,6 +340,11 @@ def place(
     ``media`` は :func:`gather_media` で登録する素材 素材を参照するクリップへ
     ``media_id`` を結ぶ 音声しか無い素材は映像トラックでは鳴らないので、
     ``track_id`` を渡していても音声トラックへ置く
+
+    映像と音の両方を持つ素材（YMM4 の動画アイテム :attr:`MappedObject.with_sound`）は、
+    素材の読み込み（:func:`~sashimono.core.commands.insert_media`）と同じく映像の
+    クリップと音のクリップへ分け、リンクで結ぶ 映像トラックへ 1 本置くだけでは
+    音が鳴らない（Issue #89）
     """
     # 中身を持たないもの（エフェクトだけのテンプレート）は置けない
     # 空のクリップを置いても何も映らないので、:func:`restyle` で着せて使う
@@ -346,8 +354,6 @@ def place(
 
     known = media or {}
     log = report if report is not None else global_report
-    _note_silent_videos(objects, known, log)
-    heard = [item for item in objects if _is_sound(item, known)]
     seen = [item for item in objects if not _is_sound(item, known)]
 
     # 一番早いオブジェクトが ``at_frame`` に来るように、まとめてずらす
@@ -364,13 +370,9 @@ def place(
         )
 
     commands: list[Command] = []
-    tracks = (
-        {}
-        if track_id is not None or not seen
-        else _tracks_for(project, {item.layer for item in seen}, commands)
-    )
-    sound_tracks = _sound_tracks_for(project, [(item, timed(item)) for item in heard], commands)
-
+    # 置くクリップを先に全部作る 音声トラックの割り当ては、分けて作った音も
+    # 含めて重なりを見ないと、同じトラックへ重ねて置いて ``AddClip`` に断られる
+    prepared: list[tuple[MappedObject, Clip | None, Clip | None]] = []
     for item in objects:
         placed = timed(item)
         linked = _media_of(item, known)
@@ -384,11 +386,62 @@ def place(
                 source_in=item.scene_offset * project.rate.frame_duration,
             )
         if _is_sound(item, known):
-            target = sound_tracks[id(item)].id
-        else:
+            prepared.append((item, None, _with_audio_effects(placed, item)))
+            continue
+        prepared.append((item, *_split_sound(placed, item, linked)))
+
+    tracks = (
+        {}
+        if track_id is not None or not seen
+        else _tracks_for(project, {item.layer for item in seen}, commands)
+    )
+    sound_tracks = _sound_tracks_for(
+        project, [(item, sound) for item, _, sound in prepared if sound is not None], commands
+    )
+
+    for item, picture, sound in prepared:
+        if picture is not None:
             target = track_id if track_id is not None else tracks[item.layer].id
-        commands.append(AddClip(target, placed))
+            commands.append(AddClip(target, picture))
+        if sound is not None:
+            commands.append(AddClip(sound_tracks[id(sound)].id, sound))
     return commands
+
+
+def _with_audio_effects(clip: Clip, item: MappedObject) -> Clip:
+    """音のクリップへ、音量などのエフェクトを足す"""
+    if not item.audio_effects:
+        return clip
+    return replace(clip, effects=clip.effects + item.audio_effects)
+
+
+def _split_sound(
+    clip: Clip, item: MappedObject, linked: MediaItem | None
+) -> tuple[Clip, Clip | None]:
+    """映像と音を両方持つ素材を、映像のクリップと音のクリップへ分ける
+
+    分けないと音声トラックにクリップが無いまま置かれ、音が鳴らない
+    リンクで結ぶのは素材の読み込みと同じ 片方だけ動かすと絵と音がずれる
+
+    音のクリップは映像のエフェクト（変形や色）を持たない 音に効かないものを
+    持ち回ると、クリップの設定画面に効かないエフェクトが並ぶ
+    """
+    if not item.with_sound or linked is None or not (linked.has_video and linked.has_audio):
+        return clip, None
+    group = new_group_id()
+    picture = replace(clip, stream_index=linked.video_streams[0].index, link_group=group)
+    sound = replace(
+        clip,
+        stream_index=linked.audio_streams[0].index,
+        link_group=group,
+        effects=item.audio_effects,
+        after_effects=(),
+        opacity=AnimatedValue(1.0),
+        blend_mode="normal",
+        clip_to_below=False,
+        id=new_clip_id(),
+    )
+    return picture, sound
 
 
 def _media_of(item: MappedObject, known: Mapping[str, MediaItem]) -> MediaItem | None:
@@ -396,23 +449,6 @@ def _media_of(item: MappedObject, known: Mapping[str, MediaItem]) -> MediaItem |
     if not item.media_path or item.clip.source is not None:
         return None
     return known.get(item.media_path)
-
-
-def _note_silent_videos(
-    objects: list[MappedObject], known: Mapping[str, MediaItem], log: CompatibilityReport
-) -> None:
-    """音も持つ動画を置いても鳴らないことを、互換性レポートへ数えて残す
-
-    こちらの素材の読み込み（:func:`~sashimono.core.commands.insert_media`）は映像と
-    音声を別のクリップへ分けてリンクするが、テンプレートの配置は映像トラックへ
-    1 本置くだけで音声のクリップを作らない YMM4 の動画アイテムは配布物 230 本で
-    1 度も使われておらず、実物で確かめるまで分ける側へ寄せない（Issue #89）
-    握り潰すと、置いたのに鳴らない理由がどこにも残らない
-    """
-    for item in objects:
-        linked = _media_of(item, known)
-        if linked is not None and linked.has_video and linked.has_audio:
-            log.note_missing("テンプレートの動画の音（映像トラックにだけ置くので鳴らない）")
 
 
 def _is_sound(item: MappedObject, known: Mapping[str, MediaItem]) -> bool:
@@ -431,7 +467,10 @@ def _is_sound(item: MappedObject, known: Mapping[str, MediaItem]) -> bool:
 def _sound_tracks_for(
     project: Project, sounds: list[tuple[MappedObject, Clip]], commands: list[Command]
 ) -> dict[int, Track]:
-    """音声を置く音声トラック（``id(元のオブジェクト)`` → トラック）
+    """音声を置く音声トラック（``id(音のクリップ)`` → トラック）
+
+    鍵をクリップにするのは、動画アイテムが映像と音の 2 本に分かれるため
+    元のオブジェクトを鍵にすると、分けて作った音のクリップを引けない
 
     元のレイヤーの低い順に、1 つずつ空いている音声トラックを上から探す
     映像と違い、レイヤー番号をそのままトラックの番号にしない YMM4 は映像と音声を
@@ -450,7 +489,7 @@ def _sound_tracks_for(
     ]
     count = len(list(project.timeline.audio_tracks()))
     chosen: dict[int, Track] = {}
-    for item, clip in sorted(sounds, key=lambda pair: (pair[0].layer, pair[1].timeline_start)):
+    for _item, clip in sorted(sounds, key=lambda pair: (pair[0].layer, pair[1].timeline_start)):
         start, end = clip.timeline_start, clip.timeline_end
         slot = next(
             (
@@ -466,7 +505,7 @@ def _sound_tracks_for(
             commands.append(AddTrack(slot[0]))
             pool.append(slot)
         slot[1].append(clip)
-        chosen[id(item)] = slot[0]
+        chosen[id(clip)] = slot[0]
     return chosen
 
 
