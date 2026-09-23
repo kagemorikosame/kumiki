@@ -31,12 +31,19 @@ from sashimono.core.model import Project, TrackKind
 from sashimono.engine.audio import AudioMixer
 from sashimono.engine.colorspace import VideoReformatter, tag_bt709, to_bt709
 from sashimono.engine.gpu import OffscreenGLContext
-from sashimono.engine.render import FULL_QUALITY, FrameRenderer
+from sashimono.engine.render import (
+    DEFAULT_DECODE_THREADS,
+    FULL_QUALITY,
+    MAX_DECODE_THREADS,
+    FrameRenderer,
+)
 
 __all__ = [
     "COLOR_OPTIONS",
     "DEFAULT_PIPELINE_DEPTH",
+    "MAX_DECODE_THREADS",
     "MAX_PIPELINE_DEPTH",
+    "MEASURED_DECODE_MS",
     "MEASURED_EXPORT_MS",
     "MEASURED_EXPORT_TOTAL_MS",
     "ExportError",
@@ -56,12 +63,18 @@ MAX_PIPELINE_DEPTH = 8
 #: 合成 / 読み戻し / 色変換 / エンコード + mux の順（NVENC・NVIDIA GPU）
 #: 前の 2 つは GPU の側で、後ろの 2 つが別スレッドへ逃がせる分
 #: 測り直すときは tools\bench_export.py
-MEASURED_EXPORT_MS = (14.6, 7.4, 6.0, 0.8)
+MEASURED_EXPORT_MS = (11.2, 2.7, 6.0, 0.7)
 
 #: 同じ素材を書き出し切ったときの 1 枚あたりの実測（ミリ秒） 1 枚ずつ / 2 枚先まで
-#: 内訳の差（6.8ms）ほど縮まないのは、色変換の前半（画素を PyAV へ写す所）が
+#: 内訳の差（6.7ms）ほど縮まないのは、色変換の前半（画素を PyAV へ写す所）が
 #: GIL を握ったままで、合成の側の Python の処理と取り合うため
-MEASURED_EXPORT_TOTAL_MS = (38.7, 37.1)
+MEASURED_EXPORT_TOTAL_MS = (31.4, 28.5)
+
+#: 同じ素材の合成（デコードを含む GPU 合成）1 枚あたりの実測（ミリ秒）
+#: 並べない（1 本ずつ）/ 4 本まで並べる の順 1920x1080 を 3 枚重ね
+#: PyAV のデコードは GIL を解放するので、別の素材どうしなら本当に重なる
+#: 測り直すときは tools\bench_export.py --decode-threads 1 と付けない場合を比べる
+MEASURED_DECODE_MS = (15.9, 11.2)
 
 #: 優先順に並べた映像コーデック 前にあるものから、使えるものを選ぶ
 #: NVENC は CPU をほとんど使わないので、長尺でも編集を続けながら書き出せる
@@ -104,6 +117,8 @@ class ExportSettings:
     #: GPU の合成を、色変換・エンコード・mux の何枚ぶん先へ進めてよいか
     #: 0 なら 1 枚ずつ直列に処理する（スレッドを使わない）
     pipeline_depth: int = DEFAULT_PIPELINE_DEPTH
+    #: 重ねたレイヤーのデコードを、いくつまで同時に走らせてよいか 1 なら並べない
+    decode_threads: int = DEFAULT_DECODE_THREADS
 
 
 #: 開けるかを試すときの大きさ NVENC は小さすぎる画を断る（64x64 では開けない）ので、
@@ -221,9 +236,19 @@ def export_project(
     ):
         raise ExportError(f"先読みの深さは 0 から {MAX_PIPELINE_DEPTH} までの整数: {depth!r}")
 
+    # デコードのスレッド数も同じ理由で見る 0 や負の数を素通しにすると、スレッドを
+    # 1 本も作らない走り係になり、最初の先読みで書き出しが止まったまま返らない
+    threads = settings.decode_threads
+    if (
+        not isinstance(threads, int)
+        or isinstance(threads, bool)
+        or not 1 <= threads <= MAX_DECODE_THREADS
+    ):
+        raise ExportError(f"デコードの並列数は 1 から {MAX_DECODE_THREADS} までの整数: {threads!r}")
+
     settings.path.parent.mkdir(parents=True, exist_ok=True)
     context = OffscreenGLContext()
-    renderer = FrameRenderer(project, context=context, quality=FULL_QUALITY)
+    renderer = FrameRenderer(project, context=context, quality=FULL_QUALITY, decode_threads=threads)
     mixer = AudioMixer(project)
 
     try:
