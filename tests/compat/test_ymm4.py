@@ -1469,6 +1469,43 @@ class TestItemSound:
         assert mapped.clip.speed == Fraction(repr(rate)) / 100
         assert any("絵の速さは未確認" in line for line in report.lines())
 
+    def test_the_newer_rate_fields_as_written_add_nothing(self) -> None:
+        """新しい版の書き出しの形（``PlaybackRate2`` と ``Resampling``）は数えない
+
+        実物の音を持つアイテム 138 個はどれもこの形 数えると、速さを変えていない
+        アイテムまで直す候補に並ぶ
+        """
+        report = CompatibilityReport()
+        map_template(
+            [
+                self.audio(
+                    PlaybackRate=50.0,
+                    PlaybackRate2=still(50.0),
+                    PlaybackRateAudioProcessingMode="Resampling",
+                )
+            ],
+            report=report,
+        )
+        assert not report.lines()
+
+    @pytest.mark.parametrize(
+        "values",
+        [
+            {"PlaybackRate2": still(200.0)},
+            {"PlaybackRate2": moving(100.0, 200.0)},
+            {"PlaybackRateAudioProcessingMode": "まだ見ていない変え方"},
+        ],
+    )
+    def test_an_unmeasured_rate_field_is_counted(self, values: dict[str, Any]) -> None:
+        """``PlaybackRate2`` の食い違いや動き・``Resampling`` 以外の変え方は数えて残す
+
+        どれが効くのか測っていない 黙って ``PlaybackRate`` だけを読むと、YMM4 と
+        違う速さや高さで鳴っても互換性レポートが「全部写せている」と言う
+        """
+        report = CompatibilityReport()
+        map_template([self.audio(**values)], report=report)
+        assert any("再生速度" in line for line in report.lines())
+
     def test_a_video_at_the_normal_rate_is_not_counted(self) -> None:
         # 等倍でも数えると、速さを変えていない動画アイテムまで直す候補に並ぶ
         report = CompatibilityReport()

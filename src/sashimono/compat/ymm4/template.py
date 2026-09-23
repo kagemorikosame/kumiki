@@ -849,8 +849,16 @@ def _playback_rate(
     テキストや図形の動きの時刻まで変わる
 
     手元のファイル 99 本（配布物・この機械のプロジェクト・測るために作った試料）の
-    アイテム 1156 個はどれもただの数で、動く値の形（``Values``）は 1 つも無かった
-    形が来たら先頭の値を使い、動くなら数えて残す（``speed`` は動かせない）
+    アイテム 1156 個の ``PlaybackRate`` はどれもただの数だった 形が来たら先頭の値を
+    使い、動くなら数えて残す（``speed`` は動かせない）
+
+    新しい版の書き出しは、ほかに動く値の ``PlaybackRate2`` と、音の速さの変え方
+    ``PlaybackRateAudioProcessingMode`` も持つ（実物の音を持つアイテム 138 個は
+    どれも ``Resampling``、``PlaybackRate2`` は動かず ``PlaybackRate`` と同じ値だった）
+    読むのは ``PlaybackRate`` のまま 測ったとき YMM4 4.56.1.1 は ``PlaybackRate``
+    だけのアイテムで速さを変えた 2 つが食い違う・``PlaybackRate2`` が動く・
+    ``Resampling`` 以外（高さを変えない変え方かもしれない）は、どちらが効くのか
+    測っていないので数えて残す
     """
     if name not in _SOUND_ITEMS:
         return Fraction(1), False
@@ -858,6 +866,16 @@ def _playback_rate(
     rate = number(raw, 100.0)
     if any(point.value != rate for point in animated(raw, 100.0).keyframes):
         log.note_missing("YMM4 の再生速度（PlaybackRate）の動き（先頭の値で写した）")
+    newer = item.get("PlaybackRate2")
+    if newer is not None:
+        moving = animated(newer, rate)
+        if moving.keyframes and any(point.value != rate for point in moving.keyframes):
+            log.note_missing("YMM4 の再生速度（PlaybackRate2）の動き")
+        elif not moving.keyframes and moving.static != rate:
+            log.note_missing("YMM4 の再生速度の食い違い（PlaybackRate と PlaybackRate2）")
+    mode = item.get("PlaybackRateAudioProcessingMode")
+    if mode is not None and mode != "Resampling":
+        log.note_missing(f"YMM4 の再生速度の音の変え方: {mode}")
     if not math.isfinite(rate):
         # NaN や無限大は分数にできず、そのまま渡すと ValueError で読み込みごと止まり、
         # 同じテンプレートの正常なアイテムまで写せなくなる 等倍として置き、数えて残す
