@@ -192,3 +192,36 @@ def test_an_absurd_length_fails_as_a_transcription_error(
     )
     with pytest.raises(AsrError, match="メモリが足りない"):
         _transcribe(sample_av.path, monkeypatch)
+
+
+def test_a_cancel_while_probing_a_sound_of_unknown_length_stops(
+    sample_av: SampleMedia, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 長さの分からない素材はパスを渡す道へ進む そこで中断を見ないと、止めても起こしが始まる
+    real_probe = probe_media
+    monkeypatch.setattr(
+        "sashimono.asr.whisper.probe_media",
+        lambda path: replace(real_probe(path), duration=Fraction(0)),
+    )
+    backend = FasterWhisperBackend()
+    model = _Model()
+    monkeypatch.setattr(backend, "_ensure_model", lambda options: model)
+    calls = iter([False])
+    result = backend.transcribe(
+        sample_av.path, TranscribeOptions(), should_cancel=lambda: next(calls, True)
+    )
+    assert result is None
+    assert model.audio is None
+
+
+def test_running_out_of_memory_while_reading_fails_as_a_transcription_error(
+    sample_av: SampleMedia, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 全長の配列は作れても、読むたびの配列で足りなくなりうる
+    # そこで素の例外が出ると、起こしの失敗ではなく想定外の失敗になる
+    def exhausted(self: Any, start: int, count: int) -> Any:
+        raise MemoryError
+
+    monkeypatch.setattr(AudioDecoder, "read", exhausted)
+    with pytest.raises(AsrError, match="メモリが足りない"):
+        _transcribe(sample_av.path, monkeypatch)

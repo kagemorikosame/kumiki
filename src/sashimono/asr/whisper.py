@@ -166,25 +166,26 @@ def _media_audio(source: Path, should_cancel: ShouldCancel | None) -> np.ndarray
         if not item.audio_streams:
             raise AsrError(f"音声が無い: {source}")
         if total <= 0:
-            return str(source)
-        # 全長の配列を先に 1 つだけ作って書き込む 読んだ分を貯めてから最後につなぐと、
-        # つなぐ瞬間に同じ長さの配列が 2 つ並ぶ（1 時間で 230MB が 460MB になる）
-        try:
+            audio: np.ndarray | str = str(source)
+        else:
+            # 全長の配列を先に 1 つだけ作って書き込む 読んだ分を貯めてから最後につなぐと、
+            # つなぐ瞬間に同じ長さの配列が 2 つ並ぶ（1 時間で 230MB が 460MB になる）
             audio = np.empty(total, dtype=np.float32)
-        except (MemoryError, ValueError) as exc:
-            # ValueError は配列の大きさが NumPy の上限を越えたとき（異常な長さの素材）
-            # 起こしの失敗として出す 素のまま投げると起こしの枠の外（想定外の失敗）になる
-            raise AsrError(f"音声を読むメモリが足りない（{total * 4 // 2**20} MB）") from exc
-        with AudioDecoder(source, sample_rate=WHISPER_SAMPLE_RATE, channels=1) as decoder:
-            for start in range(0, total, chunk):
-                if should_cancel is not None and should_cancel():
-                    return None
-                count = min(chunk, total - start)
-                audio[start : start + count] = decoder.read(start, count)[:, 0]
+            with AudioDecoder(source, sample_rate=WHISPER_SAMPLE_RATE, channels=1) as decoder:
+                for start in range(0, total, chunk):
+                    if should_cancel is not None and should_cancel():
+                        return None
+                    count = min(chunk, total - start)
+                    audio[start : start + count] = decoder.read(start, count)[:, 0]
     except ProbeError as exc:
         raise AsrError(f"音声を読めない: {exc}") from exc
-    # 読み終わりにも見る 見ないと、1 回で読み切る短い素材や最後の読み込みの間に止めても、
-    # そのままモデルへ渡して起こしが始まる
+    except (MemoryError, ValueError) as exc:
+        # 全長の配列を作る所だけでなく、読むたびの配列でも足りなくなりうる ValueError は
+        # 配列の大きさが NumPy の上限を越えたとき（異常な長さの素材） 起こしの失敗として
+        # 出す 素のまま投げると起こしの枠の外（想定外の失敗）になる
+        raise AsrError(f"音声を読むメモリが足りない: {exc}") from exc
+    # 読み終わりにも見る 見ないと、1 回で読み切る短い素材や最後の読み込みの間、長さの
+    # 分からない素材を調べている間に止めても、そのままモデルへ渡して起こしが始まる
     if should_cancel is not None and should_cancel():
         return None
     return audio
