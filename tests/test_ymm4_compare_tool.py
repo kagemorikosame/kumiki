@@ -1092,6 +1092,11 @@ def test_a_window_after_the_source_runs_out_is_not_read_as_stopped(tool: ModuleT
 
 
 def test_the_nearer_value_is_read_for_a_still_mismatch(tool: ModuleType) -> None:
+    """止まった値の食い違いでは、区切りの傾きが近い方の値を名指す
+
+    取り違えると YMM4 で効いた値を誤って読み、互換層の ``_playback_rate`` を
+    誤った測り結果に合わせて直すことになる
+    """
     entry = {"length": 60, "rate": 100.0, "rate2": [50.0]}
     expectations = tool.rate_expectations(entry)
     assert tool.nearer_rate([0.5, 0.49], expectations)[0] == "PlaybackRate2"
