@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
+from fractions import Fraction
 from pathlib import Path, PureWindowsPath
 
 from sashimono.compat.aviutl.exo import ExoParseError, load_exo
@@ -317,6 +318,12 @@ def gather_media(
       機械にはまず無い 素材を同じフォルダに添えて配る作者はいる
     """
     known = {_same_file(item.path): item for item in project.media}
+    held = {
+        inner.media_path
+        for item in objects
+        for inner in item.walk()
+        if inner.media_path and inner.hold_last_frame
+    }
     chosen: dict[str, MediaItem] = {}
     commands: list[Command] = []
     missing: list[str] = []
@@ -339,8 +346,36 @@ def gather_media(
                 continue
             commands.append(AddMedia(media))
             known[key] = media
+        elif raw in held and _lacks_video_end(media):
+            media = _with_video_end(media, probe(path))
+            known[key] = media
         chosen[raw] = media
     return MediaPlan(commands=tuple(commands), media=chosen, missing=tuple(missing))
+
+
+def _lacks_video_end(media: MediaItem) -> bool:
+    """映像の道の終わりを持たない登録済みの素材か（道の終わりを記録する前の版で登録した物）"""
+    return (
+        bool(media.video_streams) and not media.is_still and media.video_streams[0].end_time is None
+    )
+
+
+def _with_video_end(media: MediaItem, fresh: MediaItem | None) -> MediaItem:
+    """登録済みの素材へ、開き直して取った映像の道の終わりを添える
+
+    絵を止める時刻（:func:`_held_at_end`）を決めるためだけに使う 無いままだと
+    コンテナの長さで見るしかなく、頭が 0 より後ろの素材（頭 5 秒・長さ 2 秒）では
+    止める時刻が頭より前になり、デコーダが何も返さず動画全体が映らない
+    素材の ``id`` はそのまま残すので、クリップは登録済みの素材に結ばれる
+    プロジェクトの素材は書き換えない 書き換えるなら元に戻せるコマンドを通す必要があり、
+    テンプレートを置くだけで素材一覧が変わるのは本人の予想を外れる
+    開けないときや、開いても道の終わりが分からないときは元のまま使う
+    """
+    if fresh is None or not fresh.video_streams or fresh.video_streams[0].end_time is None:
+        return media
+    first, *rest = media.video_streams
+    end = fresh.video_streams[0].end_time
+    return replace(media, video_streams=(replace(first, end_time=end), *rest))
 
 
 def place(
@@ -399,6 +434,8 @@ def place(
         linked = _media_of(item, known)
         if linked is not None:
             placed = replace(placed, media_id=linked.id)
+            if item.hold_last_frame and placed.hold_at is None:
+                placed = replace(placed, hold_at=_held_at_end(placed, linked, project.rate))
         if item.children:
             placed = replace(
                 placed,
@@ -407,7 +444,9 @@ def place(
                 source_in=item.scene_offset * project.rate.frame_duration,
             )
         if _is_sound(item, known):
-            prepared.append((item, None, _with_audio_effects(placed, item)))
+            # 音だけの素材を読む動画アイテムでも、止めるのは絵だけ 音のクリップには持たせない
+            heard = replace(placed, hold_at=None)
+            prepared.append((item, None, _with_audio_effects(heard, item)))
             continue
         prepared.append((item, *_split_sound(placed, item, linked)))
 
@@ -427,6 +466,45 @@ def place(
         if sound is not None:
             commands.append(AddClip(sound_tracks[id(sound)].id, sound))
     return commands
+
+
+def _held_at_end(clip: Clip, media: MediaItem, rate: FrameRate) -> Fraction | None:
+    """素材の終わりを越えて読むクリップの、最後の絵の時刻 越えなければ ``None``
+
+    越えないクリップに持たせないのは、止まらないのに設定画面へ「絵を止める」が出て、
+    何を止めているのか分からなくなるため
+
+    最後の絵の時刻は、映像の終わりの **time_base の 1 刻み手前** デコーダは「その時刻を
+    越えない最後のフレーム」を返し（:meth:`~sashimono.engine.decode.VideoDecoder.frame_at`）、
+    終わりちょうどでは何も返さない 最後のフレームの PTS は必ず終わりより 1 刻み以上前に
+    あるので、フレームの間隔によらず最後のフレームが出る 平均のフレーム 1 つ分を引くと、
+    可変フレームレートの素材で最後の間隔が平均より短いとき、1 つ前の絵で止まる
+
+    映像の終わりは映像の道の長さ
+    （:attr:`~sashimono.core.model.VideoStreamInfo.end_time`）で見る コンテナの
+    長さ（:attr:`MediaItem.duration`）で見ると、音の方が長い素材で最後の映像フレームより
+    後ろを指し、止めた後もデコーダが毎フレーム終わり付近へシークし直してデコードする
+    道の終わりは PTS そのままの時刻で、クリップの ``source_in`` やデコーダが読む時刻と
+    同じ数え方 コンテナの長さは頭の時刻を含まないので、2 つの小さい方を取ると、頭が
+    0 より後ろの素材で映像の途中の絵に止まる（混ぜない）
+    道の長さが分からない素材（古いプロジェクトに入っていた素材など）はコンテナの長さで見る
+    頭の時刻が分からないので、頭が 0 の素材として扱う
+
+    長さの分からない素材（0 と読めた物）と静止画は止めない 静止画はもともと
+    いつでも同じ絵で、長さの分からない素材はどこが最後か決められない
+    """
+    if media.is_still or media.duration <= 0 or not media.video_streams:
+        return None
+    # 映像のクリップが読むのは最初の映像ストリーム（:func:`_split_sound` と同じ）
+    stream = media.video_streams[0]
+    end = media.duration if stream.end_time is None else stream.end_time
+    if clip.source_out(rate) <= end:
+        return None
+    # 1 刻みがフレームより長い（壊れた time_base）ときはフレーム 1 つ分に抑える 大きく引くと
+    # 最後より前の絵で止まる 0 以下の刻みは引いても終わりちょうどになり、何も映らない
+    frame = stream.frame_rate.frame_duration
+    tick = stream.time_base if 0 < stream.time_base < frame else frame
+    return max(Fraction(0), end - tick)
 
 
 def _with_audio_effects(clip: Clip, item: MappedObject) -> Clip:
@@ -460,6 +538,9 @@ def _split_sound(
         opacity=AnimatedValue(1.0),
         blend_mode="normal",
         clip_to_below=False,
+        # 音は止めない（ミキサーは読まない） 持たせたままだと、音のクリップの設定画面に
+        # 効かない「絵を止める」が出る
+        hold_at=None,
         id=new_clip_id(),
     )
     return picture, sound

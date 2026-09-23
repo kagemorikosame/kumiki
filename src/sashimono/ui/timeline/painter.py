@@ -401,9 +401,8 @@ def _draw_filmstrip(
     while x < rect.right():
         # 秒の計算に float を混ぜないよう、まずフレーム番号（整数）へ落とす
         frame = layout.frame_at(x)
-        local_frame = frame - clip.timeline_start
-        source_time = clip.source_in + local_frame * rate.frame_duration * clip.speed
-        tile = filmstrip.at(source_time)
+        # 描画と同じ式で引く 絵を止めたクリップで、止めた後の所に動く絵が並ばないように
+        tile = filmstrip.at(clip.picture_time(frame - clip.timeline_start, rate))
         if tile is None:
             break
         painter.drawImage(QRectF(x, rect.top(), tile_width, rect.height()), to_qimage(tile))

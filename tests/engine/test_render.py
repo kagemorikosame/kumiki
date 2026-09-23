@@ -396,6 +396,67 @@ class TestFrameRenderer:
 
         assert np.array_equal(at_15, source_30)
 
+    def test_a_held_clip_shows_the_last_picture_past_the_end_of_its_source(
+        self, rendered_project: Project, gl_context: OffscreenGLContext
+    ) -> None:
+        """素材より長いクリップは、素材の終わりの後も最後の絵を出す（Issue #115）
+
+        素材は 2 秒（60 フレーム） 止めないと、素材の終わりから後は何も映らない
+        YMM4 は素材の最後のフレームを枠の終わりまで出し続ける
+        """
+        media = rendered_project.media[0]
+        track = rendered_project.timeline.tracks[0]
+        held = replace(track.clips[0], duration=90, hold_at=media.duration - Fraction(1, 30))
+        project = rendered_project.with_timeline(
+            rendered_project.timeline.replace_track(track.with_clips((held,)))
+        )
+
+        renderer = FrameRenderer(project, context=gl_context)
+        try:
+            moving = renderer.render(30)
+            past = [renderer.render(number) for number in (60, 75, 89)]
+        finally:
+            renderer.close()
+
+        normal = FrameRenderer(rendered_project, context=gl_context)
+        try:
+            source_30 = normal.render(30)
+            source_last = normal.render(59)
+        finally:
+            normal.close()
+
+        # 止める前は素のクリップと同じ絵 止める所を早めに効かせると、動くはずの所が止まる
+        assert np.array_equal(moving, source_30)
+        assert source_last[..., :3].max() > 0
+        for frame in past:
+            assert np.array_equal(frame, source_last)
+
+    def test_a_clip_held_at_its_start_never_moves(
+        self, rendered_project: Project, gl_context: OffscreenGLContext
+    ) -> None:
+        # YMM4 の再生速度 0 は素材の頭（ContentOffset の位置）の絵のまま
+        # 素材の 1 秒目から読むクリップは、どのフレームでも素材の 30 フレーム目を出す
+        track = rendered_project.timeline.tracks[0]
+        held = replace(track.clips[0], source_in=Fraction(1), hold_at=Fraction(1), duration=60)
+        project = rendered_project.with_timeline(
+            rendered_project.timeline.replace_track(track.with_clips((held,)))
+        )
+
+        renderer = FrameRenderer(project, context=gl_context)
+        try:
+            produced = [renderer.render(number) for number in (0, 20, 59)]
+        finally:
+            renderer.close()
+
+        normal = FrameRenderer(rendered_project, context=gl_context)
+        try:
+            source_30 = normal.render(30)
+        finally:
+            normal.close()
+
+        for frame in produced:
+            assert np.array_equal(frame, source_30)
+
     def test_closed_renderer_refuses_to_render(
         self, rendered_project: Project, gl_context: OffscreenGLContext
     ) -> None:
