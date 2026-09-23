@@ -18,6 +18,13 @@ YMM4 のテンプレートは、値の意味を配布物の並びから読み取
 3. ``audio-measure`` 書き出した音を枠ごとに測り、音量の曲線・定位の向き・
                      再生速度 0 の意味を表にする
 
+格子の点の並びも別の 2 段（Issue #107）
+
+1. ``mesh-build``   格子の点を 1 つずつ動かした探り用のプロジェクト（mesh-probe.ymmp）を作る
+2. YMM4 でそれを開き、同じフォルダへ ``mesh-probe.mp4`` として書き出す（手作業）
+3. ``mesh-measure`` 枠ごとに、動いた点が画面のどこに出たかを YMM4 と Sashimono で並べ、
+                    ``Points`` が行ごとか列ごとかを表にする
+
 動画アイテムの再生速度が絵をどう進めるかも別の 2 段（Issue #89 の残り）
 
 1. ``video-rate-build``   フレームごとに絵が変わる動画を、``PlaybackRate`` を変えて並べた
@@ -49,6 +56,8 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
+
+    from sashimono.core.model import MediaItem
 
 import numpy as np
 
@@ -711,6 +720,24 @@ def sample_index(
     return round(seconds * rate)
 
 
+def unreadable_export_errors() -> tuple[type[Exception], ...]:
+    """書き出しを開けない・読み切れないときに PyAV が投げる例外
+
+    YMM4 が書き出している最中や中断した後の mp4 は ``moov`` がまだ無く、
+    ``av.open`` が ``InvalidDataError``（``FFmpegError`` の一種）を投げる
+    時刻の検査は通ってしまうので、捕まえないと案内の無い traceback で終わる
+    ``probe_media`` と同じ組み合わせにする
+    """
+    import av.error
+
+    return (av.error.FFmpegError, OSError)
+
+
+def _explain_unreadable(video: Path, project: Path) -> None:
+    print(f"{video} を読めません 書き出しが終わっていないか壊れています")
+    print(f"YMM4 で {project} の書き出しを終えてから走らせてください")
+
+
 def decode_audio(video: Path) -> tuple[np.ndarray, int] | None:
     """書き出した動画の音を ``(2, サンプル数)`` の配列と標本化周波数で返す
 
@@ -849,7 +876,11 @@ def command_audio_measure(arguments: argparse.Namespace) -> int:
         print(f"YMM4 で {work / 'audio-probe.ymmp'} を開き直し、書き出してから走らせてください")
         return 0
 
-    decoded = decode_audio(video)
+    try:
+        decoded = decode_audio(video)
+    except unreadable_export_errors():
+        _explain_unreadable(video, work / "audio-probe.ymmp")
+        return 0
     if decoded is None:
         print(f"{video} に音の道がありません 音が入る形式で書き出してください")
         return 0
@@ -934,6 +965,480 @@ def _print_audio_rows(rows: list[dict[str, Any]]) -> None:
         print()
         print("再生速度 長さが 0 秒なら止まる、基準と同じ長さなら等倍として扱われている")
         print("         中心Hz が基準の半分・倍なら、速度は音の高さごと変えている")
+
+
+#: 探りの下地の画像の大きさ 画面とちょうど同じにする
+#: 画面より小さい画像は、Sashimono は画面いっぱいへ広げ、YMM4 は原寸で置くので、
+#: 格子の点の画面の位置が両者で食い違い、予想の点との距離が比べられなくなる
+MESH_IMAGE_WIDTH, MESH_IMAGE_HEIGHT = WIDTH, HEIGHT
+#: 下地の市松の 1 マス 格子の区切り（3x3 で 960x540、5x5 で 480x270）より
+#: ずっと細かくして、どのセルが歪んだかがマスの崩れで見えるようにする
+MESH_CELL = 60
+#: 枠 1 つの長さ（フレーム） 絵は止まっているので、真ん中の 1 枚だけを見る
+MESH_SLOT = 30
+#: 動かす点のずれ YMM4 の値のまま（px、Y は下が正）
+#: 5x5 のセル（480x270）の 4 分の 1 前後にして、隣のセルまで崩れが広がらないようにする
+#: 右と下へ動かすので、上の辺と左の辺の点を動かすと画面の内側へ入り、
+#: 抜けた所（透明）が黒く出る 外へ動かすと画面の外で起きて、画素に何も残らない
+MESH_SHIFT = (120.0, 60.0)
+#: 変化とみなす差（0〜255、色の平均） 書き出しの圧縮が止まった絵に乗せる揺れより上に置く
+#: 低いと、動かしていない所の揺れまで重心に入り、重心が画面の真ん中へ寄る
+MESH_THRESHOLD = 24.0
+
+
+@dataclass(frozen=True)
+class MeshSlot:
+    """探りの枠 1 つ ``moved`` は動かす点の番号（``Points`` の添字） ``None`` なら基準"""
+
+    name: str
+    columns: int
+    rows: int
+    moved: int | None
+    start: int
+
+
+def build_mesh_slots() -> list[MeshSlot]:
+    """確かめる条件を、時間軸に重ならないように並べる
+
+    格子の大きさごとに、動かさない枠（基準）を先に置く 変化の場所は基準との差で
+    読むので、同じ格子の基準が要る 3x3 の基準で 5x5 を読むと、何も動かさなくても
+    格子の分け方の違い（補間の継ぎ目）が差に出るかもしれない
+
+    1 番と 3 番を分けて動かすのは、行ごとと列ごとを見分けるため 真ん中（4 番、
+    5x5 の 12 番）は、どちらの並びでも真ん中に出るので見分けられない
+    5x5 の 7 番は、行ごとなら上寄りの真ん中、列ごとなら左寄りの真ん中に出る
+    """
+    conditions: list[tuple[str, int, int, int | None]] = [
+        ("基準 3x3", 3, 3, None),
+        ("3x3 の 4 番", 3, 3, 4),
+        ("3x3 の 1 番", 3, 3, 1),
+        ("3x3 の 3 番", 3, 3, 3),
+        ("基準 5x5", 5, 5, None),
+        ("5x5 の 12 番", 5, 5, 12),
+        ("5x5 の 7 番", 5, 5, 7),
+    ]
+    slots: list[MeshSlot] = []
+    cursor = 0
+    for name, columns, rows, moved in conditions:
+        slots.append(MeshSlot(name=name, columns=columns, rows=rows, moved=moved, start=cursor))
+        cursor += MESH_SLOT + GAP
+    return slots
+
+
+def mesh_pattern() -> np.ndarray:
+    """位置が読み取れる下地 ``(高さ, 幅, 3)`` の RGB
+
+    赤は左から右、緑は上から下へ明るくなり、青は市松で入れ替わる
+    一色の図形では、内側の点を動かしても輪郭が変わらず、画素に何も出ない
+    """
+    ys, xs = np.mgrid[0:MESH_IMAGE_HEIGHT, 0:MESH_IMAGE_WIDTH]
+    image = np.empty((MESH_IMAGE_HEIGHT, MESH_IMAGE_WIDTH, 3), dtype=np.uint8)
+    image[..., 0] = (xs * 255 // (MESH_IMAGE_WIDTH - 1)).astype(np.uint8)
+    image[..., 1] = (ys * 255 // (MESH_IMAGE_HEIGHT - 1)).astype(np.uint8)
+    image[..., 2] = np.where((xs // MESH_CELL + ys // MESH_CELL) % 2 == 0, 255, 0)
+    return image
+
+
+def mesh_point_entry(x: float, y: float, *, selected: bool) -> dict[str, Any]:
+    """``Points`` の 1 点 ``X`` と ``Y`` は動く値、``IsSelected`` は UI の選び状態
+
+    ``.work/probes/samples.json`` の実物の形そのまま
+    """
+    return {"X": _still(x), "Y": _still(y), "IsSelected": selected}
+
+
+def mesh_effect_entry(slot: MeshSlot) -> dict[str, Any]:
+    """探りの枠の ``MeshDeformationEffect`` 動かすのは ``moved`` 番の点だけ
+
+    実物は最初の点だけが ``IsSelected`` 真なので、それに合わせる
+    """
+    points = [
+        mesh_point_entry(0.0, 0.0, selected=index == 0) for index in range(slot.columns * slot.rows)
+    ]
+    if slot.moved is not None:
+        points[slot.moved] = mesh_point_entry(*MESH_SHIFT, selected=slot.moved == 0)
+    return {
+        "$type": "YukkuriMovieMaker.Project.Effects.MeshDeformationEffect, YukkuriMovieMaker",
+        "HorizontalCount": slot.columns,
+        "VerticalCount": slot.rows,
+        "Points": points,
+        "IsEnabled": True,
+        "Remark": "",
+    }
+
+
+def mesh_image_item(slot: MeshSlot, media: Path) -> dict[str, Any]:
+    """探りの枠 1 つを、格子で歪ませた画像アイテムにする
+
+    項目の並びは ``.work/probes/samples.json`` の実物の ``ImageItem`` から写した
+    """
+    return {
+        "$type": "YukkuriMovieMaker.Project.Items.ImageItem, YukkuriMovieMaker",
+        "FilePath": str(media),
+        "X": _still(0.0),
+        "Y": _still(0.0),
+        "Z": _still(0.0),
+        "Opacity": _still(100.0),
+        "Zoom": _still(100.0),
+        "Rotation": _still(0.0),
+        "FadeIn": 0.0,
+        "FadeOut": 0.0,
+        "Blend": "Normal",
+        "IsInverted": False,
+        "IsClippingWithObjectAbove": False,
+        "IsAlwaysOnTop": False,
+        "IsZOrderEnabled": False,
+        "VideoEffects": [mesh_effect_entry(slot)],
+        "Group": 0,
+        "Frame": slot.start,
+        "Layer": 0,
+        "KeyFrames": {"Frames": [], "Count": 0},
+        "Length": MESH_SLOT,
+        "PlaybackRate": 100.0,
+        "PlaybackRate2": _still(100.0),
+        "ContentOffset": "00:00:00",
+        "Remark": slot.name,
+        "IsLocked": False,
+        "IsHidden": False,
+    }
+
+
+def grid_position(index: int, columns: int, rows: int, *, by_row: bool) -> tuple[float, float]:
+    """``Points`` の ``index`` 番が、動かす前に画面のどこにあるか（px、Y は下が正）
+
+    ``by_row`` が真なら左上から行ごと、偽なら左上から列ごとの並びと読む
+    下地は画面の真ん中に置くので、格子の四隅は画像の四隅
+    """
+    if by_row:
+        column, row = index % columns, index // columns
+    else:
+        column, row = index // rows, index % rows
+    left = (WIDTH - MESH_IMAGE_WIDTH) / 2.0
+    top = (HEIGHT - MESH_IMAGE_HEIGHT) / 2.0
+    return (
+        left + MESH_IMAGE_WIDTH * column / (columns - 1),
+        top + MESH_IMAGE_HEIGHT * row / (rows - 1),
+    )
+
+
+def mesh_manifest(slots: list[MeshSlot], media: Path) -> dict[str, Any]:
+    """枠の一覧 ``mesh-measure`` はこれだけを見て切り出し、Sashimono でも描く"""
+    baselines = {
+        (slot.columns, slot.rows): index
+        for index, slot in reversed(list(enumerate(slots)))
+        if slot.moved is None
+    }
+    entries: list[dict[str, Any]] = []
+    for index, slot in enumerate(slots):
+        entry: dict[str, Any] = {
+            "index": index,
+            "name": slot.name,
+            "start": slot.start,
+            "length": MESH_SLOT,
+            "columns": slot.columns,
+            "rows": slot.rows,
+            "moved": slot.moved,
+            "baseline": baselines[(slot.columns, slot.rows)],
+            "item": mesh_image_item(slot, media),
+        }
+        if slot.moved is not None:
+            entry["by_row"] = grid_position(slot.moved, slot.columns, slot.rows, by_row=True)
+            entry["by_column"] = grid_position(slot.moved, slot.columns, slot.rows, by_row=False)
+        entries.append(entry)
+    return {
+        "width": WIDTH,
+        "height": HEIGHT,
+        "fps": FPS,
+        "media": str(media),
+        "image": [MESH_IMAGE_WIDTH, MESH_IMAGE_HEIGHT],
+        "shift": list(MESH_SHIFT),
+        "threshold": MESH_THRESHOLD,
+        "slots": entries,
+    }
+
+
+def _clear_mesh_results(work: Path) -> None:
+    """前の測り結果を捨てる 残すと、新しい枠の一覧に対応しない表や絵を読んでしまう"""
+    (work / "mesh-report.json").unlink(missing_ok=True)
+    images = work / "images"
+    if images.is_dir():
+        for old in images.glob("mesh-*.png"):
+            old.unlink()
+
+
+def command_mesh_build(arguments: argparse.Namespace) -> int:
+    # 絶対パスにしてから書く YMM4 はこの道具の作業フォルダを知らないので、
+    # 相対のまま `.ymmp` へ書くと下地を見つけられず、全部の枠が空になる
+    # 空の書き出しを測ると「どの点を動かしても何も変わらない」と読めてしまう
+    work: Path = arguments.work.resolve()
+    work.mkdir(parents=True, exist_ok=True)
+    media = work / "mesh-probe-grid.png"
+    _save_png(mesh_pattern(), media)
+    slots = build_mesh_slots()
+    items = [mesh_image_item(slot, media) for slot in slots]
+    length = max(slot.start for slot in slots) + MESH_SLOT + GAP
+    project = work / "mesh-probe.ymmp"
+    write_document(items, length, project)
+    (work / "mesh-probe.json").write_text(
+        json.dumps(mesh_manifest(slots, media), ensure_ascii=False, indent=1), encoding="utf-8"
+    )
+    _clear_mesh_results(work)
+    print(f"{len(slots)} 枠を並べた（{length} フレーム、{length / FPS:.1f} 秒）")
+    video = work / "mesh-probe.mp4"
+    if video.exists():
+        # 前の書き出しが残っていると、新しい枠の一覧で古い絵を切り出してしまう
+        # `mesh-measure` は書き出しが一覧より古ければ止めるが、ここでも言っておく
+        print(f"{video} は前の探りの書き出しです 作り直した方で書き出し直してください")
+    print(f"YMM4 で {project} を開き、{video} として書き出してください")
+    print(f"書き出しは {WIDTH}x{HEIGHT}・{FPS}fps・頭から終わりまで（範囲を絞らない）")
+    return 0
+
+
+def change_centroid(
+    picture: np.ndarray, baseline: np.ndarray, threshold: float = MESH_THRESHOLD
+) -> tuple[float, float, int] | None:
+    """基準との差が ``threshold`` を超えた所の重心を、画面の px（``WIDTH`` 基準）で返す
+
+    返すのは ``(x, y, 変化した画素の数)`` 何も変わっていなければ ``None``
+    差の大きさで重みを付ける 数だけで数えると、圧縮の揺れで閾値を少しだけ超えた
+    画素が、崩れの芯と同じ重さで重心を引っ張る
+    """
+    difference = np.abs(picture[..., :3].astype(np.float32) - baseline[..., :3]).mean(axis=2)
+    changed = difference > threshold
+    count = int(np.count_nonzero(changed))
+    if count == 0:
+        return None
+    weight = np.where(changed, difference, 0.0)
+    ys, xs = np.mgrid[0 : difference.shape[0], 0 : difference.shape[1]]
+    total = float(weight.sum())
+    # 画素の真ん中を位置とする 左上の角で数えると、縮めた絵で半画素ぶん左上へ寄る
+    scale_x = WIDTH / difference.shape[1]
+    scale_y = HEIGHT / difference.shape[0]
+    x = (float((weight * xs).sum()) / total + 0.5) * scale_x
+    y = (float((weight * ys).sum()) / total + 0.5) * scale_y
+    return x, y, count
+
+
+def mesh_reading(
+    centroid: tuple[float, float] | None,
+    by_row: tuple[float, float] | None,
+    by_column: tuple[float, float] | None,
+) -> str:
+    """重心が、行ごとと列ごとのどちらの読みの点に近いか"""
+    if by_row is None or by_column is None:
+        return "基準"
+    if centroid is None:
+        return "変化なし"
+    if by_row == by_column:
+        # 真ん中の点はどちらの並びでも同じ所 重心がそこへ出たかだけを見る
+        return "見分けない"
+    near_row = float(np.hypot(centroid[0] - by_row[0], centroid[1] - by_row[1]))
+    near_column = float(np.hypot(centroid[0] - by_column[0], centroid[1] - by_column[1]))
+    if near_row == near_column:
+        return "見分けられない"
+    return "行ごと" if near_row < near_column else "列ごと"
+
+
+def has_video_stream(video: Path) -> bool:
+    """映像の道があるか 音だけの形式で書き出した物を、添字の例外で落とさずに断る"""
+    import av
+
+    with av.open(str(video)) as container:
+        return bool(container.streams.video)
+
+
+def _probe_or_none(path: Path) -> MediaItem | None:
+    from sashimono.engine.decode import ProbeError, probe_media
+
+    try:
+        return probe_media(path)
+    except ProbeError:
+        return None
+
+
+def _render_mesh_slots(entries: list[dict[str, Any]]) -> list[np.ndarray | None]:
+    """同じ ``.ymmp`` の枠を Sashimono で描き、縮めた絵を枠の順に返す
+
+    ``compare`` と同じ道（写す・素材を登録する・置く・描く）を通す 素材の登録を
+    飛ばすと、画像のクリップが ``media_id`` を持たず、全部の枠が透明になる
+    """
+    from sashimono.compat.catalog import gather_media
+    from sashimono.core.model import Project, ProjectSettings
+    from sashimono.core.timebase import FrameRate
+    from sashimono.engine.render import FrameRenderer
+
+    settings = ProjectSettings(width=WIDTH, height=HEIGHT, frame_rate=FrameRate(FPS))
+    report = CompatibilityReport()
+    pictures: list[np.ndarray | None] = []
+    renderer: FrameRenderer | None = None
+    try:
+        for entry in entries:
+            objects = map_template([copy.deepcopy(entry["item"])], report=report)
+            project = Project.create(settings)
+            plan = gather_media(objects, project, _probe_or_none)
+            if plan.missing:
+                pictures.append(None)
+                continue
+            start = int(entry["start"])
+            commands = [*plan.commands, *place(objects, project, at_frame=start, media=plan.media)]
+            for command in commands:
+                project = command.apply(project)
+            if renderer is None:
+                renderer = FrameRenderer(project)
+            else:
+                renderer.set_project(project)
+            pictures.append(_shrink(renderer.render(start + int(entry["length"]) // 2)))
+    finally:
+        if renderer is not None:
+            renderer.close()
+    for line in report.lines():
+        print(f"写すときの記録 {line}")
+    return pictures
+
+
+def _read_ymm4_slots(video: Path, entries: list[dict[str, Any]]) -> list[np.ndarray | None]:
+    """YMM4 の書き出しから、枠ごとの真ん中の 1 枚を縮めて返す 動画に無い枠は ``None``"""
+    references = References(_ymm4_frames(video))
+    pictures: list[np.ndarray | None] = [None] * len(entries)
+    # 動画は戻せないので、枠を頭から順に引く 返すのは一覧の順
+    for index in sorted(range(len(entries)), key=lambda at: int(entries[at]["start"])):
+        entry = entries[index]
+        picture = references.get(int(entry["start"]) + int(entry["length"]) // 2)
+        pictures[index] = None if picture is None else _shrink(picture)
+    return pictures
+
+
+def _marked(picture: np.ndarray, centroid: tuple[float, float] | None) -> np.ndarray:
+    """重心に赤い十字を描いた写し 人が並べた絵で、測った場所を確かめられるようにする"""
+    marked = picture.copy()
+    if centroid is None:
+        return marked
+    height, width = marked.shape[:2]
+    x = min(width - 1, max(0, int(centroid[0] * width / WIDTH)))
+    y = min(height - 1, max(0, int(centroid[1] * height / HEIGHT)))
+    marked[y, max(0, x - 6) : x + 7] = (255.0, 0.0, 0.0)
+    marked[max(0, y - 6) : y + 7, x] = (255.0, 0.0, 0.0)
+    return marked
+
+
+def command_mesh_measure(arguments: argparse.Namespace) -> int:
+    work: Path = arguments.work
+    manifest_path = work / "mesh-probe.json"
+    if not manifest_path.exists():
+        print(f"{manifest_path} がありません 先に mesh-build を走らせてください")
+        return 0
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    # 測れなかった道で前の表が残ると、新しい結果として開けてしまう
+    # 測れたときは最後に書き直すので、先に消しておけばどの道でも残らない
+    _clear_mesh_results(work)
+    video = work / "mesh-probe.mp4"
+    if not video.exists():
+        print(f"{video} がまだ書き出されていません")
+        print(f"YMM4 で {work / 'mesh-probe.ymmp'} を開き、そこへ書き出してから走らせてください")
+        return 0
+    if video.stat().st_mtime <= manifest_path.stat().st_mtime:
+        # 探りを作り直したのに書き出しが前のままだと、新しい枠の一覧で古い絵を
+        # 切り出して、別の点を動かした絵を測った表が出る 同じ時刻も断る
+        # 置き場によっては時刻が 2 秒刻みでしか残らない
+        print(f"{video} は探りを作り直す前の書き出しです")
+        print(f"YMM4 で {work / 'mesh-probe.ymmp'} を開き直し、書き出してから走らせてください")
+        return 0
+    entries: list[dict[str, Any]] = manifest["slots"]
+    threshold = float(manifest.get("threshold", MESH_THRESHOLD))
+    try:
+        if not has_video_stream(video):
+            print(f"{video} に映像の道がありません 映像が入る形式で書き出してください")
+            return 0
+        # 頭は開けても途中で切れた書き出しは、読み進めた所で復号が失敗する
+        # 開けるかどうかだけを見ても、その穴は塞がらない
+        theirs = _read_ymm4_slots(video, entries)
+    except unreadable_export_errors():
+        _explain_unreadable(video, work / "mesh-probe.ymmp")
+        return 0
+    ours = _render_mesh_slots(entries)
+    images = work / "images"
+    images.mkdir(exist_ok=True)
+    rows = [_mesh_row(entry, theirs, ours, threshold, images) for entry in entries]
+    _print_mesh_rows(rows)
+    (work / "mesh-report.json").write_text(
+        json.dumps({"threshold": threshold, "rows": rows}, ensure_ascii=False, indent=1),
+        encoding="utf-8",
+    )
+    print(f"{work / 'mesh-report.json'} へ書いた 並べた絵は {images} の mesh-*.png")
+    return 0
+
+
+def _mesh_row(
+    entry: dict[str, Any],
+    theirs: list[np.ndarray | None],
+    ours: list[np.ndarray | None],
+    threshold: float,
+    images: Path,
+) -> dict[str, Any]:
+    """枠 1 つぶんの表の行 並べた絵（YMM4・Sashimono・差 3 倍）も書き出す"""
+    index = int(entry["index"])
+    baseline = int(entry["baseline"])
+    by_row = tuple(entry["by_row"]) if "by_row" in entry else None
+    by_column = tuple(entry["by_column"]) if "by_column" in entry else None
+    row: dict[str, Any] = {
+        "index": index,
+        "name": entry["name"],
+        "columns": entry["columns"],
+        "rows": entry["rows"],
+        "moved": entry["moved"],
+        "by_row": by_row,
+        "by_column": by_column,
+    }
+    for side, pictures in (("ymm4", theirs), ("sashimono", ours)):
+        picture, base = pictures[index], pictures[baseline]
+        if picture is None or base is None:
+            row[side] = None
+            row[f"{side}_reading"] = "絵が無い"
+            continue
+        found = change_centroid(picture, base, threshold)
+        centroid = None if found is None else (found[0], found[1])
+        row[side] = None if found is None else {"x": found[0], "y": found[1], "pixels": found[2]}
+        row[f"{side}_reading"] = mesh_reading(
+            centroid,
+            None if by_row is None else (by_row[0], by_row[1]),
+            None if by_column is None else (by_column[0], by_column[1]),
+        )
+    a, b = theirs[index], ours[index]
+    if a is not None and b is not None:
+        spots = [
+            None if row[side] is None else (row[side]["x"], row[side]["y"])
+            for side in ("ymm4", "sashimono")
+        ]
+        side_by_side = np.concatenate(
+            [_marked(a, spots[0]), _marked(b, spots[1]), np.abs(a - b) * 3.0], axis=1
+        )
+        stem = f"mesh-{index:02d}"
+        _save_png(np.clip(side_by_side, 0, 255).astype(np.uint8), images / f"{stem}.png")
+        row["image"] = stem
+    return row
+
+
+def _print_mesh_rows(rows: list[dict[str, Any]]) -> None:
+    def spot(value: dict[str, Any] | None) -> str:
+        return "-" if value is None else f"({value['x']:.0f},{value['y']:.0f})"
+
+    def point(value: tuple[float, ...] | None) -> str:
+        return "-" if value is None else f"({value[0]:.0f},{value[1]:.0f})"
+
+    # 位置は画面の px、Y は下が正 重心は崩れた範囲の真ん中なので、点そのものより
+    # 少し格子の内側へ寄る 行ごとと列ごとの予想のどちらに近いかで読む
+    print(
+        f"{'枠':<14}{'YMM4 重心':>14}{'Sashimono 重心':>16}{'行ごと予想':>14}{'列ごと予想':>14}"
+        f"{'YMM4':>10}{'Sashimono':>11}"
+    )
+    for row in rows:
+        print(
+            f"{row['name']:<14}{spot(row['ymm4']):>14}{spot(row['sashimono']):>16}"
+            f"{point(row['by_row']):>14}{point(row['by_column']):>14}"
+            f"{row['ymm4_reading']:>10}{row['sashimono_reading']:>11}"
+        )
+    print()
+    print("YMM4 の列が「行ごと」なら今の写し方どおり 「列ごと」なら並べ替えが要る")
 
 
 #: 絵の速さの探りの素材の長さ（秒） 枠より短くして、素材を読み切った後の絵
@@ -1203,8 +1708,11 @@ def _read_rate_slots(video: Path, entries: list[dict[str, Any]]) -> list[list[np
 
 
 def _read_source(media: Path) -> np.ndarray:
-    """素材の全フレームを縮めて ``(枚数, 高さ, 幅, 3)`` で返す"""
-    return np.stack([tiny(convert()) for _, convert in _ymm4_frames(media)])
+    """素材の全フレームを縮めて ``(枚数, 高さ, 幅, 3)`` で返す 絵が無ければ 0 枚"""
+    frames = [tiny(convert()) for _, convert in _ymm4_frames(media)]
+    if not frames:
+        return np.zeros((0, TINY_HEIGHT, TINY_WIDTH, 3), dtype=np.float32)
+    return np.stack(frames)
 
 
 def _render_rate_slots(entries: list[dict[str, Any]]) -> list[list[np.ndarray | None]]:
@@ -1214,16 +1722,9 @@ def _render_rate_slots(entries: list[dict[str, Any]]) -> list[list[np.ndarray | 
     飛ばすと、動画のクリップが ``media_id`` を持たず、全部の枠が透明になる
     """
     from sashimono.compat.catalog import gather_media
-    from sashimono.core.model import MediaItem, Project, ProjectSettings
+    from sashimono.core.model import Project, ProjectSettings
     from sashimono.core.timebase import FrameRate
-    from sashimono.engine.decode import ProbeError, probe_media
     from sashimono.engine.render import FrameRenderer
-
-    def probe(path: Path) -> MediaItem | None:
-        try:
-            return probe_media(path)
-        except ProbeError:
-            return None
 
     settings = ProjectSettings(width=WIDTH, height=HEIGHT, frame_rate=FrameRate(FPS))
     report = CompatibilityReport()
@@ -1233,7 +1734,7 @@ def _render_rate_slots(entries: list[dict[str, Any]]) -> list[list[np.ndarray | 
         for entry in entries:
             objects = map_template([copy.deepcopy(entry["item"])], report=report)
             project = Project.create(settings)
-            plan = gather_media(objects, project, probe)
+            plan = gather_media(objects, project, _probe_or_none)
             start, length = int(entry["start"]), int(entry["length"])
             if plan.missing:
                 pictures.append([None] * length)
@@ -1280,8 +1781,6 @@ def rate_row(
 
 
 def command_video_rate_measure(arguments: argparse.Namespace) -> int:
-    import av.error
-
     work: Path = arguments.work
     manifest_path = work / "video-rate-probe.json"
     if not manifest_path.exists():
@@ -1310,14 +1809,22 @@ def command_video_rate_measure(arguments: argparse.Namespace) -> int:
         return 0
     entries: list[dict[str, Any]] = manifest["slots"]
     limit = float(manifest.get("match_limit", RATE_MATCH_LIMIT))
-    # 書き出している最中や中断した後の mp4 は開けないか、読み進めた所で復号が失敗する
-    # 捕まえないと案内の無い traceback で終わる 映像の道が無い書き出しは添字で落ちる
     try:
         sources = _read_source(media)
+    except unreadable_export_errors():
+        print(f"素材 {media} を読めません video-rate-build を走らせ直してください")
+        return 0
+    if len(sources) == 0:
+        print(f"素材 {media} に絵がありません video-rate-build を走らせ直してください")
+        return 0
+    try:
+        if not has_video_stream(video):
+            print(f"{video} に映像の道がありません 映像が入る形式で書き出してください")
+            return 0
+        # 頭は開けても途中で切れた書き出しは、読み進めた所で復号が失敗する
         theirs = _read_rate_slots(video, entries)
-    except (av.error.FFmpegError, OSError, IndexError, ValueError):
-        print(f"{video} を読めません 書き出しが終わっていないか壊れています")
-        print(f"YMM4 で {project} の書き出しを終えてから走らせてください")
+    except unreadable_export_errors():
+        _explain_unreadable(video, project)
         return 0
     ours = None if arguments.skip_sashimono else _render_rate_slots(entries)
     rows = []
@@ -1379,6 +1886,8 @@ def main() -> int:
     compare.add_argument("--blending", choices=("srgb", "linear"), default="srgb")
     commands.add_parser("audio-build")
     commands.add_parser("audio-measure")
+    commands.add_parser("mesh-build")
+    commands.add_parser("mesh-measure")
     commands.add_parser("video-rate-build")
     rate_measure = commands.add_parser("video-rate-measure")
     rate_measure.add_argument(
@@ -1392,6 +1901,8 @@ def main() -> int:
         "compare": command_compare,
         "audio-build": command_audio_build,
         "audio-measure": command_audio_measure,
+        "mesh-build": command_mesh_build,
+        "mesh-measure": command_mesh_measure,
         "video-rate-build": command_video_rate_build,
         "video-rate-measure": command_video_rate_measure,
     }
