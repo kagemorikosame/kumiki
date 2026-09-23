@@ -722,6 +722,17 @@ class TestMeshDeformation:
         assert mesh_grid(mapped)[:2] == (3.0, 3.0)
         assert len(mesh_grid(mapped)) == 2 + 9 * 2
 
+    def test_a_point_that_is_not_a_map_is_not_silently_flattened(self) -> None:
+        """点が辞書でない物を空の辞書へ置き換えると、その点だけ動かない格子が
+        黙って通り、記録にも残らないので直しようが無くなる
+        """
+        report = CompatibilityReport()
+        points: list[Any] = [mesh_point() for _ in range(9)]
+        points[4] = "壊れた点"
+        result = map_video_effects([mesh_effect(3, 3, points)], report, length=30)
+        assert not result.effects
+        assert report.lines()
+
     def test_a_five_by_five_mesh_keeps_all_twentyfive_points(self) -> None:
         report = CompatibilityReport()
         (mapped,) = map_video_effects([mesh_effect(5, 5)], report, length=30).effects

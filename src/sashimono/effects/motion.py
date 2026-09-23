@@ -642,6 +642,11 @@ void main() {
             vec2 top_right = mesh_point(column + 1, row, columns, rows);
             vec2 bottom_left = mesh_point(column, row + 1, columns, rows);
             vec2 bottom_right = mesh_point(column + 1, row + 1, columns, rows);
+            // 四隅を囲む四角から外れていれば、逆双一次補間まで行かずに次のセルへ
+            // 画素ごとに最大 64 回の補間を回すと、大きな絵でプレビューが重くなる
+            vec2 low = min(min(top_left, top_right), min(bottom_left, bottom_right));
+            vec2 high = max(max(top_left, top_right), max(bottom_left, bottom_right));
+            if (any(lessThan(pixel, low)) || any(greaterThan(pixel, high))) continue;
             vec2 uv = inverse_bilinear(pixel, bottom_left, bottom_right, top_right, top_left);
             // NaN は比較がすべて偽になり範囲の判定をすり抜けるので、先に弾く
             bool broken = any(isnan(uv)) || any(isinf(uv));

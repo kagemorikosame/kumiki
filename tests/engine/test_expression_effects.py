@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from typing import Any
 
 import numpy as np
 import pytest
@@ -319,6 +320,32 @@ class TestMeshGrid:
         assert spec.coerce((99.0, 99.0, *([0.0] * (99 * 99 * 2)))) == ()
         assert spec.coerce((2.0, 2.0, *([float("nan")] * 8))) == ()
         assert spec.size(spec.coerce(None)) == (0, 0)
+
+    def test_a_grid_size_that_is_not_a_whole_number_is_dropped(self) -> None:
+        """点数を先に丸めると、2.9 が 2 扱いで通って別の格子になる
+
+        点の数の検査をすり抜けるので、絵が畳まれたまま出る
+        """
+        spec = registry.require("mesh_deform").spec("grid")
+        assert isinstance(spec, GridSpec)
+        assert spec.coerce((2.9, 2.0, *([0.0] * 8))) == ()
+        assert spec.coerce((3.0, 2.5, *([0.0] * 12))) == ()
+
+    def test_a_grid_size_that_is_not_a_number_is_dropped(self) -> None:
+        """整える所から例外が出ると、プロジェクトを開く所で落ちる
+
+        `float("x")` も `int(float("nan"))` も例外になる 辻褄が合わない値は
+        「格子なし」へ戻すのが約束なので、例外にしてはいけない
+        """
+        spec = registry.require("mesh_deform").spec("grid")
+        assert isinstance(spec, GridSpec)
+        # 型の付かない値が来る道（保存ファイル・プリセット・AI の書き換え）を真似る
+        letters: Any = ("x",) * 18
+        empties: Any = (None,) * 8
+        assert spec.coerce((3.0, 3.0, *letters)) == ()
+        assert spec.coerce((float("nan"), 2.0, *([0.0] * 8))) == ()
+        assert spec.coerce((float("inf"), 2.0, *([0.0] * 8))) == ()
+        assert spec.coerce((2.0, 2.0, *empties)) == ()
 
     def test_a_flat_grid_leaves_the_picture_alone(
         self, gl_context: OffscreenGLContext, processor: EffectProcessor

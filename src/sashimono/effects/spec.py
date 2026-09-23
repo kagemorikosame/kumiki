@@ -305,6 +305,24 @@ class ValueSpec:
         return self.default
 
 
+def _finite_floats(value: tuple[object, ...]) -> list[float] | None:
+    """並びを全部 ``float`` にする 1 つでも数でなければ ``None``
+
+    ``float("x")`` は例外を投げる 整える役目の関数から例外が出ると、
+    「辻褄が合わなければ格子なしへ戻す」はずが、プロジェクトを開く所で落ちる
+    NaN と無限大も弾く シェーダへ渡すと、その画素の行き先が決まらない
+    """
+    numbers: list[float] = []
+    for item in value:
+        if isinstance(item, bool) or not isinstance(item, int | float):
+            return None
+        number = float(item)
+        if not math.isfinite(number):
+            return None
+        numbers.append(number)
+    return numbers
+
+
 @dataclass(frozen=True, slots=True)
 class GridSpec:
     """格子の点のずれ 値は ``(横の点数, 縦の点数, x0, y0, x1, y1, ...)`` の平らな並び
@@ -355,17 +373,21 @@ class GridSpec:
         """
         if not isinstance(value, tuple) or len(value) < 2:
             return ()
-        columns, rows = int(value[0]), int(value[1])
+        numbers = _finite_floats(value)
+        if numbers is None:
+            return ()
+        # 点数は先に丸めない 2.9 を int() で 2 にすると、点の数の検査を
+        # すり抜けて別の格子として通り、絵が畳まれて出る
+        if numbers[0] != int(numbers[0]) or numbers[1] != int(numbers[1]):
+            return ()
+        columns, rows = int(numbers[0]), int(numbers[1])
         if not self.minimum <= columns <= self.maximum:
             return ()
         if not self.minimum <= rows <= self.maximum:
             return ()
-        if len(value) != 2 + columns * rows * 2:
+        if len(numbers) != 2 + columns * rows * 2:
             return ()
-        numbers = [float(v) for v in value[2:]]
-        if not all(math.isfinite(v) for v in numbers):
-            return ()
-        return (float(columns), float(rows), *numbers)
+        return (float(columns), float(rows), *numbers[2:])
 
 
 #: パラメータ定義の総称

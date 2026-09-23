@@ -659,14 +659,19 @@ def _mesh_deformation(r: _Reader) -> Effect | None:
     rows = r.count("VerticalCount", 2, animated=False)
     points = r.entry.get("Points")
     fits = 2 <= columns <= MESH_MAX_POINTS and 2 <= rows <= MESH_MAX_POINTS
-    if not fits or not isinstance(points, list) or len(points) != columns * rows:
+    shaped = (
+        [point for point in points if isinstance(point, dict)] if isinstance(points, list) else []
+    )
+    if not fits or len(points if isinstance(points, list) else []) != columns * rows:
         # 点数と点の数が合わない値で作ると、シェーダが配列の外を読む
         r.report.note_missing(f"YMM4 の MeshDeformationEffect の格子 {columns}x{rows}")
         return None
-    readers = [
-        _Reader(point if isinstance(point, dict) else {}, r.length, r.keyframes, r.report, r.name)
-        for point in points
-    ]
+    if len(shaped) != columns * rows:
+        # 点が辞書でない物を空の辞書へ置き換えると、その点だけ動かない格子が
+        # 黙って通り、記録にも残らないので直しようが無くなる
+        r.report.note_missing(f"YMM4 の MeshDeformationEffect の点の書き方 {columns}x{rows}")
+        return None
+    readers = [_Reader(point, r.length, r.keyframes, r.report, r.name) for point in shaped]
     if columns == 2 and rows == 2:
         return _mesh_corners(readers)
     # YMM4 の Points は左上から行ごと こちらの格子も同じ並びなので、並べ替えない
