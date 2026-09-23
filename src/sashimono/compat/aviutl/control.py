@@ -45,6 +45,7 @@ from sashimono.effects.spec import (
 __all__ = [
     "ScriptHeader",
     "ScriptSection",
+    "lua_string",
     "lua_value",
     "parse_control",
     "split_scripts",
@@ -235,7 +236,7 @@ def _check(body: str, slot: str | None, named: str | None) -> ParameterSpec:
 def _font(body: str, named: str | None) -> ParameterSpec:
     parts = _split(body)
     label = parts[0] if parts else "フォント"
-    default = _unquote(parts[1]) if len(parts) > 1 and parts[1] else "Yu Gothic UI"
+    default = lua_string(parts[1]) if len(parts) > 1 and parts[1] else "Yu Gothic UI"
     return FontSpec(named or "font", label or "フォント", default)
 
 
@@ -243,7 +244,7 @@ def _text(body: str, named: str | None) -> ParameterSpec:
     """``--text@名前:ラベル,既定値`` AviUtl2 世代の文字入力欄"""
     parts = _split(body)
     label = parts[0] if parts else "文字"
-    default = _unquote(",".join(parts[1:])) if len(parts) > 1 else ""
+    default = lua_string(",".join(parts[1:])) if len(parts) > 1 else ""
     return TextSpec(named or "text", label or "文字", default)
 
 
@@ -335,6 +336,13 @@ def _dialog(body: str) -> list[ParameterSpec]:
         label = label.strip() or name
         suffix = suffix.strip().lower()
         default = raw_default.strip() if has_default else ""
+        if default == "nil":
+            # 初期値が nil の欄は、Lua の表などを直接書き込むための欄
+            # （sigma のスクリプトの ``TRACK,_0=nil`` は、トラックバーの値を表で
+            # 差し替える入口） 数のスライダーにすると 0 が入り、``if _0 then _0[1]``
+            # が数を表として引いて、sigma の効果が 1 本残らず 1 行目で落ちた
+            # こちらの設定欄では表を書けないので、欄を作らず nil のまま渡す
+            continue
 
         specs.append(_dialog_item(name, label, suffix, default))
     return specs
@@ -342,18 +350,21 @@ def _dialog(body: str) -> list[ParameterSpec]:
 
 def _dialog_item(name: str, label: str, suffix: str, default: str) -> ParameterSpec:
     if suffix == "chk":
-        return CheckSpec(name, label, _number([default], 0, 0.0) != 0)
+        return CheckSpec(name, label, _number([default], 0, 0.0) != 0, as_number=True)
     if suffix == "col":
         return ColorSpec(name, label, _color_value(default, (1.0, 1.0, 1.0, 1.0)))
     if suffix == "fig":
-        return SelectSpec(name, label, FIGURE_CHOICES, _unquote(default) or FIGURE_CHOICES[0][0])
+        return SelectSpec(name, label, FIGURE_CHOICES, lua_string(default) or FIGURE_CHOICES[0][0])
     if suffix == "file":
         return FileSpec(name, label)
     if suffix == "font":
-        return FontSpec(name, label, _unquote(default) or "Yu Gothic UI")
+        return FontSpec(name, label, lua_string(default) or "Yu Gothic UI")
 
-    if default.startswith(('"', "'")):
-        return TextSpec(name, label, _unquote(default))
+    # ``[[…]]`` も Lua の文字 sigma の効果集は画像のパスの欄を ``パターン画像,_2=[[]]`` と
+    # 書く 数として読むと、パスの欄がスライダーになり、中身の入ったエイリアスを
+    # 読むたびに「数として読めない値」と記録されていた
+    if default.startswith(('"', "'", "[[")):
+        return TextSpec(name, label, lua_string(default))
 
     # 数値はスライダーにする AviUtl のダイアログは入力欄で、範囲も無いが、
     # こちらではキーフレームを打てる方が使い出がある 範囲は初期値から広めに取る
@@ -386,7 +397,7 @@ def lua_value(spec: ParameterSpec, value: object) -> object:
         red, green, blue = (int(min(max(float(part), 0.0), 1.0) * 255) for part in value[:3])
         return (red << 16) | (green << 8) | blue
     if isinstance(spec, CheckSpec):
-        return bool(value)
+        return int(bool(value)) if spec.as_number else bool(value)
     if isinstance(spec, SelectSpec) and isinstance(value, str):
         # 選択肢の識別子が数字なら数値で渡す 配布スクリプトは
         # ``if style == 1 then`` のように数値で比べる
@@ -419,10 +430,13 @@ def _number(parts: list[str], index: int, default: float) -> float:
         return default
 
 
-def _unquote(value: str) -> str:
+def lua_string(value: str) -> str:
+    """Lua の文字の書き方（``"…"`` ``'…'`` ``[[…]]``）を外す それ以外はそのまま"""
     text = value.strip()
     if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
         return text[1:-1]
+    if len(text) >= 4 and text.startswith("[[") and text.endswith("]]"):
+        return text[2:-2]
     return text
 
 

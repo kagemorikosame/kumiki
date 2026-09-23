@@ -122,6 +122,11 @@ class CheckSpec:
     name: str
     label: str
     default: bool = False
+    #: スクリプトへ真偽ではなく 0 と 1 の数で渡すか
+    #: AviUtl1 の ``--dialog`` の ``/chk`` は、ダイアログの中身を Lua のコード
+    #: （``_3=1;``）として流すので数になる 配布スクリプトは ``_3==1`` と比べており、
+    #: 真偽で渡すと Lua では ``true==1`` が偽なので、入れたチェックが効かない
+    as_number: bool = False
 
     kind = ParameterKind.CHECK
 

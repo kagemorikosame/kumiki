@@ -345,6 +345,11 @@ class LuaScriptRuntime:
         # ``sethook`` を取っておいてから、中身を絞る
         for name in ("io", "os", "package", "require", "dofile", "loadfile", "load", "loadstring"):
             globals_table[name] = None
+        # ``package`` は中身の無い ``loaded`` だけを戻す sigma のスクリプトは読み込みの
+        # 頭で ``package.loaded.bit or pcall(require,"bit")`` と書いており、``package`` が
+        # nil だとそこで落ちて、効果が 1 本も動かなかった（ffi の要らない配布物 26 本） 本物の
+        # ``package`` は探索先（``path`` ``cpath``）とローダーを持つので戻さない
+        self._lua.execute("package = { loaded = {} }")
 
         globals_table["RGB"] = rgb_to_number
         globals_table["HSV"] = hsv_to_number

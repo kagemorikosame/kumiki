@@ -35,11 +35,16 @@ def fixture_root() -> Path | None:
 
 
 def _files() -> list[Path]:
+    """AviUtl2 世代（``.object``）だけ
+
+    AviUtl1 の ``.exa`` は ``test_real_aviutl1_exa.py`` が見る ここへ混ぜると、字幕の
+    ひな形（本文が空で、差し込む道具が埋める）やフォント欄を持たない書き方まで
+    AviUtl2 の決まりで裁くことになり、世代の違いを読み手の不具合と取り違える
+    """
     found: list[Path] = []
     for root in (alias_root(), fixture_root()):
         if root is not None:
             found.extend(root.rglob("*.object"))
-            found.extend(root.rglob("*.exa"))
     return sorted(set(found))
 
 

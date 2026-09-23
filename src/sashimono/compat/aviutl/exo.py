@@ -11,14 +11,18 @@
 
 世代が 2 つある 読み方が変わるのは次の 4 点だけで、あとは同じ
 
-============  ====================  ==============================
-              AviUtl1 (``.exa``)    AviUtl2 (``.object``)
-============  ====================  ==============================
-節の名前      ``[0]`` ``[0.1]``     ``[Object]`` ``[Object.1]``
-要素の名前    ``_name=テキスト``    ``effect.name=テキスト``
-区間          ``start=`` ``end=``   ``frame=0,179``
-テキスト欄    UTF-16LE の 16 進     素のまま（改行は ``\\n``）
-============  ====================  ==============================
+============  =======================  ==============================
+              AviUtl1 (``.exa``)       AviUtl2 (``.object``)
+============  =======================  ==============================
+節の名前      ``[vo]`` ``[vo.1]``      ``[Object]`` ``[Object.1]``
+要素の名前    ``_name=テキスト``       ``effect.name=テキスト``
+区間          ``length=64``            ``frame=0,179``
+テキスト欄    UTF-16LE の 16 進        素のまま（改行は ``\\n``）
+============  =======================  ==============================
+
+AviUtl1 の ``.exo`` は ``[0]`` ``[0.1]`` と番号で書き、区間を ``start=`` ``end=`` で持つ
+``.exa`` の節の名前と区間の書き方は、配布されている ``.exa`` 67 本から読んだ
+（sigma_aviutl_scripts・PSDToolKit・localfont2・FPS カウンタ）
 
 開始フレームの数え方も違う（1 始まり／0 始まり） ここで **0 始まりに揃えて**
 から返す 使う側が世代を気にしなくて済むようにするため
@@ -35,7 +39,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from sashimono.compat.aviutl.encoding import decode_utf16_hex, read_text
-from sashimono.compat.aviutl.motion import Motion, parse_motion
+from sashimono.compat.aviutl.motion import Motion, from_aviutl1, parse_motion
 
 __all__ = [
     "ALIAS_SUFFIXES",
@@ -52,6 +56,46 @@ ALIAS_SUFFIXES = (".exa", ".exa2", ".object", ".exo", ".exo2")
 
 #: AviUtl2 の節の名前の頭 ``[Object]`` ``[Object.1]``
 _ALIAS_SECTION = "object"
+
+#: AviUtl1 の ``.exa`` の節の名前の頭 ``[vo]`` ``[vo.0]`` は映像、``[ao]`` ``[ao.0]`` は
+#: 音声、``[v.0]`` はシーンチェンジだけのエイリアス
+#: 以前は数字の節しか受けず、これらを全体設定として読んでいた ファイルは開けるのに
+#: オブジェクトが 0 個になり、配布物 67 本がどれも何も置かないまま通っていた
+#: 1 本の中に 2 種類が混ざったものは無いので、どれもオブジェクト 0 番として扱う
+_ALIAS1_SECTIONS = frozenset({"vo", "ao", "v"})
+
+#: 英語版の AviUtl1 が書く要素の名前と、日本語版での名前
+#: PSDToolKit は同じエイリアスを日本語版と英語版（``*_en.exa``）で配っており、
+#: 2 本を行ごとに突き合わせると、名前だけが違い並びも値も同じだった
+#: 日本語の名前へ寄せておくと、写す側は 1 つの対応表で済む
+_ENGLISH_NAMES: dict[str, str] = {
+    "Text": "テキスト",
+    "Standard drawing": "標準描画",
+    "Custom object": "カスタムオブジェクト",
+    "Animation effect": "アニメーション効果",
+    "Audio file": "音声ファイル",
+    "Standard playback": "標準再生",
+}
+
+#: 英語版の項目名 要素ごとに引く（同じ英語が別の要素で別の意味を持ちうるため）
+#: どれも上と同じ突き合わせで、日本語版の同じ行にあった名前
+_ENGLISH_KEYS: dict[str, dict[str, str]] = {
+    "テキスト": {
+        "Size": "サイズ",
+        "vDisplay": "表示速度",
+        "1char1obj": "文字毎に個別オブジェクト",
+        "Show on motion coordinate": "移動座標上に表示する",
+        "Automatic scrolling": "自動スクロール",
+    },
+    "標準描画": {"Zoom%": "拡大率", "Clearness": "透明度", "Rotation": "回転"},
+    "音声ファイル": {
+        "Playback position": "再生位置",
+        "vPlay": "再生速度",
+        "Loop playback": "ループ再生",
+        "Sync with video files": "動画ファイルと連携",
+    },
+    "標準再生": {"Volume": "音量", "Left-Right": "左右"},
+}
 
 
 class ExoParseError(ValueError):
@@ -266,11 +310,13 @@ def load_exo(path: Path) -> ExoFile:
 def _section_key(name: str) -> tuple[int, int | None] | None:
     """節の名前を ``(オブジェクト, 要素)`` へ 全体設定なら ``None``
 
-    ``[0.1]``（AviUtl1）と ``[Object.1]``（AviUtl2）の両方を受ける 後者は
-    エイリアスにしか現れず、オブジェクトは 1 つだけなので 0 番として扱う
+    ``[0.1]``（AviUtl1 の ``.exo``）、``[vo.1]``（AviUtl1 の ``.exa``）、
+    ``[Object.1]``（AviUtl2）を受ける 後の 2 つはエイリアスにしか現れず、
+    オブジェクトは 1 つだけなので 0 番として扱う
     """
     head, separator, tail = name.partition(".")
-    index = 0 if head.strip().lower() == _ALIAS_SECTION else None
+    lowered = head.strip().lower()
+    index = 0 if lowered == _ALIAS_SECTION or lowered in _ALIAS1_SECTIONS else None
     if index is None:
         if not head.isdigit():
             return None
@@ -321,7 +367,7 @@ def _build_objects(
                 overlay=_as_int(header.get("overlay"), 1),
                 camera=_as_int(header.get("camera"), 0),
                 entries=entries,
-                span_given=bool(header.keys() & {"frame", "start", "end"}),
+                span_given=bool(header.keys() & {"frame", "start", "end", "length"}),
             )
         )
     return tuple(built)
@@ -347,6 +393,10 @@ def _span(header: dict[str, str], generation: int) -> tuple[int, ...]:
         for number in numbers[1:]:
             points.append(max(points[-1], number))
         return tuple(points) if len(points) > 1 else (start, start)
+    if "start" not in header and "length" in header:
+        # AviUtl1 の ``.exa`` は置く場所を持たず、長さだけを ``length=64`` と書く
+        # 読まないと 1 フレームのクリップになり、テンプレートとして尺を合わせられない
+        return 0, max(0, _as_int(header.get("length"), 1) - 1)
     start = max(0, _as_int(header.get("start"), 1) - 1)
     return start, max(start, _as_int(header.get("end"), 1) - 1)
 
@@ -354,6 +404,11 @@ def _span(header: dict[str, str], generation: int) -> tuple[int, ...]:
 def _build_entry(values: dict[str, str], generation: int = 1) -> ExoEntry:
     name = values.get("effect.name") or values.get("_name", "")
     params = {key: value for key, value in values.items() if key not in ("_name", "effect.name")}
+    if generation == 1:
+        name = _ENGLISH_NAMES.get(name, name)
+        keys = _ENGLISH_KEYS.get(name, {})
+        # 移動方法の書き方も AviUtl2 の形へ揃える 値を読む側（motion）は 1 つの文法だけを知る
+        params = {keys.get(key, key): from_aviutl1(value) for key, value in params.items()}
     return ExoEntry(name=name, params=params, generation=generation)
 
 

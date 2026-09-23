@@ -11,11 +11,14 @@ AviUtl のオブジェクトは「中身 1 つ + フィルタの列」ででき�
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from fractions import Fraction
 from pathlib import Path
 
+from sashimono.compat.aviutl.catalog import ScriptEntry
+from sashimono.compat.aviutl.control import lua_string
 from sashimono.compat.aviutl.encoding import decode_utf16_hex
 from sashimono.compat.aviutl.exo import ExoEntry, ExoFile, ExoObject
 from sashimono.compat.aviutl.motion import (
@@ -44,6 +47,7 @@ from sashimono.core.timebase import FrameRate
 from sashimono.effects.definition import EffectDefinition, registry
 from sashimono.effects.spec import (
     IMAGE_SUFFIXES,
+    CheckSpec,
     ColorSpec,
     FileSpec,
     ParameterSpec,
@@ -118,6 +122,14 @@ _CONTENT_NAMES = frozenset(
 
 #: 位置と大きさを決める要素 エフェクトではなくクリップの配置として扱う
 _DRAW_NAMES = frozenset({"標準描画", "拡張描画"})
+
+#: 先頭に来ても中身ではなく効果として読む要素
+#: AviUtl1 の効果のエイリアス（sigma_aviutl_scripts の ``exa/anm`` の 30 本）は
+#: ``[vo.0]`` に アニメーション効果 が 1 つだけ入っており、中身も 標準描画 も無い
+_EFFECT_ONLY = frozenset({"アニメーション効果"})
+
+#: スクリプトが中身を作る要素 ``name=矩形@単純図形σ`` のようにスクリプトを名前で指す
+_SCRIPTED_CONTENTS = frozenset({"カスタムオブジェクト", "シーンチェンジ"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -272,6 +284,9 @@ _PARAMS: dict[str, dict[str, _Param]] = {
         "境目調整": _Param("gap"),
     },
     "音声再生": {"音量": _Param("volume"), "左右": _Param("pan")},
+    # AviUtl1 の音声オブジェクトの置き方 AviUtl2 の 音声再生 に当たり、項目の名前も同じ
+    # （PSDToolKit の wav.exa が ``音量=100.0`` ``左右=0.0`` と書く）
+    "標準再生": {"音量": _Param("volume"), "左右": _Param("pan")},
     "音量調整": {"音量": _Param("volume"), "左右": _Param("pan")},
     "音量フェード": {"イン": _Param("fade_in"), "アウト": _Param("fade_out")},
     # モノラル化の 比率 は **0 が元のまま** 逆に読むと既定でステレオが潰れる
@@ -451,6 +466,7 @@ _FILTERS: dict[str, str] = {
     # 音声再生 は音声オブジェクトの置き方（映像の 標準描画 に当たる）で、
     # 項目が 音量調整 と同じなので同じエフェクトへ写す
     "音声再生": "audio_volume",
+    "標準再生": "audio_volume",
     "音量調整": "audio_volume",
     "音量フェード": "audio_fade",
     "モノラル化": "audio_monaural",
@@ -593,7 +609,15 @@ def map_object(
     if content is None:
         return None
 
-    source, media_path, kind = _content(content, obj.relative_points(), log)
+    if content.name in _EFFECT_ONLY:
+        # 中身を持たず、効果だけを入れたエイリアス 置いても何も映らず、今のクリップへ
+        # 着せて使う（YMM4 のエフェクトだけのテンプレートと同じ扱い）
+        # 中身として読むと、効果が丸ごと「未知のオブジェクト」として捨てられていた
+        source, media_path, kind = None, "", "effects"
+        stacked: tuple[ExoEntry, ...] = obj.entries
+    else:
+        source, media_path, kind = _content(content, obj.relative_points(), log)
+        stacked = tuple(obj.filters())
     effects: list[Effect] = []
     opacity = AnimatedValue(1.0)
     blend = "normal"
@@ -604,7 +628,7 @@ def map_object(
     # （AviUtl2 でも分割なしの 個別の拡大 50 は元の絵のままだった）
     grid: dict[str, ParamValue] = {}
 
-    for entry in obj.filters():
+    for entry in stacked:
         if entry.name == _SPLIT:
             grid = _split_grid(entry, points, log)
             continue
@@ -920,6 +944,12 @@ def _content(
         return _waveform(entry, path, points, log), path, "shape"
     if entry.name in _MEDIA_NAMES:
         return None, _media_file(entry), entry.name
+    if entry.name in _SCRIPTED_CONTENTS:
+        # スクリプトで中身を作るもの（AviUtl1 の カスタムオブジェクト と シーンチェンジ）
+        # どのスクリプトかで出来る絵がまるで違うので、名前ごとに数える
+        # 種類だけで数えると、どのスクリプトから手を付ければよいかが分からない
+        log.note_missing(f"{entry.name}: {entry.params.get('name', '') or '名前なし'}")
+        return None, "", entry.name
 
     if entry.name not in _CONTENT_NAMES:
         log.note_missing(f"オブジェクト: {entry.name}")
@@ -1837,12 +1867,27 @@ def _script_filter(
 
 
 def _animation(entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport) -> Effect | None:
-    """アニメーション効果 スクリプトが手元にあれば繋ぐ"""
-    from sashimono.compat.aviutl.catalog import script_catalog
+    """アニメーション効果 スクリプトが手元にあれば繋ぐ
 
+    AviUtl1 の書き方は配布されている ``.exa`` から読んだ
+
+    .. code-block:: none
+
+        name=内側シャドー@効果集σ     ← スクリプト名@ファイル名（``@効果集σ.anm`` の中の 1 本）
+        track0=-40.00                 ← スライダー 4 本
+        check0=0
+        param=_1=0x000000;_2=[[]];_3=1;_0=nil;   ← ``--dialog`` の変数と値
+
+    以前は ``name`` をスクリプトの表示名とそのまま比べ、値を ``param0`` から読んでいた
+    どちらも実物には無い書き方で、配布物のアニメーション効果は 1 本も繋がらなかった
+    """
     name = entry.params.get("name", "")
-    catalog = script_catalog()
-    found = next((item for item in catalog.all() if item.label == name), None)
+    if not name:
+        # 組み込みのアニメーション効果（震える など）は ``type`` の番号で指す
+        # 番号と効果の対応は実物で確かめていないので、番号のまま数える
+        log.note_missing(f"アニメーション効果: 組み込みの番号 {entry.params.get('type', '')}")
+        return None
+    found = _find_script(name, "anm")
     if found is None:
         log.note_missing(f"アニメーション効果: {name}")
         return None
@@ -1852,14 +1897,78 @@ def _animation(entry: ExoEntry, points: tuple[int, ...], log: CompatibilityRepor
         return None
 
     params = definition.default_params()
+    label = found.label
     for index in range(4):
         spec = definition.spec(f"track{index}")
-        raw = entry.params.get(f"param{index}") or entry.params.get(str(index))
+        raw = entry.params.get(f"track{index}")
         if spec is not None and raw is not None:
             params[spec.name] = spec.coerce(
-                _spec_value(spec, raw, points, log, f"{name}の track{index}")
+                _spec_value(spec, raw, points, log, f"{label}の track{index}")
             )
+    check = definition.spec("check0")
+    raw_check = entry.params.get("check0")
+    if check is not None and raw_check is not None:
+        params[check.name] = check.coerce(raw_check.strip() not in ("", "0"))
+    _dialog_values(definition, params, entry.params.get("param", ""), points, log, label)
     return Effect(kind=found.identifier, params=params)
+
+
+def _find_script(name: str, kind: str) -> ScriptEntry | None:
+    """``スクリプト名@ファイル名`` を手元のスクリプトから探す
+
+    ``@`` の後ろは 1 ファイルに何本も入れたスクリプトのファイル名（``@効果集σ.anm``
+    の ``効果集σ``） ``@`` が無ければファイル 1 本で 1 つのスクリプト
+    種類（``anm`` ``obj`` …）も合わせる PSDToolKit は ``多目的スライダー`` を
+    ``@PSDToolKit.anm`` と ``@PSDToolKit.obj`` の両方に持っており、名前だけで
+    選ぶと、効果として置いたものにカスタムオブジェクトの方が繋がる
+    """
+    from sashimono.compat.aviutl.catalog import script_catalog
+
+    label, separator, owner = name.partition("@")
+    for item in script_catalog().of_kind(kind):
+        if separator:
+            if item.label == label and item.path.stem in (f"@{owner}", owner):
+                return item
+        elif not item.name and item.path.stem == label:
+            return item
+    return None
+
+
+#: ``--dialog`` の値の区切り 引用符と ``[[ ]]`` の中の ``;`` では切らない
+_DIALOG_ITEM = re.compile(r"""(?:"[^"]*"|'[^']*'|\[\[.*?\]\]|[^;])+""")
+
+
+def _dialog_values(
+    definition: EffectDefinition,
+    params: dict[str, ParamValue],
+    raw: str,
+    points: tuple[int, ...],
+    log: CompatibilityReport,
+    label: str,
+) -> None:
+    """``param=_1=0x000000;_2=[[]];_0=nil;`` を ``--dialog`` の設定欄へ
+
+    値は Lua の書き方のまま入っている 文字は ``"円"`` か ``[[…]]``、色は ``0x…``
+    ``nil`` は「値なし」で、スクリプトの既定のままにする（``TRACK,_0=nil`` は
+    sigma のスクリプトがダイアログの終わりの印に置いている）
+    """
+    for chunk in _DIALOG_ITEM.findall(raw):
+        variable, separator, value = chunk.strip().partition("=")
+        variable = variable.strip()
+        value = value.strip()
+        if not separator or not variable or value == "nil":
+            continue
+        spec = definition.spec(variable)
+        if spec is None:
+            log.note_missing(f"{label}のダイアログに無い変数: {variable}")
+            continue
+        text = lua_string(value)
+        if isinstance(spec, CheckSpec):
+            params[spec.name] = spec.coerce(text not in ("", "0"))
+            continue
+        params[spec.name] = spec.coerce(
+            _spec_value(spec, text, points, log, f"{label}の {variable}")
+        )
 
 
 def _tracks_for(project: Project, layers: set[int], commands: list[Command]) -> dict[int, Track]:
