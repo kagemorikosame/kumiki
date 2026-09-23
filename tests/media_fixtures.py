@@ -6,11 +6,14 @@
 
 from __future__ import annotations
 
+import functools
 import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+import pytest
 
 if TYPE_CHECKING:
     import numpy as np
@@ -19,6 +22,7 @@ __all__ = [
     "SampleMedia",
     "decode_all_frames",
     "ffmpeg_available",
+    "libx264_available",
     "make_rotated",
     "make_sample",
     "make_silent_gap",
@@ -27,6 +31,46 @@ __all__ = [
 
 def ffmpeg_available() -> bool:
     return shutil.which("ffmpeg") is not None
+
+
+#: 符号化器の一覧を待つ上限（秒）
+ENCODER_LIST_TIMEOUT = 30
+
+
+@functools.cache
+def libx264_available() -> bool:
+    """外の ffmpeg で H.264 を焼けるか
+
+    ffmpeg があっても libx264 が入っていない組み立て方があり、そこでは素材を
+    作る所で落ちる 落ちると取り付け口（fixture）のエラーになり、「使えない
+    環境では飛ばす」という他の場所の決まりと食い違うので、先に見て分ける
+    一覧を取るのに 100ms 前後かかるので、1 度だけ見て覚える
+    """
+    if not ffmpeg_available():
+        return False
+    try:
+        listing = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-encoders"],
+            check=False,
+            capture_output=True,
+            text=True,
+            # 応答しない ffmpeg に当たると、待ち時間を切らないとテストの進行が
+            # 止まったまま戻らない 一覧は 100ms 前後で返るので 30 秒で十分長い
+            timeout=ENCODER_LIST_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if listing.returncode != 0:
+        return False
+    # 一覧は「 V....D libx264   libx264 H.264 ...」の形 説明文にも libx264 の
+    # 字が出るので、名前の欄（2 列目）が一致する行だけを数える
+    # 手元の ffmpeg 8.1.2 は一覧を標準出力へ出すが、組み立て方によっては
+    # 標準エラーへ出るという指摘があったので、両方を見る
+    for line in (listing.stdout + "\n" + listing.stderr).splitlines():
+        columns = line.split()
+        if len(columns) >= 2 and columns[1] == "libx264":
+            return True
+    return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +111,9 @@ def make_sample(
     path = directory / name
     if path.exists():
         return SampleMedia(path, width, height, fps, duration, audio, sample_rate)
+
+    if not libx264_available():
+        pytest.skip("ffmpeg に libx264 が無いので実素材のテストを飛ばす")
 
     directory.mkdir(parents=True, exist_ok=True)
     command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
