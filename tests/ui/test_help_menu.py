@@ -496,7 +496,7 @@ class TestTemplateNotesCopy:
         # 名前そのものが消えたことを見る
         assert "kagemori" not in text.casefold()
         assert str(tmp_path).casefold() not in text.casefold()
-        assert "ファイル: <探索先1>\字幕\強調.object" in text.replace("/", "\\")
+        assert r"ファイル: <探索先1>\字幕\強調.object" in text.replace("/", "\\")
         assert "探索先:\n  <探索先1>" in text
         # どの印がどの場所かは、聞かれたときに本人が画面で答えられるようにする
         assert f"  <探索先1> {root}" in tip.splitlines()
