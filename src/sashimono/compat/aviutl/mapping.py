@@ -1939,9 +1939,12 @@ def _find_script(name: str, kind: str) -> ScriptEntry | None:
     # エイリアスはそれを ``表示名@ファイル名`` と書く） なので見るのはファイル名だけで、
     # 中に ``@表示名`` の行があるかどうかでは選ばない 以前は中の見出しが空のものに
     # 限っていたので、``ゆれ.anm`` の頭に ``@ゆれ`` と書いたスクリプトが見つからなかった
+    # 見出しが表示名と同じもの、無ければ見出しの無いもの（ファイル全体で 1 本）を選ぶ
+    # どちらも無ければ選ばない ``foo.anm`` に ``@bar`` ``@baz`` しか無いとき、先頭の
+    # ``bar`` を走らせると、頼まれていない効果が黙って掛かる 見つからないと記録する方がよい
     singles = [item for item in candidates if item.path.stem == label]
-    return next((item for item in singles if item.label == label), None) or next(
-        iter(singles), None
+    return next((item for item in singles if item.name == label), None) or next(
+        (item for item in singles if not item.name), None
     )
 
 

@@ -328,6 +328,50 @@ class TestPackage:
         assert state.ox == 1.0
 
 
+class TestQodoFindings:
+    """PR #131 の 2 度目のレビュー（Qodo）で見つかった 2 つ"""
+
+    def test_an_escaped_quote_does_not_close_the_string(self) -> None:
+        # ``\"`` を閉じ引用符と取り違えると、中の ``;`` で切れて後ろの欄が崩れる
+        header = parse_control('--dialog:本文,_1="a\\";b";色/col,_2=0x102030;')
+        assert [spec.name for spec in header.parameters] == ["_1", "_2"]
+        text = header.parameters[0]
+        assert isinstance(text, TextSpec)
+        assert text.default == 'a";b'
+
+    def test_an_escaped_quote_in_the_alias_value(self, scripts: ScriptCatalog) -> None:
+        # ``.exa`` の ``param=`` も同じ切り方を通る
+        del scripts
+        alias = EFFECT_ALIAS.replace("_2=[[a;b.png]]", "_2='c\\';d.png'")
+        mapped = map_object(parse_exo(alias).objects[0], RATE, report=CompatibilityReport())
+        assert mapped is not None
+        params = mapped.clip.effects[0].params
+        assert params["_2"] == "c';d.png"
+        assert params["_3"] is True
+
+    def test_an_unrelated_section_is_not_picked(self, tmp_path: Path) -> None:
+        # ``foo.anm`` に ``@bar`` と ``@baz`` しか無いとき、``name=foo`` で先頭の ``bar`` を
+        # 走らせると、頼まれていない効果が黙って掛かる 見つからないと記録する
+        root = tmp_path / "scripts"
+        root.mkdir()
+        (root / "foo.anm").write_text("@bar\nobj.ox = 1\n@baz\nobj.ox = 2\n", "cp932")
+        saved = catalog_module._catalog
+        created = ScriptCatalog(roots=(root,))
+        created.scan()
+        set_script_catalog(created)
+        try:
+            report = CompatibilityReport()
+            alias = "[vo.0]\n_name=アニメーション効果\nname=foo\nparam=\n"
+            mapped = map_object(parse_exo(alias).objects[0], RATE, report=report)
+            assert mapped is not None
+            assert mapped.clip.effects == ()
+            assert report.missing["アニメーション効果: foo"] == 1
+        finally:
+            catalog_module._catalog = saved
+            if saved is not None:
+                saved.register_all()
+
+
 class TestSourceryFindings:
     """PR #131 のレビューで見つかった 2 つ"""
 

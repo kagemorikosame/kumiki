@@ -350,7 +350,16 @@ def _dialog(body: str) -> list[ParameterSpec]:
 
 
 #: ``--dialog`` の 1 項目 引用符と ``[[ ]]`` の中の ``;`` では切らない
-_DIALOG_ITEM = re.compile(r"""(?:"[^"]*"|'[^']*'|\[\[.*?\]\]|[^;])+""")
+#: 引用符の中では ``\`` と次の 1 文字をまとめて読む（Lua の書き方） そうしないと
+#: ``"a\";b"`` の ``\"`` を閉じ引用符と取り違え、中の ``;`` で切ってしまう
+_DIALOG_ITEM = re.compile(
+    r"""(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\[\[.*?\]\]|[^;])+""",
+    re.DOTALL,
+)
+
+#: Lua の文字の中の逃がし書き ``\n`` と ``\t`` 以外は、次の 1 文字そのもの
+_LUA_ESCAPE = re.compile(r"\\(.)", re.DOTALL)
+_LUA_ESCAPED = {"n": "\n", "t": "\t"}
 
 
 def split_dialog(body: str) -> list[str]:
@@ -450,7 +459,8 @@ def lua_string(value: str) -> str:
     """Lua の文字の書き方（``"…"`` ``'…'`` ``[[…]]``）を外す それ以外はそのまま"""
     text = value.strip()
     if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
-        return text[1:-1]
+        # 引用符の中は逃がし書きを戻す ``[[…]]`` は Lua でも逃がし書きを持たないので戻さない
+        return _LUA_ESCAPE.sub(lambda found: _LUA_ESCAPED.get(found[1], found[1]), text[1:-1])
     if len(text) >= 4 and text.startswith("[[") and text.endswith("]]"):
         return text[2:-2]
     return text
