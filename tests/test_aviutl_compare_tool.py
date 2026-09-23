@@ -180,7 +180,9 @@ class TestProfileCommand:
         lines = tool.profile_guide(sample, target)
         assert any("控え" in line for line in lines)
         backup = next(i for i, line in enumerate(lines) if str(tool.backup_of(target)) in line)
-        copy = next(i for i, line in enumerate(lines) if f'Copy-Item "{sample}"' in line)
+        copy = next(
+            i for i, line in enumerate(lines) if f"Copy-Item -LiteralPath '{sample}'" in line
+        )
         # 控えを取る行が、写す行より先に来ること 後だと上書きした物の控えになる
         assert backup < copy
 
@@ -221,6 +223,25 @@ class TestFollowingTheGuide:
     @pytest.fixture
     def target(self, tmp_path: Path) -> Path:
         return tmp_path / "aviutl2" / "compositefont" / "profiles.json"
+
+    def test_a_folder_with_brackets_quotes_and_dollars_still_works(
+        self, tool: ModuleType, tmp_path: Path
+    ) -> None:
+        """二重引用符と ``-Path`` では、``[`` ``]`` がワイルドカード、``$`` が変数として読まれ、
+        見本も控えも見つからないまま置く手順も戻す手順も失敗する
+        """
+        odd = tmp_path / "作業[2] $HOME 'x'"
+        sample = odd / "work" / "profiles.json"
+        sample.parent.mkdir(parents=True)
+        sample.write_text('{"見本": 1}', encoding="utf-8")
+        target = odd / "aviutl2" / "compositefont" / "profiles.json"
+        target.parent.mkdir(parents=True)
+        target.write_text('{"元": 1}', encoding="utf-8")
+        lines = tool.profile_guide(sample, target)
+        _follow(lines, "place")
+        assert target.read_text(encoding="utf-8") == '{"見本": 1}'
+        _follow(lines, "restore")
+        assert target.read_text(encoding="utf-8") == '{"元": 1}'
 
     def test_restoring_brings_back_the_original(
         self, tool: ModuleType, sample: Path, target: Path
@@ -356,3 +377,11 @@ class TestSavingPictures:
         name = tool.preview_name(case)
         assert len(name) <= 255
         assert name.startswith("000012_")
+
+    def test_a_name_of_wide_characters_still_fits(self, tool: ModuleType) -> None:
+        """絵文字は UTF-16 で 2 単位 文字数で切ると NTFS の上限を超えて絵が作られない"""
+        case = SimpleNamespace(start=12, name="😀" * 200)
+        name = tool.preview_name(case)
+        assert len(name.encode("utf-16-le")) // 2 <= 255
+        # 文字の途中（サロゲートの片割れ）で切ると、名前として書けない
+        name.encode("utf-8")

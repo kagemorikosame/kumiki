@@ -405,18 +405,18 @@ def profile_guide(sample: Path, target: Path | None) -> list[str]:
             )
     elif target.exists() and not placed:
         lines.append(f"  既に {target} があるので、先に控えを取る")
-        lines.append(f'  Copy-Item "{target}" "{backup}"')
+        lines.append(f"  Copy-Item -LiteralPath {_ps(target)} -Destination {_ps(backup)}")
     elif not target.exists():
         lines.append(f"  {target} はまだ無い（置き場のフォルダから作る）")
-        lines.append(f'  New-Item -ItemType Directory -Force "{target.parent}"')
+        lines.append(f"  New-Item -ItemType Directory -Force -Path {_ps(target.parent)}")
     if placed:
         lines.append(f"  {target} には見本が置かれたまま（写し直さなくてよい）")
     else:
-        lines.append(f'  Copy-Item "{sample}" "{target}"')
+        lines.append(f"  Copy-Item -LiteralPath {_ps(sample)} -Destination {_ps(target)}")
 
     lines.append("比べ終わったら、AviUtl2 を閉じてから元へ戻す")
     if backup.exists() or (target.exists() and not placed):
-        lines.append(f'  Move-Item -Force "{backup}" "{target}"')
+        lines.append(f"  Move-Item -Force -LiteralPath {_ps(backup)} -Destination {_ps(target)}")
     else:
         # 見本と同じ中身を元から持っていた場合と見分けられない 控えが無いのは
         # 見本を置く前に設定が無かったときだけのはずだが、決め打ちせず本人に確かめさせる
@@ -424,8 +424,18 @@ def profile_guide(sample: Path, target: Path | None) -> list[str]:
             "  （控えが無い 見本を置く前に設定が無かったなら消す 元から同じ中身を"
             "持っていたなら消さない）"
         )
-        lines.append(f'  Remove-Item "{target}"')
+        lines.append(f"  Remove-Item -LiteralPath {_ps(target)}")
     return lines
+
+
+def _ps(path: Path) -> str:
+    """PowerShell の命令に書くパス 単一引用符で囲み、中の ``'`` は ``''`` にする
+
+    二重引用符だと ``$`` が変数として展開されて名前が欠ける ``-Path`` は ``[`` ``]`` を
+    ワイルドカードとして読むので、``作業[2]`` のような置き場では見本も控えも見つからない
+    命令の側は ``-LiteralPath`` で受ける
+    """
+    return "'" + str(path).replace("'", "''") + "'"
 
 
 def command_profile(arguments: argparse.Namespace) -> int:
@@ -444,7 +454,7 @@ def command_profile(arguments: argparse.Namespace) -> int:
 
 
 #: 見本の絵の名前に使うエイリアスの名前の長さ 頭の番号と拡張子を足しても、
-#: ファイル名の上限（NTFS で 255 文字）に収まるようにする 番号で見分けが付くので、
+#: ファイル名の上限（NTFS で UTF-16 の 255 単位）に収まるようにする 番号で見分けが付くので、
 #: 切っても別のエイリアスの絵と取り違えない
 PREVIEW_NAME_LIMIT = 200
 
@@ -455,7 +465,22 @@ def preview_name(case: Case) -> str:
     名前だけにすると、別のフォルダにある同じ名前のエイリアスの絵が先の絵を
     上書きし、描いたはずの 1 本が黙って消える 並べた位置は 1 本ごとに違う
     """
-    return f"{case.start:06d}_{case.name[:PREVIEW_NAME_LIMIT]}.png"
+    return f"{case.start:06d}_{_fit_utf16(case.name, PREVIEW_NAME_LIMIT)}.png"
+
+
+def _fit_utf16(text: str, limit: int) -> str:
+    """UTF-16 の単位で ``limit`` に収まる所まで切る
+
+    NTFS の上限は UTF-16 の単位で数える 絵文字のような補助面の文字は 1 文字で
+    2 単位なので、Python の文字数で切ると、名前だけで上限を超えて絵が作られない
+    文字の途中（サロゲートの片割れ）では切らない
+    """
+    used = 0
+    for index, character in enumerate(text):
+        used += 2 if ord(character) > 0xFFFF else 1
+        if used > limit:
+            return text[:index]
+    return text
 
 
 def command_preview(arguments: argparse.Namespace) -> int:
