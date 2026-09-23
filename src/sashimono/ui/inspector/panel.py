@@ -289,6 +289,14 @@ class InspectorPanel(QWidget):
             editor,
             self._keyframe_button(ParamPath.of_clip(clip.id, "opacity"), clip.opacity),
         )
+        if clip.hold_at is not None:
+            # 止めた絵は読み込み（YMM4 の素材より長い動画・再生速度 0）で付く 見えないままだと、
+            # 絵が動かない理由がどこにも出ず、素材の不具合と取り違える 外す道も置く
+            held = QLabel(f"素材の {float(clip.hold_at):.3f} 秒の絵で止める", section)
+            held.setStyleSheet("border: none;")
+            release = QPushButton("解除", section)
+            release.clicked.connect(lambda: self._emit(SetClipProperty(clip.id, "hold_at", None)))
+            section.add_row("絵を止める", held, release)
         return section
 
     def _build_source_section(self, clip: Clip) -> QWidget | None:

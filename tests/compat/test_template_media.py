@@ -15,11 +15,14 @@ from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
 
+import numpy as np
 import pytest
 
-from sashimono.compat.catalog import gather_media, place
+from sashimono.compat.aviutl.report import CompatibilityReport
+from sashimono.compat.catalog import Probe, gather_media, place
 from sashimono.compat.mapped import MappedObject
-from sashimono.core.commands import AddTrack, Command
+from sashimono.compat.ymm4.template import map_template
+from sashimono.core.commands import AddMedia, AddTrack, Command
 from sashimono.core.model import (
     AnimatedValue,
     AudioStreamInfo,
@@ -33,6 +36,8 @@ from sashimono.core.model import (
     VideoStreamInfo,
 )
 from sashimono.core.timebase import FrameRate
+from sashimono.engine.decode import VideoDecoder, probe_media
+from tests.media_fixtures import SampleMedia, make_delayed
 
 
 def still(path: Path) -> MediaItem:
@@ -123,7 +128,7 @@ def apply(project: Project, commands: list[Command]) -> Project:
 
 
 def put(
-    objects: list[MappedObject], project: Project, probe: FakeProbe, *, at_frame: int = 0
+    objects: list[MappedObject], project: Project, probe: Probe, *, at_frame: int = 0
 ) -> Project:
     """UI と同じ順で置く（素材の登録 → 配置）"""
     plan = gather_media(objects, project, probe)
@@ -459,3 +464,263 @@ def test_audio_uses_an_existing_track_when_it_is_free_there(files: tuple[Path, P
 
     (track,) = project.timeline.audio_tracks()
     assert len(track.clips) == 2
+
+
+def _held_video(movie_file: Path, clip: Clip) -> MappedObject:
+    """素材の終わりの後も最後の絵を出す印を立てた動画（YMM4 の動画アイテム）"""
+    return replace(
+        media_object(movie_file, "動画ファイル", with_sound=True), clip=clip, hold_last_frame=True
+    )
+
+
+def test_a_video_longer_than_its_source_holds_the_last_picture(tmp_path: Path) -> None:
+    """素材より長い動画は、素材の最後のフレームの時刻で絵を止める（Issue #115）
+
+    素材は 2 秒・30fps なので最後の絵は 59/30 秒 止めないと、素材の終わりから後が
+    何も映らない（YMM4 は最後の絵を枠の終わりまで出す）
+    音のクリップには持たせない 音は素材の終わりの後は無音で、止める物ではない
+    """
+    movie_file = tmp_path / "映像.mp4"
+    movie_file.write_bytes(b"")
+    project = put(
+        [_held_video(movie_file, Clip(timeline_start=0, duration=90))],
+        Project.create(),
+        FakeProbe(),
+    )
+
+    (picture,) = clips_of(project, TrackKind.VIDEO)
+    (heard,) = clips_of(project, TrackKind.AUDIO)
+    assert picture.hold_at == Fraction(59, 30)
+    assert heard.hold_at is None
+
+
+def test_the_offset_counts_toward_running_past_the_end(tmp_path: Path) -> None:
+    # 切り出した位置から先の残りで比べる 素材の長さだけで比べると、途中から使う動画が
+    # 素材の終わりを越えても止まらない
+    movie_file = tmp_path / "映像.mp4"
+    movie_file.write_bytes(b"")
+    clip = Clip(timeline_start=0, duration=45, source_in=Fraction(1))
+    project = put([_held_video(movie_file, clip)], Project.create(), FakeProbe())
+
+    (picture,) = clips_of(project, TrackKind.VIDEO)
+    assert picture.hold_at == Fraction(59, 30)
+
+
+def test_a_video_within_its_source_is_not_held(tmp_path: Path) -> None:
+    # 止まらないクリップに持たせると、設定画面に「絵を止める」が出て何を止めたのか分からない
+    movie_file = tmp_path / "映像.mp4"
+    movie_file.write_bytes(b"")
+    project = put(
+        [_held_video(movie_file, Clip(timeline_start=0, duration=60))],
+        Project.create(),
+        FakeProbe(),
+    )
+
+    (picture,) = clips_of(project, TrackKind.VIDEO)
+    assert picture.hold_at is None
+
+
+def test_a_video_without_the_mark_is_not_held(tmp_path: Path) -> None:
+    # AviUtl の動画ファイルは印を立てない 素材の終わりの後をどう描くかは測っていない
+    movie_file = tmp_path / "映像.mp4"
+    movie_file.write_bytes(b"")
+    unmarked = replace(
+        media_object(movie_file, "動画ファイル"), clip=Clip(timeline_start=0, duration=90)
+    )
+    project = put([unmarked], Project.create(), FakeProbe())
+
+    (picture,) = clips_of(project, TrackKind.VIDEO)
+    assert picture.hold_at is None
+
+
+def test_a_video_of_unknown_length_is_not_held(tmp_path: Path) -> None:
+    """長さの分からない素材（0 と読めた物）は止めない
+
+    どこが最後か決められない 0 から 1 フレーム引くと負になり、クリップが作れず
+    置く所で落ちる
+    """
+    movie_file = tmp_path / "映像.mp4"
+    movie_file.write_bytes(b"")
+
+    def unknown(path: Path) -> MediaItem:
+        return replace(movie(path), duration=Fraction(0))
+
+    objects = [_held_video(movie_file, Clip(timeline_start=0, duration=90))]
+    project = Project.create()
+    plan = gather_media(objects, project, unknown)
+    project = apply(project, [*plan.commands, *place(objects, project, media=plan.media)])
+
+    (picture,) = clips_of(project, TrackKind.VIDEO)
+    assert picture.hold_at is None
+
+
+def test_a_stopped_video_keeps_its_own_hold(tmp_path: Path) -> None:
+    # 再生速度 0 で頭に止めた物を、最後の絵で止め直さない 止める絵が頭から最後へ変わる
+    movie_file = tmp_path / "映像.mp4"
+    movie_file.write_bytes(b"")
+    clip = Clip(timeline_start=0, duration=90, source_in=Fraction(1, 2), hold_at=Fraction(1, 2))
+    project = put([_held_video(movie_file, clip)], Project.create(), FakeProbe())
+
+    (picture,) = clips_of(project, TrackKind.VIDEO)
+    (heard,) = clips_of(project, TrackKind.AUDIO)
+    assert picture.hold_at == Fraction(1, 2)
+    assert heard.hold_at is None
+
+
+def test_a_ymm4_video_longer_than_its_source_is_held_without_a_report(tmp_path: Path) -> None:
+    """YMM4 の動画アイテムを読んで置くまで通す 素材 2 秒・枠 90 フレーム（3 秒）"""
+    movie_file = tmp_path / "映像.mp4"
+    movie_file.write_bytes(b"")
+    item = {
+        "$type": "YukkuriMovieMaker.Project.Items.VideoItem, YukkuriMovieMaker",
+        "FilePath": str(movie_file),
+        "PlaybackRate": 100.0,
+        "ContentOffset": "00:00:00",
+        "IsLooped": False,
+        "Length": 90,
+    }
+    report = CompatibilityReport()
+    objects = map_template([item], report=report)
+    project = put(objects, Project.create(), FakeProbe())
+
+    (picture,) = clips_of(project, TrackKind.VIDEO)
+    assert picture.hold_at == Fraction(59, 30)
+    assert not report.lines()
+
+
+def test_a_video_whose_sound_runs_longer_holds_its_last_picture(tmp_path: Path) -> None:
+    """音の方が長い素材は、映像の道の終わりで止める（#115 のレビュー）
+
+    素材は音 3 秒・映像 2 秒 コンテナの長さ（3 秒）で止める時刻を決めると、映像の
+    最後のフレームより後ろを読みに行き、止めた後もデコーダが毎フレーム動く
+    2.5 秒の枠はコンテナの中に収まるが、映像の終わりは越える
+    """
+    movie_file = tmp_path / "映像.mp4"
+    movie_file.write_bytes(b"")
+
+    def longer_sound(path: Path) -> MediaItem:
+        made = movie(path)
+        (stream,) = made.video_streams
+        return replace(
+            made, duration=Fraction(3), video_streams=(replace(stream, end_time=Fraction(2)),)
+        )
+
+    objects = [_held_video(movie_file, Clip(timeline_start=0, duration=75))]
+    project = Project.create()
+    plan = gather_media(objects, project, longer_sound)
+    project = apply(project, [*plan.commands, *place(objects, project, media=plan.media)])
+
+    (picture,) = clips_of(project, TrackKind.VIDEO)
+    assert picture.hold_at == Fraction(59, 30)
+
+
+def _probed_as(duration: Fraction, end_time: Fraction, time_base: Fraction) -> FakeProbe:
+    """長さと映像の終わり・刻みを決めた動画を返す偽物"""
+
+    class _Probe(FakeProbe):
+        def __call__(self, path: Path) -> MediaItem | None:
+            made = movie(path)
+            (stream,) = made.video_streams
+            shaped = replace(stream, end_time=end_time, time_base=time_base)
+            return replace(made, duration=duration, video_streams=(shaped,))
+
+    return _Probe()
+
+
+def test_a_variable_rate_video_holds_its_very_last_picture(tmp_path: Path) -> None:
+    """可変フレームレートの素材でも、最後のフレームで止める（#120 のレビュー）
+
+    平均 30fps で最後の間隔だけ 1/60 秒の素材なら、最後のフレームは 2 − 1/60 秒
+    終わりから平均の 1 フレーム（1/30 秒）を引くと、その 1 つ前の絵で止まる
+    """
+    movie_file = tmp_path / "映像.mp4"
+    movie_file.write_bytes(b"")
+    probe = _probed_as(Fraction(2), Fraction(2), Fraction(1, 15360))
+    project = put(
+        [_held_video(movie_file, Clip(timeline_start=0, duration=90))], Project.create(), probe
+    )
+
+    (picture,) = clips_of(project, TrackKind.VIDEO)
+    assert picture.hold_at is not None
+    assert Fraction(2) - Fraction(1, 60) <= picture.hold_at < Fraction(2)
+
+
+def test_a_late_starting_video_is_held_at_its_own_end(tmp_path: Path) -> None:
+    """頭が 0 より後ろの素材は、PTS の数え方の映像の終わりで止める（#120 のレビュー）
+
+    素材の時刻は PTS そのまま（頭 5 秒・映像の終わり 7 秒） コンテナの長さ（2 秒）は
+    頭を含まない 小さい方を取ると 2 秒の手前で止まり、クリップの残りが途中の絵のまま
+    """
+    movie_file = tmp_path / "映像.mp4"
+    movie_file.write_bytes(b"")
+    probe = _probed_as(Fraction(2), Fraction(7), Fraction(1, 15360))
+    project = put(
+        [_held_video(movie_file, Clip(timeline_start=0, duration=270))], Project.create(), probe
+    )
+
+    (picture,) = clips_of(project, TrackKind.VIDEO)
+    assert picture.hold_at == Fraction(7) - Fraction(1, 15360)
+
+
+def test_a_late_starting_video_registered_before_the_end_was_kept_is_opened_again(
+    tmp_path: Path,
+) -> None:
+    """道の終わりを持たない登録済みの素材は、開き直して終わりを取る（#120 のレビュー）
+
+    前の版で登録した素材は道の終わりを持たない コンテナの長さ（2 秒）で止めると、
+    頭 5 秒の素材では止める時刻が頭より前になり、デコーダが何も返さず動画全体が映らない
+    素材はプロジェクトのものを使い続ける 増やすと素材一覧に同じ名前が並ぶ
+    """
+    movie_file = tmp_path / "映像.mp4"
+    movie_file.write_bytes(b"")
+    old = movie(movie_file)
+    project = apply(Project.create(), [AddMedia(old)])
+    probe = _probed_as(Fraction(2), Fraction(7), Fraction(1, 15360))
+    project = put(
+        [_held_video(movie_file, Clip(timeline_start=0, duration=270, source_in=Fraction(5)))],
+        project,
+        probe,
+    )
+
+    (picture,) = clips_of(project, TrackKind.VIDEO)
+    # 引く刻みは登録済みの素材の time_base（ここではフレーム 1 つ分）
+    assert picture.hold_at is not None
+    assert Fraction(7) - Fraction(1, 30) <= picture.hold_at < Fraction(7)
+    assert picture.media_id == old.id
+    assert project.media == (old,)
+
+
+def test_a_registered_video_is_not_opened_again_when_nothing_is_held(tmp_path: Path) -> None:
+    # 止めないクリップのために開き直すと、大きい動画を置くたびに待たされる
+    movie_file = tmp_path / "映像.mp4"
+    movie_file.write_bytes(b"")
+    project = apply(Project.create(), [AddMedia(movie(movie_file))])
+    probe = FakeProbe()
+    put([media_object(movie_file, "動画ファイル", with_sound=True)], project, probe)
+
+    assert probe.opened == []
+
+
+def test_a_late_starting_file_stops_on_its_last_frame(
+    sample_av: SampleMedia, tmp_path: Path
+) -> None:
+    """頭が 5 秒の実素材（2 秒・60 フレーム）で、止めた時刻にデコーダが最後のフレームを出す
+
+    止める時刻が映像の途中なら途中の絵、デコーダが頭の時刻を数えないなら何も映らない
+    """
+    late = make_delayed(tmp_path, "late.mp4", sample_av.path, 5.0)
+    project = put(
+        [_held_video(late, Clip(timeline_start=0, duration=270))], Project.create(), probe_media
+    )
+
+    (picture,) = clips_of(project, TrackKind.VIDEO)
+    assert picture.hold_at is not None
+    with VideoDecoder(late) as decoder:
+        held = decoder.frame_at(picture.hold_at)
+        last = decoder.frame_at(Fraction(5) + Fraction(59, 30))
+        before = decoder.frame_at(Fraction(5) + Fraction(58, 30))
+    assert held is not None
+    assert last is not None
+    assert before is not None
+    assert not np.array_equal(before, last)
+    assert np.array_equal(held, last)

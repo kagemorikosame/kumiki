@@ -59,6 +59,11 @@ class VideoDecoder:
             item.video_streams[0],
         )
         self._duration = item.duration
+        # 絵を出すのは映像の道の終わりまで 素材の時刻はフレームの PTS そのもの（頭の時刻を
+        # 引かない :func:`_frame_time`）で、道の終わりも同じ数え方で取ってある
+        # コンテナの終わりで切ると、音の方が長い素材では音だけの区間にも直前の絵が残る
+        # 最後の絵を出し続けたいクリップは ``Clip.hold_at`` で明示して止める
+        self._end = self._info.end_time if self._info.end_time is not None else self._fallback_end()
 
         self._frames = self._container.decode(self._stream)
         #: 今「表示されている」フレーム 最後に返したもの
@@ -73,6 +78,16 @@ class VideoDecoder:
     @property
     def duration(self) -> Fraction:
         return self._duration
+
+    def _fallback_end(self) -> Fraction:
+        """映像の道が長さを書いていない素材の終わり コンテナの頭の時刻 ＋ 全体の長さ
+
+        コンテナの長さは頭の時刻を含まない 長さそのものと比べると、頭が 0 より後ろの素材
+        （分割して書き出した物）は、映像の途中から先が何も映らない
+        """
+        start = self._container.start_time
+        offset = Fraction(start, av.time_base) if start is not None and start > 0 else Fraction(0)
+        return self._duration + offset
 
     def __enter__(self) -> VideoDecoder:
         return self
@@ -95,7 +110,7 @@ class VideoDecoder:
         回転情報を持つ素材では、表示すべき向きに直してから返す
         """
         target = max(Fraction(0), Fraction(seconds))
-        if self._duration > 0 and target >= self._duration:
+        if self._duration > 0 and target >= self._end:
             return None
 
         frame = self._decode_at(target)

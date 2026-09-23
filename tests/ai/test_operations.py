@@ -158,6 +158,28 @@ class TestEditing:
         run(host, "set_clip_property", clip_id=clip, name="speed", value=0.5)
         assert host.document.project.timeline.tracks[0].clips[0].speed == Fraction(1, 2)
 
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [("1.5", Fraction(3, 2)), (2, Fraction(2)), (0.5, Fraction(1, 2)), (None, None)],
+    )
+    def test_the_hold_is_kept_as_a_fraction(
+        self, host: FakeHost, value: object, expected: Fraction | None
+    ) -> None:
+        # 直さずに渡すと、整数や小数は保存の所で落ち、文字列はクリップを作る所で落ちる
+        clip = str(_clip_id(host.document.project))
+        run(host, "set_clip_property", clip_id=clip, name="hold_at", value=value)
+        held = host.document.project.timeline.tracks[0].clips[0].hold_at
+        assert held == expected
+        assert held is None or isinstance(held, Fraction)
+
+    @pytest.mark.parametrize("value", ["止める", -1, True, [1]])
+    def test_a_hold_that_is_not_a_time_is_refused(self, host: FakeHost, value: object) -> None:
+        # 通すと、読めない値で落ちるか、true が 1 秒として入り、どこで止めたのか分からない
+        clip = str(_clip_id(host.document.project))
+        with pytest.raises(ToolError, match="hold_at"):
+            run(host, "set_clip_property", clip_id=clip, name="hold_at", value=value)
+        assert host.document.project.timeline.tracks[0].clips[0].hold_at is None
+
     def test_only_allowed_properties_can_change(self, host: FakeHost) -> None:
         clip = str(_clip_id(host.document.project))
         with pytest.raises(ToolError, match="変えられるのは"):

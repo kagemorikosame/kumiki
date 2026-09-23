@@ -73,7 +73,10 @@ FORMAT_NAME = "sashimono-project"
 #: 3 で重ね合わせの方法（``settings.blending``）を足した（Issue #65） 2 までの本体は項目を
 #: 知らないので、sRGB で混ぜる作品をリニアで描き、保存し直すと項目ごと消えて見た目が変わる
 #: 黙って変えるより「更新してください」で止める方がよいので、版を上げた
-FORMAT_VERSION = 3
+#: 4 で絵を止める時刻（``Clip.hold_at``）を足した（Issue #115） 3 までの本体は項目を
+#: 知らないので、止めた絵が動き出す（素材の終わりの後は何も映らなくなる）うえ、保存し直すと
+#: 項目ごと消える 3 と同じ理由で版を上げた 3 までのファイルは止めないクリップとして開く
+FORMAT_VERSION = 4
 
 #: プロジェクトファイルの拡張子
 SUFFIX = ".sme"
@@ -101,6 +104,14 @@ def _fraction_to_json(value: Fraction) -> str:
 
 
 def _fraction_from_json(value: object, field: str) -> Fraction:
+    """分数の項目を読む 書くのは常に ``"分子/分母"`` の文字、既定値だけ整数
+
+    真偽値は ``int`` の仲間なので、断らないと ``true`` が 1（秒・倍・分の 1 秒）として
+    読めてしまう こちらが真偽値を書くことは無く、どの分数の項目（時刻・速さ・長さ・
+    時間の単位・フレームレート）でも壊れたファイルなので、読み替えずに断る
+    """
+    if isinstance(value, bool):
+        raise ProjectFileError(f"{field} が分数ではない: {value!r}")
     if isinstance(value, str):
         try:
             return Fraction(value)
@@ -374,6 +385,9 @@ def _media_to_json(item: MediaItem) -> dict[str, Any]:
                 "codec": stream.codec,
                 "pixel_format": stream.pixel_format,
                 "rotation": stream.rotation,
+                "end_time": (
+                    _fraction_to_json(stream.end_time) if stream.end_time is not None else None
+                ),
             }
             for stream in item.video_streams
         ],
@@ -399,6 +413,8 @@ def _media_from_json(raw: object) -> MediaItem:
     video_streams = []
     for s in _get_list(data, "video_streams"):
         stream_data = _require(s, "video_stream")
+        # 項目が無いのは、映像の終わりを覚える前に取り込んだ素材 コンテナの長さで代わりにする
+        end_raw = stream_data.get("end_time")
         video_streams.append(
             VideoStreamInfo(
                 index=_get_int(stream_data, "index"),
@@ -409,6 +425,9 @@ def _media_from_json(raw: object) -> MediaItem:
                 codec=_get_str(stream_data, "codec"),
                 pixel_format=_get_str(stream_data, "pixel_format"),
                 rotation=_get_int(stream_data, "rotation", 0),
+                end_time=(
+                    _fraction_from_json(end_raw, "end_time") if end_raw is not None else None
+                ),
             )
         )
 
@@ -454,6 +473,7 @@ def _clip_to_json(clip: Clip) -> dict[str, Any]:
         "source_in": _fraction_to_json(clip.source_in),
         "stream_index": clip.stream_index,
         "speed": _fraction_to_json(clip.speed),
+        "hold_at": _fraction_to_json(clip.hold_at) if clip.hold_at is not None else None,
         "opacity": _param_to_json(clip.opacity),
         "blend_mode": clip.blend_mode,
         "link_group": clip.link_group,
@@ -486,6 +506,8 @@ def _clip_from_json(raw: object) -> Clip:
         raise ProjectFileError(f"opacity がアニメーション値ではない: {opacity!r}")
 
     source_raw = data.get("source")
+    # 版 3 までは項目が無い そのころは絵を止める仕組みが無かったので、止めないで開く
+    hold_raw = data.get("hold_at")
     return Clip(
         timeline_start=_get_int(data, "timeline_start"),
         duration=_get_int(data, "duration"),
@@ -494,6 +516,7 @@ def _clip_from_json(raw: object) -> Clip:
         source_in=_fraction_from_json(data.get("source_in", 0), "source_in"),
         stream_index=_get_int(data, "stream_index", 0),
         speed=_fraction_from_json(data.get("speed", 1), "speed"),
+        hold_at=_fraction_from_json(hold_raw, "hold_at") if hold_raw is not None else None,
         effects=tuple(effect_from_json(e) for e in _get_list(data, "effects")),
         after_effects=tuple(effect_from_json(e) for e in _get_list(data, "after_effects")),
         opacity=opacity,

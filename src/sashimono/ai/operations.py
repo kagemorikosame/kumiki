@@ -696,8 +696,30 @@ def _set_clip_property(host: EditorHost, arguments: dict[str, Any]) -> object:
         value = bool(value)
     elif name == "stream_index":
         value = int(str(value))
+    elif name == "hold_at":
+        value = _hold_at(value)
     host.apply_commands([SetClipProperty(clip.id, name, value)], f"クリップの{name}を変更")
     return {"name": name, "value": str(value)}
+
+
+def _hold_at(value: object) -> Fraction | None:
+    """絵を止める素材の時刻（秒）を :class:`~fractions.Fraction` にする ``None`` は解除
+
+    直さずに渡すと、文字列はクリップを作る所で落ち、整数や小数はモデルに入ったまま
+    保存の所で落ちる（分数として書けない） 真偽値は数に読めるが（``True`` が 1 秒）、
+    時刻として渡されることは無いので断る
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        raise ToolError(f"hold_at は秒の数か null で渡してください: {value!r}")
+    try:
+        seconds = Fraction(str(value)).limit_denominator(1000000)
+    except (ValueError, ZeroDivisionError) as exc:
+        raise ToolError(f"hold_at を秒として読めません: {value!r}") from exc
+    if seconds < 0:
+        raise ToolError(f"hold_at は 0 以上の秒です: {value!r}")
+    return seconds
 
 
 def _add_effect(host: EditorHost, arguments: dict[str, Any]) -> object:
@@ -1374,7 +1396,10 @@ OPERATIONS: tuple[Operation, ...] = (
     ),
     Operation(
         name="set_clip_property",
-        description="クリップの blend_mode / speed / enabled / stream_index を変える",
+        description=(
+            "クリップの blend_mode / speed / enabled / stream_index / hold_at を変える"
+            " hold_at は絵を止める素材の時刻（秒） null で止めない"
+        ),
         schema=_schema(
             {
                 "clip_id": _string("対象"),
