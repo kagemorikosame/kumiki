@@ -33,6 +33,10 @@ def ffmpeg_available() -> bool:
     return shutil.which("ffmpeg") is not None
 
 
+#: 符号化器の一覧を待つ上限（秒）
+ENCODER_LIST_TIMEOUT = 30
+
+
 @functools.cache
 def libx264_available() -> bool:
     """外の ffmpeg で H.264 を焼けるか
@@ -50,14 +54,19 @@ def libx264_available() -> bool:
             check=False,
             capture_output=True,
             text=True,
+            # 応答しない ffmpeg に当たると、待ち時間を切らないとテストの進行が
+            # 止まったまま戻らない 一覧は 100ms 前後で返るので 30 秒で十分長い
+            timeout=ENCODER_LIST_TIMEOUT,
         )
-    except OSError:
+    except (OSError, subprocess.SubprocessError):
         return False
     if listing.returncode != 0:
         return False
     # 一覧は「 V....D libx264   libx264 H.264 ...」の形 説明文にも libx264 の
     # 字が出るので、名前の欄（2 列目）が一致する行だけを数える
-    for line in listing.stdout.splitlines():
+    # 手元の ffmpeg 8.1.2 は一覧を標準出力へ出すが、組み立て方によっては
+    # 標準エラーへ出るという指摘があったので、両方を見る
+    for line in (listing.stdout + "\n" + listing.stderr).splitlines():
         columns = line.split()
         if len(columns) >= 2 and columns[1] == "libx264":
             return True

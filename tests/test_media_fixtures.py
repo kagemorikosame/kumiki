@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from tests.media_fixtures import libx264_available, make_sample
+from tests.media_fixtures import ENCODER_LIST_TIMEOUT, libx264_available, make_sample
 
 WITH_X264 = """Encoders:
  V..... libx264              libx264 H.264 / AVC / MPEG-4 AVC
@@ -40,13 +40,22 @@ def forget_the_answer() -> Iterator[None]:
 
 
 def fake_ffmpeg(
-    monkeypatch: pytest.MonkeyPatch, *, listing: str = "", code: int = 0
-) -> list[list[str]]:
-    """符号化器の一覧を返す偽の ffmpeg を置き、呼ばれた命令を記録する"""
-    calls: list[list[str]] = []
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    listing: str = "",
+    code: int = 0,
+    on_stderr: bool = False,
+    hangs: bool = False,
+) -> list[dict[str, Any]]:
+    """符号化器の一覧を返す偽の ffmpeg を置き、呼ばれた命令と引数を記録する"""
+    calls: list[dict[str, Any]] = []
 
     def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        calls.append(command)
+        calls.append({"command": command, **kwargs})
+        if hangs:
+            raise subprocess.TimeoutExpired(command, kwargs.get("timeout", 0))
+        if on_stderr:
+            return subprocess.CompletedProcess(command, code, "", listing)
         return subprocess.CompletedProcess(command, code, listing, "")
 
     monkeypatch.setattr(shutil, "which", lambda _name: "ffmpeg")
@@ -74,6 +83,21 @@ class TestSeeingWhetherH264CanBeBurned:
         """ffmpeg が無いのに呼ぶと ``FileNotFoundError`` で落ちる"""
         monkeypatch.setattr(shutil, "which", lambda _name: None)
         assert libx264_available() is False
+
+    def test_a_listing_on_the_error_side_still_counts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """一覧を標準エラーへ出す組み立て方でも、焼けるのに飛ばしてしまわない"""
+        fake_ffmpeg(monkeypatch, listing=WITH_X264, on_stderr=True)
+        assert libx264_available() is True
+
+    def test_an_ffmpeg_that_never_answers_does_not_stop_the_run(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """待ち時間を切らないと、応答しない ffmpeg でテストが止まったまま戻らない"""
+        calls = fake_ffmpeg(monkeypatch, hangs=True)
+        assert libx264_available() is False
+        assert calls[0]["timeout"] == ENCODER_LIST_TIMEOUT
 
     def test_the_list_is_read_only_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """毎回 ffmpeg を起こすと、素材を作るたびに 100ms 前後を捨てる"""
