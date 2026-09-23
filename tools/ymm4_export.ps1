@@ -49,8 +49,8 @@ Add-Type -Namespace SashimonoYmm4 -Name Native -MemberDefinition @'
 public static extern System.IntPtr SendText(System.IntPtr hWnd, int msg, System.IntPtr wParam, string lParam);
 [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "SendMessageW")]
 public static extern System.IntPtr SendPlain(System.IntPtr hWnd, int msg, System.IntPtr wParam, System.IntPtr lParam);
-[System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "GetWindowTextW", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
-public static extern int ReadText(System.IntPtr hWnd, System.Text.StringBuilder text, int count);
+[System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "SendMessageW", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+public static extern System.IntPtr ReadText(System.IntPtr hWnd, int msg, System.IntPtr wParam, System.Text.StringBuilder lParam);
 '@
 
 # 型は Add-Type のあとで引く（読む時点で解決させると見つからない）
@@ -65,6 +65,9 @@ $WindowPattern = ('System.Windows.Automation.WindowPattern' -as [type])::Pattern
 $NativeApi = 'SashimonoYmm4.Native' -as [type]
 
 $WM_SETTEXT = 0x000C
+# 読み返しは WM_GETTEXT で送る GetWindowText は別の process の Edit の中身を返さず
+# 空になる（窓の題名しか読まない） 実機の YMM4 の保存の窓で空が返った
+$WM_GETTEXT = 0x000D
 $BM_CLICK = 0x00F5
 
 $ProcessName = [System.IO.Path]::GetFileNameWithoutExtension($Ymm4)
@@ -246,10 +249,26 @@ function Read-Compressor($Dialog) {
     }
 }
 
+function Select-ComboWithRetry($Dialog, [string]$Label, [string]$Wanted) {
+    # 選び直した直後は、隣の欄の項目の並びがまだ組み上がっていないことがある
+    # （実機で、音量調整を戻した直後のコンプレッサーの欄に「自動」が見つからなかった）
+    # 欄を引き直し、間を伸ばしながら数回やり直す 1 回で諦めると設定が戻らない
+    $attempts = 5
+    for ($attempt = 1; $attempt -le $attempts; $attempt++) {
+        try {
+            Select-Combo (Get-ComboAfter $Dialog $Label) $Wanted
+            return
+        } catch {
+            if ($attempt -eq $attempts) { throw }
+            Start-Sleep -Milliseconds (500 * $attempt)
+        }
+    }
+}
+
 function Set-Compressor($Dialog, [string]$Volume, [string]$Compression) {
     Open-CompressorGroup $Dialog
-    Select-Combo (Get-ComboAfter $Dialog $VolumeLabel) $Volume
-    Select-Combo (Get-ComboAfter $Dialog $CompressionLabel) $Compression
+    Select-ComboWithRetry $Dialog $VolumeLabel $Volume
+    Select-ComboWithRetry $Dialog $CompressionLabel $Compression
     $now = Read-Compressor $Dialog
     if ($now.Volume -ne $Volume -or $now.Compression -ne $Compression) {
         throw "選んだはずの値にならない 音量調整「$($now.Volume)」 コンプレッサー「$($now.Compression)」"
@@ -268,9 +287,16 @@ function Close-SaveDialog($Main) {
 
 function Restore-Compressor($Main, $Original) {
     Close-SaveDialog $Main
+    # 書き出しの後、書き出しの窓が開いたまま残っていることがある 開き直す前に閉じる
+    $left = Get-ExportDialog $Main
+    if ($left) { Close-ExportDialog $Main $left }
     $dialog = Open-ExportDialog $Main
-    Set-Compressor $dialog $Original.Volume $Original.Compression
-    Close-ExportDialog $Main $dialog
+    try {
+        Set-Compressor $dialog $Original.Volume $Original.Compression
+    } finally {
+        # 戻せなくても窓は閉じる 開いたままだと主の窓が閉じられず YMM4 が残る
+        Close-ExportDialog $Main $dialog
+    }
     # 閉じたあとも残っているかは、開き直して読まないと分からない
     $dialog = Open-ExportDialog $Main
     $after = Read-Compressor $dialog
@@ -289,7 +315,7 @@ function Save-As($Main) {
     $nameHandle = [System.IntPtr]$nameBox.Current.NativeWindowHandle
     [void]$NativeApi::SendText($nameHandle, $WM_SETTEXT, [System.IntPtr]::Zero, $Output)
     $buffer = New-Object System.Text.StringBuilder 4096
-    [void]$NativeApi::ReadText($nameHandle, $buffer, $buffer.Capacity)
+    [void]$NativeApi::ReadText($nameHandle, $WM_GETTEXT, [System.IntPtr]$buffer.Capacity, $buffer)
     if ($buffer.ToString() -ne $Output) {
         # 違う名前のまま保存すると、別の所へ書き出して「見つからない」で終わる
         throw "保存の名前の欄に書けない（読み返すと「$($buffer.ToString())」）"
@@ -339,6 +365,11 @@ function Wait-Written($Main) {
 
 function Close-Ymm4 {
     foreach ($window in Get-TopWindows) {
+        # 主の窓の子（書き出しの窓・保存の窓）が開いていると、主の窓が閉じるのを止める
+        # 子から先に閉じる
+        foreach ($child in $window.FindAll($Scope::Children, (New-Condition $Uia::ControlTypeProperty $ControlTypes::Window))) {
+            try { $child.GetCurrentPattern($WindowPattern).Close() } catch { }
+        }
         try { $window.GetCurrentPattern($WindowPattern).Close() } catch { }
     }
     $until = (Get-Date).AddSeconds($DialogSeconds)
@@ -393,7 +424,18 @@ try {
 } finally {
     if ($original) {
         try {
-            Restore-Compressor $main $original
+            # 戻すのはまるごと数回やり直す ここで諦めると本人の書き出しの設定が変わったまま残る
+            $restored = $false
+            for ($round = 1; -not $restored; $round++) {
+                try {
+                    Restore-Compressor $main $original
+                    $restored = $true
+                } catch {
+                    if ($round -ge 3) { throw }
+                    Say "コンプレッサーを戻すのをやり直します（$round 回目は $($_.Exception.Message)）"
+                    Start-Sleep -Seconds 2
+                }
+            }
             Say "コンプレッサーを元へ戻しました 音量調整「$($original.Volume)」 コンプレッサー「$($original.Compression)」"
         } catch {
             Say '!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!'
