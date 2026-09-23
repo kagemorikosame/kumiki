@@ -305,6 +305,28 @@ YMM4 の絵が 1 枚遅れて並び、動きのある所で差が 8〜24 跳ね�
 `PlaybackRate` はクリップの `speed` へ `rate / 100` で写す `Length` はタイムライン上の
 長さのままで、素材は `Length × rate` だけ進む（50% で 2 秒の素材が 3.98 秒鳴った）
 0 は `speed` に置けない（正の数だけ）ので、音量 0 にして鳴らさない
+動画アイテムでは `speed` が映像のクリップにも効くが、絵の速さは測っていないので、
+100 以外なら互換性レポートに数えて残す（下の「絵の速さを測る」で確かめる）
+新しい版の書き出しは動く値の `PlaybackRate2` と `PlaybackRateAudioProcessingMode` も持つ
+実物はどれも `PlaybackRate` と同じ値・`Resampling` だった 食い違いや動き・ほかの変え方は
+どちらが効くのか測っていないので数えて残す
+
+### 絵の速さを測る
+
+動画アイテムの `PlaybackRate` が絵をどう進めるか（とくに 0 で止まるのか）を測る
+
+```
+.venv\Scripts\python.exe tools\ymm4_compare.py --work .work\ymm4-video-rate video-rate-build
+:: YMM4 で .work\ymm4-video-rate\video-rate-probe.ymmp を開き、video-rate-probe.mp4 へ書き出す
+.venv\Scripts\python.exe tools\ymm4_compare.py --work .work\ymm4-video-rate video-rate-measure
+```
+
+`video-rate-build` は ffmpeg の testsrc2 で 4 秒の動画（全フレームが鍵フレーム）を作り、
+`PlaybackRate` を 100・50・200・0 にした動画アイテムを 6 秒ずつの枠に並べる
+ffmpeg や libx264 が無ければ理由を言って終える
+`video-rate-measure` は書き出しの各フレームを素材の全フレームと比べて一番近い物の番号を取り、
+枠の頭からの経過フレームに対する傾き（1 で等倍・0.5・2・0 で止まる）を表にする
+同じ `.ymmp` を Sashimono でも描いて並べる（`--skip-sashimono` で飛ばせる）
 
 YMM4 が読み込みで断った設定（列挙型の名前の間違いなど）は、ダイアログが別の窓に
 隠れて見えないことがある そのときは YMM4 を前に出して Ctrl+C を押すと、
