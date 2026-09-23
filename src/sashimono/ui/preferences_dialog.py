@@ -24,10 +24,17 @@ from sashimono.engine.cache.proxy import (
     MEASURED_PREFETCH_MS,
     MEASURED_THREE_LAYERS_MS,
 )
+from sashimono.engine.encode import MEASURED_EXPORT_MS, MEASURED_EXPORT_TOTAL_MS
 from sashimono.engine.render.prefetch import BYTES_PER_FRAME_PIXEL
 from sashimono.ui.workspace import Preferences
 
-__all__ = ["PREFETCH_BUDGETS", "PROXY_HEIGHTS", "QUALITY_DIVISORS", "PreferencesDialog"]
+__all__ = [
+    "PIPELINE_DEPTHS",
+    "PREFETCH_BUDGETS",
+    "PROXY_HEIGHTS",
+    "QUALITY_DIVISORS",
+    "PreferencesDialog",
+]
 
 #: 控えの大きさ 小さいほど軽いが、文字の読みやすさが落ちる
 PROXY_HEIGHTS: tuple[tuple[str, int], ...] = (
@@ -48,6 +55,14 @@ PREFETCH_BUDGETS: tuple[tuple[str, int], ...] = (
     ("1GB（既定）", 1024),
     ("2GB", 2048),
     ("4GB（たくさん貯める）", 4096),
+)
+
+#: 書き出しで、合成を書き込みの何枚ぶん先へ進めるか
+#: 1 枚は画面 1 枚の RGBA（1080p で 8MB、4K で 33MB）
+PIPELINE_DEPTHS: tuple[tuple[str, int], ...] = (
+    ("重ねない（1 枚ずつ）", 0),
+    ("2 枚先まで（既定）", 2),
+    ("4 枚先まで", 4),
 )
 
 
@@ -119,6 +134,18 @@ class PreferencesDialog(QDialog):
         self._select(self._prefetch_budget, preferences.prefetch_budget_mb)
         form.addRow("先読みに使うメモリ", self._prefetch_budget)
 
+        self._pipeline_depth = QComboBox(self)
+        for label, depth in PIPELINE_DEPTHS:
+            self._pipeline_depth.addItem(label, depth)
+        self._select(self._pipeline_depth, preferences.export_pipeline_depth)
+        self._pipeline_depth.setToolTip(
+            "書き出しで、GPU の合成と、CPU の色変換・エンコード・多重化を重ねて進める "
+            "合成済みの絵を貯めるぶんメモリを使う（1080p で 1 枚 8MB、4K で 33MB）ので、"
+            "深くすれば速いとは限らない 実測では 4K で 4 枚先まで貯めると 2 枚より遅くなった "
+            "メモリが足りない機械では「重ねない」にする"
+        )
+        form.addRow("書き出しの先読み", self._pipeline_depth)
+
         self._native_modules = QCheckBox("AviUtl2 のスクリプトモジュール（DLL）を読み込む", self)
         self._native_modules.setChecked(preferences.native_modules)
         self._native_modules.setToolTip(
@@ -134,6 +161,8 @@ class PreferencesDialog(QDialog):
         # 測り直したときに画面の側だけ古くなる
         plain, proxied, both = MEASURED_THREE_LAYERS_MS
         filling, showing = MEASURED_PREFETCH_MS
+        compose, readback, convert, muxing = MEASURED_EXPORT_MS
+        serial_ms, pipelined_ms = MEASURED_EXPORT_TOTAL_MS
         note = QLabel(
             f"4K を 3 枚重ねたときの実測（1 コマ {BUDGET_MS:.1f}ms が 60fps の目安）\n"
             f"元のまま {plain}ms ／ 控えを使う {proxied}ms ／ さらに画質を下げる {both}ms\n"
@@ -143,7 +172,12 @@ class PreferencesDialog(QDialog):
             f"先読みは 1 枚 {_megabytes(FULL_HD_FRAME_BYTES):.1f}MB（1920x1080）"
             f" 1GB でおよそ {PREFETCH_FRAMES_PER_GB} 枚＝{PREFETCH_SECONDS_PER_GB} 秒ぶん\n"
             f"貯めるのに 1 枚 {filling}ms 掛かる代わりに、貯まった所は {showing}ms で出せる"
-            "（上と同じ 4K 3 枚 + blur）",
+            "（上と同じ 4K 3 枚 + blur）\n"
+            f"書き出しの内訳は 1 枚あたり 合成 {compose}ms ／ 読み戻し {readback}ms ／"
+            f" 色変換 {convert}ms ／ エンコード + 多重化 {muxing}ms"
+            "（1920x1080 を 3 枚重ね、NVIDIA GPU）\n"
+            f"後ろの 2 つを重ねると、書き出し全体で 1 枚 {serial_ms:.1f}ms の所が"
+            f" {pipelined_ms:.1f}ms になる この機械で測るには tools\\bench_export.py",
             self,
         )
         note.setWordWrap(True)
@@ -189,5 +223,6 @@ class PreferencesDialog(QDialog):
             auto_quality_divisor=int(self._auto_divisor.currentData()),
             prefetch=self._prefetch.isChecked(),
             prefetch_budget_mb=int(self._prefetch_budget.currentData()),
+            export_pipeline_depth=int(self._pipeline_depth.currentData()),
             native_modules=self._native_modules.isChecked(),
         )

@@ -16,9 +16,16 @@ import av
 import av.video.frame
 import av.video.stream
 import numpy as np
-from av.video.reformatter import ColorPrimaries, ColorRange, Colorspace, ColorTrc
+from av.video.reformatter import (
+    ColorPrimaries,
+    ColorRange,
+    Colorspace,
+    ColorTrc,
+    VideoReformatter,
+)
 
 __all__ = [
+    "VideoReformatter",
     "source_matrix",
     "tag_bt709",
     "to_bt709",
@@ -59,6 +66,43 @@ def source_matrix(frame: av.video.frame.VideoFrame) -> Colorspace | None:
     return Colorspace.ITU601
 
 
+def _reformat(
+    frame: av.video.frame.VideoFrame,
+    reformatter: VideoReformatter | None,
+    *,
+    width: int | None = None,
+    height: int | None = None,
+    pixel_format: str,
+    src_colorspace: Colorspace | None = None,
+    dst_colorspace: Colorspace | None = None,
+    dst_color_range: ColorRange | None = None,
+) -> av.video.frame.VideoFrame:
+    """``reformatter`` があればそれで、無ければフレーム自身の表で変換する
+
+    フレーム自身に任せると、フレームごとに swscale の表を作り直す
+    受ける項目はここで使う 6 つに絞る ``**options`` で素通しにすると、
+    PyAV の引数が変わっても型検査に掛からない
+    """
+    if reformatter is None:
+        return frame.reformat(
+            width=width,
+            height=height,
+            format=pixel_format,
+            src_colorspace=src_colorspace,
+            dst_colorspace=dst_colorspace,
+            dst_color_range=dst_color_range,
+        )
+    return reformatter.reformat(
+        frame,
+        width=width,
+        height=height,
+        format=pixel_format,
+        src_colorspace=src_colorspace,
+        dst_colorspace=dst_colorspace,
+        dst_color_range=dst_color_range,
+    )
+
+
 def to_rgb_array(frame: av.video.frame.VideoFrame, pixel_format: str) -> np.ndarray:
     """素材のフレームを RGB 系の配列へ 行列は :func:`source_matrix` で決める"""
     return frame.to_ndarray(format=pixel_format, src_colorspace=source_matrix(frame))
@@ -70,18 +114,27 @@ def to_bt709(
     *,
     width: int | None = None,
     height: int | None = None,
+    reformatter: VideoReformatter | None = None,
 ) -> av.video.frame.VideoFrame:
     """BT.709 / limited の YUV へ変換し、そのタグを付けたフレームを返す
 
     ``width`` / ``height`` を渡すと、縮めるのと行列の変換を 1 回で済ませる
     RGB の書式を頼まれたら行列もタグも関係ないので、書式だけ変える
+
+    ``reformatter`` を渡すと、swscale の変換表をフレームをまたいで使い回す
+    渡さないと :class:`~av.video.frame.VideoFrame` ごとに新しい表が作られる
+    毎フレーム作り直すのは 1920x1080 で 1 枚 10ms ほどで、使い回すと 1ms を切る
+    （書き出しの色変換 15.6ms のうち 10ms 近くがこれだった）
+    出る画素は同じなので、同じ設定で呼び続ける所だけ渡す
     """
     if not _has_matrix(av.VideoFormat(pixel_format)):
-        return frame.reformat(width=width, height=height, format=pixel_format)
-    converted = frame.reformat(
+        return _reformat(frame, reformatter, width=width, height=height, pixel_format=pixel_format)
+    converted = _reformat(
+        frame,
+        reformatter,
         width=width,
         height=height,
-        format=pixel_format,
+        pixel_format=pixel_format,
         src_colorspace=source_matrix(frame),
         dst_colorspace=Colorspace.ITU709,
         dst_color_range=ColorRange.MPEG,
