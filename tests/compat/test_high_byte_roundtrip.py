@@ -11,7 +11,8 @@ import json
 from pathlib import Path
 
 from sashimono.compat.aviutl.control import lua_string
-from sashimono.compat.aviutl.objapi import ObjectState, lua_text
+from sashimono.compat.aviutl.objapi import LUA_ENCODING, ObjectState, lua_text
+from sashimono.compat.aviutl.report import CompatibilityReport
 from sashimono.compat.aviutl.runtime import LuaScriptRuntime, blank_image
 from sashimono.core.commands import AddClip, AddTrack
 from sashimono.core.io.presets import Preset, PresetStore
@@ -24,7 +25,49 @@ HIGH = lua_string('"a\\255b"')
 
 def test_the_value_holds_the_raw_byte() -> None:
     assert HIGH == "a\udcffb"
-    assert lua_text(HIGH) == b"a\xffb"
+    # 読めないバイトは Lua との間の符号化（LUA_ENCODING）がそのまま渡すので、ここでは触らない
+    assert lua_text(HIGH) == HIGH
+    assert HIGH.encode(LUA_ENCODING) == b"a\xffb"
+
+
+def test_a_high_byte_goes_into_lua_and_comes_back_unchanged() -> None:
+    """Lua へ渡した値を、スクリプトが Python の窓口へ返しても同じバイトのまま
+
+    lupa の既定の UTF-8 は Lua から戻る文字の 0xFF を読めずに例外を出し、
+    ``obj.名前 = 値`` や ``debug_print`` へ渡した所でスクリプトが落ちていた
+    """
+    report = CompatibilityReport()
+    runtime = LuaScriptRuntime(report=report, instruction_limit=100_000)
+    state = ObjectState(image=blank_image(8, 8))
+    state.values["_2"] = HIGH
+    state.values["jp"] = "字幕の本文"
+    result = runtime.run(
+        "obj.copy = _2 obj.field = obj._2 obj.made = string.char(0x61, 0xff, 0x62) "
+        "obj.jp_copy = jp obj.literal = '日本語' debug_print(_2)",
+        state,
+    )
+    assert not result.failed, result.message
+    assert state.values["copy"] == HIGH
+    assert state.values["field"] == HIGH
+    assert state.values["made"] == HIGH
+    assert state.values["copy"].encode(LUA_ENCODING) == b"a\xffb"
+    # ふつうの UTF-8 の文字はどちらの向きも変わらない
+    assert state.values["jp_copy"] == "字幕の本文"
+    assert state.values["literal"] == "日本語"
+    assert "debug_print: " + HIGH in report.missing
+
+
+def test_a_surrogate_that_is_not_a_byte_is_replaced_and_recorded() -> None:
+    # U+D800 はどのバイトにも戻せない そのまま渡すと準備の段で例外になり、描画ごと落ちる
+    report = CompatibilityReport()
+    runtime = LuaScriptRuntime(report=report, instruction_limit=100_000)
+    state = ObjectState(image=blank_image(8, 8))
+    state.values["bad"] = "x\ud800y"
+    result = runtime.run("obj.back = bad obj.field = obj.bad", state)
+    assert not result.failed, result.message
+    assert state.values["back"] == "x\ufffdy"
+    assert state.values["field"] == "x\ufffdy"
+    assert report.missing["Lua へ渡せない文字（対になっていない代用符号）"] >= 1
 
 
 def test_a_project_with_a_high_byte_saves_and_reloads(tmp_path: Path) -> None:

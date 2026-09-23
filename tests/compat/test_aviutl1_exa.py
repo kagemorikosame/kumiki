@@ -440,14 +440,47 @@ class TestCodeRabbitFindings:
         catalog = ScriptCatalog(roots=(tmp_path,), report=report)
         assert {entry.label for entry in catalog.scan()} == {"図形", "良い"}
 
-        from sashimono.compat.aviutl import catalog as module
-        from sashimono.compat.aviutl.control import split_scripts as real
+        from sashimono.compat.aviutl import control
 
-        def fussy(text: str) -> tuple[object, ...]:
+        real = control.parse_control
+
+        def fussy(text: str, *, name: str = "") -> control.ScriptHeader:
             if "ハート" in text:
                 raise ValueError("壊れた制御文字")
-            return real(text)
+            return real(text, name=name)
 
-        monkeypatch.setattr(module, "split_scripts", fussy)
+        monkeypatch.setattr(control, "parse_control", fussy)
         assert {entry.label for entry in catalog.scan()} == {"良い"}
         assert "図形.anm" in report.failures
+
+    def test_a_broken_section_does_not_take_its_neighbours(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 1 本のファイルに何本も入れた配布物で、後ろの 1 節が崩れているだけで
+        # 前の読めていた節まで一覧から消えていた
+        (tmp_path / "@束.anm").write_text(
+            "@良い\n--track0:量,0,10,1\nobj.ox = 0\n@壊れ\n--track0:量,0,10,1\nobj.ox = 0\n"
+            "@後ろ\n--track0:量,0,10,1\nobj.ox = 0\n",
+            "cp932",
+        )
+        from sashimono.compat.aviutl import control
+
+        real = control.parse_control
+
+        def fussy(text: str, *, name: str = "") -> control.ScriptHeader:
+            if name == "壊れ":
+                raise ValueError("範囲の崩れた値")
+            return real(text, name=name)
+
+        monkeypatch.setattr(control, "parse_control", fussy)
+        report = CompatibilityReport()
+        catalog = ScriptCatalog(roots=(tmp_path,), report=report)
+        assert {entry.label for entry in catalog.scan()} == {"良い", "後ろ"}
+        assert "@束.anm@壊れ" in report.failures
+
+    def test_a_non_finite_value_control_does_not_break_the_header(self) -> None:
+        # int(nan) は ValueError、int(inf) は OverflowError 後者は節ごとの受け止めも
+        # すり抜けて走査を止める
+        for raw in ("nan", "inf"):
+            (spec,) = parse_control(f"--value@x:値,{raw}").parameters
+            assert spec.default_value() == 0

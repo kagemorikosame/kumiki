@@ -25,6 +25,7 @@ from sashimono.compat.aviutl.control import ScriptHeader
 from sashimono.compat.aviutl.embedded import EMIT, build_source, has_embedded, literal_text
 from sashimono.compat.aviutl.encoding import read_text
 from sashimono.compat.aviutl.objapi import (
+    LUA_ENCODING,
     DrawCall,
     ObjApi,
     ObjectState,
@@ -233,6 +234,8 @@ def _new_runtime(module: Any) -> Any:
             register_builtins=False,
             attribute_filter=_attribute_filter,
             max_memory=LUA_MEMORY_LIMIT,
+            # 読めないバイトを持つ文字を、どちらの向きでも落とさずに渡す（LUA_ENCODING）
+            encoding=LUA_ENCODING,
         )
     except (TypeError, ValueError, RuntimeError) as exc:
         raise LuaError(f"メモリの上限を付けられない Lua です: {exc}") from exc
@@ -481,8 +484,8 @@ class LuaScriptRuntime:
             globals_table[name] = None
         self._injected = set(state.values)
         for name, value in state.values.items():
-            # 読めないバイトを持つ文字は、元のバイト列にして置く（lua_text を参照）
-            globals_table[name] = lua_text(value)
+            # バイトに戻せない代用符号だけを置き換える（lua_text を参照）
+            globals_table[name] = lua_text(value, self._report)
 
     # --- モジュール ---
 

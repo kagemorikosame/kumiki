@@ -15,8 +15,11 @@ AviUtl の見え方に合わせる
 
 from __future__ import annotations
 
+import codecs
 import math
 import random
+import re
+from collections.abc import Buffer
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -26,22 +29,52 @@ from sashimono.compat.aviutl import raster
 from sashimono.compat.aviutl.native import PixelData
 from sashimono.compat.aviutl.report import CompatibilityReport, global_report
 
-__all__ = ["DrawCall", "EffectRequest", "ObjApi", "ObjectState", "lua_text"]
+__all__ = ["LUA_ENCODING", "DrawCall", "EffectRequest", "ObjApi", "ObjectState", "lua_text"]
 
 
-def lua_text(value: Any) -> Any:
-    """Lua へ渡す値 UTF-8 で表せない文字を含む文字だけ、元のバイト列にして渡す
+#: Lua とやり取りする文字の符号化の名前 lupa のランタイムにこの名前を渡す
+#:
+#: 中身は UTF-8 で、読めないバイトだけを ``surrogateescape``（U+DC80〜U+DCFF の 1 文字）
+#: で持つ lupa の既定の UTF-8 は読めないバイトで例外を出すので、ダイアログの
+#: ``"\255"`` のような値は、Python から Lua へ渡す所でも、スクリプトが Python の
+#: 窓口（``obj.名前 = 値`` など）へ返す所でも落ちていた ふつうの UTF-8 の文字
+#: （日本語など）は、どちらの向きも UTF-8 そのままで変わらない
+LUA_ENCODING = "sashimono_lua_bytes"
 
-    ダイアログの ``"\\255"`` や ``"\\xFF"`` は、Lua では 1 バイトの 0xFF を持つ文字になる
-    こちらでは読めないバイトを ``surrogateescape`` の形で文字の中に持っているので、
-    そのまま lupa へ渡すと UTF-8 へ直せずに例外になり、スクリプトが 1 行も走らない
-    バイト列にして渡せば、LuaJIT が持つのと同じバイトになる
+
+def _lua_codec(name: str) -> codecs.CodecInfo | None:
+    if name != LUA_ENCODING:
+        return None
+    utf8 = codecs.lookup("utf-8")
+
+    def encode(text: str, errors: str = "strict") -> tuple[bytes, int]:
+        del errors
+        return utf8.encode(text, "surrogateescape")
+
+    def decode(data: Buffer, errors: str = "strict") -> tuple[str, int]:
+        del errors
+        return utf8.decode(data, "surrogateescape")
+
+    return codecs.CodecInfo(encode=encode, decode=decode, name=LUA_ENCODING)
+
+
+codecs.register(_lua_codec)
+
+#: ``surrogateescape`` で表せない代用符号 U+DC80〜U+DCFF の外にあるもの
+_FOREIGN_SURROGATE = re.compile("[\ud800-\udc7f\udd00-\udfff]")
+
+
+def lua_text(value: Any, report: CompatibilityReport | None = None) -> Any:
+    """Lua へ渡す値 バイトに戻せない文字だけを置き換える
+
+    読めないバイト（U+DC80〜U+DCFF）は :data:`LUA_ENCODING` がそのままのバイトで渡す
+    それ以外の対になっていない代用符号（``\\ud800`` など）は、どのバイトにも
+    戻せないので lupa へ渡す所で例外になり、スクリプトの失敗としても扱われずに
+    描画ごと落ちる U+FFFD に置き換え、置き換えたことを記録に残す
     """
-    if isinstance(value, str):
-        try:
-            value.encode("utf-8")
-        except UnicodeEncodeError:
-            return value.encode("utf-8", "surrogateescape")
+    if isinstance(value, str) and _FOREIGN_SURROGATE.search(value):
+        (report or global_report).note_missing("Lua へ渡せない文字（対になっていない代用符号）")
+        return _FOREIGN_SURROGATE.sub("\ufffd", value)
     return value
 
 
@@ -327,7 +360,7 @@ class ObjApi:
         if name.startswith("check") and name[5:].isdigit():
             return 1 if state.check0 else 0
         if name in state.values:
-            return lua_text(state.values[name])
+            return lua_text(state.values[name], self._report)
         if name in _IDENTIFIERS:
             return state.index
 
@@ -922,7 +955,7 @@ class ObjApi:
         name = str(target)
         for candidate in (name, name.split(".", 1)[-1]):
             if candidate in self.state.values:
-                return lua_text(self.state.values[candidate])
+                return lua_text(self.state.values[candidate], self._report)
             value = self.get(candidate)
             if value is not None and not callable(value):
                 return value

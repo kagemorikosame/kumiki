@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from sashimono.effects.spec import (
@@ -95,11 +96,17 @@ class ScriptSection:
     source: str
 
 
-def split_scripts(text: str) -> tuple[ScriptSection, ...]:
+def split_scripts(
+    text: str, *, on_error: Callable[[str, ValueError], None] | None = None
+) -> tuple[ScriptSection, ...]:
     """``@名前`` でスクリプトを分ける
 
     区切りが無ければファイル全体で 1 つ その場合の名前は空にしておき、
     呼び出し側がファイル名を使う
+
+    ``on_error`` を渡すと、設定欄を作れない節（範囲の崩れた値など）はそこへ知らせて
+    飛ばし、ほかの節は返す 渡さなければ例外のまま 1 本のファイルに十数本を入れる
+    配布物（``@効果集σ.anm`` は 13 本）で、1 節の崩れのために残りまで失うのを避ける
     """
     sections: list[tuple[str, list[str]]] = []
     current: list[str] = []
@@ -117,11 +124,20 @@ def split_scripts(text: str) -> tuple[ScriptSection, ...]:
         current.append(line)
 
     sections.append((name, current))
-    return tuple(
-        ScriptSection(header=parse_control("\n".join(body), name=title), source="\n".join(body))
-        for title, body in sections
-        if title or "".join(body).strip() or len(sections) == 1
-    )
+    built: list[ScriptSection] = []
+    for title, body in sections:
+        if not (title or "".join(body).strip() or len(sections) == 1):
+            continue
+        source = "\n".join(body)
+        try:
+            header = parse_control(source, name=title)
+        except ValueError as exc:
+            if on_error is None:
+                raise
+            on_error(title, exc)
+            continue
+        built.append(ScriptSection(header=header, source=source))
+    return tuple(built)
 
 
 def parse_control(text: str, *, name: str = "") -> ScriptHeader:
@@ -312,7 +328,10 @@ def _value(body: str, named: str | None) -> ParameterSpec:
     """``--value@`` はスライダーを持たない数値 整数として扱う"""
     parts = _split(body)
     label = parts[0] if parts else "値"
-    return ValueSpec(named or "value", label or "値", int(_number(parts, 1, 0.0)))
+    number = _number(parts, 1, 0.0)
+    # nan と inf は整数にできず、int() が例外を投げてスクリプト一覧の走査を止める
+    # （inf の OverflowError は節ごとの受け止めもすり抜ける） 0 から始める
+    return ValueSpec(named or "value", label or "値", int(number) if math.isfinite(number) else 0)
 
 
 def _dialog(body: str, unknown: list[str]) -> list[ParameterSpec]:
