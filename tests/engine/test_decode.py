@@ -85,6 +85,20 @@ class TestProbe:
         assert float(end) == pytest.approx(1.0, abs=0.05)
         assert item.duration > end + Fraction(1, 2)
 
+    def test_a_late_starting_file_is_measured_from_its_head(
+        self, sample_av: SampleMedia, tmp_path: Path
+    ) -> None:
+        """頭が 5 秒の素材の長さと映像の終わりは、元の素材と同じ 2 秒（Issue #123）
+
+        終わりを PTS そのまま（7 秒）で持つと、最後の絵で止める時刻（``Clip.hold_at``）が
+        頭から数えるデコーダの映像の終わりを越え、止めたはずの所で何も映らない
+        長さに音の前置き（映像より 24ms 早く始まる）を含めると、置いたクリップが
+        1 フレーム長くなり、最後の 1 フレームが何も映らない
+        """
+        late = probe_media(make_delayed(tmp_path, "late.mp4", sample_av.path, 5.0))
+        assert late.video_streams[0].end_time == Fraction(2)
+        assert late.duration == Fraction(2)
+
     def test_video_only_media(self, sample_long: SampleMedia) -> None:
         item = probe_media(sample_long.path)
         assert item.has_video
@@ -145,30 +159,36 @@ class TestVideoDecoder:
         assert midway is not None
         assert np.array_equal(at_start, midway)
 
-    def test_a_late_starting_file_shows_its_whole_picture(
+    def test_a_late_starting_file_is_timed_from_its_head(
         self, sample_av: SampleMedia, tmp_path: Path
     ) -> None:
-        # 素材の時刻は PTS そのまま 終わりを頭の時刻抜きの長さで切ると、頭が 5 秒の
-        # 2 秒の素材は 2 秒から先（映像のすべて）が何も映らない
+        """頭が 5 秒の素材の時刻は頭から数える 元の素材と同じ時刻に同じフレーム（Issue #123）
+
+        PTS そのままで数えると 0〜2 秒はすべて最初のフレームより前で、最初の絵が止まったまま
+        飛ぶ順を前後させて、シークも原点を足した PTS へ着地することを見る
+        """
+        reference = decode_all_frames(sample_av.path)
         late = make_delayed(tmp_path, "late.mp4", sample_av.path, 5.0)
         with VideoDecoder(late) as decoder:
-            assert decoder.frame_at(Fraction(6)) is not None
-            assert decoder.frame_at(Fraction(7) - Fraction(1, 1000)) is not None
-            assert decoder.frame_at(Fraction(8)) is None
+            for index in (0, 1, 45, 30, 59, 2):
+                frame = decoder.frame_at(Fraction(index, 30))
+                assert frame is not None, f"{index} フレーム目が読めない"
+                assert np.array_equal(frame, reference[index][1]), f"{index} フレーム目が不一致"
+            assert decoder.frame_at(Fraction(2)) is None
 
     def test_a_late_file_shows_no_picture_where_only_its_sound_goes_on(
         self, media_dir: Path, tmp_path: Path
     ) -> None:
-        """頭 5 秒・映像 1 秒・音 2 秒の素材で、映像の終わり（6 秒）の後は絵を出さない
+        """頭 5 秒・映像 1 秒・音 2 秒の素材で、映像の終わり（頭から 1 秒）の後は絵を出さない
 
-        コンテナの終わり（7 秒）まで出すと、音だけの区間に直前の絵が静止画で残る
+        コンテナの終わり（頭から 2 秒）まで出すと、音だけの区間に直前の絵が静止画で残る
         最後の絵を出し続けたいクリップは ``hold_at`` で止める（Issue #115）
         """
         late = make_delayed(tmp_path, "late-short.mp4", _short_picture(media_dir), 5.0)
         with VideoDecoder(late) as decoder:
-            assert decoder.frame_at(Fraction(11, 2)) is not None
-            assert decoder.frame_at(Fraction(6) - Fraction(1, 1000)) is not None
-            assert decoder.frame_at(Fraction(13, 2)) is None
+            assert decoder.frame_at(Fraction(1, 2)) is not None
+            assert decoder.frame_at(Fraction(1) - Fraction(1, 1000)) is not None
+            assert decoder.frame_at(Fraction(3, 2)) is None
 
     def test_a_file_whose_sound_runs_longer_shows_no_picture_after_its_picture_ends(
         self, media_dir: Path
@@ -269,6 +289,26 @@ class TestAudioDecoder:
             seeked = decoder.read(48000, 24000)
 
         signal = float(np.sqrt(np.mean(sequential**2)))
+        error = float(np.sqrt(np.mean((sequential - seeked) ** 2)))
+        assert error / signal < 0.05, f"相対 RMS 誤差 {error / signal:.3%}"
+
+    def test_a_late_starting_file_sounds_from_its_head(
+        self, sample_av: SampleMedia, tmp_path: Path
+    ) -> None:
+        """頭が 5 秒の素材の音は頭から数える 飛んで読んでも同じ所（Issue #123）
+
+        PTS そのままで数えると、素材の長さ（2 秒）ぶんの範囲はすべて頭より前で無音になる
+        シークだけ原点を足し忘れると、飛んだ先で 5 秒前の位置（無音）を読む
+        """
+        late = make_delayed(tmp_path, "late.mp4", sample_av.path, 5.0)
+        with AudioDecoder(late, sample_rate=48000) as decoder:
+            sequential = decoder.read(0, 72000)[48000:]
+        with AudioDecoder(late, sample_rate=48000) as decoder:
+            decoder.read(0, 480)
+            seeked = decoder.read(48000, 24000)
+
+        signal = float(np.sqrt(np.mean(sequential**2)))
+        assert signal > 0.01, "頭から 1 秒の所が無音"
         error = float(np.sqrt(np.mean((sequential - seeked) ** 2)))
         assert error / signal < 0.05, f"相対 RMS 誤差 {error / signal:.3%}"
 

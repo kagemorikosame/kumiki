@@ -76,7 +76,22 @@ FORMAT_NAME = "sashimono-project"
 #: 4 で絵を止める時刻（``Clip.hold_at``）を足した（Issue #115） 3 までの本体は項目を
 #: 知らないので、止めた絵が動き出す（素材の終わりの後は何も映らなくなる）うえ、保存し直すと
 #: 項目ごと消える 3 と同じ理由で版を上げた 3 までのファイルは止めないクリップとして開く
-FORMAT_VERSION = 4
+#: 5 で素材の中の時刻を素材の頭から数えるようにした（Issue #123） 頭が 0 の素材は何も
+#: 変わらない 頭が 0 より後ろの素材は、4 までは PTS そのままで数えていて、ふつうに置くと
+#: 頭の絵が止まったまま音も鳴らなかった MP3（頭が 0.025 秒）の音は 25ms 早く鳴るようになる
+#: 版を上げたのは映像の終わり（``VideoStreamInfo.end_time``）のため 4 のファイルの値は
+#: PTS そのままで、頭 5 秒・長さ 2 秒の素材なら 7 秒と書いてある 版を分けないと、読む側が
+#: どちらの数え方か見分けられず、テンプレートを置いたときに映像の終わりの後で絵を止めて
+#: 何も映らなくなる 4 までのファイルは映像の終わりを持たない素材として開く（絵を止める
+#: 所で素材を開き直して取る :func:`sashimono.compat.catalog.gather_media`）
+#: ``source_in`` と ``hold_at`` はそのまま読む 直すには素材を開いて頭の時刻を知る必要があり、
+#: ここ（コア層）では開けない 頭が 0 の素材ではもともと正しい 頭が 0 より後ろの素材で、
+#: 手で素材の中の位置を頭の時刻ぶん後ろへずらして映るようにしていたクリップは、5 で開くと
+#: その分だけ後ろを読む（ずらさずに置いたクリップは、ここで初めて正しく映る）
+FORMAT_VERSION = 5
+
+#: 映像の終わり（``end_time``）を素材の頭から数え始めた版 これより前の値は捨てる
+MEDIA_CLOCK_VERSION = 5
 
 #: プロジェクトファイルの拡張子
 SUFFIX = ".sme"
@@ -408,13 +423,16 @@ def _media_to_json(item: MediaItem) -> dict[str, Any]:
     }
 
 
-def _media_from_json(raw: object) -> MediaItem:
+def _media_from_json(raw: object, version: int) -> MediaItem:
     data = _require(raw, "media")
     video_streams = []
     for s in _get_list(data, "video_streams"):
         stream_data = _require(s, "video_stream")
         # 項目が無いのは、映像の終わりを覚える前に取り込んだ素材 コンテナの長さで代わりにする
-        end_raw = stream_data.get("end_time")
+        # 版 4 の値は PTS そのままの数え方（:data:`MEDIA_CLOCK_VERSION`） 頭が 0 より後ろの
+        # 素材では今の数え方と頭の時刻ぶん違い、どの素材がそうかはファイルからは分からないので、
+        # 覚える前の素材と同じ扱いにする 使う所（絵を止める時刻を決める所）が開き直して取る
+        end_raw = stream_data.get("end_time") if version >= MEDIA_CLOCK_VERSION else None
         video_streams.append(
             VideoStreamInfo(
                 index=_get_int(stream_data, "index"),
@@ -704,7 +722,7 @@ def _project_from_dict(data: object) -> Project:
         return Project(
             settings=settings,
             timeline=timeline,
-            media=tuple(_media_from_json(m) for m in _get_list(root, "media")),
+            media=tuple(_media_from_json(m, version) for m in _get_list(root, "media")),
             name=_get_str(root, "name", "無題"),
             scenes=scenes,
         )

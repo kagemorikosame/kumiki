@@ -217,6 +217,28 @@ class TestFile:
         reopened = project_from_dict(data)
         assert reopened.media[0].video_streams[0].end_time is None
 
+    def test_a_version_4_end_of_the_picture_is_not_trusted(self, held: Project) -> None:
+        """版 4 の映像の終わりは PTS そのままの数え方なので捨てる（Issue #123）
+
+        頭 5 秒・長さ 2 秒の素材なら版 4 は 7 秒と書いている 今の数え方（頭から 2 秒）として
+        読むと、テンプレートを置いたときに映像の終わりの後で絵を止め、止めた所から何も映らない
+        捨てておけば、絵を止める所で素材を開き直して取る（版 3 までの素材と同じ道）
+        """
+        media = held.media[0]
+        (stream,) = media.video_streams
+        marked = held.replace_media(
+            replace(media, video_streams=(replace(stream, end_time=Fraction(7)),))
+        )
+        data = project_to_dict(marked)
+        data["version"] = 4
+        reopened = project_from_dict(data)
+        assert reopened.media[0].video_streams[0].end_time is None
+
+    def test_the_format_version_says_media_are_timed_from_their_head(self, held: Project) -> None:
+        # 版を上げないと、版 4 の値（PTS そのまま）と今の値（頭から）を見分けられない
+        assert FORMAT_VERSION >= 5
+        assert project_to_dict(held)["version"] == FORMAT_VERSION
+
 
 class TestCommand:
     def test_a_number_that_is_not_a_fraction_is_refused(self, held: Project) -> None:
