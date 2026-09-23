@@ -94,10 +94,27 @@ class AudioDecoder:
         self._buffer_start = 0
         self._position_known = False
         self._exhausted = False
+        #: 途中で復号に失敗したときの理由 失敗した所から先は無音で返すので、呼ぶ側には
+        #: 終わりと見分けが付かない 再生は無音で続けてよいが、字幕起こしのように
+        #: 読んだ音を丸ごと使う側は、欠けたまま成功と見なさないためにこれを見る
+        #: シークしても消さない 一度でも壊れた所を読んだことを覚えておく
+        self._decode_error: str | None = None
+        #: 失敗した位置（出力のサンプル番号） 読めた所の終わり 位置が分からなければ ``None``
+        self._decode_error_at: int | None = None
 
     @property
     def info(self) -> AudioStreamInfo:
         return self._info
+
+    @property
+    def decode_error(self) -> str | None:
+        """途中で復号に失敗したときの理由 失敗していなければ ``None``"""
+        return self._decode_error
+
+    @property
+    def decode_error_at(self) -> int | None:
+        """失敗した位置（出力のサンプル番号） 読めた所の終わりで、ここから先が無音になる"""
+        return self._decode_error_at
 
     @property
     def duration(self) -> Fraction:
@@ -236,8 +253,11 @@ class AudioDecoder:
             except StopIteration:
                 self._exhausted = True
                 return self._flush_resampler()
-            except av.error.FFmpegError:
+            except av.error.FFmpegError as exc:
                 self._exhausted = True
+                self._decode_error = str(exc)
+                if self._position_known:
+                    self._decode_error_at = self._buffer_start + len(self._buffer)
                 return False
 
             if self._resample_into_buffer(frame):
