@@ -272,6 +272,7 @@ class ObjApi:
         render_source: Any = None,
         load_module: Any = None,
         load_script_module: Any = None,
+        emit: Any = None,
     ) -> None:
         self.state = state
         self._report = report if report is not None else global_report
@@ -282,6 +283,9 @@ class ObjApi:
         self._load_module = load_module
         #: ``obj.module`` の実体（``.mod2`` を読む） 無ければ ``require`` と同じ物を使う
         self._load_script_module = load_script_module or load_module
+        #: テキスト欄に埋め込んだ Lua を走らせているときの書き出し先
+        #: そこでの ``obj.mes`` は絵を作るのではなく、本文を書き出す
+        self._emit = emit
         self._random = random.Random(0)
 
     # --- 値の読み書き ---
@@ -695,6 +699,12 @@ class ObjApi:
 
     def lua_mes(self, text: str = "") -> None:
         """テキストを描く ``obj.mes`` と ``obj.load("text", …)`` の実体"""
+        if self._emit is not None:
+            # テキスト欄の中の Lua から呼ばれている ここで絵にすると、
+            # 1x1 の作業用の絵へ描いて捨てることになり、本文が空になる
+            # （合成フォントの配布エイリアスは ``obj.mes`` で本文を出す）
+            self._emit(str(text))
+            return
         if self._render_source is None:
             self._report.note_missing("obj.mes")
             return
@@ -727,8 +737,31 @@ class ObjApi:
             "bold": bool(style & 1),
             "italic": bool(style & 2),
             "color": color,
+            # ``obj.getfont`` が返せるように、受けた引数をそのまま覚えておく
+            # 装飾や色を作り直すと、AviUtl では往復しても変わらない値が変わる
+            "given": (str(name), _as_float(size), *rest),
             "extra": rest[2:],
         }
+
+    def lua_getfont(self) -> Any:
+        """いまの書体 ``obj.setfont`` の引数と同じ並びで返す
+
+        AviUtl2 の ``lua.txt`` にある通り 9 つ返す
+        ``名前, 大きさ, 装飾, 文字色, 影・縁色, 太字, 斜体, 字間, 行間``
+        名前の初期値は**空**（＝既定の書体） 合成フォントの配布エイリアスは
+        この名前をそのままプラグインへ渡すので、勝手に既定の書体名を入れると
+        AviUtl2 と違う組み方になる
+
+        ``obj.setfont`` で渡された値を覚えておいて返す 作り直すと、
+        受け取っていない引数に既定値が入って往復で値が変わる
+        """
+        given = self.state.font.get("given")
+        values: list[Any] = list(given) if isinstance(given, tuple) else ["", 48.0]
+        # 足りない分は AviUtl の既定で埋める 短い組を返すと、受け側の
+        # ``local a,b,c,d,e,f,g,h = obj.getfont()`` に nil が並ぶ
+        defaults: list[Any] = ["", 48.0, 0, 0xFFFFFF, 0x000000, False, False, 0.0, 0.0]
+        values.extend(defaults[len(values) :])
+        return tuple(values[: len(defaults)])
 
     # --- 画素 ---
 

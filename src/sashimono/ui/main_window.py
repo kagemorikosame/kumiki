@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
 )
 
 from sashimono.ai.host import ToolError
-from sashimono.compat.aviutl import native
+from sashimono.compat.aviutl import native, plugin
 from sashimono.compat.aviutl.exo import ExoFile
 from sashimono.core.commands import (
     AddClip,
@@ -602,6 +602,9 @@ class MainWindow(QMainWindow):
         self._preview.set_decode_threads(preferences.decode_threads)
         if native.enabled() != preferences.native_modules:
             native.set_enabled(preferences.native_modules)
+            # 汎用プラグインも同じ設定で入り切りする 切ったときに覚えている
+            # モジュールを捨てないと、切ったあとも同じ表が返り続ける
+            plugin.forget()
             # 読む・読まないで絵が変わる 先読みした絵は全部使えない
             self._preview.refresh_all()
         for media in self.view_project.media:

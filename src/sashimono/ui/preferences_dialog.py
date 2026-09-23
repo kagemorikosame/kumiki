@@ -176,7 +176,9 @@ class PreferencesDialog(QDialog):
         self._native_modules.setChecked(preferences.native_modules)
         self._native_modules.setToolTip(
             "テレビ字幕のように、処理を DLL に切り出した配布スクリプトを動かす "
-            "読み込むのはスクリプトフォルダに自分で置いた物だけ DLL は Sashimono と"
+            "合成フォントのように、AviUtl2 の汎用プラグイン（.aux2）が出す "
+            "モジュールもここで読む 読み込むのはスクリプトフォルダに自分で置いた物と、"
+            "AviUtl2 の Plugin フォルダの物だけ DLL は Sashimono と"
             "同じ権限で動くので、信頼できない物は置かない"
         )
         form.addRow(self._native_modules)

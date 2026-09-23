@@ -11,6 +11,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 import numpy as np
 
 from sashimono.compat.aviutl import PREFIX
@@ -28,6 +31,7 @@ __all__ = [
     "script_catalog",
     "script_effects",
     "split_effects",
+    "text_font",
 ]
 
 
@@ -99,8 +103,22 @@ class ScriptStage:
 
         return state.result()
 
-    def expand_text(self, text: str, *, frame: int, fps: float, duration: int) -> str:
-        """テキスト欄に埋め込んだ Lua を、そのフレームの文字にする"""
+    def expand_text(
+        self,
+        text: str,
+        *,
+        frame: int,
+        fps: float,
+        duration: int,
+        font: dict[str, Any] | None = None,
+    ) -> str:
+        """テキスト欄に埋め込んだ Lua を、そのフレームの文字にする
+
+        ``font`` はそのテキストオブジェクトの書体の設定 ``obj.getfont`` が
+        これを返す 渡さないと、合成フォントのエイリアスのように
+        ``obj.getfont`` で大きさや字間を取って組むスクリプトが、
+        設定欄に書いた値ではなく既定値で組む
+        """
         state = ObjectState(
             image=blank_image(1, 1),
             screen_w=self._screen[0],
@@ -108,6 +126,7 @@ class ScriptStage:
             frame=frame,
             totalframe=max(1, duration),
             framerate=fps,
+            font=dict(font) if font else {},
         )
         return self._runtime.expand_text(text, state)
 
@@ -120,6 +139,57 @@ class ScriptStage:
         if drawn is None:  # pragma: no cover - 種類は呼び出し側が決めている
             return np.zeros((max(1, height), max(1, width), 4), dtype=np.uint8)
         return drawn
+
+
+def text_font(params: Mapping[str, ParamValue], frame: int) -> dict[str, Any]:
+    """テキストオブジェクトの書体の設定を ``obj`` の書体の形にする
+
+    並びは AviUtl2 の ``obj.setfont`` と同じ（lua.txt）
+    ``名前, 大きさ, 装飾, 文字色, 影・縁色, 太字, 斜体, 字間, 行間``
+    ``obj.getfont`` はこれをそのまま返す
+
+    名前は空のままにする 設定欄で書体を選んでいないことを、選んだことに
+    してしまうと、合成フォントのように名前で組み方を変えるスクリプトが
+    AviUtl2 と違う結果を出す
+    """
+
+    def number(name: str, default: float = 0.0) -> float:
+        raw = params.get(name, default)
+        value = raw.at(frame) if isinstance(raw, AnimatedValue) else raw
+        return float(value) if isinstance(value, int | float) else default
+
+    color = params.get("color")
+    name = params.get("font")
+    return {
+        "name": str(name) if isinstance(name, str) else "",
+        "size": number("size", 48.0),
+        "bold": bool(number("bold")),
+        "italic": bool(number("italic")),
+        "color": color,
+        "given": (
+            str(name) if isinstance(name, str) else "",
+            number("size", 48.0),
+            # 装飾の番号は縁取りや影の組み合わせから作り直すことになる
+            # 取り違えた番号を返すより、装飾なし（0）で通す
+            0,
+            _number_color(color),
+            0x000000,
+            bool(number("bold")),
+            bool(number("italic")),
+            number("letter_spacing"),
+            number("line_spacing"),
+        ),
+    }
+
+
+def _number_color(value: object) -> int:
+    """色を ``obj.setfont`` が使う 0xRRGGBB の数にする 読めなければ白"""
+    if isinstance(value, tuple) and len(value) >= 3:
+        red, green, blue = (max(0, min(255, round(float(part) * 255))) for part in value[:3])
+        return (red << 16) | (green << 8) | blue
+    if isinstance(value, int):
+        return int(value)
+    return 0xFFFFFF
 
 
 def _apply_params(state: ObjectState, effect: Effect, frame: int) -> None:

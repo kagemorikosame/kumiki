@@ -35,6 +35,7 @@ from typing import Any
 import numpy as np
 
 __all__ = [
+    "EDIT_SECTION_SLOTS",
     "HOST_VERSION",
     "NativeModule",
     "NativeModuleError",
@@ -55,6 +56,10 @@ MAX_FUNCTIONS = 1024
 
 #: PE の機械の種類 x64 以外の DLL は 64bit の Sashimono へ読み込めない
 _MACHINE_AMD64 = 0x8664
+
+#: ``EDIT_SECTION``（plugin2.h）に並ぶ関数の数 関数ポインタだけが並ぶ構造体で、
+#: 数えたら 82 本あった 中身は編集中のプロジェクトを触る物なので、こちらには無い
+EDIT_SECTION_SLOTS = 82
 
 
 class NativeModuleError(RuntimeError):
@@ -211,7 +216,7 @@ _SLOTS: tuple[tuple[str, Any], ...] = (
     ("push_result_table_boolean", _F(None, ctypes.POINTER(_c_str), ctypes.POINTER(_b), _i)),
     # 編集の情報・関数の返却・メタテーブルは使わない（手元の配布物は呼ばない）
     # 空のまま渡すと、呼ばれた時点で DLL が落ちる 呼ばれたら落とさずに断れるよう、
-    # 呼ばれたことを記録して何もしない関数を置く
+    # 呼ばれたことを記録して何もしない関数を置く（``edit`` は :data:`_EDIT_SECTION`）
     ("edit", _ptr),
     ("push_result_function", _F(None, _ptr, _ptr)),
     ("deprecated_push_result_meta_table", _F(None, _ptr, _ptr, _ptr)),
@@ -301,13 +306,40 @@ def _handlers(call: _Call) -> dict[str, Any]:
     }
 
 
+#: ``EDIT_SECTION`` の代わりに渡す表 全部の枠が同じ「何もしない」関数を指す
+#:
+#: 空（nullptr）のまま渡すと、編集の情報を見に来たモジュールが nullptr の
+#: 先を読んで Sashimono ごと落ちる（合成フォントの ``decorate_layout`` に
+#: 書体名を渡すと、``get_font`` を引きに来て落ちた） x64 の呼び出し規約では
+#: 引数はレジスタに載り、後始末は呼ぶ側がするので、引数を取らない関数を
+#: どの枠に置いても安全に戻れる 返すのは 0＝「無い・失敗した」で、
+#: plugin2.h のどの関数もこの値を「取れなかった」として扱える
+#: （返り値は最大 8 バイト 小数を返す関数は EDIT_SECTION に無い）
+_EditStub = ctypes.CFUNCTYPE(ctypes.c_int64)
+
+
+def _edit_section_stub() -> ctypes.Array[ctypes.c_void_p]:
+    stub = _EditStub(lambda: 0)
+    address = ctypes.cast(stub, ctypes.c_void_p).value
+    table = (ctypes.c_void_p * EDIT_SECTION_SLOTS)(*([address] * EDIT_SECTION_SLOTS))
+    # 関数そのものを表にぶら下げて、表が生きている間は回収されないようにする
+    table._stub = stub  # type: ignore[attr-defined]
+    return table
+
+
+_EDIT_SECTION = _edit_section_stub()
+
+
 def _build_param(call: _Call) -> tuple[_Param, list[Any]]:
     """表を組み立てる 返す 2 つ目は、呼び出しが終わるまで生かしておく物"""
     keep: list[Any] = []
     handlers = _handlers(call)
     values: dict[str, Any] = {}
     for name, kind in _SLOTS:
-        if name in ("edit", "userdata"):
+        if name == "edit":
+            values[name] = ctypes.cast(_EDIT_SECTION, ctypes.c_void_p)
+            continue
+        if name == "userdata":
             values[name] = None
             continue
         function = kind(handlers[name])
@@ -342,6 +374,16 @@ class NativeModule:
         # 同じ DLL を描画と書き出しが同時に呼ぶことがある 中が同時に呼ばれる
         # ことに耐えるかは分からないので、1 つずつにする
         self._lock = threading.Lock()
+
+    @classmethod
+    def from_address(cls, path: Path, library: Any, address: int) -> NativeModule:
+        """``SCRIPT_MODULE_TABLE*`` の番地から作る
+
+        汎用プラグイン（``.aux2``）は表をファイルから出さず、登録の引数として
+        渡してくる :mod:`sashimono.compat.aviutl.plugin` がそれを受け取る
+        """
+        table = ctypes.cast(address, ctypes.POINTER(_ModuleTable)).contents
+        return cls(path, library, table)
 
     @property
     def names(self) -> tuple[str, ...]:
