@@ -17,7 +17,8 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QApplication
 
 from sashimono import __version__
-from sashimono.compat.aviutl.catalog import ScriptCatalog, script_catalog, set_script_catalog
+from sashimono.compat.aviutl import catalog as catalog_module
+from sashimono.compat.aviutl.catalog import ScriptCatalog
 from sashimono.compat.aviutl.report import CompatibilityReport
 from sashimono.core import userdirs
 from sashimono.links import MANUAL_URL, REPORT_URL
@@ -219,22 +220,30 @@ class TestCompatibilityCopy:
     def test_every_script_folder_in_the_list_is_hidden(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        # 探索先は「、」でつないで書く 「、」を場所の終わりと認めないと、
-        # 最後以外の探索先が伏せられず、公開の Issue に名前が出る
+        # 探索先を読点でつなぐと、場所の直後に読点が来て、最後以外の探索先が伏せられない
+        # （読点は名前の途中に来うるので、伏せる側は場所の終わりと認めない）
         _clear_folder_variables(monkeypatch)
         roots = [r"D:\kagemori\aviutl\Script", r"E:\kagemori2\scripts", r"F:\山田\素材"]
         text = report_text(CompatibilityReport(), 0, user_folders(tmp_path), roots=roots)
-        assert "探索先: <探索先1>、<探索先2>、<探索先3>" in text
+        assert "探索先:\n  <探索先1>\n  <探索先2>\n  <探索先3>" in text
         for name in ("kagemori", "山田"):
             assert name not in text.casefold()
 
-    @pytest.mark.parametrize("after", ["、", "。", "，", "．", "）", "」", "』", "】", "〕", "　"])
-    def test_a_japanese_delimiter_ends_the_folder(self, after: str) -> None:
-        # 日本語の文では、場所の直後に句読点や閉じ括弧が来る そこで伏せ損ねると名前が残る
+    @pytest.mark.parametrize("after", ["）", "」", "』", "】", "〕", "　"])
+    def test_a_closing_bracket_ends_the_folder(self, after: str) -> None:
+        # 文の中で場所を括弧で囲むと、場所の直後に閉じ括弧が来る そこで伏せ損ねると名前が残る
         text = mask_user_folders(
             rf"（C:\Users\kagemori{after}ほか", [(r"C:\Users\kagemori", "%USERPROFILE%")]
         )
         assert text == f"（%USERPROFILE%{after}ほか"
+
+    @pytest.mark.parametrize("comma", ["、", "，", "．"])
+    def test_a_name_that_goes_on_after_a_comma_is_left_whole(self, comma: str) -> None:
+        # 読点などは名前の途中に来うる 終わりと認めると、別の人の場所の頭だけを伏せ、
+        # 残りの「太郎」から名前が読める 本人の場所ではないので丸ごと残す
+        written = rf"C:\Users\山田{comma}太郎\a"
+        text = mask_user_folders(written, [(r"C:\Users\山田", "%USERPROFILE%")])
+        assert text == written
 
     def test_a_middle_dot_is_part_of_the_name(self) -> None:
         # カタカナの名前では「・」の後ろに名前の続きが来る 頭だけを伏せると残りが読める
@@ -282,7 +291,7 @@ class TestCompatibilityCopy:
         text = report_text(report, 1, user_folders(tmp_path), roots=[outside])
         assert "kagemori" not in text.casefold()
         assert r"ゆらゆら.anm2: 開けない: [Errno 13] <探索先1>\ゆらゆら.anm2" in text
-        assert "探索先: <探索先1>" in text
+        assert "探索先:\n  <探索先1>" in text
 
     def test_a_script_folder_under_the_settings_keeps_its_name(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -293,23 +302,23 @@ class TestCompatibilityCopy:
         monkeypatch.setenv("APPDATA", r"C:\Users\kagemori\AppData\Roaming")
         inside = r"C:\Users\kagemori\AppData\Roaming\Sashimono\scripts"
         text = report_text(CompatibilityReport(), 0, user_folders(tmp_path), roots=[inside])
-        assert r"探索先: %APPDATA%\Sashimono\scripts" in text
+        assert "探索先:\n  %APPDATA%\\Sashimono\\scripts" in text
         assert "<探索先" not in text
 
     def test_the_dialog_tells_which_marker_is_which(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # 貼った文の印が何を指すかは、聞かれたときに本人が画面で答えられるようにする
         _clear_folder_variables(monkeypatch)
         outside = Path(r"D:\kagemori\aviutl\Script")
-        before = script_catalog()
-        set_script_catalog(ScriptCatalog(roots=(outside,)))
+        # 前の一覧は ``_catalog`` から直に取る ``script_catalog()`` で取ると、一覧が
+        # まだ無いときに既定の探索先（本物の AviUtl2 の Script など）を走査して登録する
+        monkeypatch.setattr(catalog_module, "_catalog", ScriptCatalog(roots=(outside,)))
         dialog = CompatibilityDialog(CompatibilityReport())
         try:
-            assert f"<探索先1> {outside}" in dialog._scripts.text()
+            assert f"  <探索先1> {outside}" in dialog._scripts.text().splitlines()
             dialog.copy_to_clipboard()
             assert "kagemori" not in QApplication.clipboard().text().casefold()
         finally:
             dialog.close()
-            set_script_catalog(before)
 
     def test_the_button_puts_the_text_on_the_clipboard(self, qt_application: QApplication) -> None:
         # 壊れると、一覧を 1 行ずつしか選べず、報告に貼れない

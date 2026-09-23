@@ -35,6 +35,7 @@ __all__ = [
     "CompatibilityDialog",
     "mask_user_folders",
     "report_text",
+    "root_lines",
     "root_markers",
     "short_path",
     "user_folders",
@@ -72,13 +73,13 @@ _SEPARATORS = r"[\\/]+"
 #: 伏せた場所のすぐ後に来てよい文字（区切り・空白・引用符・括弧など）
 #: これ以外が続くときは名前の途中なので伏せない ``C:\Users\kage`` を伏せるときに
 #: ``C:\Users\kagemori`` の頭だけを伏せると、残りから名前が読める
-#: 日本語の文で場所の直後に来る区切り（読点・句点・全角のカンマとピリオド・閉じ括弧）も
-#: 終わりとみなす 探索先を ``、`` でつないで書くので、認めないと最後以外の探索先が
-#: どれも伏せられない ``・`` は足さない カタカナの名前（``ジョン・スミス``）では名前の続きに来る
-#: 全角の文字は番号で書く 句点を字のまま書くと、文章の句点の検査が文と取り違える
-_JAPANESE_ENDS = "".join(
-    chr(code) for code in (0x3001, 0x3002, 0xFF0C, 0xFF0E, 0xFF09, 0x300D, 0x300F, 0x3011, 0x3015)
-)
+#: 全角の閉じ括弧（``）`` ``」`` ``』`` ``】`` ``〕``）も終わりとみなす 文の中で場所を括弧で
+#: 囲む書き方はありうるが、フォルダの名前がそれで続くことはまず無い
+#: 読点・句点・全角のカンマとピリオドは認めない 名前の途中に来うる（``山田、太郎``）ので、
+#: 認めると別の人の場所の頭だけを伏せ、残りから名前が読める こちらが組む文では、
+#: 場所の直後にそれらを置かない（探索先は 1 行に 1 つ）ことで釣り合いを取る
+#: ``・`` も同じ理由で足さない カタカナの名前（``ジョン・スミス``）では名前の続きに来る
+_JAPANESE_ENDS = "）」』】〕"
 _FOLDER_END = r"(?![^\\/\s\"'<>|:;,)\]}" + _JAPANESE_ENDS + r"])"
 
 
@@ -180,6 +181,17 @@ def root_markers(
     return markers
 
 
+def root_lines(labels: Sequence[str]) -> list[str]:
+    """探索先の並びの行 1 行に 1 つ
+
+    読点でつなぐと、場所の直後に読点が来る 伏せる側は読点を場所の終わりと認めない
+    （名前の途中に来うる）ので、つないだ探索先は最後の 1 つしか伏せられない
+    """
+    if not labels:
+        return ["探索先: （設定なし）"]
+    return ["探索先:", *(f"  {label}" for label in labels)]
+
+
 def report_text(
     report: CompatibilityReport,
     scripts: int,
@@ -200,7 +212,7 @@ def report_text(
         f"Sashimono Edit {__version__} 互換性レポート",
         report.summary(),
         f"読み込み済みのスクリプト {scripts} 本",
-        f"探索先: {'、'.join(str(root) for root in roots) or '（設定なし）'}",
+        *root_lines([str(root) for root in roots]),
         *report.lines(),
     ]
     return mask_user_folders("\n".join(lines), hidden)
@@ -259,12 +271,12 @@ class CompatibilityDialog(QDialog):
         # 貼る文で印に置き換える探索先は、画面では印を添えて出す 報告を受けた側が
         # 「<探索先1> が何か」を聞いたときに、本人が画面で答えられるように
         markers = dict(root_markers(catalog.roots, user_folders()))
-        roots = "、".join(
+        labels = [
             f"{markers[str(root)]} {root}" if str(root) in markers else str(root)
             for root in catalog.roots
-        )
+        ]
         self._scripts.setText(
-            f"スクリプト {len(entries)} 本を読み込み済み\n探索先: {roots or '（設定なし）'}"
+            "\n".join([f"スクリプト {len(entries)} 本を読み込み済み", *root_lines(labels)])
         )
 
         self._list.clear()
