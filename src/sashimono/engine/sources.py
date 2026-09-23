@@ -588,22 +588,40 @@ def _aviutl_lines(
 
 
 def _revealed_lines(lines: list[TaggedLine], values: dict[str, object]) -> list[TaggedLine]:
-    """制御文字を読んだ後の文字送り 数え方は :func:`_revealed` と同じ（改行は数えない）"""
+    """制御文字を読んだ後の文字送り 数え方は :func:`_revealed` と同じ（改行は数えない）
+
+    出た文字だけで行を組む まだ出ていない後ろの行は行の高さにも枠にも数えない
+    これは制御文字を読む前の組み方（:func:`_revealed` で切った本文を行に分けて組んでいた）を
+    そのまま写した物で、AviUtl2 で測った決まりではない 文字送りは Sashimono だけの設定で
+    （AviUtl の表示速度は読み込んでいない）、合わせる相手の振る舞いが無い 根拠無しに変えると、
+    前の版で作った文字送りの字幕の位置が動く
+
+    切れ目の扱いも :func:`_revealed` と同じにする 改行はいつでも通し、出す文字が尽きた後に
+    次の字に当たった所で止める 行末でちょうど尽きると、次の行が空の行として 1 つ残る
+    """
     ratio = float(values.get("reveal", 100.0)) / 100.0  # type: ignore[arg-type]
     if ratio >= 1.0:
         return lines
+    if ratio <= 0.0:
+        return []
     total = sum(len(line.text) for line in lines)
-    visible = round(total * ratio) if ratio > 0.0 else 0
+    visible = round(total * ratio)
     shown: list[TaggedLine] = []
     for line in lines:
         kept = TaggedLine(end=line.end)
+        shown.append(kept)
         for run in line.runs:
+            if not run.text:
+                continue
             if visible <= 0:
-                break
+                # 次の字に当たった所で止める 空の行になったときは、止まった所の見た目の高さ
+                kept.end = run.style
+                return shown
             piece = run.text[:visible]
             visible -= len(piece)
             kept.runs.append(TextRun(piece, run.style))
-        shown.append(kept)
+            if len(piece) < len(run.text):
+                return shown
     return shown
 
 

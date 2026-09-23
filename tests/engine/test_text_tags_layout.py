@@ -170,3 +170,28 @@ def test_reveal_counts_the_letters_not_the_tags() -> None:
     # 文字送り 50% で 4 文字のうち 2 文字 タグを文字として数えると 0 文字か途中のタグが出る
     half, _ = draw("<@メイリオ>HH<@>HH", reveal=AnimatedValue(50.0))
     assert len(glyph_bottoms(half)) == 2
+
+
+class TestRevealLayout:
+    """文字送りの途中は、出た文字だけで組む（制御文字を読む前の組み方と同じ）
+
+    AviUtl2 で測った決まりではない 文字送りは Sashimono だけの設定で、前の版の組み方を
+    変えないための試験 まだ出ていない行まで高さに数えると、中央揃えの字が出る途中で
+    前の版より上へずれる
+    """
+
+    def test_trailing_unrevealed_lines_are_not_laid_out(self) -> None:
+        body = "<@メイリオ>HH<@>\nHH\n<@ＭＳ ゴシック>HH<@>"
+        # 6 文字のうち 3 文字 1 行目と 2 行目の 1 文字だけが出る
+        half, half_frame = draw(body, reveal=AnimatedValue(50.0))
+        shorter, shorter_frame = draw("<@メイリオ>HH<@>\nH")
+        assert half_frame == pytest.approx(shorter_frame, abs=0.01)
+        assert np.array_equal(half[..., 3] > 128, shorter[..., 3] > 128)
+
+    def test_an_exact_line_end_keeps_one_empty_line_like_before(self) -> None:
+        # 前の組み方は、行末でちょうど尽きると次の行を空の行として 1 つ残した
+        # 残す行の高さは止まった所の見た目（ここではＭＳ ゴシック）
+        body = "HH\n<@ＭＳ ゴシック>HH<@>\nHH"
+        _, exact = draw(body, reveal=AnimatedValue(100.0 * 2 / 6))
+        _, two_lines = draw("HH\n<@ＭＳ ゴシック> <@>")
+        assert exact[3] - exact[1] == pytest.approx(two_lines[3] - two_lines[1], abs=0.01)

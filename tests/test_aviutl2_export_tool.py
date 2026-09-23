@@ -69,7 +69,11 @@ class TestFrames:
     def test_the_real_alias_with_intermediate_points_is_counted_to_its_end(
         self, tool: ModuleType
     ) -> None:
+        # 見本は手元にだけある（tests/fixtures/aviutl は .object を入れない） 無い機械では
+        # 上の試験が同じ並びを受け持つ
         probe = ROOT / "tests" / "fixtures" / "aviutl" / "probes" / "kumiki_motion_probe.object"
+        if not probe.is_file():
+            pytest.skip("AviUtl2 に作らせた中間点の見本が手元に無い")
         header = probe.read_text(encoding="utf-8-sig").replace("[Object]", "[0]", 1)
         assert tool.project_frames(header) == 424
 
