@@ -1,0 +1,387 @@
+"""AviUtl2 と比べる道具（tools/aviutl_compare.py）の、合成フォントの下ごしらえ
+
+合成フォント（``comfont.aux2``）は設定（``compositefont\\profiles.json``）が無いと
+本文をそのまま返し、書体の組み替えが起きない 道具は見本の設定を作業フォルダへ書き、
+AviUtl2 の置き場へ写す手順を出す **利用者の設定へは書きに行かない**
+
+実物のプラグインを使う試験は、入っている機械でだけ走る（CI では飛ぶ）
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
+from typing import Any
+
+import numpy as np
+import pytest
+
+from sashimono.compat.aviutl import plugin
+
+ROOT = Path(__file__).resolve().parent.parent
+
+#: 実物の置き場 利用者の AviUtl2 にしか無い
+_REAL_PLUGIN = Path(os.environ.get("PROGRAMDATA", "")) / "aviutl2" / "Plugin" / "comfont.aux2"
+
+#: 実物（comfont.aux2 v0.2.0）が受け付けた 1 文字種ぶんの項目
+#: 臨時の置き場に置いたとき ``resolve("あ", "default")`` が書いた書体を返した
+_ACCEPTED_ADJUSTMENT = {
+    "font_family",
+    "fallback_font_families",
+    "size_ratio",
+    "baseline_shift_em",
+    "tracking_adjust_em",
+    "metric_unit",
+    "size_px",
+    "baseline_shift_px",
+    "tracking_adjust_px",
+    "vertical_scale_ratio",
+    "horizontal_scale_ratio",
+}
+_ACCEPTED_KINDS = ("western", "hiragana", "katakana", "kanji", "digit", "symbol", "other")
+
+
+@pytest.fixture(scope="module")
+def tool() -> ModuleType:
+    spec = importlib.util.spec_from_file_location(
+        "aviutl_compare", ROOT / "tools" / "aviutl_compare.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _profile(document: dict[str, Any]) -> dict[str, Any]:
+    profiles = document["profiles"]
+    assert isinstance(profiles, list) and len(profiles) == 1
+    profile: dict[str, Any] = profiles[0]
+    return profile
+
+
+class TestSampleProfile:
+    def test_has_the_fields_the_real_plugin_accepted(self, tool: ModuleType) -> None:
+        """項目が欠けたり名前が違ったりすると、実物は設定を読まずに本文をそのまま返し、
+        組み替えの起きない絵を AviUtl2 の絵と比べることになる
+        """
+        document = tool.composite_profiles()
+        assert document["schema_version"] == 1
+        profile = _profile(document)
+        expected = {"name", *_ACCEPTED_KINDS, *(f"{kind}_fallbacks" for kind in _ACCEPTED_KINDS)}
+        assert set(profile) == expected
+        for kind in _ACCEPTED_KINDS:
+            assert set(profile[kind]) == _ACCEPTED_ADJUSTMENT
+
+    def test_uses_the_profile_the_aliases_ask_for(self, tool: ModuleType) -> None:
+        """配布エイリアスは ``profile="default"`` を引く 名前が違うと組み替えが起きない"""
+        assert _profile(tool.composite_profiles())["name"] == "default"
+
+    def test_neighbouring_kinds_get_different_fonts(self, tool: ModuleType) -> None:
+        """同じ書体が並ぶと、組み替えが起きたかどうかを絵で見分けられない"""
+        profile = _profile(tool.composite_profiles())
+        japanese = {profile[kind]["font_family"] for kind in ("hiragana", "katakana", "kanji")}
+        assert len(japanese) == 3
+        assert profile["western"]["font_family"] not in japanese
+
+    def test_avoids_the_default_font(self, tool: ModuleType) -> None:
+        """Sashimono の既定（Yu Gothic UI）を混ぜると、組み替えずに既定で描いた絵と
+        区別が付かない
+        """
+        profile = _profile(tool.composite_profiles())
+        assert all(profile[kind]["font_family"] != "Yu Gothic UI" for kind in _ACCEPTED_KINDS)
+
+    def test_only_the_font_changes(self, tool: ModuleType) -> None:
+        """大きさや位置まで動かすと、絵の違いが書体から来たのか見分けられない"""
+        profile = _profile(tool.composite_profiles())
+        for kind in _ACCEPTED_KINDS:
+            adjustment = profile[kind]
+            assert adjustment["size_ratio"] == 1.0
+            assert adjustment["baseline_shift_em"] == 0.0
+            assert adjustment["tracking_adjust_em"] == 0.0
+
+    def test_missing_fonts_are_named(
+        self, tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """無い書体を指すと、AviUtl2 も Sashimono も既定の書体で描き、組み替えが見えない
+
+        その PC に書体が入っているかは機械ごとに違う（CI の英語版 Windows には
+        游明朝もメイリオも無い） 入っているかそのものではなく、足りない物を
+        言い当てられるかを偽の Fonts フォルダで確かめる 言い当てられれば、
+        `profile` がその場で警告を出す
+        """
+        fonts = tmp_path / "Fonts"
+        fonts.mkdir()
+        (_key, first, file), *rest = tool.COMPOSITE_FONTS
+        (fonts / file).write_bytes(b"")
+        monkeypatch.setenv("WINDIR", str(tmp_path))
+        assert tool.missing_fonts() == [family for _k, family, _f in rest]
+        assert first not in tool.missing_fonts()
+
+
+class TestProfileCommand:
+    def _run(self, tool: ModuleType, work: Path) -> None:
+        assert tool.command_profile(SimpleNamespace(work=work)) == 0
+
+    def test_writes_only_into_the_work_folder(
+        self, tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """利用者の置き場へ書くと、合成フォントのエディターで作った設定を黙って潰す"""
+        program_data = tmp_path / "ProgramData"
+        (program_data / "aviutl2").mkdir(parents=True)
+        monkeypatch.setenv("PROGRAMDATA", str(program_data))
+        work = tmp_path / "work"
+        self._run(tool, work)
+        sample = work / "appdata" / "compositefont" / "profiles.json"
+        assert json.loads(sample.read_text(encoding="utf-8")) == tool.composite_profiles()
+        assert not (program_data / "aviutl2" / "compositefont").exists()
+
+    def test_an_existing_user_setting_is_left_alone(
+        self, tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """控えも取らずに上書きすると、本人の設定が戻らなくなる"""
+        program_data = tmp_path / "ProgramData"
+        target = program_data / "aviutl2" / "compositefont" / "profiles.json"
+        target.parent.mkdir(parents=True)
+        target.write_text('{"本人": 1}', encoding="utf-8")
+        monkeypatch.setenv("PROGRAMDATA", str(program_data))
+        self._run(tool, tmp_path / "work")
+        assert target.read_text(encoding="utf-8") == '{"本人": 1}'
+        assert not tool.backup_of(target).exists()
+
+    def test_tells_where_to_put_it(
+        self,
+        tool: ModuleType,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """置き場を示さないと、本人は AviUtl2 のどこへ置けば効くのか分からない"""
+        program_data = tmp_path / "ProgramData"
+        monkeypatch.setenv("PROGRAMDATA", str(program_data))
+        self._run(tool, tmp_path / "work")
+        out = capsys.readouterr().out
+        target = program_data / "aviutl2" / "compositefont" / "profiles.json"
+        assert str(target) in out
+        # 元の設定が無いのに控えを取らせると、無いファイルを写す命令で止まる
+        assert f'Copy-Item "{target}"' not in out
+
+    def test_asks_for_a_backup_when_one_exists(self, tool: ModuleType, tmp_path: Path) -> None:
+        """既にある設定へそのまま写させると、本人の組み合わせが消える"""
+        target = tmp_path / "compositefont" / "profiles.json"
+        target.parent.mkdir()
+        target.write_text("{}", encoding="utf-8")
+        sample = tmp_path / "見本.json"
+        lines = tool.profile_guide(sample, target)
+        assert any("控え" in line for line in lines)
+        backup = next(i for i, line in enumerate(lines) if str(tool.backup_of(target)) in line)
+        copy = next(
+            i for i, line in enumerate(lines) if f"Copy-Item -LiteralPath '{sample}'" in line
+        )
+        # 控えを取る行が、写す行より先に来ること 後だと上書きした物の控えになる
+        assert backup < copy
+
+
+#: 手順のうち、本人がそのまま打つ命令の行
+_COMMANDS = ("Copy-Item", "New-Item", "Move-Item", "Remove-Item")
+
+
+def _follow(lines: list[str], part: str) -> None:
+    """手順の命令を、書かれた順に PowerShell で打つ ``part`` は置く側か戻す側か
+
+    文言を見るだけでは、打てない命令や順番の誤りを見逃す 実際に打って結果を見る
+    """
+    split = next(i for i, line in enumerate(lines) if line.startswith("比べ終わったら"))
+    chosen = lines[:split] if part == "place" else lines[split:]
+    commands = [line.strip() for line in chosen if line.strip().startswith(_COMMANDS)]
+    if not commands:
+        return
+    subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", "; ".join(commands)],
+        check=True,
+        capture_output=True,
+        timeout=60,
+    )
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="手順は PowerShell の命令で出す")
+class TestFollowingTheGuide:
+    """出た手順をそのままなぞって、置いて戻せるか"""
+
+    @pytest.fixture
+    def sample(self, tmp_path: Path) -> Path:
+        path = tmp_path / "work" / "profiles.json"
+        path.parent.mkdir()
+        path.write_text('{"見本": 1}', encoding="utf-8")
+        return path
+
+    @pytest.fixture
+    def target(self, tmp_path: Path) -> Path:
+        return tmp_path / "aviutl2" / "compositefont" / "profiles.json"
+
+    def test_a_folder_with_brackets_quotes_and_dollars_still_works(
+        self, tool: ModuleType, tmp_path: Path
+    ) -> None:
+        """二重引用符と ``-Path`` では、``[`` ``]`` がワイルドカード、``$`` が変数として読まれ、
+        見本も控えも見つからないまま置く手順も戻す手順も失敗する
+        """
+        odd = tmp_path / "作業[2] $HOME 'x'"
+        sample = odd / "work" / "profiles.json"
+        sample.parent.mkdir(parents=True)
+        sample.write_text('{"見本": 1}', encoding="utf-8")
+        target = odd / "aviutl2" / "compositefont" / "profiles.json"
+        target.parent.mkdir(parents=True)
+        target.write_text('{"元": 1}', encoding="utf-8")
+        lines = tool.profile_guide(sample, target)
+        _follow(lines, "place")
+        assert target.read_text(encoding="utf-8") == '{"見本": 1}'
+        _follow(lines, "restore")
+        assert target.read_text(encoding="utf-8") == '{"元": 1}'
+
+    def test_restoring_brings_back_the_original(
+        self, tool: ModuleType, sample: Path, target: Path
+    ) -> None:
+        """戻す手順が無いと、比べ終わったあとも見本の組み替えが普段の AviUtl2 に残る"""
+        target.parent.mkdir(parents=True)
+        target.write_text('{"本人": 1}', encoding="utf-8")
+        lines = tool.profile_guide(sample, target)
+        _follow(lines, "place")
+        assert target.read_text(encoding="utf-8") == '{"見本": 1}'
+        _follow(lines, "restore")
+        assert target.read_text(encoding="utf-8") == '{"本人": 1}'
+        assert not tool.backup_of(target).exists()
+
+    def test_restoring_removes_the_sample_when_there_was_nothing(
+        self, tool: ModuleType, sample: Path, target: Path
+    ) -> None:
+        """元が無かったのに見本を残すと、置く前に無かった組み替えが居座る"""
+        lines = tool.profile_guide(sample, target)
+        _follow(lines, "place")
+        assert target.read_text(encoding="utf-8") == '{"見本": 1}'
+        _follow(lines, "restore")
+        assert not target.exists()
+
+    def test_following_it_twice_keeps_the_original_backup(
+        self, tool: ModuleType, sample: Path, target: Path
+    ) -> None:
+        """もう一度なぞると、置いたままの見本を「元の設定」として控えに上書きし、
+        本人の設定へ戻せなくなる
+        """
+        target.parent.mkdir(parents=True)
+        target.write_text('{"本人": 1}', encoding="utf-8")
+        _follow(tool.profile_guide(sample, target), "place")
+        again = tool.profile_guide(sample, target)
+        assert any("見本が置かれたまま" in line for line in again)
+        _follow(again, "place")
+        assert tool.backup_of(target).read_text(encoding="utf-8") == '{"本人": 1}'
+        _follow(again, "restore")
+        assert target.read_text(encoding="utf-8") == '{"本人": 1}'
+
+    def test_following_it_twice_without_an_original_still_cleans_up(
+        self, tool: ModuleType, sample: Path, target: Path
+    ) -> None:
+        """2 度目の手順が控えを戻そうとすると、無い控えを探して止まり見本が残る"""
+        _follow(tool.profile_guide(sample, target), "place")
+        again = tool.profile_guide(sample, target)
+        _follow(again, "place")
+        _follow(again, "restore")
+        assert not target.exists()
+
+
+def test_previews_of_aliases_with_the_same_name_do_not_overwrite(
+    tool: ModuleType, tmp_path: Path
+) -> None:
+    """名前だけで絵を書くと、別のフォルダの同じ名前のエイリアスが先の絵を上書きし、
+    描いたはずの 1 本が黙って消える
+    """
+    alias = "[Object]\nframe=0,29\n[Object.0]\neffect.name=図形\n"
+    files = []
+    for folder in ("甲", "乙"):
+        path = tmp_path / folder / "同じ名前.object"
+        path.parent.mkdir()
+        path.write_text(alias, encoding="utf-8")
+        files.append(path)
+    cases, _ = tool.build_cases(files)
+    assert len(cases) == 2
+    assert len({tool.preview_name(case) for case in cases}) == 2
+
+
+class TestAppDataPath:
+    @pytest.fixture(autouse=True)
+    def reset(self) -> Any:
+        yield
+        plugin.set_app_data_path(None)
+
+    def test_override_reaches_the_plugin(self, tmp_path: Path) -> None:
+        """差し替えが届かないと、見本を試すには利用者の設定を書き換えるしかなくなる"""
+        plugin.set_app_data_path(tmp_path)
+        assert plugin._config().app_data_path == str(tmp_path)
+
+    def test_without_override_the_users_folder_is_used(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """既定が変わると、利用者が AviUtl2 で作った書体の組み合わせが見えなくなる"""
+        monkeypatch.setenv("PROGRAMDATA", str(tmp_path))
+        plugin.set_app_data_path(tmp_path / "一時")
+        plugin.set_app_data_path(None)
+        assert plugin._config().app_data_path == str(tmp_path / "aviutl2")
+
+
+@pytest.mark.skipif(not _REAL_PLUGIN.is_file(), reason="comfont.aux2 が入っていない")
+def test_the_real_plugin_composes_with_the_sample(tool: ModuleType, tmp_path: Path) -> None:
+    """見本の設定を実物が読まないと、組み替えの無い絵を AviUtl2 と比べることになる
+
+    プラグインは読んだときの置き場を持ち続けるので、別のプロセスで読ませる
+    同じプロセスで先に読まれていると、見本の置き場が届かない
+    """
+    tool.command_profile(SimpleNamespace(work=tmp_path))
+    script = (
+        "import sys, json\n"
+        "from pathlib import Path\n"
+        "from sashimono.compat.aviutl import plugin\n"
+        "plugin.set_app_data_path(Path(sys.argv[1]))\n"
+        "module = plugin.script_modules(roots=(Path(sys.argv[2]),))['compositefont']\n"
+        "text = module.call('decorate_layout', ['あア亜A1', 'default', 64.0, 0.0, ''])\n"
+        "print(json.dumps(text, ensure_ascii=False))\n"
+    )
+    environment = dict(os.environ, PYTHONPATH=str(ROOT / "src"), PYTHONIOENCODING="utf-8")
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path / "appdata"), str(_REAL_PLUGIN.parent)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=environment,
+        timeout=60,
+        check=True,
+    )
+    decorated = json.loads(result.stdout.strip().splitlines()[-1])[0]
+    for _kind, family, _file in tool.COMPOSITE_FONTS[:5]:
+        assert f"<@{family}>" in decorated
+
+
+class TestSavingPictures:
+    def test_a_failed_save_is_reported(self, tool: ModuleType, tmp_path: Path) -> None:
+        """Qt は保存に失敗しても例外を投げない 見ないと「書いた」と出したのに絵が無い"""
+        image = np.zeros((4, 4, 3), dtype=np.uint8)
+        assert tool._save_png(image, tmp_path / "書ける.png") is True
+        assert tool._save_png(image, tmp_path / "無いフォルダ" / "書けない.png") is False
+
+    def test_a_long_alias_name_still_fits(self, tool: ModuleType) -> None:
+        """番号と拡張子を足すとファイル名の上限を超え、絵が作られない"""
+        case = SimpleNamespace(start=12, name="長" * 300)
+        name = tool.preview_name(case)
+        assert len(name) <= 255
+        assert name.startswith("000012_")
+
+    def test_a_name_of_wide_characters_still_fits(self, tool: ModuleType) -> None:
+        """絵文字は UTF-16 で 2 単位 文字数で切ると NTFS の上限を超えて絵が作られない"""
+        case = SimpleNamespace(start=12, name="😀" * 200)
+        name = tool.preview_name(case)
+        assert len(name.encode("utf-16-le")) // 2 <= 255
+        # 文字の途中（サロゲートの片割れ）で切ると、名前として書けない
+        name.encode("utf-8")
