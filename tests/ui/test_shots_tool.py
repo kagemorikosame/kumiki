@@ -21,7 +21,7 @@ from PySide6.QtGui import QColor, QImage
 from PySide6.QtWidgets import QApplication, QTreeWidget, QWidget
 
 from sashimono.compat.catalog import TemplateCatalog
-from tests.media_fixtures import ffmpeg_available
+from tests.media_fixtures import libx264_available
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -177,8 +177,8 @@ class TestTakingTheEditorShot:
         ので、プレビューの占める範囲だけを切って見る
         """
         del qt_application
-        if not ffmpeg_available():
-            pytest.skip("ffmpeg が PATH に無いので見本の素材を作れない")
+        if not libx264_available():
+            pytest.skip("libx264 の入った ffmpeg が無いので見本の素材を作れない")
 
         context = shots.Context(
             media=shots.make_sample_media(tmp_path / "media"),
