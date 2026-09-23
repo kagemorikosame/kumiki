@@ -645,39 +645,39 @@ def test_a_variable_rate_video_holds_its_very_last_picture(tmp_path: Path) -> No
     assert Fraction(2) - Fraction(1, 60) <= picture.hold_at < Fraction(2)
 
 
-def test_a_late_starting_video_is_held_at_its_own_end(tmp_path: Path) -> None:
-    """頭が 0 より後ろの素材は、PTS の数え方の映像の終わりで止める（#120 のレビュー）
+def test_a_late_starting_video_is_held_at_its_own_end(
+    sample_av: SampleMedia, tmp_path: Path
+) -> None:
+    """頭が 5 秒の素材（2 秒）は、頭から数えた映像の終わり（2 秒）で止める（Issue #123）
 
-    素材の時刻は PTS そのまま（頭 5 秒・映像の終わり 7 秒） コンテナの長さ（2 秒）は
-    頭を含まない 小さい方を取ると 2 秒の手前で止まり、クリップの残りが途中の絵のまま
+    素材の時刻は頭から数える（``ContentOffset`` も頭から） PTS そのまま（7 秒）で
+    止めると、デコーダの映像の終わり（2 秒）を越えた所で止めることになり、止めた所から
+    何も映らない
     """
-    movie_file = tmp_path / "映像.mp4"
-    movie_file.write_bytes(b"")
-    probe = _probed_as(Fraction(2), Fraction(7), Fraction(1, 15360))
+    late = make_delayed(tmp_path, "late.mp4", sample_av.path, 5.0)
     project = put(
-        [_held_video(movie_file, Clip(timeline_start=0, duration=270))], Project.create(), probe
+        [_held_video(late, Clip(timeline_start=0, duration=270))], Project.create(), probe_media
     )
 
     (picture,) = clips_of(project, TrackKind.VIDEO)
-    assert picture.hold_at == Fraction(7) - Fraction(1, 15360)
+    assert picture.hold_at == Fraction(2) - Fraction(1, 15360)
 
 
-def test_a_late_starting_video_registered_before_the_end_was_kept_is_opened_again(
-    tmp_path: Path,
-) -> None:
+def test_a_video_registered_before_the_end_was_kept_is_opened_again(tmp_path: Path) -> None:
     """道の終わりを持たない登録済みの素材は、開き直して終わりを取る（#120 のレビュー）
 
-    前の版で登録した素材は道の終わりを持たない コンテナの長さ（2 秒）で止めると、
-    頭 5 秒の素材では止める時刻が頭より前になり、デコーダが何も返さず動画全体が映らない
+    前の版で登録した素材は道の終わりを持たない（版 4 のファイルは読むときに捨てる #123）
+    音の方が長い素材（映像 2 秒・音 3 秒）をコンテナの長さで止めると、映像の最後の
+    フレームより後ろを読みに行き、止めた後もデコーダが毎フレーム動く
     素材はプロジェクトのものを使い続ける 増やすと素材一覧に同じ名前が並ぶ
     """
     movie_file = tmp_path / "映像.mp4"
     movie_file.write_bytes(b"")
-    old = movie(movie_file)
+    old = replace(movie(movie_file), duration=Fraction(3))
     project = apply(Project.create(), [AddMedia(old)])
-    probe = _probed_as(Fraction(2), Fraction(7), Fraction(1, 15360))
+    probe = _probed_as(Fraction(3), Fraction(2), Fraction(1, 15360))
     project = put(
-        [_held_video(movie_file, Clip(timeline_start=0, duration=270, source_in=Fraction(5)))],
+        [_held_video(movie_file, Clip(timeline_start=0, duration=90, source_in=Fraction(1, 2)))],
         project,
         probe,
     )
@@ -685,8 +685,34 @@ def test_a_late_starting_video_registered_before_the_end_was_kept_is_opened_agai
     (picture,) = clips_of(project, TrackKind.VIDEO)
     # 引く刻みは登録済みの素材の time_base（ここではフレーム 1 つ分）
     assert picture.hold_at is not None
-    assert Fraction(7) - Fraction(1, 30) <= picture.hold_at < Fraction(7)
+    assert Fraction(2) - Fraction(1, 30) <= picture.hold_at < Fraction(2)
     assert picture.media_id == old.id
+    assert project.media == (old,)
+
+
+def test_a_registered_video_takes_the_length_counted_from_its_head(tmp_path: Path) -> None:
+    """道の終わりが分からない素材は、開き直した長さで止める時刻を決める（#124 のレビュー）
+
+    版 4 までに覚えた長さはコンテナの頭から数えてあり、映像より早く始まる音の前置きを
+    含む（ここでは 3 秒） 今の数え方の長さ（2 秒）に替えないと、2.5 秒の枠が映像の
+    終わりを越えるのに止まらず、2 秒から先が何も映らない
+    """
+    movie_file = tmp_path / "映像.mp4"
+    movie_file.write_bytes(b"")
+    old = replace(movie(movie_file), duration=Fraction(3))
+    project = apply(Project.create(), [AddMedia(old)])
+
+    class _Headless(FakeProbe):
+        def __call__(self, path: Path) -> MediaItem | None:
+            return movie(path)
+
+    project = put(
+        [_held_video(movie_file, Clip(timeline_start=0, duration=75))], project, _Headless()
+    )
+
+    (picture,) = clips_of(project, TrackKind.VIDEO)
+    assert picture.hold_at is not None
+    assert Fraction(2) - Fraction(1, 30) <= picture.hold_at < Fraction(2)
     assert project.media == (old,)
 
 
@@ -706,7 +732,8 @@ def test_a_late_starting_file_stops_on_its_last_frame(
 ) -> None:
     """頭が 5 秒の実素材（2 秒・60 フレーム）で、止めた時刻にデコーダが最後のフレームを出す
 
-    止める時刻が映像の途中なら途中の絵、デコーダが頭の時刻を数えないなら何も映らない
+    止める時刻が映像の途中なら途中の絵、止める時刻とデコーダで数え方が違えば何も映らない
+    どちらも素材の頭から数える（Issue #123）
     """
     late = make_delayed(tmp_path, "late.mp4", sample_av.path, 5.0)
     project = put(
@@ -717,8 +744,8 @@ def test_a_late_starting_file_stops_on_its_last_frame(
     assert picture.hold_at is not None
     with VideoDecoder(late) as decoder:
         held = decoder.frame_at(picture.hold_at)
-        last = decoder.frame_at(Fraction(5) + Fraction(59, 30))
-        before = decoder.frame_at(Fraction(5) + Fraction(58, 30))
+        last = decoder.frame_at(Fraction(59, 30))
+        before = decoder.frame_at(Fraction(58, 30))
     assert held is not None
     assert last is not None
     assert before is not None

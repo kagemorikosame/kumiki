@@ -16,7 +16,9 @@ NAMESPACE = "waveform"
 SUFFIX = ".peaks.npz"
 
 #: 保存形式の版 段階の作り方を変えたら上げる 読めない版は捨てて作り直す
-FORMAT_VERSION = 1
+#: 2 で素材の時刻を頭から数えるようにした（#123） 頭が 0 より後ろの素材は、それまで
+#: 平らな（無音の）波形になっていた 上げないとそれが残り、ジェットカットが素材全体を無音と見る
+FORMAT_VERSION = 2
 
 
 def waveform_key(path: Path, sample_rate: int, channels: int) -> str:

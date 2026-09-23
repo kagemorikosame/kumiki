@@ -364,18 +364,23 @@ def _with_video_end(media: MediaItem, fresh: MediaItem | None) -> MediaItem:
     """登録済みの素材へ、開き直して取った映像の道の終わりを添える
 
     絵を止める時刻（:func:`_held_at_end`）を決めるためだけに使う 無いままだと
-    コンテナの長さで見るしかなく、頭が 0 より後ろの素材（頭 5 秒・長さ 2 秒）では
-    止める時刻が頭より前になり、デコーダが何も返さず動画全体が映らない
+    コンテナの長さで見るしかなく、音の方が長い素材（映像 2 秒・音 3 秒）では止める時刻が
+    映像の最後のフレームより後ろになり、止めた後もデコーダが毎フレーム終わり付近を読み直す
     素材の ``id`` はそのまま残すので、クリップは登録済みの素材に結ばれる
     プロジェクトの素材は書き換えない 書き換えるなら元に戻せるコマンドを通す必要があり、
     テンプレートを置くだけで素材一覧が変わるのは本人の予想を外れる
-    開けないときや、開いても道の終わりが分からないときは元のまま使う
+    長さも開き直した物に替える 版 4 までに覚えた長さはコンテナの頭から数えてあり、
+    映像より早く始まる音の前置きを含む 道の終わりが分からない素材は止める時刻を長さで
+    決めるので、古い長さのままだと映像の終わりより後ろを基準にして、止めるべき
+    クリップを止めない
+    開けないときは元のまま使う
     """
-    if fresh is None or not fresh.video_streams or fresh.video_streams[0].end_time is None:
+    if fresh is None:
         return media
+    end = fresh.video_streams[0].end_time if fresh.video_streams else None
     first, *rest = media.video_streams
-    end = fresh.video_streams[0].end_time
-    return replace(media, video_streams=(replace(first, end_time=end), *rest))
+    duration = fresh.duration if fresh.duration > 0 else media.duration
+    return replace(media, duration=duration, video_streams=(replace(first, end_time=end), *rest))
 
 
 def place(
@@ -484,11 +489,12 @@ def _held_at_end(clip: Clip, media: MediaItem, rate: FrameRate) -> Fraction | No
     （:attr:`~sashimono.core.model.VideoStreamInfo.end_time`）で見る コンテナの
     長さ（:attr:`MediaItem.duration`）で見ると、音の方が長い素材で最後の映像フレームより
     後ろを指し、止めた後もデコーダが毎フレーム終わり付近へシークし直してデコードする
-    道の終わりは PTS そのままの時刻で、クリップの ``source_in`` やデコーダが読む時刻と
-    同じ数え方 コンテナの長さは頭の時刻を含まないので、2 つの小さい方を取ると、頭が
-    0 より後ろの素材で映像の途中の絵に止まる（混ぜない）
+    道の終わりもコンテナの長さも、素材の頭（:func:`~sashimono.engine.decode.probe.media_origin`）
+    から数えてあり、クリップの ``source_in``・YMM4 の ``ContentOffset``・デコーダが読む時刻と
+    同じ数え方（Issue #123） 頭が 0 より後ろの素材（分割して書き出した物）でも、頭 5 秒・
+    長さ 2 秒なら映像の終わりは 2 秒 PTS そのまま（7 秒）で数えると、デコーダの映像の
+    終わりを越えた所で止めることになり、止めた所から何も映らない
     道の長さが分からない素材（古いプロジェクトに入っていた素材など）はコンテナの長さで見る
-    頭の時刻が分からないので、頭が 0 の素材として扱う
 
     長さの分からない素材（0 と読めた物）と静止画は止めない 静止画はもともと
     いつでも同じ絵で、長さの分からない素材はどこが最後か決められない
