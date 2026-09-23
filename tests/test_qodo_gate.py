@@ -127,14 +127,19 @@ class TestMergingTheBase:
         """
         trees = trees or {}
 
-        def files_of(pair: str) -> list[dict[str, str]]:
-            return compares.get(pair, [])
+        def gate_max_files() -> int:
+            return 300
 
         def call(path: str) -> dict[str, object]:
             if path.startswith("commits/"):
-                return {"parents": [{"sha": s} for s in commits[path.split("/", 1)[1]]]}
+                sha = path.split("/", 1)[1]
+                # 木の API はコミットではなく木の SHA を受け取る 本物と同じ形で答える
+                return {
+                    "parents": [{"sha": s} for s in commits.get(sha, [])],
+                    "commit": {"tree": {"sha": f"tree-{sha}"}},
+                }
             if path.startswith("git/trees/"):
-                sha = path.removeprefix("git/trees/").split("?")[0]
+                sha = path.removeprefix("git/trees/tree-").split("?")[0]
                 entries = trees.get(sha)
                 if entries is None:
                     # 木を渡していないときは、その側の比べた結果から組み立てる
@@ -159,10 +164,8 @@ class TestMergingTheBase:
             left, right = pair.split("...")
             if left in ("main", "master"):
                 return {"status": "behind" if right in in_base else "ahead"}
-            page = int(path.split("page=")[-1]) if "page=" in path else 1
-            files = files_of(pair)
-            per_page = 100
-            return {"files": files[(page - 1) * per_page : page * per_page]}
+            # 本物はファイルの一覧を 1 頁目にだけ、全体で 300 件まで返す
+            return {"files": compares.get(pair, [])[: gate_max_files()]}
 
         return call
 
@@ -249,8 +252,9 @@ class TestMergingTheBase:
         assert not gate.only_base_merges_since(self.MERGE, "main", lambda s: s == self.BRANCH, call)
 
     def test_a_list_cut_off_by_the_api_does_not_pass(self, gate: ModuleType) -> None:
-        # 返ってきた数だけを見ると、打ち切られた後ろに main 由来でない変更があっても通る
-        many = [{"filename": f"f{i}.py", "sha": "aa"} for i in range(gate.MAX_MERGED_PAGES * 100)]
+        # 一覧は 1 頁目にしか出ず 300 件で打ち切られる 数だけを見ると、その後ろに
+        # main 由来でない変更があっても通る
+        many = [{"filename": f"f{i}.py", "sha": "aa"} for i in range(gate.MAX_COMPARE_FILES + 5)]
         call = self.api(
             {self.MERGE: [self.BRANCH, self.MAIN]},
             {self.MAIN},

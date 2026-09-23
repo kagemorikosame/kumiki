@@ -73,12 +73,9 @@ def is_reviewed(head_sha: str, comments: list[Comment], since: datetime | None =
 #: 作られたコミットの連なりを延々と辿って API を叩き続けることになる
 MAX_MERGE_WALK = 20
 
-#: 比べる API が 1 回に返すファイルの数 GitHub の上限は 300 だが、頁をめくって集める
-PER_PAGE = 100
-
-#: めくる頁の数の上限 比べる API が返すファイルは 300 までなので、100 × 3 頁で足りる
-#: 足りない大きさの取り込みは、諦めて Qodo の見直しを待つ
-MAX_MERGED_PAGES = 3
+#: 比べる API が返すファイルの数の上限 一覧は 1 頁目にしか出ず、比べた全体で 300 件で
+#: 打ち切られる 頁をめくっても増えないので、この数に届いたら「分からない」として通さない
+MAX_COMPARE_FILES = 300
 
 
 def only_base_merges_since(
@@ -158,29 +155,30 @@ def _matches_base(
 def _changed_files(left: str, right: str, api: Callable[[str], Any]) -> set[str] | None:
     """2 つのコミットの間で変わったファイルの道
 
-    比べる API は 1 頁に 100、全部で 300 ファイルまでしか返さない 返ってきた数だけを
-    見ると、打ち切られた後ろに main 由来でない変更があっても通してしまう そこで頁を
-    めくって集め、めくり切れなければ ``None``（＝分からないので通さない）を返す
+    比べる API のファイルの一覧は**1 頁目にしか出ず、全体で 300 件**で打ち切られる
+    頁をめくっても増えないので、300 件に届いたら残りを確かめられない そのときは
+    ``None``（＝分からないので通さない）を返す
     名前を変えたファイルは、元の名前も見る 元の側の変更を見落とさないため
     """
+    listed = api(f"compare/{left}...{right}").get("files") or []
+    if len(listed) >= MAX_COMPARE_FILES:
+        return None
     names: set[str] = set()
-    for page in range(1, MAX_MERGED_PAGES + 1):
-        batch = api(f"compare/{left}...{right}?per_page={PER_PAGE}&page={page}").get("files") or []
-        for entry in batch:
-            names.add(str(entry["filename"]))
-            if entry.get("previous_filename"):
-                names.add(str(entry["previous_filename"]))
-        if len(batch) < PER_PAGE:
-            return names
-    return None
+    for entry in listed:
+        names.add(str(entry["filename"]))
+        if entry.get("previous_filename"):
+            names.add(str(entry["previous_filename"]))
+    return names
 
 
 def _tree(sha: str, api: Callable[[str], Any]) -> dict[str, tuple[str, str]] | None:
     """コミットの木 道ごとに（種類, 中身の SHA）
 
+    木の API はコミットではなく**木の SHA**を受け取るので、コミットから引いてから呼ぶ
     木が大きすぎて GitHub が切り詰めたときは ``None``（＝分からないので通さない）
     """
-    tree = api(f"git/trees/{sha}?recursive=1")
+    tree_sha = api(f"commits/{sha}")["commit"]["tree"]["sha"]
+    tree = api(f"git/trees/{tree_sha}?recursive=1")
     if tree.get("truncated"):
         return None
     # blob だけに絞らない サブモジュール（type が commit、mode 160000）を外すと、
