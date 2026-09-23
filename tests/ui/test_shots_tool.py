@@ -16,6 +16,8 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+from PySide6.QtCore import QRect
+from PySide6.QtGui import QColor, QImage
 from PySide6.QtWidgets import QApplication, QTreeWidget, QWidget
 
 from sashimono.compat.catalog import TemplateCatalog
@@ -123,11 +125,38 @@ class TestSettling:
         assert elapsed >= rounds * shots.SETTLE_MS * 0.8
 
 
+class TestPasting:
+    def test_it_ignores_the_scaling_of_the_target(
+        self, shots: ModuleType, qt_application: QApplication
+    ) -> None:
+        """拡大率の付いた画像へも、渡した画素の位置に貼れること
+
+        ``QPainter`` は相手の QImage が持つ devicePixelRatio で座標を変換する
+        1.0 に戻さずに貼ると、拡大率 125% の機械では GL の面が二重に拡大されて
+        画面の外へ出て、プレビューの場所には何も写らない写真ができる
+        """
+        del qt_application
+        image = QImage(200, 200, QImage.Format.Format_RGB32)
+        image.fill(QColor("black"))
+        image.setDevicePixelRatio(2.0)
+        source = QImage(10, 10, QImage.Format.Format_RGB32)
+        source.fill(QColor("red"))
+
+        shots.paste(image, QRect(100, 100, 40, 40), source)
+
+        # 渡したのは画素そのものの座標 2 倍に変換されると (200, 200) は画像の外で、
+        # ここは黒いままになる
+        assert image.pixelColor(120, 120) == QColor("red")
+
+
 class TestSampleScript:
     def test_the_sample_script_becomes_a_settings_panel(
         self, shots: ModuleType, tmp_path: Path
     ) -> None:
-        """制御行が設定欄になる これが AviUtl の写真で見せている所そのもの"""
+        """制御行が設定欄になる これが AviUtl の写真で見せている所そのもの
+
+        壊れると、README の AviUtl の写真に実際とは違う設定欄が写る
+        """
         from sashimono.effects.definition import registry
 
         kind = shots.install_sample_script(tmp_path / "scripts")

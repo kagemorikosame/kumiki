@@ -293,7 +293,6 @@ def grab(widget: QWidget) -> QImage:
     image = widget.grab().toImage()
     ratio = image.width() / max(1, widget.width())
 
-    painter = QPainter(image)
     for surface in widget.findChildren(QOpenGLWidget):
         if not surface.isVisible():
             continue
@@ -304,8 +303,7 @@ def grab(widget: QWidget) -> QImage:
             round(surface.width() * ratio),
             round(surface.height() * ratio),
         )
-        painter.drawImage(target, surface.grabFramebuffer())
-    painter.end()
+        paste(image, target, surface.grabFramebuffer())
 
     if ratio != 1.0:
         # 画面の拡大率（125% など）で撮ると、撮った機械によって大きさが変わる
@@ -316,8 +314,21 @@ def grab(widget: QWidget) -> QImage:
             Qt.AspectRatioMode.IgnoreAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
-    image.setDevicePixelRatio(1.0)
     return image
+
+
+def paste(image: QImage, target: QRect, source: QImage) -> None:
+    """``target``（画素そのものの座標）へ ``source`` を貼る
+
+    **貼る前に画像の拡大率を 1.0 にする** ``QPainter`` は相手の QImage が持つ
+    devicePixelRatio で座標を変換するので、そのままだと拡大率 125% の機械では
+    位置も大きさも二重に拡大され、GL の面が画面の外まではみ出して貼られる
+    （プレビューの場所には何も写らないまま、明るさの見張りだけが通る）
+    """
+    image.setDevicePixelRatio(1.0)
+    painter = QPainter(image)
+    painter.drawImage(target, source)
+    painter.end()
 
 
 def brightest(image: QImage, rect: QRect) -> int:
