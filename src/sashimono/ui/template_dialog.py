@@ -14,11 +14,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
@@ -31,6 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sashimono import __version__
 from sashimono.compat.aviutl.report import CompatibilityReport
 from sashimono.compat.catalog import (
     TemplateCatalog,
@@ -39,15 +42,56 @@ from sashimono.compat.catalog import (
     template_catalog,
 )
 from sashimono.compat.mapped import MappedObject
+from sashimono.ui.report_masking import marked_root_labels, mask_report, root_lines
 from sashimono.ui.theme import Colors
 
-__all__ = ["TemplateDialog"]
+__all__ = ["TemplateDialog", "notes_text"]
 
 #: 下絵の大きさ 一覧の横に置くので、縦横比だけ合わせた小さめのもの
 _PREVIEW = (384, 216)
 
 #: 下絵を描くときの実寸 配布物は 1080p を前提にしている
 _CANVAS = (1920, 1080)
+
+
+def notes_text(
+    entry: TemplateEntry,
+    contents: str,
+    notes: Sequence[str],
+    roots: Sequence[Path | str] = (),
+    folders: Sequence[tuple[str, str]] | None = None,
+) -> str:
+    """互換の報告に貼る文面 版と、選んだテンプレートの見分けと、注意書きを全部入れる
+
+    受けた側が同じ物を手元で開けるように、名前・種類・ファイルの場所（棚の中の
+    どこか）を入れる YMM4 は 1 ファイルに何本も入っているので、何本目かも入れる
+    テンプレートの中身（見本の文字・フォント・JSON など）は入れない 配布物で、
+    再配布の条件が作者ごとに違う 足りない物は注意書きの行に名前で出ている
+
+    伏せ方は互換性レポートと同じ物を使う 棚の置き場は本人が決めた場所で、
+    ホームの外なら利用者名を含みうるので、外にある物は ``<探索先1>`` の印にする
+    """
+    if entry.source == "ymm4":
+        kind = f"YMM4 のアイテムテンプレート（ファイルの {entry.index + 1} 本目）"
+    else:
+        kind = "AviUtl のエイリアス"
+    lines = [
+        f"Sashimono Edit {__version__} テンプレートの注意書き",
+        f"名前: {entry.name}",
+        f"種類: {kind}",
+    ]
+    # AviUtl の見出しは置き場のフォルダ名で、置き場の直下なら置き場そのものの名前
+    # （利用者名でありうる）になる 1 段の名前は伏せる側が拾わないので入れない
+    # 場所はファイルの行に伏せた形で出る YMM4 の見出しはファイル名と中の分類から作る
+    if entry.source == "ymm4":
+        lines.append(f"分類: {entry.folder}")
+    lines += [
+        f"ファイル: {entry.path}",
+        f"読んだ結果: {contents}",
+        *root_lines([str(root) for root in roots]),
+    ]
+    lines += ["注意書き:", *(f"  {note}" for note in notes)] if notes else ["注意書き: （なし）"]
+    return mask_report("\n".join(lines), roots, folders)
 
 
 class TemplateDialog(QDialog):
@@ -72,6 +116,11 @@ class TemplateDialog(QDialog):
         self._roots = roots
         self._report = CompatibilityReport()
         self._loaded: list[MappedObject] = []
+        #: 貼る文の「中身」の行と注意書き 画面に出した物と同じ物を写す
+        self._contents = ""
+        self._note_lines: tuple[str, ...] = ()
+        #: 最後に走査した置き場 貼る文で伏せる探索先
+        self._scanned: tuple[Path, ...] = ()
 
         self._tree = QTreeWidget(self)
         self._tree.setHeaderLabels(["名前"])
@@ -89,6 +138,13 @@ class TemplateDialog(QDialog):
 
         self._notes = QListWidget(self)
         self._notes.setMaximumHeight(90)
+        # 一覧からは行を 1 つずつしか選べず、Ctrl+C でも写せない 互換の報告に
+        # 手で打ち写してもらうと、写し間違いと写し漏れがそのまま届く
+        self._copy_button = QPushButton("内容をコピー", self)
+        self._copy_button.clicked.connect(self.copy_to_clipboard)
+        copy_row = QHBoxLayout()
+        copy_row.addStretch(1)
+        copy_row.addWidget(self._copy_button)
 
         self._place_button = QPushButton("タイムラインへ置く", self)
         self._restyle_button = QPushButton("選択中のクリップに適用", self)
@@ -111,6 +167,7 @@ class TemplateDialog(QDialog):
         side.addWidget(self._preview)
         side.addWidget(self._detail)
         side.addWidget(self._notes)
+        side.addLayout(copy_row)
         side.addStretch(1)
 
         columns = QHBoxLayout()
@@ -133,7 +190,19 @@ class TemplateDialog(QDialog):
         """棚を読み直して並べ直す"""
         from sashimono.compat.catalog import default_template_roots
 
-        self._catalog.scan(self._roots if self._roots is not None else default_template_roots())
+        self._scanned = self._roots if self._roots is not None else default_template_roots()
+        self._catalog.scan(self._scanned)
+        # どの印がどの置き場かは画面にだけ出す 貼る文には出さない（出すと伏せた意味が無い）
+        # 報告を受けた側に「<探索先1> はどこか」と聞かれたときに、本人がここで答えられる
+        self._copy_button.setToolTip(
+            "\n".join(
+                [
+                    "選んだテンプレートの注意書きを、互換の報告に貼れる形で写します",
+                    "テンプレートの中身は入りません ホームと設定の置き場は伏せます",
+                    *root_lines(marked_root_labels(self._scanned)),
+                ]
+            )
+        )
         self._tree.clear()
 
         groups: dict[str, QTreeWidgetItem] = {}
@@ -168,9 +237,13 @@ class TemplateDialog(QDialog):
         entry = self._selected_entry()
         self._loaded = []
         self._notes.clear()
+        self._contents = ""
+        self._note_lines = ()
         self._preview.setPixmap(QPixmap())
         self._place_button.setEnabled(entry is not None)
         self._restyle_button.setEnabled(False)
+        # 読めなかったテンプレートも写せるようにする 読めない理由こそ報告に要る
+        self._copy_button.setEnabled(entry is not None)
         if entry is None:
             return
 
@@ -178,10 +251,12 @@ class TemplateDialog(QDialog):
         try:
             self._loaded = entry.load(report=self._report)
         except TemplateError as exc:
-            self._detail.setText(f"読み込めません: {exc}")
+            self._contents = f"読み込めません: {exc}"
+            self._detail.setText(self._contents)
             self._place_button.setEnabled(False)
             return
 
+        self._contents = self._summarize()
         self._detail.setText(self._describe(entry))
         # 絵を持たないテンプレート（YMM4 のアニメーション効果など）は置けない
         # 着せることしかできないので、そちらだけを押せるようにする
@@ -193,7 +268,8 @@ class TemplateDialog(QDialog):
             )
             or self._is_effects_only()
         )
-        self._notes.addItems(self._report.lines())
+        self._note_lines = self._report.lines()
+        self._notes.addItems(self._note_lines)
         self._show_preview()
 
     def _walk_loaded(self) -> list[MappedObject]:
@@ -203,20 +279,28 @@ class TemplateDialog(QDialog):
     def _is_effects_only(self) -> bool:
         return bool(self._loaded) and not any(item.has_picture for item in self._loaded)
 
-    def _describe(self, entry: TemplateEntry) -> str:
+    def _summarize(self) -> str:
+        """読んだ結果の 1 行 画面と貼る文の両方に出す 別々に組むと食い違う"""
         effects = sum(len(item.clip.effects) for item in self._walk_loaded())
         if self._is_effects_only():
-            return (
-                f"{entry.path}\n"
-                f"エフェクトだけのテンプレート（{effects} 段）\n"
-                "中身は持ちません 選んだクリップに効果を足す形で使います"
-            )
-
+            return f"エフェクトだけのテンプレート（{effects} 段）"
         kinds = [item.kind or "?" for item in self._loaded]
-        return (
-            f"{entry.path}\n"
-            f"{len(self._loaded)} オブジェクト（{'、'.join(kinds)}）／エフェクト {effects} 段\n"
-            "下絵は文字と図形だけ 縁取りやグラデーションは含まれていません"
+        return f"{len(self._loaded)} オブジェクト（{'、'.join(kinds)}）／エフェクト {effects} 段"
+
+    def _describe(self, entry: TemplateEntry) -> str:
+        if self._is_effects_only():
+            hint = "中身は持ちません 選んだクリップに効果を足す形で使います"
+        else:
+            hint = "下絵は文字と図形だけ 縁取りやグラデーションは含まれていません"
+        return f"{entry.path}\n{self._summarize()}\n{hint}"
+
+    def copy_to_clipboard(self) -> None:
+        """選んだテンプレートの注意書きを、報告に貼れる形でクリップボードへ写す"""
+        entry = self._selected_entry()
+        if entry is None:
+            return
+        QApplication.clipboard().setText(
+            notes_text(entry, self._contents, self._note_lines, self._scanned)
         )
 
     def _show_preview(self) -> None:

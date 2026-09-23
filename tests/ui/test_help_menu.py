@@ -1,6 +1,6 @@
-"""ヘルプメニューと、互換性レポートを報告に写す口
+"""ヘルプメニューと、互換性レポートやテンプレートの注意書きを報告に写す口
 
-どちらも困った人が受け口へ辿り着くための道 壊れても編集は続けられるので
+どれも困った人が受け口へ辿り着くための道 壊れても編集は続けられるので
 気付きにくく、気付くのは報告が届かなくなってから
 """
 
@@ -20,17 +20,16 @@ from sashimono import __version__
 from sashimono.compat.aviutl import catalog as catalog_module
 from sashimono.compat.aviutl.catalog import ScriptCatalog
 from sashimono.compat.aviutl.report import CompatibilityReport
+from sashimono.compat.catalog import TemplateCatalog, TemplateEntry
 from sashimono.core import userdirs
 from sashimono.links import MANUAL_URL, REPORT_URL
-from sashimono.ui import compat_dialog
-from sashimono.ui.compat_dialog import (
-    HOME_PLACEHOLDER,
-    CompatibilityDialog,
-    mask_user_folders,
-    report_text,
-    user_folders,
-)
+from sashimono.ui import report_masking
+from sashimono.ui.compat_dialog import CompatibilityDialog, report_text
 from sashimono.ui.main_window import MainWindow, about_text
+from sashimono.ui.report_masking import HOME_PLACEHOLDER, mask_user_folders, user_folders
+from sashimono.ui.template_dialog import TemplateDialog, notes_text
+from tests.compat.test_ymm4 import template as ymm4_template
+from tests.compat.test_ymm4 import text_item, write_ymmt
 
 
 @pytest.fixture
@@ -98,7 +97,7 @@ def _clear_folder_variables(monkeypatch: pytest.MonkeyPatch) -> None:
     いると、伏せる置き場の数や伏せた結果が機械ごとに変わり、比べる試験が落ちる
     一覧から消すのは、置き場を足したときに試験の側が取り残されないようにするため
     """
-    for variable, _placeholder in compat_dialog._FOLDER_VARIABLES:
+    for variable, _placeholder in report_masking._FOLDER_VARIABLES:
         monkeypatch.delenv(variable, raising=False)
 
 
@@ -172,7 +171,7 @@ class TestCompatibilityCopy:
         long_home = r"C:\Users\kagemori"
         shorts = {long_home: r"C:\Users\KAGEMO~1"}
         _clear_folder_variables(monkeypatch)
-        monkeypatch.setattr(compat_dialog, "short_path", shorts.get)
+        monkeypatch.setattr(report_masking, "short_path", shorts.get)
         text = mask_user_folders(
             r"開けない: c:\users\kagemo~1\scripts\a.anm2", user_folders(Path(long_home))
         )
@@ -184,7 +183,7 @@ class TestCompatibilityCopy:
     ) -> None:
         # 8.3 を切ってある置き場では、短い形を聞いても同じ形が返る
         _clear_folder_variables(monkeypatch)
-        monkeypatch.setattr(compat_dialog, "short_path", lambda folder: folder.upper())
+        monkeypatch.setattr(report_masking, "short_path", lambda folder: folder.upper())
         assert user_folders(Path(r"C:\Users\kagemori")) == [
             (r"C:\Users\kagemori", HOME_PLACEHOLDER)
         ]
@@ -194,7 +193,7 @@ class TestCompatibilityCopy:
     ) -> None:
         # Windows 以外では windll が無い 求められないからとコピーまで落ちると、報告できない
         monkeypatch.delattr(ctypes, "windll", raising=False)
-        assert compat_dialog.short_path(r"C:\Users\kagemori") is None
+        assert report_masking.short_path(r"C:\Users\kagemori") is None
         assert report_text(CompatibilityReport(), 0)
 
     def test_a_failing_call_falls_back_to_the_long_names(
@@ -208,7 +207,7 @@ class TestCompatibilityCopy:
         fake = SimpleNamespace(kernel32=SimpleNamespace(GetShortPathNameW=broken))
         monkeypatch.setattr(ctypes, "windll", fake, raising=False)
         _clear_folder_variables(monkeypatch)
-        assert compat_dialog.short_path(r"C:\Users\kagemori") is None
+        assert report_masking.short_path(r"C:\Users\kagemori") is None
         home = Path(r"C:\Users\kagemori")
         assert user_folders(home) == [(str(home), HOME_PLACEHOLDER)]
         report = CompatibilityReport()
@@ -254,7 +253,7 @@ class TestCompatibilityCopy:
 
     def test_a_missing_folder_has_no_short_name(self, tmp_path: Path) -> None:
         # 無い場所では API が 0 を返す それを空の名前として足すと、何も伏せない行が混ざる
-        assert compat_dialog.short_path(str(tmp_path / "無い")) is None
+        assert report_masking.short_path(str(tmp_path / "無い")) is None
 
     def test_the_settings_folder_is_named_rather_than_the_home(
         self, monkeypatch: pytest.MonkeyPatch
@@ -355,7 +354,7 @@ def test_a_search_folder_listed_twice_gets_one_marker() -> None:
     """同じ探索先が 2 度並ぶと印が 2 つ付き、画面と貼る文で違う印が出て、
     報告者が印の指す場所を確かめられない
     """
-    from sashimono.ui.compat_dialog import root_markers
+    from sashimono.ui.report_masking import root_markers
 
     markers = root_markers([r"D:\山田\Script", r"d:/山田/script", r"E:\別\Script"], [])
     # 同じ場所の 2 つの書き方は同じ印 別の場所は次の番号
@@ -366,7 +365,7 @@ def test_every_spelling_of_the_same_folder_is_hidden() -> None:
     r"""同じ場所の別の書き方をまとめるときに片方を落とすと、そちらが伏せる相手から
     外れ、`D:\work\..\kagemori\Script` のような書き方で貼る文に名前が残る
     """
-    from sashimono.ui.compat_dialog import mask_user_folders, root_markers
+    from sashimono.ui.report_masking import mask_user_folders, root_markers
 
     plain = r"D:\kagemori\Script"
     winding = r"D:\work\..\kagemori\Script"
@@ -380,7 +379,159 @@ def test_a_rooted_and_a_relative_folder_are_not_merged() -> None:
     r"""頭の区切りを捨てて比べると、`\山田\Script` と `山田\Script` を同じ場所とみなし、
     片方に印が付かないまま貼る文に場所が残る
     """
-    from sashimono.ui.compat_dialog import root_markers
+    from sashimono.ui.report_masking import root_markers
 
     markers = root_markers([r"\山田\Script", r"山田\Script", r"D:\山田\Script"], [])
     assert len(markers) == 3
+
+
+#: 見本のエイリアス 中身（見本の文字・フォント）は貼る文に入ってはいけない印を兼ねる
+#: 未対応のフィルタを 1 つ積んで、注意書きが 1 行出るようにしてある
+_ALIAS = "\n".join(
+    [
+        "[Object]",
+        "frame=0,89",
+        "[Object.0]",
+        "effect.name=テキスト",
+        "フォント=Dela Gothic One",
+        "テキスト=見本の秘密の文字",
+        "[Object.1]",
+        "effect.name=謎のフィルタ",
+        "",
+    ]
+)
+
+
+def _shelf(root: Path) -> Path:
+    """AviUtl のエイリアス 1 本と、YMM4 の 2 本入りのテンプレートを置いた棚"""
+    (root / "字幕").mkdir(parents=True)
+    (root / "字幕" / "強調.object").write_text(_ALIAS, "utf-8")
+    unknown = {"$type": "Example.UnknownEffect, Example", "IsEnabled": True}
+    write_ymmt(
+        root / "束.ymmt",
+        ymm4_template("見出し", text_item()),
+        ymm4_template("動き/揺れ", text_item(VideoEffects=[unknown])),
+    )
+    return root
+
+
+def _copied(dialog: TemplateDialog, name: str) -> str:
+    """棚で ``name`` を選んで〔内容をコピー〕を押し、クリップボードの中身を返す"""
+    tree = dialog._tree
+    for index in range(tree.topLevelItemCount()):
+        group = tree.topLevelItem(index)
+        assert group is not None
+        for row in range(group.childCount()):
+            item = group.child(row)
+            if item is not None and item.text(0) == name:
+                tree.setCurrentItem(item)
+                dialog._copy_button.click()
+                return QApplication.clipboard().text()
+    raise AssertionError(f"棚に無い: {name}")
+
+
+class TestTemplateNotesCopy:
+    def test_the_button_puts_the_notes_on_the_clipboard(self, tmp_path: Path) -> None:
+        # 壊れると、注意書きを 1 行ずつ手で打ち写すことになり、写し漏れがそのまま届く
+        dialog = TemplateDialog(TemplateCatalog(), roots=(_shelf(tmp_path / "棚"),))
+        try:
+            lines = _copied(dialog, "強調").splitlines()
+        finally:
+            dialog.close()
+        assert lines[0] == f"Sashimono Edit {__version__} テンプレートの注意書き"
+        assert "名前: 強調" in lines
+        assert "種類: AviUtl のエイリアス" in lines
+        assert "  フィルタ: 謎のフィルタ — 1 回" in lines
+
+    def test_the_template_inside_a_ymm4_file_is_told_apart(self, tmp_path: Path) -> None:
+        # YMM4 は 1 ファイルに何本も入っている 何本目かが無いと、受けた側が
+        # 100 本を超える中から同じ物を探すことになる
+        dialog = TemplateDialog(TemplateCatalog(), roots=(_shelf(tmp_path / "棚"),))
+        try:
+            lines = _copied(dialog, "動き/揺れ").splitlines()
+        finally:
+            dialog.close()
+        assert "種類: YMM4 のアイテムテンプレート（ファイルの 2 本目）" in lines
+        assert "  YMM4 の映像エフェクト: UnknownEffect — 1 回" in lines
+
+    def test_the_distributed_template_itself_is_left_out(self, tmp_path: Path) -> None:
+        # 配布物の中身は再配布の条件が作者ごとに違う 貼る文に混ざると、公開の Issue に
+        # 本人の知らないうちに他人の作品を貼ることになる
+        dialog = TemplateDialog(TemplateCatalog(), roots=(_shelf(tmp_path / "棚"),))
+        try:
+            texts = [_copied(dialog, name) for name in ("強調", "見出し", "動き/揺れ")]
+        finally:
+            dialog.close()
+        for text in texts:
+            for inside in (
+                "見本の秘密の文字",
+                "Dela Gothic One",
+                "effect.name",
+                "サンプルテキスト",
+                "Noto Sans JP Black",
+                "$type",
+                "#FF2B9FE2",
+            ):
+                assert inside not in text
+
+    def test_a_shelf_outside_the_home_is_hidden(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # 棚の置き場は本人が決めた場所で、ホームの外なら利用者名を含みうる ファイルの
+        # 場所は絶対パスで入るので、そこを伏せないと公開の Issue に名前が出る
+        _clear_folder_variables(monkeypatch)
+        # ホームを棚と関係ない場所へ向ける 一時フォルダは本物のホームの下にあるので、
+        # 向けないとホームとして伏せられ、探索先を伏せる側を確かめられない
+        home = tmp_path / "someone"
+        monkeypatch.setenv("USERPROFILE", str(home))
+        monkeypatch.setenv("HOME", str(home))
+        root = _shelf(tmp_path / "kagemori" / "棚")
+        dialog = TemplateDialog(TemplateCatalog(), roots=(root,))
+        try:
+            text = _copied(dialog, "強調")
+            tip = dialog._copy_button.toolTip()
+        finally:
+            dialog.close()
+        # 場所の文字列が無いだけでは、一部だけが置き換わって名前が残っても通る
+        # 名前そのものが消えたことを見る
+        assert "kagemori" not in text.casefold()
+        assert str(tmp_path).casefold() not in text.casefold()
+        assert "ファイル: <探索先1>\字幕\強調.object" in text.replace("/", "\\")
+        assert "探索先:\n  <探索先1>" in text
+        # どの印がどの場所かは、聞かれたときに本人が画面で答えられるようにする
+        assert f"  <探索先1> {root}" in tip.splitlines()
+
+    def test_a_shelf_under_the_settings_keeps_its_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # YMM4 の置き場は %LOCALAPPDATA% の下 印にすると、YMM4 の棚を見に行って
+        # いるかが報告から読めなくなる
+        _clear_folder_variables(monkeypatch)
+        local = r"\server\profiles\kagemori\AppData\Local"
+        monkeypatch.setenv("LOCALAPPDATA", local)
+        root = rf"{local}\YukkuriMovieMaker\ItemTemplate"
+        entry = TemplateEntry(
+            name="見出し", path=Path(rf"{root}\束.ymmt"), folder="束", source="ymm4"
+        )
+        text = notes_text(
+            entry, "1 オブジェクト（text）", [], [root], user_folders(Path(r"C:\Users\x"))
+        )
+        assert "kagemori" not in text.casefold()
+        assert r"ファイル: %LOCALAPPDATA%\YukkuriMovieMaker\ItemTemplate\束.ymmt" in text
+        assert "<探索先" not in text
+
+    def test_a_template_that_fails_to_load_can_still_be_copied(self, tmp_path: Path) -> None:
+        # 読めない理由こそ報告に要る 読めなかったときに写せないと、いちばん困った
+        # 人が手で打ち写すことになる
+        entry = TemplateEntry(name="壊れ", path=tmp_path / "壊れ.object")
+        text = notes_text(entry, "読み込めません: 形が違う", [], [tmp_path])
+        assert "読んだ結果: 読み込めません: 形が違う" in text.splitlines()
+        assert "注意書き: （なし）" in text.splitlines()
+
+    def test_nothing_is_copied_without_a_selection(self, tmp_path: Path) -> None:
+        # 選んでいないのに押せると、空の文や前に選んだ物の文が写り、別の物の報告になる
+        dialog = TemplateDialog(TemplateCatalog(), roots=(tmp_path,))
+        try:
+            assert not dialog._copy_button.isEnabled()
+        finally:
+            dialog.close()
