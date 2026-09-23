@@ -114,7 +114,12 @@ def number(value: Any, default: float = 0.0) -> float:
     if isinstance(value, bool):
         return float(value)
     if isinstance(value, int | float):
-        return float(value)
+        try:
+            return float(value)
+        except OverflowError:
+            # Python の整数には桁の上限が無い 数百桁の整数を float へ直すと例外になり、
+            # 同じテンプレートの正常なアイテムまで読めなくなるので、既定へ戻す
+            return default
     if isinstance(value, str):
         try:
             return float(value)

@@ -25,6 +25,14 @@ YMM4 のテンプレートは、値の意味を配布物の並びから読み取
 3. ``mesh-measure`` 枠ごとに、動いた点が画面のどこに出たかを YMM4 と Sashimono で並べ、
                     ``Points`` が行ごとか列ごとかを表にする
 
+動画アイテムの再生速度が絵をどう進めるかも別の 2 段（Issue #89 の残り）
+
+1. ``video-rate-build``   フレームごとに絵が変わる動画を、``PlaybackRate`` を変えて並べた
+                          探り用のプロジェクト（video-rate-probe.ymmp）を作る
+2. YMM4 でそれを開き、同じフォルダへ ``video-rate-probe.mp4`` として書き出す（手作業）
+3. ``video-rate-measure`` 書き出しの各フレームが素材の何フレーム目かを枠ごとに並べ、
+                          経過フレームに対する傾き（1 で等倍・0 で止まる）を表にする
+
 作業フォルダは既定で ``.work/ymm4-compare`` リポジトリには入れない
 （配布物の絵が入るため）
 """
@@ -667,6 +675,7 @@ def command_audio_build(arguments: argparse.Namespace) -> int:
     if not make_tone(media):
         # 測れない環境で「壊れた」と読まれないように、落とさずに終える
         # （tools/bench_export.py と同じ作法）
+        _drop_probe(work, "audio-probe", "audio-report.json")
         print("ffmpeg が無いか正弦波を作れないので、探りのプロジェクトは作れない")
         return 0
     slots = build_audio_slots()
@@ -687,6 +696,41 @@ def command_audio_build(arguments: argparse.Namespace) -> int:
         print(f"{video} は前の探りの書き出しです 作り直した方で書き出し直してください")
     print(f"YMM4 で {project} を開き、{video} として書き出してください")
     return 0
+
+
+def _drop_probe(work: Path, stem: str, report: str) -> None:
+    """作り直しに失敗したとき、前の探りの一覧・プロジェクト・測り結果を捨てる
+
+    残すと、前に成功していた作業フォルダでは measure が古い一覧と古い書き出しの組を
+    今回の物として測る 一覧が無ければ measure は「先に build」と案内して止まる
+    書き出し（mp4）は本人が YMM4 で作った物なので残す
+    """
+    for name in (f"{stem}.json", f"{stem}.ymmp", report):
+        (work / name).unlink(missing_ok=True)
+
+
+def export_fps(video: Path) -> float | None:
+    """書き出しの映像のフレームレート 映像の道が無いか読めなければ ``None``"""
+    import av
+
+    with av.open(str(video)) as container:
+        if not container.streams.video:
+            return None
+        rate = container.streams.video[0].average_rate
+        return None if rate is None else float(rate)
+
+
+def _fps_differs(video: Path, fps: int) -> bool:
+    """書き出しが一覧と違うフレームレートか 違えば案内する
+
+    一覧の枠の番号は一覧の fps で数えている 書き出しを別の fps で数えた番号に
+    そのまま当てると、60fps の書き出しでは枠が前半へずれ、等倍が 0.5 倍と出る
+    """
+    found = export_fps(video)
+    if found is None or abs(found - fps) < 0.01:
+        return False
+    print(f"一覧は {fps}fps 書き出しは {found:g}fps です {fps}fps で書き出し直してください")
+    return True
 
 
 def sample_index(
@@ -882,6 +926,8 @@ def command_audio_measure(arguments: argparse.Namespace) -> int:
         # 「再生速度 0 で止まる」と読み違える
         print(f"{video} の音が空です 音が入る形式で書き出してください")
         return 0
+    # 音は書き出しのフレームレートに左右されない 枠の頭は一覧の fps で秒へ直し、
+    # 書き出しの音は自分の時刻で並べるので、60fps で書き出しても同じ秒の音を切り出す
     fps = int(manifest.get("fps", FPS))
     measured: list[tuple[dict[str, Any], AudioMeasure]] = []
     for entry in manifest["slots"]:
@@ -1341,6 +1387,8 @@ def command_mesh_measure(arguments: argparse.Namespace) -> int:
         if not has_video_stream(video):
             print(f"{video} に映像の道がありません 映像が入る形式で書き出してください")
             return 0
+        if _fps_differs(video, int(manifest.get("fps", FPS))):
+            return 0
         # 頭は開けても途中で切れた書き出しは、読み進めた所で復号が失敗する
         # 開けるかどうかだけを見ても、その穴は塞がらない
         theirs = _read_ymm4_slots(video, entries)
@@ -1433,6 +1481,441 @@ def _print_mesh_rows(rows: list[dict[str, Any]]) -> None:
     print("YMM4 の列が「行ごと」なら今の写し方どおり 「列ごと」なら並べ替えが要る")
 
 
+#: 絵の速さの探りの素材の長さ（秒） 枠より短くして、素材を読み切った後の絵
+#: （止まるのか消えるのか）も枠の中に入るようにする
+RATE_SOURCE_SECONDS = 4
+#: 枠 1 つの長さ（フレーム） 素材の 1.5 倍 50% でも素材の 3 秒ぶんまで読み進み、
+#: 200% では素材を 2 秒で読み切った後が 4 秒残る
+RATE_SLOT = 180
+#: 枠と枠の間の黒（フレーム） 前の枠の絵が次の枠の頭に残って、傾きの頭を狂わせない
+RATE_GAP = 30
+#: 並べる再生速度 等倍を基準に先頭へ 0 は音では無音・長さ 0 だった（2026-09-23）
+RATE_CONDITIONS = (100.0, 50.0, 200.0, 0.0)
+#: 絵を突き合わせる大きさ 1920x1080 をちょうど 10 分の 1 に縮める
+#: testsrc2 は隣り合うフレームの差がこの大きさで 2.5 以上あり、書き出しの圧縮の
+#: 揺れ（0.3 前後）よりずっと大きいので、隣のフレームと取り違えない
+TINY_WIDTH, TINY_HEIGHT = 192, 108
+#: 素材のどのフレームにも似ていないとみなす差（0〜255、色の平均）
+#: 黒の画面と素材の差は 126 前後 圧縮の揺れや色の変換のずれは十数までに収まる
+RATE_MATCH_LIMIT = 30.0
+
+
+@dataclass(frozen=True)
+class RateSlot:
+    """絵の速さの探りの枠 1 つ"""
+
+    name: str
+    rate: float
+    start: int
+
+
+def build_rate_slots() -> list[RateSlot]:
+    """確かめる速さを、時間軸に重ならないように並べる"""
+    slots: list[RateSlot] = []
+    cursor = 0
+    for rate in RATE_CONDITIONS:
+        slots.append(RateSlot(name=f"PlaybackRate={rate:g}", rate=rate, start=cursor))
+        cursor += RATE_SLOT + RATE_GAP
+    return slots
+
+
+def rate_video_item(slot: RateSlot, media: Path) -> dict[str, Any]:
+    """探りの枠 1 つを YMM4 の動画アイテムにする
+
+    項目の並びと既定の値は、この機械の YMM4 プロジェクトにあった新しい版の
+    ``VideoItem`` 67 個（``PlaybackRate2`` と ``PlaybackRateAudioProcessingMode`` を
+    持つ形）から写した 実物は ``PlaybackRate`` と ``PlaybackRate2`` がどれも同じ値
+    だったので、両方に同じ速さを書く 片方だけ変えると、どちらが効いたのか読めない
+    ``Zoom`` 100 のまま 素材は画面と同じ大きさなので、画面いっぱいに映る
+    """
+    return {
+        "$type": "YukkuriMovieMaker.Project.Items.VideoItem, YukkuriMovieMaker",
+        "IsWaveformEnabled": False,
+        "FilePath": str(media),
+        "AudioTrackIndex": 0,
+        "Volume": _still(100.0),
+        "Pan": _still(0.0),
+        "PlaybackRate2": _still(slot.rate),
+        "PlaybackRateAudioProcessingMode": "Resampling",
+        "ContentOffset": "00:00:00",
+        "IsLooped": False,
+        "EchoIsEnabled": False,
+        "EchoInterval": 0.1,
+        "EchoAttenuation": 40.0,
+        "AudioEffects": [],
+        "X": _still(0.0),
+        "Y": _still(0.0),
+        "Z": _still(0.0),
+        "Opacity": _still(100.0),
+        "Zoom": _still(100.0),
+        "Rotation": _still(0.0),
+        "FadeIn": 0.0,
+        "FadeOut": 0.0,
+        "Blend": "Normal",
+        "IsInverted": False,
+        "IsClippingWithObjectAbove": False,
+        "IsAlwaysOnTop": False,
+        "IsZOrderEnabled": False,
+        "VideoEffects": [],
+        "Group": 0,
+        "Frame": slot.start,
+        "Layer": 0,
+        "KeyFrames": {"Frames": [], "Count": 0},
+        "Length": RATE_SLOT,
+        "PlaybackRate": slot.rate,
+        "Remark": slot.name,
+        "IsLocked": False,
+        "IsHidden": False,
+    }
+
+
+def rate_manifest(slots: list[RateSlot], media: Path) -> dict[str, Any]:
+    """枠の一覧 ``video-rate-measure`` はこれだけを見て切り出し、Sashimono でも描く"""
+    return {
+        "width": WIDTH,
+        "height": HEIGHT,
+        "fps": FPS,
+        "media": str(media),
+        "source_frames": RATE_SOURCE_SECONDS * FPS,
+        "match_limit": RATE_MATCH_LIMIT,
+        "slots": [
+            {
+                "index": index,
+                "name": slot.name,
+                "rate": slot.rate,
+                "start": slot.start,
+                "length": RATE_SLOT,
+                "item": rate_video_item(slot, media),
+            }
+            for index, slot in enumerate(slots)
+        ],
+    }
+
+
+def make_rate_source(target: Path) -> str:
+    """ffmpeg の testsrc2 でフレームごとに絵が変わる動画を作る 作れなければ理由を返す
+
+    すべてのフレームを鍵フレームにする（``-g 1``） YMM4 が速さを変えて飛び飛びに
+    読んでも、前のフレームからの差分の崩れが絵に乗らない
+    """
+    if shutil.which("ffmpeg") is None:
+        return "ffmpeg が見つからないので、探りの動画を作れない"
+    command = [
+        "ffmpeg",
+        "-y",
+        "-loglevel",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        f"testsrc2=size={WIDTH}x{HEIGHT}:rate={FPS}:duration={RATE_SOURCE_SECONDS}",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-g",
+        "1",
+        "-crf",
+        "18",
+        str(target),
+    ]
+    completed = subprocess.run(command, capture_output=True, check=False)
+    if completed.returncode == 0 and target.exists():
+        return ""
+    message = completed.stderr.decode("utf-8", "replace").strip().splitlines()
+    if any("libx264" in line for line in message):
+        return "この ffmpeg には libx264 が無いので、探りの動画を作れない"
+    return "ffmpeg が探りの動画を作れなかった " + (message[-1] if message else "")
+
+
+def _clear_rate_results(work: Path) -> None:
+    """前の測り結果を捨てる 残すと、新しい枠の一覧に対応しない表を読んでしまう"""
+    (work / "video-rate-report.json").unlink(missing_ok=True)
+
+
+def command_video_rate_build(arguments: argparse.Namespace) -> int:
+    # 絶対パスにしてから書く YMM4 はこの道具の作業フォルダを知らないので、
+    # 相対のまま `.ymmp` へ書くと素材を見つけられず、全部の枠が黒になる
+    # 黒を測ると「どの速さでも絵が出ない」と読めてしまう
+    work: Path = arguments.work.resolve()
+    work.mkdir(parents=True, exist_ok=True)
+    # 作れなかった道でも前の表を残さない 残ると、作り直した探りの結果として開けてしまう
+    _clear_rate_results(work)
+    media = work / "video-rate-source.mp4"
+    problem = make_rate_source(media)
+    if problem:
+        # 測れない環境で「壊れた」と読まれないように、落とさずに終える
+        _drop_probe(work, "video-rate-probe", "video-rate-report.json")
+        print(problem)
+        return 0
+    slots = build_rate_slots()
+    items = [rate_video_item(slot, media) for slot in slots]
+    length = max(slot.start for slot in slots) + RATE_SLOT + RATE_GAP
+    project = work / "video-rate-probe.ymmp"
+    write_document(items, length, project)
+    (work / "video-rate-probe.json").write_text(
+        json.dumps(rate_manifest(slots, media), ensure_ascii=False, indent=1), encoding="utf-8"
+    )
+    print(f"{len(slots)} 枠を並べた（{length} フレーム、{length / FPS:.0f} 秒）")
+    video = work / "video-rate-probe.mp4"
+    if video.exists():
+        # 前の書き出しが残っていると、新しい枠の一覧で古い絵を突き合わせてしまう
+        # `video-rate-measure` は書き出しが一覧より古ければ止めるが、ここでも言っておく
+        print(f"{video} は前の探りの書き出しです 作り直した方で書き出し直してください")
+    print(f"YMM4 で {project} を開き、{video} として書き出してください")
+    print(f"書き出しは {WIDTH}x{HEIGHT}・{FPS}fps・頭から終わりまで（範囲を絞らない）")
+    return 0
+
+
+def tiny(image: np.ndarray) -> np.ndarray:
+    """突き合わせ用に面積の平均で縮める"""
+    height, width = image.shape[:2]
+    fy, fx = max(1, height // TINY_HEIGHT), max(1, width // TINY_WIDTH)
+    cropped = image[: TINY_HEIGHT * fy, : TINY_WIDTH * fx, :3].astype(np.float32)
+    return cropped.reshape(TINY_HEIGHT, fy, TINY_WIDTH, fx, 3).mean(axis=(1, 3))
+
+
+def nearest_frame(picture: np.ndarray, sources: np.ndarray) -> tuple[int, float]:
+    """``picture`` に一番近い素材のフレームの番号と、その差（0〜255、色の平均）"""
+    distances = np.abs(sources - picture[None]).mean(axis=(1, 2, 3))
+    index = int(np.argmin(distances))
+    return index, float(distances[index])
+
+
+def match_frames(
+    pictures: list[np.ndarray | None], sources: np.ndarray, limit: float = RATE_MATCH_LIMIT
+) -> list[tuple[int | None, float | None]]:
+    """枠の各フレームが素材の何フレーム目か 似た物が無ければ番号は ``None``
+
+    差が ``limit`` を超えたものは素材のどれでもない（黒や別の絵） 一番近い物を
+    そのまま番号にすると、黒い画面が素材の暗いフレームとして数えられる
+    """
+    matched: list[tuple[int | None, float | None]] = []
+    for picture in pictures:
+        if picture is None:
+            matched.append((None, None))
+            continue
+        index, distance = nearest_frame(picture, sources)
+        matched.append((index if distance <= limit else None, distance))
+    return matched
+
+
+def rate_slope(indices: list[int | None], last: int) -> float | None:
+    """経過フレームに対する素材のフレーム番号の傾き 求められなければ ``None``
+
+    素材の最後のフレーム（``last``）へ届いた所で切る 読み切った後に最後の絵で
+    止まる作りだと、そこが傾き 0 の尾になり、200% の傾きが 2 より小さく出る
+    最後のフレームそのものも数えないのは、読み切った後の止まった絵と見分けられないため
+
+    ただし一致した絵がすべて同じフレームなら止まった絵（0） 最後のフレームで止まった枠
+    （0 で素材の末尾から映す・最後の絵を出し続ける）を切ると点が残らず、一致数は
+    揃っているのに「絵が無い」と読み、表の中で食い違う
+    """
+    found = [index for index in indices if index is not None]
+    if len(found) >= 2 and len(set(found)) == 1:
+        return 0.0
+    points: list[tuple[int, int]] = []
+    for elapsed, index in enumerate(indices):
+        if index is None:
+            continue
+        if index >= last:
+            break
+        points.append((elapsed, index))
+    if len(points) < 2:
+        return None
+    xs = np.array([point[0] for point in points], dtype=np.float64)
+    ys = np.array([point[1] for point in points], dtype=np.float64)
+    if float(np.ptp(ys)) == 0.0:
+        # 最小二乗でも 0 になるが、丸めの揺れで 1e-17 のような値が出ると読みにくい
+        return 0.0
+    slope = float(np.polyfit(xs, ys, 1)[0])
+    return slope
+
+
+def rate_reading(slope: float | None) -> str:
+    """傾きの読み 0 に近ければ止まる"""
+    if slope is None:
+        return "絵が無い"
+    if abs(slope) < 0.05:
+        return "止まる"
+    return f"{slope:.2f} 倍"
+
+
+def _read_rate_slots(video: Path, entries: list[dict[str, Any]]) -> list[list[np.ndarray | None]]:
+    """YMM4 の書き出しから、枠ごとに全フレームを縮めて返す 動画に無い所は ``None``"""
+    references = References(_ymm4_frames(video))
+    pictures: list[list[np.ndarray | None]] = [[] for _ in entries]
+    # 動画は戻せないので、枠を頭から順に引く 返すのは一覧の順
+    for index in sorted(range(len(entries)), key=lambda at: int(entries[at]["start"])):
+        entry = entries[index]
+        start = int(entry["start"])
+        for frame in range(start, start + int(entry["length"])):
+            picture = references.get(frame)
+            pictures[index].append(None if picture is None else tiny(picture))
+    return pictures
+
+
+def _read_source(media: Path) -> np.ndarray:
+    """素材の全フレームを縮めて ``(枚数, 高さ, 幅, 3)`` で返す 絵が無ければ 0 枚"""
+    frames = [tiny(convert()) for _, convert in _ymm4_frames(media)]
+    if not frames:
+        return np.zeros((0, TINY_HEIGHT, TINY_WIDTH, 3), dtype=np.float32)
+    return np.stack(frames)
+
+
+def _render_rate_slots(entries: list[dict[str, Any]]) -> list[list[np.ndarray | None]]:
+    """同じ ``.ymmp`` の枠を Sashimono で描き、枠ごとに全フレームを縮めて返す
+
+    ``compare`` と同じ道（写す・置く・描く）に、素材の登録を足して通す 登録を
+    飛ばすと、動画のクリップが ``media_id`` を持たず、全部の枠が透明になる
+    """
+    from sashimono.compat.catalog import gather_media
+    from sashimono.core.model import Project, ProjectSettings
+    from sashimono.core.timebase import FrameRate
+    from sashimono.engine.render import FrameRenderer
+
+    settings = ProjectSettings(width=WIDTH, height=HEIGHT, frame_rate=FrameRate(FPS))
+    report = CompatibilityReport()
+    pictures: list[list[np.ndarray | None]] = []
+    renderer: FrameRenderer | None = None
+    try:
+        for entry in entries:
+            objects = map_template([copy.deepcopy(entry["item"])], report=report)
+            project = Project.create(settings)
+            plan = gather_media(objects, project, _probe_or_none)
+            start, length = int(entry["start"]), int(entry["length"])
+            if plan.missing:
+                pictures.append([None] * length)
+                continue
+            commands = [*plan.commands, *place(objects, project, at_frame=start, media=plan.media)]
+            for command in commands:
+                project = command.apply(project)
+            if renderer is None:
+                renderer = FrameRenderer(project)
+            else:
+                renderer.set_project(project)
+            frames = range(start, start + length)
+            pictures.append([tiny(renderer.render(frame)) for frame in frames])
+    finally:
+        if renderer is not None:
+            renderer.close()
+    for line in report.lines():
+        print(f"写すときの記録 {line}")
+    return pictures
+
+
+def rate_row(
+    entry: dict[str, Any],
+    sides: list[tuple[str, list[np.ndarray | None]]],
+    sources: np.ndarray,
+    limit: float,
+) -> dict[str, Any]:
+    """枠 1 つぶんの表の行 YMM4 と Sashimono を同じ読み方で並べる"""
+    last = len(sources) - 1
+    row: dict[str, Any] = {"index": entry["index"], "name": entry["name"], "rate": entry["rate"]}
+    for side, pictures in sides:
+        matched = match_frames(pictures, sources, limit)
+        indices = [found for found, _ in matched]
+        slope = rate_slope(indices, last)
+        row[side] = {
+            "slope": slope,
+            "reading": rate_reading(slope),
+            "first": next((found for found in indices if found is not None), None),
+            "matched": sum(found is not None for found in indices),
+            "frames": indices,
+            "distances": [distance for _, distance in matched],
+        }
+    return row
+
+
+def command_video_rate_measure(arguments: argparse.Namespace) -> int:
+    work: Path = arguments.work
+    manifest_path = work / "video-rate-probe.json"
+    if not manifest_path.exists():
+        print(f"{manifest_path} がありません 先に video-rate-build を走らせてください")
+        return 0
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    # 測れなかった道で前の表が残ると、新しい結果として開けてしまう
+    # 測れたときは最後に書き直すので、先に消しておけばどの道でも残らない
+    _clear_rate_results(work)
+    project = work / "video-rate-probe.ymmp"
+    video = work / "video-rate-probe.mp4"
+    if not video.exists():
+        print(f"{video} がまだ書き出されていません")
+        print(f"YMM4 で {project} を開き、そこへ書き出してから走らせてください")
+        return 0
+    if video.stat().st_mtime <= manifest_path.stat().st_mtime:
+        # 探りを作り直したのに書き出しが前のままだと、新しい枠の一覧で古い絵を
+        # 突き合わせ、別の速さを測った表が出る 同じ時刻も断る
+        # 置き場によっては時刻が 2 秒刻みでしか残らない
+        print(f"{video} は探りを作り直す前の書き出しです")
+        print(f"YMM4 で {project} を開き直し、書き出してから走らせてください")
+        return 0
+    media = Path(manifest["media"])
+    if not media.exists():
+        print(f"素材 {media} がありません video-rate-build を走らせ直してください")
+        return 0
+    entries: list[dict[str, Any]] = manifest["slots"]
+    limit = float(manifest.get("match_limit", RATE_MATCH_LIMIT))
+    try:
+        sources = _read_source(media)
+    except unreadable_export_errors():
+        print(f"素材 {media} を読めません video-rate-build を走らせ直してください")
+        return 0
+    if len(sources) == 0:
+        print(f"素材 {media} に絵がありません video-rate-build を走らせ直してください")
+        return 0
+    try:
+        if not has_video_stream(video):
+            print(f"{video} に映像の道がありません 映像が入る形式で書き出してください")
+            return 0
+        if _fps_differs(video, int(manifest.get("fps", FPS))):
+            return 0
+        # 頭は開けても途中で切れた書き出しは、読み進めた所で復号が失敗する
+        theirs = _read_rate_slots(video, entries)
+    except unreadable_export_errors():
+        _explain_unreadable(video, project)
+        return 0
+    ours = None if arguments.skip_sashimono else _render_rate_slots(entries)
+    rows = []
+    for index, entry in enumerate(entries):
+        sides = [("ymm4", theirs[index])]
+        if ours is not None:
+            sides.append(("sashimono", ours[index]))
+        rows.append(rate_row(entry, sides, sources, limit))
+    _print_rate_rows(rows)
+    (work / "video-rate-report.json").write_text(
+        json.dumps(
+            {"source_frames": len(sources), "match_limit": limit, "rows": rows},
+            ensure_ascii=False,
+            indent=1,
+        ),
+        encoding="utf-8",
+    )
+    print(f"{work / 'video-rate-report.json'} へ書いた")
+    return 0
+
+
+def _print_rate_rows(rows: list[dict[str, Any]]) -> None:
+    def cell(value: dict[str, Any] | None) -> str:
+        if value is None:
+            return f"{'-':>24}"
+        first = "-" if value["first"] is None else str(value["first"])
+        return f"{value['reading']:>10}{first:>6}{value['matched']:>8}"
+
+    print(
+        f"{'枠':<22}{'YMM4 読み':>10}{'頭':>6}{'一致数':>8}"
+        f"{'Sashimono 読み':>14}{'頭':>6}{'一致数':>8}"
+    )
+    for row in rows:
+        print(f"{row['name']:<22}{cell(row.get('ymm4'))}{cell(row.get('sashimono'))}")
+    print()
+    print("読みは「枠の頭からの経過フレーム → 素材の何フレーム目」の傾き 1.00 倍で等倍、")
+    print("0.50 倍・2.00 倍なら速さのとおり 止まるなら絵は動かない")
+    print("絵が無いなら素材の絵が出ていない（黒や別の絵）")
+    print("頭は枠の最初に映った素材のフレーム 一致数は素材のどれかに似ていたフレームの数")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--work", type=Path, default=DEFAULT_WORK)
@@ -1455,6 +1938,13 @@ def main() -> int:
     commands.add_parser("audio-measure")
     commands.add_parser("mesh-build")
     commands.add_parser("mesh-measure")
+    commands.add_parser("video-rate-build")
+    rate_measure = commands.add_parser("video-rate-measure")
+    rate_measure.add_argument(
+        "--skip-sashimono",
+        action="store_true",
+        help="Sashimono で描いて並べるのを飛ばし、YMM4 の書き出しだけを測る",
+    )
     arguments = parser.parse_args()
     runners: dict[str, Callable[[argparse.Namespace], int]] = {
         "build": command_build,
@@ -1463,6 +1953,8 @@ def main() -> int:
         "audio-measure": command_audio_measure,
         "mesh-build": command_mesh_build,
         "mesh-measure": command_mesh_measure,
+        "video-rate-build": command_video_rate_build,
+        "video-rate-measure": command_video_rate_measure,
     }
     return runners[arguments.command](arguments)
 

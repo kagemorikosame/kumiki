@@ -1343,6 +1343,16 @@ class TestTheContentOffset:
         assert any("ContentOffset" in line for line in report.lines())
 
 
+def test_a_huge_integer_does_not_stop_reading() -> None:
+    """数百桁の整数を float へ直すと例外になる 数を読む所で落ちると、同じ
+    テンプレートの正常なアイテムまで読めなくなる 既定へ戻して先へ進む
+    """
+    from sashimono.compat.ymm4.values import number
+
+    assert number(10**400, 7.0) == 7.0
+    assert number({"Values": [{"Value": -(10**400)}]}, 7.0) == 7.0
+
+
 class TestItemSound:
     """アイテムの音の設定（Issue #89）
 
@@ -1410,8 +1420,6 @@ class TestItemSound:
     @pytest.mark.parametrize(
         ("values", "word"),
         [
-            ({"Pan": still(50.0)}, "Pan"),
-            ({"PlaybackRate": 150.0}, "PlaybackRate"),
             ({"AudioTrackIndex": 1}, "AudioTrackIndex"),
             ({"IsLooped": True}, "IsLooped"),
             ({"AudioEffects": [{"$type": "N.VibratoEffect, A"}]}, "VibratoEffect"),
@@ -1420,27 +1428,240 @@ class TestItemSound:
     def test_what_cannot_be_carried_is_counted(self, values: dict[str, Any], word: str) -> None:
         """写せない音の設定は数えて残す 握り潰すと、直す順番を決められない
 
-        どれも実物に出てくる 再生速度は 0 のものが 5 個あり（こちらの ``speed`` は
-        正の数しか取らない） 開始位置（``ContentOffset``）は写せるようになった
+        どれも実物に出てくる 開始位置（``ContentOffset``）・定位（``Pan``）・
+        再生速度（``PlaybackRate``）は写せるようになった
         """
         report = CompatibilityReport()
         map_template([self.video(**values)], report=report)
         assert any(word in line for line in report.lines())
 
-    def test_a_setting_that_only_moves_later_is_counted(self) -> None:
-        """途中から動き出す定位も数える
+    @pytest.mark.parametrize(
+        "values", [{"Pan": still(50.0)}, {"PlaybackRate": 150.0}, {"PlaybackRate": 50.0}]
+    )
+    def test_carried_settings_are_no_longer_counted_as_missing(
+        self, values: dict[str, Any]
+    ) -> None:
+        """写せるようになった定位と再生速度は、写せない物として数えない
 
-        先頭の値だけを見ると、0 から始まって途中で振り切れる定位を数え落とし、
-        互換性レポートが「全部写せている」と言う
+        数え続けると、互換性レポートが直し終えた物を上位に出し続け、直す順番を誤る
         """
-        moving = {
-            "Values": [{"Value": 0.0}, {"Value": 100.0}],
-            "Span": 0.0,
-            "AnimationType": "直線移動",
-        }
         report = CompatibilityReport()
-        map_template([self.video(Pan=moving)], report=report)
-        assert any("Pan" in line for line in report.lines())
+        map_template([self.audio(**values)], report=report)
+        assert not report.lines()
+
+    def audio(self, **values: Any) -> dict[str, Any]:
+        """音声アイテム 映像を持たないので、速さを変えても絵の心配が無い"""
+        item = self.video(**values)
+        item["$type"] = "YukkuriMovieMaker.Project.Items.AudioItem, YukkuriMovieMaker"
+        item["FilePath"] = "C:/素材/音.wav"
+        return item
+
+    @pytest.mark.parametrize("rate", [float("nan"), float("inf"), float("-inf"), "NaN"])
+    def test_a_broken_rate_does_not_stop_the_whole_template(self, rate: object) -> None:
+        """NaN や無限大の ``PlaybackRate`` は等倍として置き、数えて残す
+
+        分数にしようとすると ValueError で読み込みごと止まり、同じテンプレートの
+        正常なアイテムまで写せなくなる
+        """
+        report = CompatibilityReport()
+        mapped = map_template([self.audio(PlaybackRate=rate), self.audio()], report=report)
+        assert [item.clip.speed for item in mapped] == [1, 1]
+        assert any("PlaybackRate" in line for line in report.lines())
+
+    @pytest.mark.parametrize(
+        ("key", "raw"),
+        [
+            ("PlaybackRate", "broken"),
+            ("PlaybackRate", {"Values": [], "AnimationType": "なし"}),
+            ("PlaybackRate", {"Values": [{"Value": "x"}], "AnimationType": "なし"}),
+            ("PlaybackRate", True),
+            ("PlaybackRate2", "broken"),
+            ("PlaybackRate2", {"Values": [], "AnimationType": "なし"}),
+            # float に直すと OverflowError になる桁の整数 読み込みごと止めてはいけない
+            ("PlaybackRate", 10**400),
+            ("PlaybackRate2", {"Values": [{"Value": 10**400}], "AnimationType": "なし"}),
+        ],
+    )
+    def test_an_unreadable_rate_is_counted_not_silently_normal(self, key: str, raw: object) -> None:
+        """数として読めない形は「読めない値」として数える
+
+        既定値へ丸めた後では、書かれていたのが 100 なのか壊れていたのか見分けられず、
+        壊れた値が等倍として写っても互換性レポートに出ない
+        """
+        report = CompatibilityReport()
+        (mapped,) = map_template([self.audio(**{key: raw})], report=report)
+        assert mapped.clip.speed == 1
+        assert any(key in line and "読めない値" in line for line in report.lines())
+
+    @pytest.mark.parametrize("rate", [50.0, 200.0])
+    def test_a_measured_video_rate_is_not_counted_as_missing(self, rate: float) -> None:
+        """動画アイテムの絵の速さは YMM4 と一致した 写せない物として数えない
+
+        YMM4 4.56.1.1 に書き出させると 50 で 0.50 倍・200 で 2.00 倍（2026-09-23）
+        数え続けると、直し終えた物が互換性レポートの上位に残り、直す順番を誤る
+        """
+        report = CompatibilityReport()
+        (mapped,) = map_template([self.video(PlaybackRate=rate)], report=report)
+        assert mapped.clip.speed == Fraction(repr(rate)) / 100
+        assert not report.lines()
+
+    def test_a_stopped_video_is_counted_until_it_can_be_stopped(self) -> None:
+        """YMM4 は 0 で素材の頭の絵に止める こちらは止めた絵を表せないので数えて残す
+
+        数えないと、止まるはずの絵が動いていることに互換性レポートから気付けない
+        """
+        report = CompatibilityReport()
+        map_template([self.video(PlaybackRate=0.0)], report=report)
+        assert any("止まった絵" in line for line in report.lines())
+
+    def test_the_newer_rate_fields_as_written_add_nothing(self) -> None:
+        """新しい版の書き出しの形（``PlaybackRate2`` と ``Resampling``）は数えない
+
+        実物の音を持つアイテム 138 個はどれもこの形 数えると、速さを変えていない
+        アイテムまで直す候補に並ぶ
+        """
+        report = CompatibilityReport()
+        map_template(
+            [
+                self.audio(
+                    PlaybackRate=50.0,
+                    PlaybackRate2=still(50.0),
+                    PlaybackRateAudioProcessingMode="Resampling",
+                )
+            ],
+            report=report,
+        )
+        assert not report.lines()
+
+    @pytest.mark.parametrize(
+        ("key", "word"), [("PlaybackRate", "PlaybackRate）"), ("PlaybackRate2", "PlaybackRate2")]
+    )
+    def test_a_rate_that_differs_only_in_the_middle_is_counted(self, key: str, word: str) -> None:
+        """途中の点だけが違う 3 点の動きも数える
+
+        長さ 1 として読むと 3 点が 0・0・1 フレームに並び、同じフレームの 2 点目が
+        捨てられて、動いているのに「動かない」と読む
+        """
+        report = CompatibilityReport()
+        map_template([self.audio(**{key: moving(100.0, 50.0, 100.0)})], report=report)
+        assert any(word in line and "動き" in line for line in report.lines())
+
+    @pytest.mark.parametrize(
+        "values",
+        [
+            {"PlaybackRate2": still(200.0)},
+            {"PlaybackRate2": moving(100.0, 200.0)},
+            {"PlaybackRateAudioProcessingMode": "まだ見ていない変え方"},
+        ],
+    )
+    def test_an_unmeasured_rate_field_is_counted(self, values: dict[str, Any]) -> None:
+        """``PlaybackRate2`` の食い違いや動き・``Resampling`` 以外の変え方は数えて残す
+
+        どれが効くのか測っていない 黙って ``PlaybackRate`` だけを読むと、YMM4 と
+        違う速さや高さで鳴っても互換性レポートが「全部写せている」と言う
+        """
+        report = CompatibilityReport()
+        map_template([self.audio(**values)], report=report)
+        assert any("再生速度" in line for line in report.lines())
+
+    def test_a_video_at_the_normal_rate_is_not_counted(self) -> None:
+        # 等倍でも数えると、速さを変えていない動画アイテムまで直す候補に並ぶ
+        report = CompatibilityReport()
+        map_template([self.video()], report=report)
+        assert not any("再生速度" in line for line in report.lines())
+
+    def test_a_pan_that_only_moves_later_is_carried(self) -> None:
+        """途中から動き出す定位も運ぶ
+
+        先頭の値だけで既定かどうかを決めると、0 から始まって途中で振り切れる定位を
+        取りこぼし、左右へ振るはずの音が真ん中のまま鳴る
+        """
+        (mapped,) = map_template([self.video(Pan=moving(0.0, 100.0))], report=CompatibilityReport())
+        (effect,) = mapped.audio_effects
+        pan = effect.params["pan"]
+        assert value_at(pan, 0) == 0.0
+        assert value_at(pan, 60) == 100.0
+
+    def test_the_volume_50_is_half_the_amplitude(self) -> None:
+        """``Volume`` 50 はそのまま ``volume`` 50（振幅の半分）
+
+        YMM4 に書き出させて測ると 50 で最大振幅が 0.501 倍（2026-09-23 4.56.1.1）
+        dB 目盛りや二乗と読んで写し直すと、この半分が崩れる
+        """
+        (mapped,) = map_template([self.video(Volume=still(50.0))], report=CompatibilityReport())
+        (effect,) = mapped.audio_effects
+        assert value_at(effect.params["volume"]) == 50.0
+
+    @pytest.mark.parametrize("pan", [-100.0, -50.0, 50.0, 100.0])
+    def test_the_pan_keeps_its_sign(self, pan: float) -> None:
+        """``Pan`` はそのまま ``pan`` へ 符号を取り違えると左右が入れ替わる
+
+        YMM4 に書き出させて測ると -100 で右が無音・50 で左が半分（負が左）
+        こちらの ``audio_volume`` の ``pan`` も負が左で、近い側を残し遠い側だけ下げる
+        """
+        (mapped,) = map_template([self.video(Pan=still(pan))], report=CompatibilityReport())
+        (effect,) = mapped.audio_effects
+        assert effect.kind == "audio_volume"
+        assert value_at(effect.params["pan"]) == pan
+        # 音量を変えていないのに音量まで変わると、定位を振っただけで小さく鳴る
+        assert value_at(effect.params["volume"]) == 100.0
+
+    def test_the_default_pan_adds_nothing(self) -> None:
+        # 既定のままで定位のエフェクトが並ぶと、何を変えたテンプレートなのか読めない
+        (mapped,) = map_template([self.video(Pan=still(0.0))], report=CompatibilityReport())
+        assert mapped.audio_effects == ()
+
+    def test_the_playback_rate_becomes_the_clip_speed(self) -> None:
+        """``PlaybackRate`` 50 は ``speed`` 1/2 で、タイムライン上の長さは ``Length`` のまま
+
+        YMM4 の ``Length`` はタイムライン上の長さで、素材は ``Length × rate`` だけ進む
+        （50 で 2 秒の素材が 4 秒の枠いっぱいに鳴った） 長さまで rate で割ると、
+        枠の倍の長さを鳴らし、後ろのアイテムに重なる
+        """
+        (mapped,) = map_template([self.video(PlaybackRate=50.0)], report=CompatibilityReport())
+        assert mapped.clip.speed == Fraction(1, 2)
+        assert mapped.clip.duration == 60
+
+    def test_a_fractional_rate_stays_in_decimal(self) -> None:
+        # 実物に 102.1 がある 2 進の小数のまま分数にすると、書き戻したときに桁が崩れる
+        (mapped,) = map_template([self.video(PlaybackRate=102.1)], report=CompatibilityReport())
+        assert mapped.clip.speed == Fraction(1021, 1000)
+
+    def test_a_rate_of_zero_is_silent(self) -> None:
+        """``PlaybackRate`` 0 は鳴らない（YMM4 に書き出させると無音・長さ 0）
+
+        ``speed`` は正の数しか取らないので 1 のまま置き、音量 0 で止める
+        等倍に読み替えると、実物の動画アイテム 5 個で止めたはずの音が鳴る
+        """
+        report = CompatibilityReport()
+        (mapped,) = map_template([self.video(PlaybackRate=0.0)], report=report)
+        assert mapped.clip.speed == 1
+        (effect,) = mapped.audio_effects
+        assert value_at(effect.params["volume"]) == 0.0
+        # 絵がどうなるかは測っていない 等倍で動かしたことを数えて残す
+        assert any("再生速度 0" in line for line in report.lines())
+
+    def test_a_moving_rate_uses_its_first_value(self) -> None:
+        """動く値の形で来たら先頭の値を使い、動きは数えて残す
+
+        実物は 1156 個どれもただの数だった ``speed`` は動かせないので、動きを
+        黙って捨てると「全部写せている」と言いながら速さが変わらない
+        """
+        report = CompatibilityReport()
+        (mapped,) = map_template([self.video(PlaybackRate=moving(50.0, 200.0))], report=report)
+        assert mapped.clip.speed == Fraction(1, 2)
+        assert any("PlaybackRate" in line for line in report.lines())
+
+    def test_a_still_item_keeps_its_speed(self) -> None:
+        # 音を持たないアイテムに speed を持たせると、テキストや図形の動きの時刻が変わる
+        item = {
+            "$type": "YukkuriMovieMaker.Project.Items.ImageItem, YukkuriMovieMaker",
+            "FilePath": "C:/素材/絵.png",
+            "PlaybackRate": 50.0,
+            "Length": 60,
+        }
+        (mapped,) = map_template([item], report=CompatibilityReport())
+        assert mapped.clip.speed == 1
 
     def test_a_switched_off_audio_effect_is_not_counted(self) -> None:
         """切ってある音声エフェクトは数えない

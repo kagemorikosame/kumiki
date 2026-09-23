@@ -239,7 +239,15 @@ def _manifest_and_video(
     slots = tool.build_audio_slots()
     manifest = work / "audio-probe.json"
     manifest.write_text(json.dumps(tool.audio_manifest(slots, work / "tone.wav")), encoding="utf-8")
-    video = work / "audio-probe.mp4"
+    return _export_after(manifest, work / "audio-probe.mp4", newer=newer, content=content)
+
+
+def _export_after(manifest: Path, video: Path, *, newer: int, content: bytes) -> Path:
+    """書き出しを置き、その時刻を枠の一覧より ``newer`` 秒先にする
+
+    音・格子・絵の速さの探りで同じ 時刻を明示しないと、続けて書いた 2 つが同じ時刻に
+    なり（置き場によっては 2 秒刻みでしか残らない）「古い書き出し」と見なされる
+    """
     video.write_bytes(content)
     stamp = manifest.stat()
     os.utime(video, (stamp.st_atime + newer, stamp.st_mtime + newer))
@@ -527,11 +535,7 @@ def _mesh_manifest_and_video(
         json.dumps(tool.mesh_manifest(tool.build_mesh_slots(), work / "grid.png")),
         encoding="utf-8",
     )
-    video = work / "mesh-probe.mp4"
-    video.write_bytes(content)
-    stamp = manifest.stat()
-    os.utime(video, (stamp.st_atime + newer, stamp.st_mtime + newer))
-    return video
+    return _export_after(manifest, work / "mesh-probe.mp4", newer=newer, content=content)
 
 
 def test_measuring_the_mesh_before_the_export_explains_itself(
@@ -648,3 +652,321 @@ def test_ymm4_slots_come_back_in_manifest_order_though_read_in_time_order(
     assert first is not None and second is not None
     assert float(first[0, 0, 0]) == 65.0
     assert float(second[0, 0, 0]) == 5.0
+
+
+# 動画アイテムの再生速度が絵をどう進めるかの探り（video-rate-build / video-rate-measure）
+# 素材の絵はその場で合成する ffmpeg も YMM4 も要らない
+
+
+def _sources(count: int = 40) -> np.ndarray:
+    """フレームごとに違う絵 隣どうしでも見分けがつく乱数の模様"""
+    generator = np.random.default_rng(7)
+    return generator.uniform(0.0, 255.0, size=(count, 9, 16, 3)).astype(np.float32)
+
+
+def _played(sources: np.ndarray, rate: float, length: int) -> list[np.ndarray | None]:
+    """``rate`` 倍で素材を進めた枠 素材を読み切った後は最後の絵で止め、圧縮の揺れを乗せる"""
+    generator = np.random.default_rng(11)
+    last = len(sources) - 1
+    return [
+        sources[min(int(elapsed * rate), last)] + generator.normal(0.0, 2.0, sources[0].shape)
+        for elapsed in range(length)
+    ]
+
+
+@pytest.mark.parametrize("rate", [1.0, 0.5, 2.0])
+def test_the_slope_reads_the_playback_rate(tool: ModuleType, rate: float) -> None:
+    """経過フレームに対する素材のフレーム番号の傾きが、速さそのものになる
+
+    読み切った後の止まった尾まで含めると、200% の傾きが 2 より小さく出て
+    「YMM4 の絵は速さのとおりに進まない」と読み違える
+    """
+    sources = _sources()
+    indices = [found for found, _ in tool.match_frames(_played(sources, rate, 60), sources)]
+    slope = tool.rate_slope(indices, len(sources) - 1)
+    assert slope == pytest.approx(rate, abs=0.02)
+
+
+def test_a_stopped_picture_reads_as_stopped(tool: ModuleType) -> None:
+    """再生速度 0 で同じ絵が続くと「止まる」 傾きを求められないと扱うと、
+    止まったのか絵が出ていないのか見分けられない
+    """
+    sources = _sources()
+    indices = [found for found, _ in tool.match_frames(_played(sources, 0.0, 60), sources)]
+    assert set(indices) == {0}
+    slope = tool.rate_slope(indices, len(sources) - 1)
+    assert slope == 0.0
+    assert tool.rate_reading(slope) == "止まる"
+
+
+def test_a_picture_stopped_on_the_last_frame_reads_as_stopped(tool: ModuleType) -> None:
+    """最後のフレームだけが並んだ枠も「止まる」
+
+    最後のフレームで切ると点が残らず「絵が無い」と読み、一致数は揃っているのに
+    表の中で食い違う（0 で素材の末尾から映す枠や、最後の絵を出し続ける枠）
+    """
+    sources = _sources()
+    last = len(sources) - 1
+    pictures: list[np.ndarray | None] = [sources[last].copy() for _ in range(30)]
+    indices = [found for found, _ in tool.match_frames(pictures, sources)]
+    assert set(indices) == {last}
+    slope = tool.rate_slope(indices, last)
+    assert slope == 0.0
+    assert tool.rate_reading(slope) == "止まる"
+
+
+def test_a_black_frame_is_not_taken_for_a_dark_source_frame(tool: ModuleType) -> None:
+    """素材のどれにも似ていない絵（黒）は番号を持たない
+
+    一番近い物をそのまま番号にすると、絵が出ていない枠が素材の暗いフレームとして
+    数えられ、「止まる」と読み違える
+    """
+    sources = _sources()
+    black = [np.zeros_like(sources[0]) for _ in range(30)]
+    indices = [found for found, _ in tool.match_frames(black, sources)]
+    assert indices == [None] * 30
+    slope = tool.rate_slope(indices, len(sources) - 1)
+    assert slope is None
+    assert tool.rate_reading(slope) == "絵が無い"
+
+
+def test_the_slope_ignores_frames_missing_from_the_export(tool: ModuleType) -> None:
+    # 書き出しの頭が欠けても（動画に無い枠は None）、残りから同じ傾きを読む
+    sources = _sources()
+    pictures = _played(sources, 0.5, 60)
+    pictures[:5] = [None] * 5
+    indices = [found for found, _ in tool.match_frames(pictures, sources)]
+    assert tool.rate_slope(indices, len(sources) - 1) == pytest.approx(0.5, abs=0.02)
+
+
+def test_the_rate_row_reads_both_sides_the_same_way(tool: ModuleType) -> None:
+    """YMM4 と Sashimono を同じ読み方で並べる 片方だけ読み方が違うと、差が作り物になる"""
+    sources = _sources()
+    entry = {"index": 0, "name": "PlaybackRate=50", "rate": 50.0}
+    sides = [("ymm4", _played(sources, 0.5, 40)), ("sashimono", _played(sources, 1.0, 40))]
+    row = tool.rate_row(entry, sides, sources, tool.RATE_MATCH_LIMIT)
+    assert row["ymm4"]["reading"] == "0.50 倍"
+    assert row["sashimono"]["reading"] == "1.00 倍"
+    assert row["ymm4"]["first"] == 0
+    assert row["ymm4"]["matched"] == 40
+
+
+def test_the_rate_slots_never_overlap_and_outlast_the_source(tool: ModuleType) -> None:
+    """枠は重ならず、素材より長い 短いと 50% で素材を読み進める途中で枠が終わり、
+    読み切った後の絵（止まるのか消えるのか）も見えない
+    """
+    slots = tool.build_rate_slots()
+    assert [slot.rate for slot in slots] == [100.0, 50.0, 200.0, 0.0]
+    for before, after in itertools.pairwise(slots):
+        assert after.start >= before.start + tool.RATE_SLOT + tool.RATE_GAP
+    assert tool.RATE_SLOT > tool.RATE_SOURCE_SECONDS * tool.FPS
+
+
+def test_the_rate_item_writes_both_rate_fields_like_the_newer_ymm4(tool: ModuleType) -> None:
+    """実物の新しい版の動画アイテムは ``PlaybackRate`` と ``PlaybackRate2`` が同じ値
+
+    片方だけ変えると、YMM4 がどちらを読んだのか書き出しから読めない
+    """
+    slot = tool.build_rate_slots()[1]
+    item = tool.rate_video_item(slot, Path("C:/work/source.mp4"))
+    assert item["$type"].startswith("YukkuriMovieMaker.Project.Items.VideoItem")
+    assert item["PlaybackRate"] == slot.rate
+    assert item["PlaybackRate2"]["Values"] == [{"Value": slot.rate}]
+    assert item["PlaybackRateAudioProcessingMode"] == "Resampling"
+    assert item["Length"] == tool.RATE_SLOT
+
+
+def _no_ffmpeg(tool: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(tool.shutil, "which", lambda _name: None)
+
+
+def test_the_rate_build_without_ffmpeg_explains_itself(
+    tool: ModuleType,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ffmpeg が無い機械で例外で落ちると、道具が壊れたのか環境なのか分からない"""
+    _no_ffmpeg(tool, monkeypatch)
+    (tmp_path / "video-rate-report.json").write_text("{}", encoding="utf-8")
+    assert tool.command_video_rate_build(SimpleNamespace(work=tmp_path)) == 0
+    assert "ffmpeg" in capsys.readouterr().out
+    assert not (tmp_path / "video-rate-probe.ymmp").exists()
+    # 作れなかった道でも前の表を残さない 残ると、作り直した探りの結果として開けてしまう
+    assert not (tmp_path / "video-rate-report.json").exists()
+
+
+def test_the_rate_build_without_libx264_says_so(
+    tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # libx264 の無い ffmpeg がある 失敗の理由を言わないと、ffmpeg を入れ直しても直らない
+    monkeypatch.setattr(tool.shutil, "which", lambda _name: "ffmpeg")
+    failed = SimpleNamespace(returncode=1, stderr=b"Unknown encoder 'libx264'\n")
+    monkeypatch.setattr(tool.subprocess, "run", lambda *_a, **_k: failed)
+    assert "libx264" in tool.make_rate_source(tmp_path / "source.mp4")
+
+
+def test_the_rate_probe_writes_an_absolute_path_for_the_source(
+    tool: ModuleType,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """相対のまま書くと YMM4 が素材を見つけられず、全部の枠が黒になる
+
+    黒を測ると「どの速さでも絵が出ない」と読めてしまう 前の書き出しが残っていれば言う
+    """
+    monkeypatch.setattr(tool, "make_rate_source", lambda target: (target.write_bytes(b""), "")[1])
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "work").mkdir()
+    (tmp_path / "work" / "video-rate-probe.mp4").write_bytes(b"")
+    assert tool.command_video_rate_build(SimpleNamespace(work=Path("work"))) == 0
+    assert "前の探りの書き出し" in capsys.readouterr().out
+    raw = (tmp_path / "work" / "video-rate-probe.ymmp").read_bytes().decode("utf-8-sig")
+    paths = [item["FilePath"] for item in json.loads(raw)["Timelines"][0]["Items"]]
+    assert len(paths) == len(tool.RATE_CONDITIONS)
+    assert all(Path(path).is_absolute() for path in paths)
+
+
+def _rate_manifest_and_video(
+    tool: ModuleType, work: Path, *, newer: int = 60, content: bytes = b""
+) -> Path:
+    """枠の一覧と、素材と書き出しを置く 素材は ``media`` に作る 時刻の扱いは音の探りと同じ"""
+    manifest = work / "video-rate-probe.json"
+    manifest.write_text(
+        json.dumps(tool.rate_manifest(tool.build_rate_slots(), work / "video-rate-source.mp4")),
+        encoding="utf-8",
+    )
+    return _export_after(manifest, work / "video-rate-probe.mp4", newer=newer, content=content)
+
+
+def test_measuring_the_rate_before_building_explains_itself(
+    tool: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    arguments = SimpleNamespace(work=tmp_path, skip_sashimono=True)
+    assert tool.command_video_rate_measure(arguments) == 0
+    assert "video-rate-build" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("newer", [-60, 0])
+def test_a_rate_export_not_newer_than_the_probe_is_refused(
+    tool: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str], newer: int
+) -> None:
+    """作り直した探りで古い書き出しを測ると、別の速さを測った表が出る
+
+    同じ時刻も断る 置き場によっては時刻が 2 秒刻みでしか残らない
+    """
+    _rate_manifest_and_video(tool, tmp_path, newer=newer)
+    arguments = SimpleNamespace(work=tmp_path, skip_sashimono=True)
+    assert tool.command_video_rate_measure(arguments) == 0
+    assert "作り直す前の書き出し" in capsys.readouterr().out
+
+
+def test_a_broken_rate_export_explains_itself_and_drops_the_old_report(
+    tool: ModuleType,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """書き出しの途中や壊れた mp4 で traceback が出ると、測り方の案内が出ない
+
+    前の表も残さない 残ると、新しい結果として開けてしまう
+    """
+    (tmp_path / "video-rate-source.mp4").write_bytes(b"")
+    monkeypatch.setattr(tool, "_read_source", lambda _media: _sources())
+    _rate_manifest_and_video(tool, tmp_path, content=b"not a movie")
+    (tmp_path / "video-rate-report.json").write_text("{}", encoding="utf-8")
+    arguments = SimpleNamespace(work=tmp_path, skip_sashimono=True)
+    assert tool.command_video_rate_measure(arguments) == 0
+    assert "書き出しが終わっていないか壊れています" in capsys.readouterr().out
+    assert not (tmp_path / "video-rate-report.json").exists()
+
+
+def test_a_broken_rate_source_explains_itself(
+    tool: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # 素材が壊れていると全部の枠が「絵が無い」になり、YMM4 が絵を出さないと読み違える
+    (tmp_path / "video-rate-source.mp4").write_bytes(b"not a movie")
+    _rate_manifest_and_video(tool, tmp_path)
+    arguments = SimpleNamespace(work=tmp_path, skip_sashimono=True)
+    assert tool.command_video_rate_measure(arguments) == 0
+    assert "video-rate-build を走らせ直して" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("command", "maker", "failed", "stem", "report"),
+    [
+        ("command_audio_build", "make_tone", False, "audio-probe", "audio-report.json"),
+        (
+            "command_video_rate_build",
+            "make_rate_source",
+            "ffmpeg が無い",
+            "video-rate-probe",
+            "video-rate-report.json",
+        ),
+    ],
+)
+def test_a_failed_rebuild_drops_the_old_probe_so_it_is_not_measured_as_new(
+    tool: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+    maker: str,
+    failed: object,
+    stem: str,
+    report: str,
+) -> None:
+    """作り直しに失敗したら、前の一覧とプロジェクトも捨てる
+
+    残すと、前に成功していた作業フォルダでは measure が古い一覧と古い書き出しの組を
+    今回の物として測る 書き出しは本人が作った物なので残す
+    """
+    for name in (f"{stem}.json", f"{stem}.ymmp", f"{stem}.mp4", report):
+        (tmp_path / name).write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(tool, maker, lambda _target: failed)
+    assert getattr(tool, command)(SimpleNamespace(work=tmp_path)) == 0
+    assert not (tmp_path / f"{stem}.json").exists()
+    assert not (tmp_path / f"{stem}.ymmp").exists()
+    assert not (tmp_path / report).exists()
+    assert (tmp_path / f"{stem}.mp4").exists()
+
+
+def _refuse_reading(*_args: object) -> None:
+    raise AssertionError("フレームレートの違う書き出しを読み進めた")
+
+
+def test_a_mesh_export_at_another_frame_rate_is_refused(
+    tool: ModuleType,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """一覧の枠の番号は 30fps で数えている 60fps の書き出しにそのまま当てると、
+    枠の真ん中のつもりで前の方の絵を切り出し、別の点を動かした絵を測る
+    """
+    _mesh_manifest_and_video(tool, tmp_path)
+    monkeypatch.setattr(tool, "has_video_stream", lambda _video: True)
+    monkeypatch.setattr(tool, "export_fps", lambda _video: 60.0)
+    monkeypatch.setattr(tool, "_read_ymm4_slots", _refuse_reading)
+    assert tool.command_mesh_measure(SimpleNamespace(work=tmp_path)) == 0
+    assert "一覧は 30fps 書き出しは 60fps" in capsys.readouterr().out
+    assert not (tmp_path / "mesh-report.json").exists()
+
+
+def test_a_rate_export_at_another_frame_rate_is_refused(
+    tool: ModuleType,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 60fps の書き出しを 30fps の番号で数えると、等倍が 0.5 倍と出る
+    (tmp_path / "video-rate-source.mp4").write_bytes(b"")
+    monkeypatch.setattr(tool, "_read_source", lambda _media: _sources())
+    _rate_manifest_and_video(tool, tmp_path)
+    monkeypatch.setattr(tool, "has_video_stream", lambda _video: True)
+    monkeypatch.setattr(tool, "export_fps", lambda _video: 60.0)
+    monkeypatch.setattr(tool, "_read_rate_slots", _refuse_reading)
+    arguments = SimpleNamespace(work=tmp_path, skip_sashimono=True)
+    assert tool.command_video_rate_measure(arguments) == 0
+    assert "一覧は 30fps 書き出しは 60fps" in capsys.readouterr().out
+    assert not (tmp_path / "video-rate-report.json").exists()
