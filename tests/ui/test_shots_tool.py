@@ -23,7 +23,7 @@ from PySide6.QtGui import QColor, QImage
 from PySide6.QtWidgets import QApplication, QLabel, QTreeWidget, QWidget
 
 from sashimono.compat.aviutl import catalog as catalog_module
-from sashimono.compat.aviutl.catalog import ScriptCatalog, set_script_catalog
+from sashimono.compat.aviutl.catalog import ScriptCatalog, script_catalog, set_script_catalog
 from sashimono.compat.catalog import TemplateCatalog
 from sashimono.core import userdirs
 from sashimono.effects.definition import registry
@@ -221,9 +221,20 @@ class TestCompatibilityShot:
         scripts = userdirs.config_root() / "scripts"
         scripts.mkdir(parents=True)
         (scripts / "既定の置き場の見本.anm2").write_text("--track0:量,0,100,50\n", "utf-8")
+        # 手助けに入るだけで何もしない 見るのは、手助け自身が基準を取るときに既定の
+        # 探索先を走査しないか（前の手助けは走査して、見本を基準に入れて残していた）
         with _restored_scripts():
             pass
         assert not [d.kind for d in registry.all() if "既定の置き場の見本" in d.kind]
+        # 置いた見本が本当に走査される物か 走査されない物なら、上の確かめは何も言っていない
+        try:
+            script_catalog()
+            assert [d.kind for d in registry.all() if "既定の置き場の見本" in d.kind]
+        finally:
+            for definition in registry.all():
+                if "既定の置き場の見本" in definition.kind:
+                    registry.unregister(definition.kind)
+            monkeypatch.setattr(catalog_module, "_catalog", None)
 
     def test_the_report_shot_leaves_no_sample_behind(
         self, shots: ModuleType, qt_application: QApplication, tmp_path: Path

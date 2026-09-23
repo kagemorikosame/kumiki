@@ -340,3 +340,13 @@ def test_a_search_folder_listed_twice_gets_one_marker() -> None:
 
     markers = root_markers([r"D:\山田\Script", r"d:/山田/script", r"E:\別\Script"], [])
     assert [marker for _root, marker in markers] == ["<探索先1>", "<探索先2>"]
+
+
+def test_a_rooted_and_a_relative_folder_are_not_merged() -> None:
+    r"""頭の区切りを捨てて比べると、`\山田\Script` と `山田\Script` を同じ場所とみなし、
+    片方に印が付かないまま貼る文に場所が残る
+    """
+    from sashimono.ui.compat_dialog import root_markers
+
+    markers = root_markers([r"\山田\Script", r"山田\Script", r"D:\山田\Script"], [])
+    assert len(markers) == 3

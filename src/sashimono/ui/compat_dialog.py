@@ -10,6 +10,7 @@ AviUtl の ``obj`` API は広い 全部を一度に実装することはでき�
 from __future__ import annotations
 
 import ctypes
+import ntpath
 import os
 import re
 from collections.abc import Sequence
@@ -175,7 +176,9 @@ def root_markers(
         # 同じ探索先が 2 度並ぶと、印が 2 つ付いて画面（後の印）と貼る文（先の印）で
         # 食い違い、報告者が印の指す場所を確かめられない 1 つの場所に 1 つの印
         # 大文字小文字と区切りの違いは同じ場所として扱う（Windows では同じ場所を指す）
-        key = "/".join(part for part in re.split(_SEPARATORS, text.casefold()) if part)
+        # 頭の区切り（`\a` と `a` の違い）とドライブは残す 捨てると、絶対の場所と
+        # 同じ名前の相対の場所を同じ物とみなし、片方に印が付かない
+        key = ntpath.normcase(ntpath.normpath(text))
         if key in seen:
             continue
         seen.add(key)
