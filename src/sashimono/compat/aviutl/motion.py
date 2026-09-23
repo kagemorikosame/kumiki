@@ -40,6 +40,7 @@ from sashimono.core.model import AnimatedValue, Interpolation, Keyframe
 __all__ = [
     "Motion",
     "animated_value",
+    "from_aviutl1",
     "parse_motion",
 ]
 
@@ -80,6 +81,40 @@ _TIME_CONTROLLED = frozenset({"直線移動(時間制御)", "補間移動(時間
 
 #: 移動そのものを回転として扱うもの 中心の位置がファイルに出ないので写せない
 _ROTATED = frozenset({"直線移動(回転)", "補間移動(回転)"})
+
+
+#: AviUtl1 のトラックバーの行 ``始点,終点,移動方法の番号``
+#: AviUtl1 は中間点で区切った区間を別のオブジェクトとして書くので、1 行に並ぶ値は
+#: いつも 2 つ 移動方法は名前ではなく番号で書く
+_AVIUTL1_LINE = re.compile(
+    r"^(?P<start>-?\d+(?:\.\d+)?)\s*,\s*(?P<end>-?\d+(?:\.\d+)?)\s*,\s*(?P<method>\d+)$"
+)
+
+#: AviUtl1 の移動方法の番号と、AviUtl2 での呼び名
+#:
+#: 実物で確かめられたのは 3 だけ PSDToolKit の多目的スライダーのエイリアスが
+#: ``track0=0.00,0.00,3`` と書いており、同じ配布物の CHANGELOG（0.2beta45）に
+#: 「多目的スライダーの値の変化方法がデフォルトで瞬間移動になるように変更」とある
+#: ほかの番号は資料の並びから推測するしかないので名前を付けない 番号のまま
+#: 未対応として記録に残り、実物が来たときに数えて埋められる
+_AVIUTL1_METHODS: dict[int, str] = {3: "瞬間移動"}
+
+
+def from_aviutl1(raw: str) -> str:
+    """AviUtl1 の ``始点,終点,番号`` を、AviUtl2 と同じ ``値,値,移動方法,旗`` へ
+
+    書き直さずに読むと、番号が 3 つ目の**値**に見える ``0.00,0.00,3`` が
+    0 から 3 へ動く値として読まれ、中間点と数が合わないと記録されたうえ、
+    実物では動かない値に動きがあるように見えていた
+
+    形が合わない行（ただの数や文字）はそのまま返す
+    """
+    matched = _AVIUTL1_LINE.match(raw.strip())
+    if matched is None:
+        return raw
+    number = int(matched["method"])
+    method = _AVIUTL1_METHODS.get(number, f"AviUtl1 の番号 {number}")
+    return f"{matched['start']},{matched['end']},{method},0"
 
 
 @dataclass(frozen=True, slots=True)

@@ -20,6 +20,7 @@ from sashimono.core.io.serialize import (
     ProjectFileError,
     effect_from_json,
     effect_to_json,
+    json_text,
     source_from_json,
     source_to_json,
 )
@@ -129,9 +130,8 @@ class PresetStore:
         # 一時ファイルへ書いてから差し替える プリセットは作り直せないので、
         # 書き込み中に落ちて壊れると手作業で復元することになる
         temporary = target.with_name(target.name + ".writing")
-        temporary.write_text(
-            json.dumps(preset.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        # 値には読めないバイトを持つ文字が入りうる（json_text を参照）
+        temporary.write_text(json_text(preset.to_dict()), encoding="utf-8")
         temporary.replace(target)
         return target
 

@@ -27,7 +27,9 @@ AviUtl2 世代で増えた ``--track@名前:`` ``--check@名前:`` ``--select@``
 
 from __future__ import annotations
 
+import math
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from sashimono.effects.spec import (
@@ -45,8 +47,10 @@ from sashimono.effects.spec import (
 __all__ = [
     "ScriptHeader",
     "ScriptSection",
+    "lua_string",
     "lua_value",
     "parse_control",
+    "split_dialog",
     "split_scripts",
 ]
 
@@ -92,11 +96,17 @@ class ScriptSection:
     source: str
 
 
-def split_scripts(text: str) -> tuple[ScriptSection, ...]:
+def split_scripts(
+    text: str, *, on_error: Callable[[str, ValueError], None] | None = None
+) -> tuple[ScriptSection, ...]:
     """``@名前`` でスクリプトを分ける
 
     区切りが無ければファイル全体で 1 つ その場合の名前は空にしておき、
     呼び出し側がファイル名を使う
+
+    ``on_error`` を渡すと、設定欄を作れない節（範囲の崩れた値など）はそこへ知らせて
+    飛ばし、ほかの節は返す 渡さなければ例外のまま 1 本のファイルに十数本を入れる
+    配布物（``@効果集σ.anm`` は 13 本）で、1 節の崩れのために残りまで失うのを避ける
     """
     sections: list[tuple[str, list[str]]] = []
     current: list[str] = []
@@ -114,11 +124,20 @@ def split_scripts(text: str) -> tuple[ScriptSection, ...]:
         current.append(line)
 
     sections.append((name, current))
-    return tuple(
-        ScriptSection(header=parse_control("\n".join(body), name=title), source="\n".join(body))
-        for title, body in sections
-        if title or "".join(body).strip() or len(sections) == 1
-    )
+    built: list[ScriptSection] = []
+    for title, body in sections:
+        if not (title or "".join(body).strip() or len(sections) == 1):
+            continue
+        source = "\n".join(body)
+        try:
+            header = parse_control(source, name=title)
+        except ValueError as exc:
+            if on_error is None:
+                raise
+            on_error(title, exc)
+            continue
+        built.append(ScriptSection(header=header, source=source))
+    return tuple(built)
 
 
 def parse_control(text: str, *, name: str = "") -> ScriptHeader:
@@ -160,7 +179,7 @@ def parse_control(text: str, *, name: str = "") -> ScriptHeader:
         elif kind == "value":
             spec = _value(body, named)
         elif kind == "dialog":
-            parameters.extend(_dialog(body))
+            parameters.extend(_dialog(body, unknown))
             continue
         elif kind == "param":
             setup.append(body)
@@ -235,7 +254,7 @@ def _check(body: str, slot: str | None, named: str | None) -> ParameterSpec:
 def _font(body: str, named: str | None) -> ParameterSpec:
     parts = _split(body)
     label = parts[0] if parts else "フォント"
-    default = _unquote(parts[1]) if len(parts) > 1 and parts[1] else "Yu Gothic UI"
+    default = lua_string(parts[1]) if len(parts) > 1 and parts[1] else "Yu Gothic UI"
     return FontSpec(named or "font", label or "フォント", default)
 
 
@@ -243,7 +262,7 @@ def _text(body: str, named: str | None) -> ParameterSpec:
     """``--text@名前:ラベル,既定値`` AviUtl2 世代の文字入力欄"""
     parts = _split(body)
     label = parts[0] if parts else "文字"
-    default = _unquote(",".join(parts[1:])) if len(parts) > 1 else ""
+    default = lua_string(",".join(parts[1:])) if len(parts) > 1 else ""
     return TextSpec(named or "text", label or "文字", default)
 
 
@@ -309,17 +328,20 @@ def _value(body: str, named: str | None) -> ParameterSpec:
     """``--value@`` はスライダーを持たない数値 整数として扱う"""
     parts = _split(body)
     label = parts[0] if parts else "値"
-    return ValueSpec(named or "value", label or "値", int(_number(parts, 1, 0.0)))
+    number = _number(parts, 1, 0.0)
+    # nan と inf は整数にできず、int() が例外を投げてスクリプト一覧の走査を止める
+    # （inf の OverflowError は節ごとの受け止めもすり抜ける） 0 から始める
+    return ValueSpec(named or "value", label or "値", int(number) if math.isfinite(number) else 0)
 
 
-def _dialog(body: str) -> list[ParameterSpec]:
+def _dialog(body: str, unknown: list[str]) -> list[ParameterSpec]:
     """``ラベル,変数=初期値;ラベル/col,色=0xffffff;…``
 
     ラベルの末尾に付く ``/chk`` ``/col`` などが種類を決める AviUtl の
     仕様がここだけ独特なので、素直に書き下す
     """
     specs: list[ParameterSpec] = []
-    for chunk in body.split(";"):
+    for chunk in split_dialog(body):
         item = chunk.strip()
         if not item:
             continue
@@ -335,29 +357,96 @@ def _dialog(body: str) -> list[ParameterSpec]:
         label = label.strip() or name
         suffix = suffix.strip().lower()
         default = raw_default.strip() if has_default else ""
+        if default == "nil":
+            # 初期値が nil の欄は、Lua の表などを直接書き込むための欄
+            # （sigma のスクリプトの ``TRACK,_0=nil`` は、トラックバーの値を表で
+            # 差し替える入口） 数のスライダーにすると 0 が入り、``if _0 then _0[1]``
+            # が数を表として引いて、sigma の効果が 1 本残らず 1 行目で落ちた
+            # こちらの設定欄では表を書けないので、欄を作らず nil のまま渡す
+            continue
 
-        specs.append(_dialog_item(name, label, suffix, default))
+        specs.append(_dialog_item(name, label, suffix, default, unknown))
     return specs
 
 
-def _dialog_item(name: str, label: str, suffix: str, default: str) -> ParameterSpec:
+#: ``--dialog`` の 1 項目 引用符と ``[[ ]]`` の中の ``;`` では切らない
+#: 引用符の中では ``\`` と次の 1 文字をまとめて読む（Lua の書き方） そうしないと
+#: ``"a\";b"`` の ``\"`` を閉じ引用符と取り違え、中の ``;`` で切ってしまう
+_DIALOG_ITEM = re.compile(
+    r"""(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\[\[.*?\]\]|[^;])+""",
+    re.DOTALL,
+)
+
+#: 1 文字で決まる逃がし書き LuaJIT の字句解析（lj_lex.c）と同じ並び
+_LUA_SIMPLE_ESCAPES = {
+    "a": 7,
+    "b": 8,
+    "f": 12,
+    "n": 10,
+    "r": 13,
+    "t": 9,
+    "v": 11,
+    "\\": 92,
+    '"': 34,
+    "'": 39,
+    "\n": 10,
+    "\r": 10,
+}
+
+#: ``\z`` が読み飛ばす空白 Lua の ``isspace`` と同じ 6 文字
+_LUA_SPACES = " \t\n\r\v\f"
+
+
+class _BadEscapeError(ValueError):
+    """Lua なら読み込みで止まる逃がし書き"""
+
+
+def split_dialog(body: str) -> list[str]:
+    """``--dialog`` の本文や ``.exa`` の ``param=`` を項目ごとに切る
+
+    どちらも ``;`` 区切りだが、Lua の文字（``"…"`` ``[[…]]``）の中にも ``;`` は書ける
+    素直に ``split(";")`` すると ``[[a;b]]`` が ``[[a`` と ``b]]`` に割れ、初期値が
+    壊れたうえ後ろの半分が別の項目として読まれる 制御文字とエイリアスの値で
+    切り方がずれないよう、どちらもここを通す
+    """
+    return [chunk for chunk in _DIALOG_ITEM.findall(body) if chunk.strip()]
+
+
+def _dialog_item(
+    name: str, label: str, suffix: str, default: str, unknown: list[str]
+) -> ParameterSpec:
     if suffix == "chk":
-        return CheckSpec(name, label, _number([default], 0, 0.0) != 0)
+        return CheckSpec(name, label, _number([default], 0, 0.0) != 0, as_number=True)
     if suffix == "col":
         return ColorSpec(name, label, _color_value(default, (1.0, 1.0, 1.0, 1.0)))
     if suffix == "fig":
-        return SelectSpec(name, label, FIGURE_CHOICES, _unquote(default) or FIGURE_CHOICES[0][0])
+        # AviUtl1 の図形は figure フォルダの画像の名前も取れるので、こちらの一覧に無い
+        # 名前も書かれうる そのまま選択肢の既定値にすると SelectSpec が例外を投げ、
+        # スクリプト一覧の走査がその 1 本で止まる 記録に残して既定の図形へ寄せる
+        figure = lua_string(default)
+        if figure and figure not in dict(FIGURE_CHOICES):
+            unknown.append(f"--dialog の図形: {figure}")
+            figure = ""
+        return SelectSpec(name, label, FIGURE_CHOICES, figure or FIGURE_CHOICES[0][0])
     if suffix == "file":
         return FileSpec(name, label)
     if suffix == "font":
-        return FontSpec(name, label, _unquote(default) or "Yu Gothic UI")
+        return FontSpec(name, label, lua_string(default) or "Yu Gothic UI")
 
-    if default.startswith(('"', "'")):
-        return TextSpec(name, label, _unquote(default))
+    # ``[[…]]`` も Lua の文字 sigma の効果集は画像のパスの欄を ``パターン画像,_2=[[]]`` と
+    # 書く 数として読むと、パスの欄がスライダーになり、中身の入ったエイリアスを
+    # 読むたびに「数として読めない値」と記録されていた
+    if default.startswith(('"', "'", "[[")):
+        return TextSpec(name, label, lua_string(default))
 
     # 数値はスライダーにする AviUtl のダイアログは入力欄で、範囲も無いが、
     # こちらではキーフレームを打てる方が使い出がある 範囲は初期値から広めに取る
     value = _number([default], 0, 0.0)
+    if not math.isfinite(value):
+        # nan を既定値にするとスライダーの範囲の検査で例外になり、inf では範囲が
+        # 無限に広がる どちらも数の欄としては持てないので 0 から始める
+        unknown.append(f"--dialog の数として持てない初期値: {name}={default}")
+        value = 0.0
     span = max(100.0, abs(value) * 10.0)
     step = 0.01 if value != int(value) else 1.0
     return TrackSpec(name, label, -span, span, value, step=step)
@@ -386,7 +475,7 @@ def lua_value(spec: ParameterSpec, value: object) -> object:
         red, green, blue = (int(min(max(float(part), 0.0), 1.0) * 255) for part in value[:3])
         return (red << 16) | (green << 8) | blue
     if isinstance(spec, CheckSpec):
-        return bool(value)
+        return int(bool(value)) if spec.as_number else bool(value)
     if isinstance(spec, SelectSpec) and isinstance(value, str):
         # 選択肢の識別子が数字なら数値で渡す 配布スクリプトは
         # ``if style == 1 then`` のように数値で比べる
@@ -419,11 +508,93 @@ def _number(parts: list[str], index: int, default: float) -> float:
         return default
 
 
-def _unquote(value: str) -> str:
+def lua_string(value: str) -> str:
+    r"""Lua の文字の書き方（``"…"`` ``'…'`` ``[[…]]``）を外す それ以外はそのまま
+
+    引用符の中の逃がし書きは、AviUtl1 が使う LuaJIT の字句解析と同じ規則で戻す
+    （``\ddd`` ``\xXX`` ``\z`` ``\u{XXXX}`` と 1 文字のもの） 戻し方を半端にすると
+    ``\r`` が ``r`` に、``\065`` が ``065`` になり、スクリプトが受け取る文字が変わる
+
+    **Lua が読み込みで止める書き方（``\q`` や ``\256``）は、引用符ごと書かれたまま返す**
+    AviUtl1 ではそのダイアログ自体が読めずに失敗する物で、こちらで推し量って直すと、
+    本体では動かない値が動く値として紛れる 書かれたままなら、設定欄を開いた人に見える
+    """
     text = value.strip()
     if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
-        return text[1:-1]
+        # ``[[…]]`` は Lua でも逃がし書きを持たないので、こちらだけ戻す
+        try:
+            return _unescape_lua(text[1:-1])
+        except _BadEscapeError:
+            return text
+    if len(text) >= 4 and text.startswith("[[") and text.endswith("]]"):
+        return text[2:-2]
     return text
+
+
+def _unescape_lua(body: str) -> str:
+    r"""引用符の中身の逃がし書きを戻す 読めない書き方なら :class:`_BadEscapeError`
+
+    Lua の文字はバイト列なので、``\ddd`` と ``\xXX`` はバイトを 1 つ作る いったん
+    UTF-8 のバイト列に組み、読めないバイトは ``surrogateescape`` で落とさずに持つ
+    （``\255`` 1 つでも、1 バイトとして Lua へ返せば元と同じになる）
+    """
+    out = bytearray()
+    index = 0
+    length = len(body)
+    while index < length:
+        char = body[index]
+        if char != "\\":
+            out += char.encode("utf-8", "surrogateescape")
+            index += 1
+            continue
+        if index + 1 >= length:
+            raise _BadEscapeError(body)
+        code = body[index + 1]
+        index += 2
+        if code in _LUA_SIMPLE_ESCAPES:
+            out.append(_LUA_SIMPLE_ESCAPES[code])
+            # 逃がした改行が ``\r\n`` か ``\n\r`` なら、2 文字で 1 つの改行
+            if code in "\n\r" and index < length and body[index] in "\n\r" and body[index] != code:
+                index += 1
+        elif code.isascii() and code.isdigit():
+            end = index
+            while end < length and end - index < 2 and body[end].isascii() and body[end].isdigit():
+                end += 1
+            number = int(code + body[index:end])
+            if number > 255:
+                raise _BadEscapeError(body)
+            out.append(number)
+            index = end
+        elif code == "x":
+            digits = body[index : index + 2]
+            if len(digits) != 2 or not all(c in "0123456789abcdefABCDEF" for c in digits):
+                raise _BadEscapeError(body)
+            out.append(int(digits, 16))
+            index += 2
+        elif code == "z":
+            while index < length and body[index] in _LUA_SPACES:
+                index += 1
+        elif code == "u":
+            index = _unicode_escape(body, index, out)
+        else:
+            raise _BadEscapeError(body)
+    return out.decode("utf-8", "surrogateescape")
+
+
+def _unicode_escape(body: str, index: int, out: bytearray) -> int:
+    r"""LuaJIT 2.1 の ``\u{XXXX}`` 返り値は読み終えた位置"""
+    close = body.find("}", index)
+    digits = body[index + 1 : close] if body[index : index + 1] == "{" and close > 0 else ""
+    if not digits or not all(c in "0123456789abcdefABCDEF" for c in digits):
+        raise _BadEscapeError(body)
+    number = int(digits, 16)
+    # 代用符号（サロゲート U+D800..U+DFFF）と U+10FFFF より先は、LuaJIT 2.1 が
+    # invalid escape sequence で読み込みを止める（lupa の LuaJIT で確かめた）
+    # UTF-8 の形に作って通すと、AviUtl1 では読めない値がこちらでは読めてしまう
+    if number >= 0x110000 or 0xD800 <= number <= 0xDFFF:
+        raise _BadEscapeError(body)
+    out += chr(number).encode("utf-8")
+    return close + 1
 
 
 def _color_value(

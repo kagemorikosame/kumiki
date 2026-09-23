@@ -573,6 +573,10 @@ YMM4 の画面を UI Automation で操作して、開く・〔ファイル(F)〕
 
 - `tools/aviutl_count.py` … 手元のエイリアスを全部通して、写せない所を回数つきで数える
   見に行くのは `%PROGRAMDATA%\aviutl2\Alias` と `tests/fixtures/aviutl`
+  拡張子ごと（`.exa` は AviUtl1、`.object` は AviUtl2）にも分けて出す 開けても何も
+  置かないファイルは「何も置かない」の列に数える（AviUtl1 の `.exa` は以前どれもここに
+  落ちていたのに、読めなかった数は 0 本と出ていた） エイリアスが呼ぶスクリプトは、
+  いつもの置き場に加えて探す場所の中からも探す
 
 ```
 .venv\Scripts\python.exe tools\aviutl_count.py

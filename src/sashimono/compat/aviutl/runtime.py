@@ -25,10 +25,12 @@ from sashimono.compat.aviutl.control import ScriptHeader
 from sashimono.compat.aviutl.embedded import EMIT, build_source, has_embedded, literal_text
 from sashimono.compat.aviutl.encoding import read_text
 from sashimono.compat.aviutl.objapi import (
+    LUA_ENCODING,
     DrawCall,
     ObjApi,
     ObjectState,
     hsv_to_number,
+    lua_text,
     rgb_to_number,
 )
 from sashimono.compat.aviutl.report import CompatibilityReport, global_report
@@ -232,6 +234,8 @@ def _new_runtime(module: Any) -> Any:
             register_builtins=False,
             attribute_filter=_attribute_filter,
             max_memory=LUA_MEMORY_LIMIT,
+            # 読めないバイトを持つ文字を、どちらの向きでも落とさずに渡す（LUA_ENCODING）
+            encoding=LUA_ENCODING,
         )
     except (TypeError, ValueError, RuntimeError) as exc:
         raise LuaError(f"メモリの上限を付けられない Lua です: {exc}") from exc
@@ -345,6 +349,11 @@ class LuaScriptRuntime:
         # ``sethook`` を取っておいてから、中身を絞る
         for name in ("io", "os", "package", "require", "dofile", "loadfile", "load", "loadstring"):
             globals_table[name] = None
+        # ``package`` は中身の無い ``loaded`` だけを戻す sigma のスクリプトは読み込みの
+        # 頭で ``package.loaded.bit or pcall(require,"bit")`` と書いており、``package`` が
+        # nil だとそこで落ちて、効果が 1 本も動かなかった（ffi の要らない配布物 26 本） 本物の
+        # ``package`` は探索先（``path`` ``cpath``）とローダーを持つので戻さない
+        self._lua.execute("package = { loaded = {} }")
 
         globals_table["RGB"] = rgb_to_number
         globals_table["HSV"] = hsv_to_number
@@ -451,6 +460,11 @@ class LuaScriptRuntime:
 
     def _prepare(self, api: ObjApi, header: ScriptHeader | None, state: ObjectState) -> None:
         """``obj`` を繋ぎ、名前付きの値を大域変数へ置き、``--param`` を流し込む"""
+        # ``package`` はスクリプトごとに空の物へ戻す 同じランタイムでエフェクトを順に走らせる
+        # ので、戻さないと前のスクリプトが ``package.loaded`` に置いた物が後のスクリプトに見え、
+        # 積んだ順で結果が変わる 読み込んだモジュールは ``require`` の側がパスごとに覚えている
+        # （``package.loaded`` を使わない）ので、戻しても読み込みの速さは変わらない
+        self._lua.execute("package = { loaded = {} }")
         self._bind_obj(api.get, api.set)
         self._install_values(state)
         if header is None or not header.setup:
@@ -475,7 +489,8 @@ class LuaScriptRuntime:
             globals_table[name] = None
         self._injected = set(state.values)
         for name, value in state.values.items():
-            globals_table[name] = value
+            # バイトに戻せない代用符号だけを置き換える（lua_text を参照）
+            globals_table[name] = lua_text(value, self._report)
 
     # --- モジュール ---
 

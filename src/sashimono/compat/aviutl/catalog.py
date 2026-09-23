@@ -208,7 +208,15 @@ class ScriptCatalog:
             return
 
         relative = _relative(root, path)
-        for index, section in enumerate(split_scripts(text)):
+
+        def broken(title: str, exc: ValueError) -> None:
+            # 制御文字から設定欄を作れない節（範囲の崩れた値など）だけを飛ばす
+            # ファイルごと飛ばすと、同じファイルの読めていた節まで使えなくなる
+            where = f"{path.name}@{title}" if title else path.name
+            self._report.note_failure(where, f"制御文字を読めない: {exc}")
+
+        sections = split_scripts(text, on_error=broken)
+        for index, section in enumerate(sections):
             yield _entry(relative, kind, index, section, path.parent)
 
 

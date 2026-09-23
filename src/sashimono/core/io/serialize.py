@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
@@ -58,6 +59,7 @@ __all__ = [
     "ProjectFileError",
     "effect_from_json",
     "effect_to_json",
+    "json_text",
     "load_project",
     "project_from_dict",
     "project_to_dict",
@@ -65,6 +67,25 @@ __all__ = [
     "source_from_json",
     "source_to_json",
 ]
+
+#: 対になっていない代用符号 1 文字
+_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def json_text(value: Any, *, indent: int | None = 2, default: Any = None) -> str:
+    r"""日本語を読めるまま JSON の文字にする 対になっていない代用符号だけは ``\uXXXX`` で書く
+
+    AviUtl1 のダイアログの ``"\255"`` のように、UTF-8 で読めないバイトを持つ値は、
+    そのバイトを ``surrogateescape`` の形（U+DC80〜U+DCFF の 1 文字）で文字の中に持つ
+    ``ensure_ascii=False`` のまま UTF-8 で書くとそこで ``UnicodeEncodeError`` になり、
+    プロジェクトごと保存できない ファイル全体を ``ensure_ascii=True`` にすると日本語が
+    すべて ``\uXXXX`` になって読めなくなるので、その文字だけを逃がす
+    ``json.loads`` は ``\udcff`` を同じ 1 文字へ戻すので、読み直すと元の値のまま
+    （JSON の中で代用符号が出るのは文字の中だけなので、置き換えても形は崩れない）
+    """
+    text = json.dumps(value, ensure_ascii=False, indent=indent, default=default)
+    return _LONE_SURROGATE.sub(lambda found: f"\\u{ord(found[0]):04x}", text)
+
 
 FORMAT_NAME = "sashimono-project"
 #: 2 でシーン（``scenes`` と ``Clip.scene_id``）とグループ（``Clip.group_id``）を足した
@@ -750,7 +771,7 @@ def save_project(project: Project, path: Path) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".writing")
-    payload = json.dumps(project_to_dict(project), ensure_ascii=False, indent=2)
+    payload = json_text(project_to_dict(project))
 
     with temporary.open("w", encoding="utf-8", newline="\n") as handle:
         handle.write(payload)
