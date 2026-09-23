@@ -400,6 +400,37 @@ function New-PartialName {
     throw "一時の名前が既にあるファイルと重ならずに選べない（$folder）"
 }
 
+function Publish-Export {
+    param([string]$From, [string]$To)
+    # 書き終えたと確かめてから置き換える 前の書き出しが消えるのはここが初めて
+    try {
+        # 失敗を止まる例外にする 止まらない種類の失敗だと catch へ来ず、書き終えた扱いのまま進む
+        Move-Item -LiteralPath $From -Destination $To -Force -ErrorAction Stop
+    } catch {
+        # 出力の名前の動画を動画プレーヤーが開いているときなど 書き終えた物はまだ一時の名前にある
+        throw "出力の名前 $To へ置き換えられませんでした（$($_.Exception.Message)）"
+    }
+}
+
+function Clear-Unfinished {
+    param([string]$Path, [bool]$Written, [int]$Code)
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    if ($Written) {
+        # 書き終えて確かめた物は消さない 消すと、置き換えに失敗しただけで書き出しからやり直しになる
+        if ($Code -ne 0) {
+            Say "書き終えた書き出しは $Path に残してあります 出力の名前へは手で置き換えてください"
+        }
+        return
+    }
+    # 書き終えなかった一時の書き出しは捨てる 前の書き出しは出力の名前のまま残っている
+    # この名前は始めに無いことを確かめて選んだので、ここにある物はこの回に YMM4 が書いた物
+    try {
+        Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
+    } catch {
+        Say "一時の書き出し $Path を消せませんでした $($_.Exception.Message)"
+    }
+}
+
 function Close-Ymm4 {
     foreach ($window in Get-TopWindows) {
         # 主の窓の子（書き出しの窓・保存の窓）が開いていると、主の窓が閉じるのを止める
@@ -433,6 +464,7 @@ try {
 Say "一時の名前 $Partial"
 
 $exitCode = 1
+$written = $false
 $main = $null
 $original = $null
 try {
@@ -459,8 +491,8 @@ try {
     $exportButton.GetCurrentPattern($InvokePattern).Invoke()
     Save-As $main
     Wait-Written $main
-    # 書き終えたと確かめてから置き換える 前の書き出しが消えるのはここが初めて
-    Move-Item -LiteralPath $Partial -Destination $Output -Force
+    $written = $true
+    Publish-Export $Partial $Output
     Say "書き出しました $Output"
     $exitCode = 0
 } catch {
@@ -498,15 +530,7 @@ try {
             if ($exitCode -eq 0) { $exitCode = 1 }
         }
     }
-    # 書き終えなかった一時の書き出しは捨てる 前の書き出しは出力の名前のまま残っている
-    # この名前は始めに無いことを確かめて選んだので、ここにある物はこの回に YMM4 が書いた物
-    # YMM4 を閉じたあとに消す 書いている最中は YMM4 が掴んでいて消せない
-    if ((Test-Path -LiteralPath $Partial) -and $exitCode -ne 0) {
-        try {
-            Remove-Item -LiteralPath $Partial -Force
-        } catch {
-            Say "一時の書き出し $Partial を消せませんでした $($_.Exception.Message)"
-        }
-    }
+    # YMM4 を閉じたあとに片付ける 書いている最中は YMM4 が掴んでいて消せない
+    Clear-Unfinished $Partial $written $exitCode
 }
 exit $exitCode

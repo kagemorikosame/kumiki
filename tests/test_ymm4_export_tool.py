@@ -100,6 +100,7 @@ def test_a_missing_ymm4_says_where_it_looked_and_how_to_tell(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """探した所を出さないと、本人は ``--ymm4`` に何を渡せばよいか分からない"""
     monkeypatch.setattr(
         tool, "find_ymm4", lambda explicit, environ: (None, [r"Z:\nowhere\YukkuriMovieMaker.exe"])
     )
@@ -201,6 +202,7 @@ def test_success_without_a_file_is_not_reported_as_success(
 def test_a_project_that_is_not_ymmp_is_refused(
     tool: ModuleType, ready: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """テンプレート（.ymmt）などを渡すと YMM4 が別の窓を出し、帯の名前を待ったまま止まる"""
     other = ready["project"].with_suffix(".ymmt")
     other.write_bytes(b"")
     assert tool.main(["--project", str(other), "--output", str(ready["output"])]) == 1
@@ -210,11 +212,13 @@ def test_a_project_that_is_not_ymmp_is_refused(
 
 @pytest.mark.parametrize("seconds", ["0", "-5"])
 def test_a_timeout_that_cannot_wait_is_refused(tool: ModuleType, seconds: str) -> None:
+    """0 秒以下を通すと、書き出しが始まる前に「終わらない」で止まり、YMM4 だけが残る"""
     with pytest.raises(SystemExit):
         tool.parse_arguments(["--project", "a.ymmp", "--output", "a.mp4", "--timeout", seconds])
 
 
 def test_the_association_command_gives_the_exe(tool: ModuleType) -> None:
+    """読み違えると、関連付けのある機械でも「見つかりません」になり、毎回 ``--ymm4`` が要る"""
     command = r'"D:\Program\YukkuriMovieMaker_v4\YukkuriMovieMaker.exe" "%1"'
     assert tool.exe_from_command(command) == Path(
         r"D:\Program\YukkuriMovieMaker_v4\YukkuriMovieMaker.exe"
@@ -234,6 +238,7 @@ def _no_common_places(tool: ModuleType, monkeypatch: pytest.MonkeyPatch, root: P
 def test_the_association_finds_ymm4_wherever_it_was_unpacked(
     tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """YMM4 は zip を好きな所へ展開する 関連付けを見ないと、決まった置き場以外で見つからない"""
     _no_common_places(tool, monkeypatch, tmp_path)
     exe = tmp_path / "anywhere" / "YukkuriMovieMaker.exe"
     exe.parent.mkdir()
@@ -245,6 +250,7 @@ def test_the_association_finds_ymm4_wherever_it_was_unpacked(
 def test_a_common_place_is_used_when_nothing_is_registered(
     tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """関連付けを登録していない機械では、よく見る置き場に置いてあっても見つからなくなる"""
     _no_common_places(tool, monkeypatch, tmp_path)
     exe = tmp_path / "Program" / "YukkuriMovieMaker_v4" / "YukkuriMovieMaker.exe"
     exe.parent.mkdir(parents=True)
@@ -278,6 +284,7 @@ def test_a_named_ymm4_that_is_missing_is_not_swapped_for_another(
 def test_the_places_looked_at_are_listed_when_nothing_is_found(
     tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """探した先を返さないと、見つからないときの案内が空になり、どこを直せばよいか分からない"""
     _no_common_places(tool, monkeypatch, tmp_path)
     found, looked = tool.find_ymm4(None, {}, association=lambda: None)
     assert found is None
@@ -308,6 +315,7 @@ def test_powershell_lines_are_read_as_utf8_first(tool: ModuleType) -> None:
 def test_the_output_is_relayed_line_by_line(
     tool: ModuleType, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """中継しないと、本人は YMM4 がどこで止まったのか、何を戻せばよいのかを読めない"""
     code = "import sys; sys.stdout.buffer.write('書き出しています\\n'.encode()); sys.exit(3)"
     assert tool.run_script([sys.executable, "-c", code], 60) == (3, False)
     assert "書き出しています" in capsys.readouterr().out
@@ -351,6 +359,7 @@ _WINDOWS_ONLY = pytest.mark.skipif(
 
 @_WINDOWS_ONLY
 def test_the_script_parses_in_windows_powershell() -> None:
+    """構文が壊れると、YMM4 を開く前に PowerShell が落ち、書き出しは 1 本もできない"""
     command = (
         "$errors = $null; "
         "[void][System.Management.Automation.Language.Parser]::ParseFile("
@@ -510,7 +519,80 @@ def test_the_export_is_written_under_the_temporary_name() -> None:
         assert "$Partial" in bodies[name], name
         assert "$Output" not in bodies[name], name
     text = SCRIPT.read_text(encoding="utf-8-sig")
-    assert "Move-Item -LiteralPath $Partial -Destination $Output" in text
+    assert "Publish-Export $Partial $Output" in text
+    assert "Move-Item -LiteralPath $From -Destination $To" in bodies["Publish-Export"]
+
+
+#: 置き換えと片付けを本物の関数で走らせる 出力の名前のファイルを共有なしで掴んでおき、
+#: 動画プレーヤーが開いているときと同じく置き換えを失敗させる
+_PUBLISH = """
+$script:StandardOutput = [Console]::OpenStandardOutput()
+function Say([string]$Text) {SAY}
+function Publish-Export {PUBLISH}
+function Clear-Unfinished {CLEAR}
+$written = [bool]::Parse($env:SASHIMONO_WRITTEN)
+$code = 0
+$lock = [System.IO.File]::Open($env:SASHIMONO_OUTPUT, 'Open', 'Read', 'None')
+try {
+    if ($written) { Publish-Export $env:SASHIMONO_PARTIAL $env:SASHIMONO_OUTPUT }
+} catch {
+    Say "書き出せませんでした $($_.Exception.Message)"
+    $code = 1
+} finally {
+    $lock.Dispose()
+}
+if (-not $written) { $code = 1 }
+Clear-Unfinished $env:SASHIMONO_PARTIAL $written $code
+exit $code
+"""
+
+
+def _publish(tool: ModuleType, tmp_path: Path, *, written: bool) -> tuple[Path, Path, list[str]]:
+    bodies = _function_bodies(SCRIPT)
+    run = (
+        _PUBLISH.replace("{SAY}", bodies["Say"])
+        .replace("{PUBLISH}", bodies["Publish-Export"])
+        .replace("{CLEAR}", bodies["Clear-Unfinished"])
+    )
+    output = tmp_path / "a.mp4"
+    output.write_bytes(b"earlier")
+    partial = tmp_path / "a.sashimono-0123abcd.part.mp4"
+    partial.write_bytes(b"finished export")
+    completed = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", run],
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "SASHIMONO_OUTPUT": str(output),
+            "SASHIMONO_PARTIAL": str(partial),
+            "SASHIMONO_WRITTEN": str(written),
+        },
+        timeout=120,
+    )
+    lines = [tool.decode_line(raw) for raw in completed.stdout.splitlines()]
+    assert completed.returncode == 1, lines
+    return output, partial, lines
+
+
+@_WINDOWS_ONLY
+def test_a_failed_replace_keeps_the_finished_export_and_says_where(
+    tool: ModuleType, tmp_path: Path
+) -> None:
+    """置き換えに失敗しただけで書き終えた物を消すと、本人は書き出しからやり直すことになる"""
+    output, partial, lines = _publish(tool, tmp_path, written=True)
+    assert partial.read_bytes() == b"finished export", lines
+    assert output.read_bytes() == b"earlier", lines
+    assert any("置き換えられませんでした" in line for line in lines), lines
+    assert any(str(partial) in line and "残してあります" in line for line in lines), lines
+
+
+@_WINDOWS_ONLY
+def test_an_unfinished_export_is_still_thrown_away(tool: ModuleType, tmp_path: Path) -> None:
+    """書き終えなかった一時の書き出しを残すと、途中で切れた動画が置き場に溜まる"""
+    output, partial, lines = _publish(tool, tmp_path, written=False)
+    assert not partial.exists(), lines
+    assert output.read_bytes() == b"earlier", lines
 
 
 @_WINDOWS_ONLY
