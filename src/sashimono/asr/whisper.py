@@ -14,6 +14,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from sashimono.asr.backend import (
     AsrError,
     Progress,
@@ -23,6 +25,12 @@ from sashimono.asr.backend import (
 )
 from sashimono.asr.environment import runtime_status
 from sashimono.core.model import Transcript, TranscriptSegment, Word
+from sashimono.engine.decode import AudioDecoder, ProbeError, probe_media
+
+#: faster-whisper が受け取る音の形（16kHz・モノラル・float32）
+WHISPER_SAMPLE_RATE = 16000
+#: 音を読むときの 1 回の長さ（秒） 長い素材を 1 回で読むと、途中で止める機会が無い
+_READ_CHUNK_SECONDS = 60
 
 __all__ = ["FasterWhisperBackend"]
 
@@ -68,11 +76,15 @@ class FasterWhisperBackend:
         if should_cancel is not None and should_cancel():
             return None
 
+        audio = _media_audio(source, should_cancel)
+        if audio is None:
+            return None
+
         if progress is not None:
             progress(0.02, "音声を解析している")
         try:
             segments, info = model.transcribe(
-                str(source),
+                audio,
                 language=options.language,
                 beam_size=options.beam_size,
                 vad_filter=options.vad_filter,
@@ -131,6 +143,63 @@ class FasterWhisperBackend:
             raise AsrError(f"モデルを読み込めない ({options.model}): {exc}") from exc
         self._loaded_with = key
         return self._model
+
+
+def _media_audio(source: Path, should_cancel: ShouldCancel | None) -> np.ndarray | str | None:
+    """素材の音を faster-whisper の形で読む 止められたら ``None``
+
+    素材の時刻の原点（:func:`~sashimono.engine.decode.probe.media_origin`）から数えて読む
+    パスを渡して faster-whisper に読ませると、音の最初のサンプルを 0 秒として数えるので、
+    音の頭が原点と違う素材（AAC の前置き・音が映像より早く始まる物）では、起こした字幕が
+    その差の分だけずれる（Issue #125） 原点より前の音（前置きなど）は置いたクリップでも
+    鳴らない区間なので、起こさなくてよい
+
+    長さの分からない素材（調べても 0 と出た物）は、読む量を決められないので前と同じく
+    パスを渡す 音の頭と原点の差の分はずれうるが、断って起こせないよりよい
+    """
+    try:
+        item = probe_media(source)
+        chunk = _READ_CHUNK_SECONDS * WHISPER_SAMPLE_RATE
+        total = int(item.duration * WHISPER_SAMPLE_RATE)
+        # 配列を作る前に断る 音の無い長い動画で先に全長の配列を作ると、音が無いと
+        # 分かる前に大きな確保が走る
+        if not item.audio_streams:
+            raise AsrError(f"音声が無い: {source}")
+        if total <= 0:
+            audio: np.ndarray | str = str(source)
+        else:
+            # 全長の配列を先に 1 つだけ作って書き込む 読んだ分を貯めてから最後につなぐと、
+            # つなぐ瞬間に同じ長さの配列が 2 つ並ぶ（1 時間で 230MB が 460MB になる）
+            audio = np.empty(total, dtype=np.float32)
+            with AudioDecoder(source, sample_rate=WHISPER_SAMPLE_RATE, channels=1) as decoder:
+                for start in range(0, total, chunk):
+                    if should_cancel is not None and should_cancel():
+                        return None
+                    count = min(chunk, total - start)
+                    audio[start : start + count] = decoder.read(start, count)[:, 0]
+                    # 壊れた所から先は無音で返ってくる そのまま渡すと、そこから先の字幕が
+                    # 欠けたのに起こしは成功したように見える
+                    if decoder.decode_error is not None:
+                        # 失敗した位置が分かればそこを出す 読んだ塊の頭を出すと、
+                        # 実際より最大で 1 塊（60 秒）手前から読めないように見える
+                        at = decoder.decode_error_at
+                        seconds = (start if at is None else at) / WHISPER_SAMPLE_RATE
+                        raise AsrError(
+                            f"音声の {seconds:.1f} 秒から先に読めない所がある: "
+                            f"{decoder.decode_error}"
+                        )
+    except ProbeError as exc:
+        raise AsrError(f"音声を読めない: {exc}") from exc
+    except (MemoryError, ValueError) as exc:
+        # 全長の配列を作る所だけでなく、読むたびの配列でも足りなくなりうる ValueError は
+        # 配列の大きさが NumPy の上限を越えたとき（異常な長さの素材） 起こしの失敗として
+        # 出す 素のまま投げると起こしの枠の外（想定外の失敗）になる
+        raise AsrError(f"音声を読むメモリが足りない: {exc}") from exc
+    # 読み終わりにも見る 見ないと、1 回で読み切る短い素材や最後の読み込みの間、長さの
+    # 分からない素材を調べている間に止めても、そのままモデルへ渡して起こしが始まる
+    if should_cancel is not None and should_cancel():
+        return None
+    return audio
 
 
 def _to_segment(raw: Any) -> TranscriptSegment | None:
