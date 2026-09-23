@@ -73,9 +73,11 @@ def is_reviewed(head_sha: str, comments: list[Comment], since: datetime | None =
 #: 作られたコミットの連なりを延々と辿って API を叩き続けることになる
 MAX_MERGE_WALK = 20
 
-#: 取り込みで変わってよいファイルの数の上限 これを超えたら辿らずに待ちにする
-#: 数が多いほど照合の API 呼び出しが増えるので、諦めて人の目に回す
-MAX_MERGED_FILES = 300
+#: 比べる API が 1 回に返すファイルの数 GitHub の上限は 300 だが、頁をめくって集める
+PER_PAGE = 100
+
+#: めくる頁の数の上限 これを超える大きさの取り込みは、諦めて Qodo の見直しを待つ
+MAX_MERGED_PAGES = 5
 
 
 def only_base_merges_since(
@@ -99,6 +101,7 @@ def only_base_merges_since(
       であること（衝突を手で直すと、どちらとも違う中身になるので通らない）
     """
     sha = head_sha
+    newest_merge = None
     for _ in range(depth):
         parents: list[str] = [str(p["sha"]) for p in api(f"commits/{sha}")["parents"]]
         if len(parents) < 2:
@@ -106,22 +109,29 @@ def only_base_merges_since(
             return None
         if not all(_is_in_base(parent, base, api) for parent in parents[1:]):
             return None
-        merged_from = parents[1]
+        if newest_merge is None:
+            # 照合に使うのは**先頭に一番近い**取り込み元 2 回以上取り込んだときに
+            # 古い方と比べると、その後に main へ入った変更が差として残り、
+            # 取り込んだだけなのに通らなくなる
+            newest_merge = parents[1]
         sha = parents[0]
         if reviewed(sha):
             # Qodo の見たコミットに着いた ここで中身が合わなければ、取り込み以外の
             # 手が入っている さらに古いコミットを探しても中身は合わないので止める
-            return sha if _matches_base(sha, head_sha, merged_from, api) else None
+            return sha if _matches_base(sha, head_sha, newest_merge, api) else None
     return None
 
 
 def _is_in_base(sha: str, base: str, api: Callable[[str], Any]) -> bool:
     """``sha`` が ``base`` ブランチに入っているか
 
-    ``identical`` は同じコミット ``behind`` は base の方が先にある、つまり ``sha`` は
-    base の祖先 それ以外は main に入っていない物を取り込んだということなので通さない
+    ``compare/{base}...{sha}`` の ``status`` は**右側が左側から見てどうか**を返す
+    ``identical`` は同じコミット ``behind`` は右側が遅れている、つまり ``sha`` は
+    base の祖先で、すでに main に入っている
+    ``ahead`` と ``diverged`` は main に無いコミットを持つということなので通さない
+    向きを取り違えると、main に入っていない枝を取り込んだ PR まで通る
     """
-    return api(f"compare/{sha}...{base}")["status"] in ("identical", "behind")
+    return api(f"compare/{base}...{sha}")["status"] in ("identical", "behind")
 
 
 def _matches_base(
@@ -132,14 +142,27 @@ def _matches_base(
     衝突を手で直したときは、どちらの側とも違う中身になるのでここで落ちる
     ファイルの中身は blob の SHA で比べる 中身が 1 バイトでも違えば別の SHA になる
     """
-    changed = api(f"compare/{reviewed_sha}...{head_sha}").get("files") or []
-    if len(changed) > MAX_MERGED_FILES:
+    changed = _changed_files(reviewed_sha, head_sha, api)
+    from_base = _changed_files(reviewed_sha, merged_from, api)
+    if changed is None or from_base is None:
         return False
-    from_base = {
-        f["filename"]: f["sha"]
-        for f in (api(f"compare/{reviewed_sha}...{merged_from}").get("files") or [])
-    }
-    return all(from_base.get(f["filename"]) == f["sha"] for f in changed)
+    return all(from_base.get(name) == blob for name, blob in changed.items())
+
+
+def _changed_files(left: str, right: str, api: Callable[[str], Any]) -> dict[str, str] | None:
+    """2 つのコミットの間で変わったファイルと、その中身の SHA
+
+    比べる API は 1 回に 300 ファイルまでしか返さない 返ってきた数だけを見ると、
+    打ち切られた後ろに main 由来でない変更があっても通してしまう そこで頁をめくって
+    集め、上限を超えたら ``None``（＝分からないので通さない）を返す
+    """
+    files: dict[str, str] = {}
+    for page in range(1, MAX_MERGED_PAGES + 1):
+        batch = api(f"compare/{left}...{right}?per_page={PER_PAGE}&page={page}").get("files") or []
+        files.update({f["filename"]: f["sha"] for f in batch})
+        if len(batch) < PER_PAGE:
+            return files
+    return None
 
 
 def last_base_change(events: list[dict[str, Any]]) -> datetime | None:

@@ -117,13 +117,23 @@ class TestMergingTheBase:
         in_base: set[str],
         compares: dict[str, list[dict[str, str]]],
     ) -> object:
+        """GitHub の API の代わり 比べる向きも本物と同じにする
+
+        ``compare/{base}...{sha}`` は右側が左側から見てどうかを返す 向きを取り違えたまま
+        通る作りにしないよう、試験の側も本物の向きで答える
+        """
+
         def call(path: str) -> dict[str, object]:
             if path.startswith("commits/"):
                 return {"parents": [{"sha": s} for s in commits[path.split("/", 1)[1]]]}
-            left, right = path.removeprefix("compare/").split("...")
-            if right in ("main", "master"):
-                return {"status": "behind" if left in in_base else "diverged"}
-            return {"files": compares.get(f"{left}...{right}", [])}
+            pair = path.removeprefix("compare/").split("?")[0]
+            left, right = pair.split("...")
+            if left in ("main", "master"):
+                return {"status": "behind" if right in in_base else "ahead"}
+            page = int(path.split("page=")[-1]) if "page=" in path else 1
+            files = compares.get(pair, [])
+            per_page = 100
+            return {"files": files[(page - 1) * per_page : page * per_page]}
 
         return call
 
@@ -178,3 +188,35 @@ class TestMergingTheBase:
         chain = {f"{i:040x}": [f"{i + 1:040x}", self.MAIN] for i in range(50)}
         call = self.api(chain, {self.MAIN}, {})
         assert not gate.only_base_merges_since(f"{0:040x}", "main", lambda s: False, call)
+
+    def test_merging_main_twice_passes(self, gate: ModuleType) -> None:
+        # 2 回目の取り込みを古い方と比べると、その後 main へ入った変更が差として残り、
+        # 取り込んだだけなのに通らなくなる
+        first = "5555555555555555555555555555555555555555"
+        newer_main = "6666666666666666666666666666666666666666"
+        call = self.api(
+            {self.MERGE: [first, newer_main], first: [self.BRANCH, self.MAIN]},
+            {self.MAIN, newer_main},
+            {
+                f"{self.BRANCH}...{self.MERGE}": [{"filename": "a.py", "sha": "bb"}],
+                f"{self.BRANCH}...{newer_main}": [{"filename": "a.py", "sha": "bb"}],
+                f"{self.BRANCH}...{self.MAIN}": [{"filename": "a.py", "sha": "aa"}],
+            },
+        )
+        assert gate.only_base_merges_since(self.MERGE, "main", lambda s: s == self.BRANCH, call)
+
+    def test_a_branch_outside_main_is_not_taken_as_merged(self, gate: ModuleType) -> None:
+        # 比べる向きを取り違えると、main より先にある未レビューの枝を取り込んだ PR が通る
+        ahead = "7777777777777777777777777777777777777777"
+        call = self.api({self.MERGE: [self.BRANCH, ahead]}, {self.MAIN}, {})
+        assert not gate.only_base_merges_since(self.MERGE, "main", lambda s: s == self.BRANCH, call)
+
+    def test_a_list_cut_off_by_the_api_does_not_pass(self, gate: ModuleType) -> None:
+        # 返ってきた数だけを見ると、打ち切られた後ろに main 由来でない変更があっても通る
+        many = [{"filename": f"f{i}.py", "sha": "aa"} for i in range(gate.MAX_MERGED_PAGES * 100)]
+        call = self.api(
+            {self.MERGE: [self.BRANCH, self.MAIN]},
+            {self.MAIN},
+            {f"{self.BRANCH}...{self.MERGE}": many, f"{self.BRANCH}...{self.MAIN}": many},
+        )
+        assert not gate.only_base_merges_since(self.MERGE, "main", lambda s: s == self.BRANCH, call)
