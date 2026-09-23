@@ -42,7 +42,14 @@ from sashimono.compat.ymm4.values import (
     type_name,
 )
 from sashimono.core.commands import SetSource
-from sashimono.core.model import AnimatedValue, Clip, GeneratedSource, Interpolation, Project
+from sashimono.core.model import (
+    AnimatedValue,
+    Clip,
+    Effect,
+    GeneratedSource,
+    Interpolation,
+    Project,
+)
 
 #: 実物と同じ書き方のブラシ
 BRUSH = {
@@ -679,6 +686,99 @@ class TestVideoEffects:
             [{"$type": "N.MeshDeformationEffect, A", "IsEnabled": True}], report, length=1
         )
         assert any("MeshDeformationEffect" in line for line in report.lines())
+
+
+def mesh_point(x: float = 0.0, y: float = 0.0) -> dict[str, Any]:
+    return {"X": still(x), "Y": still(y), "IsSelected": False}
+
+
+def mesh_effect(columns: int, rows: int, points: list[Any] | None = None) -> dict[str, Any]:
+    """実物と同じ形の ``MeshDeformationEffect`` 点は左上から行ごと"""
+    return {
+        "$type": "YukkuriMovieMaker.Project.Effects.MeshDeformationEffect, YukkuriMovieMaker",
+        "HorizontalCount": columns,
+        "VerticalCount": rows,
+        "Points": [mesh_point() for _ in range(columns * rows)] if points is None else points,
+        "IsEnabled": True,
+    }
+
+
+def mesh_grid(effect: Effect) -> tuple[float, ...]:
+    grid = effect.params["grid"]
+    assert isinstance(grid, tuple)
+    return grid
+
+
+class TestMeshDeformation:
+    """2x2 より細かい格子（Issue #31）"""
+
+    def test_a_three_by_three_mesh_is_not_recorded_as_missing(self) -> None:
+        # 諦めると、格子で歪ませた配布テンプレートが歪まないまま出る
+        report = CompatibilityReport()
+        result = map_video_effects([mesh_effect(3, 3)], report, length=30)
+        assert not report.lines()
+        (mapped,) = result.effects
+        assert mapped.kind == "mesh_deform"
+        assert mesh_grid(mapped)[:2] == (3.0, 3.0)
+        assert len(mesh_grid(mapped)) == 2 + 9 * 2
+
+    def test_a_point_that_is_not_a_map_is_not_silently_flattened(self) -> None:
+        """点が辞書でない物を空の辞書へ置き換えると、その点だけ動かない格子が
+        黙って通り、記録にも残らないので直しようが無くなる
+        """
+        report = CompatibilityReport()
+        points: list[Any] = [mesh_point() for _ in range(9)]
+        points[4] = "壊れた点"
+        result = map_video_effects([mesh_effect(3, 3, points)], report, length=30)
+        assert not result.effects
+        assert report.lines()
+
+    def test_a_five_by_five_mesh_keeps_all_twentyfive_points(self) -> None:
+        report = CompatibilityReport()
+        (mapped,) = map_video_effects([mesh_effect(5, 5)], report, length=30).effects
+        assert not report.lines()
+        assert mesh_grid(mapped)[:2] == (5.0, 5.0)
+        assert len(mesh_grid(mapped)) == 2 + 25 * 2
+
+    def test_the_moved_point_stays_in_its_row_and_column(self) -> None:
+        # 並べ替えを間違えると絵が対角に折れる 上の真ん中を動かしたのに
+        # 左の真ん中が動くと、歪みの向きが 90 度ずれる
+        report = CompatibilityReport()
+        points = [mesh_point() for _ in range(9)]
+        points[1] = mesh_point(10.0, 20.0)
+        (mapped,) = map_video_effects([mesh_effect(3, 3, points)], report, length=30).effects
+        grid = mesh_grid(mapped)
+        # YMM4 の Y は下が正 こちらは上が正なので符号が反る
+        assert grid[2 + 1 * 2 : 2 + 1 * 2 + 2] == (10.0, -20.0)
+        assert [value for index, value in enumerate(grid[2:]) if index not in (2, 3)] == [0.0] * 16
+
+    def test_a_two_by_two_mesh_still_moves_with_keyframes(self) -> None:
+        # 四隅はスライダのまま写す 格子にすると、点ごとのアニメーションが落ちる
+        report = CompatibilityReport()
+        points = [mesh_point() for _ in range(4)]
+        points[0] = {"X": moving(0.0, 30.0), "Y": still(0.0), "IsSelected": False}
+        (mapped,) = map_video_effects([mesh_effect(2, 2, points)], report, length=30).effects
+        assert mapped.params["grid"] == ()
+        assert value_at(mapped.params["point0_x"], 30) == 30.0
+
+    def test_a_grid_too_big_for_the_shader_is_recorded(self) -> None:
+        # シェーダの配列より多い点を渡すと、配列の外を読む
+        report = CompatibilityReport()
+        assert not map_video_effects([mesh_effect(10, 10)], report, length=30).effects
+        assert any("10x10" in line for line in report.lines())
+
+    def test_points_that_do_not_match_the_counts_are_recorded(self) -> None:
+        # 点が欠けた記録を 0 で埋めて写すと、その点だけ畳まれた絵になる
+        report = CompatibilityReport()
+        short = mesh_effect(3, 3, [mesh_point() for _ in range(4)])
+        assert not map_video_effects([short], report, length=30).effects
+        assert any("3x3" in line for line in report.lines())
+
+    def test_a_grid_with_one_column_is_recorded(self) -> None:
+        # 点が 1 列しか無いとセルが作れず、割る数が 0 になって絵が消える
+        report = CompatibilityReport()
+        assert not map_video_effects([mesh_effect(1, 3)], report, length=30).effects
+        assert any("1x3" in line for line in report.lines())
 
 
 class TestGroups:
