@@ -85,8 +85,12 @@ README_TEXT = f"""Sashimono Edit {__version__}
 
 起動: Sashimono.exe
 
-AviUtl のスクリプト（.anm2 .obj2 など）は、この隣の {PORTABLE_SCRIPTS_DIR} フォルダへ
-置けば読み込まれます AviUtl2 が入っていれば、そちらの Script フォルダも読みます
+AviUtl のスクリプト（.anm2 .obj2 など）は、ソフトの〔互換〕→〔スクリプトフォルダを開く〕で
+開くフォルダ（%APPDATA%\\Sashimono\\scripts）へ置けば読み込まれます AviUtl2 が入って
+いれば、そちらの Script フォルダも読みます
+
+この隣の {PORTABLE_SCRIPTS_DIR} フォルダも読みますが、新しい版へ入れ替えるときにこの
+フォルダごと差し替えると中身が消えます 自分で足すスクリプトは上のフォルダへ置いてください
 
 動かないときは、このフォルダでコマンドを開いて次を打つと、どの部品が
 動いていないかが 1 行ずつ出ます（そのまま打つと、結果は窓で出ます）

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import ctypes
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -51,6 +52,32 @@ def opened(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
     monkeypatch.setattr(QDesktopServices, "openUrl", fake_open)
     return urls
+
+
+class TestScriptFolder:
+    def test_the_menu_opens_the_folder_an_update_keeps(
+        self,
+        window: MainWindow,
+        opened: list[str],
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """配布版でも〔スクリプトフォルダを開く〕は %APPDATA% の側を開く（Issue #138）
+
+        exe の隣の ``scripts`` を開くと、そこへ置いた人のスクリプトが新しい版への
+        入れ替えで消える 読む順の先頭が exe の隣でも、開くのは入れ替えても残る側
+        """
+        executable = tmp_path / "Sashimono" / "Sashimono.exe"
+        executable.parent.mkdir()
+        executable.write_bytes(b"")
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        monkeypatch.setattr(sys, "executable", str(executable))
+        monkeypatch.setenv("APPDATA", str(tmp_path / "roaming"))
+        window.open_script_folder()
+        (url,) = opened
+        target = QUrl(url).toLocalFile()
+        assert Path(target) == tmp_path / "roaming" / "Sashimono" / "scripts"
+        assert Path(target).is_dir()
 
 
 class TestHelpMenu:
