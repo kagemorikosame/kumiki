@@ -242,6 +242,38 @@ class TestPluginModules:
         finally:
             plugin.forget()
 
+    def test_a_module_that_could_not_be_used_is_recorded(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        """プラグインは読めても中のモジュールが使えないとき、黙って捨てると
+        利用者には「モジュールが見つかりません」しか見えず、原因を追えない
+        """
+        (tmp_path / "半分.aux2").write_bytes(b"MZ")
+        monkeypatch.setattr("sys.platform", "win32")
+
+        def half(path: Path) -> dict[str, Any]:
+            plugin._problems[path.resolve()] = [
+                f"汎用プラグイン {path.name} のモジュール x を使えない"
+            ]
+            return {}
+
+        monkeypatch.setattr(plugin, "_load", half)
+        try:
+            report = CompatibilityReport()
+            plugin._scan((tmp_path,), report)
+            assert any("半分.aux2 のモジュール x" in line for line in report.missing)
+        finally:
+            plugin._problems.pop((tmp_path / "半分.aux2").resolve(), None)
+
+    def test_an_unnamed_registration_is_counted(self) -> None:
+        """名前の無い登録は引けないので使わないが、数えずに捨てると、
+        それを使うスクリプトが止まったときに原因を追えない
+        """
+        host = plugin._Host()
+        host._register_unnamed(0x1234)
+        host._register_unnamed(None)
+        assert host.unnamed == 1
+
     def test_switched_off_gives_no_modules(self, tmp_path: Path) -> None:
         """切っても読むなら、設定に意味が無い"""
         native.set_enabled(False)

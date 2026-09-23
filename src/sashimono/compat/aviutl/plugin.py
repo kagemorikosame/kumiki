@@ -166,6 +166,10 @@ class _Host:
 
     def __init__(self) -> None:
         self.modules: dict[str, int] = {}
+        #: 名前の無い登録を受けた回数 こちらからは引けないので使わないが、
+        #: 数えて記録に残す 黙って捨てると、そのモジュールを使うスクリプトが
+        #: 「見つかりません」で止まったときに原因を追えない
+        self.unnamed = 0
         self._keep: list[Any] = []
         self.table = _HostAppTable(**{name: self._slot(name, kind) for name, kind in _HOST_SLOTS})
 
@@ -190,7 +194,8 @@ class _Host:
     def _register_unnamed(self, table: int | None) -> None:
         # 名前の無い登録 SDK は名前の決め方を書いていないので、こちらからは
         # 引けない 名前付きだけを使う（実物の comfont.aux2 は名前付きで呼ぶ）
-        del table
+        if table:
+            self.unnamed += 1
 
 
 def _refuse(kind: Any) -> Any:
@@ -240,6 +245,9 @@ _told: weakref.WeakValueDictionary[int, CompatibilityReport] = weakref.WeakValue
 #: 伝え直さないと、互換性の記録の画面で消したあとは理由が二度と戻らない
 _told_at: dict[int, int] = {}
 _loaded: dict[Path, Any] = {}
+#: 読めたが一部を使えなかった理由 プラグインごと（実体のパス）に覚える
+#: `_register` からは記録の器に触れないので、ここへ置いて `_scan` が記録する
+_problems: dict[Path, list[str]] = {}
 _lock = threading.RLock()
 
 
@@ -338,6 +346,8 @@ def _scan(roots: tuple[Path, ...], report: CompatibilityReport) -> dict[str, Nat
                 # どのプラグインがどう失敗したかを残す
                 report.note_missing(f"汎用プラグイン {path.name} を読めない: {exc}")
                 continue
+            for line in _problems.get(path.resolve(), ()):
+                report.note_missing(line)
             for name, module in loaded.items():
                 if name in found:
                     # 先に見つけた方（直下が先）を残す 後から上書きすると、
@@ -365,12 +375,12 @@ def _load(path: Path) -> dict[str, NativeModule]:
             library = ctypes.WinDLL(str(resolved))
         except OSError as exc:
             raise NativeModuleError(f"{path.name} を読めない: {exc}") from exc
-        modules = _register(library, path)
+        modules = _register(library, path, _problems.setdefault(resolved, []))
         _loaded[resolved] = modules
         return dict(modules)
 
 
-def _register(library: Any, path: Path) -> dict[str, NativeModule]:
+def _register(library: Any, path: Path, problems: list[str]) -> dict[str, NativeModule]:
     # こちらより新しい本体を求めるプラグインは、ここで断る（理由は _scan が記録する）
     version = host_version_for(library, path)
 
@@ -411,10 +421,15 @@ def _register(library: Any, path: Path) -> dict[str, NativeModule]:
     for name, address in host.modules.items():
         try:
             modules[name] = NativeModule.from_address(path, library, address)
-        except NativeModuleError:
+        except NativeModuleError as exc:
             # 1 つのモジュールの一覧が壊れていても、同じプラグインの
-            # 別のモジュールは使える
-            continue
+            # 別のモジュールは使える 理由は _scan が記録へ残す
+            problems.append(f"汎用プラグイン {path.name} のモジュール {name} を使えない: {exc}")
+    if host.unnamed:
+        problems.append(
+            f"汎用プラグイン {path.name} の名前の無いモジュール {host.unnamed} 個"
+            "（名前が分からず引けない）"
+        )
     return modules
 
 
