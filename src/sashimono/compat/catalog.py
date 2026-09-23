@@ -419,13 +419,21 @@ def _held_at_end(clip: Clip, media: MediaItem, rate: FrameRate) -> Fraction | No
     越えないクリップに持たせないのは、止まらないのに設定画面へ「絵を止める」が出て、
     何を止めているのか分からなくなるため
 
-    最後の絵の時刻は、映像の終わりから映像のフレーム 1 つ分を引いた所 デコーダは
-    「その時刻を越えない最後のフレーム」を返し、素材の長さちょうどでは何も返さない
+    最後の絵の時刻は、映像の終わりの **time_base の 1 刻み手前** デコーダは「その時刻を
+    越えない最後のフレーム」を返し（:meth:`~sashimono.engine.decode.VideoDecoder.frame_at`）、
+    終わりちょうどでは何も返さない 最後のフレームの PTS は必ず終わりより 1 刻み以上前に
+    あるので、フレームの間隔によらず最後のフレームが出る 平均のフレーム 1 つ分を引くと、
+    可変フレームレートの素材で最後の間隔が平均より短いとき、1 つ前の絵で止まる
+
     映像の終わりは映像の道の長さ
     （:attr:`~sashimono.core.model.VideoStreamInfo.end_time`）で見る コンテナの
     長さ（:attr:`MediaItem.duration`）で見ると、音の方が長い素材で最後の映像フレームより
     後ろを指し、止めた後もデコーダが毎フレーム終わり付近へシークし直してデコードする
+    道の終わりは PTS そのままの時刻で、クリップの ``source_in`` やデコーダが読む時刻と
+    同じ数え方 コンテナの長さは頭の時刻を含まないので、2 つの小さい方を取ると、頭が
+    0 より後ろの素材で映像の途中の絵に止まる（混ぜない）
     道の長さが分からない素材（古いプロジェクトに入っていた素材など）はコンテナの長さで見る
+    頭の時刻が分からないので、頭が 0 の素材として扱う
 
     長さの分からない素材（0 と読めた物）と静止画は止めない 静止画はもともと
     いつでも同じ絵で、長さの分からない素材はどこが最後か決められない
@@ -434,11 +442,14 @@ def _held_at_end(clip: Clip, media: MediaItem, rate: FrameRate) -> Fraction | No
         return None
     # 映像のクリップが読むのは最初の映像ストリーム（:func:`_split_sound` と同じ）
     stream = media.video_streams[0]
-    # コンテナより長いとは読まない 素材の長さ以上の時刻はデコーダが何も返さない
-    end = media.duration if stream.end_time is None else min(stream.end_time, media.duration)
+    end = media.duration if stream.end_time is None else stream.end_time
     if clip.source_out(rate) <= end:
         return None
-    return max(Fraction(0), end - stream.frame_rate.frame_duration)
+    # 1 刻みがフレームより長い（壊れた time_base）ときはフレーム 1 つ分に抑える 大きく引くと
+    # 最後より前の絵で止まる 0 以下の刻みは引いても終わりちょうどになり、何も映らない
+    frame = stream.frame_rate.frame_duration
+    tick = stream.time_base if 0 < stream.time_base < frame else frame
+    return max(Fraction(0), end - tick)
 
 
 def _with_audio_effects(clip: Clip, item: MappedObject) -> Clip:

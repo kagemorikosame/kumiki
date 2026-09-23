@@ -59,6 +59,13 @@ class VideoDecoder:
             item.video_streams[0],
         )
         self._duration = item.duration
+        # 素材の時刻はフレームの PTS そのもの（頭の時刻を引かない :func:`_frame_time`） 一方
+        # コンテナの長さは頭の時刻を含まない 終わりを長さそのものと比べると、頭が 0 より
+        # 後ろの素材（分割して書き出した物）は、映像の途中から先が何も映らない
+        start = self._container.start_time
+        self._end = self._duration + (
+            Fraction(start, av.time_base) if start is not None and start > 0 else Fraction(0)
+        )
 
         self._frames = self._container.decode(self._stream)
         #: 今「表示されている」フレーム 最後に返したもの
@@ -95,7 +102,7 @@ class VideoDecoder:
         回転情報を持つ素材では、表示すべき向きに直してから返す
         """
         target = max(Fraction(0), Fraction(seconds))
-        if self._duration > 0 and target >= self._duration:
+        if self._duration > 0 and target >= self._end:
             return None
 
         frame = self._decode_at(target)

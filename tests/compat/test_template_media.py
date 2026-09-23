@@ -15,10 +15,11 @@ from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from sashimono.compat.aviutl.report import CompatibilityReport
-from sashimono.compat.catalog import gather_media, place
+from sashimono.compat.catalog import Probe, gather_media, place
 from sashimono.compat.mapped import MappedObject
 from sashimono.compat.ymm4.template import map_template
 from sashimono.core.commands import AddTrack, Command
@@ -35,6 +36,8 @@ from sashimono.core.model import (
     VideoStreamInfo,
 )
 from sashimono.core.timebase import FrameRate
+from sashimono.engine.decode import VideoDecoder, probe_media
+from tests.media_fixtures import SampleMedia, make_delayed
 
 
 def still(path: Path) -> MediaItem:
@@ -125,7 +128,7 @@ def apply(project: Project, commands: list[Command]) -> Project:
 
 
 def put(
-    objects: list[MappedObject], project: Project, probe: FakeProbe, *, at_frame: int = 0
+    objects: list[MappedObject], project: Project, probe: Probe, *, at_frame: int = 0
 ) -> Project:
     """UI と同じ順で置く（素材の登録 → 配置）"""
     plan = gather_media(objects, project, probe)
@@ -609,3 +612,76 @@ def test_a_video_whose_sound_runs_longer_holds_its_last_picture(tmp_path: Path) 
 
     (picture,) = clips_of(project, TrackKind.VIDEO)
     assert picture.hold_at == Fraction(59, 30)
+
+
+def _probed_as(duration: Fraction, end_time: Fraction, time_base: Fraction) -> FakeProbe:
+    """長さと映像の終わり・刻みを決めた動画を返す偽物"""
+
+    class _Probe(FakeProbe):
+        def __call__(self, path: Path) -> MediaItem | None:
+            made = movie(path)
+            (stream,) = made.video_streams
+            shaped = replace(stream, end_time=end_time, time_base=time_base)
+            return replace(made, duration=duration, video_streams=(shaped,))
+
+    return _Probe()
+
+
+def test_a_variable_rate_video_holds_its_very_last_picture(tmp_path: Path) -> None:
+    """可変フレームレートの素材でも、最後のフレームで止める（#120 のレビュー）
+
+    平均 30fps で最後の間隔だけ 1/60 秒の素材なら、最後のフレームは 2 − 1/60 秒
+    終わりから平均の 1 フレーム（1/30 秒）を引くと、その 1 つ前の絵で止まる
+    """
+    movie_file = tmp_path / "映像.mp4"
+    movie_file.write_bytes(b"")
+    probe = _probed_as(Fraction(2), Fraction(2), Fraction(1, 15360))
+    project = put(
+        [_held_video(movie_file, Clip(timeline_start=0, duration=90))], Project.create(), probe
+    )
+
+    (picture,) = clips_of(project, TrackKind.VIDEO)
+    assert picture.hold_at is not None
+    assert Fraction(2) - Fraction(1, 60) <= picture.hold_at < Fraction(2)
+
+
+def test_a_late_starting_video_is_held_at_its_own_end(tmp_path: Path) -> None:
+    """頭が 0 より後ろの素材は、PTS の数え方の映像の終わりで止める（#120 のレビュー）
+
+    素材の時刻は PTS そのまま（頭 5 秒・映像の終わり 7 秒） コンテナの長さ（2 秒）は
+    頭を含まない 小さい方を取ると 2 秒の手前で止まり、クリップの残りが途中の絵のまま
+    """
+    movie_file = tmp_path / "映像.mp4"
+    movie_file.write_bytes(b"")
+    probe = _probed_as(Fraction(2), Fraction(7), Fraction(1, 15360))
+    project = put(
+        [_held_video(movie_file, Clip(timeline_start=0, duration=270))], Project.create(), probe
+    )
+
+    (picture,) = clips_of(project, TrackKind.VIDEO)
+    assert picture.hold_at == Fraction(7) - Fraction(1, 15360)
+
+
+def test_a_late_starting_file_stops_on_its_last_frame(
+    sample_av: SampleMedia, tmp_path: Path
+) -> None:
+    """頭が 5 秒の実素材（2 秒・60 フレーム）で、止めた時刻にデコーダが最後のフレームを出す
+
+    止める時刻が映像の途中なら途中の絵、デコーダが頭の時刻を数えないなら何も映らない
+    """
+    late = make_delayed(tmp_path, "late.mp4", sample_av.path, 5.0)
+    project = put(
+        [_held_video(late, Clip(timeline_start=0, duration=270))], Project.create(), probe_media
+    )
+
+    (picture,) = clips_of(project, TrackKind.VIDEO)
+    assert picture.hold_at is not None
+    with VideoDecoder(late) as decoder:
+        held = decoder.frame_at(picture.hold_at)
+        last = decoder.frame_at(Fraction(5) + Fraction(59, 30))
+        before = decoder.frame_at(Fraction(5) + Fraction(58, 30))
+    assert held is not None
+    assert last is not None
+    assert before is not None
+    assert not np.array_equal(before, last)
+    assert np.array_equal(held, last)

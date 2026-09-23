@@ -19,6 +19,7 @@ from tests.media_fixtures import (
     SampleMedia,
     decode_all_frames,
     libx264_available,
+    make_delayed,
     make_rotated,
     make_sample,
 )
@@ -138,6 +139,17 @@ class TestVideoDecoder:
         assert at_start is not None
         assert midway is not None
         assert np.array_equal(at_start, midway)
+
+    def test_a_late_starting_file_shows_its_whole_picture(
+        self, sample_av: SampleMedia, tmp_path: Path
+    ) -> None:
+        # 素材の時刻は PTS そのまま 終わりを頭の時刻抜きの長さで切ると、頭が 5 秒の
+        # 2 秒の素材は 2 秒から先（映像のすべて）が何も映らない
+        late = make_delayed(tmp_path, "late.mp4", sample_av.path, 5.0)
+        with VideoDecoder(late) as decoder:
+            assert decoder.frame_at(Fraction(6)) is not None
+            assert decoder.frame_at(Fraction(7) - Fraction(1, 1000)) is not None
+            assert decoder.frame_at(Fraction(8)) is None
 
     def test_past_the_end_returns_none(self, sample_av: SampleMedia) -> None:
         with VideoDecoder(sample_av.path) as decoder:
