@@ -1198,6 +1198,29 @@ class TestTheContentOffset:
         (mapped,) = map_template([item], report=CompatibilityReport())
         assert mapped.clip.source_in == Fraction(0)
 
+    @pytest.mark.parametrize(
+        "offset",
+        [
+            "00:60:00",
+            "00:00:60",
+            "24:00:00",
+            "1.24:00:00",
+            "00:00:01.12345678",
+            "99999999999999999999.00:00:00",
+        ],
+    )
+    def test_a_shape_dot_net_never_writes_is_not_taken(self, offset: str) -> None:
+        """.NET が書かない形は受けない
+
+        受けると、書き間違い（``00:60:00`` など）から別の場面が再生される
+        桁を無制限にすると、長い数字で ``int`` が桁数の上限に当たって投げ、
+        テンプレートの読み込みごと止まる
+        """
+        report = CompatibilityReport()
+        (mapped,) = map_template([self.video(offset)], report=report)
+        assert mapped.clip.source_in == Fraction(0)
+        assert any("ContentOffset" in line for line in report.lines())
+
     @pytest.mark.parametrize("offset", ["まもなく", "00:00", "-00:00:01"])
     def test_an_offset_that_cannot_be_read_is_counted(self, offset: str) -> None:
         """読めない形と負の値は、頭から再生して数える

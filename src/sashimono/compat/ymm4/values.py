@@ -56,9 +56,12 @@ __all__ = [
 
 #: .NET の TimeSpan の文字列 ``[-][日.]時:分:秒[.小数]``
 #: 日を落とすと、9 分 24 秒のつもりが 1 日 9 分 24 秒の素材で頭から鳴る
+#: 桁数に上限を置く 置かないと、長い数字で ``int`` が桁数の上限に当たって投げ、
+#: テンプレートの読み込みごと止まる（Python の既定は 4300 桁）
+#: 日は 10 桁（.NET の上限は約 1067 万日）、小数は 7 桁（.NET は 100 ナノ秒まで）
 _TIMESPAN = re.compile(
-    r"^(?P<sign>-)?(?:(?P<days>\d+)\.)?(?P<hours>\d+):(?P<minutes>\d{1,2})"
-    r":(?P<seconds>\d{1,2})(?:\.(?P<fraction>\d+))?$"
+    r"^(?P<sign>-)?(?:(?P<days>\d{1,10})\.)?(?P<hours>\d{1,2}):(?P<minutes>\d{1,2})"
+    r":(?P<seconds>\d{1,2})(?:\.(?P<fraction>\d{1,7}))?$"
 )
 
 #: YMM4 の移動方法と、こちらの補間方法
@@ -310,6 +313,9 @@ def timespan(value: Any) -> Fraction | None:
     小数は 10 の累乗で割る 浮動小数にすると、7 桁の ``0.1999999`` が丸まって
     長い素材では数フレームずれる こちらの ``source_in`` は :class:`~fractions.Fraction`
     なので、丸めずに渡せる
+
+    .NET が書かない形（時が 24 以上、分や秒が 60 以上、桁が長すぎる）は ``None``
+    受けてしまうと、書き間違いから別の場面が再生される
     """
     if isinstance(value, Fraction | int) and not isinstance(value, bool):
         return Fraction(value)
@@ -319,6 +325,10 @@ def timespan(value: Any) -> Fraction | None:
     if found is None:
         return None
     parts = found.groupdict()
+    # .NET が書く形（``c``）では 時は 0〜23、分と秒は 0〜59 で、超える分は日と時へ繰り上がる
+    # 読めるものとして受けると、``00:99:00`` のような書き間違いから別の場面が再生される
+    if int(parts["hours"]) > 23 or int(parts["minutes"]) > 59 or int(parts["seconds"]) > 59:
+        return None
     seconds = Fraction(int(parts["days"] or 0) * 86400)
     seconds += Fraction(int(parts["hours"]) * 3600 + int(parts["minutes"]) * 60)
     seconds += Fraction(int(parts["seconds"]))
