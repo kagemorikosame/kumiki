@@ -89,6 +89,17 @@ class TestHelpMenu:
         assert str(userdirs.state_root()) in text
 
 
+def _clear_folder_variables(monkeypatch: pytest.MonkeyPatch) -> None:
+    """伏せる置き場を決める環境変数を全部消す
+
+    ``user_folders`` は OS で分けずに全部を読む 走らせる機械で XDG などが立って
+    いると、伏せる置き場の数や伏せた結果が機械ごとに変わり、比べる試験が落ちる
+    一覧から消すのは、置き場を足したときに試験の側が取り残されないようにするため
+    """
+    for variable, _placeholder in compat_dialog._FOLDER_VARIABLES:
+        monkeypatch.delenv(variable, raising=False)
+
+
 class TestCompatibilityCopy:
     def test_the_copied_text_hides_the_user_name(self, tmp_path: Path) -> None:
         # 壊れると、公開の Issue に貼った記録からユーザー名が読める
@@ -128,6 +139,7 @@ class TestCompatibilityCopy:
         # 移動プロファイルなどで設定の置き場がホームの外にあると、ホームだけを伏せても
         # その場所の利用者名が残る
         roaming = r"\\server\profiles\kagemori\AppData\Roaming"
+        _clear_folder_variables(monkeypatch)
         monkeypatch.setenv("APPDATA", roaming)
         text = mask_user_folders(
             rf"開けない: {roaming.lower()}\Sashimono\scripts\a.anm2", user_folders(tmp_path)
@@ -140,6 +152,7 @@ class TestCompatibilityCopy:
         # Windows 以外では設定と退避の置き場が XDG の環境変数で決まる ホームの外
         # （ネットワークの置き場など）へ向けた機械では、ホームだけを伏せると名前が残る
         state = "/mnt/share/kagemori/state"
+        _clear_folder_variables(monkeypatch)
         monkeypatch.setenv("XDG_STATE_HOME", state)
         text = mask_user_folders(
             f"開けない: {state}/Sashimono/recovery/a.sme", user_folders(tmp_path)
@@ -154,8 +167,7 @@ class TestCompatibilityCopy:
         # 短い形を求める所を差し替える
         long_home = r"C:\Users\kagemori"
         shorts = {long_home: r"C:\Users\KAGEMO~1"}
-        monkeypatch.delenv("APPDATA", raising=False)
-        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+        _clear_folder_variables(monkeypatch)
         monkeypatch.setattr(compat_dialog, "short_path", shorts.get)
         text = mask_user_folders(
             r"開けない: c:\users\kagemo~1\scripts\a.anm2", user_folders(Path(long_home))
@@ -167,8 +179,7 @@ class TestCompatibilityCopy:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # 8.3 を切ってある置き場では、短い形を聞いても同じ形が返る
-        monkeypatch.delenv("APPDATA", raising=False)
-        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+        _clear_folder_variables(monkeypatch)
         monkeypatch.setattr(compat_dialog, "short_path", lambda folder: folder.upper())
         assert user_folders(Path(r"C:\Users\kagemori")) == [
             (r"C:\Users\kagemori", HOME_PLACEHOLDER)
@@ -201,6 +212,7 @@ class TestCompatibilityCopy:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # ホームから先に伏せると %USERPROFILE%\AppData\Roaming になり、設定の置き場だと読めない
+        _clear_folder_variables(monkeypatch)
         monkeypatch.setenv("APPDATA", r"C:\Users\kagemori\AppData\Roaming")
         text = mask_user_folders(
             r"C:\Users\kagemori\AppData\Roaming\Sashimono", user_folders(Path(r"C:\Users\kagemori"))

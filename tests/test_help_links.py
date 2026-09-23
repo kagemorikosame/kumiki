@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -77,14 +78,42 @@ class TestIssueTemplates:
             assert f"{label}:" in about_text()
             assert f"「{label}」" in text
 
-    def test_the_menu_paths_in_the_templates_exist(self) -> None:
-        # 雛形は〔メニュー〕→〔項目〕の形で操作を案内する 項目の名前を変えたら
-        # 雛形も直さないと、案内どおりに探しても見つからない
-        window_source = (ROOT / "src" / "sashimono" / "ui" / "main_window.py").read_text(
-            encoding="utf-8"
-        )
-        for template in TEMPLATES.glob("*.yml"):
-            text = template.read_text(encoding="utf-8")
-            for menu, item in re.findall(r"〔([^〕]+)〕→〔([^〕]+)〕", text):
-                assert f'self._menu("{menu}")' in window_source, (template.name, menu)
-                assert f'"{item}"' in window_source, (template.name, item)
+    def test_the_menu_paths_in_the_templates_exist(self, menu_paths: set[str]) -> None:
+        # 雛形は〔メニュー〕→〔項目〕の形で操作を案内する 項目の名前を変えたり、
+        # 別のメニューへ移したりしたら雛形も直さないと、案内どおりに探しても見つからない
+        guided = {
+            f"{template.name}: {path}"
+            for template in TEMPLATES.glob("*.yml")
+            for path in _guided_paths(template.read_text(encoding="utf-8"))
+            if path not in menu_paths
+        }
+        assert guided == set()
+
+    def test_an_item_under_another_menu_is_caught(self, menu_paths: set[str]) -> None:
+        # メニューと項目がそれぞれ在るだけで通すと、〔互換〕→〔設定…〕のような
+        # 取り違えた道を案内し続けても気付けない
+        assert "表示/設定…" in menu_paths
+        assert _guided_paths("〔互換〕→〔設定…〕") == ["互換/設定…"]
+        assert "互換/設定…" not in menu_paths
+
+
+def _guided_paths(text: str) -> list[str]:
+    """雛形が案内する〔メニュー〕→〔項目〕の道 画面の操作の名前と同じ「メニュー/項目」の形"""
+    return [f"{menu}/{item}" for menu, item in re.findall(r"〔([^〕]+)〕→〔([^〕]+)〕", text)]
+
+
+@pytest.fixture
+def menu_paths() -> Iterator[set[str]]:
+    """編集画面に実際にある「メニュー/項目」
+
+    ソースの文字を探すのではなく、窓を組み立てて確かめる 文字で探すと、項目が
+    どのメニューの下に足されたかまでは分からない ショートカットの設定が使う名前と
+    同じ物なので、メニューの組み立てを変えても追える
+    """
+    from sashimono.ui.main_window import MainWindow
+
+    window = MainWindow(confirm_unsaved=False)
+    try:
+        yield set(window._actions)
+    finally:
+        window.close()
