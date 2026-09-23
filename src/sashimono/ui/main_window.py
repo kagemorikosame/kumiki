@@ -11,6 +11,7 @@ import contextlib
 import functools
 import platform
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -25,6 +26,7 @@ from PySide6.QtGui import (
     QKeySequence,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QDockWidget,
     QFileDialog,
@@ -90,6 +92,7 @@ from sashimono.engine.audio.waveform import Waveform
 from sashimono.engine.cache import MediaAnalyzer
 from sashimono.engine.cache.proxy import ProxyBuilder, ProxyStore
 from sashimono.engine.decode import ProbeError, probe_media
+from sashimono.engine.decode.batch import ProbeBatch
 from sashimono.engine.render import FrameRenderer, RenderQuality
 from sashimono.links import MANUAL_URL, REPORT_URL
 from sashimono.ui.chat import ChatPanel
@@ -99,6 +102,14 @@ from sashimono.ui.inspector import InspectorPanel
 from sashimono.ui.media_pool import MediaPoolWidget
 from sashimono.ui.playback import PlaybackController
 from sashimono.ui.preview import PreviewWidget
+from sashimono.ui.progress_display import (
+    ProgressIndicator,
+    describe_background,
+    describe_import,
+    finished_message,
+    overall_fraction,
+    row_notes,
+)
 from sashimono.ui.scene_bar import SceneBar
 from sashimono.ui.subtitle import SubtitlePanel
 from sashimono.ui.theme import Colors
@@ -119,6 +130,12 @@ __all__ = ["MainWindow", "about_text"]
 #: 解析はワーカースレッドで終わるので、その通知を待って毎回描き直すのではなく、
 #: まとめて一定間隔で描き直す 素材を 100 本入れたときに描画で埋もれないように
 ANALYSIS_REFRESH_MS = 250
+
+#: 読み込みで素材を調べている間、進み具合を見に行く間隔（ミリ秒）
+#: 解析の間隔（250ms）に合わせると、1 本だけ読み込んだときに置かれるまで
+#: 最大 250ms 待たされる 前は 55ms ほどで置かれていたので、遅く感じる
+#: 走っている間しか回さないので、短くしても手の空いた時の重さは変わらない
+IMPORT_POLL_MS = 30
 
 #: 保存していない変更を退避する間隔（ミリ秒）
 #: 落ちたときに失うのは最大でこの長さの作業 短くするほど書き込みが増えるが、
@@ -249,6 +266,13 @@ class MainWindow(QMainWindow):
         #: 編集しているシーン ``None`` ならメイン モデルではなく画面の状態なので
         #: 窓が持つ（保存しない 開き直したらメインから始まる）
         self._active_scene: SceneId | None = None
+        #: 裏で調べている読み込み 1 度に 1 回分だけ走らせ、後から頼まれた分は順に待たせる
+        #: 並べて走らせると、後から頼んだ方が先に置かれることがあり、置く順が
+        #: 頼んだ順と食い違う
+        self._import: ProbeBatch | None = None
+        self._import_queue: list[list[Path]] = []
+        #: 控えと解析の進み具合を出していたか 終わったことを 1 度だけ知らせるため
+        self._background_shown = False
 
         self._build_widgets()
         self._build_menus()
@@ -258,6 +282,12 @@ class MainWindow(QMainWindow):
         self._refresh_timer.setInterval(ANALYSIS_REFRESH_MS)
         self._refresh_timer.timeout.connect(self._flush_analysis)
         self._refresh_timer.start()
+
+        # 読み込みの間だけ回す（_start_import） 画面のスレッドから読みに行く形にするのは、
+        # 裏のスレッドから部品に触ると Qt が落ちるため（解析の知らせと同じ作り）
+        self._import_timer = QTimer(self)
+        self._import_timer.setInterval(IMPORT_POLL_MS)
+        self._import_timer.timeout.connect(self._poll_import)
 
         self._autosave_timer = QTimer(self)
         self._autosave_timer.setInterval(AUTOSAVE_MS)
@@ -376,6 +406,15 @@ class MainWindow(QMainWindow):
         self.resizeDocks([timeline_dock], [320], Qt.Orientation.Vertical)
 
         self.statusBar().showMessage("素材を読み込んでください")
+        # 進み具合は右端に常駐させる 左の一時的な文言に出すと、ほかの操作の
+        # 知らせに上書きされて消える
+        self._background_indicator = ProgressIndicator(self)
+        self._import_indicator = ProgressIndicator(self, cancel_text="取り消す")
+        cancel = self._import_indicator.cancel_button
+        if cancel is not None:
+            cancel.clicked.connect(self.cancel_import)
+        self.statusBar().addPermanentWidget(self._background_indicator)
+        self.statusBar().addPermanentWidget(self._import_indicator)
 
     def _dock(self, title: str, name: str) -> QDockWidget:
         """パネルを 1 つ作る
@@ -633,6 +672,11 @@ class MainWindow(QMainWindow):
         if resized or stopped:
             self._proxies.close()
             self._proxies = ProxyBuilder(ProxyStore(height=preferences.proxy_height))
+            # 止めた変換は終わっていない 「終わった」と知らせない
+            self._background_shown = False
+        if not preferences.pool_progress:
+            # 次の間隔を待たずに外す 切ったのに行の後ろに古い割合が残って見える
+            self._media_pool.set_progress({})
         self._preview.set_proxies(self._proxies.store if preferences.use_proxy else None)
         self._preview.set_prefetch_bytes(preferences.prefetch_bytes())
         self._preview.set_prefetch_thread(preferences.prefetch_thread)
@@ -958,29 +1002,152 @@ class MainWindow(QMainWindow):
             self.import_media([Path(name) for name in names])
 
     def import_media(self, paths: list[Path]) -> None:
-        """素材を読み込んでタイムラインへ置く
+        """素材を読み込んでタイムラインへ置く 調べるのは裏のスレッドで、待たずに返る
 
         複数選ばれた場合もまとめて 1 回の Undo で戻せるようにする
         10 本読み込んで 10 回取り消す、という操作は誰も望まない
+        置くのは全部を調べ終えてから 1 回の操作で行う（:meth:`_apply_import`）
+        読み込みの最中にもう一度頼まれたら、前の分が終わってから順に調べる
+        ダイアログ・一覧のボタン・一覧への落とし込みは、どれもここへ来る
+        """
+        if not paths:
+            return
+        if self._import is not None:
+            self._import_queue.append(list(paths))
+            self._show_import_progress()
+            return
+        self._start_import(list(paths))
+
+    @property
+    def importing(self) -> bool:
+        """素材を調べている最中か、調べるのを待っている読み込みがある"""
+        return self._import is not None or bool(self._import_queue)
+
+    def cancel_import(self) -> None:
+        """読み込みを取り消す 待っている分も捨て、何も置かない
+
+        調べ終えた分だけ置く形にしないのは、取り消したのに一部が入ると、
+        どこまで入ったのかを一覧で確かめ直すことになるため
+        """
+        if self._drop_imports():
+            self.statusBar().showMessage("素材の読み込みを取り消した", 4000)
+
+    def _drop_imports(self) -> bool:
+        """走っている読み込みと待っている読み込みを捨てる 捨てた物があれば真
+
+        調べている最中の 1 本は止まらないが、ここで外すので終わっても置きに来ない
+        （置くのは :meth:`_poll_import` が ``self._import`` を見たときだけ）
+        """
+        batch = self._import
+        if batch is None and not self._import_queue:
+            return False
+        self._import = None
+        self._import_queue.clear()
+        if batch is not None:
+            batch.cancel()
+        self._import_timer.stop()
+        self._import_indicator.hide()
+        return True
+
+    def _leave_project(self, previous: Project) -> None:
+        """プロジェクトを差し替えた（新規・開く・復元）ときに、前のプロジェクトの裏の仕事を片付ける
+
+        読み込みは始めたときのプロジェクトへ置く約束 捨てずに置くと、調べ終わった
+        素材が差し替えた先のプロジェクトに入り、その取り消しの履歴にまで載る
+        控えと解析も、前のプロジェクトにしか無い素材の分は外す 残すと、新しい
+        プロジェクトのステータスバーに、前の素材の本数と失敗が出続ける
+        """
+        if self._drop_imports():
+            self.statusBar().showMessage(
+                "プロジェクトを切り替えたので、素材の読み込みを取り消した", 5000
+            )
+        kept = {media.id for media in self._document.project.media}
+        for media in previous.media:
+            if media.id not in kept:
+                self._analyzer.forget(media.id)
+                self._proxies.forget(media.id)
+        # 前のプロジェクトで出していた進み具合の続きとして「終わった」と出さない
+        self._background_shown = False
+        self._background_indicator.hide()
+
+    def wait_for_imports(self, timeout: float = 30.0) -> bool:
+        """読み込みが置き終わるまで待つ 間に合えば真
+
+        写真を撮る道具と試験のためのもの 画面の操作からは呼ばない（呼ぶと、
+        裏へ移した意味が無くなり、また調べ終わるまで画面が固まる）
+        """
+        deadline = time.monotonic() + timeout
+        while self.importing:
+            if time.monotonic() > deadline:
+                return False
+            QApplication.processEvents()
+            # タイマーを待たずに見に行く 試験の中ではタイマーが回るとは限らない
+            self._poll_import()
+            time.sleep(0.005)
+        return True
+
+    def _start_import(self, paths: list[Path]) -> None:
+        # probe_media はこのモジュールの名前から引く 試験がここを差し替えて、
+        # 開けない素材や断られる読み込みを作る
+        self._import = ProbeBatch(paths, probe_media)
+        self._show_import_progress()
+        self._import_timer.start()
+
+    def _show_import_progress(self) -> None:
+        batch = self._import
+        if batch is None:
+            self._import_indicator.hide()
+            return
+        done = batch.progress()
+        self._import_indicator.show_progress(
+            describe_import(done, batch.total, len(self._import_queue)),
+            done / batch.total if batch.total else 1.0,
+            tooltip="\n".join(str(path) for path in batch.paths),
+        )
+
+    def _poll_import(self) -> None:
+        batch = self._import
+        if batch is None:
+            self._import_timer.stop()
+            self._import_indicator.hide()
+            return
+        if not batch.finished:
+            self._show_import_progress()
+            return
+        # 置く前に外す 置く途中で例外が出ても、同じ読み込みを 30ms ごとに
+        # 置き直そうとし続けない
+        self._import = None
+        try:
+            self._apply_import(batch)
+        finally:
+            if self._import_queue:
+                self._start_import(self._import_queue.pop(0))
+            else:
+                self._import_timer.stop()
+                self._import_indicator.hide()
+
+    def _apply_import(self, batch: ProbeBatch) -> None:
+        """調べ終えた素材を 1 回の操作で置く
+
+        置く位置は調べ終えた時点のタイムラインから決める 調べている間に
+        編集していても、その後ろへ並ぶ
         """
         commands: list[Command] = []
         failures: list[str] = []
         loaded: list[MediaItem] = []
         project = self.view_project
 
-        for path in paths:
-            try:
-                media = probe_media(path)
-            except ProbeError as exc:
-                failures.append(str(exc))
+        for outcome in batch.results():
+            if isinstance(outcome, ProbeError):
+                failures.append(str(outcome))
                 continue
-            batch = insert_media(project, media, at_frame=None)
-            for command in batch:
+            placed = insert_media(project, outcome, at_frame=None)
+            for command in placed:
                 project = command.apply(project)
-            commands.extend(batch)
-            loaded.append(media)
+            commands.extend(placed)
+            loaded.append(outcome)
 
-        if commands and not self.execute_all(commands, f"素材を読み込み: {len(paths)} 件"):
+        if commands and not self.execute_all(commands, f"素材を読み込み: {batch.total} 件"):
             # 断られるとまとめて戻る 一覧に無い素材の解析と控えを頼まないために、
             # 頼むのは通ってからにする 理由は execute_all が出しているので上書きしない
             return
@@ -991,7 +1158,7 @@ class MainWindow(QMainWindow):
         if failures:
             self.statusBar().showMessage(failures[0], 5000)
         elif commands:
-            self.statusBar().showMessage(f"{len(paths)} 件を読み込んだ", 3000)
+            self.statusBar().showMessage(f"{batch.total} 件を読み込んだ", 3000)
 
     def add_text(self) -> None:
         """再生ヘッドの位置にテキストを置く"""
@@ -1097,6 +1264,7 @@ class MainWindow(QMainWindow):
         # AI から始めた起こしの様子も、ついでにここで拾う 専用のタイマーを
         # もう 1 本増やすほどの頻度ではない
         self._subtitles.poll_transcription()
+        self._show_background_progress()
         # 控えができた 開きっぱなしのデコーダは元のファイルを掴んだままなので、
         # 開き直させる（描き直すだけでは切り替わらない）
         # できた素材のぶんだけにする 全部開き直すと、別の素材の控えが
@@ -1123,6 +1291,38 @@ class MainWindow(QMainWindow):
             return
         self._analysis_dirty = False
         self._timeline.update()
+
+    def _show_background_progress(self) -> None:
+        """控えと解析の進み具合を、ステータスバーと素材一覧の行へ出す
+
+        ひと続きの数を 0 へ戻すのもここ 控えと解析の**両方**が止まってから戻す
+        片方ずつ戻すと、解析が走っている間に控えの失敗の数が消え、全体の割合も巻き戻る
+        """
+        proxy = self._proxies.poll()
+        analysis = self._analyzer.poll()
+        self._media_pool.set_progress(
+            row_notes(proxy, analysis) if self._preferences.pool_progress else {}
+        )
+        if proxy.busy or analysis.busy:
+            self._background_indicator.show_progress(
+                describe_background(proxy, analysis),
+                overall_fraction(proxy, analysis),
+                tooltip="\n".join([*proxy.failures.values(), *analysis.failures.values()]),
+            )
+            self._background_shown = True
+            return
+        self._background_indicator.hide()
+        # 終わったことを知らせるのは、進み具合を出していたときと失敗したときだけ
+        # キャッシュから一瞬で済んだ分まで知らせると、開くたびに文言が出る
+        failed = proxy.failed or analysis.failed
+        if self._background_shown or failed:
+            self.statusBar().showMessage(
+                finished_message(proxy, analysis), 8000 if failed else 4000
+            )
+        self._background_shown = False
+        # 知らせた分を数え直す 戻さないと、次のひと続きが前の本数と失敗を抱えたまま始まる
+        self._proxies.settle(proxy)
+        self._analyzer.settle(analysis)
 
     # --- 再生とシーク ---
 
@@ -1186,7 +1386,9 @@ class MainWindow(QMainWindow):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         self._playback.stop()
+        previous = self._document.project
         self._document.reset(Project.create(dialog.settings()))
+        self._leave_project(previous)
         self._path = None
         self._release_lock()
         self._mark_saved()
@@ -1235,7 +1437,9 @@ class MainWindow(QMainWindow):
             return
 
         self._playback.stop()
+        previous = self._document.project
         self._document.reset(project)
+        self._leave_project(previous)
         self._path = Path(name)
         self._mark_saved()
         self._on_project_changed()
@@ -1405,7 +1609,9 @@ class MainWindow(QMainWindow):
             return False
 
         self._playback.stop()
+        previous = self._document.project
         self._document.reset(project)
+        self._leave_project(previous)
         self._path = entry.source
         self._saved = None
         self._on_project_changed()
@@ -1744,6 +1950,8 @@ class MainWindow(QMainWindow):
         # 解放の順番が大事 GL 資源はコンテキストが生きているうちに、
         # 再生スレッドはウィジェットが消える前に畳む
         self._refresh_timer.stop()
+        # 調べている最中の読み込みは捨てる 閉じた窓へ置きに来させない
+        self._drop_imports()
         self._chat.close_session()
         self._playback.close()
         if self._ai_renderer is not None:

@@ -174,6 +174,11 @@ class Preferences:
     #: 読んだ DLL は Sashimono と同じ権限で動く（Lua の閉じ込めの外） 読むのは
     #: 本人がスクリプトフォルダへ置いた物だけだが、気になる人は切れるようにする
     native_modules: bool = True
+    #: 控えと解析の進み具合を、素材一覧の行にも添える（ステータスバーには必ず出す）
+    #: 既定は入 読み込んだ直後にプレビューが重い理由が、どの素材の控えを
+    #: 作っている最中だからなのかを、知らない人ほど見て分かる必要がある
+    #: 行の文字が 250ms ごとに変わるのが目障りな人は切れるようにする
+    pool_progress: bool = True
     #: AviUtl2 の汎用プラグイン（``.aux2``）を全部読んで、スクリプトが引くモジュールを探す
     #: 既定は切 切っている間は、名前を出すと確かめたプラグイン（合成フォントの
     #: ``comfont.aux2``）だけを読む 全部を読むと、関係の無いプラグインが初期化で
@@ -237,6 +242,7 @@ class PreferenceStore:
             ),
             decode_threads=_threads(data.get("decode_threads"), plain.decode_threads),
             native_modules=_flag(data.get("native_modules"), plain.native_modules),
+            pool_progress=_flag(data.get("pool_progress"), plain.pool_progress),
             all_aviutl_plugins=_flag(data.get("all_aviutl_plugins"), plain.all_aviutl_plugins),
         )
 

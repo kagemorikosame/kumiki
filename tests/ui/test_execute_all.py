@@ -261,6 +261,7 @@ def test_a_refused_media_import_does_not_claim_it_loaded_anything(
     window.statusBar().clearMessage()
 
     window.import_media([movie])
+    assert window.wait_for_imports()
     assert asked == []
     assert "読み込んだ" not in window.statusBar().currentMessage()
 
