@@ -474,6 +474,18 @@ class TestWhenItCannotRun:
         assert len(made) == 1, "入れ直したのに走り係を作り直していない"
         assert widget.prefetch_in_background
 
+    def test_proxies_dropped_by_a_closed_worker_are_still_handed_over(
+        self, running: tuple[PreviewWidget, StubCache, StubBackground]
+    ) -> None:
+        # 走り係が壊れた控えを捨てた後で先読みを切ると、預かっておかない限り作り直しの
+        # 頼みが出ず、その素材は元の素材から読み続ける
+        widget, _, background = running
+        background.discarded = {MediaId("broken")}
+        widget.set_prefetch_bytes(0)
+        assert background.closed == 1
+        assert MediaId("broken") in widget.take_discarded()
+        assert widget.take_discarded() == set(), "同じ素材を何度も渡している"
+
     def test_turning_it_back_on_tries_again(
         self,
         parts: tuple[PreviewWidget, StubCache, list[str]],

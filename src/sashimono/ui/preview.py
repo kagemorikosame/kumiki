@@ -100,6 +100,8 @@ class PreviewWidget(QOpenGLWidget):
         #: 別のスレッドの先読み 作れなかった・止まったときは None のまま、
         #: 画面のスレッドの先読み（``_idle`` と ``_cache``）へ戻る
         self._background: BackgroundPrefetch | None = None
+        #: 閉じた走り係が捨てていた控えの素材 次の :meth:`take_discarded` で渡す
+        self._closed_discarded: set[MediaId] = set()
         #: 別のスレッドで先読みできなかった 何度も作り直して失敗し続けないよう覚える
         #: 設定を入れ直したときだけ忘れる
         self._background_broken = False
@@ -155,6 +157,8 @@ class PreviewWidget(QOpenGLWidget):
         コマを読むので、壊れた控えに先に当たるのはたいてい走り係の方
         """
         found = self._renderer.take_discarded() if self._renderer is not None else set()
+        found |= self._closed_discarded
+        self._closed_discarded = set()
         if self._background is not None:
             found |= self._background.take_discarded()
         return found
@@ -518,6 +522,9 @@ class PreviewWidget(QOpenGLWidget):
         background, self._background = self._background, None
         if background is not None:
             background.close()
+            # 閉じる前に走り係が捨てた控えも預かる 捨てたまま閉じると、壊れた控えを
+            # 作り直す頼みが出ず、その素材は元の素材から読み続ける
+            self._closed_discarded |= background.take_discarded()
 
     def _prefetch_step(self) -> None:
         """空き時間に 1 コマだけ描く
