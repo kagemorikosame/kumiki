@@ -1286,3 +1286,60 @@ def test_the_moving_slot_also_lists_the_reading_that_matched_ymm4(tool: ModuleTy
     assert tool.nearer_rate(windows, expectations)[0] == tool.HEAD_TO_LAST
     still = tool.rate_expectations({"length": length, "rate": 100.0, "rate2": [50.0]})
     assert tool.HEAD_TO_LAST not in still
+
+
+def _export_tool() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("ymm4_export", ROOT / "tools" / "ymm4_export.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_export_hint_parses_as_the_export_tool_arguments(tool: ModuleType) -> None:
+    """案内の命令と道具の引数の名前が食い違うと、写して走らせた所で落ちる"""
+    export = _export_tool()
+    arguments = tool.export_arguments(
+        Path("work/audio-probe.ymmp"), Path("work/audio-probe.mp4"), no_compressor=True
+    )
+    assert arguments[0] == r"tools\ymm4_export.py"
+    parsed = export.parse_arguments(arguments[1:])
+    assert parsed.no_compressor
+    # 相対のままだと、別の所で走らせた道具が違う .ymmp を開く
+    assert parsed.project == (Path("work") / "audio-probe.ymmp").resolve()
+    assert parsed.output == (Path("work") / "audio-probe.mp4").resolve()
+    plain = export.parse_arguments(tool.export_arguments(Path("a.ymmp"), Path("a.mp4"))[1:])
+    assert not plain.no_compressor
+
+
+def test_the_audio_probe_guide_exports_without_the_compressor(
+    tool: ModuleType,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """既定の「自動」のコンプレッサーは音量の比を潰す 切らずに書き出すと測れない"""
+    monkeypatch.setattr(tool, "make_tone", lambda target: target.write_bytes(b"") or True)
+    assert tool.command_audio_build(SimpleNamespace(work=tmp_path)) == 0
+    lines = [line for line in capsys.readouterr().out.splitlines() if "ymm4_export.py" in line]
+    assert len(lines) == 1
+    assert "--no-compressor" in lines[0]
+    assert str(tmp_path / "audio-probe.ymmp") in lines[0]
+    assert str(tmp_path / "audio-probe.mp4") in lines[0]
+
+
+def test_the_picture_probe_guides_show_the_export_command_without_touching_the_sound(
+    tool: ModuleType,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """絵の探りで本人の書き出しの音の設定を触る理由は無い"""
+    monkeypatch.setattr(tool, "make_rate_source", lambda target: (target.write_bytes(b""), "")[1])
+    assert tool.command_mesh_build(SimpleNamespace(work=tmp_path / "mesh")) == 0
+    assert tool.command_video_rate_build(SimpleNamespace(work=tmp_path / "rate")) == 0
+    lines = [line for line in capsys.readouterr().out.splitlines() if "ymm4_export.py" in line]
+    assert len(lines) == 2
+    assert str(tmp_path / "mesh" / "mesh-probe.mp4") in lines[0]
+    assert str(tmp_path / "rate" / "video-rate-probe.mp4") in lines[1]
+    assert not any("--no-compressor" in line for line in lines)

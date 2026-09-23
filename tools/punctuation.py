@@ -45,7 +45,8 @@ MARU = chr(0x3002)
 ROOT = Path(__file__).resolve().parent.parent
 
 #: 文章として検査するファイルの種類
-TEXT_SUFFIXES = {".md", ".mdc", ".yml", ".yaml", ".toml", ".txt"}
+#: ``.ps1`` は YMM4 を操作する道具（tools/ymm4_export.ps1） 中の文字はどれも文章
+TEXT_SUFFIXES = {".md", ".mdc", ".yml", ".yaml", ".toml", ".txt", ".ps1"}
 
 #: 見ないところ
 SKIP_PARTS = {
