@@ -12,6 +12,7 @@ GUI にも OpenGL にも依存しない 定義はただのデータで、それ�
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -31,6 +32,7 @@ __all__ = [
     "ColorSpec",
     "FileSpec",
     "FontSpec",
+    "GridSpec",
     "ParamInput",
     "ParameterKind",
     "ParameterSpec",
@@ -62,6 +64,8 @@ class ParameterKind(Enum):
     STRING = "string"
     #: ``--value@`` スライダーを持たない数値 時間で変化させられない
     VALUE = "value"
+    #: AviUtl に対応する制御文字は無い 格子の点のずれをまとめて持つ
+    GRID = "grid"
 
 
 @dataclass(frozen=True, slots=True)
@@ -301,9 +305,80 @@ class ValueSpec:
         return self.default
 
 
+@dataclass(frozen=True, slots=True)
+class GridSpec:
+    """格子の点のずれ 値は ``(横の点数, 縦の点数, x0, y0, x1, y1, ...)`` の平らな並び
+
+    点は**左上から行ごと**に並べる（YMM4 の ``MeshDeformationEffect`` の
+    ``Points`` と同じ順） 並べ替えを挟むと、読むときと描くときで順が食い違って
+    絵が対角に折れる
+
+    値を 1 本の ``tuple[float, ...]`` にしてあるのは、これが
+    :data:`~sashimono.core.model.ParamValue` に既にある型だから 保存形式も
+    設定 UI も新しい入れ物を覚えずに済み、点数と点が必ず一緒に読み書きされる
+    （別々の項目にすると、点数だけ書き換わった半端な状態が作れてしまう）
+
+    空の並びは「格子を使わない」で、``mesh_deform`` はそのとき四隅のスライダで
+    動く 既存のプロジェクトファイルには格子が入っていないので、既定はこちら
+
+    シェーダへは 3 つの uniform で渡す（:mod:`sashimono.engine.gpu.effects`）
+    ``<項目名>_columns`` ``<項目名>_rows``（``int``、格子が無ければ 0）と、
+    ``<項目名>_points``（``vec2`` の配列）
+
+    点はスライダーで触るものではない（5x5 で 50 個になる） 互換層が作った値を
+    そのまま持ち運ぶための入れ物で、設定 UI には大きさだけを出す
+    """
+
+    name: str
+    label: str
+    #: 1 辺の点の数の下限と上限 上限はシェーダの配列の大きさと同じにすること
+    minimum: int = 2
+    maximum: int = 9
+
+    kind = ParameterKind.GRID
+
+    def default_value(self) -> tuple[float, ...]:
+        return ()
+
+    def size(self, value: tuple[float, ...]) -> tuple[int, int]:
+        """整えた値から ``(横の点数, 縦の点数)`` を読む 格子が無ければ ``(0, 0)``"""
+        if len(value) < 2:
+            return (0, 0)
+        return (int(value[0]), int(value[1]))
+
+    def coerce(self, value: ParamInput) -> tuple[float, ...]:
+        """外から来た値を整える 少しでも辻褄が合わなければ「格子なし」へ戻す
+
+        点数と点の数が食い違う値をそのまま渡すと、シェーダが配列の外を読む
+        黙って欠けた点を 0 で埋めると、絵が畳まれて出るので、丸ごと捨てて
+        四隅のスライダへ戻す方が直しやすい
+        """
+        if not isinstance(value, tuple) or len(value) < 2:
+            return ()
+        columns, rows = int(value[0]), int(value[1])
+        if not self.minimum <= columns <= self.maximum:
+            return ()
+        if not self.minimum <= rows <= self.maximum:
+            return ()
+        if len(value) != 2 + columns * rows * 2:
+            return ()
+        numbers = [float(v) for v in value[2:]]
+        if not all(math.isfinite(v) for v in numbers):
+            return ()
+        return (float(columns), float(rows), *numbers)
+
+
 #: パラメータ定義の総称
 type ParameterSpec = (
-    TrackSpec | CheckSpec | ColorSpec | SelectSpec | TextSpec | FileSpec | FontSpec | ValueSpec
+    TrackSpec
+    | CheckSpec
+    | ColorSpec
+    | SelectSpec
+    | TextSpec
+    | FileSpec
+    | FontSpec
+    | ValueSpec
+    | GridSpec
 )
 
 

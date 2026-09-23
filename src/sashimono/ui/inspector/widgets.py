@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFontComboBox,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
@@ -30,6 +31,7 @@ from sashimono.effects import (
     ColorSpec,
     FileSpec,
     FontSpec,
+    GridSpec,
     ParameterSpec,
     SelectSpec,
     TextSpec,
@@ -367,6 +369,34 @@ class ValueEditor(ParameterEditor):
             self._updating = False
 
 
+class GridEditor(ParameterEditor):
+    """格子の大きさを見せるだけの欄 触らせない
+
+    点は 5x5 で 50 個あり、並べても読めないし、ずらして直したいときに
+    欲しいのは数値欄ではなく画面上の掴み手 互換で読み込んだ格子が
+    「消えた」と思われないよう、大きさだけは出しておく
+    """
+
+    def __init__(self, spec: GridSpec, parent: QWidget | None = None) -> None:
+        super().__init__(spec, parent)
+        self._spec = spec
+        self._label = QLabel(self)
+        self._label.setEnabled(False)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self._label)
+        layout.addStretch(1)
+        self.set_value(spec.default_value())
+
+    def set_value(self, value: ParamValue | None) -> None:
+        columns, rows = self._spec.size(self._spec.coerce(value))
+        if columns < 2 or rows < 2:
+            self._label.setText("なし（四隅で変形）")
+            return
+        self._label.setText(f"{columns}x{rows} の格子")
+
+
 def create_editor(spec: ParameterSpec, parent: QWidget | None = None) -> ParameterEditor:
     """仕様に合う入力欄を作る"""
     if isinstance(spec, TrackSpec):
@@ -383,4 +413,6 @@ def create_editor(spec: ParameterSpec, parent: QWidget | None = None) -> Paramet
         return FontEditor(spec, parent)
     if isinstance(spec, FileSpec):
         return FileEditor(spec, parent)
+    if isinstance(spec, GridSpec):
+        return GridEditor(spec, parent)
     return ValueEditor(spec, parent)

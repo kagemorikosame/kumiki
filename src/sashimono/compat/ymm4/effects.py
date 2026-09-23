@@ -22,6 +22,7 @@ from sashimono.compat.ymm4.brushes import BLEND_NAMES, is_solid
 from sashimono.compat.ymm4.values import animated, brush_colour, colour, number
 from sashimono.core.model import AnimatedValue, Effect
 from sashimono.effects.definition import registry
+from sashimono.effects.motion import MESH_MAX_POINTS
 
 __all__ = ["CenterPoint", "center_point", "map_effect", "mapped_names"]
 
@@ -657,18 +658,36 @@ def _mesh_deformation(r: _Reader) -> Effect | None:
     columns = r.count("HorizontalCount", 2, animated=False)
     rows = r.count("VerticalCount", 2, animated=False)
     points = r.entry.get("Points")
-    if columns != 2 or rows != 2 or not isinstance(points, list) or len(points) != 4:
-        # 四隅より細かい格子は、こちらの四隅の変形では表せない
+    fits = 2 <= columns <= MESH_MAX_POINTS and 2 <= rows <= MESH_MAX_POINTS
+    if not fits or not isinstance(points, list) or len(points) != columns * rows:
+        # 点数と点の数が合わない値で作ると、シェーダが配列の外を読む
         r.report.note_missing(f"YMM4 の MeshDeformationEffect の格子 {columns}x{rows}")
         return None
-    # YMM4 は格子の点を行ごとに並べる（左上・右上・左下・右下） こちらは一周の順
+    readers = [
+        _Reader(point if isinstance(point, dict) else {}, r.length, r.keyframes, r.report, r.name)
+        for point in points
+    ]
+    if columns == 2 and rows == 2:
+        return _mesh_corners(readers)
+    # YMM4 の Points は左上から行ごと こちらの格子も同じ並びなので、並べ替えない
+    # 並べ替えを挟むと、読むときと描くときで順が食い違って絵が対角に折れる
+    offsets: list[float] = []
+    for reader in readers:
+        # 点ごとのアニメーションは格子では持てない 1 つの平らな値の並びだから
+        offsets += [reader.still("X"), -reader.still("Y")]
+    return _create("mesh_deform", grid=(float(columns), float(rows), *offsets))
+
+
+def _mesh_corners(readers: list[_Reader]) -> Effect | None:
+    """2x2 は四隅のスライダへ写す こちらは点ごとのアニメーションも運べる
+
+    YMM4 の並びは左上・右上・左下・右下、スライダは一周の順（左上・右上・右下・左下）
+    """
     order = (0, 1, 3, 2)
     params: dict[str, Any] = {}
     for corner, index in enumerate(order):
-        point = points[index] if isinstance(points[index], dict) else {}
-        reader = _Reader(point, r.length, r.keyframes, r.report, r.name)
-        params[f"point{corner}_x"] = reader.track("X")
-        params[f"point{corner}_y"] = reader.track("Y", flip=True)
+        params[f"point{corner}_x"] = readers[index].track("X")
+        params[f"point{corner}_y"] = readers[index].track("Y", flip=True)
     return _create("mesh_deform", **params)
 
 

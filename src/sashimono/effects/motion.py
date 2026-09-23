@@ -15,9 +15,9 @@ from __future__ import annotations
 from sashimono.effects.builtin import PRELUDE
 from sashimono.effects.definition import EffectDefinition, registry
 from sashimono.effects.easing import EASING_KINDS, EASING_MODES
-from sashimono.effects.spec import CheckSpec, SelectSpec, TrackSpec, ValueSpec
+from sashimono.effects.spec import CheckSpec, GridSpec, SelectSpec, TrackSpec, ValueSpec
 
-__all__ = ["EASING_KINDS", "EASING_MODES", "register_motion_effects"]
+__all__ = ["EASING_KINDS", "EASING_MODES", "MESH_MAX_POINTS", "register_motion_effects"]
 
 
 def _shader(body: str) -> str:
@@ -550,8 +550,13 @@ void main() {
 """
 )
 
+#: 格子の 1 辺の点数の上限 シェーダの配列の大きさと
+#: :class:`~sashimono.effects.spec.GridSpec` の上限を揃えること
+#: 片方だけ増やすと、配列の外を読むか、渡したのに効かない点が出る
+MESH_MAX_POINTS = 9
+
 _MESH = _shader(
-    """
+    f"""
 uniform float point0_x;
 uniform float point0_y;
 uniform float point1_x;
@@ -560,7 +565,14 @@ uniform float point2_x;
 uniform float point2_y;
 uniform float point3_x;
 uniform float point3_y;
-
+// 格子（grid）の点数と、各点のずれ 左上から行ごとに並ぶ
+// 点数が 0 なら格子は無く、上の四隅のスライダで動く（既存のプロジェクトはこちら）
+uniform int grid_columns;
+uniform int grid_rows;
+const int MESH_MAX = {MESH_MAX_POINTS};
+uniform vec2 grid_points[MESH_MAX * MESH_MAX];
+"""
+    + """
 float cross2(vec2 a, vec2 b) { return a.x * b.y - a.y * b.x; }
 
 // 四隅を動かした四角形の中で、点が元のどこにあたるか（双一次補間の逆）
@@ -594,20 +606,54 @@ vec2 inverse_bilinear(vec2 p, vec2 a, vec2 b, vec2 c, vec2 d) {
     return vec2((h.y - f.y * v) / across_y, v);
 }
 
-void main() {
-    // 四隅は左上・右上・右下・左下 Y は上が正
-    vec2 top_left = vec2(u_object.x, u_object.w) + vec2(point0_x, point0_y);
-    vec2 top_right = vec2(u_object.z, u_object.w) + vec2(point1_x, point1_y);
-    vec2 bottom_right = vec2(u_object.z, u_object.y) + vec2(point2_x, point2_y);
-    vec2 bottom_left = vec2(u_object.x, u_object.y) + vec2(point3_x, point3_y);
-    vec2 uv = inverse_bilinear(v_uv * u_size, bottom_left, bottom_right, top_right, top_left);
-    // NaN は比較がすべて偽になり範囲の判定をすり抜けるので、先に弾く
-    bool broken = any(isnan(uv)) || any(isinf(uv));
-    if (broken || uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
-        frag_color = vec4(0.0);
-        return;
+// 格子の点 1 つのずれ 番号は左上から行ごと
+// 格子が無いときは四隅のスライダを同じ順（左上・右上・左下・右下）に並べ替えて返す
+vec2 mesh_offset(int index) {
+    if (grid_columns >= 2 && grid_rows >= 2) {
+        return grid_points[clamp(index, 0, MESH_MAX * MESH_MAX - 1)];
     }
-    frag_color = sample_pixel(u_object.xy + uv * object_size());
+    // スライダは一周の順（左上・右上・右下・左下）で持っている
+    if (index == 0) return vec2(point0_x, point0_y);
+    if (index == 1) return vec2(point1_x, point1_y);
+    if (index == 2) return vec2(point3_x, point3_y);
+    return vec2(point2_x, point2_y);
+}
+
+// 変形後の格子の点 (column, row) row は上から数える Y は上が正なので下ほど小さい
+vec2 mesh_point(int column, int row, int columns, int rows) {
+    float u = float(column) / float(columns - 1);
+    float v = float(row) / float(rows - 1);
+    vec2 base = vec2(mix(u_object.x, u_object.z, u), mix(u_object.w, u_object.y, v));
+    return base + mesh_offset(row * columns + column);
+}
+
+void main() {
+    // 格子が無ければ 2x2（四隅のスライダ）として扱う 既存のプロジェクトはこの道を通る
+    int columns = grid_columns >= 2 ? min(grid_columns, MESH_MAX) : 2;
+    int rows = grid_rows >= 2 ? min(grid_rows, MESH_MAX) : 2;
+    vec2 pixel = v_uv * u_size;
+    // 出力の画素が入る**変形後のセル**を探す セルを 1 つしか見ないと、真ん中の点を
+    // 動かしたときに端まで一緒に歪む 上限は 8x8 = 64 回なので総当たりで足りる
+    for (int row = 0; row + 1 < MESH_MAX; ++row) {
+        if (row + 1 >= rows) break;
+        for (int column = 0; column + 1 < MESH_MAX; ++column) {
+            if (column + 1 >= columns) break;
+            vec2 top_left = mesh_point(column, row, columns, rows);
+            vec2 top_right = mesh_point(column + 1, row, columns, rows);
+            vec2 bottom_left = mesh_point(column, row + 1, columns, rows);
+            vec2 bottom_right = mesh_point(column + 1, row + 1, columns, rows);
+            vec2 uv = inverse_bilinear(pixel, bottom_left, bottom_right, top_right, top_left);
+            // NaN は比較がすべて偽になり範囲の判定をすり抜けるので、先に弾く
+            bool broken = any(isnan(uv)) || any(isinf(uv));
+            if (broken || uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) continue;
+            // セルの中の位置を、絵全体の位置へ uv.y は下からなので、行は下から数え直す
+            float across = (float(column) + uv.x) / float(columns - 1);
+            float along = (float(rows - 2 - row) + uv.y) / float(rows - 1);
+            frag_color = sample_pixel(u_object.xy + vec2(across, along) * object_size());
+            return;
+        }
+    }
+    frag_color = vec4(0.0);
 }
 """
 )
@@ -1210,12 +1256,16 @@ def register_motion_effects() -> None:
             kind="mesh_deform",
             label="四隅の変形",
             category="変形",
-            parameters=tuple(
-                TrackSpec(
-                    f"point{index}_{axis}", f"{corner} {axis.upper()}", -4000, 4000, 0, 1, "px"
-                )
-                for index, corner in enumerate(("左上", "右上", "右下", "左下"))
-                for axis in ("x", "y")
+            parameters=(
+                *(
+                    TrackSpec(
+                        f"point{index}_{axis}", f"{corner} {axis.upper()}", -4000, 4000, 0, 1, "px"
+                    )
+                    for index, corner in enumerate(("左上", "右上", "右下", "左下"))
+                    for axis in ("x", "y")
+                ),
+                # 四隅より細かい格子 互換層が入れる 入っていなければ上の四隅で動く
+                GridSpec("grid", "格子", maximum=MESH_MAX_POINTS),
             ),
             fragment_shader=_MESH,
         ),

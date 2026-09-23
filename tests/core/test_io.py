@@ -79,6 +79,22 @@ class TestRoundTrip:
         assert "curve" not in keyframes["keyframes"][1]
         assert project_from_dict(data) == original
 
+    def test_a_mesh_grid_survives_a_round_trip(self) -> None:
+        # 格子は点数と点を 1 本の並びで持つ 落とすと、YMM4 から読んだ 3x3 の歪みが
+        # 開き直しただけで四隅の変形に戻る
+        grid = (3.0, 3.0, *([0.0] * 16), 12.0, -8.0)
+        effect = Effect(kind="mesh_deform", params={"grid": grid})
+        clip = Clip(timeline_start=0, duration=30, effects=(effect,))
+        base = Project.create()
+        track = Track(TrackKind.VIDEO, "V1", (clip,))
+        original = base.with_timeline(replace(base.timeline, tracks=(track,)))
+        data = project_to_dict(original)
+        assert data["timeline"]["tracks"][0]["clips"][0]["effects"][0]["params"]["grid"][:2] == [
+            3.0,
+            3.0,
+        ]
+        assert project_from_dict(data) == original
+
     def test_fractions_are_written_as_strings(self, tmp_path: Path) -> None:
         settings = ProjectSettings(frame_rate=FrameRate(30000, 1001))
         project = Project.create(settings)
