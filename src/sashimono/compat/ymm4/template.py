@@ -938,6 +938,9 @@ def _shape(item: dict[str, Any], log: CompatibilityReport) -> GeneratedSource:
         params["line_width"] = AnimatedValue(thickness)
         params["width"] = _shifted(width, -thickness)
         params["height"] = _shifted(height, -thickness)
+        # 線の位置は中央のまま 大きさを縮めて内側に見せる書き方で YMM4 の見本と
+        # 合わせてあるので、内側に引く（#87 の既定）と二重に細って合わなくなる
+        params["line_align"] = "center"
     if params["shape"] == "fan":
         params["span"] = track("CenterAngle", 360.0)
     elif params["shape"] == "arrow":
