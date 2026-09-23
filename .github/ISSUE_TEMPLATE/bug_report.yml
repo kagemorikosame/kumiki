@@ -116,9 +116,12 @@ body:
       label: 関係するファイル
       description: |
         プロジェクト（`.sme`）を貼れると助かります（素材の動画は要りません）
-        落ちたときに残る退避は `%LOCALAPPDATA%\Sashimono\recovery`、保存前のバックアップは
-        〔ファイル〕→〔バックアップのフォルダを開く〕で開けます 設定は `%APPDATA%\Sashimono` の
-        `preferences.json` と `shortcuts.json` です
+        置き場は〔ヘルプ〕→〔バージョン情報…〕に、その機械での実際の場所が出ます
+        落ちたときに残る退避は「退避・バックアップ」の下の `recovery`、設定は「設定・スクリプト・テンプレート」の
+        `preferences.json` と `shortcuts.json` です 保存前のバックアップは〔ファイル〕→〔バックアップのフォルダを開く〕で開けます
+        Windows では退避が `%LOCALAPPDATA%\Sashimono\recovery`、設定が `%APPDATA%\Sashimono` です
+        Windows 以外（ソースから動かしたとき）は `XDG_STATE_HOME` と `XDG_CONFIG_HOME` の下の `Sashimono`、
+        それが無ければ `~/.local/state/sashimono` と `~/.config/sashimono` です
         **他人が作った配布物（スクリプト・テンプレート）は貼らないでください** 再配布の条件が作者ごとに違います
         代わりに名前と入手先の URL を書いてください
         ファイルの場所にユーザー名が入っているときは、伏せてかまいません

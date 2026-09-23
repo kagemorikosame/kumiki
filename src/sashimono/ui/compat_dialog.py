@@ -9,6 +9,9 @@ AviUtl の ``obj`` API は広い 全部を一度に実装することはでき�
 
 from __future__ import annotations
 
+import os
+import re
+from collections.abc import Sequence
 from pathlib import Path
 
 from PySide6.QtWidgets import (
@@ -27,15 +30,71 @@ from sashimono.compat.aviutl.catalog import script_catalog
 from sashimono.compat.aviutl.report import CompatibilityReport, global_report
 from sashimono.ui.theme import Colors
 
-__all__ = ["CompatibilityDialog", "report_text"]
+__all__ = ["CompatibilityDialog", "mask_user_folders", "report_text", "user_folders"]
 
 #: 写した文面で、本人のホームフォルダの代わりに置く文字
 #: 失敗の記録には OS の文言がそのまま入り、ファイルの場所（ユーザー名を含む）が混じる
 #: 不具合の報告は公開の Issue に貼られるので、名前が出ないように伏せる
 HOME_PLACEHOLDER = "%USERPROFILE%"
 
+#: ホームのほかに伏せる置き場 （環境変数, 置き換える文字）
+#: 普段はどちらもホームの下にあるが、移動プロファイルや組織の設定でホームの外
+#: （ネットワークの置き場など）へ向いていることがあり、その場所にも利用者名が入る
+#: ホームだけを伏せると、そうした機械では名前がそのまま残る
+#: 環境変数の名前で置くのは、伏せたあとも「設定の置き場の中」だと読めるようにするため
+_FOLDER_VARIABLES = (("APPDATA", "%APPDATA%"), ("LOCALAPPDATA", "%LOCALAPPDATA%"))
 
-def report_text(report: CompatibilityReport, scripts: int, home: Path | None = None) -> str:
+#: 区切りとみなす文字 Windows は ``/`` も ``\`` も受け付け、OS の文言や
+#: スクリプトの書いた場所ではどちらも混ざる
+_SEPARATORS = r"[\\/]+"
+
+#: 伏せた場所のすぐ後に来てよい文字（区切り・空白・引用符・括弧など）
+#: これ以外が続くときは名前の途中なので伏せない ``C:\Users\kage`` を伏せるときに
+#: ``C:\Users\kagemori`` の頭だけを伏せると、残りから名前が読める
+_FOLDER_END = r"(?![^\\/\s\"'<>|:;,)\]}])"
+
+
+def user_folders(home: Path | None = None) -> list[tuple[str, str]]:
+    """伏せる置き場と、その代わりに置く文字"""
+    folders = [(str(home if home is not None else Path.home()), HOME_PLACEHOLDER)]
+    for variable, placeholder in _FOLDER_VARIABLES:
+        value = os.environ.get(variable)
+        if value:
+            folders.append((value, placeholder))
+    return folders
+
+
+def mask_user_folders(text: str, folders: Sequence[tuple[str, str]]) -> str:
+    r"""文面の中の置き場を、書き方の揺れごと伏せる
+
+    完全一致で置き換えると、``c:\users\…`` と ``C:\Users\…``、``/`` と ``\``
+    の違う書き方が素通りする Windows の場所は大文字と小文字を区別しないので、
+    どれも同じ場所で、同じように利用者名を含む
+
+    長い場所から伏せる ``%APPDATA%`` はホームの下にあるので、先にホームを伏せると
+    ``%USERPROFILE%\AppData\Roaming`` になり、設定の置き場だと読みにくくなる
+    """
+    for folder, placeholder in sorted(folders, key=lambda pair: len(pair[0]), reverse=True):
+        parts = [part for part in re.split(_SEPARATORS, folder) if part]
+        # 短すぎる場所（根だけなど）で置き換えると、関係ない文字まで伏せてしまう
+        if len(parts) < 2:
+            continue
+        pattern = _SEPARATORS.join(re.escape(part) for part in parts) + _FOLDER_END
+        # 頭の区切り（ネットワークの置き場の ``\\server`` や、Windows 以外の ``/home``）も
+        # 伏せる側に含める 残すと ``\\%APPDATA%`` のような読めない形になる
+        if re.match(_SEPARATORS, folder):
+            pattern = _SEPARATORS + pattern
+        # 置き換える文字は escape して渡す 素のままだと ``\`` を置き換えの書式として読まれる
+        replacement = placeholder.replace("\\", "\\\\")
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+    return text
+
+
+def report_text(
+    report: CompatibilityReport,
+    scripts: int,
+    folders: Sequence[tuple[str, str]] | None = None,
+) -> str:
     """不具合の報告に貼る文面 版と、画面に出ている記録を全部入れる
 
     版を頭に入れるのは、同じ記録でも版によって直っているかが変わるため
@@ -48,12 +107,7 @@ def report_text(report: CompatibilityReport, scripts: int, home: Path | None = N
         f"読み込み済みのスクリプト {scripts} 本",
         *report.lines(),
     ]
-    text = "\n".join(lines)
-    folder = str(home if home is not None else Path.home())
-    # 短すぎる場所（根だけなど）で置き換えると、関係ない文字まで伏せてしまう
-    if len(folder) > 3:
-        text = text.replace(folder, HOME_PLACEHOLDER)
-    return text
+    return mask_user_folders("\n".join(lines), folders if folders is not None else user_folders())
 
 
 class CompatibilityDialog(QDialog):

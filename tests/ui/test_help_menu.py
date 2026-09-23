@@ -18,7 +18,13 @@ from sashimono import __version__
 from sashimono.compat.aviutl.report import CompatibilityReport
 from sashimono.core import userdirs
 from sashimono.links import MANUAL_URL, REPORT_URL
-from sashimono.ui.compat_dialog import HOME_PLACEHOLDER, CompatibilityDialog, report_text
+from sashimono.ui.compat_dialog import (
+    HOME_PLACEHOLDER,
+    CompatibilityDialog,
+    mask_user_folders,
+    report_text,
+    user_folders,
+)
 from sashimono.ui.main_window import MainWindow, about_text
 
 
@@ -86,9 +92,54 @@ class TestCompatibilityCopy:
         home = tmp_path / "kagemori"
         report = CompatibilityReport()
         report.note_failure("ゆらゆら.anm2", f"開けない: {home / 'scripts' / 'ゆらゆら.anm2'}")
-        text = report_text(report, 3, home=home)
+        text = report_text(report, 3, user_folders(home))
         assert str(home) not in text
         assert HOME_PLACEHOLDER in text
+
+    @pytest.mark.parametrize(
+        "written",
+        [
+            r"C:\Users\Kagemori\scripts\a.anm2",
+            r"c:\users\kagemori\scripts\a.anm2",
+            "C:/Users/kagemori/scripts/a.anm2",
+            r"C:\\Users\\KAGEMORI/scripts\a.anm2",
+        ],
+    )
+    def test_other_spellings_of_the_home_are_hidden_too(self, written: str) -> None:
+        # Windows の場所は大文字小文字も区切りも揺れる 完全一致で探すと、OS の文言に
+        # 入った別の書き方が素通りし、公開の Issue に利用者名が残る
+        text = mask_user_folders(f"開けない: {written}", [(r"C:\Users\kagemori", "%USERPROFILE%")])
+        assert "kagemori" not in text.lower()
+        assert text.startswith("開けない: %USERPROFILE%")
+        assert text.endswith("a.anm2")
+
+    def test_a_longer_name_that_shares_the_start_is_left_whole(self) -> None:
+        # 名前の頭だけを伏せると ``%USERPROFILE%mori`` のように、残りから名前が読める
+        # 別の人の場所として丸ごと残すほうがまし（そもそも本人の名前ではない）
+        text = mask_user_folders(r"C:\Users\kagemori\a", [(r"C:\Users\kage", "%USERPROFILE%")])
+        assert text == r"C:\Users\kagemori\a"
+
+    def test_the_app_folders_outside_the_home_are_hidden(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # 移動プロファイルなどで設定の置き場がホームの外にあると、ホームだけを伏せても
+        # その場所の利用者名が残る
+        roaming = r"\\server\profiles\kagemori\AppData\Roaming"
+        monkeypatch.setenv("APPDATA", roaming)
+        text = mask_user_folders(
+            rf"開けない: {roaming.lower()}\Sashimono\scripts\a.anm2", user_folders(tmp_path)
+        )
+        assert text == r"開けない: %APPDATA%\Sashimono\scripts\a.anm2"
+
+    def test_the_settings_folder_is_named_rather_than_the_home(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ホームから先に伏せると %USERPROFILE%\AppData\Roaming になり、設定の置き場だと読めない
+        monkeypatch.setenv("APPDATA", r"C:\Users\kagemori\AppData\Roaming")
+        text = mask_user_folders(
+            r"C:\Users\kagemori\AppData\Roaming\Sashimono", user_folders(Path(r"C:\Users\kagemori"))
+        )
+        assert text == r"%APPDATA%\Sashimono"
 
     def test_the_copied_text_carries_the_version_and_every_line(self) -> None:
         # 壊れると、貼られた記録がどの版のものか分からず、直ったかどうかを判断できない
