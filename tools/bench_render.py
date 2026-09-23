@@ -32,6 +32,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -96,9 +97,16 @@ class ScanMeter:
 
     def __init__(self) -> None:
         self.elapsed_ms = 0.0
+        #: 差し替える前の関数 差し替えている間だけ持つ
+        self._original: Callable[[np.ndarray], tuple[int, int, int, int] | None] | None = None
 
     def install(self) -> None:
+        # 差し替えたまま包み直すと、1 回の走査を内と外のラッパーが二重に足す
+        # 同じプロセスで ``main`` を 2 回呼んだときに内訳が実測より大きくなる
+        if self._original is not None:
+            return
         original = renderer_module._content_box
+        self._original = original
 
         def timed(image: np.ndarray) -> tuple[int, int, int, int] | None:
             started = time.perf_counter()
@@ -108,6 +116,12 @@ class ScanMeter:
                 self.elapsed_ms += (time.perf_counter() - started) * 1000
 
         renderer_module._content_box = timed
+
+    def uninstall(self) -> None:
+        """差し替えた関数を元に戻す 測り終えたら戻して、ほかの呼び出しを測りに巻き込まない"""
+        if self._original is not None:
+            renderer_module._content_box = self._original
+            self._original = None
 
     def take(self) -> float:
         """ここまでの分を返して 0 へ戻す"""
@@ -420,6 +434,7 @@ def main(argv: list[str] | None = None) -> int:
                         measure(project, context, arguments.frames, readback=arguments.readback),
                     )
     finally:
+        SCAN.uninstall()
         context.release()
     # 読み戻しの道は比べるための表示 予算はプレビューのものなので合否に使わない
     return 0 if passed or arguments.readback else 1

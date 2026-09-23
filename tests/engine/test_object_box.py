@@ -34,6 +34,7 @@ from sashimono.core.model import (
 from sashimono.core.timebase import FrameRate
 from sashimono.effects import registry
 from sashimono.effects.sources import SHAPE, TEXT
+from sashimono.effects.spec import ParamInput
 from sashimono.engine.decode import probe_media
 from sashimono.engine.gpu import GLContextError, OffscreenGLContext
 from sashimono.engine.render import FrameRenderer
@@ -207,8 +208,8 @@ def write_png(path: Path, image: np.ndarray) -> Path:
     return path
 
 
-def effect(kind: str, **values: object) -> Effect:
-    return registry.require(kind).create(**values)  # type: ignore[arg-type]
+def effect(kind: str, **values: ParamInput) -> Effect:
+    return registry.require(kind).create(**values)
 
 
 #: 入れ物を使うエフェクト 回転・拡大は入れ物の中央を中心に回し、角丸は入れ物の角に付き、
