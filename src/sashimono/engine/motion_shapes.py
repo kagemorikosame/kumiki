@@ -486,7 +486,10 @@ def unit_randoms(seed: int, count: int, streams: int = 1) -> np.ndarray:
     index = np.arange(count, dtype=np.uint64).reshape(count, 1)
     salt = np.arange(streams, dtype=np.uint64).reshape(1, streams)
     # 掛け算は配列のまま行う NumPy のスカラ同士だと、桁あふれで警告が出る
-    base = np.array([[(seed & 0xFFFFFFFFFFFFFFFF) + 1]], dtype=np.uint64)
+    # 足したあとにも 64 ビットへ丸める 丸めないと種 -1（＝ 2**64 - 1）で
+    # 値が 2**64 になり、`np.uint64` にできずに乱数ものが描けなくなる
+    base = np.array([[((seed & 0xFFFFFFFFFFFFFFFF) + 1) & 0xFFFFFFFFFFFFFFFF]], dtype=np.uint64)
     key = base * np.uint64(0x9E3779B97F4A7C15)
+    # 行（index）と列（salt）で形が広がるので、この時点で (count, streams) になる
     key = key ^ (index * np.uint64(0xC2B2AE3D27D4EB4F)) ^ (salt * np.uint64(0xD6E8FEB86659FD93))
-    return _splitmix(np.broadcast_to(key, (count, streams)))
+    return _splitmix(key)

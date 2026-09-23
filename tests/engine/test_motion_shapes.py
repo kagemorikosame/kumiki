@@ -347,3 +347,14 @@ def test_the_unit_randoms_spread_over_the_whole_range() -> None:
     assert float(np.mean(dice)) == pytest.approx(0.5, abs=0.02)
     counts = np.histogram(dice, bins=8, range=(0.0, 1.0))[0]
     assert counts.min() > 4096 / 8 * 0.8
+
+
+def test_the_unit_randoms_take_any_seed() -> None:
+    """種を 64 ビットへ丸めないと、-1 で ``OverflowError`` が出て何も描けない
+
+    種は時刻や設定から作るので、負の値や上限いっぱいの値が来ても止まってはいけない
+    """
+    for seed in (-1, 0, 2**64 - 1, -(2**63)):
+        dice = unit_randoms(seed, 8, 2)
+        assert dice.shape == (8, 2)
+        assert dice.min() >= 0.0 and dice.max() < 1.0
