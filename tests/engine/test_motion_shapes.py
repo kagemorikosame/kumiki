@@ -23,6 +23,7 @@ from sashimono.engine.motion_shapes import (
     star_field,
     trail,
     trail_path,
+    unit_randoms,
 )
 from sashimono.engine.sources import render_source
 
@@ -324,3 +325,52 @@ def test_a_broken_current_position_stays_finite() -> None:
     assert all(math.isfinite(value) for value in shape.last)
     assert shape.head is not None
     assert all(math.isfinite(value) for value in shape.head)
+
+
+def test_the_unit_randoms_repeat_for_the_same_seed() -> None:
+    # 種が同じなら同じ並び ここが揺れると、開き直すたびに乱数ものの絵が変わる
+    assert np.array_equal(unit_randoms(17, 64, 3), unit_randoms(17, 64, 3))
+
+
+def test_the_unit_random_streams_do_not_follow_each_other() -> None:
+    # 列ごとに別の値 同じ並びを使い回すと、向きと太さが連動して、
+    # 太い線ほど一方向に寄った絵になる
+    dice = unit_randoms(17, 512, 2)
+    assert not np.array_equal(dice[:, 0], dice[:, 1])
+    assert abs(float(np.corrcoef(dice[:, 0], dice[:, 1])[0, 1])) < 0.2
+
+
+def test_the_unit_randoms_spread_over_the_whole_range() -> None:
+    # 一様でないと、線の向きが偏って集中線が片側だけ濃くなる
+    dice = unit_randoms(3, 4096, 1)[:, 0]
+    assert dice.min() >= 0.0 and dice.max() < 1.0
+    assert float(np.mean(dice)) == pytest.approx(0.5, abs=0.02)
+    counts = np.histogram(dice, bins=8, range=(0.0, 1.0))[0]
+    assert counts.min() > 4096 / 8 * 0.8
+
+
+def test_the_unit_randoms_take_any_seed() -> None:
+    """種を 64 ビットへ丸めないと、-1 で ``OverflowError`` が出て何も描けない
+
+    種は時刻や設定から作るので、負の値や上限いっぱいの値が来ても止まってはいけない
+    """
+    for seed in (-1, 0, 2**64 - 1, -(2**63)):
+        dice = unit_randoms(seed, 8, 2)
+        assert dice.shape == (8, 2)
+        assert dice.min() >= 0.0 and dice.max() < 1.0
+
+
+def test_the_unit_randoms_keep_this_exact_sequence() -> None:
+    """並びそのものを留め金で押さえる 混ぜ方を書き換えると落ちる
+
+    同じ実行の中で 2 度呼んで比べるだけでは、別の決まった並びへ変わったことを
+    見つけられない ここが変わると、前に書き出した動画と集中線の走り方が
+    合わなくなる 値は splitmix64 の定数から決まるもので、直すときは
+    「絵が変わってよいか」を先に決めること
+    """
+    assert unit_randoms(17, 4, 3).tolist() == [
+        [0.7648786940076188, 0.18928660347641368, 0.37606316555964026],
+        [0.9885477460685106, 0.14531100776772354, 0.02397332730634305],
+        [0.7176686040064033, 0.00725504398040977, 0.5982940347170692],
+        [0.8475990804935291, 0.2767325739387113, 0.07366295985589966],
+    ]
