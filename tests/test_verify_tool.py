@@ -7,9 +7,12 @@ CI は以前、件数を取るためだけに pytest をもう 1 度回してい
 from __future__ import annotations
 
 import importlib.util
+import os
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import pytest
 
@@ -63,3 +66,59 @@ def test_a_run_that_stopped_early_says_so(verify: ModuleType) -> None:
     # 集計の行が無いのに「通った」と読める要約を書くと、止まった CI を見落とす
     (line,) = verify.summarize("ImportError while loading conftest", "3.14")
     assert "見つからない" in line
+
+
+class TestReadingThisTree:
+    """worktree で検証しても、その木のコードを試すこと（#102）"""
+
+    def test_this_tree_comes_first(self, verify: ModuleType, tmp_path: Path) -> None:
+        """立てないと .pth が指す本体の src が読まれ、worktree の変更を試さない"""
+        environment = verify.own_environment(tmp_path, {"PATH": "x"})
+        assert environment["PYTHONPATH"] == str(tmp_path / "src")
+
+    def test_a_path_already_set_is_kept_behind(self, verify: ModuleType, tmp_path: Path) -> None:
+        """手で立てた置き場を消すと、それを頼りにしていた試験が読めなくなる"""
+        environment = verify.own_environment(tmp_path, {"PYTHONPATH": "手で足した"})
+        assert environment["PYTHONPATH"].split(os.pathsep) == [str(tmp_path / "src"), "手で足した"]
+
+    def test_a_child_python_imports_this_tree(self, verify: ModuleType, tmp_path: Path) -> None:
+        """実際に子の Python を起こして、入っている本体ではなくこの木を読むこと
+
+        環境変数を組み立てるだけの試験では、``.pth`` より先に並ぶかまでは分からない
+        """
+        package = tmp_path / "src" / "sashimono"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("WHERE = 'この木'\n", encoding="utf-8")
+        found = subprocess.run(
+            [sys.executable, "-c", "import sashimono; print(sashimono.WHERE)"],
+            env={**verify.own_environment(tmp_path), "PYTHONIOENCODING": "utf-8"},
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
+        )
+        assert found.stdout.strip() == "この木"
+
+    def test_every_step_is_run_with_this_tree_first(
+        self, verify: ModuleType, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """組み立てた環境を段へ渡し忘れると、pytest が本体の src を読んだまま通る
+
+        環境を作る所だけを見る試験では、``main`` から ``_run_tests`` を通って
+        pytest を起こす道の渡し忘れを見つけられない 全部の段を差し替えて、
+        受け取った環境を見る
+        """
+        seen: list[tuple[str, str]] = []
+
+        def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            environment = kwargs.get("env") or {}
+            seen.append((" ".join(command[1:3]), environment.get("PYTHONPATH", "")))
+            return subprocess.CompletedProcess(command, 0, "1 passed in 0.01s\n", "")
+
+        monkeypatch.setattr(verify.subprocess, "run", run)
+        monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+        assert verify.main() == 0
+        own = str(ROOT / "src")
+        assert {step for step, _ in seen} >= {"-m pytest", "-m mypy"}
+        for step, path in seen:
+            assert path.split(os.pathsep)[0] == own, f"{step} に自分の木の src が渡っていない"
