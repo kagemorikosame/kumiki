@@ -20,6 +20,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "tools" / "ymm4_export.ps1"
+NEWLINE = chr(10)
 
 
 def _load(name: str) -> ModuleType:
@@ -56,6 +57,7 @@ def ready(tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     def run_script(command: list[str], limit: int) -> tuple[int, bool]:
         state["commands"].append(command)
         state["limit"] = limit
+        state["existed"] = state["output"].exists()
         if state["writes"]:
             state["output"].write_bytes(b"mp4")
         result: tuple[int, bool] = state["result"]
@@ -152,17 +154,18 @@ def test_a_relative_project_is_passed_as_an_absolute_path(
     assert Path(command[command.index("-Output") + 1]).is_absolute()
 
 
-def test_a_previous_export_is_removed_so_the_save_dialog_does_not_ask(
-    tool: ModuleType, ready: dict[str, Any], capsys: pytest.CaptureFixture[str]
+def test_the_entry_leaves_the_previous_export_for_the_script_to_remove(
+    tool: ModuleType, ready: dict[str, Any]
 ) -> None:
-    """残っていると保存の窓が「上書きしますか」で止まり、大きさの見張りも前の物を見る"""
+    """入口で消すと、確かめてから PowerShell が確かめ直すまでの間に本人が YMM4 を開いたとき、
+    止まったのに前の書き出しだけ消えている 消すのは PowerShell が確かめ直した直後
+    """
     ready["output"].parent.mkdir()
     ready["output"].write_bytes(b"earlier")
     ready["writes"] = False
     ready["result"] = (1, False)
     assert tool.main(_arguments(ready)) == 1
-    assert not ready["output"].exists()
-    assert "前の書き出し" in capsys.readouterr().out
+    assert ready["existed"]
 
 
 def test_a_failed_restore_is_shouted_and_kept_as_exit_code_two(
@@ -370,12 +373,56 @@ def test_the_script_loads_its_types_and_fails_cleanly_without_ymm4(
     Add-Type より前に UI Automation の型を書くと、ここで「型が見つからない」で落ちる
     """
     missing = tmp_path / "NotYmm4AtAll.exe"
+    earlier = tmp_path / "a.mp4"
+    earlier.write_bytes(b"earlier")
     command = tool.powershell_command(
-        missing, tmp_path / "a.ymmp", tmp_path / "a.mp4", no_compressor=True, timeout=5
+        missing, tmp_path / "a.ymmp", earlier, no_compressor=True, timeout=5
     )
     completed = subprocess.run(command, capture_output=True, check=False, timeout=120)
     lines = [tool.decode_line(raw) for raw in completed.stdout.splitlines()]
     assert completed.returncode == 1, lines
     assert any("書き出せませんでした" in line for line in lines), lines
+    # 開いていないと確かめたので、前の書き出しは消える（残ると保存の窓が上書きを尋ねて止まる）
+    assert not earlier.exists(), lines
     # 変える前に落ちたので、戻す所は通らない（通れば YMM4 の無い所で戻そうとして 2 になる）
     assert not any("戻せませんでした" in line for line in lines), lines
+
+
+@_WINDOWS_ONLY
+def test_an_open_program_found_by_the_script_keeps_the_previous_export(
+    tool: ModuleType, tmp_path: Path
+) -> None:
+    """PowerShell 側でも開いていると分かったら、前の書き出しを消す前に止まる
+
+    YMM4 は起動しない 動いているのが確かな powershell.exe（この試験が走らせている物）を
+    YMM4 の代わりに名指しする
+    """
+    earlier = tmp_path / "a.mp4"
+    earlier.write_bytes(b"earlier")
+    command = tool.powershell_command(
+        Path("powershell.exe"), tmp_path / "a.ymmp", earlier, no_compressor=False, timeout=5
+    )
+    completed = subprocess.run(command, capture_output=True, check=False, timeout=120)
+    lines = [tool.decode_line(raw) for raw in completed.stdout.splitlines()]
+    assert completed.returncode == 1, lines
+    assert any("既に開いています" in line for line in lines), lines
+    assert earlier.read_bytes() == b"earlier"
+
+
+def _function_body(text: str, name: str) -> str:
+    # 関数の閉じ括弧は行の頭に置いてある そこまでを本体とする
+    start = text.index(f"function {name} ")
+    return text[start : text.index(NEWLINE + "}" + NEWLINE, start)]
+
+
+def test_only_the_windows_of_the_started_ymm4_are_touched() -> None:
+    """名前で process を数えると、道具が動いている間に本人が開いた YMM4 まで操作して閉じる
+
+    起動した process の Id の窓だけを探し、閉じたかもその process で見る
+    """
+    text = SCRIPT.read_text(encoding="utf-8-sig")
+    for name in ("Get-TopWindows", "Wait-MainWindow", "Close-Ymm4"):
+        body = _function_body(text, name)
+        assert "Get-Process" not in body, name
+    assert "$script:Ymm4Process.Id" in _function_body(text, "Get-TopWindows")
+    assert "$script:Ymm4Process = Start-Process" in text

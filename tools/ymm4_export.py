@@ -286,15 +286,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("YMM4 を閉じてから走らせてください")
         return 1
     output.parent.mkdir(parents=True, exist_ok=True)
-    if output.exists():
-        # 残っていると保存の窓が「上書きしますか」を出して止まる 大きさを見て書き終えたかを
-        # 決めるので、前の書き出しの大きさを今回の物と取り違えないためにも消しておく
-        try:
-            output.unlink()
-        except OSError as exc:
-            print(f"前の書き出し {output} を消せません（{exc}） 開いている物を閉じてください")
-            return 1
-        print(f"前の書き出し {output} を消しました")
+    # 前の書き出しはここでは消さない ymm4_export.ps1 が YMM4 の開いていないことを
+    # 確かめ直した直後に消す ここで消すと、上の確かめから PowerShell が起動するまでの
+    # 間に本人が YMM4 を開いたとき、止まったのに前の書き出しだけ消えている
     print("YMM4 を動かします 終わるまでマウスとキーボードに触らないでください")
     command = powershell_command(
         ymm4,

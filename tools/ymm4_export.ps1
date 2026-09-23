@@ -121,12 +121,19 @@ function Get-Label($Element) {
     return (@($names) | Where-Object { $_ }) -join '/'
 }
 
+# この道具が起動した YMM4 動かしている間に本人が別の YMM4 を開いても、そちらは触らない
+$script:Ymm4Process = $null
+
 function Get-TopWindows {
-    $windows = @()
-    foreach ($running in @(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue)) {
-        $windows += @($Uia::RootElement.FindAll($Scope::Children, (New-Condition $Uia::ProcessIdProperty $running.Id)))
-    }
-    return $windows
+    # 名前で数えると、後から本人が開いた YMM4 の窓まで操作して閉じてしまう
+    # 起動した process の窓だけを相手にする
+    if (-not $script:Ymm4Process) { return @() }
+    return @($Uia::RootElement.FindAll($Scope::Children, (New-Condition $Uia::ProcessIdProperty $script:Ymm4Process.Id)))
+}
+
+function Test-Ymm4Exited {
+    $script:Ymm4Process.Refresh()
+    return $script:Ymm4Process.HasExited
 }
 
 function Test-ProjectShown($Window) {
@@ -141,12 +148,20 @@ function Test-ProjectShown($Window) {
 }
 
 function Wait-MainWindow {
-    return Wait-For {
-        foreach ($window in Get-TopWindows) {
-            if (Test-ProjectShown $window) { return $window }
+    $until = (Get-Date).AddSeconds($LoadSeconds)
+    while ((Get-Date) -lt $until) {
+        if (Test-Ymm4Exited) {
+            # 起動した process が別の process へ引き継いで終わる作りなら、主の窓は別の Id に出る
+            # どれが道具の開いた物かは分からないので、推測で他の YMM4 の窓を触らずに止める
+            throw "起動した YMM4（process $($script:Ymm4Process.Id)）が主の窓を出さずに終わった"
         }
-        return $null
-    } $LoadSeconds "YMM4 の下の帯の「$ProjectStem」"
+        foreach ($window in Get-TopWindows) {
+            # 作り直しの途中の要素を触ると例外になる 次の周で拾い直せばよい
+            try { if (Test-ProjectShown $window) { return $window } } catch { }
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    throw "YMM4 の下の帯の「$ProjectStem」が $LoadSeconds 秒待っても見つからない"
 }
 
 function Get-ExportDialog($Main) {
@@ -374,7 +389,7 @@ function Close-Ymm4 {
     }
     $until = (Get-Date).AddSeconds($DialogSeconds)
     while ((Get-Date) -lt $until) {
-        if (-not @(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue).Count) { return }
+        if (Test-Ymm4Exited) { return }
         Start-Sleep -Milliseconds 500
     }
     # 無理に止めない 止めると YMM4 が設定を書き残す前に終わり、戻した設定が消えかねない
@@ -387,15 +402,27 @@ if (@(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue).Count) {
     exit 1
 }
 
+if (Test-Path -LiteralPath $Output) {
+    # 残っていると保存の窓が「上書きしますか」で止まり、大きさの見張りも前の物を見る
+    # 消すのは開いていないと確かめた直後のここ 入口で消すと、入口の確かめからここまでの間に
+    # 本人が YMM4 を開いた場合、ここで止まっても前の書き出しはもう消えている
+    # 確かめてから消すまでの隙は無くしきれないが、この 2 行の間まで縮める
+    try {
+        Remove-Item -LiteralPath $Output -Force
+    } catch {
+        Say "前の書き出し $Output を消せません（$($_.Exception.Message)） 開いている物を閉じてください"
+        exit 1
+    }
+    Say "前の書き出し $Output を消しました"
+}
+
 $exitCode = 1
-$started = $false
 $main = $null
 $original = $null
 try {
     Say "YMM4 を起動します $Ymm4"
     # 引数は 1 つの文字列で渡す 空白を含むパスを引用符で囲まないと、別々の引数に割れる
-    [void](Start-Process -FilePath $Ymm4 -ArgumentList ('"' + $Project + '"') -PassThru)
-    $started = $true
+    $script:Ymm4Process = Start-Process -FilePath $Ymm4 -ArgumentList ('"' + $Project + '"') -PassThru
     $main = Wait-MainWindow
     Say "プロジェクトが開きました $ProjectStem"
     # 帯に名前が出た直後は、メニューがまだ組み上がっていないことがある
@@ -445,7 +472,7 @@ try {
             $exitCode = 2
         }
     }
-    if ($started) {
+    if ($script:Ymm4Process) {
         try {
             Close-Ymm4
         } catch {
