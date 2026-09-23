@@ -665,7 +665,12 @@ def command_audio_build(arguments: argparse.Namespace) -> int:
         json.dumps(audio_manifest(slots, media), ensure_ascii=False, indent=1), encoding="utf-8"
     )
     print(f"{len(slots)} 枠を並べた（{length} フレーム、{length / FPS:.0f} 秒）")
-    print(f"YMM4 で {project} を開き、{work / 'audio-probe.mp4'} として書き出してください")
+    video = work / "audio-probe.mp4"
+    if video.exists():
+        # 前の書き出しが残っていると、新しい枠の一覧で古い音を切り出してしまう
+        # `audio-measure` は書き出しが一覧より古ければ止めるが、ここでも言っておく
+        print(f"{video} は前の探りの書き出しです 作り直した方で書き出し直してください")
+    print(f"YMM4 で {project} を開き、{video} として書き出してください")
     return 0
 
 
@@ -678,15 +683,20 @@ def sample_index(pts: int, start: int | None, time_base: Fraction, rate: int) ->
     return round(float((pts - (start or 0)) * time_base) * rate)
 
 
-def decode_audio(video: Path) -> tuple[np.ndarray, int]:
+def decode_audio(video: Path) -> tuple[np.ndarray, int] | None:
     """書き出した動画の音を ``(2, サンプル数)`` の配列と標本化周波数で返す
 
     頭の時刻のずれを詰めた位置へ置く 欠けた所は 0（無音）のまま残す
+
+    音の道が無い書き出し（映像だけの形式で出した物）は ``None``
+    ここで添字を取ると `IndexError` で終わり、測り方の案内を出せない
     """
     import av
     from av.audio.resampler import AudioResampler
 
     with av.open(str(video)) as container:
+        if not container.streams.audio:
+            return None
         stream = container.streams.audio[0]
         rate = int(stream.rate or AUDIO_RATE)
         # 左右 2 本の浮動小数へそろえる 書き出しの形式（s16 か fltp か、
@@ -777,7 +787,18 @@ def command_audio_measure(arguments: argparse.Namespace) -> int:
         print(f"YMM4 で {work / 'audio-probe.ymmp'} を開き、そこへ書き出してから走らせてください")
         return 0
 
-    samples, rate = decode_audio(video)
+    if video.stat().st_mtime < manifest_path.stat().st_mtime:
+        # 探りを作り直したのに書き出しが前のままだと、新しい枠の一覧で
+        # 古い音を切り出して、まるで別の条件を測ったような表が出る
+        print(f"{video} は探りを作り直す前の書き出しです")
+        print(f"YMM4 で {work / 'audio-probe.ymmp'} を開き直し、書き出してから走らせてください")
+        return 0
+
+    decoded = decode_audio(video)
+    if decoded is None:
+        print(f"{video} に音の道がありません 音が入る形式で書き出してください")
+        return 0
+    samples, rate = decoded
     fps = int(manifest.get("fps", FPS))
     measured: list[tuple[dict[str, Any], AudioMeasure]] = []
     for entry in manifest["slots"]:

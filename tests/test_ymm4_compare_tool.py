@@ -225,3 +225,58 @@ def test_measuring_before_the_export_explains_itself_instead_of_crashing(
     )
     assert tool.command_audio_measure(arguments) == 0
     assert "まだ書き出されていません" in capsys.readouterr().out
+
+
+def _manifest_and_video(tool: ModuleType, work: Path) -> Path:
+    """枠の一覧と、中身の無い書き出しを置く 一覧は書き出しより新しくしない"""
+    slots = tool.build_audio_slots()
+    (work / "audio-probe.json").write_text(
+        json.dumps(tool.audio_manifest(slots, work / "tone.wav")), encoding="utf-8"
+    )
+    video = work / "audio-probe.mp4"
+    video.write_bytes(b"")
+    return video
+
+
+def test_an_export_older_than_the_probe_is_refused(
+    tool: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """探りを作り直した後に古い書き出しを測ると、別の条件を測った表が出る
+
+    枠の並びが変わっているのに気付けないので、`Pan` の向きを読み違えたまま
+    実装を直してしまう
+    """
+    video = _manifest_and_video(tool, tmp_path)
+    manifest = tmp_path / "audio-probe.json"
+    # 書き出しが一覧より 1 分古い状態を作る
+    import os
+
+    os.utime(video, (manifest.stat().st_atime - 60, manifest.stat().st_mtime - 60))
+    assert tool.command_audio_measure(SimpleNamespace(work=tmp_path)) == 0
+    assert "作り直す前の書き出し" in capsys.readouterr().out
+
+
+def test_an_export_without_sound_explains_itself(
+    tool: ModuleType,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """音の道が無い書き出しで `IndexError` で終わると、測り方の案内が出ない"""
+    _manifest_and_video(tool, tmp_path)
+    monkeypatch.setattr(tool, "decode_audio", lambda _video: None)
+    assert tool.command_audio_measure(SimpleNamespace(work=tmp_path)) == 0
+    assert "音の道がありません" in capsys.readouterr().out
+
+
+def test_the_build_warns_about_a_stale_export(
+    tool: ModuleType,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """作り直したことに気付かないまま measure へ進むと、古い音を測る"""
+    monkeypatch.setattr(tool, "make_tone", lambda target: target.write_bytes(b"") or True)
+    (tmp_path / "audio-probe.mp4").write_bytes(b"")
+    assert tool.command_audio_build(SimpleNamespace(work=tmp_path)) == 0
+    assert "前の探りの書き出し" in capsys.readouterr().out
