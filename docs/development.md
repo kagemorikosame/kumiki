@@ -440,6 +440,15 @@ AviUtl の乱数ものは、エイリアスではなくスクリプト（`obj.ra
 - 名乗る本体の版は `native.HOST_VERSION`（2010601＝v2.1.6a） 写した表の並びが
   どの版まで含むかを表す それより新しい版を `RequiredVersion` で求める DLL は、
   こちらの表の外を呼びうるので読まずに断り、理由を記録する
+- 合成フォントは設定（`%PROGRAMDATA%\aviutl2\compositefont\profiles.json`）が無いと
+  本文をそのまま返す 組み替えを試すときは `tools/aviutl_compare.py profile` で見本を
+  作業フォルダへ書き、`preview --app-data <作業フォルダ>\appdata` で描く
+  （`plugin.set_app_data_path` プラグインを読む前にだけ効く） 利用者の置き場へは
+  道具から書かず、写すのは本人
+- 組み替えた結果は書体を変える制御文字（`<@Yu Mincho>ここに<@>`）で返ってくる
+  読み込みで `register_font_collection` は呼ばれず、書体名を渡して `get_font` が
+  空で返っても組み替えの結果は同じだった 描けるかどうかは、テキストの描き方が
+  この制御文字を読むかどうかで決まる
 
 ---
 
