@@ -1114,6 +1114,12 @@ def test_an_old_slot_says_it_cannot_tell_the_two_apart(tool: ModuleType) -> None
 def test_the_rate_row_and_table_show_both_guesses_for_a_mismatch(
     tool: ModuleType, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """YMM4 の行と Sashimono の行で、それぞれ近い予想を名指し、表にも予想を並べる
+
+    2 つの行で近い予想を取り違えると、YMM4 で効いた値を誤って読み、互換層の
+    直し方を誤る 表に予想が出ないと、次に測る人が実測をどの読みと比べるのか
+    読み取れない
+    """
     sources = _sources(200)
     entry = {
         "index": 6,

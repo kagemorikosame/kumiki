@@ -903,7 +903,13 @@ def _playback_rate(
     elif newer is not None:
         # 止まった値の食い違いは見ない YMM4 は PlaybackRate を読むと測って確かめた
         moving = read(newer, rate)
-        if moving.keyframes and any(point.value != rate for point in moving.keyframes):
+        amounts = [point.value for point in moving.keyframes] or [moving.static]
+        if not all(math.isfinite(amount) for amount in amounts):
+            # 写す値には使わないが、NaN や無限大を黙って捨てると、壊れたファイルが
+            # 互換性レポートに出ない 食い違いの判定を外したので、ここで見ないと
+            # 1 つの値の NaN はどこにも引っ掛からない（PlaybackRate の読めない値と同じ扱い）
+            log.note_missing(f"YMM4 の再生速度（PlaybackRate2）が読めない値: {newer!r}")
+        elif moving.keyframes and any(point.value != rate for point in moving.keyframes):
             log.note_missing(
                 "YMM4 の再生速度（PlaybackRate2）の動き 動く速さは写せない（PlaybackRate で置いた）"
             )

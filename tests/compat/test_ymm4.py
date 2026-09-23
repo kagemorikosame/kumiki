@@ -1575,6 +1575,23 @@ class TestItemSound:
         assert mapped.clip.speed == Fraction(repr(rate)) / 100
         assert not report.lines()
 
+    @pytest.mark.parametrize(
+        "rate2",
+        [still(float("nan")), still(float("inf")), still(float("-inf")), "NaN", "broken"],
+    )
+    def test_a_broken_single_playback_rate2_is_counted(self, rate2: object) -> None:
+        """1 つの値で書かれた ``PlaybackRate2`` の NaN・無限大・文字は「読めない値」と数える
+
+        写す値には使わないが、食い違いの判定を外したので、ここで見ないと壊れた値が
+        どこにも引っ掛からず、互換性レポートに出ない 速さは ``PlaybackRate`` のまま写す
+        """
+        report = CompatibilityReport()
+        (mapped,) = map_template(
+            [self.audio(PlaybackRate=50.0, PlaybackRate2=rate2)], report=report
+        )
+        assert mapped.clip.speed == Fraction(1, 2)
+        assert any("PlaybackRate2" in line and "読めない値" in line for line in report.lines())
+
     def test_a_moving_playback_rate2_is_counted_as_not_carried(self) -> None:
         """``PlaybackRate2`` が動くと YMM4 の速さは途中で変わる こちらの速さは動かせない
 
