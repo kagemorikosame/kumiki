@@ -280,11 +280,25 @@ def test_an_export_whose_sound_is_empty_explains_itself(
     「再生速度 0 で止まる」と読み違える
     """
     _manifest_and_video(tool, tmp_path)
+    # 前に測った表を置いておく 残ったままだと、新しい結果として開けてしまう
+    (tmp_path / "audio-report.json").write_text("{}", encoding="utf-8")
     empty = np.zeros((2, 0), dtype=np.float32)
     monkeypatch.setattr(tool, "decode_audio", lambda _video: (empty, tool.AUDIO_RATE))
     assert tool.command_audio_measure(SimpleNamespace(work=tmp_path)) == 0
     assert "音が空です" in capsys.readouterr().out
     assert not (tmp_path / "audio-report.json").exists()
+
+
+def test_the_start_time_is_read_in_the_stream_unit(tool: ModuleType) -> None:
+    """頭の時刻とサンプルの時刻は刻みが違う 同じ刻みとして引くと枠ごとずれる
+
+    ずれた枠は別の条件の音や無音を測るので、音量の曲線を丸ごと読み違える
+    """
+    # 頭の時刻は 1/90000 刻みで 9000（＝ 0.1 秒）、一切れは 1/48000 刻みで 4800
+    at = tool.sample_index(4800, 9000, Fraction(1, 48000), 48000, Fraction(1, 90000))
+    assert at == 4800 - 4800
+    # 同じ刻みなら今までどおり
+    assert tool.sample_index(4800, 480, Fraction(1, 48000), 48000) == 4320
 
 
 def test_an_export_without_sound_explains_itself(

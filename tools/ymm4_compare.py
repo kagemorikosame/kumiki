@@ -680,16 +680,27 @@ def command_audio_build(arguments: argparse.Namespace) -> int:
     return 0
 
 
-def sample_index(pts: int, start: int | None, time_base: Fraction, rate: int) -> int:
+def sample_index(
+    pts: int,
+    start: int | None,
+    time_base: Fraction,
+    rate: int,
+    start_base: Fraction | None = None,
+) -> int:
     """書き出した音の一切れが、頭から何サンプル目かを返す :func:`frame_index` の音版
 
     YMM4 の書き出しは最初の一切れの時刻が 0 から始まらない 時刻をそのまま位置に
     すると、枠がまるごとずれて隣の枠の音を測る
 
+    ``start`` はストリームの刻み（``start_base``）、``pts`` は並べ直したあとの
+    刻み（``time_base``）で数える 刻みが違うまま引き算すると、頭の位置が
+    まるごとずれて、枠に別の条件の音や無音が入る
+
     分数のまま掛ける 先に ``float`` へ落とすと、長い書き出しの終わりの方で
     丸めが 1 サンプルずれ、そこだけ隣の枠の音が混じる
     """
-    return round((pts - (start or 0)) * time_base * rate)
+    seconds = pts * time_base - (start or 0) * (start_base if start_base is not None else time_base)
+    return round(seconds * rate)
 
 
 def decode_audio(video: Path) -> tuple[np.ndarray, int] | None:
@@ -718,7 +729,13 @@ def decode_audio(video: Path) -> tuple[np.ndarray, int] | None:
             for converted in resampler.resample(frame):
                 if converted.pts is None or converted.time_base is None:
                     continue
-                at = sample_index(converted.pts, stream.start_time, converted.time_base, rate)
+                at = sample_index(
+                    converted.pts,
+                    stream.start_time,
+                    converted.time_base,
+                    rate,
+                    stream.time_base,
+                )
                 pieces.append((at, np.asarray(converted.to_ndarray(), dtype=np.float32)))
     if not pieces:
         return np.zeros((2, 0), dtype=np.float32), rate
@@ -791,6 +808,9 @@ def command_audio_measure(arguments: argparse.Namespace) -> int:
         print(f"{manifest_path} がありません 先に audio-build を走らせてください")
         return 0
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    # 測れなかった道で前の表が残ると、新しい結果として開けてしまう
+    # 測れたときは最後に書き直すので、先に消しておけばどの道でも残らない
+    (work / "audio-report.json").unlink(missing_ok=True)
     video = work / "audio-probe.mp4"
     if not video.exists():
         print(f"{video} がまだ書き出されていません")
