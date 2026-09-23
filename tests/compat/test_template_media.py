@@ -690,6 +690,32 @@ def test_a_video_registered_before_the_end_was_kept_is_opened_again(tmp_path: Pa
     assert project.media == (old,)
 
 
+def test_a_registered_video_takes_the_length_counted_from_its_head(tmp_path: Path) -> None:
+    """道の終わりが分からない素材は、開き直した長さで止める時刻を決める（#124 のレビュー）
+
+    版 4 までに覚えた長さはコンテナの頭から数えてあり、映像より早く始まる音の前置きを
+    含む（ここでは 3 秒） 今の数え方の長さ（2 秒）に替えないと、2.5 秒の枠が映像の
+    終わりを越えるのに止まらず、2 秒から先が何も映らない
+    """
+    movie_file = tmp_path / "映像.mp4"
+    movie_file.write_bytes(b"")
+    old = replace(movie(movie_file), duration=Fraction(3))
+    project = apply(Project.create(), [AddMedia(old)])
+
+    class _Headless(FakeProbe):
+        def __call__(self, path: Path) -> MediaItem | None:
+            return movie(path)
+
+    project = put(
+        [_held_video(movie_file, Clip(timeline_start=0, duration=75))], project, _Headless()
+    )
+
+    (picture,) = clips_of(project, TrackKind.VIDEO)
+    assert picture.hold_at is not None
+    assert Fraction(2) - Fraction(1, 30) <= picture.hold_at < Fraction(2)
+    assert project.media == (old,)
+
+
 def test_a_registered_video_is_not_opened_again_when_nothing_is_held(tmp_path: Path) -> None:
     # 止めないクリップのために開き直すと、大きい動画を置くたびに待たされる
     movie_file = tmp_path / "映像.mp4"

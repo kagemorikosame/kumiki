@@ -9,6 +9,7 @@ from __future__ import annotations
 import subprocess
 from fractions import Fraction
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -311,6 +312,36 @@ class TestAudioDecoder:
         assert signal > 0.01, "頭から 1 秒の所が無音"
         error = float(np.sqrt(np.mean((sequential - seeked) ** 2)))
         assert error / signal < 0.05, f"相対 RMS 誤差 {error / signal:.3%}"
+
+    def test_a_seek_near_the_head_reads_from_before_the_origin(
+        self, sample_av: SampleMedia, tmp_path: Path
+    ) -> None:
+        """頭の近くへ飛ぶときも、原点より手前から余らせて読み始める（#124 のレビュー）
+
+        素材の中の時刻で 0 に丸めてから原点を足すと、原点ちょうどへ飛ぶ 原点をまたぐ
+        復号の単位から読めないコンテナでは、頭の音が欠ける
+        """
+        late = make_delayed(tmp_path, "late.mp4", sample_av.path, 5.0)
+        seeks: list[int] = []
+        with AudioDecoder(late, sample_rate=48000) as decoder:
+            real = decoder._container
+
+            class _Recording:
+                def seek(self, offset: int, **kwargs: Any) -> None:
+                    seeks.append(offset)
+                    real.seek(offset, **kwargs)
+
+                def __getattr__(self, name: str) -> Any:
+                    return getattr(real, name)
+
+            decoder._container = _Recording()  # type: ignore[assignment]
+            decoder._seek(4800)
+            decoder._container = real
+            assert decoder._stream.time_base is not None
+            time_base = Fraction(decoder._stream.time_base)
+            origin = decoder._origin
+        # 0.1 秒の所へ飛ぶなら、余らせる 0.25 秒を引いた原点の 0.15 秒手前から
+        assert seeks == [int((origin + Fraction(1, 10) - Fraction(1, 4)) / time_base)]
 
     def test_before_the_start_is_silent(self, sample_av: SampleMedia) -> None:
         with AudioDecoder(sample_av.path, sample_rate=48000) as decoder:

@@ -369,13 +369,18 @@ def _with_video_end(media: MediaItem, fresh: MediaItem | None) -> MediaItem:
     素材の ``id`` はそのまま残すので、クリップは登録済みの素材に結ばれる
     プロジェクトの素材は書き換えない 書き換えるなら元に戻せるコマンドを通す必要があり、
     テンプレートを置くだけで素材一覧が変わるのは本人の予想を外れる
-    開けないときや、開いても道の終わりが分からないときは元のまま使う
+    長さも開き直した物に替える 版 4 までに覚えた長さはコンテナの頭から数えてあり、
+    映像より早く始まる音の前置きを含む 道の終わりが分からない素材は止める時刻を長さで
+    決めるので、古い長さのままだと映像の終わりより後ろを基準にして、止めるべき
+    クリップを止めない
+    開けないときは元のまま使う
     """
-    if fresh is None or not fresh.video_streams or fresh.video_streams[0].end_time is None:
+    if fresh is None:
         return media
+    end = fresh.video_streams[0].end_time if fresh.video_streams else None
     first, *rest = media.video_streams
-    end = fresh.video_streams[0].end_time
-    return replace(media, video_streams=(replace(first, end_time=end), *rest))
+    duration = fresh.duration if fresh.duration > 0 else media.duration
+    return replace(media, duration=duration, video_streams=(replace(first, end_time=end), *rest))
 
 
 def place(

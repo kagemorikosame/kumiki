@@ -200,9 +200,14 @@ class AudioDecoder:
         return cursor - (self._buffer_start + len(self._buffer)) > window
 
     def _seek(self, cursor: int) -> None:
-        seconds = max(Fraction(0), Fraction(cursor, self._sample_rate) - SEEK_PREROLL)
+        # 手前へ余らせる分は原点を足してから引く 素材の中の時刻で 0 に丸めてから原点を
+        # 足すと、頭の近く（余らせる分より手前）へ飛ぶときに原点より前へ戻れず、原点を
+        # またぐ復号の単位から読めないコンテナでは頭の音が欠ける
+        seconds = max(
+            Fraction(0), self._origin + Fraction(cursor, self._sample_rate) - SEEK_PREROLL
+        )
         time_base = self._stream.time_base or Fraction(1, self._sample_rate)
-        pts = seconds_to_pts(seconds + self._origin, Fraction(time_base), Rounding.FLOOR)
+        pts = seconds_to_pts(seconds, Fraction(time_base), Rounding.FLOOR)
         try:
             self._container.seek(pts, stream=self._stream, backward=True)
         except av.error.FFmpegError:
