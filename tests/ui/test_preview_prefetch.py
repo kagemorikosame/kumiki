@@ -69,7 +69,7 @@ class StubCache:
         self.budget_playhead = playhead
 
     def release(self) -> None:
-        pass
+        self.released = getattr(self, "released", 0) + 1
 
 
 def _project() -> tuple[Project, Clip, Clip]:

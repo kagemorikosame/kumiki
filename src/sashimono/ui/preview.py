@@ -102,6 +102,9 @@ class PreviewWidget(QOpenGLWidget):
         self._background: BackgroundPrefetch | None = None
         #: 閉じた走り係が捨てていた控えの素材 次の :meth:`take_discarded` で渡す
         self._closed_discarded: set[MediaId] = set()
+        #: 走り係を作るときに画面の側の絵を手放せなかった（current にできなかった）
+        #: 次にコンテキストが current な所（:meth:`_apply_pending`）で手放す
+        self._release_cache_pending = False
         #: 別のスレッドで先読みできなかった 何度も作り直して失敗し続けないよう覚える
         #: 設定を入れ直したときだけ忘れる
         self._background_broken = False
@@ -416,6 +419,9 @@ class PreviewWidget(QOpenGLWidget):
 
     def _apply_pending(self) -> None:
         """持ち越していた設定を置き場へ渡す **コンテキストが current な所で呼ぶこと**"""
+        if self._release_cache_pending and self._cache is not None:
+            self._release_cache_pending = False
+            self._cache.release()
         if self._pending_budget is None or self._cache is None:
             return
         budget, self._pending_budget = self._pending_budget, None
@@ -477,6 +483,11 @@ class PreviewWidget(QOpenGLWidget):
                     self._cache.release()
                 finally:
                     self.doneCurrent()
+            else:
+                # 窓が隠れていると current にならないまま戻る 覚えておかないと、
+                # 走り係が動く間ずっと画面の側の絵も抱え、先読みの予算の 2 倍の
+                # GPU のメモリを使い続ける
+                self._release_cache_pending = True
             background = BackgroundPrefetch(
                 self._project,
                 share=self.context(),

@@ -386,6 +386,28 @@ class TestWhenItCannotRun:
         assert made[0].named("playhead") == [12]
         assert stub.steps == []
 
+    def test_frames_that_could_not_be_let_go_are_let_go_at_the_next_paint(
+        self,
+        parts: tuple[PreviewWidget, StubCache, list[str]],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """走り係を作るときに current にできなかったら、次に描く所で画面の側の絵を手放す
+
+        手放さないと、走り係が動く間ずっと画面の側の絵も抱え、先読みの予算の 2 倍の
+        GPU のメモリを使い続ける 窓が隠れていると current にならないまま戻る
+        """
+        widget, stub, _ = parts
+        _patch_preview(monkeypatch, "QOpenGLContext", _CurrentIs(None))  # type: ignore[arg-type]
+        _patch_preview(monkeypatch, "BackgroundPrefetch", lambda *a, **k: StubBackground())
+        widget._prefetch_step()
+        assert widget.prefetch_in_background
+        assert getattr(stub, "released", 0) == 0
+        # paintGL の頭で Qt が current にしてから呼ぶ所
+        widget._apply_pending()
+        assert getattr(stub, "released", 0) == 1
+        widget._apply_pending()
+        assert getattr(stub, "released", 0) == 1, "二度手放している"
+
     def test_a_context_that_cannot_be_shared_falls_back(
         self,
         parts: tuple[PreviewWidget, StubCache, list[str]],
