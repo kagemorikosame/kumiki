@@ -152,6 +152,12 @@ def load_template(path: Path) -> list[ItemTemplate]:
         raw = _read_catalog(target)
     except OSError as exc:
         raise Ymm4ParseError(f"開けない: {target} ({exc})") from exc
+    # ZIP の形だけ整って中が壊れている物や、UTF-8 でない物もある どちらも OSError では
+    # ないので、ここで受けないと棚の走査ごと落ち、ほかのテンプレートまで並ばない
+    except zipfile.BadZipFile as exc:
+        raise Ymm4ParseError(f"{target.name}: ZIP として読めない ({exc})") from exc
+    except UnicodeDecodeError as exc:
+        raise Ymm4ParseError(f"{target.name}: UTF-8 の文字として読めない ({exc})") from exc
 
     try:
         document = json.loads(raw)

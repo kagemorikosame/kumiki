@@ -213,7 +213,9 @@ class TemplateDialog(QDialog):
                 group = QTreeWidgetItem([label])
                 groups[label] = group
                 self._tree.addTopLevelItem(group)
-            node = QTreeWidgetItem([entry.name])
+            # 読めなかった物は選ぶ前から分かるようにする 選んで初めて分かると、
+            # 読めない物ばかりの棚で 1 つずつ選んで確かめることになる
+            node = QTreeWidgetItem([f"{entry.name}（読めません）" if entry.error else entry.name])
             node.setData(0, Qt.ItemDataRole.UserRole, entry)
             group.addChild(node)
 

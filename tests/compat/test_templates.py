@@ -7,12 +7,15 @@
 
 from __future__ import annotations
 
+import io
 import json
+import re
+import zipfile
 from pathlib import Path
 
 import pytest
 
-from sashimono.compat.catalog import TemplateCatalog, place, restyle
+from sashimono.compat.catalog import TemplateCatalog, TemplateError, place, restyle
 from sashimono.core.commands import AddClip, AddEffect, AddTrack, RemoveEffect, SetSource
 from sashimono.core.model import AnimatedValue, Clip, GeneratedSource, Project
 from sashimono.effects import registry
@@ -91,6 +94,19 @@ NO_SPAN = (
 )
 
 
+def _corrupt_zip() -> bytes:
+    """終わりの目録は正しく、中の圧縮された所だけが壊れた ZIP
+
+    ZIP とは見分けられるので中を開きに行き、取り出すところで初めて失敗する
+    """
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("catalog.json", json.dumps({"ItemTemplates": []}) * 50)
+    data = bytearray(buffer.getvalue())
+    data[40:60] = bytes(20)
+    return bytes(data)
+
+
 @pytest.fixture
 def shelf(tmp_path: Path) -> tuple[TemplateCatalog, Path]:
     root = tmp_path / "テンプレート"
@@ -134,6 +150,33 @@ class TestScanning:
     def test_an_absent_folder_is_not_an_error(self, tmp_path: Path) -> None:
         catalog = TemplateCatalog()
         assert catalog.scan((tmp_path / "無い",)) == []
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            pytest.param("{これは JSON ではない".encode(), id="壊れた JSON"),
+            pytest.param(b"\xff\xfe\x00\x81", id="UTF-8 でない"),
+            pytest.param(_corrupt_zip(), id="中の壊れた ZIP"),
+            pytest.param(json.dumps({"ItemTemplates": []}).encode(), id="中身が空"),
+        ],
+    )
+    def test_an_unreadable_ymm4_file_stays_on_the_shelf(
+        self, tmp_path: Path, content: bytes
+    ) -> None:
+        # 壊れると、読めない .ymmt が棚から黙って消える（UTF-8 でない物は走査ごと落ちる）
+        # 本人は置いた物が無い理由が分からず、互換の報告にも写せない
+        (tmp_path / "壊れ.ymmt").write_bytes(content)
+        (tmp_path / "強調.object").write_text(ALIAS, "utf-8")
+        catalog = TemplateCatalog()
+        catalog.scan((tmp_path,))
+        broken = catalog.find("壊れ")
+        assert broken is not None
+        assert broken.source == "ymm4"
+        assert broken.error
+        with pytest.raises(TemplateError, match=re.escape(broken.error)):
+            broken.load()
+        # 読めない物が 1 つあっても、ほかのテンプレートは並ぶ
+        assert catalog.find("強調") is not None
 
 
 class TestPlacing:

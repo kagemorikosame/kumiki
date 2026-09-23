@@ -528,6 +528,34 @@ class TestTemplateNotesCopy:
         assert "読んだ結果: 読み込めません: 形が違う" in text.splitlines()
         assert "注意書き: （なし）" in text.splitlines()
 
+    def test_a_broken_ymm4_file_can_be_chosen_and_reported(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # 壊れた .ymmt が棚から消えると、読めない理由を画面でも貼る文でも見られず、
+        # いちばん報告してほしい物が報告できない
+        _clear_folder_variables(monkeypatch)
+        home = tmp_path / "someone"
+        monkeypatch.setenv("USERPROFILE", str(home))
+        monkeypatch.setenv("HOME", str(home))
+        root = tmp_path / "kagemori" / "棚"
+        root.mkdir(parents=True)
+        (root / "壊れ.ymmt").write_text("{これは JSON ではない", "utf-8")
+        dialog = TemplateDialog(TemplateCatalog(), roots=(root,))
+        try:
+            text = _copied(dialog, "壊れ（読めません）")
+            detail = dialog._detail.text()
+            placeable = dialog._place_button.isEnabled()
+            restylable = dialog._restyle_button.isEnabled()
+        finally:
+            dialog.close()
+        assert detail.startswith("読み込めません: 壊れ.ymmt: JSON として読めない")
+        assert "読んだ結果: 読み込めません: 壊れ.ymmt: JSON として読めない" in text
+        assert "ファイル: <探索先1>\\壊れ.ymmt" in text.replace("/", "\\")
+        assert "kagemori" not in text.casefold()
+        # 読めない物は置くことも着せることもできない
+        assert not placeable
+        assert not restylable
+
     def test_nothing_is_copied_without_a_selection(self, tmp_path: Path) -> None:
         # 選んでいないのに押せると、空の文や前に選んだ物の文が写り、別の物の報告になる
         dialog = TemplateDialog(TemplateCatalog(), roots=(tmp_path,))
