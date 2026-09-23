@@ -17,6 +17,7 @@ from fractions import Fraction
 from sashimono.core.model import MediaId, MediaItem
 from sashimono.engine.audio.waveform import Waveform, analyze_waveform
 
+from .progress import JobBoard, ProgressSnapshot
 from .store import CacheStore
 from .thumbnails import (
     DEFAULT_INTERVAL,
@@ -30,6 +31,9 @@ from .thumbnails import (
 from .waveform_cache import load_waveform, save_waveform, waveform_key
 
 __all__ = ["MediaAnalyzer"]
+
+#: 失敗したときに画面へ出す名前
+_KIND_NAMES = {"waveform": "波形", "filmstrip": "サムネイル"}
 
 #: 同時に走らせる解析の数 増やしすぎるとディスクの取り合いで全体が遅くなる
 MAX_WORKERS = 2
@@ -63,6 +67,16 @@ class MediaAnalyzer:
         self._running: set[tuple[str, MediaId]] = set()
         self._cancelled: set[tuple[str, MediaId]] = set()
         self._closed = False
+        #: 画面へ出す進み具合 数えるのは裏のスレッド、読むのは画面のタイマー
+        self._board = JobBoard()
+
+    def poll(self) -> ProgressSnapshot:
+        """画面へ出す進み具合 画面のスレッドのタイマーから呼ぶ（:meth:`JobBoard.poll`）"""
+        return self._board.poll()
+
+    def settle(self, seen: ProgressSnapshot) -> bool:
+        """画面が終わりを見届けた ひと続きの数を戻す（:meth:`JobBoard.settle`）"""
+        return self._board.settle(seen)
 
     def waveform(self, media: MediaItem) -> Waveform | None:
         """すでに用意できていれば返す 無ければ ``None``
@@ -94,6 +108,7 @@ class MediaAnalyzer:
                 key = (kind, media_id)
                 if key in self._running:
                     self._cancelled.add(key)
+        self._board.forget(media_id)
 
     def close(self) -> None:
         # 投入（_submit）と同じロックの中で止める ロックの外で止めると、投入側が
@@ -110,7 +125,7 @@ class MediaAnalyzer:
         self,
         kind: str,
         media: MediaItem,
-        work: Callable[[MediaItem], bool],
+        work: Callable[[MediaItem, Callable[[float], None]], bool],
         on_ready: Callable[[MediaId], None] | None,
     ) -> None:
         key = (kind, media.id)
@@ -122,15 +137,31 @@ class MediaAnalyzer:
                 return
             self._cancelled.discard(key)
             self._running.add(key)
+            self._board.start(key, media.id)
+
+        def report(value: float) -> None:
+            self._board.report(key, value)
 
         def run() -> None:
             produced = False
+            failure: str | None = None
             try:
-                produced = work(media)
+                produced = work(media, report)
+            except Exception as exc:  # 裏のスレッドの例外は誰にも見えずに消える
+                # 投げ直さずに失敗として数える 前は executor の中で黙って消え、
+                # 波形が出ないまま理由も分からなかった
+                failure = f"{_KIND_NAMES[kind]}を作れなかった: {exc}"
             finally:
                 with self._lock:
+                    stopped = self._closed or key in self._cancelled
                     self._running.discard(key)
                     self._cancelled.discard(key)
+            if stopped:
+                self._board.drop(key)
+            elif produced:
+                self._board.finish(key)
+            else:
+                self._board.finish(key, failure or f"{_KIND_NAMES[kind]}を作れなかった")
             if produced and on_ready is not None:
                 on_ready(media.id)
 
@@ -138,6 +169,7 @@ class MediaAnalyzer:
             # close と同じロックの中で投げる（close の説明を参照）
             if self._closed:
                 self._running.discard(key)
+                self._board.drop(key)
                 return
             self._executor.submit(run)
 
@@ -161,7 +193,7 @@ class MediaAnalyzer:
         with self._lock:
             return self._closed or (kind, media_id) in self._cancelled
 
-    def _analyze_waveform(self, media: MediaItem) -> bool:
+    def _analyze_waveform(self, media: MediaItem, report: Callable[[float], None]) -> bool:
         key = waveform_key(media.path, self._sample_rate, self._channels)
         waveform = load_waveform(self._store, key)
 
@@ -170,6 +202,7 @@ class MediaAnalyzer:
                 media.path,
                 sample_rate=self._sample_rate,
                 channels=self._channels,
+                progress=report,
                 should_cancel=lambda: self._is_cancelled("waveform", media.id),
             )
             if waveform is None:
@@ -178,7 +211,7 @@ class MediaAnalyzer:
 
         return self._publish("waveform", media.id, waveform)
 
-    def _analyze_filmstrip(self, media: MediaItem) -> bool:
+    def _analyze_filmstrip(self, media: MediaItem, report: Callable[[float], None]) -> bool:
         interval = _interval_for(media.duration)
         key = filmstrip_key(media.path, interval, THUMBNAIL_HEIGHT)
         filmstrip = load_filmstrip(self._store, key)
@@ -188,6 +221,7 @@ class MediaAnalyzer:
                 media.path,
                 interval=interval,
                 height=THUMBNAIL_HEIGHT,
+                progress=report,
                 should_cancel=lambda: self._is_cancelled("filmstrip", media.id),
             )
             if filmstrip is None:

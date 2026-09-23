@@ -196,6 +196,15 @@ class PreferencesDialog(QDialog):
         )
         form.addRow(self._native_modules)
 
+        self._pool_progress = QCheckBox("控えと解析の進み具合を、素材一覧の行にも出す", self)
+        self._pool_progress.setChecked(preferences.pool_progress)
+        self._pool_progress.setToolTip(
+            "素材ごとに、控え（プロキシ）と波形・サムネイルを作っている途中の割合と、"
+            "作れなかったことを行の後ろに添える 切ってもステータスバーには全体の"
+            "進み具合が出て、作れなかった理由も終わったときに出る"
+        )
+        form.addRow(self._pool_progress)
+
         self._all_plugins = QCheckBox("AviUtl2 の汎用プラグインを全部読んで探す", self)
         self._all_plugins.setChecked(preferences.all_aviutl_plugins)
         self._all_plugins.setToolTip(
@@ -289,5 +298,6 @@ class PreferencesDialog(QDialog):
             export_pipeline_depth=int(self._pipeline_depth.currentData()),
             decode_threads=int(self._decode_threads.currentData()),
             native_modules=self._native_modules.isChecked(),
+            pool_progress=self._pool_progress.isChecked(),
             all_aviutl_plugins=self._all_plugins.isChecked(),
         )

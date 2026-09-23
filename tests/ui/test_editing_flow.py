@@ -51,6 +51,7 @@ class TestEditingFlow:
         self, window: MainWindow, two_clips: tuple[SampleMedia, SampleMedia]
     ) -> None:
         window.import_media([two_clips[0].path])
+        assert window.wait_for_imports()
         project = window._document.project
 
         assert len(project.media) == 1
@@ -68,6 +69,7 @@ class TestEditingFlow:
     ) -> None:
         # 2 本読み込んで 2 回取り消す、という操作は誰も望まない
         window.import_media([two_clips[0].path, two_clips[1].path])
+        assert window.wait_for_imports()
         assert len(window._document.history_labels) == 1
 
         window.undo()
@@ -77,6 +79,7 @@ class TestEditingFlow:
         self, window: MainWindow, two_clips: tuple[SampleMedia, SampleMedia]
     ) -> None:
         window.import_media([two_clips[0].path, two_clips[1].path])
+        assert window.wait_for_imports()
         project = window._document.project
         video_track = next(iter(project.timeline.video_tracks()))
         starts = [clip.timeline_start for clip in video_track.clips]
@@ -87,6 +90,7 @@ class TestEditingFlow:
         self, window: MainWindow, two_clips: tuple[SampleMedia, SampleMedia]
     ) -> None:
         window.import_media([two_clips[0].path, two_clips[1].path])
+        assert window.wait_for_imports()
         before = window._document.project.duration
 
         window._seek(45)
@@ -106,6 +110,7 @@ class TestEditingFlow:
         self, window: MainWindow, two_clips: tuple[SampleMedia, SampleMedia]
     ) -> None:
         window.import_media([two_clips[0].path])
+        assert window.wait_for_imports()
         original = window._document.project
 
         window._seek(30)
@@ -125,6 +130,7 @@ class TestEditingFlow:
         self, window: MainWindow, two_clips: tuple[SampleMedia, SampleMedia]
     ) -> None:
         window.import_media([two_clips[0].path])
+        assert window.wait_for_imports()
         window._seek(10**6)
         assert window._timeline.playhead == window._document.project.duration
 
@@ -133,6 +139,7 @@ class TestEditingFlow:
     ) -> None:
         # 存在しない ID を持ち続けると、次の操作で「見つからない」例外になる
         window.import_media([two_clips[0].path])
+        assert window.wait_for_imports()
         clip = next(iter(window._document.project.timeline.video_tracks())).clips[0]
         window._timeline.select(clip.id)
         window._timeline.delete_selected()
@@ -143,6 +150,7 @@ class TestEditingFlow:
     ) -> None:
         missing = tmp_path / "行方不明.mp4"
         window.import_media([missing, two_clips[0].path])
+        assert window.wait_for_imports()
         assert len(window._document.project.media) == 1
 
 
@@ -151,6 +159,7 @@ class TestSaveAndExport:
         self, window: MainWindow, two_clips: tuple[SampleMedia, SampleMedia], tmp_path: Path
     ) -> None:
         window.import_media([two_clips[0].path, two_clips[1].path])
+        assert window.wait_for_imports()
         window._seek(45)
         window._timeline.split_at_playhead()
 
@@ -171,6 +180,7 @@ class TestSaveAndExport:
             pytest.skip("使えるコーデックが無い")
 
         window.import_media([two_clips[0].path])
+        assert window.wait_for_imports()
         window._seek(30)
         window._timeline.split_at_playhead()
 

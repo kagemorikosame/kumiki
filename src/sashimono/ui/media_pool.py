@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, Qt, QUrl, Signal
@@ -21,6 +22,10 @@ from sashimono.core.model import MediaId, MediaItem, Project
 from sashimono.core.timebase import FrameRate, format_timecode, seconds_to_frame
 
 __all__ = ["MediaPoolWidget"]
+
+#: 行の説明（進み具合を添える前）を持たせる所 文言から添えた分を切り取る形にすると、
+#: 素材の名前に同じ区切りが入っていたときに名前まで削る
+_BASE_TEXT = Qt.ItemDataRole.UserRole + 1
 
 #: 読み込みダイアログのフィルタ
 MEDIA_FILTER = (
@@ -44,6 +49,8 @@ class MediaPoolWidget(QWidget):
     def __init__(self, project: Project, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._project = project
+        #: 行に添える進み具合と失敗の理由 一覧を作り直しても残すために持つ
+        self._notes: dict[MediaId, tuple[str, str]] = {}
 
         self._list = QListWidget(self)
         self._list.itemDoubleClicked.connect(self._on_double_click)
@@ -84,12 +91,46 @@ class MediaPoolWidget(QWidget):
 
         self._list.clear()
         for media in project.media:
-            item = QListWidgetItem(_describe(media, project.rate))
+            item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, str(media.id))
-            item.setToolTip(str(media.path))
+            item.setData(_BASE_TEXT, _describe(media, project.rate))
+            self._show_note(item, media)
             self._list.addItem(item)
             if media.id == selected:
                 self._list.setCurrentItem(item)
+
+    def set_progress(self, notes: Mapping[MediaId, tuple[str, str]]) -> None:
+        """行に進み具合を添える ``notes`` は素材 → （添える文言、失敗の理由）
+
+        変わった行だけ書き換える 一覧を作り直すと、スクロールの位置と
+        選んでいる行が 250ms ごとに揺れる
+        """
+        if dict(notes) == self._notes:
+            return
+        self._notes = dict(notes)
+        for row in range(self._list.count()):
+            item = self._list.item(row)
+            media = self._project.find_media(MediaId(str(item.data(Qt.ItemDataRole.UserRole))))
+            if media is not None:
+                self._show_note(item, media)
+
+    def row_text(self, media_id: MediaId) -> str | None:
+        """その素材の行に今出ている文言 無ければ ``None``"""
+        for row in range(self._list.count()):
+            item = self._list.item(row)
+            if item.data(Qt.ItemDataRole.UserRole) == str(media_id):
+                return item.text()
+        return None
+
+    def _show_note(self, item: QListWidgetItem, media: MediaItem) -> None:
+        base = str(item.data(_BASE_TEXT))
+        note, reason = self._notes.get(media.id, ("", ""))
+        text = f"{base}   [{note}]" if note else base
+        tooltip = f"{media.path}\n{reason}" if reason else str(media.path)
+        if item.text() != text:
+            item.setText(text)
+        if item.toolTip() != tooltip:
+            item.setToolTip(tooltip)
 
     def selected_media_id(self) -> MediaId | None:
         items = self._list.selectedItems()

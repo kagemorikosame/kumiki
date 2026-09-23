@@ -84,6 +84,7 @@ import av.video.stream
 import numpy as np
 
 from sashimono.core.model import MediaId, MediaItem
+from sashimono.engine.cache.progress import JobBoard, ProgressSnapshot
 from sashimono.engine.cache.store import CacheStore, media_key
 from sashimono.engine.colorspace import tag_bt709, to_bt709, to_rgb_array
 from sashimono.engine.decode import ProbeError, VideoDecoder, probe_media
@@ -434,10 +435,21 @@ class ProxyBuilder:
         self._running: set[MediaId] = set()
         self._cancelled: set[MediaId] = set()
         self._closed = False
+        #: 画面へ出す進み具合 ``_progress`` は描画の側が 1 本ずつ引くためのもので、
+        #: 何本のうち何本目か・失敗したかは持たない
+        self._board = JobBoard()
 
     @property
     def store(self) -> ProxyStore:
         return self._store
+
+    def poll(self) -> ProgressSnapshot:
+        """画面へ出す進み具合 画面のスレッドのタイマーから呼ぶ（:meth:`JobBoard.poll`）"""
+        return self._board.poll()
+
+    def settle(self, seen: ProgressSnapshot) -> bool:
+        """画面が終わりを見届けた ひと続きの数を戻す（:meth:`JobBoard.settle`）"""
+        return self._board.settle(seen)
 
     def progress(self, media_id: MediaId) -> float | None:
         """作っている最中なら 0..1 それ以外は ``None``
@@ -464,10 +476,12 @@ class ProxyBuilder:
             self._cancelled.discard(media.id)
             self._running.add(media.id)
             self._progress[media.id] = 0.0
+            self._board.start(media.id, media.id)
 
         def report(value: float) -> None:
             with self._lock:
                 self._progress[media.id] = value
+            self._board.report(media.id, value)
             if on_progress is not None:
                 on_progress(media.id)
 
@@ -480,6 +494,7 @@ class ProxyBuilder:
             # 止められていたかどうかを、消す前に控えておく 消してから見ると
             # 分からなくなり、閉じたあとに「控えができた」と伝えてしまう
             stopped = False
+            failure: str | None = None
             try:
                 made = create_proxy(
                     media.path,
@@ -491,12 +506,24 @@ class ProxyBuilder:
                     progress=report,
                     should_cancel=cancelled,
                 )
+            except Exception as exc:  # 裏のスレッドの例外は誰にも見えずに消える
+                # 投げ直さずに失敗として数える 前は executor の中で黙って消え、
+                # 控えが無いまま「作っている最中」にも見えなかった
+                failure = f"控えを作れなかった: {exc}"
             finally:
                 with self._lock:
                     stopped = self._closed or media.id in self._cancelled
                     self._running.discard(media.id)
                     self._cancelled.discard(media.id)
                     self._progress.pop(media.id, None)
+            if stopped:
+                self._board.drop(media.id)
+            elif made is None:
+                # 開けない・映像の大きさが分からない素材は None で返る 何も出さないと、
+                # プレビューが重いまま控えを待ち続けることになる
+                self._board.finish(media.id, failure or "控えを作れなかった")
+            else:
+                self._board.finish(media.id)
             # 止められていたなら伝えない 伝えると、窓を閉じている最中や
             # 控えを切った直後に「控えができた」として描き直しが走る
             if made is not None and not stopped and on_ready is not None:
@@ -508,6 +535,7 @@ class ProxyBuilder:
             if self._closed:
                 self._running.discard(media.id)
                 self._progress.pop(media.id, None)
+                self._board.drop(media.id)
                 return
             self._executor.submit(run)
 
@@ -516,6 +544,7 @@ class ProxyBuilder:
         with self._lock:
             if media_id in self._running:
                 self._cancelled.add(media_id)
+        self._board.forget(media_id)
 
     def close(self) -> None:
         with self._lock:

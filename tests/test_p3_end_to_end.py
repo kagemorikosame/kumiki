@@ -104,6 +104,7 @@ class TestSubtitleFlow:
     ) -> None:
         # --- 読み込み ---
         window.import_media([speech])
+        assert window.wait_for_imports()
         project = window._document.project
         media = project.media[0]
         assert media.has_audio
@@ -169,6 +170,7 @@ class TestSubtitleFlow:
         self, window: MainWindow, speech: Path
     ) -> None:
         window.import_media([speech])
+        assert window.wait_for_imports()
         media = window._document.project.media[0]
         window.execute(SetTranscript(media.id, FAKE_RESULT))
 
