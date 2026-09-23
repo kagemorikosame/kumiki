@@ -22,7 +22,7 @@ from sashimono.compat.aviutl.report import CompatibilityReport
 from sashimono.compat.catalog import Probe, gather_media, place
 from sashimono.compat.mapped import MappedObject
 from sashimono.compat.ymm4.template import map_template
-from sashimono.core.commands import AddTrack, Command
+from sashimono.core.commands import AddMedia, AddTrack, Command
 from sashimono.core.model import (
     AnimatedValue,
     AudioStreamInfo,
@@ -660,6 +660,45 @@ def test_a_late_starting_video_is_held_at_its_own_end(tmp_path: Path) -> None:
 
     (picture,) = clips_of(project, TrackKind.VIDEO)
     assert picture.hold_at == Fraction(7) - Fraction(1, 15360)
+
+
+def test_a_late_starting_video_registered_before_the_end_was_kept_is_opened_again(
+    tmp_path: Path,
+) -> None:
+    """道の終わりを持たない登録済みの素材は、開き直して終わりを取る（#120 のレビュー）
+
+    前の版で登録した素材は道の終わりを持たない コンテナの長さ（2 秒）で止めると、
+    頭 5 秒の素材では止める時刻が頭より前になり、デコーダが何も返さず動画全体が映らない
+    素材はプロジェクトのものを使い続ける 増やすと素材一覧に同じ名前が並ぶ
+    """
+    movie_file = tmp_path / "映像.mp4"
+    movie_file.write_bytes(b"")
+    old = movie(movie_file)
+    project = apply(Project.create(), [AddMedia(old)])
+    probe = _probed_as(Fraction(2), Fraction(7), Fraction(1, 15360))
+    project = put(
+        [_held_video(movie_file, Clip(timeline_start=0, duration=270, source_in=Fraction(5)))],
+        project,
+        probe,
+    )
+
+    (picture,) = clips_of(project, TrackKind.VIDEO)
+    # 引く刻みは登録済みの素材の time_base（ここではフレーム 1 つ分）
+    assert picture.hold_at is not None
+    assert Fraction(7) - Fraction(1, 30) <= picture.hold_at < Fraction(7)
+    assert picture.media_id == old.id
+    assert project.media == (old,)
+
+
+def test_a_registered_video_is_not_opened_again_when_nothing_is_held(tmp_path: Path) -> None:
+    # 止めないクリップのために開き直すと、大きい動画を置くたびに待たされる
+    movie_file = tmp_path / "映像.mp4"
+    movie_file.write_bytes(b"")
+    project = apply(Project.create(), [AddMedia(movie(movie_file))])
+    probe = FakeProbe()
+    put([media_object(movie_file, "動画ファイル", with_sound=True)], project, probe)
+
+    assert probe.opened == []
 
 
 def test_a_late_starting_file_stops_on_its_last_frame(

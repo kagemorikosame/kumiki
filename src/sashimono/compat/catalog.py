@@ -297,6 +297,12 @@ def gather_media(
       機械にはまず無い 素材を同じフォルダに添えて配る作者はいる
     """
     known = {_same_file(item.path): item for item in project.media}
+    held = {
+        inner.media_path
+        for item in objects
+        for inner in item.walk()
+        if inner.media_path and inner.hold_last_frame
+    }
     chosen: dict[str, MediaItem] = {}
     commands: list[Command] = []
     missing: list[str] = []
@@ -319,8 +325,36 @@ def gather_media(
                 continue
             commands.append(AddMedia(media))
             known[key] = media
+        elif raw in held and _lacks_video_end(media):
+            media = _with_video_end(media, probe(path))
+            known[key] = media
         chosen[raw] = media
     return MediaPlan(commands=tuple(commands), media=chosen, missing=tuple(missing))
+
+
+def _lacks_video_end(media: MediaItem) -> bool:
+    """映像の道の終わりを持たない登録済みの素材か（道の終わりを記録する前の版で登録した物）"""
+    return (
+        bool(media.video_streams) and not media.is_still and media.video_streams[0].end_time is None
+    )
+
+
+def _with_video_end(media: MediaItem, fresh: MediaItem | None) -> MediaItem:
+    """登録済みの素材へ、開き直して取った映像の道の終わりを添える
+
+    絵を止める時刻（:func:`_held_at_end`）を決めるためだけに使う 無いままだと
+    コンテナの長さで見るしかなく、頭が 0 より後ろの素材（頭 5 秒・長さ 2 秒）では
+    止める時刻が頭より前になり、デコーダが何も返さず動画全体が映らない
+    素材の ``id`` はそのまま残すので、クリップは登録済みの素材に結ばれる
+    プロジェクトの素材は書き換えない 書き換えるなら元に戻せるコマンドを通す必要があり、
+    テンプレートを置くだけで素材一覧が変わるのは本人の予想を外れる
+    開けないときや、開いても道の終わりが分からないときは元のまま使う
+    """
+    if fresh is None or not fresh.video_streams or fresh.video_streams[0].end_time is None:
+        return media
+    first, *rest = media.video_streams
+    end = fresh.video_streams[0].end_time
+    return replace(media, video_streams=(replace(first, end_time=end), *rest))
 
 
 def place(
