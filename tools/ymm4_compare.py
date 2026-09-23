@@ -33,6 +33,10 @@ YMM4 のテンプレートは、値の意味を配布物の並びから読み取
 3. ``video-rate-measure`` 書き出しの各フレームが素材の何フレーム目かを枠ごとに並べ、
                           経過フレームに対する傾き（1 で等倍・0 で止まる）を表にする
 
+絵と音の速さの探りは、どちらも後ろに ``PlaybackRate`` と ``PlaybackRate2`` を
+わざと食い違わせた枠を持つ（Issue #117） 測る側は、どちらの値の予想に近いかを並べる
+音はさらに ``PlaybackRateAudioProcessingMode`` を ``Sola`` にした枠を持つ
+
 作業フォルダは既定で ``.work/ymm4-compare`` リポジトリには入れない
 （配布物の絵が入るため）
 """
@@ -44,6 +48,7 @@ import copy
 import html
 import itertools
 import json
+import math
 import shutil
 import subprocess
 import sys
@@ -531,9 +536,33 @@ ENVELOPE_SECONDS = 0.005
 DB_SPAN = 60.0
 
 
+#: 音の速さの変え方 YMM4 本体（4.56.1.1）の ``YukkuriMovieMaker.dll`` の
+#: 列挙 ``YukkuriMovieMaker.Project.Items.PlaybackRateAudioProcessingMode`` は
+#: ``Resampling = 0`` と ``Sola = 1`` の 2 つだけ（メタデータの表を読んだ）
+#: 実物の書き出しはどれも ``Resampling`` で、``Sola`` は名前から高さを保って
+#: 長さだけを変える変え方（WSOLA）と見当を付けた 測るまでは見当のまま
+RESAMPLING = "Resampling"
+SOLA = "Sola"
+#: 新しい版の音声アイテムの枠（Issue #117） 前からある枠の後ろに並べる
+#: ``(種類, PlaybackRate, PlaybackRate2, 音の変え方)``
+#: 食い違いは絵の探りと同じ 2 組 音の長さと高さの両方がどちらかの値に合うかで読む
+#: ``Sola`` は速さを 50 と 200 の両方で置く 高さを保つ変え方なら、どちらも 440Hz のまま
+#: 長さだけが 4 秒と 1 秒になり、``Resampling`` の 220Hz・880Hz と見分けられる
+AUDIO_NEWER_CONDITIONS: tuple[tuple[str, float, float, str], ...] = (
+    ("rate2", 100.0, 50.0, RESAMPLING),
+    ("rate2", 50.0, 100.0, RESAMPLING),
+    ("mode", 50.0, 50.0, SOLA),
+    ("mode", 200.0, 200.0, SOLA),
+)
+
+
 @dataclass(frozen=True)
 class AudioSlot:
-    """探りの枠 1 つ 条件 1 つぶんの音声アイテムに対応する"""
+    """探りの枠 1 つ 条件 1 つぶんの音声アイテムに対応する
+
+    ``playback_rate2`` が ``None`` なら前の版の形（``PlaybackRate`` だけ）で書く
+    前からある枠はこの形で測ったので、形を変えると前の測り結果と比べられない
+    """
 
     kind: str
     name: str
@@ -541,6 +570,8 @@ class AudioSlot:
     volume: float
     pan: float
     playback_rate: float
+    playback_rate2: float | None = None
+    mode: str | None = None
 
 
 def build_audio_slots() -> list[AudioSlot]:
@@ -578,6 +609,24 @@ def build_audio_slots() -> list[AudioSlot]:
             )
         )
         cursor += AUDIO_SLOT + AUDIO_GAP
+    # 新しい版の形の枠は後ろへ足す 間に挟むと、前の測り結果と枠の番号と位置がずれる
+    for kind, rate, rate2, mode in AUDIO_NEWER_CONDITIONS:
+        name = f"PlaybackRate={rate:g} PlaybackRate2={rate2:g}"
+        if mode != RESAMPLING:
+            name += f" {mode}"
+        slots.append(
+            AudioSlot(
+                kind=kind,
+                name=name,
+                start=cursor,
+                volume=100.0,
+                pan=0.0,
+                playback_rate=rate,
+                playback_rate2=rate2,
+                mode=mode,
+            )
+        )
+        cursor += AUDIO_SLOT + AUDIO_GAP
     return slots
 
 
@@ -587,7 +636,13 @@ def audio_item(slot: AudioSlot, media: Path) -> dict[str, Any]:
     項目の並びと既定の値は、手元の YMM4 プロジェクト 16 本に入っていた
     ``AudioItem`` 125 個から写した（推測で書くと YMM4 が開けない）
     ``Volume`` と ``Pan`` は動く値、``PlaybackRate`` はただの数という食い違いも実物どおり
+
+    ``playback_rate2`` を持つ枠は新しい版の形で書く 並びはこの機械のプロジェクトの
+    新しい版の ``AudioItem`` 42 個から写した（``Pan`` の後に ``PlaybackRate2`` と
+    ``PlaybackRateAudioProcessingMode``、``PlaybackRate`` は ``Length`` の後ろ）
     """
+    if slot.playback_rate2 is not None:
+        return _newer_audio_item(slot, media, slot.playback_rate2)
     return {
         "$type": "YukkuriMovieMaker.Project.Items.AudioItem, YukkuriMovieMaker",
         "IsWaveformEnabled": False,
@@ -615,6 +670,37 @@ def audio_item(slot: AudioSlot, media: Path) -> dict[str, Any]:
     }
 
 
+def _newer_audio_item(slot: AudioSlot, media: Path, rate2: float) -> dict[str, Any]:
+    """新しい版の形の音声アイテム 並びは実物の新しい版の ``AudioItem`` そのまま"""
+    return {
+        "$type": "YukkuriMovieMaker.Project.Items.AudioItem, YukkuriMovieMaker",
+        "IsWaveformEnabled": False,
+        "FilePath": str(media),
+        "AudioTrackIndex": 0,
+        "Volume": _still(slot.volume),
+        "Pan": _still(slot.pan),
+        "PlaybackRate2": _still(rate2),
+        "PlaybackRateAudioProcessingMode": slot.mode or RESAMPLING,
+        "ContentOffset": "00:00:00",
+        "FadeIn": 0.0,
+        "FadeOut": 0.0,
+        "IsLooped": False,
+        "EchoIsEnabled": False,
+        "EchoInterval": 0.1,
+        "EchoAttenuation": 40.0,
+        "AudioEffects": [],
+        "Group": 0,
+        "Frame": slot.start,
+        "Layer": 0,
+        "KeyFrames": {"Frames": [], "Count": 0},
+        "Length": AUDIO_SLOT,
+        "PlaybackRate": slot.playback_rate,
+        "Remark": slot.name,
+        "IsLocked": False,
+        "IsHidden": False,
+    }
+
+
 def audio_manifest(slots: list[AudioSlot], media: Path) -> dict[str, Any]:
     """枠の一覧 ``audio-measure`` はこれだけを見て切り出す"""
     return {
@@ -636,6 +722,8 @@ def audio_manifest(slots: list[AudioSlot], media: Path) -> dict[str, Any]:
                 "volume": slot.volume,
                 "pan": slot.pan,
                 "playback_rate": slot.playback_rate,
+                "playback_rate2": slot.playback_rate2,
+                "mode": slot.mode,
             }
             for index, slot in enumerate(slots)
         ],
@@ -971,7 +1059,72 @@ def _audio_row(entry: dict[str, Any], value: AudioMeasure, base: AudioMeasure) -
     }
     if entry["kind"] in ("volume", "基準"):
         row["guesses"] = volume_guesses(float(entry["volume"]))
+    expectations = audio_expectations(entry)
+    if expectations:
+        row["playback_rate2"] = entry.get("playback_rate2")
+        row["mode"] = entry.get("mode")
+        row["expected"] = expectations
+        row["nearer"], row["gaps"] = nearer_sound(value, expectations)
     return row
+
+
+#: 近い方の予想でも、長さと高さの比の対数の差の和がこれを超えたら、どちらとも合わないと読む
+#: 速さ 50 と 100 の差は長さと高さでそれぞれ 0.69 ある 前に測った 50 の長さ
+#: （3.98 秒、予想の 4 秒と 0.005 の差）のような揺れよりは十分に大きく取る
+AUDIO_FAR = 0.15
+
+
+def sound_guess(rate: float, *, keep_pitch: bool = False) -> dict[str, float]:
+    """速さ ``rate``（百分率）が効いたときの、鳴っている長さと中心の周波数の予想
+
+    長さは枠（``AUDIO_SLOT``）で頭打ちになる 前に測った ``Resampling`` の作り
+    （テープのように高さも変わる）を既定に、``keep_pitch`` なら高さを保つ変え方と読む
+    """
+    share = rate / 100.0
+    slot_seconds = AUDIO_SLOT / FPS
+    seconds = min(TONE_SECONDS / share, slot_seconds) if share > 0.0 else 0.0
+    return {"seconds": seconds, "hz": TONE_HZ if keep_pitch else TONE_HZ * share}
+
+
+def audio_expectations(entry: dict[str, Any]) -> dict[str, dict[str, float]]:
+    """食い違わせた枠と音の変え方を変えた枠の、読み方ごとの予想 ほかの枠は空"""
+    kind = entry.get("kind")
+    rate = float(entry["playback_rate"])
+    if kind == "rate2":
+        return {
+            "PlaybackRate": sound_guess(rate),
+            "PlaybackRate2": sound_guess(float(entry["playback_rate2"])),
+        }
+    if kind == "mode":
+        return {
+            "高さも変わる": sound_guess(rate),
+            "高さを保つ": sound_guess(rate, keep_pitch=True),
+        }
+    return {}
+
+
+def nearer_sound(
+    value: AudioMeasure, expectations: dict[str, dict[str, float]]
+) -> tuple[str, dict[str, float]]:
+    """測った長さと高さが、どの予想に近いか 比の対数で差を取る
+
+    差をそのまま足すと、Hz（数百）が秒（数秒）を飲み込み、長さが合っているかを見なくなる
+    比の対数なら、倍と半分が同じ重さになる
+    """
+    if value.seconds <= 0.0 or value.hz <= 0.0:
+        return "鳴らない", {}
+    gaps: dict[str, float] = {}
+    for name, guess in expectations.items():
+        if guess["seconds"] <= 0.0:
+            gaps[name] = math.inf
+            continue
+        gaps[name] = abs(math.log(value.seconds / guess["seconds"])) + abs(
+            math.log(value.hz / guess["hz"])
+        )
+    best = min(gaps, key=lambda name: gaps[name])
+    if gaps[best] > AUDIO_FAR:
+        return "どちらとも合わない", gaps
+    return best, gaps
 
 
 def _print_audio_rows(rows: list[dict[str, Any]]) -> None:
@@ -1003,6 +1156,21 @@ def _print_audio_rows(rows: list[dict[str, Any]]) -> None:
         print()
         print("再生速度 長さが 0 秒なら止まる、基準と同じ長さなら等倍として扱われている")
         print("         中心Hz が基準の半分・倍なら、速度は音の高さごと変えている")
+    newer = [row for row in rows if "expected" in row]
+    if newer:
+        print()
+        print("新しい版の形（Issue #117） 長さと高さが、どちらの予想に近いか")
+        print(f"{'枠':<40}{'長さ秒':>8}{'中心Hz':>8}  予想（長さ秒 / Hz）")
+        for row in newer:
+            guesses = "  ".join(
+                f"{name} {guess['seconds']:.2f}/{guess['hz']:.0f}"
+                for name, guess in row["expected"].items()
+            )
+            print(f"{row['name']:<40}{row['seconds']:>8.2f}{row['hz']:>8.0f}  {guesses}")
+            print(f"{'':<40}→ {row['nearer']}")
+        print()
+        print("PlaybackRate と PlaybackRate2 の枠は、近い方の値を YMM4 が読んでいる")
+        print("Sola の枠は、高さを保つなら中心Hz が 440 のまま長さだけが変わる")
 
 
 #: 探りの下地の画像の大きさ 画面とちょうど同じにする
@@ -1498,23 +1666,90 @@ TINY_WIDTH, TINY_HEIGHT = 192, 108
 #: 素材のどのフレームにも似ていないとみなす差（0〜255、色の平均）
 #: 黒の画面と素材の差は 126 前後 圧縮の揺れや色の変換のずれは十数までに収まる
 RATE_MATCH_LIMIT = 30.0
+#: ``PlaybackRate`` と ``PlaybackRate2`` をわざと食い違わせた枠（Issue #117）
+#: ``(PlaybackRate, PlaybackRate2 の値)`` 値が 2 つなら ``PlaybackRate2`` を
+#: 枠の頭から終わりへ直線で動かす 前からある枠（``RATE_CONDITIONS``）の後ろに
+#: 並べるので、前の測り結果とは同じ番号・同じ位置のまま比べられる
+RATE_MISMATCHES: tuple[tuple[float, tuple[float, ...]], ...] = (
+    (100.0, (50.0,)),
+    (50.0, (100.0,)),
+    (100.0, (50.0, 200.0)),
+)
+#: 傾きを区切って読む幅（フレーム） ``PlaybackRate2`` を動かした枠で、途中から
+#: 傾きが変わるかを見る 1 秒ぶんなら、50→200 で隣の区切りとの差が 0.25 倍になり、
+#: 突き合わせの揺れ（0.02 前後）よりずっと大きい
+RATE_WINDOW = 30
+#: 直線で動く値の書き方 実物（この機械のプロジェクトの ``Zoom`` 3 個）の形そのまま
+#: ``KeyFrames`` を空のまま ``Values`` を 2 つ持ち、アイテムの頭から終わりへ動く
+#: ``Bezier`` は実物がどの動く値にも同じ既定の曲線を書いていたので写す
+_LINEAR = "直線移動"
+_DEFAULT_BEZIER: dict[str, Any] = {
+    "Points": [
+        {
+            "Point": {"X": 0.0, "Y": 0.0},
+            "ControlPoint1": {"X": -0.3, "Y": -0.3},
+            "ControlPoint2": {"X": 0.3, "Y": 0.3},
+        },
+        {
+            "Point": {"X": 1.0, "Y": 1.0},
+            "ControlPoint1": {"X": -0.3, "Y": -0.3},
+            "ControlPoint2": {"X": 0.3, "Y": 0.3},
+        },
+    ],
+    "IsQuadratic": False,
+}
+
+
+def _moving(values: tuple[float, ...]) -> dict[str, Any]:
+    """動く値 値が 1 つなら止まった値（``_still`` と同じ）、2 つ以上なら直線で動かす"""
+    if len(values) == 1:
+        return _still(values[0])
+    return {
+        "Values": [{"Value": value} for value in values],
+        "Span": 0.0,
+        "AnimationType": _LINEAR,
+        "Bezier": copy.deepcopy(_DEFAULT_BEZIER),
+    }
 
 
 @dataclass(frozen=True)
 class RateSlot:
-    """絵の速さの探りの枠 1 つ"""
+    """絵の速さの探りの枠 1 つ
+
+    ``rate2`` は ``PlaybackRate2`` の値 空なら ``rate`` と同じ（実物どおりそろえる）
+    """
 
     name: str
     rate: float
     start: int
+    rate2: tuple[float, ...] = ()
+
+    @property
+    def second(self) -> tuple[float, ...]:
+        """``PlaybackRate2`` に書く値"""
+        return self.rate2 or (self.rate,)
+
+
+def mismatch_name(rate: float, rate2: tuple[float, ...]) -> str:
+    """食い違わせた枠の名前 動く値は矢印でつなぐ"""
+    second = "→".join(f"{value:g}" for value in rate2)
+    return f"PlaybackRate={rate:g} PlaybackRate2={second}"
 
 
 def build_rate_slots() -> list[RateSlot]:
-    """確かめる速さを、時間軸に重ならないように並べる"""
+    """確かめる速さを、時間軸に重ならないように並べる
+
+    食い違わせた枠は前からある枠の後ろへ足す 間に挟むと、前の測り結果と
+    枠の番号と位置がずれて、同じ条件どうしを突き合わせられない
+    """
+    conditions: list[tuple[str, float, tuple[float, ...]]] = [
+        (f"PlaybackRate={rate:g}", rate, ()) for rate in RATE_CONDITIONS
+    ]
+    conditions.extend((mismatch_name(rate, rate2), rate, rate2) for rate, rate2 in RATE_MISMATCHES)
     slots: list[RateSlot] = []
     cursor = 0
-    for rate in RATE_CONDITIONS:
-        slots.append(RateSlot(name=f"PlaybackRate={rate:g}", rate=rate, start=cursor))
+    for name, rate, rate2 in conditions:
+        slots.append(RateSlot(name=name, rate=rate, start=cursor, rate2=rate2))
         cursor += RATE_SLOT + RATE_GAP
     return slots
 
@@ -1525,7 +1760,8 @@ def rate_video_item(slot: RateSlot, media: Path) -> dict[str, Any]:
     項目の並びと既定の値は、この機械の YMM4 プロジェクトにあった新しい版の
     ``VideoItem`` 67 個（``PlaybackRate2`` と ``PlaybackRateAudioProcessingMode`` を
     持つ形）から写した 実物は ``PlaybackRate`` と ``PlaybackRate2`` がどれも同じ値
-    だったので、両方に同じ速さを書く 片方だけ変えると、どちらが効いたのか読めない
+    だったので、前からある枠は両方に同じ速さを書く 食い違わせた枠
+    （``RateSlot.rate2``）だけが、どちらが効いたのかを読むために片方を変える
     ``Zoom`` 100 のまま 素材は画面と同じ大きさなので、画面いっぱいに映る
     """
     return {
@@ -1535,7 +1771,7 @@ def rate_video_item(slot: RateSlot, media: Path) -> dict[str, Any]:
         "AudioTrackIndex": 0,
         "Volume": _still(100.0),
         "Pan": _still(0.0),
-        "PlaybackRate2": _still(slot.rate),
+        "PlaybackRate2": _moving(slot.second),
         "PlaybackRateAudioProcessingMode": "Resampling",
         "ContentOffset": "00:00:00",
         "IsLooped": False,
@@ -1583,6 +1819,7 @@ def rate_manifest(slots: list[RateSlot], media: Path) -> dict[str, Any]:
                 "index": index,
                 "name": slot.name,
                 "rate": slot.rate,
+                "rate2": list(slot.second),
                 "start": slot.start,
                 "length": RATE_SLOT,
                 "item": rate_video_item(slot, media),
@@ -1732,6 +1969,90 @@ def rate_slope(indices: list[int | None], last: int) -> float | None:
     return slope
 
 
+def window_slopes(
+    indices: list[int | None], last: int, width: int = RATE_WINDOW
+) -> list[float | None]:
+    """``width`` フレームごとに区切った傾き 区切りの中で求められなければ ``None``
+
+    素材の最後のフレームに届いた点は区切りごとに外す 外さないと、読み切った後に
+    最後の絵で止まった区切りが「止まる（0）」と読め、``PlaybackRate2`` が途中で
+    0 へ落ちたように見える
+    """
+    slopes: list[float | None] = []
+    for begin in range(0, len(indices), width):
+        window = [
+            index if index is not None and index < last else None
+            for index in indices[begin : begin + width]
+        ]
+        slopes.append(rate_slope(window, last))
+    return slopes
+
+
+def expected_windows(values: list[float], length: int, width: int = RATE_WINDOW) -> list[float]:
+    """速さの値（百分率）がそのまま効いたときの、区切りごとの傾きの予想
+
+    値が 2 つなら、枠の頭から終わりへ直線で動くと読む（こちらの読み込みの
+    ``frame_positions`` と同じく、頭が 0・終わりが ``length``） 区切りの傾きは、
+    YMM4 がフレームごとに速さを積み上げて素材を進めるなら、区切りの真ん中の速さになる
+    積み上げずに別の進め方をしていれば、実測の区切りの並びがこの予想と違う形に曲がる
+    """
+    first, final = values[0], values[-1]
+    windows: list[float] = []
+    for begin in range(0, length, width):
+        end = min(begin + width, length)
+        middle = (begin + end - 1) / 2.0
+        value = first + (final - first) * middle / max(1, length)
+        windows.append(value / 100.0)
+    return windows
+
+
+#: 近い方の予想でも区切りの傾きの差の平均がこれを超えたら、どちらとも合わないと読む
+#: 突き合わせの揺れ（0.02 前後）より十分に大きく、50 と 100 の差（0.5）より十分に小さい
+RATE_FAR = 0.15
+
+
+def rate_expectations(entry: dict[str, Any]) -> dict[str, list[float]]:
+    """``PlaybackRate`` と ``PlaybackRate2`` のそれぞれが効いたときの、区切りごとの傾き
+
+    前の版の一覧には ``rate2`` が無い そのときは ``PlaybackRate`` と同じ値を書いていた
+    長さの無い行は枠の既定の長さで読む 読めずに止まると、ほかの枠の表まで出ない
+    """
+    length = int(entry.get("length", RATE_SLOT))
+    rate = float(entry["rate"])
+    second = [float(value) for value in entry.get("rate2") or [rate]]
+    return {
+        "PlaybackRate": expected_windows([rate], length),
+        "PlaybackRate2": expected_windows(second, length),
+    }
+
+
+def nearer_rate(
+    measured: list[float | None], expectations: dict[str, list[float]]
+) -> tuple[str, dict[str, float]]:
+    """区切りごとの実測の傾きが、どちらの予想に近いか
+
+    返すのは読みと、予想ごとの差の平均（測れた区切りだけで取る）
+    予想どうしが同じ枠（前からある枠）は見分けられないので、そう書く
+    """
+    names = list(expectations)
+    if len({tuple(expectations[name]) for name in names}) == 1:
+        return "見分けられない（同じ値）", {}
+    distances: dict[str, float] = {}
+    for name in names:
+        pairs = [
+            abs(found - guess)
+            for found, guess in zip(measured, expectations[name], strict=False)
+            if found is not None
+        ]
+        if not pairs:
+            return "測れない", {}
+        distances[name] = float(np.mean(pairs))
+    best = min(names, key=lambda name: distances[name])
+    if distances[best] > RATE_FAR:
+        return "どちらとも合わない", distances
+    return best, distances
+
+
 def rate_reading(slope: float | None) -> str:
     """傾きの読み 0 に近ければ止まる"""
     if slope is None:
@@ -1812,14 +2133,28 @@ def rate_row(
 ) -> dict[str, Any]:
     """枠 1 つぶんの表の行 YMM4 と Sashimono を同じ読み方で並べる"""
     last = len(sources) - 1
-    row: dict[str, Any] = {"index": entry["index"], "name": entry["name"], "rate": entry["rate"]}
+    expectations = rate_expectations(entry)
+    row: dict[str, Any] = {
+        "index": entry["index"],
+        "name": entry["name"],
+        "rate": entry["rate"],
+        "rate2": entry.get("rate2") or [entry["rate"]],
+        "expected": expectations,
+    }
     for side, pictures in sides:
         matched = match_frames(pictures, sources, limit)
         indices = [found for found, _ in matched]
         slope = rate_slope(indices, last)
+        windows = window_slopes(indices, last)
+        # 予想との差は ``gaps`` に置く ``distances`` は素材との突き合わせの差で、
+        # 同じ名前にすると、前の表と比べるときに使う突き合わせの差の列が消える
+        nearer, gaps = nearer_rate(windows, expectations)
         row[side] = {
             "slope": slope,
             "reading": rate_reading(slope),
+            "windows": windows,
+            "nearer": nearer,
+            "gaps": gaps,
             "first": next((found for found in indices if found is not None), None),
             "matched": sum(found is not None for found in indices),
             "frames": indices,
@@ -1914,6 +2249,35 @@ def _print_rate_rows(rows: list[dict[str, Any]]) -> None:
     print("0.50 倍・2.00 倍なら速さのとおり 止まるなら絵は動かない")
     print("絵が無いなら素材の絵が出ていない（黒や別の絵）")
     print("頭は枠の最初に映った素材のフレーム 一致数は素材のどれかに似ていたフレームの数")
+    _print_rate_mismatches(rows)
+
+
+def _slopes(values: list[float | None] | list[float]) -> str:
+    return " ".join("  -  " if value is None else f"{value:5.2f}" for value in values)
+
+
+def _print_rate_mismatches(rows: list[dict[str, Any]]) -> None:
+    """食い違わせた枠だけを、区切りごとの傾きと 2 つの予想で並べる（Issue #117）"""
+    mismatched = [
+        row for row in rows if row["expected"]["PlaybackRate"] != row["expected"]["PlaybackRate2"]
+    ]
+    if not mismatched:
+        return
+    print()
+    print(f"PlaybackRate と PlaybackRate2 の食い違い（{RATE_WINDOW} フレームごとの傾き）")
+    for row in mismatched:
+        print(row["name"])
+        print(f"  {'PlaybackRate 予想':<20}{_slopes(row['expected']['PlaybackRate'])}")
+        print(f"  {'PlaybackRate2 予想':<20}{_slopes(row['expected']['PlaybackRate2'])}")
+        for side in ("ymm4", "sashimono"):
+            value = row.get(side)
+            if value is None:
+                continue
+            gaps = " ".join(f"{name} との差 {gap:.3f}" for name, gap in value["gaps"].items())
+            print(f"  {side + ' 実測':<20}{_slopes(value['windows'])}  → {value['nearer']}  {gaps}")
+    print()
+    print("区切りの傾きが近い方の値を YMM4 が読んでいる 動かした枠は、区切りごとに")
+    print("傾きが増えていけば PlaybackRate2 の動きが効いている - は素材を読み切った後か絵が無い")
 
 
 def main() -> int:
