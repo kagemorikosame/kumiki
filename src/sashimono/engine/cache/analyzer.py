@@ -74,6 +74,10 @@ class MediaAnalyzer:
         """画面へ出す進み具合 画面のスレッドのタイマーから呼ぶ（:meth:`JobBoard.poll`）"""
         return self._board.poll()
 
+    def settle(self, seen: ProgressSnapshot) -> bool:
+        """画面が終わりを見届けた ひと続きの数を戻す（:meth:`JobBoard.settle`）"""
+        return self._board.settle(seen)
+
     def waveform(self, media: MediaItem) -> Waveform | None:
         """すでに用意できていれば返す 無ければ ``None``
 

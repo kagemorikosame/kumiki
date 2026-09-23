@@ -2,7 +2,9 @@
 
 数えるのはワーカースレッド、読むのは画面のスレッドのタイマー 画面の部品は
 ワーカースレッドから触ると Qt が落ちるので、ここでは数を持つだけにして、
-画面の側が決まった間隔で :meth:`JobBoard.poll` で読みに来る
+画面の側が決まった間隔で :meth:`JobBoard.poll` で読みに来る ひと続きが終わったと
+決めるのも画面の側（:meth:`JobBoard.settle`） 控えと解析の 2 つの数え板を並べて
+出すので、片方だけが自分の都合で数え直すと、もう片方が走っている間に失敗の数が消える
 
 Qt に依存しない 裏の処理の係（:class:`~sashimono.engine.cache.proxy.ProxyBuilder`
 と :class:`~sashimono.engine.cache.analyzer.MediaAnalyzer`）が持つ
@@ -29,6 +31,9 @@ class ProgressSnapshot:
     finished: int = 0
     #: そのうち失敗した数
     failed: int = 0
+    #: 数え板が変わるたびに増える印 :meth:`JobBoard.settle` が、読んだ後に
+    #: 何も変わっていないかを確かめるのに使う
+    stamp: int = 0
     #: 走っている仕事の途中の分の合計 解析は 1 つの素材に 2 つの仕事があるので、
     #: 素材ごとの平均（``running``）から足し直すと全体の割合がずれる
     partial: float = 0.0
@@ -37,6 +42,10 @@ class ProgressSnapshot:
     #: 失敗した素材と理由 作り直しに成功するか素材を外すまで残す
     #: 行ごとの表示は、ひと続きが終わった後も失敗を出し続けたいので数え直しで消さない
     failures: Mapping[MediaId, str] = field(default_factory=dict)
+    #: このひと続きで失敗した理由 終わった順 数え直しで消える
+    #: 終わりの知らせはこちらを使う ``failures`` から取ると、前のひと続きで失敗した
+    #: 別の素材の理由が、今の失敗の数と並んで出ることがある
+    recent_failures: tuple[str, ...] = ()
 
     @property
     def busy(self) -> bool:
@@ -59,17 +68,22 @@ class JobBoard:
     仕事は鍵（``Hashable``）で区別し、どの素材の仕事かも一緒に持つ 解析は 1 つの
     素材に波形とサムネイルの 2 つの仕事があるので、素材と鍵を分けておかないと
     行ごとの表示で片方が片方を上書きする
+
+    本数は数を足し引きするのではなく、走っている仕事と終わった仕事の表から数える
+    素材を外したときに、その素材が足した分だけをきれいに引けるようにするため
+    （数だけを持つと、外した素材の失敗が理由の無いまま数に残る）
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._active: dict[Hashable, tuple[MediaId, float]] = {}
+        #: このひと続きで終わった仕事 鍵 → （素材、失敗の理由 成功なら ``None``）
+        self._done: dict[Hashable, tuple[MediaId, str | None]] = {}
         #: 失敗は仕事の鍵ごとに持つ 素材ごとに持つと、波形が失敗した素材で
         #: サムネイルを頼み直しただけで波形の失敗まで消える
+        #: ひと続きを数え直しても残す 行の表示は、終わった後も失敗を出し続けたい
         self._failures: dict[Hashable, tuple[MediaId, str]] = {}
-        self._total = 0
-        self._finished = 0
-        self._failed = 0
+        self._stamp = 0
 
     def start(self, key: Hashable, media_id: MediaId) -> None:
         """仕事を 1 つ数え始める 同じ鍵が走っていれば何もしない"""
@@ -77,10 +91,13 @@ class JobBoard:
             if key in self._active:
                 return
             self._active[key] = (media_id, 0.0)
-            self._total += 1
+            # 同じ仕事を頼み直したら、前の回の終わりは数えない 両方数えると
+            # 「1 本のうち 2 本」になる
+            self._done.pop(key, None)
             # 作り直しを頼んだ仕事の前の失敗は消す 残すと、作り直している最中も
             # 「作れなかった」と出続ける
             self._failures.pop(key, None)
+            self._stamp += 1
 
     def report(self, key: Hashable, value: float) -> None:
         with self._lock:
@@ -89,15 +106,18 @@ class JobBoard:
                 self._active[key] = (entry[0], max(0.0, min(1.0, value)))
 
     def finish(self, key: Hashable, failure: str | None = None) -> None:
-        """仕事が終わった ``failure`` があれば失敗として数える"""
+        """仕事が終わった ``failure`` があれば失敗として数える
+
+        数え板に無い仕事（外した素材の仕事）は何もしない
+        """
         with self._lock:
             entry = self._active.pop(key, None)
             if entry is None:
                 return
-            self._finished += 1
+            self._done[key] = (entry[0], failure)
             if failure is not None:
-                self._failed += 1
                 self._failures[key] = (entry[0], failure)
+            self._stamp += 1
 
     def drop(self, key: Hashable) -> None:
         """止めた仕事を数から外す
@@ -107,21 +127,24 @@ class JobBoard:
         """
         with self._lock:
             if self._active.pop(key, None) is not None:
-                self._total -= 1
+                self._stamp += 1
 
     def forget(self, media_id: MediaId) -> None:
-        """外した素材の失敗を捨てる 一覧に無い素材の失敗を数え続けない"""
+        """外した素材の分を、走っている物・終わった物・失敗のすべてから引く
+
+        理由だけを消して数を残すと、「失敗 1 件」と出るのに、どの素材の
+        何が失敗したのかがどこにも出ない 走っている物も外す 止まるまで
+        待つと、その間は一覧に無い素材の割合が全体に混ざる
+        """
         with self._lock:
-            for key in [key for key, (owner, _) in self._failures.items() if owner == media_id]:
-                del self._failures[key]
+            for table in (self._active, self._done, self._failures):
+                owned = [key for key, entry in table.items() if entry[0] == media_id]
+                for key in owned:
+                    del table[key]
+            self._stamp += 1
 
     def poll(self) -> ProgressSnapshot:
-        """今の進み具合を返す 何も走っていなければ、返したあとで本数を数え直す
-
-        数え直すのは画面が読んだとき 仕事が終わった時点で数え直すと、次の
-        ひと続きが間隔の間に始まったとき、画面は「終わった」を 1 度も見ないまま
-        前の失敗の数ごと見失う 読むのは画面のタイマー 1 か所だけという前提
-        """
+        """今の進み具合を返す 数え直さない（数え直すのは :meth:`settle`）"""
         with self._lock:
             running: dict[MediaId, list[float]] = {}
             for media_id, value in self._active.values():
@@ -129,14 +152,30 @@ class JobBoard:
             failures: dict[MediaId, list[str]] = {}
             for media_id, reason in self._failures.values():
                 failures.setdefault(media_id, []).append(reason)
-            snapshot = ProgressSnapshot(
-                total=self._total,
-                finished=self._finished,
-                failed=self._failed,
+            return ProgressSnapshot(
+                total=len(self._active) + len(self._done),
+                finished=len(self._done),
+                failed=sum(reason is not None for _media, reason in self._done.values()),
+                stamp=self._stamp,
                 partial=sum(value for _media, value in self._active.values()),
                 running={key: sum(values) / len(values) for key, values in running.items()},
+                recent_failures=tuple(
+                    reason for _media, reason in self._done.values() if reason is not None
+                ),
                 failures={key: "\n".join(reasons) for key, reasons in failures.items()},
             )
-            if not self._active:
-                self._total = self._finished = self._failed = 0
-            return snapshot
+
+    def settle(self, seen: ProgressSnapshot) -> bool:
+        """画面が ``seen`` で「終わった」を見届けたので、ひと続きの数を 0 へ戻す
+
+        ``seen`` を読んだ後に何か動いていたら戻さない（偽を返す） 間に始まって
+        終わった仕事を、画面が 1 度も見ないまま消さないため
+        画面の側は、控えと解析の両方が止まっているときだけ呼ぶ 片方ずつ戻すと、
+        もう片方が走っている間に失敗の数と全体の割合が巻き戻る
+        """
+        with self._lock:
+            if self._active or self._stamp != seen.stamp:
+                return False
+            self._done.clear()
+            self._stamp += 1
+            return True

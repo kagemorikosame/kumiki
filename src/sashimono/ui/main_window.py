@@ -1024,16 +1024,46 @@ class MainWindow(QMainWindow):
         調べ終えた分だけ置く形にしないのは、取り消したのに一部が入ると、
         どこまで入ったのかを一覧で確かめ直すことになるため
         """
+        if self._drop_imports():
+            self.statusBar().showMessage("素材の読み込みを取り消した", 4000)
+
+    def _drop_imports(self) -> bool:
+        """走っている読み込みと待っている読み込みを捨てる 捨てた物があれば真
+
+        調べている最中の 1 本は止まらないが、ここで外すので終わっても置きに来ない
+        （置くのは :meth:`_poll_import` が ``self._import`` を見たときだけ）
+        """
         batch = self._import
         if batch is None and not self._import_queue:
-            return
+            return False
         self._import = None
         self._import_queue.clear()
         if batch is not None:
             batch.cancel()
         self._import_timer.stop()
         self._import_indicator.hide()
-        self.statusBar().showMessage("素材の読み込みを取り消した", 4000)
+        return True
+
+    def _leave_project(self, previous: Project) -> None:
+        """プロジェクトを差し替えた（新規・開く・復元）ときに、前のプロジェクトの裏の仕事を片付ける
+
+        読み込みは始めたときのプロジェクトへ置く約束 捨てずに置くと、調べ終わった
+        素材が差し替えた先のプロジェクトに入り、その取り消しの履歴にまで載る
+        控えと解析も、前のプロジェクトにしか無い素材の分は外す 残すと、新しい
+        プロジェクトのステータスバーに、前の素材の本数と失敗が出続ける
+        """
+        if self._drop_imports():
+            self.statusBar().showMessage(
+                "プロジェクトを切り替えたので、素材の読み込みを取り消した", 5000
+            )
+        kept = {media.id for media in self._document.project.media}
+        for media in previous.media:
+            if media.id not in kept:
+                self._analyzer.forget(media.id)
+                self._proxies.forget(media.id)
+        # 前のプロジェクトで出していた進み具合の続きとして「終わった」と出さない
+        self._background_shown = False
+        self._background_indicator.hide()
 
     def wait_for_imports(self, timeout: float = 30.0) -> bool:
         """読み込みが置き終わるまで待つ 間に合えば真
@@ -1260,7 +1290,8 @@ class MainWindow(QMainWindow):
     def _show_background_progress(self) -> None:
         """控えと解析の進み具合を、ステータスバーと素材一覧の行へ出す
 
-        数を読むのはここ 1 か所だけ（:meth:`JobBoard.poll` が読んだ時点で数え直すため）
+        ひと続きの数を 0 へ戻すのもここ 控えと解析の**両方**が止まってから戻す
+        片方ずつ戻すと、解析が走っている間に控えの失敗の数が消え、全体の割合も巻き戻る
         """
         proxy = self._proxies.poll()
         analysis = self._analyzer.poll()
@@ -1284,6 +1315,9 @@ class MainWindow(QMainWindow):
                 finished_message(proxy, analysis), 8000 if failed else 4000
             )
         self._background_shown = False
+        # 知らせた分を数え直す 戻さないと、次のひと続きが前の本数と失敗を抱えたまま始まる
+        self._proxies.settle(proxy)
+        self._analyzer.settle(analysis)
 
     # --- 再生とシーク ---
 
@@ -1347,7 +1381,9 @@ class MainWindow(QMainWindow):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         self._playback.stop()
+        previous = self._document.project
         self._document.reset(Project.create(dialog.settings()))
+        self._leave_project(previous)
         self._path = None
         self._release_lock()
         self._mark_saved()
@@ -1396,7 +1432,9 @@ class MainWindow(QMainWindow):
             return
 
         self._playback.stop()
+        previous = self._document.project
         self._document.reset(project)
+        self._leave_project(previous)
         self._path = Path(name)
         self._mark_saved()
         self._on_project_changed()
@@ -1566,7 +1604,9 @@ class MainWindow(QMainWindow):
             return False
 
         self._playback.stop()
+        previous = self._document.project
         self._document.reset(project)
+        self._leave_project(previous)
         self._path = entry.source
         self._saved = None
         self._on_project_changed()
@@ -1906,11 +1946,7 @@ class MainWindow(QMainWindow):
         # 再生スレッドはウィジェットが消える前に畳む
         self._refresh_timer.stop()
         # 調べている最中の読み込みは捨てる 閉じた窓へ置きに来させない
-        self._import_timer.stop()
-        self._import_queue.clear()
-        if self._import is not None:
-            self._import.cancel()
-            self._import = None
+        self._drop_imports()
         self._chat.close_session()
         self._playback.close()
         if self._ai_renderer is not None:

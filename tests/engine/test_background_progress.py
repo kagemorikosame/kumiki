@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -23,6 +25,8 @@ from sashimono.engine.cache.proxy import ProxyBuilder, ProxyStore
 from sashimono.engine.cache.store import CacheStore
 from sashimono.engine.decode import ProbeError
 from sashimono.engine.decode.batch import ProbeBatch
+
+NL = chr(10)
 
 A = MediaId("a")
 B = MediaId("b")
@@ -82,28 +86,54 @@ class TestJobBoard:
         snapshot = board.poll()
         assert (snapshot.total, snapshot.finished, snapshot.failed) == (1, 1, 0)
 
-    def test_the_count_restarts_only_after_it_was_read_idle(self) -> None:
-        # 終わった時点で数え直すと、画面は「終わった」も失敗の数も見ないまま次へ進む
+    def test_reading_does_not_restart_the_count(self) -> None:
+        # 読んだだけで数え直すと、控えが止まった時点で控えの失敗が消える 解析が
+        # まだ走っていれば、終わりの知らせに控えの失敗が出ず、全体の割合も巻き戻る
         board = JobBoard()
         board.start("x", A)
         board.finish("x", "開けない")
+        first = board.poll()
+        second = board.poll()
+        assert (second.total, second.finished, second.failed) == (1, 1, 1)
+        assert first == second
+
+    def test_settling_restarts_the_count(self) -> None:
+        board = JobBoard()
+        board.start("x", A)
+        board.finish("x", "開けない")
+        assert board.settle(board.poll())
+        snapshot = board.poll()
+        assert (snapshot.total, snapshot.finished, snapshot.failed) == (0, 0, 0)
+        # 行の失敗は数え直しても残す 終わった後に一覧を見て理由が分からないと困る
+        assert snapshot.failures == {A: "開けない"}
+
+    def test_settling_keeps_what_moved_after_reading(self) -> None:
+        # 読んだ後に始まって終わった仕事まで消すと、画面はその失敗を 1 度も見ない
+        board = JobBoard()
+        board.start("x", A)
+        board.finish("x")
+        seen = board.poll()
         board.start("y", B)
-        busy = board.poll()
-        assert (busy.total, busy.finished, busy.failed) == (2, 1, 1)
-        board.finish("y")
-        done = board.poll()
-        assert (done.total, done.finished, done.failed) == (2, 2, 1)
-        assert board.poll().total == 0
+        board.finish("y", "開けない")
+        assert not board.settle(seen)
+        assert board.poll().failed == 1
+
+    def test_settling_while_running_keeps_the_count(self) -> None:
+        board = JobBoard()
+        board.start("x", A)
+        assert not board.settle(board.poll())
+        assert board.poll().total == 1
 
     def test_a_failure_stays_on_the_row_until_asked_again(self) -> None:
         board = JobBoard()
         board.start("x", A)
         board.finish("x", "開けない")
-        board.poll()
-        # 数え直した後も行には残す 終わった後に一覧を見て理由が分からないと困る
         assert board.poll().failures == {A: "開けない"}
         board.start("x", A)
-        assert board.poll().failures == {}
+        snapshot = board.poll()
+        assert snapshot.failures == {}
+        # 頼み直した回だけを数える 前の回の終わりも数えると「1 本のうち 2 本」になる
+        assert (snapshot.total, snapshot.finished, snapshot.failed) == (1, 0, 0)
 
     def test_asking_one_job_again_keeps_the_other_failure(self) -> None:
         # 素材ごとに消すと、サムネイルを頼み直しただけで波形の失敗まで消える
@@ -119,6 +149,22 @@ class TestJobBoard:
         board.finish("x", "開けない")
         board.forget(A)
         assert board.poll().failures == {}
+
+    def test_forgetting_a_media_takes_back_its_counts(self) -> None:
+        # 理由だけ消して数を残すと、「失敗 1 件」と出るのに何が失敗したのかがどこにも出ない
+        board = JobBoard()
+        board.start("x", A)
+        board.finish("x", "開けない")
+        board.start("y", B)
+        board.finish("y")
+        board.start("z", A)
+        board.forget(A)
+        snapshot = board.poll()
+        assert (snapshot.total, snapshot.finished, snapshot.failed) == (1, 1, 0)
+        assert snapshot.running == {}
+        # 外した後に止まった仕事が終わりを知らせに来ても数えない
+        board.finish("z", "止めた")
+        assert board.poll().failed == 0
 
     def test_nothing_asked_is_complete(self) -> None:
         assert ProgressSnapshot().fraction == 1.0
@@ -162,18 +208,12 @@ class TestProxyProgress:
         monkeypatch.setattr(proxy_module, "create_proxy", broken)
         builder = ProxyBuilder(ProxyStore(CacheStore(tmp_path), height=120))
         media = _tall(video_media)
-        seen: list[ProgressSnapshot] = []
         try:
             builder.request(media)
-
-            def ended() -> bool:
-                seen.append(builder.poll())
-                return not seen[-1].busy
-
-            assert _wait(ended)
+            assert _wait(lambda: not builder.poll().busy)
         finally:
             builder.close()
-        assert sum(snapshot.failed for snapshot in seen) == 1
+        assert builder.poll().failed == 1
         assert "符号化器が無い" in builder.poll().failures[media.id]
 
     def test_nothing_made_is_a_failure(
@@ -332,7 +372,60 @@ class TestProbeBatch:
         assert _wait(lambda: len(probed) == 1)
         batch.cancel()
         release.set()
-        assert _wait(lambda: batch.finished)
-        time.sleep(0.05)
+        assert _wait(lambda: batch.progress() == 1)
+        time.sleep(0.1)
         assert probed == paths[:1], "取り消したのに、始まっていない素材まで調べた"
         assert batch.cancelled
+        # 取り消した読み込みは調べ終わらない 終わったと見て置きに来ないように
+        assert not batch.finished
+
+    def test_cancel_does_not_wait_for_a_hung_file(self, tmp_path: Path) -> None:
+        # ネットワーク越しの素材が応答しないと、調べる所は戻ってこない 取り消しが
+        # それを待つと、取り消すボタンを押した所で画面が固まる
+        hang = threading.Event()
+        started = threading.Event()
+
+        def probe(path: Path) -> MediaItem:
+            started.set()
+            hang.wait(30.0)
+            return MediaItem(path=path)
+
+        batch = ProbeBatch([tmp_path / "1.mp4"], probe)
+        try:
+            assert started.wait(5.0)
+            began = time.monotonic()
+            batch.cancel()
+            assert time.monotonic() - began < 0.5
+        finally:
+            hang.set()
+
+    def test_a_hung_file_does_not_keep_the_app_from_exiting(self) -> None:
+        # ThreadPoolExecutor のスレッドは Python の終わりに待ち合わされる 応答しない
+        # 素材を調べている間にソフトを閉じると、閉じたのに process が残り続ける
+        script = (
+            "import threading, time"
+            + NL
+            + "from pathlib import Path"
+            + NL
+            + "from sashimono.engine.decode.batch import ProbeBatch"
+            + NL
+            + "started = threading.Event()"
+            + NL
+            + "def probe(path):"
+            + NL
+            + "    started.set()"
+            + NL
+            + "    threading.Event().wait()"
+            + NL
+            + "batch = ProbeBatch([Path('net.mp4')], probe)"
+            + NL
+            + "assert started.wait(10)"
+            + NL
+            + "batch.cancel()"
+            + NL
+        )
+        # 待ち合わせで止まると、ここで TimeoutExpired になって落ちる
+        completed = subprocess.run(
+            [sys.executable, "-c", script], timeout=30, capture_output=True, check=False
+        )
+        assert completed.returncode == 0, completed.stderr.decode("utf-8", "replace")

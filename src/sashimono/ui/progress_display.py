@@ -117,11 +117,13 @@ def finished_message(proxy: ProgressSnapshot, analysis: ProgressSnapshot) -> str
     """ひと続きが終わったときの文言 失敗があれば 1 つ目の理由も出す
 
     理由を行の表示にだけ出すと、行の表示を切った人には理由が届かない
+    理由はこのひと続きの物から取る 行に残っている失敗から取ると、前に失敗した
+    別の素材の理由が、今の失敗の数と並んで出る
     """
     failed = proxy.failed + analysis.failed
     if not failed:
         return "控えと解析が終わった"
-    reasons = [*proxy.failures.values(), *analysis.failures.values()]
+    reasons = [*proxy.recent_failures, *analysis.recent_failures]
     head = f"控えと解析が終わった 失敗 {failed} 件"
     return f"{head}: {reasons[0]}" if reasons else head
 

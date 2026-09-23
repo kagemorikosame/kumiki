@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable, Sequence
-from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
 from sashimono.core.model import MediaItem
@@ -32,6 +31,11 @@ class ProbeBatch:
 
     順を保つのは、置く順が選んだ順と変わると、読み込むたびに並びが入れ替わるため
     （調べ終わった順は素材の大きさと、たまたまの速さで決まる）
+
+    ``ThreadPoolExecutor`` は使わない あちらのスレッドは Python の終わりに
+    待ち合わされるので、応答しないネットワーク越しの素材を 1 本調べている間は
+    ソフトを閉じても終われない 自前のスレッドを daemon にして、誰も待たない
+    （調べるのは読むだけで、途中で切れても書きかけの物が残らない）
     """
 
     def __init__(
@@ -42,19 +46,19 @@ class ProbeBatch:
         workers: int = PROBE_WORKERS,
     ) -> None:
         self._paths = tuple(paths)
+        self._probe = probe
         self._lock = threading.Lock()
+        self._next = 0
         self._done = 0
         self._cancelled = False
-        self._executor = ThreadPoolExecutor(
-            max_workers=max(1, workers), thread_name_prefix="sashimono-probe"
-        )
-        self._futures: list[Future[MediaItem]] = []
-        for path in self._paths:
-            future = self._executor.submit(probe, path)
-            future.add_done_callback(self._count)
-            self._futures.append(future)
-        # 投げ終えたら閉じる 閉じずに置くと、終わった後もスレッドが残る
-        self._executor.shutdown(wait=False)
+        #: 頼んだ順の結果 調べ終わるまでは ``None``
+        self._outcomes: list[MediaItem | BaseException | None] = [None] * len(self._paths)
+        self._threads = [
+            threading.Thread(target=self._work, name=f"sashimono-probe-{index}", daemon=True)
+            for index in range(max(1, min(workers, len(self._paths))))
+        ]
+        for thread in self._threads:
+            thread.start()
 
     @property
     def paths(self) -> tuple[Path, ...]:
@@ -71,7 +75,9 @@ class ProbeBatch:
 
     @property
     def finished(self) -> bool:
-        return all(future.done() for future in self._futures)
+        """全部を調べ終えた 取り消した後は、調べ終えていない物が残るので真にならない"""
+        with self._lock:
+            return self._done == len(self._paths)
 
     @property
     def cancelled(self) -> bool:
@@ -79,32 +85,46 @@ class ProbeBatch:
             return self._cancelled
 
     def cancel(self) -> None:
-        """まだ始まっていない分を捨てる
+        """まだ始まっていない分を捨てる 待たずに返る
 
         調べている最中の 1 本は止められない（PyAV は途中で止める口を持たない）
-        終わっても結果を使わないだけ 待たずに返るので、画面は固まらない
+        終わっても結果を使わないだけ スレッドは daemon なので、応答しない素材を
+        調べたまま残っても、ソフトの終わりを止めない
         """
         with self._lock:
             self._cancelled = True
-        for future in self._futures:
-            future.cancel()
 
     def results(self) -> list[MediaItem | ProbeError]:
         """頼んだ順の結果 調べられなかった素材は :class:`ProbeError` で返す
 
-        :attr:`finished` が真になってから呼ぶ 前に呼ぶと、終わるまでここで待つ
+        :attr:`finished` が真になってから呼ぶ 前に呼ぶと :class:`RuntimeError`
         :class:`ProbeError` 以外の例外はそのまま投げる 知らない失敗を
         「開けない素材」として数えると、直すべき不具合が 1 行の文言に紛れる
         """
-        outcome: list[MediaItem | ProbeError] = []
-        for future in self._futures:
-            try:
-                outcome.append(future.result())
-            except ProbeError as exc:
-                outcome.append(exc)
-        return outcome
-
-    def _count(self, future: Future[MediaItem]) -> None:
-        del future
         with self._lock:
-            self._done += 1
+            outcomes = list(self._outcomes)
+            if self._done != len(self._paths):
+                raise RuntimeError("まだ調べ終わっていない")
+        results: list[MediaItem | ProbeError] = []
+        for outcome in outcomes:
+            if isinstance(outcome, (MediaItem, ProbeError)):
+                results.append(outcome)
+            elif isinstance(outcome, BaseException):
+                raise outcome
+        return results
+
+    def _work(self) -> None:
+        while True:
+            with self._lock:
+                if self._cancelled or self._next >= len(self._paths):
+                    return
+                index = self._next
+                self._next += 1
+            outcome: MediaItem | BaseException
+            try:
+                outcome = self._probe(self._paths[index])
+            except Exception as exc:  # 投げ直すのは results（画面のスレッド）の側
+                outcome = exc
+            with self._lock:
+                self._outcomes[index] = outcome
+                self._done += 1

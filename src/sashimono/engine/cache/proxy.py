@@ -447,6 +447,10 @@ class ProxyBuilder:
         """画面へ出す進み具合 画面のスレッドのタイマーから呼ぶ（:meth:`JobBoard.poll`）"""
         return self._board.poll()
 
+    def settle(self, seen: ProgressSnapshot) -> bool:
+        """画面が終わりを見届けた ひと続きの数を戻す（:meth:`JobBoard.settle`）"""
+        return self._board.settle(seen)
+
     def progress(self, media_id: MediaId) -> float | None:
         """作っている最中なら 0..1 それ以外は ``None``
 

@@ -15,9 +15,9 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QDialog
 
-from sashimono.core.commands import insert_media
+from sashimono.core.commands import AddMedia, insert_media
 from sashimono.core.model import MediaId, MediaItem, Project, ProjectSettings, new_media_id
 from sashimono.core.timebase import FrameRate
 from sashimono.engine.cache.progress import JobBoard, ProgressSnapshot
@@ -69,6 +69,16 @@ class _Gate:
 def _names(window: MainWindow) -> list[str]:
     """一覧に入った素材のファイル名 置いた順"""
     return [media.path.name for media in window.document.project.media]
+
+
+def _new_project(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+    """〔新規〕を押して、尋ねる画面で OK を押した所まで 画面は出さない"""
+    from sashimono.ui.project_settings_dialog import ProjectSettingsDialog
+
+    monkeypatch.setattr(
+        ProjectSettingsDialog, "exec", lambda _self: QDialog.DialogCode.Accepted.value
+    )
+    window.new_project()
 
 
 def _spin(application: QApplication, until: Callable[[], bool], timeout: float = 10.0) -> bool:
@@ -239,6 +249,34 @@ class TestImportDoesNotFreeze:
         assert window.wait_for_imports()
         assert _names(window) == ["落とした.mp4"]
 
+    def test_a_new_project_drops_the_import(
+        self,
+        window: MainWindow,
+        video_media: MediaItem,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        # 読み込みは始めたときのプロジェクトへ置く約束 捨てずに置くと、調べ終わった
+        # 素材が新しいプロジェクトに入り、その取り消しの履歴にまで載る
+        gate = _Gate(video_media)
+        monkeypatch.setattr(main_window_module, "probe_media", gate)
+        window.import_media([tmp_path / "前の.mp4"])
+        window.import_media([tmp_path / "待ち.mp4"])
+        assert gate.started.wait(5.0)
+
+        _new_project(window, monkeypatch)
+        gate.release.set()
+        assert window.wait_for_imports()
+        deadline = time.monotonic() + 0.5
+        while time.monotonic() < deadline:
+            QApplication.processEvents()
+            window._poll_import()
+            time.sleep(0.01)
+        assert _names(window) == []
+        assert window.document.history_labels == ()
+        assert window._import_indicator.isHidden()
+        assert "読み込みを取り消した" in window.statusBar().currentMessage()
+
 
 class TestBackgroundProgress:
     """控えと解析の進み具合 数は裏の係の数え板へ直に入れる
@@ -326,6 +364,112 @@ class TestBackgroundProgress:
         window._apply_preferences(Preferences(pool_progress=False))
         row = window._media_pool.row_text(video_media.id)
         assert row is not None and "[" not in row
+
+    def test_a_proxy_failure_survives_while_the_analysis_runs(
+        self, window: MainWindow, video_media: MediaItem
+    ) -> None:
+        # 控えが止まった時点で控えの数だけ数え直すと、解析が終わったときの知らせに
+        # 控えの失敗が出ず、全体の割合も 50% から 0% へ巻き戻る
+        self._place(window, video_media)
+        proxy = window._proxies._board
+        analysis = window._analyzer._board
+        proxy.start(video_media.id, video_media.id)
+        analysis.start(("waveform", video_media.id), video_media.id)
+        window._flush_analysis()
+        proxy.finish(video_media.id, "控えを作れなかった: 符号化器が無い")
+        window._flush_analysis()
+        window._flush_analysis()
+        indicator = window._background_indicator
+        assert indicator.text == "波形とサムネイル 0/1 件 0% 失敗 1 件"
+        assert indicator.value == 500
+
+        analysis.finish(("waveform", video_media.id))
+        window._flush_analysis()
+        message = window.statusBar().currentMessage()
+        assert "失敗 1 件" in message
+        assert "符号化器が無い" in message
+        # 知らせた後は数え直す 次のひと続きが前の失敗を抱えたまま始まらない
+        assert window._proxies.poll().total == 0
+        assert window._analyzer.poll().total == 0
+
+    def test_an_analysis_failure_survives_while_the_proxy_runs(
+        self, window: MainWindow, video_media: MediaItem
+    ) -> None:
+        # 4K の控えは数分続く その間に波形が失敗して解析の数だけ数え直すと、失敗は
+        # 250ms しか出ず、控えが終わったときの知らせは「終わった」だけになる
+        self._place(window, video_media)
+        proxy = window._proxies._board
+        analysis = window._analyzer._board
+        proxy.start(video_media.id, video_media.id)
+        analysis.start(("waveform", video_media.id), video_media.id)
+        window._flush_analysis()
+        analysis.finish(("waveform", video_media.id), "波形を作れなかった: 音が読めない")
+        for _ in range(3):
+            window._flush_analysis()
+        assert window._background_indicator.text == "控え 0/1 本 0% 失敗 1 件"
+
+        proxy.finish(video_media.id)
+        window._flush_analysis()
+        message = window.statusBar().currentMessage()
+        assert "失敗 1 件" in message
+        assert "音が読めない" in message
+
+    def test_the_notice_names_this_run_s_failure(
+        self, window: MainWindow, video_media: MediaItem
+    ) -> None:
+        # 行に残っている前の失敗（素材 A）から理由を取ると、今失敗した素材 B の
+        # 理由の代わりに A の理由が出る
+        board = window._analyzer._board
+        first, second = MediaId("A"), MediaId("B")
+        board.start(("waveform", first), first)
+        window._flush_analysis()
+        board.finish(("waveform", first), "A の波形を作れなかった")
+        window._flush_analysis()
+        board.start(("filmstrip", second), second)
+        window._flush_analysis()
+        board.finish(("filmstrip", second), "B のサムネイルを作れなかった")
+        window._flush_analysis()
+        message = window.statusBar().currentMessage()
+        assert "失敗 1 件" in message
+        assert "B のサムネイルを作れなかった" in message
+        assert "A の" not in message
+
+    def test_removing_a_failed_media_takes_its_failure_back(
+        self, window: MainWindow, video_media: MediaItem
+    ) -> None:
+        # 理由だけ消えて数が残ると、「失敗 1 件」と出るのに何が失敗したのか分からない
+        # 一覧に入れるだけにする タイムラインで使っている素材は外せない
+        assert window.execute(AddMedia(video_media))
+        board = window._analyzer._board
+        board.start(("waveform", video_media.id), video_media.id)
+        board.start(("filmstrip", video_media.id), video_media.id)
+        window._flush_analysis()
+        board.finish(("waveform", video_media.id), "波形を作れなかった")
+        window._remove_media(str(video_media.id))
+        assert window.document.project.find_media(video_media.id) is None
+        snapshot = window._analyzer.poll()
+        assert (snapshot.total, snapshot.failed) == (0, 0)
+
+    def test_a_new_project_does_not_show_the_old_progress(
+        self, window: MainWindow, video_media: MediaItem, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 前のプロジェクトの素材の本数と失敗が、新しいプロジェクトのステータスバーに出続けない
+        self._place(window, video_media)
+        board = window._analyzer._board
+        board.start(("waveform", video_media.id), video_media.id)
+        board.start(("filmstrip", video_media.id), video_media.id)
+        board.finish(("filmstrip", video_media.id), "サムネイルを作れなかった")
+        window._flush_analysis()
+        assert not window._background_indicator.isHidden()
+
+        _new_project(window, monkeypatch)
+        window.statusBar().clearMessage()
+        window._flush_analysis()
+        snapshot = window._analyzer.poll()
+        assert (snapshot.total, snapshot.failed) == (0, 0)
+        assert snapshot.failures == {}
+        assert window._background_indicator.isHidden()
+        assert window.statusBar().currentMessage() == ""
 
 
 class TestWording:
