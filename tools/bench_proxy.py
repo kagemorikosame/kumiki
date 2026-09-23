@@ -131,7 +131,9 @@ def _project(
             media_id=media.id,
             # 重ねた下の絵も描かせる 不透明のままだと、上の 1 枚で隠れた分を
             # 飛ばす作りになったときに重ねた意味が無くなる
-            opacity=AnimatedValue(70.0),
+            # 不透明度は 0.0 から 1.0 で、合成側が範囲へ丸める 70.0 と書くと
+            # 1.0 に丸められて不透明のままになり、重ねた意味が消える
+            opacity=AnimatedValue(0.7),
             effects=tuple(registry.require(name).create() for name in effects),
         )
         project = AddClip(track.id, clip).apply(project)
