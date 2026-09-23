@@ -126,3 +126,18 @@ def test_a_cancel_while_reading_the_sound_stops_before_the_model(
     )
     assert result is None
     assert model.audio is None
+
+
+def test_a_cancel_during_the_last_read_stops_before_the_model(
+    sample_av: SampleMedia, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 2 秒の素材は 1 回で読み切る 読み始めにしか見ないと、読む間に止めてもモデルへ渡す
+    backend = FasterWhisperBackend()
+    model = _Model()
+    monkeypatch.setattr(backend, "_ensure_model", lambda options: model)
+    calls = iter([False, False])
+    result = backend.transcribe(
+        sample_av.path, TranscribeOptions(), should_cancel=lambda: next(calls, True)
+    )
+    assert result is None
+    assert model.audio is None

@@ -158,17 +158,24 @@ def _media_audio(source: Path, should_cancel: ShouldCancel | None) -> np.ndarray
         length = probe_media(source).duration
         chunk = _READ_CHUNK_SECONDS * WHISPER_SAMPLE_RATE
         total = int(length * WHISPER_SAMPLE_RATE)
-        parts: list[np.ndarray] = []
+        if total <= 0:
+            raise AsrError(f"音声が無い: {source}")
+        # 全長の配列を先に 1 つだけ作って書き込む 読んだ分を貯めてから最後につなぐと、
+        # つなぐ瞬間に同じ長さの配列が 2 つ並ぶ（1 時間で 230MB が 460MB になる）
+        audio = np.empty(total, dtype=np.float32)
         with AudioDecoder(source, sample_rate=WHISPER_SAMPLE_RATE, channels=1) as decoder:
             for start in range(0, total, chunk):
                 if should_cancel is not None and should_cancel():
                     return None
-                parts.append(decoder.read(start, min(chunk, total - start))[:, 0])
+                count = min(chunk, total - start)
+                audio[start : start + count] = decoder.read(start, count)[:, 0]
     except ProbeError as exc:
         raise AsrError(f"音声を読めない: {exc}") from exc
-    if not parts:
-        raise AsrError(f"音声が無い: {source}")
-    return np.ascontiguousarray(np.concatenate(parts), dtype=np.float32)
+    # 読み終わりにも見る 見ないと、1 回で読み切る短い素材や最後の読み込みの間に止めても、
+    # そのままモデルへ渡して起こしが始まる
+    if should_cancel is not None and should_cancel():
+        return None
+    return audio
 
 
 def _to_segment(raw: Any) -> TranscriptSegment | None:
