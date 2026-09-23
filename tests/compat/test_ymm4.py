@@ -1592,6 +1592,23 @@ class TestItemSound:
         assert mapped.clip.speed == Fraction(1, 2)
         assert any("PlaybackRate2" in line and "読めない値" in line for line in report.lines())
 
+    @pytest.mark.parametrize("key", ["PlaybackRate", "PlaybackRate2"])
+    @pytest.mark.parametrize("broken", [float("nan"), float("inf")])
+    def test_a_broken_value_hidden_by_an_overlapping_frame_is_counted(
+        self, key: str, broken: float
+    ) -> None:
+        """長さ 1 のアイテムの 3 点は同じフレームに重なり、``animated`` が途中の点を捨てる
+
+        読んだ後のキーフレームで見ると、捨てられた NaN や無限大を見落とし、
+        壊れたファイルが互換性レポートに出ない 読む前の ``Values`` の並びで見る
+        """
+        item = self.audio(**{key: moving(100.0, broken, 100.0)})
+        item["Length"] = 1
+        report = CompatibilityReport()
+        (mapped,) = map_template([item], report=report)
+        assert mapped.clip.speed == 1
+        assert any(key + "）" in line and "読めない値" in line for line in report.lines())
+
     def test_a_moving_playback_rate2_is_counted_as_not_carried(self) -> None:
         """``PlaybackRate2`` が動くと YMM4 の速さは途中で変わる こちらの速さは動かせない
 

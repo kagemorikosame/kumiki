@@ -885,7 +885,9 @@ def _playback_rate(
     raw = item.get("PlaybackRate")
     if raw is not None and not _readable_number(raw):
         # 文字や中身の無い Values は number が既定の 100 へ丸めるので、黙っていると
-        # 壊れた値が等倍として写り、互換性レポートにも出ない NaN と同じく数えて残す
+        # 壊れた値が等倍として写り、互換性レポートにも出ない NaN や無限大は分数にできず、
+        # そのまま渡すと ValueError で読み込みごと止まり、同じテンプレートの正常な
+        # アイテムまで写せなくなる どれも等倍として置き、数えて残す
         log.note_missing(f"YMM4 の再生速度（PlaybackRate）が読めない値: {raw!r}")
         return Fraction(1), False
     rate = number(raw, 100.0)
@@ -903,13 +905,7 @@ def _playback_rate(
     elif newer is not None:
         # 止まった値の食い違いは見ない YMM4 は PlaybackRate を読むと測って確かめた
         moving = read(newer, rate)
-        amounts = [point.value for point in moving.keyframes] or [moving.static]
-        if not all(math.isfinite(amount) for amount in amounts):
-            # 写す値には使わないが、NaN や無限大を黙って捨てると、壊れたファイルが
-            # 互換性レポートに出ない 食い違いの判定を外したので、ここで見ないと
-            # 1 つの値の NaN はどこにも引っ掛からない（PlaybackRate の読めない値と同じ扱い）
-            log.note_missing(f"YMM4 の再生速度（PlaybackRate2）が読めない値: {newer!r}")
-        elif moving.keyframes and any(point.value != rate for point in moving.keyframes):
+        if moving.keyframes and any(point.value != rate for point in moving.keyframes):
             log.note_missing(
                 "YMM4 の再生速度（PlaybackRate2）の動き 動く速さは写せない（PlaybackRate で置いた）"
             )
@@ -923,11 +919,6 @@ def _playback_rate(
             )
     elif mode is not None and mode != "Resampling":
         log.note_missing(f"YMM4 の再生速度の音の変え方: {mode}")
-    if not math.isfinite(rate):
-        # NaN や無限大は分数にできず、そのまま渡すと ValueError で読み込みごと止まり、
-        # 同じテンプレートの正常なアイテムまで写せなくなる 等倍として置き、数えて残す
-        log.note_missing(f"YMM4 の再生速度（PlaybackRate）が読めない値: {rate!r}")
-        return Fraction(1), False
     if rate == 0:
         if name == "VideoItem":
             log.note_missing("YMM4 の再生速度 0 の動画の止まった絵（等倍で動かした）")
@@ -941,27 +932,25 @@ def _playback_rate(
 
 
 def _readable_number(value: Any) -> bool:
-    """数として読める形か ただの数・数の文字・値を 1 つ以上持つ動く値
+    """数として読める形か ただの数・数の文字・値を 1 つ以上持つ動く値 どれも有限に限る
 
     ``number`` と ``animated`` は読めない形を既定値へ丸める 丸めた後では、書かれて
     いた値が既定だったのか壊れていたのか見分けられないので、丸める前に見る
     真偽値は数に読めるが（``True`` が 1）、速さとして書かれることは無いので断る
+
+    NaN や無限大も ``animated`` に渡す前の ``Values`` の並びで見る ``animated`` は
+    同じフレームに重なる値を捨てるので（長さ 1 のアイテムの 3 点など）、読んだ後の
+    キーフレームで見ると、重なって捨てられた NaN を見落とす
+    ``PlaybackRate2`` は写す値に使わないので、ここで見ないとどこにも引っ掛からない
     """
     if isinstance(value, bool):
         return False
-    if isinstance(value, int | float):
-        # float に直せない桁の整数は、`number` が既定へ丸める 読めない値として扱う
+    if isinstance(value, int | float | str):
+        # float に直せない桁の整数や数でない文字は、`number` が既定へ丸める
         try:
-            float(value)
-        except OverflowError:
+            return math.isfinite(float(value))
+        except (OverflowError, ValueError):
             return False
-        return True
-    if isinstance(value, str):
-        try:
-            float(value)
-        except ValueError:
-            return False
-        return True
     if isinstance(value, dict):
         values = value.get("Values")
         return (
