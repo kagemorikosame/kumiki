@@ -485,10 +485,14 @@ class FrameRenderer:
         self._compositor.begin((0.0, 0.0, 0.0, 0.0))
         try:
             self._compose_timeline(self._project.timeline, frame, depth=0)
-        finally:
-            # 使われなかった先読みを必ず回収する 置き去りにすると、次のフレームで
-            # 同じデコーダへ頼んだときに前の走りと重なり、例外も誰も受け取らない
-            self._drain_decodes()
+        except BaseException:
+            # 描く側が投げたときは、先読みを受け取るだけにして元の失敗を残す
+            # ここで先読みの失敗を投げ直すと、本当の原因がそれに置き換わって消える
+            self._settle_decodes()
+            raise
+        # 使われなかった先読みを必ず回収する 置き去りにすると、次のフレームで
+        # 同じデコーダへ頼んだときに前の走りと重なり、例外も誰も受け取らない
+        self._drain_decodes()
         self._compositor.underlay((0.0, 0.0, 0.0, 1.0))
 
     def _compose_timeline(self, timeline: Timeline, frame: int, *, depth: int) -> None:
