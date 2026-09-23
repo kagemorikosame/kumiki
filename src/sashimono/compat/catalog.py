@@ -327,6 +327,7 @@ def place(
     track_id: TrackId | None = None,
     default_duration: int = DEFAULT_GENERATED_FRAMES,
     media: Mapping[str, MediaItem] | None = None,
+    report: CompatibilityReport | None = None,
 ) -> list[Command]:
     """写した結果をタイムラインへ置くコマンドの列
 
@@ -344,6 +345,8 @@ def place(
         return []
 
     known = media or {}
+    log = report if report is not None else global_report
+    _note_silent_videos(objects, known, log)
     heard = [item for item in objects if _is_sound(item, known)]
     seen = [item for item in objects if not _is_sound(item, known)]
 
@@ -376,7 +379,7 @@ def place(
         if item.children:
             placed = replace(
                 placed,
-                scene_id=_scene_for(item, project, commands, known),
+                scene_id=_scene_for(item, project, commands, known, log),
                 # シーンの中の時刻は秒で持つ（素材のクリップと同じ決まり）
                 source_in=item.scene_offset * project.rate.frame_duration,
             )
@@ -393,6 +396,23 @@ def _media_of(item: MappedObject, known: Mapping[str, MediaItem]) -> MediaItem |
     if not item.media_path or item.clip.source is not None:
         return None
     return known.get(item.media_path)
+
+
+def _note_silent_videos(
+    objects: list[MappedObject], known: Mapping[str, MediaItem], log: CompatibilityReport
+) -> None:
+    """音も持つ動画を置いても鳴らないことを、互換性レポートへ数えて残す
+
+    こちらの素材の読み込み（:func:`~sashimono.core.commands.insert_media`）は映像と
+    音声を別のクリップへ分けてリンクするが、テンプレートの配置は映像トラックへ
+    1 本置くだけで音声のクリップを作らない YMM4 の動画アイテムは配布物 230 本で
+    1 度も使われておらず、実物で確かめるまで分ける側へ寄せない（Issue #89）
+    握り潰すと、置いたのに鳴らない理由がどこにも残らない
+    """
+    for item in objects:
+        linked = _media_of(item, known)
+        if linked is not None and linked.has_video and linked.has_audio:
+            log.note_missing("テンプレートの動画の音（映像トラックにだけ置くので鳴らない）")
 
 
 def _is_sound(item: MappedObject, known: Mapping[str, MediaItem]) -> bool:
@@ -455,12 +475,16 @@ def _scene_for(
     project: Project,
     commands: list[Command],
     media: Mapping[str, MediaItem],
+    log: CompatibilityReport,
 ) -> SceneId:
     """まとめて 1 枚にする中身をシーンへ置き、そのシーンを返す
 
     中身の位置はまとめた入れ物の頭からの時刻で持っているので、そのまま置く
     （``at_frame`` を中身の一番早い位置にして、ずらさない） 頭へ詰めると、
     遅れて出てくる中身が入れ物の頭から出てしまう
+
+    ``log`` は呼んだ側のレポートをそのまま渡す 渡さないと、まとめた中身の
+    未対応だけが共通のレポートへ紛れ、呼んだ側の数に出ない
     """
     scene = new_scene(project, item.label or "まとめた絵")
     commands.append(AddScene(scene))
@@ -470,7 +494,9 @@ def _scene_for(
     earliest = min((child.clip.timeline_start for child in item.children), default=0)
     commands.extend(
         InScene(scene.id, command)
-        for command in place(list(item.children), inside, at_frame=earliest, media=media)
+        for command in place(
+            list(item.children), inside, at_frame=earliest, media=media, report=log
+        )
     )
     return scene.id
 
