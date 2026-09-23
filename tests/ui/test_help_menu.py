@@ -501,6 +501,32 @@ class TestTemplateNotesCopy:
         # どの印がどの場所かは、聞かれたときに本人が画面で答えられるようにする
         assert f"  <探索先1> {root}" in tip.splitlines()
 
+    def test_places_inside_the_notes_are_hidden_too(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # 知らない設定値はそのまま注意書きに入る 値に場所（画像やフォントのパス）が
+        # 入っていると、ファイルの行だけ伏せても注意書きの行から利用者名が出る
+        _clear_folder_variables(monkeypatch)
+        home = tmp_path / "kagemori"
+        local = home / "AppData" / "Local"
+        monkeypatch.setenv("USERPROFILE", str(home))
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("LOCALAPPDATA", str(local))
+        root = tmp_path / "kosame" / "棚"
+        entry = TemplateEntry(name="見出し", path=root / "束.ymmt", folder="束", source="ymm4")
+        notes = [
+            f"YMM4 の設定値: 画像={home / '絵' / 'a.png'} — 1 回",
+            f"YMM4 の設定値: 字形={local / 'Fonts' / 'b.ttf'} — 1 回",
+            f"YMM4 の設定値: 素材={root / 'c.wav'} — 1 回",
+        ]
+        text = notes_text(entry, "1 オブジェクト（text）", notes, [root], user_folders(home))
+        assert "kagemori" not in text.casefold()
+        assert "kosame" not in text.casefold()
+        lines = text.replace("/", "\\").splitlines()
+        assert r"  YMM4 の設定値: 画像=%USERPROFILE%\絵\a.png — 1 回" in lines
+        assert r"  YMM4 の設定値: 字形=%LOCALAPPDATA%\Fonts\b.ttf — 1 回" in lines
+        assert r"  YMM4 の設定値: 素材=<探索先1>\c.wav — 1 回" in lines
+
     def test_a_shelf_under_the_settings_keeps_its_name(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
