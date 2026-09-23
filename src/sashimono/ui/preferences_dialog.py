@@ -196,6 +196,18 @@ class PreferencesDialog(QDialog):
         )
         form.addRow(self._native_modules)
 
+        self._all_plugins = QCheckBox("AviUtl2 の汎用プラグインを全部読んで探す", self)
+        self._all_plugins.setChecked(preferences.all_aviutl_plugins)
+        self._all_plugins.setToolTip(
+            "切っている間は、スクリプトが引くモジュールを出すと分かっている汎用プラグイン"
+            "（合成フォントの comfont.aux2）だけを読む "
+            "入れると AviUtl2 の Plugin フォルダの .aux2 を全部読み、ほかのプラグインが"
+            "出すモジュールも探す 読んだプラグインは初期化で自分の処理を走らせる"
+            "（ウィンドウを作る、Python を起動して AviUtl2 の置き場へ書く、など）ので、"
+            "要る物が無いときだけ入れる"
+        )
+        form.addRow(self._all_plugins)
+
         # 測った値をそのまま置く 「なんとなく軽くなる」ではなく、
         # どの組が 60fps に入るのかを見て選べるようにする
         # 数は控えの側（sashimono.engine.cache.proxy）から取る ここへ直に書くと、
@@ -246,6 +258,9 @@ class PreferencesDialog(QDialog):
         self._auto_quality.toggled.connect(self._auto_divisor.setEnabled)
         self._proxy_height.setEnabled(preferences.use_proxy)
         self._auto_divisor.setEnabled(preferences.auto_quality)
+        # DLL を読まない設定では汎用プラグインも読まないので、選んでも効かない
+        self._native_modules.toggled.connect(self._all_plugins.setEnabled)
+        self._all_plugins.setEnabled(preferences.native_modules)
 
     @staticmethod
     def _select(box: QComboBox, value: int) -> None:
@@ -274,4 +289,5 @@ class PreferencesDialog(QDialog):
             export_pipeline_depth=int(self._pipeline_depth.currentData()),
             decode_threads=int(self._decode_threads.currentData()),
             native_modules=self._native_modules.isChecked(),
+            all_aviutl_plugins=self._all_plugins.isChecked(),
         )

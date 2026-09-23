@@ -568,6 +568,7 @@ class LuaScriptRuntime:
             return provided
         path = self._locate(key, (".mod2",))
         if path is None:
+            self._note_unsearched_plugins(key)
             return self.load_module(key)
 
         # 設定の入り切りも鍵に入れる 入れないと、切ったあとも読んであった DLL の
@@ -581,6 +582,25 @@ class LuaScriptRuntime:
         self._modules[cache] = value
         return value
 
+    def _note_unsearched_plugins(self, name: str) -> None:
+        """読まずにおいた汎用プラグインが出しているかもしれない、と 1 度だけ記録する
+
+        既定では表に載ったプラグインしか読まない 載っていない物が出すモジュールを
+        使うスクリプトは「見つかりません」で止まるので、設定で探せることを残す
+        書かないと、AviUtl2 では動くのに Sashimono では動かない理由に辿り着けない
+        """
+        marker = ("unsearched", self._folder, name)
+        if marker in self._modules:
+            return
+        self._modules[marker] = None
+        if not native.enabled() or self._locate(name, MODULE_SUFFIXES) is not None:
+            return
+        if plugin.may_provide(name):
+            self._report.note_missing(
+                f'モジュール "{name}" は、読まずにおいた AviUtl2 の汎用プラグインが'
+                "出しているかもしれない（設定の「汎用プラグインを全部読んで探す」で探せる）"
+            )
+
     def _plugin_module(self, name: str) -> Any:
         """汎用プラグイン（``.aux2``）が名前を付けて登録したモジュール
 
@@ -592,13 +612,15 @@ class LuaScriptRuntime:
         if not native.enabled():
             return None
         try:
-            modules = plugin.script_modules(report=self._report)
+            # 名前を渡して、その名前を出すプラグインだけを読ませる 全部を読むと、
+            # テレビ字幕（中身は .mod2 のファイル）を描くだけで関係の無い
+            # プラグインが初期化され、本人の AviUtl2 の置き場へ書く（Issue #135）
+            module = plugin.script_module(name, report=self._report)
         except Exception as exc:  # pragma: no cover - 読み込みは実物が要る
             # プラグインの読み込みは他人の DLL を走らせる 何が出てくるか
             # 分からないので、ここで止めてスクリプト側は素の道へ進ませる
             self._report.note_missing(f"汎用プラグインを読めない: {exc}")
             return None
-        module = modules.get(name)
         if module is None:
             return None
         cache = ("aux2", module.path.resolve(), name)
