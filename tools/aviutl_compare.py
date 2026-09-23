@@ -356,25 +356,70 @@ def missing_fonts() -> list[str]:
     return [family for _key, family, file in COMPOSITE_FONTS if not (fonts / file).is_file()]
 
 
+#: 見本を置く前の利用者の設定の控えに付ける名前の後ろ
+#:
+#: 日時を入れずに 1 つに決めておき、**既にあれば取り直さない** 日時で名前を分けると
+#: 上書きはしないが控えが溜まり、戻す手順を出すときにどれが見本を置く前の物かを
+#: 道具が当て推量で選ぶことになる 1 つに決めて取り直さなければ、控えは常に
+#: 最初に置き換える前の物になる
+BACKUP_SUFFIX = ".sashimono-bak"
+
+
+def backup_of(target: Path) -> Path:
+    """見本を置く前の設定の控えの道"""
+    return target.with_name(target.name + BACKUP_SUFFIX)
+
+
+def _holds_sample(target: Path, sample: Path) -> bool:
+    """置き場の設定が見本と同じ中身か（見本が置かれたままか）"""
+    try:
+        return target.read_bytes() == sample.read_bytes()
+    except OSError:
+        return False
+
+
 def profile_guide(sample: Path, target: Path | None) -> list[str]:
-    """見本の設定を AviUtl2 の置き場へ写す手順 写すのは本人
+    """見本の設定を AviUtl2 の置き場へ写す手順と、終わったあとに戻す手順 写すのは本人
 
     道具が自分で置きに行かないのは、利用者が合成フォントのエディターで作った
     設定を黙って上書きしうるため 控えを取るかどうかも本人が決める
+
+    戻す手順まで出す 置く手順だけだと、比べ終わったあとも見本の組み替えが
+    普段の AviUtl2（と Sashimono）に残る 手順をなぞり直しても元の設定を
+    失わないよう、控えが既にあれば取り直さない（:data:`BACKUP_SUFFIX`）
     """
     lines = [f"見本の設定を書いた: {sample}"]
     if target is None:
         lines.append("PROGRAMDATA が無いので、AviUtl2 の置き場が分からない")
         return lines
+    backup = backup_of(target)
+    placed = target.exists() and _holds_sample(target, sample)
     lines.append("AviUtl2 に同じ組み替えをさせるには、次を本人が手で行う")
     lines.append("（AviUtl2 を開いていれば閉じてから 設定を読み直す時機は確かめていない）")
-    if target.exists():
+    if backup.exists():
+        # 取り直すと、置いたままの見本を「元の設定」として控えに上書きしてしまう
+        lines.append(f"  控え {backup} が既にあるので取り直さない")
+        if target.exists() and not placed:
+            lines.append(
+                "  控えを取ったあとに置き場の設定を変えたなら、先に控えを別の名前へ移しておく"
+            )
+    elif target.exists() and not placed:
         lines.append(f"  既に {target} があるので、先に控えを取る")
-        lines.append(f'  Copy-Item "{target}" "{target}.bak"')
-    else:
+        lines.append(f'  Copy-Item "{target}" "{backup}"')
+    elif not target.exists():
         lines.append(f"  {target} はまだ無い（置き場のフォルダから作る）")
         lines.append(f'  New-Item -ItemType Directory -Force "{target.parent}"')
-    lines.append(f'  Copy-Item "{sample}" "{target}"')
+    if placed:
+        lines.append(f"  {target} には見本が置かれたまま（写し直さなくてよい）")
+    else:
+        lines.append(f'  Copy-Item "{sample}" "{target}"')
+
+    lines.append("比べ終わったら、AviUtl2 を閉じてから元へ戻す")
+    if backup.exists() or (target.exists() and not placed):
+        lines.append(f'  Move-Item -Force "{backup}" "{target}"')
+    else:
+        lines.append("  （控えが無いので、見本を置く前は設定が無かったものとして見本を消す）")
+        lines.append(f'  Remove-Item "{target}"')
     return lines
 
 
@@ -391,6 +436,15 @@ def command_profile(arguments: argparse.Namespace) -> int:
         print(f"  注意: {family} がこの PC の Fonts に無い 組み替えても既定の書体で描かれる")
     print(f"Sashimono 側の絵は preview --app-data {sample.parent.parent} で描ける")
     return 0
+
+
+def preview_name(case: Case) -> str:
+    """見本の絵の名前 並べた位置（``compare`` の ``images/`` と同じ）を頭に付ける
+
+    名前だけにすると、別のフォルダにある同じ名前のエイリアスの絵が先の絵を
+    上書きし、描いたはずの 1 本が黙って消える 並べた位置は 1 本ごとに違う
+    """
+    return f"{case.start:06d}_{case.name}.png"
 
 
 def command_preview(arguments: argparse.Namespace) -> int:
@@ -432,7 +486,7 @@ def command_preview(arguments: argparse.Namespace) -> int:
             image = np.asarray(renderer.render(frame))[..., :3]
             # 真っ黒を「描けた」と取り違えないよう、光っている画素を数えて出す
             lit = int((image.max(axis=2) > 8).sum())
-            out = target / f"{case.name}.png"
+            out = target / preview_name(case)
             _save_png(np.ascontiguousarray(image), out)
             print(f"{case.name}: フレーム {frame} 光っている画素 {lit} → {out}")
     finally:

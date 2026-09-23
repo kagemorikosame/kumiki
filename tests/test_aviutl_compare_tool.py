@@ -151,7 +151,7 @@ class TestProfileCommand:
         monkeypatch.setenv("PROGRAMDATA", str(program_data))
         self._run(tool, tmp_path / "work")
         assert target.read_text(encoding="utf-8") == '{"本人": 1}'
-        assert not target.with_name("profiles.json.bak").exists()
+        assert not tool.backup_of(target).exists()
 
     def test_tells_where_to_put_it(
         self,
@@ -165,8 +165,10 @@ class TestProfileCommand:
         monkeypatch.setenv("PROGRAMDATA", str(program_data))
         self._run(tool, tmp_path / "work")
         out = capsys.readouterr().out
-        assert str(program_data / "aviutl2" / "compositefont" / "profiles.json") in out
-        assert "控え" not in out
+        target = program_data / "aviutl2" / "compositefont" / "profiles.json"
+        assert str(target) in out
+        # 元の設定が無いのに控えを取らせると、無いファイルを写す命令で止まる
+        assert f'Copy-Item "{target}"' not in out
 
     def test_asks_for_a_backup_when_one_exists(self, tool: ModuleType, tmp_path: Path) -> None:
         """既にある設定へそのまま写させると、本人の組み合わせが消える"""
@@ -176,10 +178,115 @@ class TestProfileCommand:
         sample = tmp_path / "見本.json"
         lines = tool.profile_guide(sample, target)
         assert any("控え" in line for line in lines)
-        backup = next(i for i, line in enumerate(lines) if f"{target}.bak" in line)
+        backup = next(i for i, line in enumerate(lines) if str(tool.backup_of(target)) in line)
         copy = next(i for i, line in enumerate(lines) if f'Copy-Item "{sample}"' in line)
         # 控えを取る行が、写す行より先に来ること 後だと上書きした物の控えになる
         assert backup < copy
+
+
+#: 手順のうち、本人がそのまま打つ命令の行
+_COMMANDS = ("Copy-Item", "New-Item", "Move-Item", "Remove-Item")
+
+
+def _follow(lines: list[str], part: str) -> None:
+    """手順の命令を、書かれた順に PowerShell で打つ ``part`` は置く側か戻す側か
+
+    文言を見るだけでは、打てない命令や順番の誤りを見逃す 実際に打って結果を見る
+    """
+    split = next(i for i, line in enumerate(lines) if line.startswith("比べ終わったら"))
+    chosen = lines[:split] if part == "place" else lines[split:]
+    commands = [line.strip() for line in chosen if line.strip().startswith(_COMMANDS)]
+    if not commands:
+        return
+    subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", "; ".join(commands)],
+        check=True,
+        capture_output=True,
+        timeout=60,
+    )
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="手順は PowerShell の命令で出す")
+class TestFollowingTheGuide:
+    """出た手順をそのままなぞって、置いて戻せるか"""
+
+    @pytest.fixture
+    def sample(self, tmp_path: Path) -> Path:
+        path = tmp_path / "work" / "profiles.json"
+        path.parent.mkdir()
+        path.write_text('{"見本": 1}', encoding="utf-8")
+        return path
+
+    @pytest.fixture
+    def target(self, tmp_path: Path) -> Path:
+        return tmp_path / "aviutl2" / "compositefont" / "profiles.json"
+
+    def test_restoring_brings_back_the_original(
+        self, tool: ModuleType, sample: Path, target: Path
+    ) -> None:
+        """戻す手順が無いと、比べ終わったあとも見本の組み替えが普段の AviUtl2 に残る"""
+        target.parent.mkdir(parents=True)
+        target.write_text('{"本人": 1}', encoding="utf-8")
+        lines = tool.profile_guide(sample, target)
+        _follow(lines, "place")
+        assert target.read_text(encoding="utf-8") == '{"見本": 1}'
+        _follow(lines, "restore")
+        assert target.read_text(encoding="utf-8") == '{"本人": 1}'
+        assert not tool.backup_of(target).exists()
+
+    def test_restoring_removes_the_sample_when_there_was_nothing(
+        self, tool: ModuleType, sample: Path, target: Path
+    ) -> None:
+        """元が無かったのに見本を残すと、置く前に無かった組み替えが居座る"""
+        lines = tool.profile_guide(sample, target)
+        _follow(lines, "place")
+        assert target.read_text(encoding="utf-8") == '{"見本": 1}'
+        _follow(lines, "restore")
+        assert not target.exists()
+
+    def test_following_it_twice_keeps_the_original_backup(
+        self, tool: ModuleType, sample: Path, target: Path
+    ) -> None:
+        """もう一度なぞると、置いたままの見本を「元の設定」として控えに上書きし、
+        本人の設定へ戻せなくなる
+        """
+        target.parent.mkdir(parents=True)
+        target.write_text('{"本人": 1}', encoding="utf-8")
+        _follow(tool.profile_guide(sample, target), "place")
+        again = tool.profile_guide(sample, target)
+        assert any("見本が置かれたまま" in line for line in again)
+        _follow(again, "place")
+        assert tool.backup_of(target).read_text(encoding="utf-8") == '{"本人": 1}'
+        _follow(again, "restore")
+        assert target.read_text(encoding="utf-8") == '{"本人": 1}'
+
+    def test_following_it_twice_without_an_original_still_cleans_up(
+        self, tool: ModuleType, sample: Path, target: Path
+    ) -> None:
+        """2 度目の手順が控えを戻そうとすると、無い控えを探して止まり見本が残る"""
+        _follow(tool.profile_guide(sample, target), "place")
+        again = tool.profile_guide(sample, target)
+        _follow(again, "place")
+        _follow(again, "restore")
+        assert not target.exists()
+
+
+def test_previews_of_aliases_with_the_same_name_do_not_overwrite(
+    tool: ModuleType, tmp_path: Path
+) -> None:
+    """名前だけで絵を書くと、別のフォルダの同じ名前のエイリアスが先の絵を上書きし、
+    描いたはずの 1 本が黙って消える
+    """
+    alias = "[Object]\nframe=0,29\n[Object.0]\neffect.name=図形\n"
+    files = []
+    for folder in ("甲", "乙"):
+        path = tmp_path / folder / "同じ名前.object"
+        path.parent.mkdir()
+        path.write_text(alias, encoding="utf-8")
+        files.append(path)
+    cases, _ = tool.build_cases(files)
+    assert len(cases) == 2
+    assert len({tool.preview_name(case) for case in cases}) == 2
 
 
 class TestAppDataPath:
