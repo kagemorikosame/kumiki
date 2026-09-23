@@ -1410,8 +1410,6 @@ class TestItemSound:
     @pytest.mark.parametrize(
         ("values", "word"),
         [
-            ({"Pan": still(50.0)}, "Pan"),
-            ({"PlaybackRate": 150.0}, "PlaybackRate"),
             ({"AudioTrackIndex": 1}, "AudioTrackIndex"),
             ({"IsLooped": True}, "IsLooped"),
             ({"AudioEffects": [{"$type": "N.VibratoEffect, A"}]}, "VibratoEffect"),
@@ -1420,27 +1418,119 @@ class TestItemSound:
     def test_what_cannot_be_carried_is_counted(self, values: dict[str, Any], word: str) -> None:
         """写せない音の設定は数えて残す 握り潰すと、直す順番を決められない
 
-        どれも実物に出てくる 再生速度は 0 のものが 5 個あり（こちらの ``speed`` は
-        正の数しか取らない） 開始位置（``ContentOffset``）は写せるようになった
+        どれも実物に出てくる 開始位置（``ContentOffset``）・定位（``Pan``）・
+        再生速度（``PlaybackRate``）は写せるようになった
         """
         report = CompatibilityReport()
         map_template([self.video(**values)], report=report)
         assert any(word in line for line in report.lines())
 
-    def test_a_setting_that_only_moves_later_is_counted(self) -> None:
-        """途中から動き出す定位も数える
+    @pytest.mark.parametrize(
+        "values", [{"Pan": still(50.0)}, {"PlaybackRate": 150.0}, {"PlaybackRate": 50.0}]
+    )
+    def test_carried_settings_are_no_longer_counted_as_missing(
+        self, values: dict[str, Any]
+    ) -> None:
+        """写せるようになった定位と再生速度は、写せない物として数えない
 
-        先頭の値だけを見ると、0 から始まって途中で振り切れる定位を数え落とし、
-        互換性レポートが「全部写せている」と言う
+        数え続けると、互換性レポートが直し終えた物を上位に出し続け、直す順番を誤る
         """
-        moving = {
-            "Values": [{"Value": 0.0}, {"Value": 100.0}],
-            "Span": 0.0,
-            "AnimationType": "直線移動",
-        }
         report = CompatibilityReport()
-        map_template([self.video(Pan=moving)], report=report)
-        assert any("Pan" in line for line in report.lines())
+        map_template([self.video(**values)], report=report)
+        assert not any("Pan" in line or "PlaybackRate" in line for line in report.lines())
+
+    def test_a_pan_that_only_moves_later_is_carried(self) -> None:
+        """途中から動き出す定位も運ぶ
+
+        先頭の値だけで既定かどうかを決めると、0 から始まって途中で振り切れる定位を
+        取りこぼし、左右へ振るはずの音が真ん中のまま鳴る
+        """
+        (mapped,) = map_template([self.video(Pan=moving(0.0, 100.0))], report=CompatibilityReport())
+        (effect,) = mapped.audio_effects
+        pan = effect.params["pan"]
+        assert value_at(pan, 0) == 0.0
+        assert value_at(pan, 60) == 100.0
+
+    def test_the_volume_50_is_half_the_amplitude(self) -> None:
+        """``Volume`` 50 はそのまま ``volume`` 50（振幅の半分）
+
+        YMM4 に書き出させて測ると 50 で最大振幅が 0.501 倍（2026-09-23 4.56.1.1）
+        dB 目盛りや二乗と読んで写し直すと、この半分が崩れる
+        """
+        (mapped,) = map_template([self.video(Volume=still(50.0))], report=CompatibilityReport())
+        (effect,) = mapped.audio_effects
+        assert value_at(effect.params["volume"]) == 50.0
+
+    @pytest.mark.parametrize("pan", [-100.0, -50.0, 50.0, 100.0])
+    def test_the_pan_keeps_its_sign(self, pan: float) -> None:
+        """``Pan`` はそのまま ``pan`` へ 符号を取り違えると左右が入れ替わる
+
+        YMM4 に書き出させて測ると -100 で右が無音・50 で左が半分（負が左）
+        こちらの ``audio_volume`` の ``pan`` も負が左で、近い側を残し遠い側だけ下げる
+        """
+        (mapped,) = map_template([self.video(Pan=still(pan))], report=CompatibilityReport())
+        (effect,) = mapped.audio_effects
+        assert effect.kind == "audio_volume"
+        assert value_at(effect.params["pan"]) == pan
+        # 音量を変えていないのに音量まで変わると、定位を振っただけで小さく鳴る
+        assert value_at(effect.params["volume"]) == 100.0
+
+    def test_the_default_pan_adds_nothing(self) -> None:
+        # 既定のままで定位のエフェクトが並ぶと、何を変えたテンプレートなのか読めない
+        (mapped,) = map_template([self.video(Pan=still(0.0))], report=CompatibilityReport())
+        assert mapped.audio_effects == ()
+
+    def test_the_playback_rate_becomes_the_clip_speed(self) -> None:
+        """``PlaybackRate`` 50 は ``speed`` 1/2 で、タイムライン上の長さは ``Length`` のまま
+
+        YMM4 の ``Length`` はタイムライン上の長さで、素材は ``Length × rate`` だけ進む
+        （50 で 2 秒の素材が 4 秒の枠いっぱいに鳴った） 長さまで rate で割ると、
+        枠の倍の長さを鳴らし、後ろのアイテムに重なる
+        """
+        (mapped,) = map_template([self.video(PlaybackRate=50.0)], report=CompatibilityReport())
+        assert mapped.clip.speed == Fraction(1, 2)
+        assert mapped.clip.duration == 60
+
+    def test_a_fractional_rate_stays_in_decimal(self) -> None:
+        # 実物に 102.1 がある 2 進の小数のまま分数にすると、書き戻したときに桁が崩れる
+        (mapped,) = map_template([self.video(PlaybackRate=102.1)], report=CompatibilityReport())
+        assert mapped.clip.speed == Fraction(1021, 1000)
+
+    def test_a_rate_of_zero_is_silent(self) -> None:
+        """``PlaybackRate`` 0 は鳴らない（YMM4 に書き出させると無音・長さ 0）
+
+        ``speed`` は正の数しか取らないので 1 のまま置き、音量 0 で止める
+        等倍に読み替えると、実物の動画アイテム 5 個で止めたはずの音が鳴る
+        """
+        report = CompatibilityReport()
+        (mapped,) = map_template([self.video(PlaybackRate=0.0)], report=report)
+        assert mapped.clip.speed == 1
+        (effect,) = mapped.audio_effects
+        assert value_at(effect.params["volume"]) == 0.0
+        # 絵がどうなるかは測っていない 等倍で動かしたことを数えて残す
+        assert any("再生速度 0" in line for line in report.lines())
+
+    def test_a_moving_rate_uses_its_first_value(self) -> None:
+        """動く値の形で来たら先頭の値を使い、動きは数えて残す
+
+        実物は 1156 個どれもただの数だった ``speed`` は動かせないので、動きを
+        黙って捨てると「全部写せている」と言いながら速さが変わらない
+        """
+        report = CompatibilityReport()
+        (mapped,) = map_template([self.video(PlaybackRate=moving(50.0, 200.0))], report=report)
+        assert mapped.clip.speed == Fraction(1, 2)
+        assert any("PlaybackRate" in line for line in report.lines())
+
+    def test_a_still_item_keeps_its_speed(self) -> None:
+        # 音を持たないアイテムに speed を持たせると、テキストや図形の動きの時刻が変わる
+        item = {
+            "$type": "YukkuriMovieMaker.Project.Items.ImageItem, YukkuriMovieMaker",
+            "FilePath": "C:/素材/絵.png",
+            "PlaybackRate": 50.0,
+            "Length": 60,
+        }
+        (mapped,) = map_template([item], report=CompatibilityReport())
+        assert mapped.clip.speed == 1
 
     def test_a_switched_off_audio_effect_is_not_counted(self) -> None:
         """切ってある音声エフェクトは数えない

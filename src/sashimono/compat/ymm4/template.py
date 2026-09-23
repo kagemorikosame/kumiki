@@ -684,12 +684,14 @@ def _map_item(item: dict[str, Any], log: CompatibilityReport) -> MappedObject | 
     # 画面の中で動かしたあとの絵にエフェクトが掛かり、回した図形が中心点の前で切れる
     effects.extend(final)
 
+    speed, silenced = _playback_rate(item, name, log)
     return MappedObject(
         clip=Clip(
             timeline_start=max(0, int(number(item.get("Frame"), 0.0))),
             duration=length,
             source=source,
             source_in=_content_offset(item, log) if media_path else Fraction(0),
+            speed=speed,
             effects=tuple(effects),
             opacity=animated(
                 item.get("Opacity"), 100.0, length=length, keyframes=keyframes, scale=0.01
@@ -705,7 +707,9 @@ def _map_item(item: dict[str, Any], log: CompatibilityReport) -> MappedObject | 
         has_span="Length" in item,
         # 動画アイテムは 1 つで映像と音の両方を持つ 音声トラックへも展開しないと鳴らない
         with_sound=name == "VideoItem",
-        audio_effects=_audio_effects(item, name, log, length=length, keyframes=keyframes),
+        audio_effects=_audio_effects(
+            item, name, log, length=length, keyframes=keyframes, silenced=silenced
+        ),
     )
 
 
@@ -748,6 +752,7 @@ def _audio_effects(
     *,
     length: int,
     keyframes: Any,
+    silenced: bool = False,
 ) -> tuple[Effect, ...]:
     """音の設定を、音声トラックのクリップへ掛けるエフェクトにする
 
@@ -759,33 +764,36 @@ def _audio_effects(
     アイテムテンプレートの中身も同じ形で入る（同じ設定ファイルの ``Templates`` が、
     ``.ymmt`` の ``catalog.json`` と同じ ``Name`` ``Path`` ``Items`` を持つ）
 
-    ``Volume`` は百分率で、0 が無音・100 がそのままの大きさ YMM4 に音を消す印は無く、
-    実物でも音を消した 18 個は ``Volume`` が 0 だった（``IsAudioEnabled`` のような
-    項目はどの版のファイルにも出てこない） こちらの ``audio_volume`` も百分率なので
-    そのまま渡す
+    写し方は YMM4 本体に書き出させて測って決めた（2026-09-23 YMM4 4.56.1.1
+    440Hz の正弦波 基準の枠との最大振幅の比 表は docs/development.md の「音を測る」）
 
-    写せないものは数えて残す 定位（``Pan``）は向きの意味を実物で確かめられていない
-    （実物 339 個すべて 0 だった） 再生速度（``PlaybackRate``）は 0 のものが実際に
-    あり（動画アイテム 5 個）、こちらの ``speed`` は正の数しか受け取らない
+    * ``Volume`` は振幅比の百分率 50 で 0.501・25 で 0.250・0 で無音 YMM4 に音を消す
+      印は無く、実物でも音を消した 18 個は ``Volume`` が 0 だった こちらの
+      ``audio_volume`` の ``volume`` も振幅比の百分率なので、そのまま渡す
+    * ``Pan`` は -100〜100 で負が左 -100 で左 1.00・右 0.00、-50 で左 1.00・右 0.50
+      近い側はそのままで、遠い側だけ直線で下がる ``audio_volume`` の ``pan`` と同じ作り
+      なので、そのまま渡す
+    * ``PlaybackRate`` はクリップの ``speed`` へ（:func:`_playback_rate`）
+      0 のとき（``silenced``）は鳴らさないので、音量を 0 にする
+
+    写せないものは数えて残す
     """
     if name not in _SOUND_ITEMS:
         return ()
 
-    def differs(key: str, default: float) -> bool:
+    def read(key: str, default: float) -> AnimatedValue:
+        return animated(item.get(key), default, length=length, keyframes=keyframes)
+
+    def differs(value: AnimatedValue, default: float) -> bool:
         """既定と違う値を持つか 動く値は途中の点まで見る
 
         先頭の値だけを見ると（``number``）、0 から動き出す定位のように、
-        始まりが既定と同じものを数え落とす
+        始まりが既定と同じものを取りこぼし、左右へ振る定位が真ん中のまま鳴る
         """
-        read = animated(item.get(key), default, length=length, keyframes=keyframes)
-        if read.keyframes:
-            return any(point.value != default for point in read.keyframes)
-        return read.static != default
+        if value.keyframes:
+            return any(point.value != default for point in value.keyframes)
+        return value.static != default
 
-    if differs("Pan", 0.0):
-        log.note_missing("YMM4 の音の定位（Pan）")
-    if differs("PlaybackRate", 100.0):
-        log.note_missing("YMM4 の再生速度（PlaybackRate）")
     if int(number(item.get("AudioTrackIndex"), 0.0)) != 0:
         log.note_missing("YMM4 の音声トラックの選択（AudioTrackIndex）")
     if item.get("IsLooped") is True:
@@ -799,13 +807,60 @@ def _audio_effects(
         if isinstance(entry, dict) and entry.get("IsEnabled") is not False:
             log.note_missing(f"YMM4 の音声エフェクト: {type_name(entry) or '種類不明'}")
 
-    volume = animated(item.get("Volume"), 100.0, length=length, keyframes=keyframes)
-    if volume == AnimatedValue(100.0):
+    volume = AnimatedValue(0.0) if silenced else read("Volume", 100.0)
+    pan = read("Pan", 0.0)
+    if not differs(volume, 100.0) and not differs(pan, 0.0):
         # 既定のままなら何も掛けない 音量 100% のエフェクトが並ぶと、
         # 何を変えたテンプレートなのかが設定画面から読めなくなる
         return ()
     definition = registry.get("audio_volume")
-    return () if definition is None else (definition.create(volume=volume),)
+    return () if definition is None else (definition.create(volume=volume, pan=pan),)
+
+
+def _playback_rate(
+    item: dict[str, Any], name: str, log: CompatibilityReport
+) -> tuple[Fraction, bool]:
+    """再生速度（``PlaybackRate``）を、クリップの ``speed`` と「鳴らさないか」の組にする
+
+    YMM4 に書き出させて測った（2026-09-23 YMM4 4.56.1.1 2 秒の 440Hz の正弦波を
+    4 秒の枠へ置いた） 50 で 3.98 秒・220Hz、200 で 1.00 秒・880Hz、最大振幅は
+    変わらない テープのように速さと一緒に高さも変わり、こちらの ``speed``
+    （ミキサーの線形の並べ直し）と同じ作り ``Length`` はタイムライン上の長さの
+    ままで、素材は ``Length × rate`` だけ進む 50 で 2 秒の素材が 4 秒の枠に収まった
+    のがそれで、:class:`~sashimono.core.model.Clip` の ``duration`` と ``speed`` の
+    決まり（素材を ``duration × speed`` 読む）と合うので、長さは変えずに渡す
+
+    **0 は鳴らない**（測ると無音で、鳴っている長さも 0） こちらの ``speed`` は
+    正の数しか取らないので、``speed`` は 1 のまま置き、音量を 0 にして止める
+    （2 つ目の値） クリップを置かない形にしないのは、音声アイテムだと置いた物が
+    まるごと消え、あとで速さを直そうにも手を掛ける所が無くなるため YMM4 でも
+    音を消したアイテムは ``Volume`` 0 で持つので、同じ形になる
+    動画アイテムの 0 で**絵**がどうなるか（止まるのか）は測っていない 絵は等倍で
+    動かし、数えて残す 実物の 0 は 5 個あり、どれも動画アイテム（mp4 4 個・webp 1 個）
+
+    音を持たないアイテムは見ない 実物ではどれも 100 で、``speed`` を持たせると
+    テキストや図形の動きの時刻まで変わる
+
+    手元のファイル 99 本（配布物・この機械のプロジェクト・測るために作った試料）の
+    アイテム 1156 個はどれもただの数で、動く値の形（``Values``）は 1 つも無かった
+    形が来たら先頭の値を使い、動くなら数えて残す（``speed`` は動かせない）
+    """
+    if name not in _SOUND_ITEMS:
+        return Fraction(1), False
+    raw = item.get("PlaybackRate")
+    rate = number(raw, 100.0)
+    if any(point.value != rate for point in animated(raw, 100.0).keyframes):
+        log.note_missing("YMM4 の再生速度（PlaybackRate）の動き（先頭の値で写した）")
+    if rate == 0:
+        if name == "VideoItem":
+            log.note_missing("YMM4 の再生速度 0 の動画の絵（等倍で動かした）")
+        return Fraction(1), True
+    if rate < 0:
+        # 負の値は実物に無く、YMM4 でどう鳴るかも測っていない
+        log.note_missing("YMM4 の再生速度（PlaybackRate）が負")
+        return Fraction(1), False
+    # 2 進の小数のまま分数にすると 102.1 が長い分母の分数になる 書かれた 10 進で持つ
+    return Fraction(repr(rate)) / 100, False
 
 
 #: YMM4 の切り替えの種類と、場面切り替えの切り替え方
