@@ -685,7 +685,7 @@ def _map_item(item: dict[str, Any], log: CompatibilityReport) -> MappedObject | 
     # 画面の中で動かしたあとの絵にエフェクトが掛かり、回した図形が中心点の前で切れる
     effects.extend(final)
 
-    speed, silenced = _playback_rate(item, name, log)
+    speed, silenced = _playback_rate(item, name, log, length=length, keyframes=keyframes)
     return MappedObject(
         clip=Clip(
             timeline_start=max(0, int(number(item.get("Frame"), 0.0))),
@@ -819,7 +819,12 @@ def _audio_effects(
 
 
 def _playback_rate(
-    item: dict[str, Any], name: str, log: CompatibilityReport
+    item: dict[str, Any],
+    name: str,
+    log: CompatibilityReport,
+    *,
+    length: int,
+    keyframes: Any,
 ) -> tuple[Fraction, bool]:
     """再生速度（``PlaybackRate``）を、クリップの ``speed`` と「鳴らさないか」の組にする
 
@@ -868,11 +873,17 @@ def _playback_rate(
         return Fraction(1), False
     raw = item.get("PlaybackRate")
     rate = number(raw, 100.0)
-    if any(point.value != rate for point in animated(raw, 100.0).keyframes):
+
+    # 動きはほかの項目と同じくアイテムの長さと中間点で読む 既定の長さ 1 で読むと、
+    # 3 点目以降が同じフレームに重なって捨てられ、途中の値だけが違う動きを数え落とす
+    def read(value: Any, default: float) -> AnimatedValue:
+        return animated(value, default, length=length, keyframes=keyframes)
+
+    if any(point.value != rate for point in read(raw, 100.0).keyframes):
         log.note_missing("YMM4 の再生速度（PlaybackRate）の動き（先頭の値で写した）")
     newer = item.get("PlaybackRate2")
     if newer is not None:
-        moving = animated(newer, rate)
+        moving = read(newer, rate)
         if moving.keyframes and any(point.value != rate for point in moving.keyframes):
             log.note_missing("YMM4 の再生速度（PlaybackRate2）の動き")
         elif not moving.keyframes and moving.static != rate:

@@ -699,6 +699,22 @@ def test_a_stopped_picture_reads_as_stopped(tool: ModuleType) -> None:
     assert tool.rate_reading(slope) == "止まる"
 
 
+def test_a_picture_stopped_on_the_last_frame_reads_as_stopped(tool: ModuleType) -> None:
+    """最後のフレームだけが並んだ枠も「止まる」
+
+    最後のフレームで切ると点が残らず「絵が無い」と読み、一致数は揃っているのに
+    表の中で食い違う（0 で素材の末尾から映す枠や、最後の絵を出し続ける枠）
+    """
+    sources = _sources()
+    last = len(sources) - 1
+    pictures: list[np.ndarray | None] = [sources[last].copy() for _ in range(30)]
+    indices = [found for found, _ in tool.match_frames(pictures, sources)]
+    assert set(indices) == {last}
+    slope = tool.rate_slope(indices, last)
+    assert slope == 0.0
+    assert tool.rate_reading(slope) == "止まる"
+
+
 def test_a_black_frame_is_not_taken_for_a_dark_source_frame(tool: ModuleType) -> None:
     """素材のどれにも似ていない絵（黒）は番号を持たない
 

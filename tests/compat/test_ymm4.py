@@ -1499,6 +1499,19 @@ class TestItemSound:
         assert not report.lines()
 
     @pytest.mark.parametrize(
+        ("key", "word"), [("PlaybackRate", "PlaybackRate）"), ("PlaybackRate2", "PlaybackRate2")]
+    )
+    def test_a_rate_that_differs_only_in_the_middle_is_counted(self, key: str, word: str) -> None:
+        """途中の点だけが違う 3 点の動きも数える
+
+        長さ 1 として読むと 3 点が 0・0・1 フレームに並び、同じフレームの 2 点目が
+        捨てられて、動いているのに「動かない」と読む
+        """
+        report = CompatibilityReport()
+        map_template([self.audio(**{key: moving(100.0, 50.0, 100.0)})], report=report)
+        assert any(word in line and "動き" in line for line in report.lines())
+
+    @pytest.mark.parametrize(
         "values",
         [
             {"PlaybackRate2": still(200.0)},

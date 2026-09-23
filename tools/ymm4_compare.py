@@ -1665,7 +1665,14 @@ def rate_slope(indices: list[int | None], last: int) -> float | None:
     素材の最後のフレーム（``last``）へ届いた所で切る 読み切った後に最後の絵で
     止まる作りだと、そこが傾き 0 の尾になり、200% の傾きが 2 より小さく出る
     最後のフレームそのものも数えないのは、読み切った後の止まった絵と見分けられないため
+
+    ただし一致した絵がすべて同じフレームなら止まった絵（0） 最後のフレームで止まった枠
+    （0 で素材の末尾から映す・最後の絵を出し続ける）を切ると点が残らず、一致数は
+    揃っているのに「絵が無い」と読み、表の中で食い違う
     """
+    found = [index for index in indices if index is not None]
+    if len(found) >= 2 and len(set(found)) == 1:
+        return 0.0
     points: list[tuple[int, int]] = []
     for elapsed, index in enumerate(indices):
         if index is None:
