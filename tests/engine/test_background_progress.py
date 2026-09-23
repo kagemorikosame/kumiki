@@ -1,0 +1,338 @@
+"""裏の処理の進み具合を数える所と、読み込む素材をまとめて裏で調べる所
+
+画面に出す前の数が合っていないと、ステータスバーは「3 本のうち 5 本」のような
+あり得ない数を出す 画面を組み立てずに数だけを確かめる
+"""
+
+from __future__ import annotations
+
+import threading
+import time
+from collections.abc import Callable
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+
+from sashimono.core.model import MediaId, MediaItem
+from sashimono.engine.cache import analyzer as analyzer_module
+from sashimono.engine.cache import proxy as proxy_module
+from sashimono.engine.cache.analyzer import MediaAnalyzer
+from sashimono.engine.cache.progress import JobBoard, ProgressSnapshot
+from sashimono.engine.cache.proxy import ProxyBuilder, ProxyStore
+from sashimono.engine.cache.store import CacheStore
+from sashimono.engine.decode import ProbeError
+from sashimono.engine.decode.batch import ProbeBatch
+
+A = MediaId("a")
+B = MediaId("b")
+
+
+def _wait(predicate: Callable[[], bool], timeout: float = 10.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def _tall(media: MediaItem) -> MediaItem:
+    """控えを作る値打ちのある大きさ（4K）にする 1080p までは控えを頼まない"""
+    stream = media.video_streams[0]
+    return replace(media, video_streams=(replace(stream, width=3840, height=2160),))
+
+
+class TestJobBoard:
+    def test_it_counts_the_finished_and_the_failed(self) -> None:
+        board = JobBoard()
+        board.start("x", A)
+        board.start("y", B)
+        board.finish("x")
+        board.finish("y", "開けない")
+        snapshot = board.poll()
+        assert (snapshot.total, snapshot.finished, snapshot.failed) == (2, 2, 1)
+        assert snapshot.failures == {B: "開けない"}
+        assert not snapshot.busy
+
+    def test_the_fraction_counts_the_running_part(self) -> None:
+        # 終わった本数だけで数えると、長い 1 本の控えを作る間ずっと 0% のまま動かない
+        board = JobBoard()
+        board.start("x", A)
+        board.report("x", 0.5)
+        assert board.poll().fraction == pytest.approx(0.5)
+
+    def test_two_jobs_of_one_media_share_the_row(self) -> None:
+        # 波形とサムネイルは同じ素材の 2 つの仕事 行には平均を 1 つだけ出す
+        board = JobBoard()
+        board.start(("waveform", A), A)
+        board.start(("filmstrip", A), A)
+        board.report(("waveform", A), 1.0)
+        snapshot = board.poll()
+        assert snapshot.running == {A: pytest.approx(0.5)}
+        assert snapshot.fraction == pytest.approx(0.5)
+
+    def test_a_stopped_job_is_not_counted(self) -> None:
+        # 終わった数に入れると、素材を外しただけで仕事をしたように見える
+        board = JobBoard()
+        board.start("x", A)
+        board.start("y", B)
+        board.drop("x")
+        board.finish("y")
+        snapshot = board.poll()
+        assert (snapshot.total, snapshot.finished, snapshot.failed) == (1, 1, 0)
+
+    def test_the_count_restarts_only_after_it_was_read_idle(self) -> None:
+        # 終わった時点で数え直すと、画面は「終わった」も失敗の数も見ないまま次へ進む
+        board = JobBoard()
+        board.start("x", A)
+        board.finish("x", "開けない")
+        board.start("y", B)
+        busy = board.poll()
+        assert (busy.total, busy.finished, busy.failed) == (2, 1, 1)
+        board.finish("y")
+        done = board.poll()
+        assert (done.total, done.finished, done.failed) == (2, 2, 1)
+        assert board.poll().total == 0
+
+    def test_a_failure_stays_on_the_row_until_asked_again(self) -> None:
+        board = JobBoard()
+        board.start("x", A)
+        board.finish("x", "開けない")
+        board.poll()
+        # 数え直した後も行には残す 終わった後に一覧を見て理由が分からないと困る
+        assert board.poll().failures == {A: "開けない"}
+        board.start("x", A)
+        assert board.poll().failures == {}
+
+    def test_asking_one_job_again_keeps_the_other_failure(self) -> None:
+        # 素材ごとに消すと、サムネイルを頼み直しただけで波形の失敗まで消える
+        board = JobBoard()
+        board.start(("waveform", A), A)
+        board.finish(("waveform", A), "波形を作れなかった")
+        board.start(("filmstrip", A), A)
+        assert board.poll().failures == {A: "波形を作れなかった"}
+
+    def test_forgetting_a_media_drops_its_failures(self) -> None:
+        board = JobBoard()
+        board.start("x", A)
+        board.finish("x", "開けない")
+        board.forget(A)
+        assert board.poll().failures == {}
+
+    def test_nothing_asked_is_complete(self) -> None:
+        assert ProgressSnapshot().fraction == 1.0
+        assert not ProgressSnapshot().busy
+
+
+class TestProxyProgress:
+    def test_the_progress_and_the_end_are_counted(
+        self, video_media: MediaItem, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        release = threading.Event()
+
+        def fake(source: Path, target: Path, **kwargs: object) -> Path:
+            report = kwargs["progress"]
+            assert callable(report)
+            report(0.25)
+            release.wait(10.0)
+            return target
+
+        monkeypatch.setattr(proxy_module, "create_proxy", fake)
+        builder = ProxyBuilder(ProxyStore(CacheStore(tmp_path), height=120))
+        media = _tall(video_media)
+        try:
+            builder.request(media)
+            assert _wait(lambda: builder.poll().running.get(media.id) == 0.25)
+            snapshot = builder.poll()
+            assert (snapshot.total, snapshot.finished) == (1, 0)
+            release.set()
+            assert _wait(lambda: not builder.poll().busy)
+        finally:
+            release.set()
+            builder.close()
+
+    def test_an_exception_is_counted_as_a_failure(
+        self, video_media: MediaItem, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 前は executor の中で黙って消え、控えが無いまま理由も出なかった
+        def broken(source: Path, target: Path, **kwargs: object) -> Path:
+            raise RuntimeError("符号化器が無い")
+
+        monkeypatch.setattr(proxy_module, "create_proxy", broken)
+        builder = ProxyBuilder(ProxyStore(CacheStore(tmp_path), height=120))
+        media = _tall(video_media)
+        seen: list[ProgressSnapshot] = []
+        try:
+            builder.request(media)
+
+            def ended() -> bool:
+                seen.append(builder.poll())
+                return not seen[-1].busy
+
+            assert _wait(ended)
+        finally:
+            builder.close()
+        assert sum(snapshot.failed for snapshot in seen) == 1
+        assert "符号化器が無い" in builder.poll().failures[media.id]
+
+    def test_nothing_made_is_a_failure(
+        self, video_media: MediaItem, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(proxy_module, "create_proxy", lambda *_args, **_kwargs: None)
+        builder = ProxyBuilder(ProxyStore(CacheStore(tmp_path), height=120))
+        media = _tall(video_media)
+        try:
+            builder.request(media)
+            assert _wait(lambda: media.id in builder.poll().failures)
+        finally:
+            builder.close()
+
+    def test_a_forgotten_media_is_not_a_failure(
+        self, video_media: MediaItem, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 素材を外しただけで「作れなかった」と出ると、壊れたように見える
+        started = threading.Event()
+
+        def stoppable(source: Path, target: Path, **kwargs: object) -> Path | None:
+            started.set()
+            should_cancel = kwargs["should_cancel"]
+            assert callable(should_cancel)
+            while not should_cancel():
+                time.sleep(0.01)
+            return None
+
+        monkeypatch.setattr(proxy_module, "create_proxy", stoppable)
+        builder = ProxyBuilder(ProxyStore(CacheStore(tmp_path), height=120))
+        media = _tall(video_media)
+        try:
+            builder.request(media)
+            assert started.wait(10.0)
+            builder.forget(media.id)
+            assert _wait(lambda: builder.progress(media.id) is None)
+            snapshot = builder.poll()
+        finally:
+            builder.close()
+        assert snapshot.failed == 0
+        assert snapshot.failures == {}
+
+
+class TestAnalysisProgress:
+    def test_the_progress_reaches_the_board(
+        self, video_media: MediaItem, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        release = threading.Event()
+
+        def slow(path: Path, **kwargs: object) -> None:
+            report = kwargs["progress"]
+            assert callable(report)
+            report(0.5)
+            release.wait(10.0)
+            return None
+
+        monkeypatch.setattr(analyzer_module, "analyze_waveform", slow)
+        monkeypatch.setattr(analyzer_module, "build_filmstrip", slow)
+        analyzer = MediaAnalyzer(CacheStore(tmp_path))
+        try:
+            analyzer.request(video_media)
+            assert _wait(lambda: analyzer.poll().running.get(video_media.id) == 0.5)
+            assert analyzer.poll().total == 2
+        finally:
+            release.set()
+            analyzer.close()
+
+    def test_an_unreadable_media_is_a_failure(
+        self, video_media: MediaItem, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def unreadable(path: Path, **kwargs: object) -> None:
+            raise ProbeError(f"素材を開けない: {path}")
+
+        monkeypatch.setattr(analyzer_module, "analyze_waveform", unreadable)
+        monkeypatch.setattr(analyzer_module, "build_filmstrip", lambda *_a, **_k: None)
+        analyzer = MediaAnalyzer(CacheStore(tmp_path))
+        try:
+            analyzer.request(video_media)
+            assert _wait(lambda: not analyzer.poll().busy and video_media.id in _failures(analyzer))
+            reason = analyzer.poll().failures[video_media.id]
+        finally:
+            analyzer.close()
+        assert "波形を作れなかった" in reason
+        assert "サムネイルを作れなかった" in reason
+
+
+def _failures(analyzer: MediaAnalyzer) -> dict[MediaId, str]:
+    return dict(analyzer.poll().failures)
+
+
+class TestProbeBatch:
+    def test_the_results_keep_the_asked_order(self, tmp_path: Path) -> None:
+        # 調べ終わった順に置くと、読み込むたびに並びが入れ替わる
+        first_done = threading.Event()
+
+        def probe(path: Path) -> MediaItem:
+            if path.name == "1.mp4":
+                # 1 本目は 2 本目より後に終わらせる
+                first_done.wait(10.0)
+            else:
+                first_done.set()
+            return MediaItem(path=path)
+
+        paths = [tmp_path / "1.mp4", tmp_path / "2.mp4"]
+        batch = ProbeBatch(paths, probe)
+        assert _wait(lambda: batch.finished)
+        results = batch.results()
+        assert [item.path for item in results if isinstance(item, MediaItem)] == paths
+
+    def test_it_runs_off_the_calling_thread(self, tmp_path: Path) -> None:
+        seen: list[threading.Thread] = []
+
+        def probe(path: Path) -> MediaItem:
+            seen.append(threading.current_thread())
+            return MediaItem(path=path)
+
+        batch = ProbeBatch([tmp_path / "1.mp4"], probe)
+        assert _wait(lambda: batch.finished)
+        assert seen and seen[0] is not threading.current_thread()
+
+    def test_an_unreadable_file_is_returned_not_raised(self, tmp_path: Path) -> None:
+        # 1 本開けないだけで読み込み全体を止めない 前と同じく数えて知らせる
+        def probe(path: Path) -> MediaItem:
+            if path.name == "壊れた.mp4":
+                raise ProbeError("素材を開けない")
+            return MediaItem(path=path)
+
+        batch = ProbeBatch([tmp_path / "壊れた.mp4", tmp_path / "良い.mp4"], probe)
+        assert _wait(lambda: batch.finished)
+        broken, good = batch.results()
+        assert isinstance(broken, ProbeError)
+        assert isinstance(good, MediaItem)
+        assert batch.progress() == 2
+
+    def test_an_unknown_error_is_not_hidden(self, tmp_path: Path) -> None:
+        # 知らない失敗を「開けない素材」に数えると、直すべき不具合が 1 行の文言に紛れる
+        def probe(path: Path) -> MediaItem:
+            raise ZeroDivisionError("こわれた")
+
+        batch = ProbeBatch([tmp_path / "1.mp4"], probe)
+        assert _wait(lambda: batch.finished)
+        with pytest.raises(ZeroDivisionError):
+            batch.results()
+
+    def test_cancel_skips_what_has_not_started(self, tmp_path: Path) -> None:
+        release = threading.Event()
+        probed: list[Path] = []
+
+        def probe(path: Path) -> MediaItem:
+            probed.append(path)
+            release.wait(10.0)
+            return MediaItem(path=path)
+
+        paths = [tmp_path / f"{index}.mp4" for index in range(6)]
+        batch = ProbeBatch(paths, probe, workers=1)
+        assert _wait(lambda: len(probed) == 1)
+        batch.cancel()
+        release.set()
+        assert _wait(lambda: batch.finished)
+        time.sleep(0.05)
+        assert probed == paths[:1], "取り消したのに、始まっていない素材まで調べた"
+        assert batch.cancelled

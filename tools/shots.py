@@ -419,13 +419,24 @@ def top_text_clip(window: MainWindow) -> ClipId:
     raise ShotError("テキストのクリップが無い")
 
 
+def import_sample(window: MainWindow, context: Context) -> None:
+    """見本の素材を読み込み、置き終わるまで待つ
+
+    読み込みは裏で素材を調べてから置く 待たずに撮ると、素材の無い空の
+    タイムラインが写る
+    """
+    window.import_media([sample_media(context)])
+    if not window.wait_for_imports():
+        raise RuntimeError("見本の素材の読み込みが終わらない")
+
+
 def build_sample_timeline(window: MainWindow, context: Context) -> None:
     """見本の素材を読み込み、テロップとエフェクトを載せる
 
     README の先頭に出る絵なので、この 1 枚で「素材・波形・テロップ・
     エフェクトの設定」が一度に見えるようにしてある
     """
-    window.import_media([sample_media(context)])
+    import_sample(window, context)
     settle(window)
 
     text = TEXT.create(
@@ -510,7 +521,7 @@ def shot_editor(context: Context) -> QImage:
 
 def shot_subtitle(context: Context) -> QImage:
     with editor(sample_project()) as window:
-        window.import_media([sample_media(context)])
+        import_sample(window, context)
         settle(window)
         media = window.project.media[0]
         window.apply_commands([SetTranscript(media.id, sample_transcript())], "字幕を更新")
@@ -531,7 +542,7 @@ def shot_ai(context: Context) -> QImage:
     （書いただけで送っていない状態は、実際に画面で作れる状態そのもの）
     """
     with editor(sample_project()) as window:
-        window.import_media([sample_media(context)])
+        import_sample(window, context)
         settle(window)
         window.show_chat()
         settle(window, rounds=4)
