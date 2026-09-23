@@ -363,3 +363,231 @@ def test_pieces_entirely_before_the_head_leave_nothing(tool: ModuleType) -> None
     early = np.ones((2, 4), dtype=np.float32)
     assert tool.assemble_audio([(-10, early)]).shape == (2, 0)
     assert tool.assemble_audio([]).shape == (2, 0)
+
+
+# 格子の点の並びの探り（Issue #107） YMM4 も ffmpeg も要らない形で確かめる
+
+
+def test_the_centroid_lands_on_the_changed_block_in_screen_pixels(tool: ModuleType) -> None:
+    """重心は縮めた絵の升目ではなく、画面の px で返す
+
+    升目のまま返すと、予想の点（画面の px）と 4 倍ずれた所を比べ、どの枠も
+    左上へ寄った読みになる
+    """
+    baseline = np.zeros((tool.COMPARE_HEIGHT, tool.COMPARE_WIDTH, 3), dtype=np.float32)
+    picture = baseline.copy()
+    # 縮めた絵の (100〜109, 40〜49) を変える 画面では x 400〜440、y 160〜200
+    picture[40:50, 100:110] = 255.0
+    found = tool.change_centroid(picture, baseline)
+    assert found is not None
+    x, y, count = found
+    assert (x, y) == pytest.approx((420.0, 180.0))
+    assert count == 100
+
+
+def test_compression_noise_below_the_threshold_does_not_pull_the_centroid(
+    tool: ModuleType,
+) -> None:
+    # 閾値より下の揺れまで数えると、動かしていない所まで重心に入り、真ん中へ寄る
+    baseline = np.zeros((tool.COMPARE_HEIGHT, tool.COMPARE_WIDTH, 3), dtype=np.float32)
+    picture = baseline + tool.MESH_THRESHOLD - 1.0
+    assert tool.change_centroid(picture, baseline) is None
+    picture[0:10, 0:10] = 255.0
+    found = tool.change_centroid(picture, baseline)
+    assert found is not None
+    assert found[0] < 50.0 and found[1] < 50.0
+
+
+def test_the_reading_tells_rows_from_columns(tool: ModuleType) -> None:
+    # 3x3 の 1 番は、行ごとなら上の真ん中、列ごとなら左の真ん中
+    by_row = tool.grid_position(1, 3, 3, by_row=True)
+    by_column = tool.grid_position(1, 3, 3, by_row=False)
+    assert by_row == (tool.WIDTH / 2, 0.0)
+    assert by_column == (0.0, tool.HEIGHT / 2)
+    assert tool.mesh_reading((980.0, 200.0), by_row, by_column) == "行ごと"
+    assert tool.mesh_reading((300.0, 560.0), by_row, by_column) == "列ごと"
+    # 何も変わらなければ、どちらとも言わない 言うと、書き出しの失敗が並びの答えに化ける
+    assert tool.mesh_reading(None, by_row, by_column) == "変化なし"
+    # 真ん中の点はどちらの並びでも同じ所なので、見分けたことにしない
+    center = tool.grid_position(12, 5, 5, by_row=True)
+    assert center == tool.grid_position(12, 5, 5, by_row=False)
+    assert tool.mesh_reading((960.0, 540.0), center, center) == "見分けない"
+
+
+def test_the_probe_moves_both_an_edge_row_point_and_an_edge_column_point(
+    tool: ModuleType,
+) -> None:
+    """真ん中だけを動かすと、行ごとでも列ごとでも真ん中に出て見分けられない"""
+    slots = tool.build_mesh_slots()
+    moved = {(slot.columns, slot.rows, slot.moved) for slot in slots}
+    assert {(3, 3, 4), (3, 3, 1), (3, 3, 3), (5, 5, 12), (3, 3, None)} <= moved
+    starts = [slot.start for slot in slots]
+    for before, after in itertools.pairwise(starts):
+        assert after - before >= tool.MESH_SLOT + tool.GAP
+
+
+def test_every_moved_slot_is_read_against_an_unmoved_slot_of_the_same_grid(
+    tool: ModuleType,
+) -> None:
+    # 別の格子の基準と比べると、何も動かさなくても分け方の違いが差に出るかもしれない
+    slots = tool.build_mesh_slots()
+    manifest = tool.mesh_manifest(slots, Path("grid.png"))
+    assert len(manifest["slots"]) == len(slots)
+    for entry, slot in zip(manifest["slots"], slots, strict=True):
+        base = slots[entry["baseline"]]
+        assert base.moved is None
+        assert (base.columns, base.rows) == (slot.columns, slot.rows)
+        assert entry["item"]["Frame"] == slot.start
+        assert ("by_row" in entry) == (slot.moved is not None)
+
+
+def test_the_probe_effect_has_the_shape_of_the_real_one(tool: ModuleType) -> None:
+    """``.work/probes/samples.json`` の実物と同じ項目 形を推測すると YMM4 が読み飛ばす"""
+    slot = next(slot for slot in tool.build_mesh_slots() if slot.moved == 1)
+    effect = tool.mesh_effect_entry(slot)
+    assert set(effect) == {
+        "$type",
+        "HorizontalCount",
+        "VerticalCount",
+        "Points",
+        "IsEnabled",
+        "Remark",
+    }
+    assert effect["$type"] == (
+        "YukkuriMovieMaker.Project.Effects.MeshDeformationEffect, YukkuriMovieMaker"
+    )
+    points = effect["Points"]
+    assert len(points) == 9
+    assert all(set(point) == {"X", "Y", "IsSelected"} for point in points)
+    # 実物は最初の点だけが選ばれている
+    assert [point["IsSelected"] for point in points] == [True] + [False] * 8
+    moved = [index for index, point in enumerate(points) if point["X"]["Values"][0]["Value"]]
+    assert moved == [1]
+
+
+def test_the_probe_effect_is_read_by_the_mapper_it_is_meant_to_check(tool: ModuleType) -> None:
+    """探りの JSON が今の写し方で読めないと、Sashimono の側が何も歪まず比べられない
+
+    動かした点は、今の写し方（行ごと・Y を反す）どおり格子の 1 番へ入る
+    """
+    from sashimono.compat.aviutl.report import CompatibilityReport
+    from sashimono.compat.ymm4.decorations import map_video_effects
+
+    slot = next(slot for slot in tool.build_mesh_slots() if slot.moved == 1)
+    report = CompatibilityReport()
+    (mapped,) = map_video_effects([tool.mesh_effect_entry(slot)], report, length=30).effects
+    assert not report.lines()
+    grid = mapped.params["grid"]
+    assert isinstance(grid, tuple)
+    shift_x, shift_y = tool.MESH_SHIFT
+    assert grid[2 + 2 : 2 + 4] == (shift_x, -shift_y)
+
+
+def test_the_mesh_probe_project_has_the_bom_and_an_absolute_image_path(
+    tool: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """BOM が無いと YMM4 は開けない 相対のパスだと下地が見つからず全部の枠が空になる
+
+    空の書き出しを測ると「どの点を動かしても何も変わらない」と読めてしまう
+    """
+    monkeypatch.chdir(tmp_path)
+    work = tmp_path / "work"
+    (work / "images").mkdir(parents=True)
+    (work / "mesh-probe.mp4").write_bytes(b"")
+    (work / "mesh-report.json").write_text("{}", encoding="utf-8")
+    (work / "images" / "mesh-01.png").write_bytes(b"")
+    assert tool.command_mesh_build(SimpleNamespace(work=Path("work"))) == 0
+    out = capsys.readouterr().out
+    assert "mesh-probe.mp4" in out
+    assert "前の探りの書き出し" in out
+    raw = (work / "mesh-probe.ymmp").read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf")
+    items = json.loads(raw.decode("utf-8-sig"))["Timelines"][0]["Items"]
+    manifest = json.loads((work / "mesh-probe.json").read_text(encoding="utf-8"))
+    assert len(items) == len(manifest["slots"])
+    (image,) = {item["FilePath"] for item in items}
+    assert Path(image).is_absolute()
+    assert Path(image).is_file()
+    # 前の測り結果と並べた絵は捨てる 新しい枠の一覧に対応しない
+    assert not (work / "mesh-report.json").exists()
+    assert not (work / "images" / "mesh-01.png").exists()
+
+
+def _mesh_manifest_and_video(tool: ModuleType, work: Path, *, newer: int = 60) -> Path:
+    """枠の一覧と、中身の無い書き出しを置く 時刻の扱いは音の探りと同じ"""
+    manifest = work / "mesh-probe.json"
+    manifest.write_text(
+        json.dumps(tool.mesh_manifest(tool.build_mesh_slots(), work / "grid.png")),
+        encoding="utf-8",
+    )
+    video = work / "mesh-probe.mp4"
+    video.write_bytes(b"")
+    stamp = manifest.stat()
+    os.utime(video, (stamp.st_atime + newer, stamp.st_mtime + newer))
+    return video
+
+
+def test_measuring_the_mesh_before_the_export_explains_itself(
+    tool: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # 書き出しは手作業 まだ無いときに例外で落ちると、手順の誤りか道具の故障か分からない
+    arguments = SimpleNamespace(work=tmp_path)
+    assert tool.command_mesh_measure(arguments) == 0
+    assert "mesh-build" in capsys.readouterr().out
+    (tmp_path / "mesh-probe.json").write_text(
+        json.dumps(tool.mesh_manifest(tool.build_mesh_slots(), tmp_path / "grid.png")),
+        encoding="utf-8",
+    )
+    assert tool.command_mesh_measure(arguments) == 0
+    assert "まだ書き出されていません" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("newer", [-60, 0])
+def test_a_mesh_export_not_newer_than_the_probe_is_refused(
+    tool: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str], newer: int
+) -> None:
+    """探りを作り直した後の古い書き出しを測ると、別の点を動かした絵の表が出る
+
+    同じ時刻も断る 置き場によっては時刻が 2 秒刻みでしか残らない
+    """
+    _mesh_manifest_and_video(tool, tmp_path, newer=newer)
+    (tmp_path / "mesh-report.json").write_text("{}", encoding="utf-8")
+    assert tool.command_mesh_measure(SimpleNamespace(work=tmp_path)) == 0
+    assert "作り直す前の書き出し" in capsys.readouterr().out
+    assert not (tmp_path / "mesh-report.json").exists()
+
+
+def test_a_mesh_export_without_pictures_explains_itself(
+    tool: ModuleType,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 映像の道が無い書き出しで添字の例外に落ちると、書き出し直す案内が出ない
+    _mesh_manifest_and_video(tool, tmp_path)
+    monkeypatch.setattr(tool, "has_video_stream", lambda _video: False)
+    assert tool.command_mesh_measure(SimpleNamespace(work=tmp_path)) == 0
+    assert "映像の道がありません" in capsys.readouterr().out
+
+
+def test_ymm4_slots_come_back_in_manifest_order_though_read_in_time_order(
+    tool: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """動画は頭から順にしか読めない 一覧が時刻順でなくても、返す絵は一覧の順
+
+    時刻順のまま返すと、基準の絵と動かした絵を取り違え、差の重心を読み違える
+    """
+
+    def picture(value: int) -> Callable[[], np.ndarray]:
+        return lambda: np.full((1080, 1920, 3), value, dtype=np.uint8)
+
+    frames = [(index, picture(index)) for index in range(100)]
+    monkeypatch.setattr(tool, "_ymm4_frames", lambda _video: iter(frames))
+    entries = [{"start": 60, "length": 10}, {"start": 0, "length": 10}]
+    first, second = tool._read_ymm4_slots(Path("unused.mp4"), entries)
+    assert first is not None and second is not None
+    assert float(first[0, 0, 0]) == 65.0
+    assert float(second[0, 0, 0]) == 5.0
