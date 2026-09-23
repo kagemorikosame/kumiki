@@ -15,6 +15,15 @@ AviUtl の効果は、項目名を実物（AviUtl2 に作らせたエイリア�
 作業フォルダは既定で ``.work/aviutl-compare`` リポジトリには入れない
 （配布物の絵が入るため）
 
+合成フォント（``comfont.aux2``）を使うエイリアスは、プラグインの設定
+（``compositefont\\profiles.json``）が無いと本文をそのまま返し、書体の組み替えが
+起きない 比べる前に 2 つの副命令で下ごしらえする
+
+* ``profile`` 文字種ごとに書体をはっきり変えた見本の設定を**作業フォルダへ**書き、
+  AviUtl2 の置き場へ写す手順を出す 利用者の設定には書きに行かない
+* ``preview`` Sashimono 側の絵だけを描く ``--app-data`` に作業フォルダの
+  ``appdata`` を渡せば、利用者の設定に触れずに見本の設定で組ませられる
+
 YMM4 側の ``tools/ymm4_compare.py`` と同じ考え方 違うのは、AviUtl の
 プロジェクトが INI に似た文字の形なので、**エイリアスの本文をそのまま並べ直す**ところ
 値を書き戻さないので、写し間違いが比べる側に混ざらない
@@ -279,6 +288,176 @@ def command_build(arguments: argparse.Namespace) -> int:
     return 0
 
 
+#: 合成フォントの見本で文字種ごとに当てる書体と、その書体のファイル（Windows の Fonts）
+#:
+#: 組み替えが起きたことが絵で一目で分かるよう、隣り合う文字種は系統から変える
+#: （ひらがなは明朝、カタカナはメイリオ、漢字は MS ゴシック） Sashimono の既定の
+#: 書体（Yu Gothic UI）は使わない 組み替えが起きずに既定で描かれたときと
+#: 見分けが付かなくなる ファイル名はこの PC の Fonts で確かめた Windows 標準の物
+COMPOSITE_FONTS: tuple[tuple[str, str, str], ...] = (
+    ("western", "Times New Roman", "times.ttf"),
+    ("hiragana", "Yu Mincho", "yumin.ttf"),
+    ("katakana", "Meiryo", "meiryo.ttc"),
+    ("kanji", "MS Gothic", "msgothic.ttc"),
+    ("digit", "Consolas", "consola.ttf"),
+    ("symbol", "Segoe UI", "segoeui.ttf"),
+    ("other", "Arial", "arial.ttf"),
+)
+#: 見本のプロファイル名 配布エイリアスはどちらも ``profile="default"`` を引く
+COMPOSITE_PROFILE = "default"
+#: 利用者の AviUtl2 の置き場から見た、合成フォントの設定の道
+COMPOSITE_SETTINGS = Path("compositefont") / "profiles.json"
+
+
+def _adjustment(family: str) -> dict[str, object]:
+    """1 つの文字種の設定 項目は実物（comfont.aux2 v0.2.0）が受け付けた形のまま
+
+    大きさ・位置・字間は動かさない 書体と一緒に動かすと、絵の違いが書体から
+    来たのか大きさから来たのかを見分けられない
+    """
+    return {
+        "font_family": family,
+        "fallback_font_families": [],
+        "size_ratio": 1.0,
+        "baseline_shift_em": 0.0,
+        "tracking_adjust_em": 0.0,
+        "metric_unit": "percent",
+        "size_px": 0.0,
+        "baseline_shift_px": 0.0,
+        "tracking_adjust_px": 0.0,
+        "vertical_scale_ratio": 1.0,
+        "horizontal_scale_ratio": 1.0,
+    }
+
+
+def composite_profiles() -> dict[str, object]:
+    """合成フォントの見本の設定（``profiles.json`` の中身）"""
+    profile: dict[str, object] = {"name": COMPOSITE_PROFILE}
+    for key, family, _file in COMPOSITE_FONTS:
+        profile[key] = _adjustment(family)
+        profile[f"{key}_fallbacks"] = []
+    return {"schema_version": 1, "profiles": [profile]}
+
+
+def user_composite_settings() -> Path | None:
+    """利用者の AviUtl2 が読む合成フォントの設定の道 **読むだけで書かない**"""
+    program_data = os.environ.get("PROGRAMDATA")
+    if not program_data:
+        return None
+    return Path(program_data) / "aviutl2" / COMPOSITE_SETTINGS
+
+
+def missing_fonts() -> list[str]:
+    """見本に使う書体のうち、この PC の Fonts に無い物"""
+    windows = os.environ.get("WINDIR") or os.environ.get("SYSTEMROOT")
+    if not windows:
+        return [family for _key, family, _file in COMPOSITE_FONTS]
+    fonts = Path(windows) / "Fonts"
+    return [family for _key, family, file in COMPOSITE_FONTS if not (fonts / file).is_file()]
+
+
+def profile_guide(sample: Path, target: Path | None) -> list[str]:
+    """見本の設定を AviUtl2 の置き場へ写す手順 写すのは本人
+
+    道具が自分で置きに行かないのは、利用者が合成フォントのエディターで作った
+    設定を黙って上書きしうるため 控えを取るかどうかも本人が決める
+    """
+    lines = [f"見本の設定を書いた: {sample}"]
+    if target is None:
+        lines.append("PROGRAMDATA が無いので、AviUtl2 の置き場が分からない")
+        return lines
+    lines.append("AviUtl2 に同じ組み替えをさせるには、次を本人が手で行う")
+    lines.append("（AviUtl2 を開いていれば閉じてから 設定を読み直す時機は確かめていない）")
+    if target.exists():
+        lines.append(f"  既に {target} があるので、先に控えを取る")
+        lines.append(f'  Copy-Item "{target}" "{target}.bak"')
+    else:
+        lines.append(f"  {target} はまだ無い（置き場のフォルダから作る）")
+        lines.append(f'  New-Item -ItemType Directory -Force "{target.parent}"')
+    lines.append(f'  Copy-Item "{sample}" "{target}"')
+    return lines
+
+
+def command_profile(arguments: argparse.Namespace) -> int:
+    work: Path = arguments.work
+    sample = work / "appdata" / COMPOSITE_SETTINGS
+    sample.parent.mkdir(parents=True, exist_ok=True)
+    sample.write_text(
+        json.dumps(composite_profiles(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    for line in profile_guide(sample, user_composite_settings()):
+        print(line)
+    for family in missing_fonts():
+        print(f"  注意: {family} がこの PC の Fonts に無い 組み替えても既定の書体で描かれる")
+    print(f"Sashimono 側の絵は preview --app-data {sample.parent.parent} で描ける")
+    return 0
+
+
+def command_preview(arguments: argparse.Namespace) -> int:
+    """AviUtl2 の書き出しを待たずに、Sashimono 側の絵だけを描く"""
+    from sashimono.core.model import Project, ProjectSettings
+    from sashimono.core.timebase import FrameRate
+    from sashimono.engine.render import FrameRenderer
+
+    _use_app_data(arguments.app_data)
+    work: Path = arguments.work
+    files = [Path(item) for item in arguments.files] or default_files()
+    cases, skipped = build_cases(files)
+    if not cases:
+        print("描けるエイリアスがありません")
+        return 1
+    settings = ProjectSettings(
+        width=WIDTH, height=HEIGHT, frame_rate=FrameRate(FPS), sample_rate=AUDIO_RATE
+    )
+    target = work / "preview"
+    target.mkdir(parents=True, exist_ok=True)
+    report = CompatibilityReport()
+    renderer: FrameRenderer | None = None
+    try:
+        for case in cases:
+            objects = [
+                item
+                for obj in load_exo(Path(case.source)).objects
+                if (item := map_object(obj, settings.frame_rate, report=report)) is not None
+            ]
+            project = Project.create(settings)
+            for command in place(objects, project, at_frame=case.start):
+                project = command.apply(project)
+            if renderer is None:
+                renderer = FrameRenderer(project)
+            else:
+                renderer.set_project(project)
+            frames = case.sample_frames()
+            frame = frames[len(frames) // 2]
+            image = np.asarray(renderer.render(frame))[..., :3]
+            # 真っ黒を「描けた」と取り違えないよう、光っている画素を数えて出す
+            lit = int((image.max(axis=2) > 8).sum())
+            out = target / f"{case.name}.png"
+            _save_png(np.ascontiguousarray(image), out)
+            print(f"{case.name}: フレーム {frame} 光っている画素 {lit} → {out}")
+    finally:
+        if renderer is not None:
+            renderer.close()
+    for line in skipped:
+        print(f"  飛ばした: {line}")
+    for line in (*report.lines(), *global_report.lines()):
+        print(f"  記録: {line}")
+    return 0
+
+
+def _use_app_data(path: Path | None) -> None:
+    """汎用プラグインへ渡す置き場を差し替える 描き始める前に呼ぶ
+
+    プラグインは最初に読んだときの置き場を持ち続けるので、1 枚でも描いた後では遅い
+    """
+    if path is None:
+        return
+    from sashimono.compat.aviutl import plugin
+
+    plugin.set_app_data_path(path.resolve())
+    print(f"汎用プラグインへ渡す置き場: {path.resolve()}")
+
+
 def _shrink(image: np.ndarray) -> np.ndarray:
     """面積の平均で縮める 1920x1080 から 4 分の 1 ならちょうど割り切れる"""
     height, width = image.shape[:2]
@@ -319,6 +498,7 @@ def command_compare(arguments: argparse.Namespace) -> int:
     from sashimono.core.timebase import FrameRate
     from sashimono.engine.render import FrameRenderer
 
+    _use_app_data(arguments.app_data)
     work: Path = arguments.work
     manifest = json.loads((work / "manifest.json").read_text(encoding="utf-8"))
     video = work / "aviutl.mp4"
@@ -533,6 +713,22 @@ def main() -> int:
         "--blending", choices=("srgb", "linear"), default="srgb", help="半透明の重ね合わせ"
     )
     comparer.set_defaults(func=command_compare)
+
+    profiler = subparsers.add_parser("profile", help="合成フォントの見本の設定を作業フォルダへ書く")
+    profiler.set_defaults(func=command_profile)
+
+    previewer = subparsers.add_parser("preview", help="Sashimono 側の絵だけを描く")
+    previewer.add_argument("files", nargs="*", help="エイリアス 省略すると手元のものを全部")
+    previewer.set_defaults(func=command_preview)
+
+    # 利用者の設定に触れずに合成フォントを組ませるための口 省略すると利用者の置き場
+    for sub in (comparer, previewer):
+        sub.add_argument(
+            "--app-data",
+            type=Path,
+            default=None,
+            help="汎用プラグインへ渡す置き場（profile が書いた appdata）",
+        )
 
     arguments = parser.parse_args()
     result: int = arguments.func(arguments)
