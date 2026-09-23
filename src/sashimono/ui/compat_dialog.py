@@ -31,7 +31,14 @@ from sashimono.compat.aviutl.catalog import script_catalog
 from sashimono.compat.aviutl.report import CompatibilityReport, global_report
 from sashimono.ui.theme import Colors
 
-__all__ = ["CompatibilityDialog", "mask_user_folders", "report_text", "short_path", "user_folders"]
+__all__ = [
+    "CompatibilityDialog",
+    "mask_user_folders",
+    "report_text",
+    "root_markers",
+    "short_path",
+    "user_folders",
+]
 
 #: 写した文面で、本人のホームフォルダの代わりに置く文字
 #: 失敗の記録には OS の文言がそのまま入り、ファイルの場所（ユーザー名を含む）が混じる
@@ -52,6 +59,10 @@ _FOLDER_VARIABLES = (
     ("XDG_STATE_HOME", "$XDG_STATE_HOME"),
     ("XDG_CACHE_HOME", "$XDG_CACHE_HOME"),
     ("XDG_DATA_HOME", "$XDG_DATA_HOME"),
+    # 利用者名は入らないが名前で置く AviUtl2 の Script（``%PROGRAMDATA%\aviutl2\Script``）
+    # は既定の探索先で、伏せないと探索先の印（``<探索先1>``）になり、AviUtl2 の
+    # スクリプトを見に行っているかが報告から読めなくなる
+    ("PROGRAMDATA", "%PROGRAMDATA%"),
 )
 
 #: 区切りとみなす文字 Windows は ``/`` も ``\`` も受け付け、OS の文言や
@@ -136,24 +147,56 @@ def mask_user_folders(text: str, folders: Sequence[tuple[str, str]]) -> str:
     return text
 
 
+def root_markers(
+    roots: Sequence[Path | str], folders: Sequence[tuple[str, str]]
+) -> list[tuple[str, str]]:
+    r"""探索先のうち、伏せる置き場の外にある物と、その代わりに置く印（``<探索先1>`` など）
+
+    探索先は本人が決めた場所で、``D:\<名前>\aviutl\Script`` のように利用者名を
+    含みうる 読めなかったスクリプトの記録には OS の文言ごと絶対パスが入るので、
+    ホームや設定の置き場の外にある探索先は、それだけで名前が漏れる道になる
+
+    伏せる置き場の下にある探索先（``%APPDATA%\Sashimono\scripts`` など）は印にしない
+    そちらの名前で伏せたほうが、どの置き場の話かが報告から読める
+    番号は画面の「探索先」の並びの順 どの印がどの場所かは画面にだけ出し、貼る文には出さない
+    """
+    markers: list[tuple[str, str]] = []
+    for root in roots:
+        text = str(root)
+        # 1 段だけの相対の名前（写真の道具が出す ``scripts`` など）は場所を明かさない
+        # 印にすると、文面の中のただの単語まで置き換わる（伏せる側も 1 段は飛ばす）
+        if len([part for part in re.split(_SEPARATORS, text) if part]) < 2:
+            continue
+        if mask_user_folders(text, folders) != text:
+            continue
+        markers.append((text, f"<探索先{len(markers) + 1}>"))
+    return markers
+
+
 def report_text(
     report: CompatibilityReport,
     scripts: int,
     folders: Sequence[tuple[str, str]] | None = None,
+    roots: Sequence[Path | str] = (),
 ) -> str:
     """不具合の報告に貼る文面 版と、画面に出ている記録を全部入れる
 
     版を頭に入れるのは、同じ記録でも版によって直っているかが変わるため
     貼る人に版を別に調べさせると、欄が空のまま届く
-    探索先（フォルダの場所）は入れない 原因を追うのに要らず、名前が出るだけになる
+    探索先は伏せた形で入れる AviUtl2 の Script を見に行っているかどうかは、
+    読めない原因を追うのに要る
     """
+    hidden = list(folders if folders is not None else user_folders())
+    # 伏せる置き場と同じ仕組みに載せる 長い方から伏せる順は mask_user_folders が守る
+    hidden.extend(root_markers(roots, hidden))
     lines = [
         f"Sashimono Edit {__version__} 互換性レポート",
         report.summary(),
         f"読み込み済みのスクリプト {scripts} 本",
+        f"探索先: {'、'.join(str(root) for root in roots) or '（設定なし）'}",
         *report.lines(),
     ]
-    return mask_user_folders("\n".join(lines), folders if folders is not None else user_folders())
+    return mask_user_folders("\n".join(lines), hidden)
 
 
 class CompatibilityDialog(QDialog):
@@ -206,8 +249,16 @@ class CompatibilityDialog(QDialog):
         entries = catalog.all()
         self._summary.setText(self._report.summary())
 
-        roots = "、".join(str(root) for root in catalog.roots) or "（設定なし）"
-        self._scripts.setText(f"スクリプト {len(entries)} 本を読み込み済み\n探索先: {roots}")
+        # 貼る文で印に置き換える探索先は、画面では印を添えて出す 報告を受けた側が
+        # 「<探索先1> が何か」を聞いたときに、本人が画面で答えられるように
+        markers = dict(root_markers(catalog.roots, user_folders()))
+        roots = "、".join(
+            f"{markers[str(root)]} {root}" if str(root) in markers else str(root)
+            for root in catalog.roots
+        )
+        self._scripts.setText(
+            f"スクリプト {len(entries)} 本を読み込み済み\n探索先: {roots or '（設定なし）'}"
+        )
 
         self._list.clear()
         lines = self._report.lines()
@@ -216,7 +267,8 @@ class CompatibilityDialog(QDialog):
     def copy_to_clipboard(self) -> None:
         """画面の記録を、報告に貼れる形でクリップボードへ写す"""
         clipboard = QApplication.clipboard()
-        clipboard.setText(report_text(self._report, len(script_catalog().all())))
+        catalog = script_catalog()
+        clipboard.setText(report_text(self._report, len(catalog.all()), roots=catalog.roots))
 
     def _clear(self) -> None:
         self._report.clear()

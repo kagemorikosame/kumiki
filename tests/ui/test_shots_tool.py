@@ -12,6 +12,8 @@ from __future__ import annotations
 import importlib.util
 import sys
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType
 
@@ -22,6 +24,7 @@ from PySide6.QtWidgets import QApplication, QLabel, QTreeWidget, QWidget
 
 from sashimono.compat.aviutl.catalog import script_catalog, set_script_catalog
 from sashimono.compat.catalog import TemplateCatalog
+from sashimono.effects.definition import registry
 from tests.media_fixtures import libx264_available
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -176,17 +179,52 @@ class TestCompatibilityShot:
         context = shots.Context(
             media=None, alias_root=None, ymm4_root=None, script_root=tmp_path / "scripts"
         )
-        # 写真の道具は一覧をアプリ全体の物と差し替える 後の試験へ持ち越さない
-        before = script_catalog()
-        dialog = shots.compatibility_dialog(context)
-        try:
-            shown = "\n".join(label.text() for label in dialog.findChildren(QLabel))
-        finally:
-            dialog.close()
-            set_script_catalog(before)
+        with _restored_scripts():
+            dialog = shots.compatibility_dialog(context)
+            try:
+                shown = "\n".join(label.text() for label in dialog.findChildren(QLabel))
+            finally:
+                dialog.close()
         assert str(tmp_path) not in shown
         assert str(Path.home()) not in shown
         assert "スクリプト 1 本" in shown
+
+    def test_the_report_shot_leaves_no_sample_behind(
+        self, shots: ModuleType, qt_application: QApplication, tmp_path: Path
+    ) -> None:
+        """見本のスクリプトの定義を登録簿に残さない
+
+        残すと、同じモジュールで後に走る試験が走る順番しだいで見本を見てしまう
+        （``forget_scripts`` が片付けるのはモジュールの終わり）
+        """
+        del qt_application
+        context = shots.Context(
+            media=None, alias_root=None, ymm4_root=None, script_root=tmp_path / "scripts"
+        )
+        kinds = {definition.kind for definition in registry.all()}
+        with _restored_scripts():
+            shots.compatibility_dialog(context).close()
+        assert {definition.kind for definition in registry.all()} == kinds
+
+
+@contextmanager
+def _restored_scripts() -> Iterator[None]:
+    """写真の道具が差し替える物を、試験の前の形へ戻す
+
+    道具はアプリ全体の一覧を見本の物と差し替え、見本のスクリプトを登録簿に足す
+    一覧を戻すだけでは足した定義が残るので、増えた種類も外す
+    モジュールの終わりにまとめて外す ``forget_scripts`` を待つと、同じモジュールの
+    後の試験が見本を見る
+    """
+    catalog = script_catalog()
+    kinds = {definition.kind for definition in registry.all()}
+    try:
+        yield
+    finally:
+        set_script_catalog(catalog)
+        for definition in registry.all():
+            if definition.kind not in kinds:
+                registry.unregister(definition.kind)
 
 
 @pytest.mark.usefixtures("gpu")

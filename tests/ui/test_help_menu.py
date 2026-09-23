@@ -17,6 +17,7 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QApplication
 
 from sashimono import __version__
+from sashimono.compat.aviutl.catalog import ScriptCatalog, script_catalog, set_script_catalog
 from sashimono.compat.aviutl.report import CompatibilityReport
 from sashimono.core import userdirs
 from sashimono.links import MANUAL_URL, REPORT_URL
@@ -230,6 +231,47 @@ class TestCompatibilityCopy:
         assert "読み込み済みのスクリプト 11 本" in lines
         assert "obj.getpixeldata — 2 回" in lines
         assert "--dialog 謎の欄 — 1 回" in lines
+
+    def test_a_script_folder_outside_the_home_is_hidden(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # 探索先は本人が決めた場所で、利用者名を含みうる 読めなかったスクリプトの
+        # 記録には絶対パスが入るので、ホームの外の探索先はそれだけで名前が漏れる
+        _clear_folder_variables(monkeypatch)
+        outside = r"D:\kagemori\aviutl\Script"
+        report = CompatibilityReport()
+        report.note_failure("ゆらゆら.anm2", rf"開けない: [Errno 13] {outside}\ゆらゆら.anm2")
+        text = report_text(report, 1, user_folders(tmp_path), roots=[outside])
+        assert "kagemori" not in text.lower()
+        assert r"ゆらゆら.anm2: 開けない: [Errno 13] <探索先1>\ゆらゆら.anm2" in text
+        assert "探索先: <探索先1>" in text
+
+    def test_a_script_folder_under_the_settings_keeps_its_name(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # 設定の置き場の下の探索先は、印ではなく %APPDATA% の名前で伏せる
+        # 印にすると、どの置き場の話なのかが報告から読めなくなる
+        _clear_folder_variables(monkeypatch)
+        monkeypatch.setenv("APPDATA", r"C:\Users\kagemori\AppData\Roaming")
+        inside = r"C:\Users\kagemori\AppData\Roaming\Sashimono\scripts"
+        text = report_text(CompatibilityReport(), 0, user_folders(tmp_path), roots=[inside])
+        assert r"探索先: %APPDATA%\Sashimono\scripts" in text
+        assert "<探索先" not in text
+
+    def test_the_dialog_tells_which_marker_is_which(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # 貼った文の印が何を指すかは、聞かれたときに本人が画面で答えられるようにする
+        _clear_folder_variables(monkeypatch)
+        outside = Path(r"D:\kagemori\aviutl\Script")
+        before = script_catalog()
+        set_script_catalog(ScriptCatalog(roots=(outside,)))
+        dialog = CompatibilityDialog(CompatibilityReport())
+        try:
+            assert f"<探索先1> {outside}" in dialog._scripts.text()
+            dialog.copy_to_clipboard()
+            assert str(outside) not in QApplication.clipboard().text()
+        finally:
+            dialog.close()
+            set_script_catalog(before)
 
     def test_the_button_puts_the_text_on_the_clipboard(self, qt_application: QApplication) -> None:
         # 壊れると、一覧を 1 行ずつしか選べず、報告に貼れない
