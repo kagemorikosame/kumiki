@@ -11,6 +11,7 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
+import av.error
 import numpy as np
 import pytest
 
@@ -343,6 +344,27 @@ class TestAudioDecoder:
             origin = decoder._origin
         # 0.1 秒の所へ飛ぶなら、余らせる 0.25 秒を引いた原点の 0.15 秒手前から
         assert seeks == [int((origin + Fraction(1, 10) - Fraction(1, 4)) / time_base)]
+
+    def test_a_decode_failure_midway_is_remembered(self, sample_av: SampleMedia) -> None:
+        """途中で復号に失敗したら、無音で返しつつ理由を覚える
+
+        覚えないと終わりと見分けが付かず、読んだ音を丸ごと使う字幕起こしが、欠けた音を
+        そのまま使って成功したように見える
+        """
+        with AudioDecoder(sample_av.path, sample_rate=48000) as decoder:
+            real = decoder._frames
+
+            def breaking() -> Any:
+                yield next(real)
+                raise av.error.InvalidDataError(1094995529, "Invalid data")
+
+            decoder._frames = breaking()
+            assert decoder.decode_error is None
+            sound = decoder.read(0, 48000)
+            assert decoder.decode_error is not None
+            assert "Invalid data" in decoder.decode_error
+        # 失敗した所から先は無音
+        assert float(np.abs(sound[24000:]).max()) == 0.0
 
     def test_before_the_start_is_silent(self, sample_av: SampleMedia) -> None:
         with AudioDecoder(sample_av.path, sample_rate=48000) as decoder:

@@ -177,6 +177,14 @@ def _media_audio(source: Path, should_cancel: ShouldCancel | None) -> np.ndarray
                         return None
                     count = min(chunk, total - start)
                     audio[start : start + count] = decoder.read(start, count)[:, 0]
+                    # 壊れた所から先は無音で返ってくる そのまま渡すと、そこから先の字幕が
+                    # 欠けたのに起こしは成功したように見える
+                    if decoder.decode_error is not None:
+                        seconds = start / WHISPER_SAMPLE_RATE
+                        raise AsrError(
+                            f"音声の {seconds:.0f} 秒から先に読めない所がある: "
+                            f"{decoder.decode_error}"
+                        )
     except ProbeError as exc:
         raise AsrError(f"音声を読めない: {exc}") from exc
     except (MemoryError, ValueError) as exc:

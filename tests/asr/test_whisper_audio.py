@@ -225,3 +225,12 @@ def test_running_out_of_memory_while_reading_fails_as_a_transcription_error(
     monkeypatch.setattr(AudioDecoder, "read", exhausted)
     with pytest.raises(AsrError, match="メモリが足りない"):
         _transcribe(sample_av.path, monkeypatch)
+
+
+def test_a_broken_sound_fails_instead_of_passing_silence(
+    sample_av: SampleMedia, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 壊れた所から先は無音で返ってくる そのまま渡すと、字幕が欠けたのに成功したように見える
+    monkeypatch.setattr(AudioDecoder, "decode_error", property(lambda self: "Invalid data"))
+    with pytest.raises(AsrError, match="読めない所がある"):
+        _transcribe(sample_av.path, monkeypatch)
