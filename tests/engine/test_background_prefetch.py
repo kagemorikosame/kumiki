@@ -26,6 +26,7 @@ from sashimono.core.model import (
     Clip,
     GeneratedSource,
     Keyframe,
+    MediaId,
     Project,
     ProjectSettings,
     Track,
@@ -431,6 +432,31 @@ class TestWhenItRuns:
             _wait_until(lambda: len(background.cached) == 6)
             background.set_budget(FRAME_BYTES * 2, 0)
             _wait_until(lambda: background.cached == frozenset({0, 1}))
+        finally:
+            background.close()
+
+    def test_proxies_dropped_before_a_failure_still_reach_the_screen(
+        self, screen_context: OffscreenGLContext, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """描けなかったコマの途中で捨てた控えも、画面の側へ渡す（#127 のレビュー）
+
+        渡さないと、壊れた控えを作り直す頼みが出ず、画面の側は同じ控えを使い続ける
+        """
+        dropped = MediaId("broken-proxy")
+
+        def failing(renderer: FrameRenderer, frame: int) -> None:
+            if threading.current_thread() is threading.main_thread():
+                return
+            renderer._discarded.add(dropped)
+            raise RuntimeError("控えが壊れていた")
+
+        monkeypatch.setattr(FrameRenderer, "compose", failing)
+        background = _start(_gray_project(), screen_context, 2)
+        reasons: list[str] = []
+        background.failed.connect(lambda _, reason: reasons.append(reason))
+        try:
+            _wait_until(lambda: bool(reasons))
+            assert background.take_discarded() == {dropped}
         finally:
             background.close()
 

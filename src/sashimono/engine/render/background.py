@@ -398,6 +398,9 @@ class _Worker(QThread):
             except Exception as exc:
                 # 先読みは無くても絵は出る 止めて伝えるだけにする
                 self._set_rendering(None)
+                # 失敗する前に捨てた控えも画面の側へ渡す 渡さないと、壊れた控えを
+                # 作り直す頼みが出ず、画面の側は同じ控えを使い続ける
+                self._collect_discarded(renderer)
                 self._halted = True
                 self._failed(f"先読みを止めた: {exc}")
                 continue
