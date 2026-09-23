@@ -23,7 +23,7 @@ import numpy as np
 import pytest
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -228,8 +228,10 @@ def test_measuring_before_the_export_explains_itself_instead_of_crashing(
     assert "まだ書き出されていません" in capsys.readouterr().out
 
 
-def _manifest_and_video(tool: ModuleType, work: Path, *, newer: int = 60) -> Path:
-    """枠の一覧と、中身の無い書き出しを置く
+def _manifest_and_video(
+    tool: ModuleType, work: Path, *, newer: int = 60, content: bytes = b""
+) -> Path:
+    """枠の一覧と、書き出し（既定は中身の無いもの）を置く
 
     書き出しの時刻は ``newer`` 秒だけ先にする 置き場によっては時刻が 2 秒刻みで
     しか残らず、続けて書くと同じ時刻になって「古い書き出し」と見なされる
@@ -238,7 +240,7 @@ def _manifest_and_video(tool: ModuleType, work: Path, *, newer: int = 60) -> Pat
     manifest = work / "audio-probe.json"
     manifest.write_text(json.dumps(tool.audio_manifest(slots, work / "tone.wav")), encoding="utf-8")
     video = work / "audio-probe.mp4"
-    video.write_bytes(b"")
+    video.write_bytes(content)
     stamp = manifest.stat()
     os.utime(video, (stamp.st_atime + newer, stamp.st_mtime + newer))
     return video
@@ -516,15 +518,17 @@ def test_the_mesh_probe_project_has_the_bom_and_an_absolute_image_path(
     assert not (work / "images" / "mesh-01.png").exists()
 
 
-def _mesh_manifest_and_video(tool: ModuleType, work: Path, *, newer: int = 60) -> Path:
-    """枠の一覧と、中身の無い書き出しを置く 時刻の扱いは音の探りと同じ"""
+def _mesh_manifest_and_video(
+    tool: ModuleType, work: Path, *, newer: int = 60, content: bytes = b""
+) -> Path:
+    """枠の一覧と、書き出し（既定は中身の無いもの）を置く 時刻の扱いは音の探りと同じ"""
     manifest = work / "mesh-probe.json"
     manifest.write_text(
         json.dumps(tool.mesh_manifest(tool.build_mesh_slots(), work / "grid.png")),
         encoding="utf-8",
     )
     video = work / "mesh-probe.mp4"
-    video.write_bytes(b"")
+    video.write_bytes(content)
     stamp = manifest.stat()
     os.utime(video, (stamp.st_atime + newer, stamp.st_mtime + newer))
     return video
@@ -571,6 +575,59 @@ def test_a_mesh_export_without_pictures_explains_itself(
     monkeypatch.setattr(tool, "has_video_stream", lambda _video: False)
     assert tool.command_mesh_measure(SimpleNamespace(work=tmp_path)) == 0
     assert "映像の道がありません" in capsys.readouterr().out
+
+
+#: 書き出し中や中断した後の mp4 に似せた、頭の読めないバイト列
+#: ``moov`` が無いので ``av.open`` が ``InvalidDataError`` を投げる
+UNFINISHED_EXPORT = b"\x00\x00\x00\x18ftypisom" + b"\xde\xad\xbe\xef" * 64
+
+
+def test_an_unfinished_mesh_export_explains_itself_instead_of_a_traceback(
+    tool: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """書き出しの途中で走らせると、時刻の検査は通り ``av.open`` が例外を投げる
+
+    捕まえないと案内の無い traceback で終わり、書き出しを待てばよいのか
+    道具が壊れたのか分からない
+    """
+    _mesh_manifest_and_video(tool, tmp_path, content=UNFINISHED_EXPORT)
+    assert tool.command_mesh_measure(SimpleNamespace(work=tmp_path)) == 0
+    assert "書き出しが終わっていないか壊れています" in capsys.readouterr().out
+    assert not (tmp_path / "mesh-report.json").exists()
+
+
+def test_a_mesh_export_that_breaks_partway_explains_itself(
+    tool: ModuleType,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """頭は開けても途中で切れた書き出しは、フレームを読み進めた所で復号が失敗する
+
+    開けるかどうかだけを守っても、そこで traceback になる
+    """
+    import av.error
+
+    def broken(_video: Path) -> Iterator[tuple[int, Callable[[], np.ndarray]]]:
+        yield 0, lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        raise av.error.InvalidDataError(1094995529, "Invalid data found when processing input")
+
+    _mesh_manifest_and_video(tool, tmp_path)
+    monkeypatch.setattr(tool, "has_video_stream", lambda _video: True)
+    monkeypatch.setattr(tool, "_ymm4_frames", broken)
+    assert tool.command_mesh_measure(SimpleNamespace(work=tmp_path)) == 0
+    assert "書き出しが終わっていないか壊れています" in capsys.readouterr().out
+
+
+def test_an_unfinished_audio_export_explains_itself_instead_of_a_traceback(
+    tool: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """音の探りも同じ作り 書き出しの途中の mp4 で ``decode_audio`` が例外を投げる"""
+    _manifest_and_video(tool, tmp_path, content=UNFINISHED_EXPORT)
+    (tmp_path / "audio-report.json").write_text("{}", encoding="utf-8")
+    assert tool.command_audio_measure(SimpleNamespace(work=tmp_path)) == 0
+    assert "書き出しが終わっていないか壊れています" in capsys.readouterr().out
+    assert not (tmp_path / "audio-report.json").exists()
 
 
 def test_ymm4_slots_come_back_in_manifest_order_though_read_in_time_order(

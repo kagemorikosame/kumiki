@@ -712,6 +712,24 @@ def sample_index(
     return round(seconds * rate)
 
 
+def unreadable_export_errors() -> tuple[type[Exception], ...]:
+    """書き出しを開けない・読み切れないときに PyAV が投げる例外
+
+    YMM4 が書き出している最中や中断した後の mp4 は ``moov`` がまだ無く、
+    ``av.open`` が ``InvalidDataError``（``FFmpegError`` の一種）を投げる
+    時刻の検査は通ってしまうので、捕まえないと案内の無い traceback で終わる
+    ``probe_media`` と同じ組み合わせにする
+    """
+    import av.error
+
+    return (av.error.FFmpegError, OSError)
+
+
+def _explain_unreadable(video: Path, project: Path) -> None:
+    print(f"{video} を読めません 書き出しが終わっていないか壊れています")
+    print(f"YMM4 で {project} の書き出しを終えてから走らせてください")
+
+
 def decode_audio(video: Path) -> tuple[np.ndarray, int] | None:
     """書き出した動画の音を ``(2, サンプル数)`` の配列と標本化周波数で返す
 
@@ -850,7 +868,11 @@ def command_audio_measure(arguments: argparse.Namespace) -> int:
         print(f"YMM4 で {work / 'audio-probe.ymmp'} を開き直し、書き出してから走らせてください")
         return 0
 
-    decoded = decode_audio(video)
+    try:
+        decoded = decode_audio(video)
+    except unreadable_export_errors():
+        _explain_unreadable(video, work / "audio-probe.ymmp")
+        return 0
     if decoded is None:
         print(f"{video} に音の道がありません 音が入る形式で書き出してください")
         return 0
@@ -1313,13 +1335,18 @@ def command_mesh_measure(arguments: argparse.Namespace) -> int:
         print(f"{video} は探りを作り直す前の書き出しです")
         print(f"YMM4 で {work / 'mesh-probe.ymmp'} を開き直し、書き出してから走らせてください")
         return 0
-    if not has_video_stream(video):
-        print(f"{video} に映像の道がありません 映像が入る形式で書き出してください")
-        return 0
-
     entries: list[dict[str, Any]] = manifest["slots"]
     threshold = float(manifest.get("threshold", MESH_THRESHOLD))
-    theirs = _read_ymm4_slots(video, entries)
+    try:
+        if not has_video_stream(video):
+            print(f"{video} に映像の道がありません 映像が入る形式で書き出してください")
+            return 0
+        # 頭は開けても途中で切れた書き出しは、読み進めた所で復号が失敗する
+        # 開けるかどうかだけを見ても、その穴は塞がらない
+        theirs = _read_ymm4_slots(video, entries)
+    except unreadable_export_errors():
+        _explain_unreadable(video, work / "mesh-probe.ymmp")
+        return 0
     ours = _render_mesh_slots(entries)
     images = work / "images"
     images.mkdir(exist_ok=True)
