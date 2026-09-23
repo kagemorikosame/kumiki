@@ -72,10 +72,12 @@ class TestFontNames:
         assert aviutl_font_family("ＭＳ ゴシック", japanese=True) == "ＭＳ ゴシック"
 
     def test_fonts_with_only_an_english_name_are_found_by_it(self) -> None:
+        # 日本語の名前が無い書体まで既定の書体へ落とすと、Arial の字幕が Yu Gothic UI で出る
         assert aviutl_font_family("Arial", japanese=True) == "Arial"
         assert aviutl_font_family("Yu Gothic UI", japanese=True) == "Yu Gothic UI"
 
     def test_an_unknown_name_falls_back_to_the_default(self) -> None:
+        # Qt が選ぶ代わりの書体をそのまま使うと、AviUtl2 の既定の書体と送り幅も行の高さも違う
         assert aviutl_font_family("存在しない書体", japanese=True) == "Yu Gothic UI"
 
     def test_the_object_font_follows_the_same_rule(self) -> None:

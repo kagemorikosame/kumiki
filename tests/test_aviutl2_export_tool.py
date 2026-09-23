@@ -78,6 +78,8 @@ class TestFrames:
         assert tool.project_frames(header) == 424
 
     def test_an_empty_project_has_no_frames(self, tool: ModuleType) -> None:
+        # 1 枚以上と数えると、何も書き出されないのに AviUtl2 を起こし、来ない PNG を
+        # 待ち時間いっぱいまで待つ 0 枚なら起こす前に断る
         assert tool.project_frames("[project]\nversion=2010601\n") == 0
 
 
@@ -142,6 +144,8 @@ class TestOutput:
         assert chosen.name == "aviutl.sashimono-bbbbbbbb.part"
 
     def test_publish_renames_the_partial_folder(self, tool: ModuleType, tmp_path: Path) -> None:
+        # 名前を変えられないと、書き終えた PNG が一時のフォルダに残り、compare が
+        # aviutl フォルダに絵を見つけられない 空の出力のフォルダが邪魔をしてもいけない
         partial = tmp_path / "aviutl.sashimono-0123abcd.part"
         partial.mkdir()
         (partial / "frame000.png").write_bytes(b"png")
@@ -333,6 +337,8 @@ class TestProbes:
             assert document.objects
 
     def test_the_blue_picture_is_one_blue_pixel(self, probes: ModuleType, tmp_path: Path) -> None:
+        # 青の 1 画素でないと、字（赤の成分が 255）と文字の枠（赤の成分が 0）を赤の成分で
+        # 分けられず、行の高さと枠の余白を AviUtl2 の絵から読めない
         from PySide6.QtGui import QImage
 
         target = tmp_path / "blue.png"

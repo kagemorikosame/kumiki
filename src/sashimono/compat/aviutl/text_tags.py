@@ -145,6 +145,9 @@ def _apply(
             return None
         return replace(style, color=color, edge=edge)
     if whole == "<s>":
+        # 測ったのは設定欄の書体のまま <s80,メイリオ> を戻した所だけ（見本 tag11 3 文字目は
+        # 設定欄の Arial に戻った） <@書体> の後の <s> がどの書体へ戻るか（設定欄か、<s> の
+        # 前の書体か）は測っていない 推測で前の書体を覚える作りにはしない
         return replace(style, size=None, font=None)
     value, font = match.group(1), match.group(2)
     if (match.group(3) or "").strip(", "):

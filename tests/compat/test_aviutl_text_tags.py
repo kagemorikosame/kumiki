@@ -89,6 +89,7 @@ class TestSize:
         assert line[0][1].size == 1.0
 
     def test_words_starting_with_s_are_not_tags(self) -> None:
+        # <s の後ろを緩く読むと <span> が大きさのタグとして消え、本文の字が欠ける
         (line,) = runs("<span>x")
         assert line == [("<span>x", TextStyle())]
 
@@ -110,6 +111,8 @@ class TestColor:
         assert line[1][1].color == "ff0000"
 
     def test_an_unreadable_colour_stays_as_text(self) -> None:
+        # 読めない色を黙って捨てると、描けていない指定が画面から消えて気付けない
+        # 白へ倒すと、元の色のつもりの字が白で出る
         (line,) = runs("A<#zzz>B")
         assert [part for part, _style in line] == ["A<#zzz>B"]
 

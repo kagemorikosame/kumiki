@@ -341,8 +341,8 @@ def _draw_text(
         tagged = _revealed_lines(parse_tags(raw, float(size)), values)
         if not any(line.text for line in tagged):
             return None
-        centre_x = width / 2.0 + float(values.get("pos_x", 0.0))  # type: ignore[arg-type]
-        centre_y = height / 2.0 - float(values.get("pos_y", 0.0))  # type: ignore[arg-type]
+        centre_x = width / 2.0 + _number(values, "pos_x", 0.0)
+        centre_y = height / 2.0 - _number(values, "pos_y", 0.0)
         family = aviutl_font_family(str(values.get("font", AVIUTL_DEFAULT_FONT)))
         groups, framed = _aviutl_lines(tagged, family, size, bold, values, centre_x, centre_y)
         _paint_groups(painter, groups, values, width, height)
@@ -528,8 +528,8 @@ def _aviutl_lines(
     - 文字の無い行は、その行の終わりの書体と大きさの行送り
     - 送り幅は字ごとにその字の書体と大きさで測る
     """
-    letter_spacing = float(values.get("letter_spacing", 0.0))  # type: ignore[arg-type]
-    line_spacing = float(values.get("line_spacing", 0.0))  # type: ignore[arg-type]
+    letter_spacing = _number(values, "letter_spacing", 0.0)
+    line_spacing = _number(values, "line_spacing", 0.0)
     italic = bool(values.get("italic", False))
     measured: dict[tuple[str, int], tuple[QFont, QFontMetricsF, float]] = {}
 
@@ -599,7 +599,7 @@ def _revealed_lines(lines: list[TaggedLine], values: dict[str, object]) -> list[
     切れ目の扱いも :func:`_revealed` と同じにする 改行はいつでも通し、出す文字が尽きた後に
     次の字に当たった所で止める 行末でちょうど尽きると、次の行が空の行として 1 つ残る
     """
-    ratio = float(values.get("reveal", 100.0)) / 100.0  # type: ignore[arg-type]
+    ratio = _number(values, "reveal", 100.0) / 100.0
     if ratio >= 1.0:
         return lines
     if ratio <= 0.0:
