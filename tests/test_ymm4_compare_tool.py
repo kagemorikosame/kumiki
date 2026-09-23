@@ -1264,3 +1264,19 @@ def test_the_old_audio_rows_carry_no_guess(
     ]
     tool._print_audio_rows(rows)
     assert "新しい版の形" in capsys.readouterr().out
+
+
+def test_the_moving_slot_also_lists_the_reading_that_matched_ymm4(tool: ModuleType) -> None:
+    """動く PlaybackRate2 を測ると、頭が PlaybackRate・終わりが PlaybackRate2 の最後の
+    直線に合った（2026-09-23） 予想に並べないと、次に測る人が表から読み取れない
+
+    1 枠からの読みなので、止まった値の枠には足さない（足すと 2 つの予想の間の値を名指す）
+    """
+    length, last = tool.RATE_SLOT, 400
+    entry = {"length": length, "rate": 100.0, "rate2": [50.0, 200.0]}
+    expectations = tool.rate_expectations(entry)
+    assert expectations[tool.HEAD_TO_LAST][:3] == pytest.approx([1.08, 1.25, 1.42], abs=0.01)
+    windows = tool.window_slopes(_accumulated((100.0, 200.0), length, last), last)
+    assert tool.nearer_rate(windows, expectations)[0] == tool.HEAD_TO_LAST
+    still = tool.rate_expectations({"length": length, "rate": 100.0, "rate2": [50.0]})
+    assert tool.HEAD_TO_LAST not in still

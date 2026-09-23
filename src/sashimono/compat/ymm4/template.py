@@ -864,10 +864,21 @@ def _playback_rate(
     新しい版の書き出しは、ほかに動く値の ``PlaybackRate2`` と、音の速さの変え方
     ``PlaybackRateAudioProcessingMode`` も持つ（実物の音を持つアイテム 138 個は
     どれも ``Resampling``、``PlaybackRate2`` は動かず ``PlaybackRate`` と同じ値だった）
-    読むのは ``PlaybackRate`` のまま 測ったとき YMM4 4.56.1.1 は ``PlaybackRate``
-    だけのアイテムで速さを変えた 2 つが食い違う・``PlaybackRate2`` が動く・
-    ``Resampling`` 以外（高さを変えない変え方かもしれない）は、どちらが効くのか
-    測っていないので数えて残す
+    2 つをわざと食い違わせて YMM4 に書き出させると（2026-09-23 YMM4 4.56.1.1
+    ``tools/ymm4_compare.py`` の ``video-rate-build`` と ``audio-build``）、絵も音も
+    **止まった値が食い違うときは ``PlaybackRate`` が効いた**ので、読むのは
+    ``PlaybackRate`` のままにして、食い違いは数えない
+
+    ``PlaybackRate2`` が動くと、YMM4 の絵の速さは途中で変わった（頭が ``PlaybackRate``・
+    終わりが ``PlaybackRate2`` の最後の値の直線と読める 1 つの枠からの読みなので
+    決め打ちしない 詳しくは docs/development.md） こちらの ``speed`` は動かせないので、
+    頭の値（``PlaybackRate``）で置いて、動く速さは写せないと数えて残す
+
+    ``Sola`` は高さを保って長さだけを変える変え方だった（50 で 3.97 秒・200 で 1.00 秒、
+    どちらも 440Hz のまま） こちらの ``speed`` はミキサーの線形の並べ直しだけで、
+    高さを保つ変え方を持たないので、長さは ``speed`` で写し、高さも変わることを
+    数えて残す 列挙の値は本体の DLL で ``Resampling`` と ``Sola`` の 2 つだけ
+    それ以外の値は、まだ見ていない変え方として数えて残す
     """
     if name not in _SOUND_ITEMS:
         return Fraction(1), False
@@ -890,13 +901,21 @@ def _playback_rate(
     if newer is not None and not _readable_number(newer):
         log.note_missing(f"YMM4 の再生速度（PlaybackRate2）が読めない値: {newer!r}")
     elif newer is not None:
+        # 止まった値の食い違いは見ない YMM4 は PlaybackRate を読むと測って確かめた
         moving = read(newer, rate)
         if moving.keyframes and any(point.value != rate for point in moving.keyframes):
-            log.note_missing("YMM4 の再生速度（PlaybackRate2）の動き")
-        elif not moving.keyframes and moving.static != rate:
-            log.note_missing("YMM4 の再生速度の食い違い（PlaybackRate と PlaybackRate2）")
+            log.note_missing(
+                "YMM4 の再生速度（PlaybackRate2）の動き 動く速さは写せない（PlaybackRate で置いた）"
+            )
     mode = item.get("PlaybackRateAudioProcessingMode")
-    if mode is not None and mode != "Resampling":
+    if mode == "Sola":
+        # 等倍なら高さを保つかどうかで音は変わらず、0 は鳴らない 数えると、
+        # 高さの変わらないアイテムまで直す候補に並ぶ
+        if rate not in (0.0, 100.0):
+            log.note_missing(
+                "YMM4 の再生速度の音の変え方 Sola（高さを保つ）は写せない 高さも変わる"
+            )
+    elif mode is not None and mode != "Resampling":
         log.note_missing(f"YMM4 の再生速度の音の変え方: {mode}")
     if not math.isfinite(rate):
         # NaN や無限大は分数にできず、そのまま渡すと ValueError で読み込みごと止まり、

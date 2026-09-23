@@ -1546,23 +1546,77 @@ class TestItemSound:
         map_template([self.audio(**{key: moving(100.0, 50.0, 100.0)})], report=report)
         assert any(word in line and "動き" in line for line in report.lines())
 
-    @pytest.mark.parametrize(
-        "values",
-        [
-            {"PlaybackRate2": still(200.0)},
-            {"PlaybackRate2": moving(100.0, 200.0)},
-            {"PlaybackRateAudioProcessingMode": "まだ見ていない変え方"},
-        ],
-    )
-    def test_an_unmeasured_rate_field_is_counted(self, values: dict[str, Any]) -> None:
-        """``PlaybackRate2`` の食い違いや動き・``Resampling`` 以外の変え方は数えて残す
+    def test_an_unknown_audio_processing_mode_is_counted(self) -> None:
+        """本体の列挙に無い変え方（``Resampling`` と ``Sola`` 以外）は数えて残す
 
-        どれが効くのか測っていない 黙って ``PlaybackRate`` だけを読むと、YMM4 と
-        違う速さや高さで鳴っても互換性レポートが「全部写せている」と言う
+        黙って ``PlaybackRate`` だけを読むと、YMM4 と違う高さで鳴っても
+        互換性レポートが「全部写せている」と言う
         """
         report = CompatibilityReport()
-        map_template([self.audio(**values)], report=report)
-        assert any("再生速度" in line for line in report.lines())
+        map_template(
+            [self.audio(PlaybackRateAudioProcessingMode="まだ見ていない変え方")], report=report
+        )
+        assert any("まだ見ていない変え方" in line for line in report.lines())
+
+    @pytest.mark.parametrize(("rate", "rate2"), [(100.0, 50.0), (50.0, 100.0), (100.0, 200.0)])
+    def test_a_still_mismatch_follows_playback_rate_without_a_note(
+        self, rate: float, rate2: float
+    ) -> None:
+        """止まった値が食い違うと YMM4 は ``PlaybackRate`` で鳴らし、描いた
+
+        YMM4 4.56.1.1 に書き出させて測った（2026-09-23） 100 と 50 は絵が 1.00 倍・
+        音が 2.00 秒 440Hz、50 と 100 は絵が 0.50 倍・音が 3.98 秒 220Hz
+        写し終えた物を数え続けると、互換性レポートの上位に残って直す順番を誤る
+        """
+        report = CompatibilityReport()
+        (mapped,) = map_template(
+            [self.audio(PlaybackRate=rate, PlaybackRate2=still(rate2))], report=report
+        )
+        assert mapped.clip.speed == Fraction(repr(rate)) / 100
+        assert not report.lines()
+
+    def test_a_moving_playback_rate2_is_counted_as_not_carried(self) -> None:
+        """``PlaybackRate2`` が動くと YMM4 の速さは途中で変わる こちらの速さは動かせない
+
+        頭の値（``PlaybackRate``）で置き、動く速さは写せないと数えて残す
+        数えないと、途中で速くなるはずの音や絵が一定の速さのまま気付かれない
+        """
+        report = CompatibilityReport()
+        (mapped,) = map_template(
+            [self.audio(PlaybackRate=100.0, PlaybackRate2=moving(50.0, 200.0))], report=report
+        )
+        assert mapped.clip.speed == 1
+        assert any("PlaybackRate2" in line and "写せない" in line for line in report.lines())
+
+    def test_sola_is_carried_by_speed_and_counted_for_its_pitch(self) -> None:
+        """``Sola`` は高さを保って長さだけを変える（50 で 3.97 秒・440Hz のまま）
+
+        こちらの速さは高さも一緒に変える 長さは ``speed`` で合わせ、高さが違うことを
+        数えて残す 数えないと、声の高さが変わったことに互換性レポートから気付けない
+        """
+        report = CompatibilityReport()
+        (mapped,) = map_template(
+            [
+                self.audio(
+                    PlaybackRate=50.0,
+                    PlaybackRate2=still(50.0),
+                    PlaybackRateAudioProcessingMode="Sola",
+                )
+            ],
+            report=report,
+        )
+        assert mapped.clip.speed == Fraction(1, 2)
+        assert any("Sola" in line and "高さ" in line for line in report.lines())
+
+    @pytest.mark.parametrize("rate", [100.0, 0.0])
+    def test_sola_at_the_normal_rate_or_silent_is_not_counted(self, rate: float) -> None:
+        # 等倍なら高さは変わらず、0 は鳴らない 数えると、直す物の無いアイテムまで候補に並ぶ
+        report = CompatibilityReport()
+        map_template(
+            [self.audio(PlaybackRate=rate, PlaybackRateAudioProcessingMode="Sola")],
+            report=report,
+        )
+        assert not any("Sola" in line for line in report.lines())
 
     def test_a_video_at_the_normal_rate_is_not_counted(self) -> None:
         # 等倍でも数えると、速さを変えていない動画アイテムまで直す候補に並ぶ

@@ -2011,19 +2011,31 @@ def expected_windows(values: list[float], length: int, width: int = RATE_WINDOW)
 RATE_FAR = 0.15
 
 
+#: 動く PlaybackRate2 の 3 つ目の読み 頭が PlaybackRate・終わりが PlaybackRate2 の最後
+HEAD_TO_LAST = "PlaybackRate→PlaybackRate2の最後"
+
+
 def rate_expectations(entry: dict[str, Any]) -> dict[str, list[float]]:
     """``PlaybackRate`` と ``PlaybackRate2`` のそれぞれが効いたときの、区切りごとの傾き
 
     前の版の一覧には ``rate2`` が無い そのときは ``PlaybackRate`` と同じ値を書いていた
     長さの無い行は枠の既定の長さで読む 読めずに止まると、ほかの枠の表まで出ない
+    ``PlaybackRate2`` が動く枠は、測って合った 3 つ目の読み（``HEAD_TO_LAST``）も並べる
     """
     length = int(entry.get("length", RATE_SLOT))
     rate = float(entry["rate"])
     second = [float(value) for value in entry.get("rate2") or [rate]]
-    return {
+    expectations = {
         "PlaybackRate": expected_windows([rate], length),
         "PlaybackRate2": expected_windows(second, length),
     }
+    if len(second) >= 2:
+        # 動く PlaybackRate2 を 1 枠測ったときの読み（2026-09-23 YMM4 4.56.1.1）
+        # 100 と 50→200 で傾きが 1.06・1.25・1.41 と並び、頭が PlaybackRate・終わりが
+        # PlaybackRate2 の最後の直線（1.08・1.25・1.42）に合った 1 枠からの読みなので、
+        # 次に測るときも並べて、ほかの値でも合うかを見る
+        expectations[HEAD_TO_LAST] = expected_windows([rate, second[-1]], length)
+    return expectations
 
 
 def nearer_rate(
@@ -2267,8 +2279,8 @@ def _print_rate_mismatches(rows: list[dict[str, Any]]) -> None:
     print(f"PlaybackRate と PlaybackRate2 の食い違い（{RATE_WINDOW} フレームごとの傾き）")
     for row in mismatched:
         print(row["name"])
-        print(f"  {'PlaybackRate 予想':<20}{_slopes(row['expected']['PlaybackRate'])}")
-        print(f"  {'PlaybackRate2 予想':<20}{_slopes(row['expected']['PlaybackRate2'])}")
+        for name, guess in row["expected"].items():
+            print(f"  {name + ' 予想':<20}{_slopes(guess)}")
         for side in ("ymm4", "sashimono"):
             value = row.get(side)
             if value is None:
@@ -2278,6 +2290,7 @@ def _print_rate_mismatches(rows: list[dict[str, Any]]) -> None:
     print()
     print("区切りの傾きが近い方の値を YMM4 が読んでいる 動かした枠は、区切りごとに")
     print("傾きが増えていけば PlaybackRate2 の動きが効いている - は素材を読み切った後か絵が無い")
+    print(f"{HEAD_TO_LAST} は、1 枠を測って合った読み（docs/development.md）")
 
 
 def main() -> int:
