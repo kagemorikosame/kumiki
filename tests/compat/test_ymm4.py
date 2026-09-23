@@ -1436,8 +1436,44 @@ class TestItemSound:
         数え続けると、互換性レポートが直し終えた物を上位に出し続け、直す順番を誤る
         """
         report = CompatibilityReport()
-        map_template([self.video(**values)], report=report)
-        assert not any("Pan" in line or "PlaybackRate" in line for line in report.lines())
+        map_template([self.audio(**values)], report=report)
+        assert not report.lines()
+
+    def audio(self, **values: Any) -> dict[str, Any]:
+        """音声アイテム 映像を持たないので、速さを変えても絵の心配が無い"""
+        item = self.video(**values)
+        item["$type"] = "YukkuriMovieMaker.Project.Items.AudioItem, YukkuriMovieMaker"
+        item["FilePath"] = "C:/素材/音.wav"
+        return item
+
+    @pytest.mark.parametrize("rate", [float("nan"), float("inf"), float("-inf"), "NaN"])
+    def test_a_broken_rate_does_not_stop_the_whole_template(self, rate: object) -> None:
+        """NaN や無限大の ``PlaybackRate`` は等倍として置き、数えて残す
+
+        分数にしようとすると ValueError で読み込みごと止まり、同じテンプレートの
+        正常なアイテムまで写せなくなる
+        """
+        report = CompatibilityReport()
+        mapped = map_template([self.audio(PlaybackRate=rate), self.audio()], report=report)
+        assert [item.clip.speed for item in mapped] == [1, 1]
+        assert any("PlaybackRate" in line for line in report.lines())
+
+    @pytest.mark.parametrize("rate", [50.0, 200.0])
+    def test_a_video_rate_is_counted_while_the_picture_is_unmeasured(self, rate: float) -> None:
+        """動画アイテムの速さは絵にも効く 測っていないので数えて残す
+
+        数えないと、YMM4 と違うかもしれない絵の速さを黙って変えたことになる
+        """
+        report = CompatibilityReport()
+        (mapped,) = map_template([self.video(PlaybackRate=rate)], report=report)
+        assert mapped.clip.speed == Fraction(repr(rate)) / 100
+        assert any("絵の速さは未確認" in line for line in report.lines())
+
+    def test_a_video_at_the_normal_rate_is_not_counted(self) -> None:
+        # 等倍でも数えると、速さを変えていない動画アイテムまで直す候補に並ぶ
+        report = CompatibilityReport()
+        map_template([self.video()], report=report)
+        assert not any("再生速度" in line for line in report.lines())
 
     def test_a_pan_that_only_moves_later_is_carried(self) -> None:
         """途中から動き出す定位も運ぶ

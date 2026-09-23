@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import json
+import math
 import zipfile
 from dataclasses import dataclass, field, replace
 from fractions import Fraction
@@ -837,6 +838,12 @@ def _playback_rate(
     音を消したアイテムは ``Volume`` 0 で持つので、同じ形になる
     動画アイテムの 0 で**絵**がどうなるか（止まるのか）は測っていない 絵は等倍で
     動かし、数えて残す 実物の 0 は 5 個あり、どれも動画アイテム（mp4 4 個・webp 1 個）
+    0 以外でも、動画アイテムの ``speed`` は映像のクリップにも効く 絵が同じ速さで
+    変わるかは測っていないので、100 以外なら数えて残す（``tools/ymm4_compare.py`` の
+    ``video-rate-build`` で測る） 映像と音で分けないのは、リンクした 2 本の速さが
+    違うと絵と音がずれていくため
+
+    NaN や無限大は分数にできないので、等倍として置き数えて残す
 
     音を持たないアイテムは見ない 実物ではどれも 100 で、``speed`` を持たせると
     テキストや図形の動きの時刻まで変わる
@@ -851,6 +858,11 @@ def _playback_rate(
     rate = number(raw, 100.0)
     if any(point.value != rate for point in animated(raw, 100.0).keyframes):
         log.note_missing("YMM4 の再生速度（PlaybackRate）の動き（先頭の値で写した）")
+    if not math.isfinite(rate):
+        # NaN や無限大は分数にできず、そのまま渡すと ValueError で読み込みごと止まり、
+        # 同じテンプレートの正常なアイテムまで写せなくなる 等倍として置き、数えて残す
+        log.note_missing(f"YMM4 の再生速度（PlaybackRate）が読めない値: {rate!r}")
+        return Fraction(1), False
     if rate == 0:
         if name == "VideoItem":
             log.note_missing("YMM4 の再生速度 0 の動画の絵（等倍で動かした）")
@@ -859,6 +871,10 @@ def _playback_rate(
         # 負の値は実物に無く、YMM4 でどう鳴るかも測っていない
         log.note_missing("YMM4 の再生速度（PlaybackRate）が負")
         return Fraction(1), False
+    if name == "VideoItem" and rate != 100:
+        # speed は映像のクリップにも効くので絵の速さも変わる YMM4 で絵も同じ速さに
+        # なるかは測っていない 数えずにおくと、絵の速さを黙って変えたことになる
+        log.note_missing("YMM4 の動画アイテムの再生速度（絵の速さは未確認）")
     # 2 進の小数のまま分数にすると 102.1 が長い分母の分数になる 書かれた 10 進で持つ
     return Fraction(repr(rate)) / 100, False
 
