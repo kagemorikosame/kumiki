@@ -376,21 +376,31 @@ def test_the_script_loads_its_types_and_fails_cleanly_without_ymm4(
     missing = tmp_path / "NotYmm4AtAll.exe"
     earlier = tmp_path / "a.mp4"
     earlier.write_bytes(b"earlier")
-    leftover = tmp_path / "a.part.mp4"
-    leftover.write_bytes(b"leftover")
+    # 本人がたまたま持っている、一時の名前に似た普通の動画
+    own = tmp_path / "a.part.mp4"
+    own.write_bytes(b"own video")
     command = tool.powershell_command(
         missing, tmp_path / "a.ymmp", earlier, no_compressor=True, timeout=5
     )
-    completed = subprocess.run(command, capture_output=True, check=False, timeout=120)
-    lines = [tool.decode_line(raw) for raw in completed.stdout.splitlines()]
-    assert completed.returncode == 1, lines
-    assert any("書き出せませんでした" in line for line in lines), lines
+    names = []
+    for _ in range(2):
+        completed = subprocess.run(command, capture_output=True, check=False, timeout=120)
+        lines = [tool.decode_line(raw) for raw in completed.stdout.splitlines()]
+        assert completed.returncode == 1, lines
+        assert any("書き出せませんでした" in line for line in lines), lines
+        # 変える前に落ちたので、戻す所は通らない（通れば YMM4 の無い所で戻そうとして 2 になる）
+        assert not any("戻せませんでした" in line for line in lines), lines
+        names += [line.split(" ", 1)[1] for line in lines if line.startswith("一時の名前 ")]
     # 書き出せなかったので、前の書き出しはそのまま残る 先に消すと失敗で前の物まで失う
-    assert earlier.read_bytes() == b"earlier", lines
-    # 前に失敗した一時の書き出しは消える 残ると保存の窓が上書きを尋ねて止まる
-    assert not leftover.exists(), lines
-    # 変える前に落ちたので、戻す所は通らない（通れば YMM4 の無い所で戻そうとして 2 になる）
-    assert not any("戻せませんでした" in line for line in lines), lines
+    assert earlier.read_bytes() == b"earlier"
+    # 道具が作った物か分からないファイルは触らない
+    assert own.read_bytes() == b"own video"
+    # 印は毎回変わる 同じ名前を使い回すと、前の回の残りと今回の物を取り違える
+    assert len(names) == 2 and names[0] != names[1], names
+    for name in names:
+        assert re.fullmatch(r"a\.sashimono-[0-9a-f]{8}\.part\.mp4", Path(name).name), name
+        assert Path(name).parent == tmp_path
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["a.mp4", "a.part.mp4"]
 
 
 @_WINDOWS_ONLY
@@ -500,5 +510,36 @@ def test_the_export_is_written_under_the_temporary_name() -> None:
         assert "$Partial" in bodies[name], name
         assert "$Output" not in bodies[name], name
     text = SCRIPT.read_text(encoding="utf-8-sig")
-    assert "'.part.mp4'" in text
     assert "Move-Item -LiteralPath $Partial -Destination $Output" in text
+
+
+@_WINDOWS_ONLY
+def test_the_temporary_name_steps_around_a_file_that_already_exists(tmp_path: Path) -> None:
+    """重なる名前を選ぶと、元からあるファイルを上書きするか、消してから書くことになる
+
+    印を決め打ちで返し、1 つ目の名前に本人のファイルを置く 2 つ目の印の名前が選ばれ、
+    置いたファイルはそのまま残る
+    """
+    body = _function_bodies(SCRIPT)["New-PartialName"]
+    taken = tmp_path / "foo.sashimono-aaaaaaaa.part.mp4"
+    taken.write_bytes(b"own video")
+    run = "\n".join(
+        [
+            f"function New-PartialName {body}",
+            "$marks = [System.Collections.Queue]::new(@('aaaaaaaa', 'bbbbbbbb'))",
+            "$chosen = New-PartialName $env:SASHIMONO_OUTPUT { $marks.Dequeue() }",
+            "$bytes = [System.Text.Encoding]::UTF8.GetBytes($chosen)",
+            "[Console]::OpenStandardOutput().Write($bytes, 0, $bytes.Length)",
+        ]
+    )
+    completed = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", run],
+        capture_output=True,
+        check=False,
+        env={**os.environ, "SASHIMONO_OUTPUT": str(tmp_path / "foo.mp4")},
+        timeout=120,
+    )
+    assert completed.returncode == 0, completed.stderr.decode("cp932", errors="replace")
+    chosen = Path(completed.stdout.decode("utf-8"))
+    assert chosen == tmp_path / "foo.sashimono-bbbbbbbb.part.mp4"
+    assert taken.read_bytes() == b"own video"

@@ -11,8 +11,8 @@ YMM4 4.56.1.1 で確かめた手順（Issue #116）
   4. 進み具合の窓が消え、出力の大きさが止まって書き手が手放すまで待つ
   5. 主の窓を閉じる
 
-書き出しは同じ置き場の一時の名前（<出力の名前>.part.mp4）へ行い、書き終えたと確かめて
-から出力の名前へ置き換える 途中で失敗しても前の書き出しは残る
+書き出しは同じ置き場の一時の名前（<出力の名前>.sashimono-<16 進 8 桁>.part.mp4）へ行い、
+書き終えたと確かめてから出力の名前へ置き換える 途中で失敗しても前の書き出しは残る
 
 Windows PowerShell 5.1 の罠
   - BOM の無い .ps1 は Shift_JIS として読まれ、日本語の名前が全部化ける このファイルは
@@ -75,10 +75,9 @@ $BM_CLICK = 0x00F5
 
 $ProcessName = [System.IO.Path]::GetFileNameWithoutExtension($Ymm4)
 $ProjectStem = [System.IO.Path]::GetFileNameWithoutExtension($Project)
-# 書き出している間の名前 拡張子は mp4 のままにする 保存の窓の種類（mp4）と違う拡張子だと、
-# 窓が .mp4 を足したり種類の違いで弾いたりして、見張る名前と書かれる名前が食い違う
-# 出力へ直に書くと、前の書き出しを先に消すことになり、失敗したら前の物まで失う
-$Partial = [System.IO.Path]::Combine([System.IO.Path]::GetDirectoryName($Output), [System.IO.Path]::GetFileNameWithoutExtension($Output) + '.part.mp4')
+# 書き出している間の名前（New-PartialName で決める） 出力へ直に書くと、前の書き出しを
+# 先に消すことになり、失敗したら前の物まで失う
+$Partial = $null
 $ProgressName = 'YukkuriMovieMaker.ViewModels.ProgressViewModel'
 $SaveDialogName = '名前を付けて保存'
 $CompressorGroup = '音量調整 / 音割れ対策（コンプレッサー）'
@@ -385,6 +384,22 @@ function Wait-Written($Main) {
     }
 }
 
+function New-PartialName {
+    param([string]$Target, [scriptblock]$Mark)
+    # 毎回違う印を入れ、既にあるファイルと重ならない名前を選ぶ 決まった名前（foo.part.mp4）
+    # だと、本人が同じ名前の動画を持っていたときにそれを上書きしたり消したりしてしまう
+    # 元からあるファイルは道具が作った物か分からないので、消さずに避ける
+    # 拡張子は mp4 のままにする 保存の窓の種類（mp4）と違う拡張子だと、窓が .mp4 を足したり
+    # 種類の違いで弾いたりして、見張る名前と書かれる名前が食い違う
+    $folder = [System.IO.Path]::GetDirectoryName($Target)
+    $stem = [System.IO.Path]::GetFileNameWithoutExtension($Target)
+    for ($attempt = 0; $attempt -lt 20; $attempt++) {
+        $candidate = [System.IO.Path]::Combine($folder, "$stem.sashimono-$(& $Mark).part.mp4")
+        if (-not (Test-Path -LiteralPath $candidate)) { return $candidate }
+    }
+    throw "一時の名前が既にあるファイルと重ならずに選べない（$folder）"
+}
+
 function Close-Ymm4 {
     foreach ($window in Get-TopWindows) {
         # 主の窓の子（書き出しの窓・保存の窓）が開いていると、主の窓が閉じるのを止める
@@ -409,16 +424,13 @@ if (@(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue).Count) {
     exit 1
 }
 
-if (Test-Path -LiteralPath $Partial) {
-    # 前に失敗した残り 残っていると保存の窓が「上書きしますか」で止まり、大きさの見張りも
-    # 前の物を見る 前の書き出し（出力の名前の方）はここでは触らない
-    try {
-        Remove-Item -LiteralPath $Partial -Force
-    } catch {
-        Say "前の一時の書き出し $Partial を消せません（$($_.Exception.Message)） 開いている物を閉じてください"
-        exit 1
-    }
+try {
+    $Partial = New-PartialName $Output { [guid]::NewGuid().ToString('N').Substring(0, 8) }
+} catch {
+    Say "書き出せませんでした $($_.Exception.Message)"
+    exit 1
 }
+Say "一時の名前 $Partial"
 
 $exitCode = 1
 $main = $null
@@ -487,6 +499,7 @@ try {
         }
     }
     # 書き終えなかった一時の書き出しは捨てる 前の書き出しは出力の名前のまま残っている
+    # この名前は始めに無いことを確かめて選んだので、ここにある物はこの回に YMM4 が書いた物
     # YMM4 を閉じたあとに消す 書いている最中は YMM4 が掴んでいて消せない
     if ((Test-Path -LiteralPath $Partial) -and $exitCode -ne 0) {
         try {

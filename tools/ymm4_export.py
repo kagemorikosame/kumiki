@@ -286,7 +286,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("YMM4 を閉じてから走らせてください")
         return 1
     output.parent.mkdir(parents=True, exist_ok=True)
-    # 前の書き出しは消さない ymm4_export.ps1 は一時の名前（<出力の名前>.part.mp4）へ
+    # 前の書き出しは消さない ymm4_export.ps1 は一時の名前（<出力の名前>.sashimono-<印>.part.mp4）へ
     # 書き出し、書き終えたと確かめてから置き換える 途中で失敗すれば前の物が残る
     print("YMM4 を動かします 終わるまでマウスとキーボードに触らないでください")
     command = powershell_command(
