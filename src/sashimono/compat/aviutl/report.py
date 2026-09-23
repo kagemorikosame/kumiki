@@ -38,6 +38,9 @@ class CompatibilityReport:
     controls: Counter[str] = field(default_factory=Counter)
     #: 実行時の失敗 同じものが何度も出るので、最初の 1 件だけ残す
     failures: dict[str, ScriptFailure] = field(default_factory=dict)
+    #: 消した回数 覚えた記録を器へ 1 度だけ伝える所（汎用プラグインの読めなかった
+    #: 理由など）が、消されたことに気付いて伝え直すのに使う
+    cleared: int = 0
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def note_missing(self, name: str) -> None:
@@ -57,6 +60,7 @@ class CompatibilityReport:
             self.missing.clear()
             self.controls.clear()
             self.failures.clear()
+            self.cleared += 1
 
     @property
     def is_empty(self) -> bool:

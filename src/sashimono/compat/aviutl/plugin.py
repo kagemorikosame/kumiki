@@ -236,6 +236,9 @@ _diagnostics: list[tuple[str, int]] = []
 #: 膨らむ 同じ器には 1 度だけ伝える 器は比べる作り（eq）で hash を持たないので、
 #: id を鍵に器そのものを弱く持つ（器が消えれば外れ、同じ id の別の器と取り違えない）
 _told: weakref.WeakValueDictionary[int, CompatibilityReport] = weakref.WeakValueDictionary()
+#: 伝えたときの器の「消した回数」 器が消されたら、同じ器でも伝え直す
+#: 伝え直さないと、互換性の記録の画面で消したあとは理由が二度と戻らない
+_told_at: dict[int, int] = {}
 _loaded: dict[Path, Any] = {}
 _lock = threading.RLock()
 
@@ -251,6 +254,7 @@ def forget() -> None:
         _modules = None
         _diagnostics = []
         _told.clear()
+        _told_at.clear()
 
 
 def script_modules(
@@ -271,11 +275,14 @@ def script_modules(
             _modules = _scan(default_plugin_roots(), collector)
             _diagnostics = list(collector.missing.items())
             _told.clear()
-        if _told.get(id(target)) is not target:
+            _told_at.clear()
+        key = id(target)
+        if _told.get(key) is not target or _told_at.get(key) != target.cleared:
             for line, count in _diagnostics:
                 for _ in range(count):
                     target.note_missing(line)
-            _told[id(target)] = target
+            _told[key] = target
+            _told_at[key] = target.cleared
         return _modules
 
 

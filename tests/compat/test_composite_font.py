@@ -221,6 +221,11 @@ class TestPluginModules:
                 lines = [line for line in report.missing if "新しすぎる.aux2" in line]
                 assert len(lines) == 1
                 assert report.missing[lines[0]] == 1
+            # 記録の画面で消したあとも、次に探したときに理由が戻ること
+            # 戻らないと「見つかりません」だけが残って原因を追えない
+            second.clear()
+            plugin.script_modules(report=second)
+            assert any("新しすぎる.aux2" in line for line in second.missing)
         finally:
             plugin.forget()
 
