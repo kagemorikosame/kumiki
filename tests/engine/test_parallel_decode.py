@@ -260,6 +260,28 @@ class TestTooManyLayers:
             renderer._decoding.clear()
             renderer.close()
 
+    def test_the_overflow_is_released_once_the_prefetch_is_taken(
+        self, many_sources: tuple[SampleMedia, ...], context: OffscreenGLContext
+    ) -> None:
+        # 先読みを守るために上限を超えたまま返すことがある 受け取り終えた所で
+        # 減らさないと、同じ素材を描き続ける間は誰も減らさず、超えた分の
+        # コンテナ・スレッド・ファイルハンドルがレンダラを閉じるまで残る
+        project = _stacked(many_sources)
+        renderer = FrameRenderer(project, context=context, decode_threads=MAX_OPEN_DECODERS)
+        items = list(project.media)
+        try:
+            pool = renderer._pool()
+            for item in items[:MAX_OPEN_DECODERS]:
+                key = (item.id, 0)
+                renderer._decoders[key] = cast("VideoDecoder", _Idle())
+                renderer._decoding[key] = (Fraction(0), pool.submit(lambda: _DUMMY))
+            renderer._decoder_for(items[MAX_OPEN_DECODERS].id, 0)
+            assert len(renderer._decoders) == MAX_OPEN_DECODERS + 1, "超えた所を作れていない"
+            renderer._drain_decodes()
+            assert len(renderer._decoders) <= MAX_OPEN_DECODERS, "超えた分が残ったまま"
+        finally:
+            renderer.close()
+
     def test_a_decoder_is_never_handed_out_after_being_closed(
         self, many_sources: tuple[SampleMedia, ...], context: OffscreenGLContext
     ) -> None:

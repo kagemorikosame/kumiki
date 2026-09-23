@@ -1597,8 +1597,6 @@ class FrameRenderer:
         まま黒い絵が書き出される 走ったままのスレッドが次のフレームの先読みと
         同じデコーダで重なることにもなる
         """
-        if not self._decoding:
-            return
         pending = list(self._decoding.values())
         self._decoding.clear()
         error: Exception | None = None
@@ -1610,6 +1608,10 @@ class FrameRenderer:
                 # ここで抜けると、受け取っていない先読みが残る
                 if error is None:
                     error = exc
+        # 受け取り終えた所で、先読みを守るために超えていた分を閉じる
+        # ここで減らさないと、同じ素材を描き続ける間は誰も減らす者がいない
+        # （:meth:`_decoder_for` は既にある鍵ならすぐ返るので通らない）
+        self._trim_decoders()
         if error is not None:
             raise error
 
@@ -1646,19 +1648,24 @@ class FrameRenderer:
             return None
 
         self._decoders[key] = decoder
-        # 追い出す相手から外すのは 2 つ
-        # ひとつは先読みが走っているデコーダ 読んでいる最中に閉じると、走っている
-        # スレッドが解放済みのコンテナを触って落ちる
-        # もうひとつは**いま開いたもの自身** 先に開いた分が全部先読み中だと、
+        # **いま開いたもの自身**は閉じない 先に開いた分が全部先読み中だと、
         # 残る相手が自分だけになり、開いた直後に閉じたデコーダを呼ぶ側へ返してしまう
         # （9 本以上の別素材が同時に映るフレームでそうなる）
-        # どちらも外して相手がいなければ、上限を一時的に超えたままにする
-        # 上限は「開きっぱなしを増やさない」ための目安で、正しさの条件ではない
-        # 超えた分は、先読みを受け取り終えた次の呼び出しで閉じられる
-        spare = [k for k in self._decoders if k not in self._decoding and k != key]
+        self._trim_decoders(keep=key)
+        return decoder
+
+    def _trim_decoders(self, *, keep: _DecodeKey | None = None) -> None:
+        """開いたままのデコーダを上限まで減らす
+
+        **先読みが走っているデコーダは閉じない** 読んでいる最中に閉じると、
+        走っているスレッドが解放済みのコンテナを触って落ちる
+        閉じる相手がいなければ、上限を一時的に超えたままにする 上限は
+        「開きっぱなしを増やさない」ための目安で、正しさの条件ではない
+        超えた分は :meth:`_drain_decodes` が受け取り終えた所で閉じる
+        """
+        spare = [k for k in self._decoders if k not in self._decoding and k != keep]
         for old in spare[: max(0, len(self._decoders) - MAX_OPEN_DECODERS)]:
             self._decoders.pop(old).close()
-        return decoder
 
     def _open(self, media: MediaItem, stream_index: int) -> VideoDecoder | None:
         """素材を開く 控えが使えなければ捨てて、元の素材で開き直す
