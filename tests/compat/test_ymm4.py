@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import zipfile
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -1146,6 +1147,70 @@ class TestOtherItems:
         assert mapped[0].media_path == "C:/素材/映像.mp4"
 
 
+class TestTheContentOffset:
+    """素材のどこから再生するか（``ContentOffset``）
+
+    切り出して使っているテンプレートは、ここを落とすと**絵も音も違う所から始まる**
+    実物（この機械の YMM4 プロジェクト 16 本）では、動画 214 個・音声 125 個のうち
+    240 個が 0 以外だった 形は ``"00:09:24.1999999"`` ``"00:00:06"`` など
+    """
+
+    def video(self, offset: Any) -> dict[str, Any]:
+        return {
+            "$type": "YukkuriMovieMaker.Project.Items.VideoItem, YukkuriMovieMaker",
+            "FilePath": "C:/素材/映像.mp4",
+            "ContentOffset": offset,
+            "Length": 60,
+        }
+
+    def test_a_trimmed_item_starts_where_ymm4_starts_it(self) -> None:
+        """切り出した位置から再生する 落とすと素材の頭から鳴り、別の場面が映る"""
+        (mapped,) = map_template([self.video("00:00:39.6000000")], report=CompatibilityReport())
+        assert mapped.clip.source_in == Fraction(198, 5)
+
+    def test_the_offset_keeps_every_digit(self) -> None:
+        """7 桁の小数を丸めない 丸めると長い素材で数フレームずれる"""
+        (mapped,) = map_template([self.video("00:09:24.1999999")], report=CompatibilityReport())
+        assert mapped.clip.source_in == Fraction(5641999999, 10000000)
+
+    def test_days_in_the_offset_are_not_dropped(self) -> None:
+        """``日.時:分:秒`` の日を落とさない 落とすと 1 日ぶん手前から再生する"""
+        (mapped,) = map_template([self.video("1.00:00:06")], report=CompatibilityReport())
+        assert mapped.clip.source_in == Fraction(86406)
+
+    def test_no_offset_starts_at_the_head(self) -> None:
+        # 既定を 0 以外にすると、切り出していないアイテムまでずれて始まる
+        (mapped,) = map_template([self.video("00:00:00")], report=CompatibilityReport())
+        assert mapped.clip.source_in == Fraction(0)
+
+    def test_an_item_without_media_is_left_alone(self) -> None:
+        """素材を読まないアイテムには効かせない
+
+        配布物 230 本で 0 以外だったのはテキスト 33・図形 25・フレームバッファ 6・
+        グループ 4 と、素材を読まない物ばかりだった（書き出しに残る既定の値で、
+        YMM4 でも絵は動かない） 効かせると、グループ（入れ子のシーン）の時刻がずれる
+        """
+        item = {
+            "$type": "YukkuriMovieMaker.Project.Items.ShapeItem, YukkuriMovieMaker",
+            "ContentOffset": "00:00:06",
+            "Length": 60,
+        }
+        (mapped,) = map_template([item], report=CompatibilityReport())
+        assert mapped.clip.source_in == Fraction(0)
+
+    @pytest.mark.parametrize("offset", ["まもなく", "00:00", "-00:00:01"])
+    def test_an_offset_that_cannot_be_read_is_counted(self, offset: str) -> None:
+        """読めない形と負の値は、頭から再生して数える
+
+        黙って 0 にすると「全部写せている」と言いながら別の場面が映る
+        こちらの :class:`Clip` は負の開始位置を受け取らない
+        """
+        report = CompatibilityReport()
+        (mapped,) = map_template([self.video(offset)], report=report)
+        assert mapped.clip.source_in == Fraction(0)
+        assert any("ContentOffset" in line for line in report.lines())
+
+
 class TestItemSound:
     """アイテムの音の設定（Issue #89）
 
@@ -1215,7 +1280,6 @@ class TestItemSound:
         [
             ({"Pan": still(50.0)}, "Pan"),
             ({"PlaybackRate": 150.0}, "PlaybackRate"),
-            ({"ContentOffset": "00:00:39.6000000"}, "ContentOffset"),
             ({"AudioTrackIndex": 1}, "AudioTrackIndex"),
             ({"IsLooped": True}, "IsLooped"),
             ({"AudioEffects": [{"$type": "N.VibratoEffect, A"}]}, "VibratoEffect"),
@@ -1225,7 +1289,7 @@ class TestItemSound:
         """写せない音の設定は数えて残す 握り潰すと、直す順番を決められない
 
         どれも実物に出てくる 再生速度は 0 のものが 5 個あり（こちらの ``speed`` は
-        正の数しか取らない）、開始位置は 339 個のうち 240 個が 0 でなかった
+        正の数しか取らない） 開始位置（``ContentOffset``）は写せるようになった
         """
         report = CompatibilityReport()
         map_template([self.video(**values)], report=report)

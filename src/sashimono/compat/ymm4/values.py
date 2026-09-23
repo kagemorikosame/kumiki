@@ -30,9 +30,11 @@ YMM4 は .NET のシリアライザで書き出しているので、型の名前
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from fractions import Fraction
 from typing import Any
 
 from sashimono.compat.aviutl.report import CompatibilityReport, global_report
@@ -48,8 +50,16 @@ __all__ = [
     "interpolation_of",
     "number",
     "reporting",
+    "timespan",
     "type_name",
 ]
+
+#: .NET の TimeSpan の文字列 ``[-][日.]時:分:秒[.小数]``
+#: 日を落とすと、9 分 24 秒のつもりが 1 日 9 分 24 秒の素材で頭から鳴る
+_TIMESPAN = re.compile(
+    r"^(?P<sign>-)?(?:(?P<days>\d+)\.)?(?P<hours>\d+):(?P<minutes>\d{1,2})"
+    r":(?P<seconds>\d{1,2})(?:\.(?P<fraction>\d+))?$"
+)
 
 #: YMM4 の移動方法と、こちらの補間方法
 #:
@@ -289,3 +299,29 @@ def brush_colour(
     if "Color" not in parameter:
         return default
     return colour(parameter.get("Color"), default)
+
+
+def timespan(value: Any) -> Fraction | None:
+    """.NET の ``TimeSpan`` の文字列を秒にする 読めなければ ``None``
+
+    YMM4 は素材のどこから再生するか（``ContentOffset``）をこの形で書く
+    実物は ``"00:09:24.1999999"`` ``"00:00:39.6000000"`` ``"00:00:06"`` の形だった
+
+    小数は 10 の累乗で割る 浮動小数にすると、7 桁の ``0.1999999`` が丸まって
+    長い素材では数フレームずれる こちらの ``source_in`` は :class:`~fractions.Fraction`
+    なので、丸めずに渡せる
+    """
+    if isinstance(value, Fraction | int) and not isinstance(value, bool):
+        return Fraction(value)
+    if not isinstance(value, str):
+        return None
+    found = _TIMESPAN.match(value.strip())
+    if found is None:
+        return None
+    parts = found.groupdict()
+    seconds = Fraction(int(parts["days"] or 0) * 86400)
+    seconds += Fraction(int(parts["hours"]) * 3600 + int(parts["minutes"]) * 60)
+    seconds += Fraction(int(parts["seconds"]))
+    if parts["fraction"]:
+        seconds += Fraction(int(parts["fraction"]), 10 ** len(parts["fraction"]))
+    return -seconds if parts["sign"] else seconds

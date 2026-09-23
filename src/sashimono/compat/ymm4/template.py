@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import zipfile
 from dataclasses import dataclass, field, replace
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +43,7 @@ from sashimono.compat.ymm4.values import (
     colour,
     number,
     reporting,
+    timespan,
     type_name,
 )
 from sashimono.core.model import AnimatedValue, Clip, Effect, GeneratedSource, ParamValue
@@ -687,6 +689,7 @@ def _map_item(item: dict[str, Any], log: CompatibilityReport) -> MappedObject | 
             timeline_start=max(0, int(number(item.get("Frame"), 0.0))),
             duration=length,
             source=source,
+            source_in=_content_offset(item, log) if media_path else Fraction(0),
             effects=tuple(effects),
             opacity=animated(
                 item.get("Opacity"), 100.0, length=length, keyframes=keyframes, scale=0.01
@@ -704,6 +707,34 @@ def _map_item(item: dict[str, Any], log: CompatibilityReport) -> MappedObject | 
         with_sound=name == "VideoItem",
         audio_effects=_audio_effects(item, name, log, length=length, keyframes=keyframes),
     )
+
+
+def _content_offset(item: dict[str, Any], log: CompatibilityReport) -> Fraction:
+    """素材のどこから再生するか（``ContentOffset``）を秒で
+
+    切り出して使っているテンプレートは、ここを落とすと絵も音も違う所から始まる
+    実物（この機械の YMM4 プロジェクト 16 本）の動画 214 個・音声 125 個のうち
+    240 個が 0 以外だった
+
+    **効かせるのは素材を持つアイテムだけ** 配布物 230 本を数えると、0 以外なのは
+    テキスト 33・図形 25・フレームバッファ 6・グループ 4 と、素材を読まない物ばかりで、
+    YMM4 でも絵は動かない（書き出しに残っている既定の値） こちらで効かせると、
+    グループ（入れ子のシーン）の時刻だけがずれる
+
+    負の値はこちらの :class:`~sashimono.core.model.Clip` が受け取らない（素材の
+    手前から再生することになる） 0 として置き、数えて残す 読めない形も同じ
+    """
+    raw = item.get("ContentOffset")
+    if raw is None or raw == "":
+        return Fraction(0)
+    offset = timespan(raw)
+    if offset is None:
+        log.note_missing(f"YMM4 の素材の開始位置（ContentOffset）の書き方: {raw!r}")
+        return Fraction(0)
+    if offset < 0:
+        log.note_missing("YMM4 の素材の開始位置（ContentOffset）が負")
+        return Fraction(0)
+    return offset
 
 
 #: 音を持つアイテム 映像を持つのは ``VideoItem`` だけ
@@ -755,8 +786,6 @@ def _audio_effects(
         log.note_missing("YMM4 の音の定位（Pan）")
     if differs("PlaybackRate", 100.0):
         log.note_missing("YMM4 の再生速度（PlaybackRate）")
-    if str(item.get("ContentOffset") or "00:00:00") != "00:00:00":
-        log.note_missing("YMM4 の素材の開始位置（ContentOffset）")
     if int(number(item.get("AudioTrackIndex"), 0.0)) != 0:
         log.note_missing("YMM4 の音声トラックの選択（AudioTrackIndex）")
     if item.get("IsLooped") is True:
