@@ -78,6 +78,7 @@ from sashimono.engine.gpu import GLContextError, OffscreenGLContext  # noqa: E40
 from sashimono.engine.render import (  # noqa: E402
     DEFAULT_DECODE_THREADS,
     FULL_QUALITY,
+    MAX_DECODE_THREADS,
     FrameRenderer,
 )
 
@@ -389,7 +390,8 @@ def main(argv: list[str] | None = None) -> int:
         "--decode-threads",
         type=int,
         default=DEFAULT_DECODE_THREADS,
-        help="レイヤーごとの並列デコードのスレッド数 1 で並べない",
+        help=f"レイヤーごとの並列デコードのスレッド数 1 から {MAX_DECODE_THREADS} まで"
+        " 1 で並べない",
     )
     parser.add_argument(
         "--compare",
@@ -397,9 +399,14 @@ def main(argv: list[str] | None = None) -> int:
         help="書き出しそのものを、パイプラインの深さを変えて測って比べる",
     )
     arguments = parser.parse_args(argv)
-    for name in ("width", "height", "frames", "layers", "decode_threads"):
+    for name in ("width", "height", "frames", "layers"):
         if getattr(arguments, name) <= 0:
-            parser.error(f"--{name.replace('_', '-')} は 1 以上にしてください")
+            parser.error(f"--{name} は 1 以上にしてください")
+    # 並列数だけは上限も見る レンダラは受け取った値を上限で切り詰めるので、
+    # 素通しにすると「999 本で測った」と表示しながら実際は 8 本で測ることになる
+    # `--compare` を付けた場合は export_project が同じ値を断り、測る前に落ちる
+    if not 1 <= arguments.decode_threads <= MAX_DECODE_THREADS:
+        parser.error(f"--decode-threads は 1 から {MAX_DECODE_THREADS} までにしてください")
 
     if shutil.which("ffmpeg") is None:
         print("ffmpeg が無いので測れない")

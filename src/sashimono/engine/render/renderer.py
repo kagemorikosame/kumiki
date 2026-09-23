@@ -1577,6 +1577,10 @@ class FrameRenderer:
         if len(requests) < 2:
             # 相手がいないなら走り係を起こさない 1 本だけ渡しても、受け渡しの分だけ遅い
             return
+        # 走り係の本数より多く頼まない 多く頼んでも順番待ちになるだけで、その間
+        # デコーダを開いたまま抱え込み、開けるデコーダの上限（8 本）を押し上げる
+        # あふれた分は、描く順に :meth:`_decode` がそのまま読む
+        requests = requests[: self._decode_threads]
         pool = self._pool()
         for key, when in requests:
             # デコーダを開くのはこちらの側 開く所（ファイルを掴み、控えを見に行く）まで
@@ -1642,11 +1646,17 @@ class FrameRenderer:
             return None
 
         self._decoders[key] = decoder
-        # 先読みが走っているデコーダは閉じない 読んでいる最中に閉じると、
-        # 走っているスレッドが解放済みのコンテナを触って落ちる
-        for old in [k for k in self._decoders if k not in self._decoding][
-            : max(0, len(self._decoders) - MAX_OPEN_DECODERS)
-        ]:
+        # 追い出す相手から外すのは 2 つ
+        # ひとつは先読みが走っているデコーダ 読んでいる最中に閉じると、走っている
+        # スレッドが解放済みのコンテナを触って落ちる
+        # もうひとつは**いま開いたもの自身** 先に開いた分が全部先読み中だと、
+        # 残る相手が自分だけになり、開いた直後に閉じたデコーダを呼ぶ側へ返してしまう
+        # （9 本以上の別素材が同時に映るフレームでそうなる）
+        # どちらも外して相手がいなければ、上限を一時的に超えたままにする
+        # 上限は「開きっぱなしを増やさない」ための目安で、正しさの条件ではない
+        # 超えた分は、先読みを受け取り終えた次の呼び出しで閉じられる
+        spare = [k for k in self._decoders if k not in self._decoding and k != key]
+        for old in spare[: max(0, len(self._decoders) - MAX_OPEN_DECODERS)]:
             self._decoders.pop(old).close()
         return decoder
 
