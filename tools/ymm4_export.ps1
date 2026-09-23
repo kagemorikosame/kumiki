@@ -417,9 +417,21 @@ function Clear-Unfinished {
     if (-not (Test-Path -LiteralPath $Path)) { return }
     if ($Written) {
         # 書き終えて確かめた物は消さない 消すと、置き換えに失敗しただけで書き出しからやり直しになる
-        if ($Code -ne 0) {
-            Say "書き終えた書き出しは $Path に残してあります 出力の名前へは手で置き換えてください"
+        # 名前の終わりを .part.mp4 から .done.mp4 へ変えて残す 途中で落ちた残り（.part.mp4）と
+        # 名前だけで見分けられる 道具の出力を見返さないと分からない形だと、あとで見つけた人が
+        # 書き上がった物を途中の物として消してしまう
+        $kept = $Path
+        $done = $Path -replace '\.part\.mp4$', '.done.mp4'
+        if ($done -ne $Path -and -not (Test-Path -LiteralPath $done)) {
+            try {
+                Move-Item -LiteralPath $Path -Destination $done -ErrorAction Stop
+                $kept = $done
+            } catch {
+                # 名前を変えられなくても中身は書き上がった物 そのままの名前で残して場所を言う
+                $kept = $Path
+            }
         }
+        Say "書き終えた書き出しは $kept に残してあります 出力の名前へは手で置き換えてください"
         return
     }
     # 書き終えなかった一時の書き出しは捨てる 前の書き出しは出力の名前のまま残っている
@@ -452,6 +464,13 @@ function Close-Ymm4 {
 if (@(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue).Count) {
     # 入口でも見ているが、入口から ここまでの間に開かれることもある 作業中の物は触らない
     Say 'YMM4 が既に開いています 閉じてから走らせてください'
+    exit 1
+}
+
+if (Test-Path -LiteralPath $Output -PathType Container) {
+    # 入口でも見ているが、ここでも YMM4 を起こす前に断る 同じ名前のフォルダがあると、
+    # 置き換えの Move-Item が書き出しをフォルダの中へ入れ、指定の場所には何もできない
+    Say "出力の名前 $Output はフォルダです 別の名前にしてください"
     exit 1
 }
 

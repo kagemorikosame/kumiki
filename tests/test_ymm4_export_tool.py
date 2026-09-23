@@ -199,6 +199,16 @@ def test_success_without_a_file_is_not_reported_as_success(
     assert "できていません" in capsys.readouterr().out
 
 
+def test_a_folder_named_like_the_output_is_refused_before_ymm4_starts(
+    tool: ModuleType, ready: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """通すと、書き出しがフォルダの中へ入り、指定の場所には何もできないまま失敗する"""
+    ready["output"].mkdir(parents=True)
+    assert tool.main(_arguments(ready)) == 1
+    assert "フォルダです" in capsys.readouterr().out
+    assert ready["commands"] == []
+
+
 def test_a_project_that_is_not_ymmp_is_refused(
     tool: ModuleType, ready: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -413,6 +423,27 @@ def test_the_script_loads_its_types_and_fails_cleanly_without_ymm4(
 
 
 @_WINDOWS_ONLY
+def test_the_script_refuses_a_folder_named_like_the_output(
+    tool: ModuleType, tmp_path: Path
+) -> None:
+    """入口を通らずに呼ばれても、YMM4 を起こす前に断る 通すと書き出しがフォルダの中へ入る
+
+    名前の違う exe を渡すので、ここで止まらなければ起動の失敗で終わり、案内が出ない
+    """
+    folder = tmp_path / "a.mp4"
+    folder.mkdir()
+    command = tool.powershell_command(
+        tmp_path / "NotYmm4AtAll.exe", tmp_path / "a.ymmp", folder, no_compressor=False, timeout=5
+    )
+    completed = subprocess.run(command, capture_output=True, check=False, timeout=120)
+    lines = [tool.decode_line(raw) for raw in completed.stdout.splitlines()]
+    assert completed.returncode == 1, lines
+    assert any("フォルダです" in line for line in lines), lines
+    assert not any("起動します" in line for line in lines), lines
+    assert list(folder.iterdir()) == []
+
+
+@_WINDOWS_ONLY
 def test_an_open_program_found_by_the_script_keeps_the_previous_export(
     tool: ModuleType, tmp_path: Path
 ) -> None:
@@ -581,10 +612,13 @@ def test_a_failed_replace_keeps_the_finished_export_and_says_where(
 ) -> None:
     """置き換えに失敗しただけで書き終えた物を消すと、本人は書き出しからやり直すことになる"""
     output, partial, lines = _publish(tool, tmp_path, written=True)
-    assert partial.read_bytes() == b"finished export", lines
+    # 途中で落ちた残り（.part.mp4）と同じ名前の形で残すと、あとで見つけた人が消してしまう
+    done = tmp_path / "a.sashimono-0123abcd.done.mp4"
+    assert not partial.exists(), lines
+    assert done.read_bytes() == b"finished export", lines
     assert output.read_bytes() == b"earlier", lines
     assert any("置き換えられませんでした" in line for line in lines), lines
-    assert any(str(partial) in line and "残してあります" in line for line in lines), lines
+    assert any(str(done) in line and "残してあります" in line for line in lines), lines
 
 
 @_WINDOWS_ONLY

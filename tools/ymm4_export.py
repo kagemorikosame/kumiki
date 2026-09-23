@@ -273,6 +273,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         # 書き出しの窓は mp4 の窓（Mp4ConfigViewModel）を前提に手順を組んである
         print(f"{output} は .mp4 ではありません 書き出し先は .mp4 にしてください")
         return 1
+    if output.is_dir():
+        # 名前が .mp4 で終わるフォルダ 置き換えの Move-Item が書き出しをフォルダの中へ入れ、
+        # 指定の場所には何もできないまま失敗する YMM4 を起こして書き出す前に断る
+        print(f"{output} はフォルダです 書き出し先はファイルの名前にしてください")
+        return 1
     ymm4, looked = find_ymm4(arguments.ymm4, os.environ)
     if ymm4 is None:
         print("YMM4（YukkuriMovieMaker.exe）が見つかりません 探した所")
