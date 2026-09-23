@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import gc
 import os
 from collections.abc import Iterator
 from pathlib import Path
@@ -226,6 +227,18 @@ class TestPluginModules:
             second.clear()
             plugin.script_modules(report=second)
             assert any("新しすぎる.aux2" in line for line in second.missing)
+        finally:
+            plugin.forget()
+
+    def test_a_forgotten_report_is_not_remembered(self, monkeypatch: Any) -> None:
+        """器が消えても伝えた回数だけ残ると、一時の器を作るたびに覚える量が増える"""
+        monkeypatch.setattr(plugin, "default_plugin_roots", lambda: ())
+        plugin.forget()
+        try:
+            for _ in range(50):
+                plugin.script_modules(report=CompatibilityReport())
+            gc.collect()
+            assert len(plugin._told_at) <= 1
         finally:
             plugin.forget()
 

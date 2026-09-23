@@ -281,6 +281,10 @@ def script_modules(
             for line, count in _diagnostics:
                 for _ in range(count):
                     target.note_missing(line)
+            if _told.get(key) is not target:
+                # 器が消えたら回数も外す 外さないと、一時の器を作るたびに
+                # 整数の鍵だけが残り続け、長く動かすほど覚える量が増える
+                weakref.finalize(target, _told_at.pop, key, None)
             _told[key] = target
             _told_at[key] = target.cleared
         return _modules
