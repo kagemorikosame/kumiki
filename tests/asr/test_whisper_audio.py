@@ -16,7 +16,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from sashimono.asr.backend import TranscribeOptions
+from sashimono.asr.backend import AsrError, TranscribeOptions
 from sashimono.asr.whisper import FasterWhisperBackend
 from sashimono.engine.decode import AudioDecoder
 from tests.media_fixtures import SampleMedia
@@ -140,4 +140,25 @@ def test_a_cancel_during_the_last_read_stops_before_the_model(
         sample_av.path, TranscribeOptions(), should_cancel=lambda: next(calls, True)
     )
     assert result is None
+    assert model.audio is None
+
+
+def test_a_video_without_sound_is_refused_before_reserving_memory(
+    sample_long: SampleMedia, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 音の無い動画で先に全長の配列を作ると、長い素材では音が無いと分かる前に大きな確保が走る
+    reserved: list[int] = []
+    real_empty = np.empty
+
+    def watching(shape: Any, *args: Any, **kwargs: Any) -> Any:
+        reserved.append(int(np.prod(shape)))
+        return real_empty(shape, *args, **kwargs)
+
+    backend = FasterWhisperBackend()
+    model = _Model()
+    monkeypatch.setattr(backend, "_ensure_model", lambda options: model)
+    monkeypatch.setattr(np, "empty", watching)
+    with pytest.raises(AsrError, match="音声が無い"):
+        backend.transcribe(sample_long.path, TranscribeOptions())
+    assert reserved == []
     assert model.audio is None

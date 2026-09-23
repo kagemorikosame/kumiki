@@ -155,14 +155,20 @@ def _media_audio(source: Path, should_cancel: ShouldCancel | None) -> np.ndarray
     鳴らない区間なので、起こさなくてよい
     """
     try:
-        length = probe_media(source).duration
+        item = probe_media(source)
         chunk = _READ_CHUNK_SECONDS * WHISPER_SAMPLE_RATE
-        total = int(length * WHISPER_SAMPLE_RATE)
-        if total <= 0:
+        total = int(item.duration * WHISPER_SAMPLE_RATE)
+        # 配列を作る前に断る 音の無い長い動画で先に全長の配列を作ると、音が無いと
+        # 分かる前に大きな確保が走る
+        if not item.audio_streams or total <= 0:
             raise AsrError(f"音声が無い: {source}")
         # 全長の配列を先に 1 つだけ作って書き込む 読んだ分を貯めてから最後につなぐと、
         # つなぐ瞬間に同じ長さの配列が 2 つ並ぶ（1 時間で 230MB が 460MB になる）
-        audio = np.empty(total, dtype=np.float32)
+        try:
+            audio = np.empty(total, dtype=np.float32)
+        except MemoryError as exc:
+            # 起こしの失敗として出す 素のまま投げると起こしの枠の外（想定外の失敗）になる
+            raise AsrError(f"音声を読むメモリが足りない（{total * 4 // 2**20} MB）") from exc
         with AudioDecoder(source, sample_rate=WHISPER_SAMPLE_RATE, channels=1) as decoder:
             for start in range(0, total, chunk):
                 if should_cancel is not None and should_cancel():
