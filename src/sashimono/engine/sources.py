@@ -12,9 +12,10 @@ from __future__ import annotations
 import math
 import struct
 from collections.abc import Callable
+from functools import lru_cache
 
 import numpy as np
-from PySide6.QtCore import QPointF, QRectF, Qt, QTextBoundaryFinder
+from PySide6.QtCore import QLocale, QPointF, QRectF, Qt, QTextBoundaryFinder
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -31,6 +32,7 @@ from PySide6.QtGui import (
     QTransform,
 )
 
+from sashimono.compat.aviutl.text_tags import TaggedLine, TextRun, TextStyle, parse_tags
 from sashimono.core.model import AnimatedValue, GeneratedSource, ParamValue
 from sashimono.effects.sources import SourceDefinition, source_registry
 from sashimono.engine.audio_shapes import (
@@ -326,9 +328,6 @@ def _draw_text(
     raw = str(values.get("text", ""))
     if str(values.get("timer_format", "")):
         raw = timer_text(values)[:200]
-    text = _revealed(raw, values)
-    if not text:
-        return None
 
     # 縦書きは AviUtl2 で測っていないので、AviUtl2 の組み方でも標準の縦書きで描く
     # （枠は返さず、太字も Qt に任せる） ここで外さないと、Qt の太字を切ったまま
@@ -336,6 +335,22 @@ def _draw_text(
     aviutl = values.get("layout") == "aviutl" and not bool(values.get("vertical", False))
     bold = bool(values.get("bold", False))
     size = max(1, int(float(values.get("size", 64))))  # type: ignore[arg-type]
+    if aviutl:
+        # 制御文字（``<@書体>`` ``<#色>`` ``<s大きさ>``）を読んでから文字送りを掛ける
+        # 先に掛けると、タグの文字まで 1 文字として数えて出す字がずれる
+        tagged = _revealed_lines(parse_tags(raw, float(size)), values)
+        if not any(line.text for line in tagged):
+            return None
+        centre_x = width / 2.0 + _number(values, "pos_x", 0.0)
+        centre_y = height / 2.0 - _number(values, "pos_y", 0.0)
+        family = aviutl_font_family(str(values.get("font", AVIUTL_DEFAULT_FONT)))
+        groups, framed = _aviutl_lines(tagged, family, size, bold, values, centre_x, centre_y)
+        _paint_groups(painter, groups, values, width, height)
+        return framed
+
+    text = _revealed(raw, values)
+    if not text:
+        return None
     font = QFont(str(values.get("font", "Yu Gothic UI")))
     font.setPixelSize(size)
     # AviUtl2 の組み方の太字は、細字の輪郭を自分で太らせる（:func:`_emboldened`）
@@ -356,10 +371,6 @@ def _draw_text(
     lines = text.split(chr(10))
     centre_x = width / 2.0 + float(values.get("pos_x", 0.0))  # type: ignore[arg-type]
     centre_y = height / 2.0 - float(values.get("pos_y", 0.0))  # type: ignore[arg-type]
-    if aviutl:
-        path, framed = _aviutl_lines(lines, font, size, bold, values, centre_x, centre_y)
-        _paint_glyphs(painter, path, values, width, height)
-        return framed
 
     line_height = metrics.height() + float(values.get("line_spacing", 0.0))  # type: ignore[arg-type]
     block_height = line_height * len(lines)
@@ -413,16 +424,90 @@ def _bold_drift(plain: QPainterPath, bold: QPainterPath) -> float:
     return plain_box.center().x() - bold_box.center().x()
 
 
+#: AviUtl2 の既定の書体 書体名が見つからないときもこれで描く
+#: 英語の名前で書いた ``<@Meiryo>`` ``<@MS Gothic>`` ``<@Yu Mincho>`` も、設定欄の
+#: ``フォント=Meiryo`` も、設定欄の書体（Arial や MS UI Gothic）ではなくこの書体で描かれた
+#: （H の送り幅 71・字の高さ 70 が Yu Gothic UI と一致 #108）
+AVIUTL_DEFAULT_FONT = "Yu Gothic UI"
+
+#: 書体の ``name`` 表の言語 Windows の言語番号
+_JAPANESE, _ENGLISH = 0x0411, 0x0409
+
+
+def _system_is_japanese() -> bool:
+    return QLocale.system().language() == QLocale.Language.Japanese
+
+
+def aviutl_font_family(name: str, japanese: bool | None = None) -> str:
+    """AviUtl2 が ``name`` で見つける書体の名前 見つけられない名前なら既定の書体
+
+    AviUtl2 v2.1.6a（日本語の Windows）は、日本語の名前を持つ書体を日本語の名前でしか
+    見つけない ``<@メイリオ>`` はメイリオで描き、``<@Meiryo>`` は既定の Yu Gothic UI で
+    描いた 書体の一覧（``aviutl2.ini`` の ``[Font.…]``）も ``メイリオ`` ``ＭＳ ゴシック``
+    ``游明朝`` と日本語で並ぶ Qt はどちらの名前でも同じ書体を返すので、Qt に任せると
+    AviUtl2 と違う書体で描く
+
+    英語の名前しか持たない書体（Arial・Yu Gothic UI・MS UI Gothic）は英語の名前で見つかる
+    ``japanese`` は名前を引く言語 省略すると、この機械の言語が日本語かで決める
+    """
+    if japanese is None:
+        japanese = _system_is_japanese()
+    return _aviutl_font_family(name.strip(), japanese)
+
+
+@lru_cache(maxsize=256)
+def _aviutl_font_family(name: str, japanese: bool) -> str:
+    if not name:
+        return AVIUTL_DEFAULT_FONT
+    raw = QRawFont.fromFont(QFont(name))
+    names = _family_names(bytes(raw.fontTable("name").data())) if raw.isValid() else {}
+    preferred = names.get(_JAPANESE) if japanese else None
+    preferred = preferred or names.get(_ENGLISH) or next(iter(names.values()), None)
+    if preferred is not None and preferred.casefold() == name.casefold():
+        return name
+    return AVIUTL_DEFAULT_FONT
+
+
+def _family_names(table: bytes) -> dict[int, str]:
+    """``name`` 表の書体名（番号 1）を言語ごとに Windows の記録（UTF-16）だけを読む
+
+    GDI の書体名と同じ番号 1 を読む 番号 16（組版上の書体名）は「游明朝 Demibold」を
+    「游明朝」にまとめてしまい、AviUtl2 の一覧（太さごとに別の名前）と合わない
+    """
+    names: dict[int, str] = {}
+    if len(table) < 6:
+        return names
+    count, strings = struct.unpack(">HH", table[2:6])
+    for index in range(count):
+        offset = 6 + index * 12
+        if offset + 12 > len(table):
+            break
+        platform, _encoding, language, number, length, where = struct.unpack(
+            ">HHHHHH", table[offset : offset + 12]
+        )
+        if platform != 3 or number != 1:
+            continue
+        begin = strings + where
+        raw = table[begin : begin + length]
+        if len(raw) == length:
+            names.setdefault(language, raw.decode("utf-16-be", errors="replace"))
+    return names
+
+
+#: 描き分ける見た目 塗りの色・影と縁の色（16 進 ``None`` は設定欄の色）と太らせる量
+_Look = tuple[str | None, str | None, float]
+
+
 def _aviutl_lines(
-    lines: list[str],
-    font: QFont,
+    lines: list[TaggedLine],
+    family: str,
     size: int,
     bold: bool,
     values: dict[str, object],
     centre_x: float,
     centre_y: float,
-) -> tuple[QPainterPath, Frame]:
-    """AviUtl2 の組み方で行を並べ、字の輪郭と文字の枠を返す
+) -> tuple[list[tuple[QPainterPath, _Look]], Frame]:
+    """AviUtl2 の組み方で行を並べ、見た目ごとの字の輪郭と文字の枠を返す
 
     AviUtl2 に描かせて測った決まり（#64 の見本 ``kumiki_p8_t_*``）
 
@@ -432,38 +517,112 @@ def _aviutl_lines(
     - 文字揃えの横は、左寄せなら枠の左端、右寄せなら右端を置いた位置に合わせる
       縦も同じで、上なら上端、下なら下端 行はそれぞれ枠の中で左・中央・右へ揃える
     - 縁取りは枠を広げない（縁は枠の内側に描かれていた）
+
+    書体や大きさが混ざった行（#108 の見本 ``tag02``〜``tag22``）
+
+    - 字はどれも 1 本のベースラインに乗る（書体ごとの字の枠の中心で揃えるのではない）
+    - 行の高さとベースラインの位置は、その行で**行送りのいちばん大きい書体 1 つ**で決まる
+      上の高さの最大と下の深さの最大を足すのではない Arial・メイリオ（106 + 44）・
+      ＭＳ ゴシック・游明朝（99.5 + 余白込みで 160.2）の行は、上 99・下 61 の 160 だった
+      上の高さが最大のメイリオでは組んでいない
+    - 文字の無い行は、その行の終わりの書体と大きさの行送り
+    - 送り幅は字ごとにその字の書体と大きさで測る
     """
-    metrics = QFontMetricsF(font)
-    embolden = size * _AVIUTL_BOLD if bold else 0.0
-    letter_spacing = float(values.get("letter_spacing", 0.0))  # type: ignore[arg-type]
-    line_spacing = float(values.get("line_spacing", 0.0))  # type: ignore[arg-type]
-    line_height = metrics.height() + _external_leading(font)
-    block_height = line_height * len(lines) + line_spacing * max(len(lines) - 1, 0)
+    letter_spacing = _number(values, "letter_spacing", 0.0)
+    line_spacing = _number(values, "line_spacing", 0.0)
+    italic = bool(values.get("italic", False))
+    measured: dict[tuple[str, int], tuple[QFont, QFontMetricsF, float]] = {}
 
-    def advance(line: str) -> float:
-        parts = _graphemes(line)
-        widths = sum(metrics.horizontalAdvance(part) + embolden for part in parts)
-        return widths + letter_spacing * max(len(parts) - 1, 0)
+    def typeface(style: TextStyle) -> tuple[QFont, QFontMetricsF, float, int]:
+        name = family if style.font is None else aviutl_font_family(style.font)
+        pixels = size if style.size is None else max(1, round(style.size))
+        key = (name, pixels)
+        if key not in measured:
+            font = QFont(name)
+            font.setPixelSize(pixels)
+            font.setItalic(italic)
+            metrics = QFontMetricsF(font)
+            measured[key] = (font, metrics, metrics.height() + _external_leading(font))
+        font, metrics, pitch = measured[key]
+        return font, metrics, pitch, pixels
 
-    widest = max((advance(line) for line in lines), default=0.0)
+    laid: list[tuple[list[tuple[str, QFont, float, _Look]], float, float, float]] = []
+    for line in lines:
+        parts: list[tuple[str, QFont, float, _Look]] = []
+        # 行の高さを決める書体 行送りが同じなら先に出た方（max は最初の最大を返す）
+        faces = [typeface(run.style) for run in line.runs if run.text] or [typeface(line.end)]
+        _font, tallest, pitch, _pixels = max(faces, key=lambda face: face[2])
+        for run in line.runs:
+            font, metrics, _pitch, pixels = typeface(run.style)
+            embolden = pixels * _AVIUTL_BOLD if bold else 0.0
+            look: _Look = (run.style.color, run.style.edge, embolden)
+            for part in _graphemes(run.text):
+                parts.append((part, font, metrics.horizontalAdvance(part) + embolden, look))
+        advance = sum(part[2] for part in parts) + letter_spacing * max(len(parts) - 1, 0)
+        laid.append((parts, advance, pitch, tallest.ascent()))
+
+    widest = max((advance for _parts, advance, _pitch, _ascent in laid), default=0.0)
+    block_height = sum(pitch for _parts, _advance, pitch, _ascent in laid)
+    block_height += line_spacing * max(len(laid) - 1, 0)
     align = str(values.get("align", "center"))
     left = centre_x - widest * {"left": 0.0, "right": 1.0}.get(align, 0.5)
     top = centre_y - block_height * _VERTICAL_SHARE.get(str(values.get("valign", "middle")), 0.5)
 
-    path = QPainterPath()
-    for index, line in enumerate(lines):
-        rest = widest - advance(line)
-        x = left + rest * {"left": 0.0, "right": 1.0}.get(align, 0.5)
-        baseline = top + (line_height + line_spacing) * index + metrics.ascent()
+    paths: dict[_Look, QPainterPath] = {}
+    line_top = top
+    for parts, advance, pitch, ascent in laid:
+        x = left + (widest - advance) * {"left": 0.0, "right": 1.0}.get(align, 0.5)
+        baseline = line_top + ascent
         # 1 文字ずつ置く 太字の分だけ送り幅を広げるのは文字ごとで、行をまとめて
         # 置くと 2 文字目から先が太った分だけ前の字に食い込む
-        for part in _graphemes(line):
-            path.addText(QPointF(x, baseline), font, part)
-            x += metrics.horizontalAdvance(part) + embolden + letter_spacing
+        for part, font, step, look in parts:
+            paths.setdefault(look, QPainterPath()).addText(QPointF(x, baseline), font, part)
+            x += step + letter_spacing
+        line_top += pitch + line_spacing
 
-    if embolden > 0.0:
-        path = _emboldened(path, embolden)
-    return path, (left, top, left + widest, top + block_height)
+    groups: list[tuple[QPainterPath, _Look]] = []
+    for look, path in paths.items():
+        embolden = look[2]
+        groups.append((_emboldened(path, embolden) if embolden > 0.0 else path, look))
+    return groups, (left, top, left + widest, top + block_height)
+
+
+def _revealed_lines(lines: list[TaggedLine], values: dict[str, object]) -> list[TaggedLine]:
+    """制御文字を読んだ後の文字送り 数え方は :func:`_revealed` と同じ（改行は数えない）
+
+    出た文字だけで行を組む まだ出ていない後ろの行は行の高さにも枠にも数えない
+    これは制御文字を読む前の組み方（:func:`_revealed` で切った本文を行に分けて組んでいた）を
+    そのまま写した物で、AviUtl2 で測った決まりではない 文字送りは Sashimono だけの設定で
+    （AviUtl の表示速度は読み込んでいない）、合わせる相手の振る舞いが無い 根拠無しに変えると、
+    前の版で作った文字送りの字幕の位置が動く
+
+    切れ目の扱いも :func:`_revealed` と同じにする 改行はいつでも通し、出す文字が尽きた後に
+    次の字に当たった所で止める 行末でちょうど尽きると、次の行が空の行として 1 つ残る
+    """
+    ratio = _number(values, "reveal", 100.0) / 100.0
+    if ratio >= 1.0:
+        return lines
+    if ratio <= 0.0:
+        return []
+    total = sum(len(line.text) for line in lines)
+    visible = round(total * ratio)
+    shown: list[TaggedLine] = []
+    for line in lines:
+        kept = TaggedLine(end=line.end)
+        shown.append(kept)
+        for run in line.runs:
+            if not run.text:
+                continue
+            if visible <= 0:
+                # 次の字に当たった所で止める 空の行になったときは、止まった所の見た目の高さ
+                kept.end = run.style
+                return shown
+            piece = run.text[:visible]
+            visible -= len(piece)
+            kept.runs.append(TextRun(piece, run.style))
+            if len(piece) < len(run.text):
+                return shown
+    return shown
 
 
 def _external_leading(font: QFont) -> float:
@@ -590,14 +749,67 @@ def _paint_glyphs(
     縦書きでも横書きでも飾りの付け方は同じなので、ここに 1 つだけ置く
     順番は下から影・縁・塗り 入れ替えると縁が影を隠す
     """
-    shadow = _shadow_layer(path, values, width, height)
-    if shadow is not None:
-        painter.drawImage(0, 0, shadow)
+    _paint_layers(painter, [(path, values)], width, height)
 
-    border_width = float(values.get("border_width", 0.0))  # type: ignore[arg-type]
-    if border_width > 0:
-        painter.fillPath(_stroke(path, border_width), _color(values.get("border_color")))
-    painter.fillPath(path, _color(values.get("color")))
+
+def _paint_groups(
+    painter: QPainter,
+    groups: list[tuple[QPainterPath, _Look]],
+    values: dict[str, object],
+    width: int,
+    height: int,
+) -> None:
+    """制御文字で色を変えた字を、色ごとに塗る 影・縁・塗りの順は全体で守る"""
+    _paint_layers(
+        painter,
+        [(path, _recoloured(values, look[0], look[1])) for path, look in groups],
+        width,
+        height,
+    )
+
+
+def _paint_layers(
+    painter: QPainter,
+    layers: list[tuple[QPainterPath, dict[str, object]]],
+    width: int,
+    height: int,
+) -> None:
+    """影を全部、縁を全部、塗りを全部の順に描く
+
+    色が 1 つのときと同じ順にする 色ごとに影・縁・塗りを描き切ると、字が近い所で
+    後の色の縁が前の色の塗りに被さり、色を変えただけで前の字が欠ける
+    """
+    for path, look in layers:
+        shadow = _shadow_layer(path, look, width, height)
+        if shadow is not None:
+            painter.drawImage(0, 0, shadow)
+    for path, look in layers:
+        border_width = float(look.get("border_width", 0.0))  # type: ignore[arg-type]
+        if border_width > 0:
+            painter.fillPath(_stroke(path, border_width), _color(look.get("border_color")))
+    for path, look in layers:
+        painter.fillPath(path, _color(look.get("color")))
+
+
+def _recoloured(
+    values: dict[str, object], color: str | None, edge: str | None
+) -> dict[str, object]:
+    """``<#文字色,影・縁色>`` で変えた色を当てた値 不透明度は設定欄のまま
+
+    影・縁色は縁取りと影の両方の色（設定欄の ``影・縁色`` と同じ） 影は装飾ごとの
+    薄さ（不透明度）を持つので、色の 3 成分だけを差し替える
+    """
+    if color is None and edge is None:
+        return values
+    changed = dict(values)
+    for name, hex_value in (("color", color), ("border_color", edge), ("shadow_color", edge)):
+        if hex_value is None:
+            continue
+        old = values.get(name)
+        alpha = float(old[3]) if isinstance(old, tuple) and len(old) >= 4 else 1.0
+        rgb = tuple(int(hex_value[i : i + 2], 16) / 255.0 for i in (0, 2, 4))
+        changed[name] = (*rgb, alpha)
+    return changed
 
 
 def _stroke(path: QPainterPath, width: float) -> QPainterPath:

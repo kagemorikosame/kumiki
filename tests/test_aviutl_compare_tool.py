@@ -385,3 +385,11 @@ class TestSavingPictures:
         assert len(name.encode("utf-16-le")) // 2 <= 255
         # 文字の途中（サロゲートの片割れ）で切ると、名前として書けない
         name.encode("utf-8")
+
+
+def test_an_alias_with_intermediate_points_keeps_its_own_length(tool: ModuleType) -> None:
+    """中間点のある ``frame=244,333,423`` を読めずに既定の長さへ倒すと、AviUtl2 側と
+    違う長さの区間に並べ、終わり際の比べるフレームが区間の外へ出る
+    """
+    assert tool._own_length(["frame=244,333,423"]) == 180
+    assert tool._own_length(["frame=0,179"]) == 180
