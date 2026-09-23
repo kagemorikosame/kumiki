@@ -36,9 +36,11 @@
 
 先読み（:mod:`sashimono.engine.render.prefetch`）
 
-``--prefetch`` を足して測った 4K 3 枚 + blur（元の素材 + 等倍）
-``.venv\\Scripts\\python.exe tools\\bench_proxy.py
---width 3840 --height 2160 --layers 3 --effects blur --prefetch``
+``--prefetch`` を足して測った 4K 3 枚 + blur（元の素材 + 等倍 大きさは既定のまま）
+
+.. code-block:: text
+
+    .venv\\Scripts\\python.exe tools\\bench_proxy.py --layers 3 --effects blur --prefetch
 
 ===================== ========
 貯める 1 枚            66.1ms
