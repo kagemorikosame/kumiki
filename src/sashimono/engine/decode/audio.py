@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import math
 from fractions import Fraction
 from pathlib import Path
 from types import TracebackType
@@ -18,7 +19,7 @@ import numpy as np
 
 from sashimono.core.model import AudioStreamInfo
 from sashimono.core.timebase import Rounding, seconds_to_pts
-from sashimono.engine.decode.probe import ProbeError, probe_media
+from sashimono.engine.decode.probe import ProbeError, media_origin, probe_media
 
 __all__ = ["AudioDecoder"]
 
@@ -81,6 +82,9 @@ class AudioDecoder:
             item.audio_streams[0],
         )
         self._duration = item.duration
+        #: 素材の時刻の原点（秒 PTS の数え方） 映像のデコーダと同じ値を引く 音だけ別の
+        #: 原点（音の道の頭）から数えると、素材の中で映像と音がずれている分が消えて口が合わない
+        self._origin = media_origin(self._container)
 
         self._resampler = self._new_resampler()
         self._frames = self._container.decode(self._stream)
@@ -196,7 +200,12 @@ class AudioDecoder:
         return cursor - (self._buffer_start + len(self._buffer)) > window
 
     def _seek(self, cursor: int) -> None:
-        seconds = max(Fraction(0), Fraction(cursor, self._sample_rate) - SEEK_PREROLL)
+        # 手前へ余らせる分は原点を足してから引く 素材の中の時刻で 0 に丸めてから原点を
+        # 足すと、頭の近く（余らせる分より手前）へ飛ぶときに原点より前へ戻れず、原点を
+        # またぐ復号の単位から読めないコンテナでは頭の音が欠ける
+        seconds = max(
+            Fraction(0), self._origin + Fraction(cursor, self._sample_rate) - SEEK_PREROLL
+        )
         time_base = self._stream.time_base or Fraction(1, self._sample_rate)
         pts = seconds_to_pts(seconds, Fraction(time_base), Rounding.FLOOR)
         try:
@@ -251,7 +260,7 @@ class AudioDecoder:
             chunk = _planar_to_interleaved(resampled)
             if not len(chunk):
                 continue
-            self._append(chunk, _output_sample_index(resampled, self._sample_rate))
+            self._append(chunk, _output_sample_index(resampled, self._sample_rate, self._origin))
             produced = True
         return produced
 
@@ -277,9 +286,13 @@ def _empty(channels: int) -> np.ndarray:
     return np.zeros((0, channels), dtype=np.float32)
 
 
-def _output_sample_index(frame: av.AudioFrame, sample_rate: int) -> int | None:
-    """リサンプル後のフレームの先頭が、出力の何サンプル目にあたるか"""
+def _output_sample_index(frame: av.AudioFrame, sample_rate: int, origin: Fraction) -> int | None:
+    """リサンプル後のフレームの先頭が、出力の何サンプル目にあたるか（素材の原点から）
+
+    原点より前（映像より早く始まる音の前置き）は負の番号になる 切り捨ては負の側へ取る
+    0 の側へ丸めると、原点をまたぐフレームが 1 サンプル後ろへずれる
+    """
     if frame.pts is None:
         return None
     time_base = Fraction(frame.time_base) if frame.time_base else Fraction(1, sample_rate)
-    return int(frame.pts * time_base * sample_rate)
+    return math.floor((frame.pts * time_base - origin) * sample_rate)

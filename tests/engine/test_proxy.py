@@ -593,6 +593,22 @@ class TestTheRendererUsesIt:
         assert image[:, :, :3].max() > 0, "何も映っていない"
         assert store.find(project.media[0]) is not None, "使える控えを消している"
 
+    def test_a_late_starting_proxy_keeps_the_same_clock(
+        self, sample_av: SampleMedia, tmp_path: Path
+    ) -> None:
+        """頭が 0 より後ろの素材の控えは、元と同じ原点から数えて同じ時刻に終わる（Issue #123）
+
+        控えは映像だけを写す 元の素材の音は映像より 24ms 早く始まるので、原点を
+        コンテナの頭（全ストリームの最小）に取ると、元と控えで原点が 24ms 食い違い、
+        控えのときだけ絵が 1 つ前のフレームになる 原点を映像の頭に取るのはこのため
+        """
+        late = make_delayed(tmp_path, "late.mp4", sample_av.path, 5.0)
+        made = create_proxy(late, tmp_path / "late-proxy.mp4", height=120)
+        assert made is not None
+        source_end = probe_media(late).video_streams[0].end_time
+        proxy_end = probe_media(made).video_streams[0].end_time
+        assert source_end == proxy_end == Fraction(2)
+
     def test_a_missing_proxy_falls_back_to_the_source(
         self, sample_av: SampleMedia, tmp_path: Path, gl_context: OffscreenGLContext
     ) -> None:

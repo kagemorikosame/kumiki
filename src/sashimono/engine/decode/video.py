@@ -18,7 +18,7 @@ import numpy as np
 from sashimono.core.model import VideoStreamInfo
 from sashimono.core.timebase import Rounding, seconds_to_pts
 from sashimono.engine.colorspace import to_rgb_array
-from sashimono.engine.decode.probe import ProbeError, probe_media
+from sashimono.engine.decode.probe import ProbeError, media_origin, probe_media
 
 __all__ = ["VideoDecoder"]
 
@@ -59,11 +59,14 @@ class VideoDecoder:
             item.video_streams[0],
         )
         self._duration = item.duration
-        # 絵を出すのは映像の道の終わりまで 素材の時刻はフレームの PTS そのもの（頭の時刻を
-        # 引かない :func:`_frame_time`）で、道の終わりも同じ数え方で取ってある
+        #: 素材の時刻の原点（秒 PTS の数え方） 時刻はフレームの PTS からこれを引いて数える
+        #: 音声のデコーダも同じ原点を引くので、素材の中の映像と音の食い違いはそのまま残る
+        self._origin = media_origin(self._container)
+        # 絵を出すのは映像の道の終わりまで 道の終わりも同じ原点から数えて取ってある
         # コンテナの終わりで切ると、音の方が長い素材では音だけの区間にも直前の絵が残る
         # 最後の絵を出し続けたいクリップは ``Clip.hold_at`` で明示して止める
-        self._end = self._info.end_time if self._info.end_time is not None else self._fallback_end()
+        # 道の長さが分からない素材は素材全体の長さで切る（これも原点から数えてある）
+        self._end = self._info.end_time if self._info.end_time is not None else self._duration
 
         self._frames = self._container.decode(self._stream)
         #: 今「表示されている」フレーム 最後に返したもの
@@ -78,16 +81,6 @@ class VideoDecoder:
     @property
     def duration(self) -> Fraction:
         return self._duration
-
-    def _fallback_end(self) -> Fraction:
-        """映像の道が長さを書いていない素材の終わり コンテナの頭の時刻 ＋ 全体の長さ
-
-        コンテナの長さは頭の時刻を含まない 長さそのものと比べると、頭が 0 より後ろの素材
-        （分割して書き出した物）は、映像の途中から先が何も映らない
-        """
-        start = self._container.start_time
-        offset = Fraction(start, av.time_base) if start is not None and start > 0 else Fraction(0)
-        return self._duration + offset
 
     def __enter__(self) -> VideoDecoder:
         return self
@@ -134,7 +127,7 @@ class VideoDecoder:
                     # 終端 最後に読めたフレームがそのまま表示され続ける
                     return self._current
 
-            if self._current is None or _frame_time(self._pending) <= target:
+            if self._current is None or self._frame_time(self._pending) <= target:
                 self._current = self._pending
                 self._pending = None
                 continue
@@ -153,7 +146,7 @@ class VideoDecoder:
         """順方向デコードで届かない位置ならシークが必要"""
         if self._current is None:
             return target > FORWARD_DECODE_WINDOW
-        position = _frame_time(self._current)
+        position = self._frame_time(self._current)
         if target < position:
             return True
         return target - position > FORWARD_DECODE_WINDOW
@@ -165,7 +158,7 @@ class VideoDecoder:
         目的フレームを飛び越してしまい、もう一度シークし直すことになる
         """
         time_base = self._stream.time_base or Fraction(1, 1000)
-        pts = seconds_to_pts(target, Fraction(time_base), Rounding.FLOOR)
+        pts = seconds_to_pts(target + self._origin, Fraction(time_base), Rounding.FLOOR)
         try:
             self._container.seek(pts, stream=self._stream, backward=True)
         except av.error.FFmpegError:
@@ -175,12 +168,15 @@ class VideoDecoder:
         self._current = None
         self._pending = None
 
+    def _frame_time(self, frame: av.VideoFrame) -> Fraction:
+        """フレームの表示時刻（秒 素材の原点から） ``time`` は float なので PTS から作り直す
 
-def _frame_time(frame: av.VideoFrame) -> Fraction:
-    """フレームの表示時刻（秒） ``time`` は float なので PTS から作り直す"""
-    if frame.pts is None or frame.time_base is None:
-        return Fraction(0)
-    return frame.pts * Fraction(frame.time_base)
+        原点を引かないと、頭が 0 より後ろの素材でクリップの読む時刻がすべて最初の
+        フレームより前になり、頭の絵が止まったまま動かない（Issue #123）
+        """
+        if frame.pts is None or frame.time_base is None:
+            return Fraction(0)
+        return frame.pts * Fraction(frame.time_base) - self._origin
 
 
 def _to_rgba(frame: av.VideoFrame, rotation: int) -> np.ndarray:
