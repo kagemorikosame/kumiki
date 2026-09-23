@@ -43,7 +43,16 @@ HOME_PLACEHOLDER = "%USERPROFILE%"
 #: （ネットワークの置き場など）へ向いていることがあり、その場所にも利用者名が入る
 #: ホームだけを伏せると、そうした機械では名前がそのまま残る
 #: 環境変数の名前で置くのは、伏せたあとも「設定の置き場の中」だと読めるようにするため
-_FOLDER_VARIABLES = (("APPDATA", "%APPDATA%"), ("LOCALAPPDATA", "%LOCALAPPDATA%"))
+#: Windows 以外の置き場（`core/userdirs.py` が使う XDG の 4 つ）も同じ理由で伏せる
+#: ホームの外へ向けた機械では、ホームを伏せても名前が残る
+_FOLDER_VARIABLES = (
+    ("APPDATA", "%APPDATA%"),
+    ("LOCALAPPDATA", "%LOCALAPPDATA%"),
+    ("XDG_CONFIG_HOME", "$XDG_CONFIG_HOME"),
+    ("XDG_STATE_HOME", "$XDG_STATE_HOME"),
+    ("XDG_CACHE_HOME", "$XDG_CACHE_HOME"),
+    ("XDG_DATA_HOME", "$XDG_DATA_HOME"),
+)
 
 #: 区切りとみなす文字 Windows は ``/`` も ``\`` も受け付け、OS の文言や
 #: スクリプトの書いた場所ではどちらも混ざる

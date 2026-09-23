@@ -134,6 +134,18 @@ class TestCompatibilityCopy:
         )
         assert text == r"開けない: %APPDATA%\Sashimono\scripts\a.anm2"
 
+    def test_the_xdg_folders_outside_the_home_are_hidden(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # Windows 以外では設定と退避の置き場が XDG の環境変数で決まる ホームの外
+        # （ネットワークの置き場など）へ向けた機械では、ホームだけを伏せると名前が残る
+        state = "/mnt/share/kagemori/state"
+        monkeypatch.setenv("XDG_STATE_HOME", state)
+        text = mask_user_folders(
+            f"開けない: {state}/Sashimono/recovery/a.sme", user_folders(tmp_path)
+        )
+        assert text == "開けない: $XDG_STATE_HOME/Sashimono/recovery/a.sme"
+
     def test_the_short_8dot3_name_of_the_home_is_hidden(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
