@@ -7,12 +7,17 @@
 
 from __future__ import annotations
 
+import io
 import json
+import re
+import zipfile
+import zlib
 from pathlib import Path
 
 import pytest
 
-from sashimono.compat.catalog import TemplateCatalog, place, restyle
+from sashimono.compat.catalog import TemplateCatalog, TemplateError, place, restyle
+from sashimono.compat.ymm4.template import Ymm4ParseError, load_template
 from sashimono.core.commands import AddClip, AddEffect, AddTrack, RemoveEffect, SetSource
 from sashimono.core.model import AnimatedValue, Clip, GeneratedSource, Project
 from sashimono.effects import registry
@@ -91,6 +96,48 @@ NO_SPAN = (
 )
 
 
+def _corrupt_zip() -> bytes:
+    """終わりの目録は正しく、中の圧縮された所だけが壊れた ZIP
+
+    ZIP とは見分けられるので中を開きに行き、取り出すところで初めて失敗する
+    """
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("catalog.json", json.dumps({"ItemTemplates": []}) * 50)
+    data = bytearray(buffer.getvalue())
+    # ローカルの見出しは固定の 30 バイトの後ろに名前と拡張の欄が続き、その後ろが中身
+    # 決め打ちの位置で壊すと名前まで壊れ、見出しの食い違い（BadZipFile）で先に落ちる
+    # 0 で埋めると展開は通って CRC の食い違いになるので、展開できない値で埋める
+    name_length = int.from_bytes(data[26:28], "little")
+    extra_length = int.from_bytes(data[28:30], "little")
+    start = 30 + name_length + extra_length
+    data[start + 2 : start + 12] = b"\xff" * 10
+    return bytes(data)
+
+
+def _rewritten_zip(*, flags: int = 0, method: int | None = None) -> bytes:
+    """見出しの汎用フラグと圧縮方式を書き換えた ZIP
+
+    標準の ``zipfile`` は暗号化した物や知らない圧縮方式の物を書けないので、普通に
+    書いてから、ローカルの見出しと中央の目録の両方を書き換える ``zipfile`` は
+    目録の値で展開のしかたを決め、ローカルの見出しとの食い違いも見るので、
+    片方だけでは別の理由（見出しの食い違い）で読めなくなり、狙った道を通らない
+    """
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
+        archive.writestr("catalog.json", json.dumps({"ItemTemplates": []}))
+    data = bytearray(buffer.getvalue())
+    # ローカルの見出しは頭から 6 バイト目に汎用フラグ、8 バイト目に圧縮方式
+    # 中央の目録はそれぞれ 8 バイト目と 10 バイト目
+    for signature, flag_at in ((b"PK\x03\x04", 6), (b"PK\x01\x02", 8)):
+        start = data.index(signature)
+        flag = int.from_bytes(data[start + flag_at : start + flag_at + 2], "little") | flags
+        data[start + flag_at : start + flag_at + 2] = flag.to_bytes(2, "little")
+        if method is not None:
+            data[start + flag_at + 2 : start + flag_at + 4] = method.to_bytes(2, "little")
+    return bytes(data)
+
+
 @pytest.fixture
 def shelf(tmp_path: Path) -> tuple[TemplateCatalog, Path]:
     root = tmp_path / "テンプレート"
@@ -131,9 +178,85 @@ class TestScanning:
         catalog, _ = shelf
         assert "字幕" in catalog.folders()
 
+    def test_the_place_in_the_original_file_is_kept(self, tmp_path: Path) -> None:
+        """報告に書く位置は、原本の一覧の何本目か
+
+        読める物だけの通し番号では、空の物を飛ばした後ろやエフェクトの一覧の物が
+        原本の別の物を指し、受けた側が違うテンプレートを調べることになる
+        """
+        text = {"$type": "YukkuriMovieMaker.Project.Items.TextItem, YukkuriMovieMaker"}
+        document = {
+            "ItemTemplates": [
+                {"Name": "空", "Path": ["空"], "Items": []},
+                {"Name": "見出し", "Path": ["見出し"], "Items": [{**text, "Length": 60}]},
+            ],
+            "VideoEffectTemplates": [{"Name": "揺れ", "Effects": [{"$type": "X"}]}],
+        }
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("catalog.json", json.dumps(document, ensure_ascii=False))
+        (tmp_path / "束.ymmt").write_bytes(buffer.getvalue())
+        catalog = TemplateCatalog()
+        catalog.scan((tmp_path,))
+
+        found = {entry.name: entry for entry in catalog.all()}
+        assert found["見出し"].origin == "ItemTemplates の 2 本目"
+        assert found["揺れ"].origin == "VideoEffectTemplates の 1 本目"
+        # 読む側の番号は読める物だけの並びのまま 変えると別のテンプレートを置く
+        assert found["見出し"].index == 0
+        assert found["見出し"].load()
+
     def test_an_absent_folder_is_not_an_error(self, tmp_path: Path) -> None:
         catalog = TemplateCatalog()
         assert catalog.scan((tmp_path / "無い",)) == []
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            pytest.param("{これは JSON ではない".encode(), id="壊れた JSON"),
+            pytest.param(b"\xff\xfe\x00\x81", id="UTF-8 でない"),
+            pytest.param(_corrupt_zip(), id="中の壊れた ZIP"),
+            pytest.param(_rewritten_zip(flags=0x1), id="暗号化された ZIP"),
+            pytest.param(_rewritten_zip(method=99), id="知らない圧縮方式の ZIP"),
+            pytest.param(json.dumps({"ItemTemplates": []}).encode(), id="中身が空"),
+        ],
+    )
+    def test_an_unreadable_ymm4_file_stays_on_the_shelf(
+        self, tmp_path: Path, content: bytes
+    ) -> None:
+        # 壊れると、読めない .ymmt が棚から黙って消える（UTF-8 でない物は走査ごと落ちる）
+        # 本人は置いた物が無い理由が分からず、互換の報告にも写せない
+        (tmp_path / "壊れ.ymmt").write_bytes(content)
+        (tmp_path / "強調.object").write_text(ALIAS, "utf-8")
+        catalog = TemplateCatalog()
+        catalog.scan((tmp_path,))
+        broken = catalog.find("壊れ")
+        assert broken is not None
+        assert broken.source == "ymm4"
+        assert broken.error
+        with pytest.raises(TemplateError, match=re.escape(broken.error)):
+            broken.load()
+        # 読めない物が 1 つあっても、ほかのテンプレートは並ぶ
+        assert catalog.find("強調") is not None
+
+    @pytest.mark.parametrize(
+        ("content", "cause"),
+        [
+            pytest.param(_rewritten_zip(flags=0x1), RuntimeError, id="暗号化"),
+            pytest.param(_rewritten_zip(method=99), NotImplementedError, id="知らない圧縮方式"),
+            pytest.param(_corrupt_zip(), zlib.error, id="中の壊れた ZIP"),
+        ],
+    )
+    def test_the_rewritten_zips_fail_where_intended(
+        self, tmp_path: Path, content: bytes, cause: type[Exception]
+    ) -> None:
+        # 書き換えを誤ると、見出しの食い違い（BadZipFile）のような別の理由で読めなく
+        # なり、上の試験は暗号化や圧縮方式を受ける所を通らないまま通ってしまう
+        path = tmp_path / "書き換え.ymmt"
+        path.write_bytes(content)
+        with pytest.raises(Ymm4ParseError) as raised:
+            load_template(path)
+        assert type(raised.value.__cause__) is cause
 
 
 class TestPlacing:
