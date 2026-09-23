@@ -10,6 +10,8 @@ faster-whisper にパスを渡すと、音の最初のサンプルを 0 秒と�
 from __future__ import annotations
 
 import subprocess
+from dataclasses import replace
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -162,3 +164,33 @@ def test_a_video_without_sound_is_refused_before_reserving_memory(
         backend.transcribe(sample_long.path, TranscribeOptions())
     assert reserved == []
     assert model.audio is None
+
+
+def test_a_sound_of_unknown_length_is_still_transcribed(
+    sample_av: SampleMedia, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 長さが分からない素材を「音声が無い」と断ると、音があるのに起こせない
+    # 読む量を決められないので、前と同じくパスを渡して faster-whisper に読ませる
+    import sashimono.asr.whisper as whisper
+
+    real_probe = whisper.probe_media
+    monkeypatch.setattr(
+        whisper, "probe_media", lambda path: replace(real_probe(path), duration=Fraction(0))
+    )
+    model, transcript = _transcribe(sample_av.path, monkeypatch)
+    assert model.audio == str(sample_av.path)
+    assert transcript is not None
+
+
+def test_an_absurd_length_fails_as_a_transcription_error(
+    sample_av: SampleMedia, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 配列を作れない長さで素の例外が出ると、起こしの失敗として画面に出ず想定外の失敗になる
+    import sashimono.asr.whisper as whisper
+
+    real_probe = whisper.probe_media
+    monkeypatch.setattr(
+        whisper, "probe_media", lambda path: replace(real_probe(path), duration=Fraction(10**15))
+    )
+    with pytest.raises(AsrError, match="メモリが足りない"):
+        _transcribe(sample_av.path, monkeypatch)

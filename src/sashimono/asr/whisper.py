@@ -145,7 +145,7 @@ class FasterWhisperBackend:
         return self._model
 
 
-def _media_audio(source: Path, should_cancel: ShouldCancel | None) -> np.ndarray | None:
+def _media_audio(source: Path, should_cancel: ShouldCancel | None) -> np.ndarray | str | None:
     """素材の音を faster-whisper の形で読む 止められたら ``None``
 
     素材の時刻の原点（:func:`~sashimono.engine.decode.probe.media_origin`）から数えて読む
@@ -153,6 +153,9 @@ def _media_audio(source: Path, should_cancel: ShouldCancel | None) -> np.ndarray
     音の頭が原点と違う素材（AAC の前置き・音が映像より早く始まる物）では、起こした字幕が
     その差の分だけずれる（Issue #125） 原点より前の音（前置きなど）は置いたクリップでも
     鳴らない区間なので、起こさなくてよい
+
+    長さの分からない素材（調べても 0 と出た物）は、読む量を決められないので前と同じく
+    パスを渡す 音の頭と原点の差の分はずれうるが、断って起こせないよりよい
     """
     try:
         item = probe_media(source)
@@ -160,13 +163,16 @@ def _media_audio(source: Path, should_cancel: ShouldCancel | None) -> np.ndarray
         total = int(item.duration * WHISPER_SAMPLE_RATE)
         # 配列を作る前に断る 音の無い長い動画で先に全長の配列を作ると、音が無いと
         # 分かる前に大きな確保が走る
-        if not item.audio_streams or total <= 0:
+        if not item.audio_streams:
             raise AsrError(f"音声が無い: {source}")
+        if total <= 0:
+            return str(source)
         # 全長の配列を先に 1 つだけ作って書き込む 読んだ分を貯めてから最後につなぐと、
         # つなぐ瞬間に同じ長さの配列が 2 つ並ぶ（1 時間で 230MB が 460MB になる）
         try:
             audio = np.empty(total, dtype=np.float32)
-        except MemoryError as exc:
+        except (MemoryError, ValueError) as exc:
+            # ValueError は配列の大きさが NumPy の上限を越えたとき（異常な長さの素材）
             # 起こしの失敗として出す 素のまま投げると起こしの枠の外（想定外の失敗）になる
             raise AsrError(f"音声を読むメモリが足りない（{total * 4 // 2**20} MB）") from exc
         with AudioDecoder(source, sample_rate=WHISPER_SAMPLE_RATE, channels=1) as decoder:
