@@ -1210,6 +1210,11 @@ class TestTheContentOffset:
             "0:00:06",
             "0:0:0",
             "10675200.00:00:00",
+            # TimeSpan.MaxValue の 100 ナノ秒 1 つ先 日だけを見ると通ってしまう
+            "10675199.02:48:05.4775808",
+            "10675199.23:59:59",
+            # アラビア数字 ``\d`` は Unicode の十進数字も拾う
+            "٠٠:٠٠:٠٦",
         ],
     )
     def test_a_shape_dot_net_never_writes_is_not_taken(self, offset: str) -> None:
@@ -1217,8 +1222,8 @@ class TestTheContentOffset:
 
         受けると、書き間違い（``00:60:00`` や ``0:0:0`` など）から別の場面が再生される
         桁を無制限にすると、長い数字で ``int`` が桁数の上限に当たって投げ、
-        テンプレートの読み込みごと止まる 日の上限（``TimeSpan.MaxValue``）を
-        超える値も .NET からは出てこない
+        テンプレートの読み込みごと止まる ``TimeSpan.MaxValue`` を超える長さや、
+        ASCII でない数字（``٠٠:٠٠:٠٦``）も .NET からは出てこない
         """
         report = CompatibilityReport()
         (mapped,) = map_template([self.video(offset)], report=report)

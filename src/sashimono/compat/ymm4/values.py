@@ -56,18 +56,21 @@ __all__ = [
 
 #: .NET の TimeSpan の文字列 ``[-][日.]時:分:秒[.小数]``
 #: 日を落とすと、9 分 24 秒のつもりが 1 日 9 分 24 秒の素材で頭から鳴る
+#: 数字は ASCII だけ ``\d`` は Unicode の十進数字も拾うので、``٠٠:٠٠:٠٦`` のような
+#: .NET が書かない形まで 6 秒として通り、数えないまま別の場面が再生される
 #: 時分秒は 2 桁で固定 .NET が書く形（``c``）は必ず 2 桁なので、``0:0:0`` のような
 #: 書き間違いを読めるものとして受けると、数え落として別の場面が再生される
 #: 小数は 7 桁まで（.NET は 100 ナノ秒まで） 桁を無制限にすると、長い数字で ``int`` が
 #: 桁数の上限に当たって投げ、テンプレートの読み込みごと止まる（Python の既定は 4300 桁）
 _TIMESPAN = re.compile(
-    r"^(?P<sign>-)?(?:(?P<days>\d{1,8})\.)?(?P<hours>\d{2}):(?P<minutes>\d{2})"
-    r":(?P<seconds>\d{2})(?:\.(?P<fraction>\d{1,7}))?$"
+    r"^(?P<sign>-)?(?:(?P<days>[0-9]{1,8})\.)?(?P<hours>[0-9]{2}):(?P<minutes>[0-9]{2})"
+    r":(?P<seconds>[0-9]{2})(?:\.(?P<fraction>[0-9]{1,7}))?$"
 )
 
-#: .NET の ``TimeSpan`` が表せる日数の上限（``TimeSpan.MaxValue`` は 10675199.02:48:05.4775807）
-#: これを超える値は .NET から出てこない 受けると、素材の終わりより先を指す開始位置になる
-MAX_TIMESPAN_DAYS = 10675199
+#: .NET の ``TimeSpan`` が表せる長さの上限（``TimeSpan.MaxValue`` は
+#: ``10675199.02:48:05.4775807`` ＝ 100 ナノ秒が 9223372036854775807 個）
+#: 日だけを見ると ``10675199.23:59:59`` のような .NET が書けない値が通る
+MAX_TIMESPAN_SECONDS = Fraction(9223372036854775807, 10**7)
 
 #: YMM4 の移動方法と、こちらの補間方法
 #:
@@ -319,8 +322,8 @@ def timespan(value: Any) -> Fraction | None:
     長い素材では数フレームずれる こちらの ``source_in`` は :class:`~fractions.Fraction`
     なので、丸めずに渡せる
 
-    .NET が書かない形は ``None`` 時分秒が 2 桁でない・時が 24 以上・分や秒が 60 以上・
-    日が :data:`MAX_TIMESPAN_DAYS` を超える・桁が長すぎる
+    .NET が書かない形は ``None`` 数字が ASCII でない・時分秒が 2 桁でない・時が 24 以上・
+    分や秒が 60 以上・全体が :data:`MAX_TIMESPAN_SECONDS` を超える・桁が長すぎる
     受けてしまうと、書き間違いから別の場面が再生される
     """
     if isinstance(value, Fraction | int) and not isinstance(value, bool):
@@ -335,11 +338,12 @@ def timespan(value: Any) -> Fraction | None:
     # 読めるものとして受けると、``00:99:00`` のような書き間違いから別の場面が再生される
     if int(parts["hours"]) > 23 or int(parts["minutes"]) > 59 or int(parts["seconds"]) > 59:
         return None
-    if int(parts["days"] or 0) > MAX_TIMESPAN_DAYS:
-        return None
+
     seconds = Fraction(int(parts["days"] or 0) * 86400)
     seconds += Fraction(int(parts["hours"]) * 3600 + int(parts["minutes"]) * 60)
     seconds += Fraction(int(parts["seconds"]))
     if parts["fraction"]:
         seconds += Fraction(int(parts["fraction"]), 10 ** len(parts["fraction"]))
+    if seconds > MAX_TIMESPAN_SECONDS:
+        return None
     return -seconds if parts["sign"] else seconds
