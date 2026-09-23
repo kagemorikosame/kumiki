@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import gc
+import os
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -26,7 +27,8 @@ from sashimono.compat.aviutl.report import CompatibilityReport
 from sashimono.compat.aviutl.runtime import LuaScriptRuntime, blank_image
 from sashimono.core.model import AnimatedValue
 from sashimono.engine.render.scripts import text_font
-from tests.conftest import REAL_AVIUTL2, touches_real_aviutl2
+from tests import conftest
+from tests.conftest import real_comfont_missing, touches_real_aviutl2
 
 
 @pytest.fixture(autouse=True)
@@ -434,12 +436,33 @@ class TestTheRealFolderIsOutOfReach:
         assert path is not None
         assert path.resolve().is_relative_to(tmp_path_factory.getbasetemp().resolve())
 
-    @pytest.mark.skipif(REAL_AVIUTL2 is None, reason="PROGRAMDATA が無い")
-    def test_reading_the_real_folder_fails_the_test(self) -> None:
-        """読もうとしても落ちないと、握って先へ進む描画の中で本物を読んでも気付けない"""
-        assert REAL_AVIUTL2 is not None
+    def test_the_real_plugin_is_skipped_off_windows(self, monkeypatch: Any) -> None:
+        """ファイルがあるだけで走らせると、DLL を読めない OS で実物の試験が落ちる"""
+        monkeypatch.setattr("sys.platform", "linux")
+        assert real_comfont_missing() == "comfont.aux2 は Windows の DLL で、この OS では読めない"
+
+    def test_the_guard_protects_the_real_default_folder(self) -> None:
+        """守る置き場がアプリの既定の置き場と食い違うと、守っているつもりで本物を読ませる"""
+        program_data = os.environ.get("PROGRAMDATA")
+        expected = (Path(program_data) / "aviutl2" / "Plugin",) if program_data else ()
+        assert expected == conftest.PROTECTED_PLUGIN_ROOTS
+
+    def test_reading_the_protected_folder_fails_the_test(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        """読もうとしても落ちないと、握って先へ進む描画の中で本物を読んでも気付けない
+
+        本物の置き場は CI には無い（無ければ中を読みに行かず、守りが試されない）
+        守る置き場を、偽の .aux2 を置いた一時フォルダへ差し替えて確かめる
+        守りが無ければ偽の DLL は読めない物として記録され、例外は出ない
+        """
+        protected = tmp_path / "Plugin"
+        protected.mkdir()
+        (protected / "偽物.aux2").write_bytes(b"MZ")
+        monkeypatch.setattr(conftest, "PROTECTED_PLUGIN_ROOTS", (protected,))
+        monkeypatch.setattr("sys.platform", "win32")
         with pytest.raises(pytest.fail.Exception, match="本人の AviUtl2"):
-            plugin.script_modules((REAL_AVIUTL2 / "Plugin",))
+            plugin.script_modules((protected,))
 
 
 def _library(required: int | None) -> Any:

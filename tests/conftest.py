@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import functools
-import os
 import shutil
+import sys
 from collections.abc import Iterator
 from fractions import Fraction
 from pathlib import Path
@@ -34,20 +34,31 @@ from tests.media_fixtures import SampleMedia, ffmpeg_available, make_sample
 
 RATE_30 = FrameRate(30)
 
-#: 本人の AviUtl2 の置き場 試験が環境変数を差し替える前に、読み込んだ時点で決めておく
-#: 差し替えた後に求めると、守るはずの本物の置き場を見失う
-REAL_AVIUTL2 = (
-    Path(os.environ["PROGRAMDATA"]) / "aviutl2" if os.environ.get("PROGRAMDATA") else None
-)
+#: 試験から読ませない置き場 アプリが既定で探す所（本人の AviUtl2 の ``Plugin``）を、
+#: アプリと同じ求め方で、差し替える前に求めておく 差し替えた後に求めると
+#: 一時フォルダを指してしまい、守るはずの本物の置き場を見失う
+PROTECTED_PLUGIN_ROOTS: tuple[Path, ...] = plugin.default_plugin_roots()
 #: 本物の合成フォント 実物を使う試験はこれを一時フォルダへ写して読む
-REAL_COMFONT = REAL_AVIUTL2 / "Plugin" / "comfont.aux2" if REAL_AVIUTL2 is not None else None
+REAL_COMFONT = PROTECTED_PLUGIN_ROOTS[0] / "comfont.aux2" if PROTECTED_PLUGIN_ROOTS else None
+
+
+def real_comfont_missing() -> str | None:
+    """実物の合成フォントを使う試験を飛ばす理由 走らせられるなら ``None``
+
+    Windows を先に見る ほかの OS では DLL を読めず、ファイルがあっても
+    （共有のフォルダから見えている、など）試験は読み込みで落ちる
+    """
+    if sys.platform != "win32":
+        return "comfont.aux2 は Windows の DLL で、この OS では読めない"
+    if REAL_COMFONT is None or not REAL_COMFONT.is_file():
+        return "comfont.aux2 が入っていない"
+    return None
 
 
 def touches_real_aviutl2(path: Path) -> bool:
-    """本人の AviUtl2 の ``Plugin`` フォルダの中を指しているか"""
-    if REAL_AVIUTL2 is None:
-        return False
-    return path.resolve().is_relative_to((REAL_AVIUTL2 / "Plugin").resolve())
+    """守る置き場（本人の AviUtl2 の ``Plugin``）の中を指しているか"""
+    target = path.resolve()
+    return any(target.is_relative_to(root.resolve()) for root in PROTECTED_PLUGIN_ROOTS)
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -130,8 +141,9 @@ def real_comfont(tmp_path_factory: pytest.TempPathFactory) -> Path:
     ほかの汎用プラグインまで全部初期化する 写すのは 1 度だけ 同じ実体を
     何度も読み込むと、試験のたびに DLL が 1 つずつ増える
     """
-    if REAL_COMFONT is None or not REAL_COMFONT.is_file():
-        pytest.skip("comfont.aux2 が入っていない")
+    reason = real_comfont_missing()
+    if reason is not None or REAL_COMFONT is None:
+        pytest.skip(reason or "comfont.aux2 が入っていない")
     folder = tmp_path_factory.mktemp("comfont")
     shutil.copy2(REAL_COMFONT, folder / REAL_COMFONT.name)
     return folder
