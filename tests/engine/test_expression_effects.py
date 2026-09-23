@@ -391,14 +391,34 @@ class TestMeshGrid:
         result = _run(gl_context, processor, _make("mesh_deform", grid=collapsed))
         assert np.all(np.isfinite(result))
 
-    def test_the_finer_mesh_keeps_the_old_corners_working(
-        self, gl_context: OffscreenGLContext, processor: EffectProcessor
+    @pytest.mark.parametrize(
+        ("slider", "moved", "still"),
+        [
+            # 返ってくる配列では行 45 が下側 列 45 が右（測って確かめた位置）
+            ("point2_y", (45, 45), (45, 18)),
+            ("point3_y", (45, 18), (45, 45)),
+        ],
+    )
+    def test_the_old_corner_sliders_move_their_own_corner(
+        self,
+        gl_context: OffscreenGLContext,
+        processor: EffectProcessor,
+        slider: str,
+        moved: tuple[int, int],
+        still: tuple[int, int],
     ) -> None:
-        # 格子を持たない既存のプロジェクトは、今までどおり四隅のスライダで動くこと
+        """スライダは一周の順（右下が 2・左下が 3）、格子は行の順（左下が 2・右下が 3）
+
+        並べ替えを取り違えると、既存のプロジェクトで右下を動かしたはずが
+        左下が動く 左上だけを動かす試験では、2 と 3 の入れ替わりを見つけられない
+        """
         picture = _ramp()
         flat = _run(gl_context, processor, _make("mesh_deform"), image=picture)
-        bent = _run(gl_context, processor, _make("mesh_deform", point0_y=16.0), image=picture)
-        assert not np.allclose(flat, bent)
+        bent = _run(gl_context, processor, _make("mesh_deform", **{slider: 8.0}), image=picture)
+        near = abs(float(bent[moved][0]) - float(flat[moved][0]))
+        far = abs(float(bent[still][0]) - float(flat[still][0]))
+        assert near > 0.02, f"{slider} が効いていない"
+        assert far < near / 5.0, f"{slider} で反対側の角が動いている"
 
 
 class TestAxes:

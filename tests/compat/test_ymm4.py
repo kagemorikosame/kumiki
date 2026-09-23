@@ -774,8 +774,8 @@ class TestMeshDeformation:
         assert not map_video_effects([short], report, length=30).effects
         assert any("3x3" in line for line in report.lines())
 
-    def test_a_grid_with_one_row_is_recorded(self) -> None:
-        # 点が 1 列しか無いとセルが作れず、割る数が 0 になる
+    def test_a_grid_with_one_column_is_recorded(self) -> None:
+        # 点が 1 列しか無いとセルが作れず、割る数が 0 になって絵が消える
         report = CompatibilityReport()
         assert not map_video_effects([mesh_effect(1, 3)], report, length=30).effects
         assert any("1x3" in line for line in report.lines())
