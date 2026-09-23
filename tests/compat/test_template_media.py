@@ -11,6 +11,7 @@ YMM4 の ``ImageItem`` ``AudioItem`` や AviUtl の ``画像ファイル`` ``音
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
 
@@ -364,6 +365,25 @@ def test_a_video_with_sound_also_lands_on_an_audio_track(tmp_path: Path) -> None
     (sound,) = clips_of(project, TrackKind.AUDIO)
     assert picture.media_id == sound.media_id == project.media[0].id
     assert (sound.timeline_start, sound.duration) == (picture.timeline_start, picture.duration)
+
+
+def test_the_sound_half_starts_where_the_picture_does(tmp_path: Path) -> None:
+    """切り出した位置は音のクリップにも付く
+
+    映像だけに付けると、切り出して使うテンプレート（YMM4 の ``ContentOffset``）で
+    絵と声が別の所から始まる
+    """
+    movie_file = tmp_path / "映像.mp4"
+    movie_file.write_bytes(b"")
+    trimmed = replace(
+        media_object(movie_file, "動画ファイル", with_sound=True),
+        clip=Clip(timeline_start=0, duration=30, source_in=Fraction(6)),
+    )
+    project = put([trimmed], Project.create(), FakeProbe())
+
+    (picture,) = clips_of(project, TrackKind.VIDEO)
+    (sound,) = clips_of(project, TrackKind.AUDIO)
+    assert picture.source_in == sound.source_in == Fraction(6)
 
 
 def test_the_two_halves_of_a_video_are_linked(tmp_path: Path) -> None:
