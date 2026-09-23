@@ -193,7 +193,8 @@ class PreferencesDialog(QDialog):
         note = QLabel(
             f"4K を 3 枚重ねたときの実測（1 コマ {BUDGET_MS:.1f}ms が 60fps の目安）\n"
             f"元のまま {plain}ms ／ 控えを使う {proxied}ms ／ さらに画質を下げる {both}ms\n"
-            "効果を積むと控えだけでは足りず、画質下げと組にして入る"
+            "効果を積むと余裕が減る ぼかしまでなら控えのままでぎりぎり入り、"
+            "画質も下げると余裕が出る ぼかしと発光まで積むとどの組でも入らない"
             f"（4K を 1 枚置いただけなら、元のままでも {MEASURED_ONE_LAYER_MS}ms で収まる）\n"
             "この機械で測るには tools\\bench_proxy.py\n"
             f"先読みは 1 枚 {_megabytes(FULL_HD_FRAME_BYTES):.1f}MB（1920x1080）"
