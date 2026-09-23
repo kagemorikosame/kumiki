@@ -1,8 +1,13 @@
-blank_issues_enabled: true
+# 白紙の Issue は閉じる 雛形を通らないと版や再現手順の欄が無く、聞き返しから始まる
+# 書き込み権限のある人（開発者本人）は、閉じていても白紙で作れる
+blank_issues_enabled: false
 contact_links:
-  - name: 使い方の質問・雑談
+  - name: 使い方の質問・相談
     url: https://github.com/kagemorikosame/sashimono-edit/discussions
-    about: 不具合か要望かはっきりしないことは、まずこちらへどうぞ
+    about: 不具合か要望かはっきりしないこと、使い方の質問はこちらへどうぞ
+  - name: 脆弱性の報告（非公開）
+    url: https://github.com/kagemorikosame/sashimono-edit/security/advisories/new
+    about: 他人のファイルで勝手に何かが動く、など 公開の Issue には書かないでください
   - name: 開発に参加する
     url: https://github.com/kagemorikosame/sashimono-edit/blob/main/CONTRIBUTING.md
     about: PR の送り方と開発ルール
