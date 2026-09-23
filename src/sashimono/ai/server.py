@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import json
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -27,6 +26,7 @@ if TYPE_CHECKING:
 from sashimono.ai.bridge import EditorBridge
 from sashimono.ai.host import ToolError
 from sashimono.ai.operations import OPERATIONS, ImageResult, Operation
+from sashimono.core.io.serialize import json_text
 
 __all__ = ["SERVER_NAME", "build_server", "build_tools", "tool_name", "tool_names"]
 
@@ -105,10 +105,9 @@ def _content(result: object) -> dict[str, Any]:
             blocks.append({"type": "text", "text": result.caption})
         return {"content": blocks}
 
-    if isinstance(result, str):
-        text = result
-    else:
-        text = json.dumps(result, ensure_ascii=False, indent=2, default=str)
+    # 効果の値には読めないバイトを持つ文字が入りうる そのまま渡すと、返事を
+    # UTF-8 にする所で落ちる（json_text を参照）
+    text = result if isinstance(result, str) else json_text(result, default=str)
     return {"content": [{"type": "text", "text": text}]}
 
 
