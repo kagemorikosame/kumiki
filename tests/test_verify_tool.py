@@ -12,6 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import pytest
 
@@ -97,3 +98,27 @@ class TestReadingThisTree:
             check=True,
         )
         assert found.stdout.strip() == "この木"
+
+    def test_every_step_is_run_with_this_tree_first(
+        self, verify: ModuleType, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """組み立てた環境を段へ渡し忘れると、pytest が本体の src を読んだまま通る
+
+        環境を作る所だけを見る試験では、``main`` から ``_run_tests`` を通って
+        pytest を起こす道の渡し忘れを見つけられない 全部の段を差し替えて、
+        受け取った環境を見る
+        """
+        seen: list[tuple[str, str]] = []
+
+        def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            environment = kwargs.get("env") or {}
+            seen.append((" ".join(command[1:3]), environment.get("PYTHONPATH", "")))
+            return subprocess.CompletedProcess(command, 0, "1 passed in 0.01s\n", "")
+
+        monkeypatch.setattr(verify.subprocess, "run", run)
+        monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+        assert verify.main() == 0
+        own = str(ROOT / "src")
+        assert {step for step, _ in seen} >= {"-m pytest", "-m mypy"}
+        for step, path in seen:
+            assert path.split(os.pathsep)[0] == own, f"{step} に自分の木の src が渡っていない"
