@@ -169,8 +169,16 @@ def root_markers(
     番号は画面の「探索先」の並びの順 どの印がどの場所かは画面にだけ出し、貼る文には出さない
     """
     markers: list[tuple[str, str]] = []
+    seen: set[str] = set()
     for root in roots:
         text = str(root)
+        # 同じ探索先が 2 度並ぶと、印が 2 つ付いて画面（後の印）と貼る文（先の印）で
+        # 食い違い、報告者が印の指す場所を確かめられない 1 つの場所に 1 つの印
+        # 大文字小文字と区切りの違いは同じ場所として扱う（Windows では同じ場所を指す）
+        key = "/".join(part for part in re.split(_SEPARATORS, text.casefold()) if part)
+        if key in seen:
+            continue
+        seen.add(key)
         # 1 段だけの相対の名前（写真の道具が出す ``scripts`` など）は場所を明かさない
         # 印にすると、文面の中のただの単語まで置き換わる（伏せる側も 1 段は飛ばす）
         if len([part for part in re.split(_SEPARATORS, text) if part]) < 2:

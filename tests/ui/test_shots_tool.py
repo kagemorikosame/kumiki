@@ -172,14 +172,24 @@ class TestSampleScript:
 
 class TestCompatibilityShot:
     def test_the_report_shot_hides_where_the_sample_lives(
-        self, shots: ModuleType, qt_application: QApplication, tmp_path: Path
+        self,
+        shots: ModuleType,
+        qt_application: QApplication,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """見本のスクリプトは一時フォルダに置く その場所を出したまま撮ると、
         撮った人のユーザー名を含むフォルダが Wiki の写真に写る
         """
         del qt_application
+        # ホームを試験の中で決める 見本はその下に置くので、撮った人の名前の代わりに
+        # この名前が写っていないかで見られる
+        home = tmp_path / "ホーム名は写らない"
+        home.mkdir()
+        monkeypatch.setenv("USERPROFILE", str(home))
+        monkeypatch.setenv("HOME", str(home))
         context = shots.Context(
-            media=None, alias_root=None, ymm4_root=None, script_root=tmp_path / "scripts"
+            media=None, alias_root=None, ymm4_root=None, script_root=home / "scripts"
         )
         with _restored_scripts():
             dialog = shots.compatibility_dialog(context)
@@ -190,7 +200,10 @@ class TestCompatibilityShot:
         assert str(tmp_path) not in shown
         assert str(Path.home()) not in shown
         # 場所の文字列が無いだけでは、一部だけが写って名前が残っても通る 名前そのものも見る
-        assert Path.home().name.casefold() not in shown.casefold()
+        # ホームの名前は試験の中で決めた物（一時フォルダの名前）を使う 走らせる機械の
+        # ホームの名前は、空（ホームが `/`）や `1` のように短いことがあり、写っていなくても
+        # 画面の決まった文（「スクリプト 1 本」など）と一致してしまう
+        assert home.name.casefold() not in shown.casefold()
         assert "スクリプト 1 本" in shown
 
     def test_scripts_in_the_default_folder_are_not_kept(

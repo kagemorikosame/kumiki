@@ -330,3 +330,13 @@ class TestCompatibilityCopy:
             assert "obj.putpixeldata — 1 回" in qt_application.clipboard().text()
         finally:
             dialog.close()
+
+
+def test_a_search_folder_listed_twice_gets_one_marker() -> None:
+    """同じ探索先が 2 度並ぶと印が 2 つ付き、画面と貼る文で違う印が出て、
+    報告者が印の指す場所を確かめられない
+    """
+    from sashimono.ui.compat_dialog import root_markers
+
+    markers = root_markers([r"D:\山田\Script", r"d:/山田/script", r"E:\別\Script"], [])
+    assert [marker for _root, marker in markers] == ["<探索先1>", "<探索先2>"]
