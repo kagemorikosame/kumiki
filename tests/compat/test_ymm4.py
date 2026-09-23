@@ -1231,6 +1231,21 @@ class TestItemSound:
         map_template([self.video(**values)], report=report)
         assert any(word in line for line in report.lines())
 
+    def test_a_setting_that_only_moves_later_is_counted(self) -> None:
+        """途中から動き出す定位も数える
+
+        先頭の値だけを見ると、0 から始まって途中で振り切れる定位を数え落とし、
+        互換性レポートが「全部写せている」と言う
+        """
+        moving = {
+            "Values": [{"Value": 0.0}, {"Value": 100.0}],
+            "Span": 0.0,
+            "AnimationType": "直線移動",
+        }
+        report = CompatibilityReport()
+        map_template([self.video(Pan=moving)], report=report)
+        assert any("Pan" in line for line in report.lines())
+
     def test_a_switched_off_audio_effect_is_not_counted(self) -> None:
         """切ってある音声エフェクトは数えない
 

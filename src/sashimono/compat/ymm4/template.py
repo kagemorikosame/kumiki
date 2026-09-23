@@ -739,9 +739,21 @@ def _audio_effects(
     """
     if name not in _SOUND_ITEMS:
         return ()
-    if number(item.get("Pan"), 0.0) != 0.0:
+
+    def differs(key: str, default: float) -> bool:
+        """既定と違う値を持つか 動く値は途中の点まで見る
+
+        先頭の値だけを見ると（``number``）、0 から動き出す定位のように、
+        始まりが既定と同じものを数え落とす
+        """
+        read = animated(item.get(key), default, length=length, keyframes=keyframes)
+        if read.keyframes:
+            return any(point.value != default for point in read.keyframes)
+        return read.static != default
+
+    if differs("Pan", 0.0):
         log.note_missing("YMM4 の音の定位（Pan）")
-    if number(item.get("PlaybackRate"), 100.0) != 100.0:
+    if differs("PlaybackRate", 100.0):
         log.note_missing("YMM4 の再生速度（PlaybackRate）")
     if str(item.get("ContentOffset") or "00:00:00") != "00:00:00":
         log.note_missing("YMM4 の素材の開始位置（ContentOffset）")
