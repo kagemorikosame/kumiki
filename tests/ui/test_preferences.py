@@ -447,6 +447,9 @@ class TestThePrefetchThreadSetting:
         assert Preferences().prefetch_thread is True
 
     def test_it_comes_back(self, tmp_path: Path) -> None:
+        """保存して読み直しても同じ 落ちると、ドライバとの相性で切った人が
+        起動のたびに別のスレッドの先読みへ戻され、同じ不具合にまた当たる
+        """
         store = PreferenceStore(tmp_path / "preferences.json")
         chosen = Preferences(prefetch_thread=False)
         store.save(chosen)

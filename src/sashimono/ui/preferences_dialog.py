@@ -154,8 +154,8 @@ class PreferencesDialog(QDialog):
         self._prefetch_thread.setChecked(preferences.prefetch_thread)
         self._prefetch_thread.setToolTip(
             "画面と同じスレッドで先読みすると、1 コマ描く間は操作を受け付けない "
-            f"4K を 3 枚重ねて効果を積んだ所で、操作が最大 {same_thread_ms}ms 待たされる所が、"
-            f"別のスレッドなら {other_thread_ms}ms で済む（95 パーセンタイル） "
+            f"4K を 3 枚重ねて効果を積んだ所で、操作が {same_thread_ms}ms 待たされる所が、"
+            f"別のスレッドなら {other_thread_ms}ms で済む（どちらも 95 パーセンタイル） "
             "GPU のドライバとの相性で先読みした絵が乱れるときは切る "
             "共有した GL を作れない機械では、入れたままでも画面のスレッドで先読みする"
         )
