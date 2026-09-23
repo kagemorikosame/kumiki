@@ -25,9 +25,6 @@ from sashimono.compat.aviutl import plugin
 
 ROOT = Path(__file__).resolve().parent.parent
 
-#: 実物の置き場 利用者の AviUtl2 にしか無い
-_REAL_PLUGIN = Path(os.environ.get("PROGRAMDATA", "")) / "aviutl2" / "Plugin" / "comfont.aux2"
-
 #: 実物（comfont.aux2 v0.2.0）が受け付けた 1 文字種ぶんの項目
 #: 臨時の置き場に置いたとき ``resolve("あ", "default")`` が書いた書体を返した
 _ACCEPTED_ADJUSTMENT = {
@@ -332,12 +329,15 @@ class TestAppDataPath:
         assert plugin._config().app_data_path == str(tmp_path / "aviutl2")
 
 
-@pytest.mark.skipif(not _REAL_PLUGIN.is_file(), reason="comfont.aux2 が入っていない")
-def test_the_real_plugin_composes_with_the_sample(tool: ModuleType, tmp_path: Path) -> None:
+def test_the_real_plugin_composes_with_the_sample(
+    tool: ModuleType, tmp_path: Path, real_comfont: Path
+) -> None:
     """見本の設定を実物が読まないと、組み替えの無い絵を AviUtl2 と比べることになる
 
     プラグインは読んだときの置き場を持ち続けるので、別のプロセスで読ませる
-    同じプロセスで先に読まれていると、見本の置き場が届かない
+    同じプロセスで先に読まれていると、見本の置き場が届かない 渡すのは実物だけを
+    写した置き場 本人の ``Plugin`` フォルダを渡すと、別のプロセスの中でほかの
+    汎用プラグインまで初期化して、本人の置き場へ書かせる（Issue #135）
     """
     tool.command_profile(SimpleNamespace(work=tmp_path))
     script = (
@@ -345,13 +345,13 @@ def test_the_real_plugin_composes_with_the_sample(tool: ModuleType, tmp_path: Pa
         "from pathlib import Path\n"
         "from sashimono.compat.aviutl import plugin\n"
         "plugin.set_app_data_path(Path(sys.argv[1]))\n"
-        "module = plugin.script_modules(roots=(Path(sys.argv[2]),))['compositefont']\n"
+        "module = plugin.script_modules((Path(sys.argv[2]),))['compositefont']\n"
         "text = module.call('decorate_layout', ['あア亜A1', 'default', 64.0, 0.0, ''])\n"
         "print(json.dumps(text, ensure_ascii=False))\n"
     )
     environment = dict(os.environ, PYTHONPATH=str(ROOT / "src"), PYTHONIOENCODING="utf-8")
     result = subprocess.run(
-        [sys.executable, "-c", script, str(tmp_path / "appdata"), str(_REAL_PLUGIN.parent)],
+        [sys.executable, "-c", script, str(tmp_path / "appdata"), str(real_comfont)],
         capture_output=True,
         text=True,
         encoding="utf-8",

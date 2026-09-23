@@ -174,6 +174,12 @@ class Preferences:
     #: 読んだ DLL は Sashimono と同じ権限で動く（Lua の閉じ込めの外） 読むのは
     #: 本人がスクリプトフォルダへ置いた物だけだが、気になる人は切れるようにする
     native_modules: bool = True
+    #: AviUtl2 の汎用プラグイン（``.aux2``）を全部読んで、スクリプトが引くモジュールを探す
+    #: 既定は切 切っている間は、名前を出すと確かめたプラグイン（合成フォントの
+    #: ``comfont.aux2``）だけを読む 全部を読むと、関係の無いプラグインが初期化で
+    #: Python を起動したりウィンドウを作ったり、本人の AviUtl2 の置き場へ書いたりする
+    #: （Issue #135） 表に無いプラグインのモジュールを使いたい人だけが入れる
+    all_aviutl_plugins: bool = False
 
     def prefetch_bytes(self) -> int:
         """先読みに使えるバイト数 切ってあれば 0
@@ -231,6 +237,7 @@ class PreferenceStore:
             ),
             decode_threads=_threads(data.get("decode_threads"), plain.decode_threads),
             native_modules=_flag(data.get("native_modules"), plain.native_modules),
+            all_aviutl_plugins=_flag(data.get("all_aviutl_plugins"), plain.all_aviutl_plugins),
         )
 
     def save(self, preferences: Preferences) -> None:

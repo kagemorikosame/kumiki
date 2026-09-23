@@ -35,16 +35,21 @@ Copyright (c) 2025 Kenkun）に従う
 - 設定（:func:`native.set_enabled`）で切れる
 - 読めない・登録が無い・Windows でない場合は落とさずに記録へ残す
 
-**1 つ読むために全部を読むことになる** 何を登録するかは読んでみるまで
-分からないため ``obj.module`` が呼ばれて初めて読むので、AviUtl2 のスクリプトを
-使わない限り動かない とはいえ副作用はある 手元の 5 本を通して観察したところ
+**既定では、求められた名前を出すと分かっているプラグインだけを読む**
+（:data:`KNOWN_PROVIDERS`） 何を登録するかは読んでみるまで分からないので、
+前は ``obj.module`` が 1 度呼ばれるたびに ``Plugin`` フォルダの全部を初期化していた
+手元の 5 本を通して観察したところ
 
 - ``comfont`` だけがスクリプトモジュールを登録した（``compositefont``）
 - ``AIEdit`` ``WhisperAutoSub`` は ``register_window_client`` に本物の
   ウィンドウハンドルを渡してきた＝読んだ時点でウィンドウを作っている
 - ``VariableFont`` はフィルタプラグインを登録しようとした（こちらは受け取らない）
+- ``WhisperAutoSub`` は初期化で Python を起動して環境を調べ、
+  ``Plugin\\WhisperAutoSub\\whisper_subtitle`` の設定と一時ファイルを書き直す（Issue #135）
 
-どれも落ちはしなかったが、**他人の DLL を走らせている**ことに変わりはない
+テレビ字幕の ``obj.module("TVSubtitle")``（中身は ``.mod2`` のファイル）を描くだけで、
+本人の AviUtl2 の置き場が書き換わっていた 表に無いモジュールを出すプラグインを
+使いたい人は、設定（:func:`set_scan_all`）で全部を読んで探す作りへ戻せる
 """
 
 from __future__ import annotations
@@ -67,17 +72,30 @@ from sashimono.compat.aviutl.native import (
 from sashimono.compat.aviutl.report import CompatibilityReport, global_report
 
 __all__ = [
+    "KNOWN_PROVIDERS",
     "PLUGIN_SUFFIX",
     "app_data_path",
     "default_plugin_roots",
     "forget",
+    "may_provide",
     "plugin_files",
+    "scan_all",
+    "script_module",
     "script_modules",
     "set_app_data_path",
+    "set_scan_all",
 ]
 
 #: 汎用プラグインの拡張子
 PLUGIN_SUFFIX = ".aux2"
+
+#: モジュールの名前 → それを登録すると確かめたプラグインのファイル名（小文字）
+#: 既定ではここに載っている物しか初期化しない 載せるのは実物を読んで登録を
+#: 確かめた物だけ 推測で載せると、関係の無いプラグインを走らせる元になる
+KNOWN_PROVIDERS: dict[str, tuple[str, ...]] = {
+    # 合成フォント 配布エイリアス「合成フォントテキスト」「合成フォント字幕」が引く
+    "compositefont": ("comfont.aux2",),
+}
 
 #: 1 つのフォルダから読むプラグインの数の上限 壊れたフォルダを指されたときに、
 #: 何百個の DLL を順に読み込んで固まらないため
@@ -261,7 +279,14 @@ def app_data_path() -> Path | None:
     return Path(program_data) / "aviutl2" if program_data else None
 
 
-_modules: dict[str, NativeModule] | None = None
+#: 既定の置き場で見つけたモジュール 探した名前の分だけ増える
+_modules: dict[str, NativeModule] = {}
+#: 既定の置き場で探し終えた名前 ``None`` は「全部を読んだ」
+#: 名前ごとに覚えないと、見つからない名前を引くたびに探し直し、壊れた
+#: プラグインの読み込みを毎コマ繰り返す
+_searched: set[str | None] = set()
+#: 全部を読んで探すか 既定は切 理由はモジュールの説明を見る
+_scan_all = False
 #: 読んだときに記録した「読めなかった理由」と回数 読み結果と一緒に覚えておく
 #: 覚えないと、2 つ目からの記録の器（別のスクリプトの実行）には理由が届かず、
 #: 「モジュールが見つかりません」だけが残って原因を追えない
@@ -270,9 +295,11 @@ _diagnostics: list[tuple[str, int]] = []
 #: 膨らむ 同じ器には 1 度だけ伝える 器は比べる作り（eq）で hash を持たないので、
 #: id を鍵に器そのものを弱く持つ（器が消えれば外れ、同じ id の別の器と取り違えない）
 _told: weakref.WeakValueDictionary[int, CompatibilityReport] = weakref.WeakValueDictionary()
-#: 伝えたときの器の「消した回数」 器が消されたら、同じ器でも伝え直す
-#: 伝え直さないと、互換性の記録の画面で消したあとは理由が二度と戻らない
-_told_at: dict[int, int] = {}
+#: 伝えたときの器の「消した回数」と、そこまでに伝えた理由の数
+#: 器が消されたら、同じ器でも初めから伝え直す 伝え直さないと、互換性の記録の
+#: 画面で消したあとは理由が二度と戻らない 数を覚えるのは、別の名前を探して
+#: 理由が増えたときに、増えた分だけを伝えるため（前の分まで流すと回数が膨らむ）
+_told_at: dict[int, tuple[int, int]] = {}
 _loaded: dict[Path, Any] = {}
 #: 読めたが一部を使えなかった理由 プラグインごと（実体のパス）に覚える
 #: `_register` からは記録の器に触れないので、ここへ置いて `_scan` が記録する
@@ -286,45 +313,106 @@ def forget() -> None:
     すでに読み込んだ DLL は放さない 同じ DLL を 2 度初期化すると、
     プラグインの中の状態が二重になる
     """
-    global _modules, _diagnostics
     with _lock:
-        _modules = None
-        _diagnostics = []
+        _modules.clear()
+        _searched.clear()
+        _diagnostics.clear()
         _told.clear()
         _told_at.clear()
 
 
-def script_modules(
-    roots: tuple[Path, ...] | None = None, *, report: CompatibilityReport | None = None
-) -> dict[str, NativeModule]:
-    """汎用プラグインが登録したスクリプトモジュール 名前で引ける
+def scan_all() -> bool:
+    """``Plugin`` フォルダの汎用プラグインを全部読んでモジュールを探すか"""
+    return _scan_all
 
-    一度だけ読む 見つからない・読めない場合は空の辞書で、呼ぶ側は
-    「そういうモジュールは無い」として先へ進む
+
+def set_scan_all(value: bool) -> None:
+    """全部を読んで探すかを切り替える
+
+    切り替えたら探し直す 覚えたままにすると、切ったあとも全部を読んだときに
+    見つけたモジュールが返り続け、入れたあとも表に無い名前が見つからないまま残る
+    読み込んだ DLL は放さない（:func:`forget` と同じ）
     """
-    global _modules, _diagnostics
+    global _scan_all
+    with _lock:
+        if _scan_all != bool(value):
+            _scan_all = bool(value)
+            forget()
+
+
+def may_provide(name: str) -> bool:
+    """その名前を、まだ読んでいない汎用プラグインが出しているかもしれないか
+
+    表に無い名前を引いて見つからなかったとき、設定で全部を読めば見つかるかも
+    しれないと記録へ書くかどうかに使う 全部を読む設定のときと、置き場に
+    プラグインが 1 つも無いときは、読めば見つかる見込みが無いので偽
+    """
+    if _scan_all or not enabled() or sys.platform != "win32":
+        return False
+    wanted = KNOWN_PROVIDERS.get(str(name), ())
+    return any(
+        path.name.lower() not in wanted
+        for root in default_plugin_roots()
+        for path in plugin_files(root)
+    )
+
+
+def script_module(name: str, *, report: CompatibilityReport | None = None) -> NativeModule | None:
+    """利用者の AviUtl2 の汎用プラグインが、その名前で登録したスクリプトモジュール
+
+    既定では、その名前を出すと分かっているプラグイン（:data:`KNOWN_PROVIDERS`）
+    だけを読む ``obj.module`` はファイルの ``.mod2``（テレビ字幕の ``TVSubtitle``）
+    にも使われ、そのたびに全部を初期化すると、関係の無いプラグインが Python を
+    起動したりウィンドウを作ったり、本人の AviUtl2 の置き場へ書いたりする
+    全部を読んで探すのは :func:`set_scan_all` で入れたときだけ
+
+    名前ごとに 1 度だけ探す 無ければ ``None`` で、呼ぶ側はファイルを探す道へ進む
+    """
+    key = str(name)
     target = report if report is not None else global_report
     with _lock:
-        if roots is not None:
-            return _scan(roots, target)
-        if _modules is None:
+        wanted: str | None = None if _scan_all else key
+        if None not in _searched and wanted not in _searched:
             collector = CompatibilityReport()
-            _modules = _scan(default_plugin_roots(), collector)
-            _diagnostics = list(collector.missing.items())
-            _told.clear()
-            _told_at.clear()
-        key = id(target)
-        if _told.get(key) is not target or _told_at.get(key) != target.cleared:
-            for line, count in _diagnostics:
-                for _ in range(count):
-                    target.note_missing(line)
-            if _told.get(key) is not target:
-                # 器が消えたら回数も外す 外さないと、一時の器を作るたびに
-                # 整数の鍵だけが残り続け、長く動かすほど覚える量が増える
-                weakref.finalize(target, _told_at.pop, key, None)
-            _told[key] = target
-            _told_at[key] = target.cleared
-        return _modules
+            for found_name, module in _scan(default_plugin_roots(), collector, wanted).items():
+                # 先に見つけた物を残す 名前ごとに探すので、全部を読んだ後に
+                # 同じ名前を別のプラグインから拾い直すことはない
+                _modules.setdefault(found_name, module)
+            _diagnostics.extend(collector.missing.items())
+            _searched.add(wanted)
+        _tell(target)
+        return _modules.get(key)
+
+
+def _tell(target: CompatibilityReport) -> None:
+    """覚えた「読めなかった理由」を、まだ伝えていない分だけ器へ書く"""
+    key = id(target)
+    known = _told.get(key) is target
+    cleared, told = _told_at.get(key, (-1, 0)) if known else (-1, 0)
+    start = told if cleared == target.cleared else 0
+    for line, count in _diagnostics[start:]:
+        for _ in range(count):
+            target.note_missing(line)
+    if not known:
+        # 器が消えたら回数も外す 外さないと、一時の器を作るたびに
+        # 整数の鍵だけが残り続け、長く動かすほど覚える量が増える
+        weakref.finalize(target, _told_at.pop, key, None)
+    _told[key] = target
+    _told_at[key] = (target.cleared, len(_diagnostics))
+
+
+def script_modules(
+    roots: tuple[Path, ...], *, report: CompatibilityReport | None = None
+) -> dict[str, NativeModule]:
+    """渡した置き場の汎用プラグインを全部読み、登録されたモジュールを名前で返す
+
+    置き場を指して確かめる道具と試験のための口 アプリの描画は
+    :func:`script_module` を使う（読むのは要る物だけ） 覚えずに毎回探すが、
+    同じ DLL は 2 度初期化しない
+    """
+    target = report if report is not None else global_report
+    with _lock:
+        return _scan(roots, target)
 
 
 def plugin_files(root: Path) -> tuple[Path, ...]:
@@ -356,13 +444,23 @@ def plugin_files(root: Path) -> tuple[Path, ...]:
     return tuple(found)
 
 
-def _scan(roots: tuple[Path, ...], report: CompatibilityReport) -> dict[str, NativeModule]:
+def _scan(
+    roots: tuple[Path, ...], report: CompatibilityReport, wanted: str | None = None
+) -> dict[str, NativeModule]:
+    """置き場のプラグインを読む ``wanted`` を渡したら、その名前を出す物だけ
+
+    ファイル名で選ぶのは初期化より前に決めるため 初期化してから名前を見ても、
+    その時点で相手の DLL はもう走っている
+    """
     if not enabled() or sys.platform != "win32":
         return {}
+    providers = None if wanted is None else KNOWN_PROVIDERS.get(wanted, ())
     found: dict[str, NativeModule] = {}
     count = 0
     for root in roots:
         for path in plugin_files(root):
+            if providers is not None and path.name.lower() not in providers:
+                continue
             if count >= MAX_PLUGINS:
                 return found
             count += 1
