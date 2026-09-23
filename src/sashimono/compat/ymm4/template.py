@@ -752,7 +752,10 @@ def _audio_effects(
     if item.get("EchoIsEnabled") is True:
         log.note_missing("YMM4 のエコー")
     for entry in item.get("AudioEffects") or []:
-        if isinstance(entry, dict):
+        # 切ってあるエフェクトは鳴り方に関わらない 数えると、直す順番を決めるときに
+        # 効いていないものが上位に来る 映像エフェクトの読み方（map_video_effects）と同じ
+        # 実物の音声エフェクト 3 個はどれも IsEnabled を持っていた
+        if isinstance(entry, dict) and entry.get("IsEnabled") is not False:
             log.note_missing(f"YMM4 の音声エフェクト: {type_name(entry) or '種類不明'}")
 
     volume = animated(item.get("Volume"), 100.0, length=length, keyframes=keyframes)

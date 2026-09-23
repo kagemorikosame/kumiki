@@ -1231,6 +1231,17 @@ class TestItemSound:
         map_template([self.video(**values)], report=report)
         assert any(word in line for line in report.lines())
 
+    def test_a_switched_off_audio_effect_is_not_counted(self) -> None:
+        """切ってある音声エフェクトは数えない
+
+        鳴り方に関わらないものが数に混ざると、直す順番を多い順で決められなくなる
+        実物の音声エフェクトはどれも ``IsEnabled`` を持っていた
+        """
+        off = [{"$type": "N.VibratoEffect, A", "IsEnabled": False}]
+        report = CompatibilityReport()
+        map_template([self.video(AudioEffects=off)], report=report)
+        assert not any("VibratoEffect" in line for line in report.lines())
+
     def test_an_unknown_item_is_recorded_and_skipped(self) -> None:
         report = CompatibilityReport()
         assert map_template([{"$type": "N.TachieItem, A"}], report=report) == []
