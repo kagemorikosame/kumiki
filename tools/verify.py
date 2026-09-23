@@ -32,17 +32,34 @@ STEPS: list[tuple[str, list[str]]] = [
 ]
 
 
+def own_environment(root: Path, base: dict[str, str] | None = None) -> dict[str, str]:
+    """この木の ``src`` を先に読ませる環境変数
+
+    ``.venv`` には本体の木が editable install で入っていて、``.pth`` が本体の
+    ``src`` を指している worktree で検証しても、立てなければ pytest が読むのは
+    本体の ``src`` で、worktree で書いたコードは 1 行も通らないのに「すべて通過」と
+    出る（#102） ``PYTHONPATH`` は ``.pth`` より先に並ぶので、ここに立てれば勝つ
+    すでに立っている値は後ろに残す（手で足した置き場を消さない）
+    """
+    environment = dict(os.environ if base is None else base)
+    own = str(root / "src")
+    rest = environment.get("PYTHONPATH", "")
+    environment["PYTHONPATH"] = own + (os.pathsep + rest if rest else "")
+    return environment
+
+
 def main() -> int:
     root = Path(__file__).resolve().parent.parent
     failures: list[str] = []
+    environment = own_environment(root)
 
     for name, arguments in STEPS:
         print(f"\n=== {name} ===", flush=True)
         if name == "pytest":
-            returncode = _run_tests(root, arguments)
+            returncode = _run_tests(root, arguments, environment)
         else:
             returncode = subprocess.run(
-                [sys.executable, *arguments], cwd=root, check=False
+                [sys.executable, *arguments], cwd=root, check=False, env=environment
             ).returncode
         if returncode != 0:
             failures.append(name)
@@ -55,13 +72,13 @@ def main() -> int:
     return 0
 
 
-def _run_tests(root: Path, arguments: list[str]) -> int:
+def _run_tests(root: Path, arguments: list[str], base: dict[str, str]) -> int:
     """pytest を回し、件数と落ちたテストの名前を CI の要約にも残す
 
     CI はこれとは別に件数を取るためだけにもう 1 度 pytest を回していた 時間が倍に
     なるうえ、たまにだけ落ちるテストを踏む回数も倍になる（PR #12） 1 回で済ませる
     """
-    environment = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+    environment = {**base, "PYTHONIOENCODING": "utf-8"}
     completed = subprocess.run(
         [sys.executable, *arguments],
         cwd=root,
