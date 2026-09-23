@@ -1,0 +1,88 @@
+name: AviUtl / YMM4 の配布物が読めない
+description: スクリプト・エイリアス・アイテムテンプレートが読めない、動かない、見た目が違う
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        互換の穴は、**実際に配られている物で何が足りないか**を数えて、多い順に埋めています
+        どの配布物で何が足りないかが分かると、そのまま次に直す物の候補になります
+
+        **配布物そのもの（`.anm2` `.obj2` `.exa` `.object` `.ymmt` `.mod2` など）は貼らないでください**
+        再配布の条件が作者ごとに違うためです 代わりに名前と、入手できるページの URL を書いてください
+
+  - type: input
+    id: version
+    attributes:
+      label: Sashimono Edit の版
+      description: 〔ヘルプ〕→〔バージョン情報…〕の 1 行目
+      placeholder: 0.1.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: 読ませた物の種類
+      options:
+        - AviUtl のスクリプト（.anm / .anm2 / .obj2 / .scn2 など）
+        - AviUtl のエイリアス・オブジェクト（.exa / .exa2 / .exo / .object）
+        - YMM4 のアイテムテンプレート（.ymmt）
+        - AviUtl2 のスクリプトモジュール・汎用プラグイン（.mod2 / .aux2）
+        - その他・分からない
+    validations:
+      required: true
+
+  - type: textarea
+    id: source
+    attributes:
+      label: 配布物の名前と入手先
+      description: 配布しているページの URL と、その中のどのファイルか 版があれば版も
+      placeholder: |
+        名前: 〇〇スクリプト集 v1.2 の「ゆらゆら.anm2」
+        入手先: https://example.com/...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: symptom
+    attributes:
+      label: どうなりましたか
+      options:
+        - 棚や一覧に出てこない
+        - 読み込めないと出る
+        - 置けるが、何も映らない
+        - 映るが、見た目や動きが違う
+        - Sashimono Edit が落ちる・固まる
+    validations:
+      required: true
+
+  - type: textarea
+    id: detail
+    attributes:
+      label: 詳しく
+      description: |
+        どう使ったか（〔タイムラインへ置く〕か〔選択中のクリップに適用〕か、など）と、
+        AviUtl2 / YMM4 ではどう見えるか 両方の画面写真を並べてもらえるといちばん分かりやすいです
+    validations:
+      required: true
+
+  - type: textarea
+    id: report
+    attributes:
+      label: 互換性レポート
+      description: |
+        スクリプトなら、使ったあとに〔互換〕→〔互換性レポート…〕を開き、〔内容をコピー〕で写した物を貼ってください
+        足りない関数と、呼ばれた回数が入っています（ユーザー名は `%USERPROFILE%` に伏せてあります）
+        テンプレートなら、〔互換〕→〔テンプレート…〕で選んだときに右下の一覧に出る行を書き写してください
+      render: text
+
+  - type: dropdown
+    id: native
+    attributes:
+      label: 〔表示〕→〔設定…〕の「AviUtl2 のスクリプトモジュール（DLL）を読み込む」
+      description: DLL を使う配布物は、ここを切ると動きません
+      options:
+        - 入れている（既定）
+        - 切っている
+        - 分からない

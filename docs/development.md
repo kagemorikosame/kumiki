@@ -730,6 +730,8 @@ gh release upload <タグ> dist\SashimonoEdit-<版>-windows-x64.zip dist\sources
 | `aviutl.png` | 道具が作る見本の Lua スクリプト（`--track` `--check` の 3 行）を積んだ所 |
 | `templates.png` `ymm4.png` | AviUtl2 のエイリアス（`%PROGRAMDATA%\aviutl2\Alias`） |
 | `ymm4-shelf.png` `ymm4-template.png` | YMM4 のアイテムテンプレート（`tests/fixtures/ymm4` の `.ymmt`） |
+| `preferences.png` | 〔表示〕→〔設定…〕を既定の値のまま開いた所（Wiki の設定のページ） |
+| `compat-report.png` | 〔互換〕→〔互換性レポート…〕 見本の記録を並べ、探索先は相対の名前に差し替える（Wiki の困ったときのページ） |
 
 配布物が要る 4 枚は、その置き場が無い機械では**飛ばして今ある写真を残す**
 （理由が 1 行出る） 置き場は `--alias-root` と `--ymm4-root` で変えられる

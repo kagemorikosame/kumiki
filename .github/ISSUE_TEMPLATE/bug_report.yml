@@ -7,38 +7,17 @@ body:
       value: |
         報告ありがとうございます **再現する手順**が分かると直せる可能性がぐっと上がります
 
-  - type: textarea
-    id: what-happened
-    attributes:
-      label: 何が起きましたか
-      placeholder: 例）字幕テンプレートを適用すると、文字が画面の外に出てしまう
-    validations:
-      required: true
-
-  - type: textarea
-    id: steps
-    attributes:
-      label: 再現する手順
-      placeholder: |
-        1. 素材を読み込む
-        2. 〔互換〕→〔テンプレート…〕を開く
-        3. 「01_Premiere風_標準字幕」を選んで〔タイムラインへ置く〕
-        4. 文字が画面の上に出る
-    validations:
-      required: true
-
-  - type: textarea
-    id: expected
-    attributes:
-      label: どうなるはずだと思いましたか
-    validations:
-      required: true
+        - AviUtl / YMM4 の配布物（スクリプト・エイリアス・テンプレート）が読めない・違って見えるときは、
+          一つ前の画面の「AviUtl / YMM4 の配布物が読めない」の方が原因を追いやすくなります
+        - 使い方の質問は [Discussions](https://github.com/kagemorikosame/sashimono-edit/discussions) へどうぞ
+        - 脆弱性（他人のファイルで勝手に何かが動く、など）は公開の Issue に書かず、
+          [非公開の報告](https://github.com/kagemorikosame/sashimono-edit/security/advisories/new)から送ってください
 
   - type: input
     id: version
     attributes:
       label: Sashimono Edit の版
-      description: 〔ヘルプ〕→〔バージョン情報〕、または実行ファイルの名前
+      description: 〔ヘルプ〕→〔バージョン情報…〕の 1 行目 配った zip なら、zip の名前（`SashimonoEdit-<版>-windows-x64.zip`）にも入っています
       placeholder: 0.1.0
     validations:
       required: true
@@ -50,7 +29,57 @@ body:
       options:
         - Windows 11
         - Windows 10
-        - その他（下に書いてください）
+        - その他（下の「環境」に書いてください）
+    validations:
+      required: true
+
+  - type: dropdown
+    id: distribution
+    attributes:
+      label: どうやって動かしていますか
+      options:
+        - 配った zip（Sashimono.exe）
+        - ソースから（python -m sashimono）
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 再現する手順
+      description: 何もない状態から、どの順に何を押すと起きるか 素材の種類（mp4 / 4K / 縦長 など）も分かれば
+      placeholder: |
+        1. 〔ファイル〕→〔素材を読み込む…〕で 4K の mp4 を読み込む
+        2. 〔互換〕→〔テンプレート…〕を開く
+        3. 「01_Premiere風_標準字幕」を選んで〔タイムラインへ置く〕
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: どうなるはずだと思いましたか
+      placeholder: 例）字幕が画面の下に出る
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 実際にはどうなりましたか
+      description: 画面にエラーが出た場合は、その文面をそのまま 画面写真も貼れます
+      placeholder: 例）文字が画面の上の端に出る 下半分が切れている
+    validations:
+      required: true
+
+  - type: dropdown
+    id: frequency
+    attributes:
+      label: 毎回起きますか
+      options:
+        - 毎回起きる
+        - ときどき起きる
+        - 1 度だけ起きた
     validations:
       required: true
 
@@ -58,19 +87,27 @@ body:
     id: environment
     attributes:
       label: 環境（分かる範囲で）
-      description: GPU、他ソフト（AviUtl2 / YMM4）を入れているか、など
+      description: |
+        〔ヘルプ〕→〔バージョン情報…〕の 2 行目（Python・Qt・Windows の版）をそのまま貼れます
+        GPU と、AviUtl2 / YMM4 を入れているかも書いてもらえると助かります
       placeholder: |
+        Python 3.14.0 / Qt 6.10.0 / Windows-11-10.0.26200-SP0
         GPU: RTX 5060 Ti
         AviUtl2: 入れている（スクリプトあり）
         YMM4: 入れていない
+      render: text
 
   - type: textarea
     id: logs
     attributes:
-      label: エラーの表示・互換性レポート
+      label: 自己診断・互換性レポートの結果
       description: |
-        画面にエラーが出た場合はその文面を
-        AviUtl / YMM4 の素材まわりなら〔互換〕→〔互換性レポート…〕の内容も
+        Sashimono Edit は**ログのファイルを書きません** 代わりに次の 2 つが手掛かりになります
+        - **起動しない・書き出せない・描けない** → 自己診断の結果
+          配った zip なら、`Sashimono.exe` のあるフォルダでコマンドを開いて `Sashimono.exe --self-check | more`
+          ソースからなら `.venv\Scripts\python.exe -m sashimono --self-check`
+          ソースから動かしているときは、落ちたときにコマンドの窓へ出た文面も貼ってください
+        - **AviUtl のスクリプトが動かない** → 〔互換〕→〔互換性レポート…〕の〔内容をコピー〕
       render: text
 
   - type: textarea
@@ -78,5 +115,10 @@ body:
     attributes:
       label: 関係するファイル
       description: |
-        プロジェクト（`.sme`）やスクリプトを貼れると助かります
-        **他人が作った配布物は、再配布の条件を確認してから貼ってください**
+        プロジェクト（`.sme`）を貼れると助かります（素材の動画は要りません）
+        落ちたときに残る退避は `%LOCALAPPDATA%\Sashimono\recovery`、保存前のバックアップは
+        〔ファイル〕→〔バックアップのフォルダを開く〕で開けます 設定は `%APPDATA%\Sashimono` の
+        `preferences.json` と `shortcuts.json` です
+        **他人が作った配布物（スクリプト・テンプレート）は貼らないでください** 再配布の条件が作者ごとに違います
+        代わりに名前と入手先の URL を書いてください
+        ファイルの場所にユーザー名が入っているときは、伏せてかまいません

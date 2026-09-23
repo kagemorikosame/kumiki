@@ -9,7 +9,10 @@ AviUtl の ``obj`` API は広い 全部を一度に実装することはでき�
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QDialogButtonBox,
     QLabel,
@@ -19,11 +22,38 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sashimono import __version__
 from sashimono.compat.aviutl.catalog import script_catalog
 from sashimono.compat.aviutl.report import CompatibilityReport, global_report
 from sashimono.ui.theme import Colors
 
-__all__ = ["CompatibilityDialog"]
+__all__ = ["CompatibilityDialog", "report_text"]
+
+#: 写した文面で、本人のホームフォルダの代わりに置く文字
+#: 失敗の記録には OS の文言がそのまま入り、ファイルの場所（ユーザー名を含む）が混じる
+#: 不具合の報告は公開の Issue に貼られるので、名前が出ないように伏せる
+HOME_PLACEHOLDER = "%USERPROFILE%"
+
+
+def report_text(report: CompatibilityReport, scripts: int, home: Path | None = None) -> str:
+    """不具合の報告に貼る文面 版と、画面に出ている記録を全部入れる
+
+    版を頭に入れるのは、同じ記録でも版によって直っているかが変わるため
+    貼る人に版を別に調べさせると、欄が空のまま届く
+    探索先（フォルダの場所）は入れない 原因を追うのに要らず、名前が出るだけになる
+    """
+    lines = [
+        f"Sashimono Edit {__version__} 互換性レポート",
+        report.summary(),
+        f"読み込み済みのスクリプト {scripts} 本",
+        *report.lines(),
+    ]
+    text = "\n".join(lines)
+    folder = str(home if home is not None else Path.home())
+    # 短すぎる場所（根だけなど）で置き換えると、関係ない文字まで伏せてしまう
+    if len(folder) > 3:
+        text = text.replace(folder, HOME_PLACEHOLDER)
+    return text
 
 
 class CompatibilityDialog(QDialog):
@@ -50,12 +80,17 @@ class CompatibilityDialog(QDialog):
         clear.clicked.connect(self._clear)
         rescan = QPushButton("スクリプトを読み直す", self)
         rescan.clicked.connect(self._rescan)
+        # 一覧からは行を 1 つずつしか選べず、Ctrl+C でも写せない 不具合の報告に
+        # 貼ってもらうには、全部をまとめて写す口が要る
+        copy = QPushButton("内容をコピー", self)
+        copy.clicked.connect(self.copy_to_clipboard)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, self)
         buttons.rejected.connect(self.reject)
         close = buttons.button(QDialogButtonBox.StandardButton.Close)
         if close is not None:
             close.setText("閉じる")
+        buttons.addButton(copy, QDialogButtonBox.ButtonRole.ActionRole)
         buttons.addButton(rescan, QDialogButtonBox.ButtonRole.ActionRole)
         buttons.addButton(clear, QDialogButtonBox.ButtonRole.ResetRole)
 
@@ -77,6 +112,11 @@ class CompatibilityDialog(QDialog):
         self._list.clear()
         lines = self._report.lines()
         self._list.addItems(lines if lines else ["まだ記録はありません"])
+
+    def copy_to_clipboard(self) -> None:
+        """画面の記録を、報告に貼れる形でクリップボードへ写す"""
+        clipboard = QApplication.clipboard()
+        clipboard.setText(report_text(self._report, len(script_catalog().all())))
 
     def _clear(self) -> None:
         self._report.clear()

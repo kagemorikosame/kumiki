@@ -18,8 +18,9 @@ from types import ModuleType
 import pytest
 from PySide6.QtCore import QRect
 from PySide6.QtGui import QColor, QImage
-from PySide6.QtWidgets import QApplication, QTreeWidget, QWidget
+from PySide6.QtWidgets import QApplication, QLabel, QTreeWidget, QWidget
 
+from sashimono.compat.aviutl.catalog import script_catalog, set_script_catalog
 from sashimono.compat.catalog import TemplateCatalog
 from tests.media_fixtures import libx264_available
 
@@ -162,6 +163,30 @@ class TestSampleScript:
         kind = shots.install_sample_script(tmp_path / "scripts")
         definition = registry.require(kind)
         assert [spec.label for spec in definition.parameters] == ["振れ幅", "速さ", "横に揺れる"]
+
+
+class TestCompatibilityShot:
+    def test_the_report_shot_hides_where_the_sample_lives(
+        self, shots: ModuleType, qt_application: QApplication, tmp_path: Path
+    ) -> None:
+        """見本のスクリプトは一時フォルダに置く その場所を出したまま撮ると、
+        撮った人のユーザー名を含むフォルダが Wiki の写真に写る
+        """
+        del qt_application
+        context = shots.Context(
+            media=None, alias_root=None, ymm4_root=None, script_root=tmp_path / "scripts"
+        )
+        # 写真の道具は一覧をアプリ全体の物と差し替える 後の試験へ持ち越さない
+        before = script_catalog()
+        dialog = shots.compatibility_dialog(context)
+        try:
+            shown = "\n".join(label.text() for label in dialog.findChildren(QLabel))
+        finally:
+            dialog.close()
+            set_script_catalog(before)
+        assert str(tmp_path) not in shown
+        assert str(Path.home()) not in shown
+        assert "スクリプト 1 本" in shown
 
 
 @pytest.mark.usefixtures("gpu")
