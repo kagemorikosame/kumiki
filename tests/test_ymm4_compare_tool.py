@@ -343,3 +343,23 @@ def test_the_probe_writes_an_absolute_path_for_the_tone(
     raw = (tmp_path / "work" / "audio-probe.ymmp").read_bytes().decode("utf-8-sig")
     paths = [item["FilePath"] for item in json.loads(raw)["Timelines"][0]["Items"]]
     assert paths and all(Path(path).is_absolute() for path in paths)
+
+
+def test_a_piece_before_the_head_is_trimmed_not_wrapped(tool: ModuleType) -> None:
+    """頭より前の一切れを負の位置のまま置くと、先頭の音が終わりへ書かれる
+
+    AAC の先読み分などで最初の一切れが頭より前に来ることがある 末尾に音が
+    混じると、最後の枠の音量を取り違える
+    """
+    early = np.ones((2, 4), dtype=np.float32)
+    later = np.full((2, 4), 0.5, dtype=np.float32)
+    joined = tool.assemble_audio([(-2, early), (2, later)])
+    assert joined.shape == (2, 6)
+    assert joined[0].tolist() == [1.0, 1.0, 0.5, 0.5, 0.5, 0.5]
+
+
+def test_pieces_entirely_before_the_head_leave_nothing(tool: ModuleType) -> None:
+    """全部が頭より前なら空 例外で落ちると、測り方の案内も出せない"""
+    early = np.ones((2, 4), dtype=np.float32)
+    assert tool.assemble_audio([(-10, early)]).shape == (2, 0)
+    assert tool.assemble_audio([]).shape == (2, 0)

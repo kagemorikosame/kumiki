@@ -737,13 +737,28 @@ def decode_audio(video: Path) -> tuple[np.ndarray, int] | None:
                     stream.time_base,
                 )
                 pieces.append((at, np.asarray(converted.to_ndarray(), dtype=np.float32)))
-    if not pieces:
-        return np.zeros((2, 0), dtype=np.float32), rate
-    total = max(at + block.shape[1] for at, block in pieces)
+    return assemble_audio(pieces), rate
+
+
+def assemble_audio(pieces: list[tuple[int, np.ndarray]]) -> np.ndarray:
+    """``(置く位置, (2, n) の一切れ)`` を 1 本の ``(2, サンプル数)`` へ並べる
+
+    頭より前に来る一切れ（圧縮の先読み分や編集リストの扱い）は、頭より前の分を
+    捨ててから置く 負の位置のまま添字にすると末尾から数えられ、先頭の音が
+    終わりへ書かれるか、長さが合わずに例外で落ちる 頭より前は測る対象ではない
+    """
+    total = max((at + block.shape[1] for at, block in pieces), default=0)
+    if total <= 0:
+        return np.zeros((2, 0), dtype=np.float32)
     buffer = np.zeros((2, total), dtype=np.float32)
     for at, block in pieces:
+        if at < 0:
+            block = block[:, -at:]
+            at = 0
+        if block.shape[1] == 0:
+            continue
         buffer[:, at : at + block.shape[1]] = block[:, : total - at]
-    return buffer, rate
+    return buffer
 
 
 def slot_bounds(start: int, length: int, fps: int, rate: int) -> tuple[int, int]:
