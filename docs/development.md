@@ -267,6 +267,30 @@ YMM4 の書き出しは、最初の 1 枚の時刻が 0 ではなく 1 フレー
 動画の頭の時刻を引いてそろえている 自前で書き出しを読むときも同じようにしないと、
 YMM4 の絵が 1 枚遅れて並び、動きのある所で差が 8〜24 跳ねる
 
+### 音を測る
+
+`build` と `compare` は絵しか見ない 音（音量の曲線・定位の向き・再生速度 0 の意味）は
+別の 2 つの副命令で測る
+
+```
+.venv\Scripts\python.exe tools\ymm4_compare.py --work .work\ymm4-audio audio-build
+:: YMM4 で .work\ymm4-audio\audio-probe.ymmp を開き、audio-probe.mp4 へ書き出す
+.venv\Scripts\python.exe tools\ymm4_compare.py --work .work\ymm4-audio audio-measure
+```
+
+`audio-build` は 440Hz の正弦波（ffmpeg で作る）を条件ごとの枠に並べた `.ymmp` と、
+枠の一覧 `audio-probe.json` を書く 枠どうしは無音の間を空けて重ねない
+`audio-measure` は書き出した音を枠ごとに左右別で測り、基準の枠（`Volume` 100・
+`Pan` 0・`PlaybackRate` 100）に対する比を表にして `audio-report.json` へ書く
+音量の表には「振幅比ならこの値・二乗ならこの値・dB 目盛りならこの値」を並べる
+どれに近いかは人が読んで決める
+
+`Pan` の値域は -100〜100 とした 実物の音声アイテム 125 個はすべて 0 で実物からは
+決められないが、YMM4 本体（4.48.0.3）の IL に `Animation(0, -100, 100)` を作る並びが
+18 か所あり、`Animation(0, -1, 1)` は 1 か所も無い もし値域が -1〜1 なら YMM4 が
+読み込みで丸めるので、表の `Pan=-100` と `Pan=-50` が同じ値になる そうなっていたら
+この判断が外れている
+
 YMM4 が読み込みで断った設定（列挙型の名前の間違いなど）は、ダイアログが別の窓に
 隠れて見えないことがある そのときは YMM4 を前に出して Ctrl+C を押すと、
 エラーの文面がクリップボードに入る
