@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 import gc
-import os
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -27,9 +26,7 @@ from sashimono.compat.aviutl.report import CompatibilityReport
 from sashimono.compat.aviutl.runtime import LuaScriptRuntime, blank_image
 from sashimono.core.model import AnimatedValue
 from sashimono.engine.render.scripts import text_font
-
-#: 実物の置き場 利用者の AviUtl2 にしか無い
-_REAL_PLUGIN = Path(os.environ.get("PROGRAMDATA", "")) / "aviutl2" / "Plugin" / "comfont.aux2"
+from tests.conftest import REAL_AVIUTL2, touches_real_aviutl2
 
 
 @pytest.fixture(autouse=True)
@@ -204,7 +201,7 @@ class TestPluginModules:
         2 つ目からのスクリプトには「見つかりません」だけが残って原因を追えない
         同じ器へ描くたびに書き直すと、回数が膨らんで多い順の並びが狂う
         """
-        (tmp_path / "新しすぎる.aux2").write_bytes(b"MZ")
+        (tmp_path / "comfont.aux2").write_bytes(b"MZ")
         monkeypatch.setattr(plugin, "default_plugin_roots", lambda: (tmp_path,))
         monkeypatch.setattr("sys.platform", "win32")
 
@@ -215,20 +212,47 @@ class TestPluginModules:
         plugin.forget()
         try:
             first, second = CompatibilityReport(), CompatibilityReport()
-            plugin.script_modules(report=first)
-            plugin.script_modules(report=second)
-            plugin.script_modules(report=second)
+            plugin.script_module("compositefont", report=first)
+            plugin.script_module("compositefont", report=second)
+            plugin.script_module("compositefont", report=second)
             for report in (first, second):
-                lines = [line for line in report.missing if "新しすぎる.aux2" in line]
+                lines = [line for line in report.missing if "comfont.aux2" in line]
                 assert len(lines) == 1
                 assert report.missing[lines[0]] == 1
             # 記録の画面で消したあとも、次に探したときに理由が戻ること
             # 戻らないと「見つかりません」だけが残って原因を追えない
             second.clear()
-            plugin.script_modules(report=second)
-            assert any("新しすぎる.aux2" in line for line in second.missing)
+            plugin.script_module("compositefont", report=second)
+            assert any("comfont.aux2" in line for line in second.missing)
         finally:
             plugin.forget()
+
+    def test_a_reason_found_later_reaches_a_report_already_told(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        """名前ごとに探すので、理由は後から増える 伝え済みの器へ増えた分を
+        書かないと、2 つ目の名前の失敗が「見つかりません」だけになる 前の分まで
+        書き直すと、1 つ目の理由の回数が膨らむ
+        """
+        (tmp_path / "comfont.aux2").write_bytes(b"MZ")
+        (tmp_path / "second.aux2").write_bytes(b"MZ")
+        providers = {**plugin.KNOWN_PROVIDERS, "second": ("second.aux2",)}
+        monkeypatch.setattr(plugin, "KNOWN_PROVIDERS", providers)
+        monkeypatch.setattr(plugin, "default_plugin_roots", lambda: (tmp_path,))
+        monkeypatch.setattr("sys.platform", "win32")
+
+        def refuse(path: Path) -> dict[str, Any]:
+            raise native.NativeModuleError(f"{path.name} は読めない")
+
+        monkeypatch.setattr(plugin, "_load", refuse)
+        report = CompatibilityReport()
+        plugin.script_module("compositefont", report=report)
+        plugin.script_module("second", report=report)
+        counts = {
+            name: sum(count for line, count in report.missing.items() if name in line)
+            for name in ("comfont.aux2", "second.aux2")
+        }
+        assert counts == {"comfont.aux2": 1, "second.aux2": 1}
 
     def test_a_forgotten_report_is_not_remembered(self, monkeypatch: Any) -> None:
         """器が消えても伝えた回数だけ残ると、一時の器を作るたびに覚える量が増える"""
@@ -236,7 +260,7 @@ class TestPluginModules:
         plugin.forget()
         try:
             for _ in range(50):
-                plugin.script_modules(report=CompatibilityReport())
+                plugin.script_module("compositefont", report=CompatibilityReport())
             gc.collect()
             assert len(plugin._told_at) <= 1
         finally:
@@ -292,12 +316,130 @@ class TestPluginModules:
                 del name, args
                 return [10]
 
-        monkeypatch.setattr(plugin, "script_modules", lambda **kwargs: {"compositefont": _Fake()})
+        monkeypatch.setattr(
+            plugin, "script_module", lambda name, **kwargs: {"compositefont": _Fake()}.get(name)
+        )
         runtime = LuaScriptRuntime()
         text = runtime.expand_text(
             "<?obj.mes(obj.module('compositefont').api_version())?>", _state()
         )
         assert text == "10"
+
+
+class TestOnlyTheNeededPlugins:
+    """``obj.module`` で初期化する汎用プラグインを、要る物だけに絞る（Issue #135）
+
+    前は名前が何であれ ``Plugin`` フォルダの全部を初期化していた テレビ字幕
+    （中身は ``.mod2`` のファイル）を描くだけで WhisperAutoSub が Python を起動し、
+    本人の AviUtl2 の置き場へ設定と一時ファイルを書いていた
+    """
+
+    @pytest.fixture
+    def started(self, tmp_path: Path, monkeypatch: Any) -> Iterator[list[str]]:
+        """合成フォントと、関係の無いプラグインを 1 つずつ置き、初期化した物を数える"""
+        (tmp_path / "comfont.aux2").write_bytes(b"MZ")
+        (tmp_path / "よそ").mkdir()
+        (tmp_path / "よそ" / "よそ.aux2").write_bytes(b"MZ")
+        monkeypatch.setattr(plugin, "default_plugin_roots", lambda: (tmp_path,))
+        monkeypatch.setattr("sys.platform", "win32")
+        loaded: list[str] = []
+
+        def record(path: Path) -> dict[str, Any]:
+            loaded.append(path.name)
+            return {}
+
+        monkeypatch.setattr(plugin, "_load", record)
+        yield loaded
+        plugin.set_scan_all(False)
+
+    def test_a_file_module_starts_no_plugin(self, started: list[str]) -> None:
+        """ファイルの ``.mod2`` を引くだけで全部を初期化すると、テレビ字幕を
+        描いただけで本人の AviUtl2 の置き場が書き換わる
+        """
+        LuaScriptRuntime().expand_text("<?local m = obj.module('TVSubtitle')?>", _state())
+        assert started == []
+
+    def test_composite_font_starts_only_its_plugin(self, started: list[str]) -> None:
+        """合成フォントのためにほかのプラグインまで初期化すると、関係の無い DLL が
+        ウィンドウを作ったり Python を起動したりする
+        """
+        LuaScriptRuntime().expand_text("<?local m = obj.module('compositefont')?>", _state())
+        assert started == ["comfont.aux2"]
+
+    def test_a_name_is_searched_once(self, started: list[str]) -> None:
+        """見つからない名前を引くたびに探し直すと、毎コマ DLL の読み込みを試す"""
+        for _ in range(3):
+            plugin.script_module("compositefont")
+        assert started == ["comfont.aux2"]
+
+    def test_scan_all_reads_every_plugin(self, started: list[str]) -> None:
+        """入れても全部を読まないなら、表に無いプラグインのモジュールを使えない"""
+        plugin.set_scan_all(True)
+        plugin.script_module("なにか")
+        assert started == ["comfont.aux2", "よそ.aux2"]
+
+    def test_switching_back_forgets_what_scan_all_found(
+        self, started: list[str], monkeypatch: Any
+    ) -> None:
+        """切ったあとも全部を読んだときの結果を返すと、切った意味が無い"""
+        del started
+        found = object()
+        monkeypatch.setattr(
+            plugin, "_load", lambda path: {"なにか": found} if path.name == "よそ.aux2" else {}
+        )
+        plugin.set_scan_all(True)
+        assert plugin.script_module("なにか") is found
+        plugin.set_scan_all(False)
+        assert plugin.script_module("なにか") is None
+
+    def test_a_missing_module_points_at_the_setting(self, started: list[str]) -> None:
+        """読まずにおいたプラグインが出す物かもしれないと書かないと、AviUtl2 では
+        動くのに Sashimono では動かない理由に辿り着けない
+        """
+        report = CompatibilityReport()
+        runtime = LuaScriptRuntime(report=report)
+        runtime.expand_text("<?local m = obj.module('なにか')?>", _state())
+        assert any("全部読んで探す" in line for line in report.missing)
+        assert started == []
+
+    def test_no_hint_when_everything_was_read(self, started: list[str]) -> None:
+        """全部を読んでも無い物に設定を勧めると、入れても直らない案内になる"""
+        del started
+        plugin.set_scan_all(True)
+        report = CompatibilityReport()
+        runtime = LuaScriptRuntime(report=report)
+        runtime.expand_text("<?local m = obj.module('なにか')?>", _state())
+        assert not any("全部読んで探す" in line for line in report.missing)
+
+
+class TestTheRealFolderIsOutOfReach:
+    """試験から本人の AviUtl2 の汎用プラグインを読ませない（Issue #135）"""
+
+    def test_the_default_folder_is_a_temporary_one(
+        self, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """既定の置き場が本物のままだと、描くだけの試験がほかのプラグインまで初期化する"""
+        base = tmp_path_factory.getbasetemp().resolve()
+        roots = plugin.default_plugin_roots()
+        assert roots
+        for root in roots:
+            assert root.resolve().is_relative_to(base)
+            assert not touches_real_aviutl2(root)
+
+    def test_plugins_are_told_a_temporary_folder(
+        self, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """本人の置き場を渡すと、合成フォントが本人の設定で組み、試験の結果が機械で変わる"""
+        path = plugin.app_data_path()
+        assert path is not None
+        assert path.resolve().is_relative_to(tmp_path_factory.getbasetemp().resolve())
+
+    @pytest.mark.skipif(REAL_AVIUTL2 is None, reason="PROGRAMDATA が無い")
+    def test_reading_the_real_folder_fails_the_test(self) -> None:
+        """読もうとしても落ちないと、握って先へ進む描画の中で本物を読んでも気付けない"""
+        assert REAL_AVIUTL2 is not None
+        with pytest.raises(pytest.fail.Exception, match="本人の AviUtl2"):
+            plugin.script_modules((REAL_AVIUTL2 / "Plugin",))
 
 
 def _library(required: int | None) -> Any:
@@ -348,27 +490,39 @@ class TestHostVersion:
             native.host_version_for(_library(required), Path("手元.aux2"))
 
 
-@pytest.mark.skipif(not _REAL_PLUGIN.is_file(), reason="comfont.aux2 が入っていない")
 class TestRealPlugin:
-    """実物の ``comfont.aux2`` 形式の推測ではなく、配布されている物で確かめる"""
+    """実物の ``comfont.aux2`` 形式の推測ではなく、配布されている物で確かめる
 
-    def test_registers_the_composite_font_module(self) -> None:
+    実物だけを一時フォルダへ写して読む（``real_comfont``） 本人の ``Plugin`` フォルダを
+    渡すと、ほかの汎用プラグインまで初期化して本人の置き場へ書かせる（Issue #135）
+    """
+
+    def test_registers_the_composite_font_module(self, real_comfont: Path) -> None:
         """登録を受け取れないと ``obj.module("compositefont")`` が nil になり、
         配布エイリアスが 1 行目で落ちて真っ黒になる
         """
-        modules = plugin.script_modules(roots=(_REAL_PLUGIN.parent,))
+        modules = plugin.script_modules((real_comfont,))
         assert "compositefont" in modules
         assert "decorate_layout" in modules["compositefont"].names
 
-    def test_api_version_can_be_called(self) -> None:
+    def test_api_version_can_be_called(self, real_comfont: Path) -> None:
         """呼べないと、エイリアスが ``api_version()`` の行で落ちる"""
-        module = plugin.script_modules(roots=(_REAL_PLUGIN.parent,))["compositefont"]
+        module = plugin.script_modules((real_comfont,))["compositefont"]
         assert int(module.call("api_version", [])[0]) >= 9
 
-    def test_layout_survives_a_font_name(self) -> None:
+    def test_obj_module_finds_it_by_name(self, real_comfont: Path, monkeypatch: Any) -> None:
+        """名前で絞ったせいで実物を読まなくなると、配布エイリアスが真っ黒に戻る"""
+        monkeypatch.setattr(plugin, "default_plugin_roots", lambda: (real_comfont,))
+        runtime = LuaScriptRuntime()
+        text = runtime.expand_text(
+            "<?obj.mes(obj.module('compositefont').api_version())?>", _state()
+        )
+        assert int(text) >= 9
+
+    def test_layout_survives_a_font_name(self, real_comfont: Path) -> None:
         """``edit`` が空のままだと、書体名を渡した時点で中から落ちて
         Sashimono ごと消える（捕まえる手段は無い）
         """
-        module = plugin.script_modules(roots=(_REAL_PLUGIN.parent,))["compositefont"]
+        module = plugin.script_modules((real_comfont,))["compositefont"]
         results = module.call("decorate_layout", ["あいう", "default", 64.0, 0.0, "Yu Gothic UI"])
         assert results and isinstance(results[0], str)
