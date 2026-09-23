@@ -67,6 +67,7 @@ class FrameCache:
         *,
         budget_bytes: int,
         surface: Callable[[int, int], CacheSurface] | None = None,
+        forget: Callable[[int], None] | None = None,
     ) -> None:
         self._width = max(1, width)
         self._height = max(1, height)
@@ -79,6 +80,11 @@ class FrameCache:
         #: 予算だけを信じると、載っているメモリの少ない機械で確保に失敗し、
         #: プレビューそのものが描けなくなる
         self._ceiling: int | None = None
+        #: 絵が置き場から外れる**直前**に、そのフレーム番号で呼ぶ
+        #: 別のスレッドで貯めるとき（:mod:`sashimono.engine.render.background`）に、
+        #: 画面の側へ出した一覧から先に外すため 外す前に描画先を使い回すと、
+        #: 画面の側が書き換え中の絵を出す
+        self._forget = forget
 
     @property
     def width(self) -> int:
@@ -172,16 +178,16 @@ class FrameCache:
         self._budget = max(0, budget_bytes)
         self._ceiling = None
         while len(self._frames) > self.capacity:
-            self._frames.pop(self._worst()).release()
+            self._pop(self._worst()).release()
         self._release(self._free)
         self._free = []
 
     def release(self) -> None:
         """GL 資源を手放す コンテキストが current な所で呼ぶこと"""
         self._ceiling = None
-        self._release(self._frames.values())
+        for frame in list(self._frames):
+            self._pop(frame).release()
         self._release(self._free)
-        self._frames = {}
         self._free = []
 
     def _claim(self, frame: int) -> CacheSurface | None:
@@ -201,8 +207,7 @@ class FrameCache:
             # 同じ遠さの後ろの絵が「捨てる 1 枚」に選ばれているのに、
             # それを追い出して前の絵を置くことができない
             return None
-        surface = self._frames.pop(worst)
-        return surface
+        return self._pop(worst)
 
     def _allocate(self) -> CacheSurface | None:
         """描画先を 1 枚増やす 取れなければ、そこを上限として諦める
@@ -237,9 +242,14 @@ class FrameCache:
 
     def _recycle(self, frames: list[int]) -> None:
         for frame in frames:
-            surface = self._frames.pop(frame, None)
-            if surface is not None:
-                self._free.append(surface)
+            if frame in self._frames:
+                self._free.append(self._pop(frame))
+
+    def _pop(self, frame: int) -> CacheSurface:
+        """``frame`` の絵を置き場から外す 外れることを先に知らせる"""
+        if self._forget is not None:
+            self._forget(frame)
+        return self._frames.pop(frame)
 
     @staticmethod
     def _release(surfaces: Iterable[CacheSurface]) -> None:
@@ -254,10 +264,16 @@ class PreviewCache:
     行き来しながら詰める編集では、1 度描いた所へすぐ戻ってくる
     """
 
-    def __init__(self, renderer: FrameRenderer, *, budget_bytes: int) -> None:
+    def __init__(
+        self,
+        renderer: FrameRenderer,
+        *,
+        budget_bytes: int,
+        forget: Callable[[int], None] | None = None,
+    ) -> None:
         self._renderer = renderer
         width, height = renderer.size
-        self._cache = FrameCache(width, height, budget_bytes=budget_bytes)
+        self._cache = FrameCache(width, height, budget_bytes=budget_bytes, forget=forget)
 
     @property
     def cache(self) -> FrameCache:
@@ -312,15 +328,22 @@ class PreviewCache:
         1 回の呼び出しで 1 コマだけにする まとめて描くと、その間ずっと
         画面が固まる（描いているのは編集画面と同じ GL コンテキスト）
         """
+        return self.step_frame(playhead) is not None
+
+    def step_frame(self, playhead: int) -> int | None:
+        """先の 1 コマを描いて取っておき、そのフレーム番号を返す 描かなければ ``None``
+
+        別のスレッドで貯める側は、描いた番号を画面の側の一覧へ載せる
+        """
         self._cache.resize(*self._renderer.size)
         self._cache.set_playhead(playhead)
-        frame = self._next(playhead)
+        frame = self.next_frame(playhead)
         if frame is None:
-            return False
+            return None
         surface = self._cache.store(frame, lambda target: self._compose_into(frame, target))
-        return surface is not None
+        return None if surface is None else frame
 
-    def _next(self, playhead: int) -> int | None:
+    def next_frame(self, playhead: int) -> int | None:
         """次に描くコマ 再生ヘッドから前へ、まだ無い所を探す"""
         capacity = self._cache.capacity
         if capacity == 0:

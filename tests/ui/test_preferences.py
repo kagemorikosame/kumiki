@@ -431,6 +431,62 @@ class TestThePrefetchSetting:
             window.close()
 
 
+class TestThePrefetchThreadSetting:
+    """先読みを別のスレッドで描くか（#56 の 3）
+
+    画面のスレッドで描くと、1 コマ描く間は操作を受け付けない ドライバとの相性で
+    絵が乱れたときに逃げられるよう、切れるようにしてある
+    """
+
+    def test_it_is_on_by_default(self) -> None:
+        """既定は入 共有した GL を作れない機械では、入れたままでも自分で戻る
+
+        切ったままにすると、先読みで貯める間ずっと操作が引っかかる
+        （4K を 3 枚重ねて効果を積むと 1 コマ 60ms）
+        """
+        assert Preferences().prefetch_thread is True
+
+    def test_it_comes_back(self, tmp_path: Path) -> None:
+        """保存して読み直しても同じ 落ちると、ドライバとの相性で切った人が
+        起動のたびに別のスレッドの先読みへ戻され、同じ不具合にまた当たる
+        """
+        store = PreferenceStore(tmp_path / "preferences.json")
+        chosen = Preferences(prefetch_thread=False)
+        store.save(chosen)
+        assert store.load() == chosen
+
+    def test_a_broken_value_falls_back(self, tmp_path: Path) -> None:
+        # 文字の "false" を真として読むと、切ったつもりが入ったままになる
+        path = tmp_path / "preferences.json"
+        path.write_text('{"prefetch_thread": "false"}', encoding="utf-8")
+        assert PreferenceStore(path).load().prefetch_thread is Preferences().prefetch_thread
+
+    def test_the_dialog_shows_what_is_set(self, qt_application: QApplication) -> None:
+        # 映らないと、設定を開いて OK を押しただけで入り直す
+        del qt_application
+        chosen = Preferences(prefetch_thread=False)
+        assert PreferencesDialog(chosen).preferences() == chosen
+
+    def test_it_is_greyed_out_without_prefetch(self, qt_application: QApplication) -> None:
+        """先読みを切ったら押せなくする 押せると、効くと思って触ってしまう"""
+        del qt_application
+        dialog = PreferencesDialog(Preferences())
+        dialog._prefetch.setChecked(False)
+        assert not dialog._prefetch_thread.isEnabled()
+
+    def test_the_window_passes_it_on(self, qt_application: QApplication) -> None:
+        """切ったら画面まで届く 届かないと、切っても裏のスレッドが描き続ける"""
+        del qt_application
+        window = MainWindow(Project.create(), confirm_unsaved=False)
+        try:
+            assert window._preview._prefetch_thread is True
+            window._apply_preferences(Preferences(prefetch_thread=False))
+            assert window._preview._prefetch_thread is False
+            assert not window._preview.prefetch_in_background
+        finally:
+            window.close()
+
+
 class TestTheExportPipelineSetting:
     """書き出しで、合成と書き込みを何枚ぶん重ねるか（#56）
 

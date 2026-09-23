@@ -13,7 +13,7 @@ from __future__ import annotations
 from types import TracebackType
 from typing import Protocol
 
-from PySide6.QtCore import QCoreApplication
+from PySide6.QtCore import QCoreApplication, QThread
 from PySide6.QtGui import (
     QGuiApplication,
     QOffscreenSurface,
@@ -184,6 +184,15 @@ class OffscreenGLContext:
     @property
     def surface(self) -> QSurface:
         return self._surface
+
+    def move_to_thread(self, thread: QThread) -> None:
+        """コンテキストを ``thread`` で使えるようにする **いま持っているスレッドから呼ぶこと**
+
+        ``QOpenGLContext`` はスレッドに付く 別のスレッドで ``makeCurrent`` すると
+        Qt が断って current にならない サーフェスは GUI のスレッドで作る決まりなので、
+        作るのはこちら、使うのは移した先、という分け方になる
+        """
+        self._context.moveToThread(thread)
 
     def make_current(self) -> None:
         if not self._context.makeCurrent(self._surface):

@@ -150,6 +150,13 @@ class Preferences:
     #: 上限を置くのは、デコードと効果の側が使う GPU のメモリを残すため
     #: 使い切ると、先読みではなくプレビューそのものが描けなくなる
     prefetch_budget_mb: int = 1024
+    #: 先読みを別のスレッドで描く 切ると画面のスレッドで 1 コマずつ描く
+    #: 既定は入 画面のスレッドで描くと、1 コマ描く間は操作を受け付けない
+    #: （4K を 3 枚重ねて効果を積むと 1 コマ 60ms） 共有した GL コンテキストを
+    #: 作れない機械では、入れたままでも画面のスレッドへ自分で戻る 切れるように
+    #: するのは、ドライバとの相性で絵が乱れたときに逃げられるようにするため
+    #: 実測は :data:`sashimono.engine.render.background.MEASURED_PREFETCH_STALL_MS`
+    prefetch_thread: bool = True
     #: 書き出しで、GPU の合成を書き込み（色変換・エンコード・mux）の何枚ぶん先へ進めるか
     #: 0 で直列（1 枚ずつ、スレッドを使わない）
     #: 既定は 2 1 枚ぶんは画面 1 枚の RGBA（1080p で 8MB、4K で 33MB）なので、
@@ -218,6 +225,7 @@ class PreferenceStore:
             ),
             prefetch=_flag(data.get("prefetch"), plain.prefetch),
             prefetch_budget_mb=_budget(data.get("prefetch_budget_mb"), plain.prefetch_budget_mb),
+            prefetch_thread=_flag(data.get("prefetch_thread"), plain.prefetch_thread),
             export_pipeline_depth=_depth(
                 data.get("export_pipeline_depth"), plain.export_pipeline_depth
             ),

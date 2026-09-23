@@ -1658,25 +1658,101 @@ class FrameRenderer:
             return None
         return (clip.media_id, clip.stream_index), _source_time(clip, media, frame, rate)
 
-    def _prefetch_decodes(self, clips: list[Clip], frame: int, rate: FrameRate) -> None:
+    def prime(self, frame: int) -> None:
+        """``frame`` で映る素材のデコードを、描く前から裏で走らせておく GL は触らない
+
+        先読みを別のスレッドで描くと（:mod:`sashimono.engine.render.background`）、
+        画面の側のデコーダは、貯めた所を再生している間は止まったまま残る
+        貯めた所の端を越えた 1 コマ目で、頭の鍵フレームから読み直すことになり、
+        再生がそこで 1 度引っかかる（GOP 250 の 1080p を 3 枚重ねて 129ms）
+        再生を始めたときに端のコマを頼んでおけば、端へ着くまでに読み進めておける
+
+        受け取るのは描く側の :meth:`_decode` で、並列デコードと同じ仕組みを通る
+        同じデコーダを 2 スレッドから触らない約束はそのまま守られる
+        並列デコードを切っている（1 本）ときは何もしない 1 を選んだ人は、描く所の
+        ほかでデコードが走ることを望んでいない
+        """
+        if self._closed:
+            return
+        rate = self._project.rate
+        placed: list[tuple[Clip, int]] = []
+        self._visible_clips(self._project.timeline, frame, rate, 0, placed)
+        requests = [
+            request
+            for clip, at in placed
+            if (request := self._decode_request(clip, at, rate)) is not None
+        ]
+        self._submit_decodes(requests, minimum=1)
+
+    def _visible_clips(
+        self,
+        timeline: Timeline,
+        frame: int,
+        rate: FrameRate,
+        depth: int,
+        placed: list[tuple[Clip, int]],
+    ) -> None:
+        """``frame`` で映るクリップと、そのクリップの中で使うフレームを集める
+
+        入れ子のシーンの中へも入る シーンの中は外と別の時刻で動くので、描く道
+        （:meth:`_draw_scene`）と同じ式で中のフレームを出す 入らないと、シーンの中の
+        素材は端を越えたところで鍵フレームから読み直し、頼んだ意味が無くなる
+        深さの上限も描く道と同じ 描かない段のデコーダを開いても使われない
+        """
+        for track in timeline.active_tracks(TrackKind.VIDEO):
+            clip = track.clip_at(frame)
+            if clip is None or not clip.enabled:
+                continue
+            if clip.scene_id is None:
+                placed.append((clip, frame))
+                continue
+            scene = self._project.find_scene(clip.scene_id)
+            if scene is None or depth >= MAX_SCENE_DEPTH:
+                continue
+            local_frame = frame - clip.timeline_start
+            scene_frame = seconds_to_frame(clip.picture_time(local_frame, rate), rate)
+            self._visible_clips(scene.timeline, scene_frame, rate, depth + 1, placed)
+
+    def _prefetch_decodes(
+        self, clips: list[Clip], frame: int, rate: FrameRate, *, minimum: int = 2
+    ) -> None:
         """この段で描くクリップのデコードを、デコーダごとに分けて先に走らせる
 
         並べてよいのは**別々のデコーダ**の間だけなので、同じ鍵の 2 本目は出さない
         結果は変わらない :meth:`VideoDecoder.frame_at` は、いまの読み位置に関係なく
         同じ時刻には同じ絵を返す（届かなければシークして読み直す）
         先に走らせた絵が使われずに終わっても、捨てるだけで絵には出ない
+
+        ``minimum`` 本より少なければ走らせない 描く直前なら、1 本だけ渡しても
+        受け渡しの分だけ遅い 描くより前から頼む :meth:`prime` は 1 本でも渡す
+        """
+        if self._decode_threads <= 1:
+            return
+        requests = [
+            request
+            for clip in clips
+            if (request := self._decode_request(clip, frame, rate)) is not None
+        ]
+        self._submit_decodes(requests, minimum=minimum)
+
+    def _submit_decodes(
+        self, candidates: list[tuple[_DecodeKey, Fraction]], *, minimum: int
+    ) -> None:
+        """頼みを走り係へ出す 同じ鍵は 1 本だけ、本数は走り係の数まで
+
+        同じ鍵の 2 本目を出さないことが、同じデコーダを 2 スレッドから触らない保証
+        入れ子のシーンの中と外で同じ素材を使っていても、先に来た方だけを頼む
         """
         if self._decode_threads <= 1:
             return
         requests: list[tuple[_DecodeKey, Fraction]] = []
         taken = set(self._decoding)
-        for clip in clips:
-            request = self._decode_request(clip, frame, rate)
-            if request is None or request[0] in taken:
+        for request in candidates:
+            if request[0] in taken:
                 continue
             taken.add(request[0])
             requests.append(request)
-        if len(requests) < 2:
+        if len(requests) < minimum:
             # 相手がいないなら走り係を起こさない 1 本だけ渡しても、受け渡しの分だけ遅い
             return
         # 走り係の本数より多く頼まない 多く頼んでも順番待ちになるだけで、その間

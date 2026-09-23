@@ -69,7 +69,7 @@ class StubCache:
         self.budget_playhead = playhead
 
     def release(self) -> None:
-        pass
+        self.released = getattr(self, "released", 0) + 1
 
 
 def _project() -> tuple[Project, Clip, Clip]:
@@ -88,7 +88,8 @@ def preview(
 ) -> Iterator[tuple[PreviewWidget, StubCache]]:
     del qt_application
     project, _, _ = _project()
-    widget = PreviewWidget(project, prefetch_bytes=1024 * 1024 * 1024)
+    # ここで見るのは画面のスレッドで貯める道 別のスレッドの道は test_preview_background.py
+    widget = PreviewWidget(project, prefetch_bytes=1024 * 1024 * 1024, prefetch_thread=False)
     # GL を作らずに中身だけ差し替える makeCurrent は本物の窓が無いと効かない
     monkeypatch.setattr(widget, "makeCurrent", lambda: None)
     monkeypatch.setattr(widget, "doneCurrent", lambda: None)
