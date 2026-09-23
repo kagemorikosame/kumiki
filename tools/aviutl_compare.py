@@ -9,6 +9,8 @@ AviUtl の効果は、項目名を実物（AviUtl2 に作らせたエイリア�
 1. ``build``   エイリアスを時間をずらして並べた AviUtl2 のプロジェクト（.aup2）と、
                どこに何を置いたかの一覧（manifest.json）を作る
 2. AviUtl2 でそのプロジェクトを開き、同じフォルダへ ``aviutl.mp4`` として書き出す
+   連番の PNG（``tools/aviutl2_export.py`` が ``aviutl`` フォルダへ書く物）でもよい
+   PNG は圧縮で色が痩せないので、両方あれば PNG を使う
 3. ``compare`` 書き出した動画と、同じオブジェクトを Sashimono で描いた絵を並べ、
                差の大きい順に一覧（report.html）と並べた絵（PNG）を作る
 
@@ -43,6 +45,7 @@ import argparse
 import html
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -157,9 +160,10 @@ def _own_length(head: list[str]) -> int:
         key, _, value = line.partition("=")
         if key.strip() != "frame":
             continue
-        first, _, last = value.partition(",")
+        # 中間点があると ``frame=開始,中間点…,終了`` と並ぶ 終わりは最後の値
+        parts = value.split(",")
         try:
-            span = int(last) - int(first) + 1
+            span = int(parts[-1]) - int(parts[0]) + 1
         except ValueError:
             return SLOT
         return span if span >= 1 else SLOT
@@ -294,11 +298,15 @@ def command_build(arguments: argparse.Namespace) -> int:
 #: （ひらがなは明朝、カタカナはメイリオ、漢字は MS ゴシック） Sashimono の既定の
 #: 書体（Yu Gothic UI）は使わない 組み替えが起きずに既定で描かれたときと
 #: 見分けが付かなくなる ファイル名はこの PC の Fonts で確かめた Windows 標準の物
+#:
+#: 書体名は AviUtl2 の書体の一覧に出る名前（日本語の名前を持つ書体は日本語）で書く
+#: ``Yu Mincho`` ``Meiryo`` ``MS Gothic`` と英語で書いた見本では、AviUtl2 v2.1.6a が
+#: どれも見つけられず、既定の Yu Gothic UI で描いた（2026-09-24 に書き出して測った #108）
 COMPOSITE_FONTS: tuple[tuple[str, str, str], ...] = (
     ("western", "Times New Roman", "times.ttf"),
-    ("hiragana", "Yu Mincho", "yumin.ttf"),
-    ("katakana", "Meiryo", "meiryo.ttc"),
-    ("kanji", "MS Gothic", "msgothic.ttc"),
+    ("hiragana", "游明朝", "yumin.ttf"),
+    ("katakana", "メイリオ", "meiryo.ttc"),
+    ("kanji", "ＭＳ ゴシック", "msgothic.ttc"),
     ("digit", "Consolas", "consola.ttf"),
     ("symbol", "Segoe UI", "segoeui.ttf"),
     ("other", "Arial", "arial.ttf"),
@@ -595,6 +603,46 @@ def _video_frames(video: Path, wanted: set[int]) -> dict[int, np.ndarray]:
     return found
 
 
+#: 連番の PNG を置くフォルダの名前（作業フォルダの中） ``tools/aviutl2_export.py`` の出力先
+PNG_FOLDER = "aviutl"
+_PNG_NUMBER = re.compile(r"(\d+)\.png$", re.IGNORECASE)
+
+
+def png_frames(folder: Path, wanted: set[int]) -> dict[int, np.ndarray]:
+    """連番の PNG から欲しいフレームを読む 背景は黒にして返す（動画の書き出しと同じ見え方）
+
+    AviUtl2 の連番ファイル出力は、名前の後ろにフレームの番号を付ける（``frame000.png``）
+    桁の数は長さで変わるので、名前の並びではなく番号の値で引く
+    透明色ありで書き出すと、何も無い所は透明になる 黒の上に重ねないと、同じ絵でも
+    Sashimono 側（黒の背景）との差が出てしまう
+    """
+    from PySide6.QtGui import QImage
+
+    found: dict[int, np.ndarray] = {}
+    for path in folder.iterdir():
+        match = _PNG_NUMBER.search(path.name)
+        if match is None or int(match.group(1)) not in wanted:
+            continue
+        image = QImage(str(path)).convertToFormat(QImage.Format.Format_RGBA8888)
+        if image.isNull():
+            continue
+        rgba = np.frombuffer(image.constBits(), np.uint8).reshape(image.height(), image.width(), 4)
+        alpha = rgba[..., 3:4].astype(np.float32) / 255.0
+        found[int(match.group(1))] = np.rint(rgba[..., :3] * alpha).astype(np.uint8)
+    return found
+
+
+def reference_frames(work: Path, wanted: set[int]) -> dict[int, np.ndarray] | None:
+    """AviUtl2 の絵 連番の PNG があればそれを、無ければ動画を読む どちらも無ければ ``None``"""
+    folder = work / PNG_FOLDER
+    if folder.is_dir() and any(folder.glob("*.png")):
+        return png_frames(folder, wanted)
+    video = work / "aviutl.mp4"
+    if video.exists():
+        return _video_frames(video, wanted)
+    return None
+
+
 def command_compare(arguments: argparse.Namespace) -> int:
     from sashimono.core.model import Project, ProjectSettings
     from sashimono.core.timebase import FrameRate
@@ -603,11 +651,6 @@ def command_compare(arguments: argparse.Namespace) -> int:
     _use_app_data(arguments.app_data)
     work: Path = arguments.work
     manifest = json.loads((work / "manifest.json").read_text(encoding="utf-8"))
-    video = work / "aviutl.mp4"
-    if not video.exists():
-        print(f"{video} がありません AviUtl2 で書き出してから走らせてください")
-        return 1
-
     cases = manifest["cases"]
     if arguments.only:
         words = [word for word in arguments.only.split(",") if word]
@@ -616,7 +659,13 @@ def command_compare(arguments: argparse.Namespace) -> int:
     wanted: set[int] = set()
     for raw in cases:
         wanted.update(Case(**raw).sample_frames())
-    references = _video_frames(video, wanted)
+    references = reference_frames(work, wanted)
+    if references is None:
+        print(
+            f"{work / 'aviutl.mp4'} も {work / PNG_FOLDER} の連番の PNG もありません"
+            " AviUtl2 で書き出してから走らせてください"
+        )
+        return 1
 
     # 音のレートは並べたプロジェクトの見出し（audio.rate=44100）と合わせる 音声波形は
     # 1 画素 1 サンプルなので、レートが違うと同じ横幅に入る時間が変わる
