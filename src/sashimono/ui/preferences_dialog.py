@@ -29,6 +29,7 @@ from sashimono.engine.encode import (
     MEASURED_EXPORT_MS,
     MEASURED_EXPORT_TOTAL_MS,
 )
+from sashimono.engine.render.background import MEASURED_PREFETCH_STALL_MS
 from sashimono.engine.render.prefetch import BYTES_PER_FRAME_PIXEL
 from sashimono.ui.workspace import Preferences
 
@@ -148,6 +149,18 @@ class PreferencesDialog(QDialog):
         self._select(self._prefetch_budget, preferences.prefetch_budget_mb)
         form.addRow("先読みに使うメモリ", self._prefetch_budget)
 
+        same_thread_ms, other_thread_ms = MEASURED_PREFETCH_STALL_MS
+        self._prefetch_thread = QCheckBox("先読みを別のスレッドで描く（操作を止めない）", self)
+        self._prefetch_thread.setChecked(preferences.prefetch_thread)
+        self._prefetch_thread.setToolTip(
+            "画面と同じスレッドで先読みすると、1 コマ描く間は操作を受け付けない "
+            f"4K を 3 枚重ねて効果を積んだ所で、操作が最大 {same_thread_ms}ms 待たされる所が、"
+            f"別のスレッドなら {other_thread_ms}ms で済む（95 パーセンタイル） "
+            "GPU のドライバとの相性で先読みした絵が乱れるときは切る "
+            "共有した GL を作れない機械では、入れたままでも画面のスレッドで先読みする"
+        )
+        form.addRow(self._prefetch_thread)
+
         self._pipeline_depth = QComboBox(self)
         for label, depth in PIPELINE_DEPTHS:
             self._pipeline_depth.addItem(label, depth)
@@ -228,6 +241,8 @@ class PreferencesDialog(QDialog):
         self._use_proxy.toggled.connect(self._proxy_height.setEnabled)
         self._prefetch.toggled.connect(self._prefetch_budget.setEnabled)
         self._prefetch_budget.setEnabled(preferences.prefetch)
+        self._prefetch.toggled.connect(self._prefetch_thread.setEnabled)
+        self._prefetch_thread.setEnabled(preferences.prefetch)
         self._auto_quality.toggled.connect(self._auto_divisor.setEnabled)
         self._proxy_height.setEnabled(preferences.use_proxy)
         self._auto_divisor.setEnabled(preferences.auto_quality)
@@ -255,6 +270,7 @@ class PreferencesDialog(QDialog):
             auto_quality_divisor=int(self._auto_divisor.currentData()),
             prefetch=self._prefetch.isChecked(),
             prefetch_budget_mb=int(self._prefetch_budget.currentData()),
+            prefetch_thread=self._prefetch_thread.isChecked(),
             export_pipeline_depth=int(self._pipeline_depth.currentData()),
             decode_threads=int(self._decode_threads.currentData()),
             native_modules=self._native_modules.isChecked(),

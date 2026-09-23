@@ -290,6 +290,7 @@ class MainWindow(QMainWindow):
             proxies=self._proxies.store if self._preferences.use_proxy else None,
             prefetch_bytes=self._preferences.prefetch_bytes(),
             decode_threads=self._preferences.decode_threads,
+            prefetch_thread=self._preferences.prefetch_thread,
         )
         self._transport = TransportBar(project.rate, self)
         self._timeline = TimelineView(project, self._analyzer, self)
@@ -633,6 +634,7 @@ class MainWindow(QMainWindow):
             self._proxies = ProxyBuilder(ProxyStore(height=preferences.proxy_height))
         self._preview.set_proxies(self._proxies.store if preferences.use_proxy else None)
         self._preview.set_prefetch_bytes(preferences.prefetch_bytes())
+        self._preview.set_prefetch_thread(preferences.prefetch_thread)
         self._preview.set_decode_threads(preferences.decode_threads)
         if native.enabled() != preferences.native_modules:
             native.set_enabled(preferences.native_modules)

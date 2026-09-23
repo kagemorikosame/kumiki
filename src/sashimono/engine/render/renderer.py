@@ -1566,13 +1566,41 @@ class FrameRenderer:
             return None
         return (clip.media_id, clip.stream_index), _source_time(clip, media, frame, rate)
 
-    def _prefetch_decodes(self, clips: list[Clip], frame: int, rate: FrameRate) -> None:
+    def prime(self, frame: int) -> None:
+        """``frame`` で映る素材のデコードを、描く前から裏で走らせておく GL は触らない
+
+        先読みを別のスレッドで描くと（:mod:`sashimono.engine.render.background`）、
+        画面の側のデコーダは、貯めた所を再生している間は止まったまま残る
+        貯めた所の端を越えた 1 コマ目で、頭の鍵フレームから読み直すことになり、
+        再生がそこで 1 度引っかかる（GOP 250 の 1080p を 3 枚重ねて 129ms）
+        再生を始めたときに端のコマを頼んでおけば、端へ着くまでに読み進めておける
+
+        受け取るのは描く側の :meth:`_decode` で、並列デコードと同じ仕組みを通る
+        同じデコーダを 2 スレッドから触らない約束はそのまま守られる
+        並列デコードを切っている（1 本）ときは何もしない 1 を選んだ人は、描く所の
+        ほかでデコードが走ることを望んでいない
+        """
+        if self._closed:
+            return
+        clips = [
+            clip
+            for track in self._project.timeline.active_tracks(TrackKind.VIDEO)
+            if (clip := track.clip_at(frame)) is not None and clip.enabled
+        ]
+        self._prefetch_decodes(clips, frame, self._project.rate, minimum=1)
+
+    def _prefetch_decodes(
+        self, clips: list[Clip], frame: int, rate: FrameRate, *, minimum: int = 2
+    ) -> None:
         """この段で描くクリップのデコードを、デコーダごとに分けて先に走らせる
 
         並べてよいのは**別々のデコーダ**の間だけなので、同じ鍵の 2 本目は出さない
         結果は変わらない :meth:`VideoDecoder.frame_at` は、いまの読み位置に関係なく
         同じ時刻には同じ絵を返す（届かなければシークして読み直す）
         先に走らせた絵が使われずに終わっても、捨てるだけで絵には出ない
+
+        ``minimum`` 本より少なければ走らせない 描く直前なら、1 本だけ渡しても
+        受け渡しの分だけ遅い 描くより前から頼む :meth:`prime` は 1 本でも渡す
         """
         if self._decode_threads <= 1:
             return
@@ -1584,7 +1612,7 @@ class FrameRenderer:
                 continue
             taken.add(request[0])
             requests.append(request)
-        if len(requests) < 2:
+        if len(requests) < minimum:
             # 相手がいないなら走り係を起こさない 1 本だけ渡しても、受け渡しの分だけ遅い
             return
         # 走り係の本数より多く頼まない 多く頼んでも順番待ちになるだけで、その間
