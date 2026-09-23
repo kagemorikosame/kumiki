@@ -1145,6 +1145,92 @@ class TestOtherItems:
         mapped = map_template([item], report=CompatibilityReport())
         assert mapped[0].media_path == "C:/素材/映像.mp4"
 
+
+class TestItemSound:
+    """アイテムの音の設定（Issue #89）
+
+    項目の並びは YMM4 が書いたものを数えて決めた 手元の YMM4（4.48.0.3）の
+    ``user/setting/…/ItemSettings.json`` にある既定の動画アイテムと、実物の
+    プロジェクト 16 本に入っていた動画アイテム 214 個・音声アイテム 125 個
+    ``Volume`` は百分率で、音を消したものは 0 だった（音を消す印は別に無い）
+    """
+
+    def video(self, **values: Any) -> dict[str, Any]:
+        item: dict[str, Any] = {
+            "$type": "YukkuriMovieMaker.Project.Items.VideoItem, YukkuriMovieMaker",
+            "FilePath": "C:/素材/映像.mp4",
+            "Volume": still(100.0),
+            "Pan": still(0.0),
+            "PlaybackRate": 100.0,
+            "ContentOffset": "00:00:00",
+            "IsLooped": False,
+            "AudioTrackIndex": 0,
+            "AudioEffects": [],
+            "Length": 60,
+        }
+        item.update(values)
+        return item
+
+    def test_a_video_item_asks_for_its_sound(self) -> None:
+        """動画アイテムは音も鳴らす印を持つ
+
+        立てないと映像トラックへ 1 本置くだけになり、置いた動画の音が鳴らない
+        """
+        (mapped,) = map_template([self.video()], report=CompatibilityReport())
+        assert mapped.with_sound is True
+
+    def test_a_still_item_does_not_ask_for_sound(self) -> None:
+        # 画像アイテムで立てると、音を持たない素材の分まで音声トラックを探しに行く
+        item = {
+            "$type": "YukkuriMovieMaker.Project.Items.ImageItem, YukkuriMovieMaker",
+            "FilePath": "C:/素材/絵.png",
+            "Length": 60,
+        }
+        (mapped,) = map_template([item], report=CompatibilityReport())
+        assert mapped.with_sound is False
+
+    def test_the_volume_becomes_an_audio_effect(self) -> None:
+        """音量は ``audio_volume`` へ 写さないと、絞ったはずの音が原寸で鳴る"""
+        (mapped,) = map_template([self.video(Volume=still(50.0))], report=CompatibilityReport())
+        (effect,) = mapped.audio_effects
+        assert effect.kind == "audio_volume"
+        assert value_at(effect.params["volume"]) == 50.0
+
+    def test_a_muted_item_keeps_its_zero(self) -> None:
+        """YMM4 に音を消す印は無く、音を消したアイテムは ``Volume`` が 0
+
+        0 を既定へ読み替えると、消したはずの音が原寸で鳴る
+        """
+        (mapped,) = map_template([self.video(Volume=still(0.0))], report=CompatibilityReport())
+        (effect,) = mapped.audio_effects
+        assert value_at(effect.params["volume"]) == 0.0
+
+    def test_the_default_volume_adds_nothing(self) -> None:
+        # 既定のままで音量のエフェクトが並ぶと、何を変えたテンプレートなのか読めない
+        (mapped,) = map_template([self.video()], report=CompatibilityReport())
+        assert mapped.audio_effects == ()
+
+    @pytest.mark.parametrize(
+        ("values", "word"),
+        [
+            ({"Pan": still(50.0)}, "Pan"),
+            ({"PlaybackRate": 150.0}, "PlaybackRate"),
+            ({"ContentOffset": "00:00:39.6000000"}, "ContentOffset"),
+            ({"AudioTrackIndex": 1}, "AudioTrackIndex"),
+            ({"IsLooped": True}, "IsLooped"),
+            ({"AudioEffects": [{"$type": "N.VibratoEffect, A"}]}, "VibratoEffect"),
+        ],
+    )
+    def test_what_cannot_be_carried_is_counted(self, values: dict[str, Any], word: str) -> None:
+        """写せない音の設定は数えて残す 握り潰すと、直す順番を決められない
+
+        どれも実物に出てくる 再生速度は 0 のものが 5 個あり（こちらの ``speed`` は
+        正の数しか取らない）、開始位置は 339 個のうち 240 個が 0 でなかった
+        """
+        report = CompatibilityReport()
+        map_template([self.video(**values)], report=report)
+        assert any(word in line for line in report.lines())
+
     def test_an_unknown_item_is_recorded_and_skipped(self) -> None:
         report = CompatibilityReport()
         assert map_template([{"$type": "N.TachieItem, A"}], report=report) == []
