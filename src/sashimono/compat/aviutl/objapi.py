@@ -697,13 +697,17 @@ class ObjApi:
             return
         state.buffers[target_name] = origin.copy()
 
-    def lua_mes(self, text: str = "") -> None:
+    def lua_mes(self, text: Any = "") -> None:
         """テキストを描く ``obj.mes`` と ``obj.load("text", …)`` の実体"""
         if self._emit is not None:
             # テキスト欄の中の Lua から呼ばれている ここで絵にすると、
             # 1x1 の作業用の絵へ描いて捨てることになり、本文が空になる
             # （合成フォントの配布エイリアスは ``obj.mes`` で本文を出す）
-            self._emit(str(text))
+            #
+            # 値はそのまま渡す 文字にするのは Lua の ``tostring`` の仕事
+            # Python の ``str`` で文字にすると、``true`` が ``True``、
+            # ``nil`` が ``None`` と出て、同じテキスト欄の ``mes`` と食い違う
+            self._emit(text)
             return
         if self._render_source is None:
             self._report.note_missing("obj.mes")

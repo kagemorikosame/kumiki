@@ -22,6 +22,7 @@ import pytest
 
 from sashimono.compat.aviutl import native, plugin
 from sashimono.compat.aviutl.objapi import ObjApi, ObjectState
+from sashimono.compat.aviutl.report import CompatibilityReport
 from sashimono.compat.aviutl.runtime import LuaScriptRuntime, blank_image
 from sashimono.core.model import AnimatedValue
 from sashimono.engine.render.scripts import text_font
@@ -115,6 +116,14 @@ class TestEmbeddedMes:
         runtime = LuaScriptRuntime()
         assert runtime.expand_text("<?obj.mes('あいう')?>", _state()) == "あいう"
 
+    def test_values_are_written_the_lua_way(self) -> None:
+        """Python の ``str`` で文字にすると、``true`` が ``True``、``nil`` が ``None``
+        と出て、同じテキスト欄の ``mes`` と書き方で結果が変わる
+        """
+        runtime = LuaScriptRuntime()
+        source = "<?obj.mes(true) mes('/') obj.mes(nil) mes('/') obj.mes(1.5)?>"
+        assert runtime.expand_text(source, _state()) == "true/nil/1.5"
+
     def test_scripts_outside_the_text_box_still_draw(self) -> None:
         """書き出しへ回し続けると、``obj.mes`` で字を描くスクリプトが何も描かなくなる"""
         drawn: list[str] = []
@@ -145,6 +154,32 @@ class TestPluginModules:
         (tmp_path / "こわれ.aux2").write_bytes("MZ これは DLL ではない".encode())
         assert plugin.script_modules(roots=(tmp_path,)) == {}
 
+    def test_broken_file_is_recorded(self, tmp_path: Path) -> None:
+        """黙って飛ばすと「なぜか合成フォントが効かない」で終わり、原因を追えない"""
+        (tmp_path / "こわれ.aux2").write_bytes("MZ これは DLL ではない".encode())
+        report = CompatibilityReport()
+        plugin.script_modules(roots=(tmp_path,), report=report)
+        assert any("こわれ.aux2" in line for line in report.lines())
+
+    def test_plugins_one_folder_down_are_found(self, tmp_path: Path) -> None:
+        """直下しか見ないと、フォルダごと配られたプラグインが 1 つも見つからない
+        （手元の AviUtl2 では AIEdit も SrtImporter も 1 段下にある）
+        """
+        (tmp_path / "直下.aux2").write_bytes(b"MZ")
+        nested = tmp_path / "なにか"
+        nested.mkdir()
+        (nested / "一段下.aux2").write_bytes(b"MZ")
+        (nested / "さらに").mkdir()
+        (nested / "さらに" / "二段下.aux2").write_bytes(b"MZ")
+        found = [path.name for path in plugin.plugin_files(tmp_path)]
+        # 直下が先 AviUtl2 の一覧と同じ並びにする
+        assert found == ["直下.aux2", "一段下.aux2"]
+
+    def test_the_same_plugin_is_not_listed_twice(self, tmp_path: Path) -> None:
+        """2 度読むと、同じプラグインの初期化が二重になる"""
+        (tmp_path / "ひとつ.aux2").write_bytes(b"MZ")
+        assert len(plugin.plugin_files(tmp_path)) == 1
+
     def test_switched_off_gives_no_modules(self, tmp_path: Path) -> None:
         """切っても読むなら、設定に意味が無い"""
         native.set_enabled(False)
@@ -163,7 +198,7 @@ class TestPluginModules:
                 del name, args
                 return [10]
 
-        monkeypatch.setattr(plugin, "script_modules", lambda: {"compositefont": _Fake()})
+        monkeypatch.setattr(plugin, "script_modules", lambda **kwargs: {"compositefont": _Fake()})
         runtime = LuaScriptRuntime()
         text = runtime.expand_text(
             "<?obj.mes(obj.module('compositefont').api_version())?>", _state()

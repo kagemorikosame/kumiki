@@ -148,9 +148,14 @@ def text_font(params: Mapping[str, ParamValue], frame: int) -> dict[str, Any]:
     ``名前, 大きさ, 装飾, 文字色, 影・縁色, 太字, 斜体, 字間, 行間``
     ``obj.getfont`` はこれをそのまま返す
 
-    名前は空のままにする 設定欄で書体を選んでいないことを、選んだことに
-    してしまうと、合成フォントのように名前で組み方を変えるスクリプトが
-    AviUtl2 と違う結果を出す
+    名前は ``font`` があればその名前、無ければ空 ここで既定の書体名
+    （``Yu Gothic UI``）を作らない AviUtl2 の ``obj.getfont`` も、書体を
+    選んでいなければ空を返す（lua.txt「フォント名の初期値は空」）
+
+    ただし ``font`` を持たない読み込み経路（AviUtl1 の ``フォント`` が空の
+    エイリアス）と、本当に ``Yu Gothic UI`` を選んだ場合は、ここでは区別できない
+    合成フォントの ``decorate`` ``decorate_layout`` は書体名を渡しても渡さなくても
+    同じ結果を返すことを実物で確かめてあるので、いまはこの粗さで困らない
     """
 
     def number(name: str, default: float = 0.0) -> float:

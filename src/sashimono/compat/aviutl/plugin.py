@@ -29,9 +29,21 @@ Copyright (c) 2025 Kenkun）に従う
 
 **読んだプラグインは Sashimono と同じ権限で動く** :mod:`native` と同じ倒し方で
 
-- 読むのは利用者の AviUtl2 の ``Plugin`` フォルダの中だけ
+- 読むのは利用者の AviUtl2 の ``Plugin`` フォルダの中だけ（直下と 1 段下
+  :func:`plugin_files`）
 - 設定（:func:`native.set_enabled`）で切れる
 - 読めない・登録が無い・Windows でない場合は落とさずに記録へ残す
+
+**1 つ読むために全部を読むことになる** 何を登録するかは読んでみるまで
+分からないため ``obj.module`` が呼ばれて初めて読むので、AviUtl2 のスクリプトを
+使わない限り動かない とはいえ副作用はある 手元の 5 本を通して観察したところ
+
+- ``comfont`` だけがスクリプトモジュールを登録した（``compositefont``）
+- ``AIEdit`` ``WhisperAutoSub`` は ``register_window_client`` に本物の
+  ウィンドウハンドルを渡してきた＝読んだ時点でウィンドウを作っている
+- ``VariableFont`` はフィルタプラグインを登録しようとした（こちらは受け取らない）
+
+どれも落ちはしなかったが、**他人の DLL を走らせている**ことに変わりはない
 """
 
 from __future__ import annotations
@@ -50,11 +62,13 @@ from sashimono.compat.aviutl.native import (
     enabled,
     is_native_x64,
 )
+from sashimono.compat.aviutl.report import CompatibilityReport, global_report
 
 __all__ = [
     "PLUGIN_SUFFIX",
     "default_plugin_roots",
     "forget",
+    "plugin_files",
     "script_modules",
 ]
 
@@ -162,7 +176,7 @@ class _Host:
         else:
             # 何を渡されても捨てる 返り値のある窓口（create_edit_handle）は
             # nullptr を返す＝「編集中のプロジェクトは無い」
-            handler = _refuse
+            handler = _refuse(kind)
         function = kind(handler)
         self._keep.append(function)
         return function
@@ -177,9 +191,21 @@ class _Host:
         del table
 
 
-def _refuse(*args: Any) -> None:
-    """登録だけ受け取って何もしない 値を返す窓口には nullptr／0 が返る"""
-    del args
+def _refuse(kind: Any) -> Any:
+    """登録だけ受け取って何もしない窓口を作る
+
+    返す値は「無い」 整数の窓口だけ 0 で、あとは nullptr
+    整数の窓口へ ``None`` を返すと ctypes が変換に失敗し、拾えない例外として
+    捨てられる 呼んだ側へ何が返るかはその時の成り行き任せになる
+    （実物の AIEdit は ``get_color_code`` ``get_layout_size`` を呼ぶ）
+
+    文字を返す ``translate`` も nullptr にする 訳す表を持っていないため
+    実物（SrtImporter）は受け取った nullptr をそのままメニュー名として
+    登録し直すだけで、落ちはしない こちらはメニューを出さないので困らない
+    """
+    if kind._restype_ is _I:
+        return lambda *args: 0
+    return lambda *args: None
 
 
 def default_plugin_roots() -> tuple[Path, ...]:
@@ -215,7 +241,9 @@ def forget() -> None:
         _modules = None
 
 
-def script_modules(roots: tuple[Path, ...] | None = None) -> dict[str, NativeModule]:
+def script_modules(
+    roots: tuple[Path, ...] | None = None, *, report: CompatibilityReport | None = None
+) -> dict[str, NativeModule]:
     """汎用プラグインが登録したスクリプトモジュール 名前で引ける
 
     一度だけ読む 見つからない・読めない場合は空の辞書で、呼ぶ側は
@@ -224,30 +252,62 @@ def script_modules(roots: tuple[Path, ...] | None = None) -> dict[str, NativeMod
     global _modules
     with _lock:
         if _modules is None or roots is not None:
-            found = _scan(roots if roots is not None else default_plugin_roots())
+            found = _scan(
+                roots if roots is not None else default_plugin_roots(),
+                report if report is not None else global_report,
+            )
             if roots is not None:
                 return found
             _modules = found
         return _modules
 
 
-def _scan(roots: tuple[Path, ...]) -> dict[str, NativeModule]:
+def plugin_files(root: Path) -> tuple[Path, ...]:
+    """1 つの置き場にある汎用プラグイン 直下と 1 段下を見る
+
+    実物の置かれ方が 2 通りある 手元の AviUtl2 では ``comfont.aux2`` が直下、
+    ``AIEdit`` ``SrtImporter`` ``VariableFont`` ``WhisperAutoSub`` は
+    それぞれ自分のフォルダの中 直下しか見ないと、フォルダごと配られた
+    プラグインが 1 つも見つからない
+
+    2 段以上下も AviUtl2 が見るのかは分からない 手元の配布物に例が無いので、
+    読み取れた範囲（1 段下まで）にとどめる 深く潜るほど、関係の無い DLL を
+    掴んで走らせる危険も増える
+    """
+    if not root.is_dir():
+        return ()
+    found: list[Path] = []
+    seen: set[Path] = set()
+    # 直下を先に見る 同じ名前が両方にあっても、直下の物を採る（AviUtl2 の
+    # 一覧でも直下が先に出る） ``seen`` は同じ実体を 2 度読まないため
+    for pattern in (f"*{PLUGIN_SUFFIX}", f"*/*{PLUGIN_SUFFIX}"):
+        for path in sorted(root.glob(pattern)):
+            key = path.resolve()
+            if key in seen:
+                continue
+            seen.add(key)
+            found.append(path)
+    return tuple(found)
+
+
+def _scan(roots: tuple[Path, ...], report: CompatibilityReport) -> dict[str, NativeModule]:
     if not enabled() or sys.platform != "win32":
         return {}
     found: dict[str, NativeModule] = {}
     count = 0
     for root in roots:
-        if not root.is_dir():
-            continue
-        for path in sorted(root.glob(f"*{PLUGIN_SUFFIX}")):
+        for path in plugin_files(root):
             if count >= MAX_PLUGINS:
                 return found
             count += 1
             try:
                 found.update(_load(path))
-            except (NativeModuleError, OSError, ValueError, ctypes.ArgumentError):
+            except (NativeModuleError, OSError, ValueError, ctypes.ArgumentError) as exc:
                 # 読めないプラグインは飛ばす 1 つの失敗で残り全部を
                 # 諦めると、関係の無いプラグインのせいで合成フォントが消える
+                # 黙って飛ばすと「なぜか合成フォントが効かない」で終わるので、
+                # どのプラグインがどう失敗したかを残す
+                report.note_missing(f"汎用プラグイン {path.name} を読めない: {exc}")
                 continue
     return found
 
@@ -277,13 +337,17 @@ def _register(library: Any, path: Path) -> dict[str, NativeModule]:
         required.restype = ctypes.c_uint32
         version = max(version, int(required()))
 
+    # 窓口の構造体そのものも抱えておく 渡すのはその番地なので、ここで手放すと
+    # 初期化のあとに記録や設定を引きに来たプラグインが、解放済みの所を読む
     logger = _logger()
+    _keep.append(logger)
     initialize_logger = getattr(library, "InitializeLogger", None)
     if initialize_logger is not None:
         initialize_logger.argtypes = [ctypes.POINTER(_LogHandle)]
         initialize_logger(ctypes.byref(logger))
 
     config = _config()
+    _keep.append(config)
     initialize_config = getattr(library, "InitializeConfig", None)
     if initialize_config is not None:
         initialize_config.argtypes = [ctypes.POINTER(_ConfigHandle)]
@@ -325,7 +389,7 @@ def _logger() -> _LogHandle:
     """
     values: dict[str, Any] = {}
     for name, kind in _LOG_SLOTS:
-        function = kind(_refuse)
+        function = kind(_refuse(kind))
         _keep.append(function)
         values[name] = function
     return _LogHandle(**values)
@@ -342,7 +406,7 @@ def _config() -> _ConfigHandle:
     path = str(Path(program_data) / "aviutl2") if program_data else ""
     values: dict[str, Any] = {"app_data_path": path}
     for name, kind in _CONFIG_SLOTS:
-        function = kind(_refuse)
+        function = kind(_refuse(kind))
         _keep.append(function)
         values[name] = function
     return _ConfigHandle(**values)

@@ -313,6 +313,9 @@ class LuaScriptRuntime:
         self._bind_obj = self._lua.eval(_BIND_OBJ)
         self._guard = self._lua.eval(_GUARD)
         self._limit_emit = self._lua.eval(_LIMIT_EMIT)
+        #: Lua の ``tostring`` いま取っておく スクリプトが差し替えたあとに引くと、
+        #: 差し替えた方で文字にしてしまう（書き出しは本体の決まりに従わせる）
+        self._tostring = self._lua.eval("tostring")
         #: 前回置いた大域変数 次の実行で消すために覚えておく
         self._injected: set[str] = set()
         #: いま走らせているスクリプトのフォルダ モジュールの探索に使う
@@ -425,9 +428,19 @@ class LuaScriptRuntime:
                     raise LuaError(f"書き出す文字が多すぎます（{EMBEDDED_TEXT_LIMIT} 文字まで）")
                 output.append(piece)
 
+            def emit_value(value: Any) -> None:
+                """``obj.mes`` の値を Lua の決まりで文字にしてから書き出す
+
+                ``mes``（:func:`~sashimono.compat.aviutl.embedded.build_source` が
+                作る方）は Lua の ``tostring`` を通る 同じテキスト欄の中で
+                ``obj.mes`` だけ Python の ``str`` を通すと、``true`` が
+                ``True``、``nil`` が ``None`` と出て、書き方で結果が変わる
+                """
+                emit(self._tostring(value))
+
             globals_table[EMIT] = self._limit_emit(emit, EMBEDDED_TEXT_LIMIT * 4)
             try:
-                result = self.run(build_source(text), state, script=script, emit=emit)
+                result = self.run(build_source(text), state, script=script, emit=emit_value)
             finally:
                 # 残すと、次に走るスクリプトの ``mes`` がテキストの書き出しを呼ぶ
                 globals_table[EMIT] = None
@@ -572,7 +585,7 @@ class LuaScriptRuntime:
         if not native.enabled():
             return None
         try:
-            modules = plugin.script_modules()
+            modules = plugin.script_modules(report=self._report)
         except Exception as exc:  # pragma: no cover - 読み込みは実物が要る
             # プラグインの読み込みは他人の DLL を走らせる 何が出てくるか
             # 分からないので、ここで止めてスクリプト側は素の道へ進ませる
