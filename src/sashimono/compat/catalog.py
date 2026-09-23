@@ -105,6 +105,9 @@ class TemplateEntry:
     #: 何が起きたかを報告することもできない ファイル 1 つを 1 項目として並べ、
     #: 選んだときに AviUtl のエイリアスと同じく「読み込めません」と理由を出す
     error: str = ""
+    #: ``.ymmt`` の原本の中の位置（:attr:`ItemTemplate.origin`） 報告に書く
+    #: ``index`` は読める物だけを数えた番号で、原本と照らし合わせるのには使えない
+    origin: str = ""
 
     @property
     def label(self) -> str:
@@ -205,6 +208,7 @@ def _entries_for(path: Path, root: Path) -> list[TemplateEntry]:
             folder=f"{path.stem} / {template.folder}" if template.folder else path.stem,
             source="ymm4",
             index=index,
+            origin=template.origin,
         )
         for index, template in enumerate(templates)
     ]

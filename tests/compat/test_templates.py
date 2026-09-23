@@ -178,6 +178,34 @@ class TestScanning:
         catalog, _ = shelf
         assert "字幕" in catalog.folders()
 
+    def test_the_place_in_the_original_file_is_kept(self, tmp_path: Path) -> None:
+        """報告に書く位置は、原本の一覧の何本目か
+
+        読める物だけの通し番号では、空の物を飛ばした後ろやエフェクトの一覧の物が
+        原本の別の物を指し、受けた側が違うテンプレートを調べることになる
+        """
+        text = {"$type": "YukkuriMovieMaker.Project.Items.TextItem, YukkuriMovieMaker"}
+        document = {
+            "ItemTemplates": [
+                {"Name": "空", "Path": ["空"], "Items": []},
+                {"Name": "見出し", "Path": ["見出し"], "Items": [{**text, "Length": 60}]},
+            ],
+            "VideoEffectTemplates": [{"Name": "揺れ", "Effects": [{"$type": "X"}]}],
+        }
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("catalog.json", json.dumps(document, ensure_ascii=False))
+        (tmp_path / "束.ymmt").write_bytes(buffer.getvalue())
+        catalog = TemplateCatalog()
+        catalog.scan((tmp_path,))
+
+        found = {entry.name: entry for entry in catalog.all()}
+        assert found["見出し"].origin == "ItemTemplates の 2 本目"
+        assert found["揺れ"].origin == "VideoEffectTemplates の 1 本目"
+        # 読む側の番号は読める物だけの並びのまま 変えると別のテンプレートを置く
+        assert found["見出し"].index == 0
+        assert found["見出し"].load()
+
     def test_an_absent_folder_is_not_an_error(self, tmp_path: Path) -> None:
         catalog = TemplateCatalog()
         assert catalog.scan((tmp_path / "無い",)) == []

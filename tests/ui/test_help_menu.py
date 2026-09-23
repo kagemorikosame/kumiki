@@ -451,7 +451,7 @@ class TestTemplateNotesCopy:
             lines = _copied(dialog, "動き/揺れ").splitlines()
         finally:
             dialog.close()
-        assert "種類: YMM4 のアイテムテンプレート（ファイルの 2 本目）" in lines
+        assert "種類: YMM4 のアイテムテンプレート（ItemTemplates の 2 本目）" in lines
         assert "  YMM4 の映像エフェクト: UnknownEffect — 1 回" in lines
 
     def test_the_distributed_template_itself_is_left_out(self, tmp_path: Path) -> None:

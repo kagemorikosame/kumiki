@@ -141,6 +141,12 @@ class ItemTemplate:
     #: ``["アニメーション効果", "振り子"]`` のような分類
     path: tuple[str, ...] = ()
     items: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    #: ファイルの中のどこにあったか（``ItemTemplates の 2 本目`` など） 空なら
+    #: ファイル全体が 1 本（古い形やアイテムだけを書き出したもの）
+    #:
+    #: 並ぶ順の番号では原本と照らし合わせられない アイテムの入っていない物を
+    #: 除いた後の番号で、アイテムとエフェクトの 2 つの一覧を続けて数えているため
+    origin: str = ""
 
     @property
     def folder(self) -> str:
@@ -234,14 +240,19 @@ def _templates_of(document: Any, path: Path) -> list[ItemTemplate]:
         catalogued = document.get("ItemTemplates")
         effect_templates = document.get("VideoEffectTemplates")
         if isinstance(catalogued, list) or isinstance(effect_templates, list):
+            # 位置は除く前の原本の並びで数える 報告を受けた側が原本で同じ物を探せるように
             built = [
-                _template_of(entry)
-                for entry in (catalogued if isinstance(catalogued, list) else [])
+                replace(_template_of(entry), origin=f"ItemTemplates の {number} 本目")
+                for number, entry in enumerate(
+                    catalogued if isinstance(catalogued, list) else [], start=1
+                )
                 if isinstance(entry, dict)
             ]
             built.extend(
-                _effect_template_of(entry)
-                for entry in (effect_templates if isinstance(effect_templates, list) else [])
+                replace(_effect_template_of(entry), origin=f"VideoEffectTemplates の {number} 本目")
+                for number, entry in enumerate(
+                    effect_templates if isinstance(effect_templates, list) else [], start=1
+                )
                 if isinstance(entry, dict)
             )
             found = [item for item in built if item.items]
