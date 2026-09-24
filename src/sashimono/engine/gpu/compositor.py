@@ -197,6 +197,15 @@ void main() {
         frag_color = vec4(srgb_decode(mix(lower, upper, amount)), 1.0);
         return;
     }
+    if (u_mode == 301) {
+        // 置き換え 下の絵もキャンバスに溜まった値（事前乗算）のまま混ぜる 混ぜる色の空間は
+        // キャンバスに従う（プロジェクトの重ね合わせの設定） 事前乗算のまま混ぜないと、
+        // 透明な所と混ぜたときに色だけが残って縁が明るく浮く
+        float amount = clamp(u_opacity, 0.0, 1.0);
+        vec4 upper = vec4(source.rgb * source.a, source.a);
+        frag_color = mix(backdrop, upper, amount);
+        return;
+    }
 
     vec3 mixed = blend(below, source.rgb);
     vec3 color = above_alpha * (1.0 - below_alpha) * source.rgb
@@ -272,6 +281,11 @@ class BlendMode:
     #: 黒の上に置いた 2 枚の絵を sRGB の値で混ぜる 不透明度が混ぜる割合 選べる合成ではなく、
     #: 場面切り替えのフェードでレンダラが使う
     SRGB_MIX = "srgb_mix"
+    #: 下の絵を、描く絵へ置き換える 不透明度が置き換える割合（0 で下の絵のまま、1 で描く絵
+    #: だけ） 選べる合成ではなく、フィルタのクリップが掛けた後の絵を戻すときにレンダラが使う
+    #: 通常の重ね方だと、掛けた後の絵の透明な所から掛ける前の絵が透けて残る（縮めたり
+    #: 動かしたりするエフェクトで、元の絵が後ろに居残る）
+    REPLACE = "replace"
 
 
 def _encode(value: float) -> float:
@@ -289,6 +303,7 @@ _SHADER_BLENDS: dict[str, int] = {
     # 乗算を係数で書くと、下に何も無い所（透明）で絵ごと消えるという違いもある
     **{mode: 100 + blend_index(mode) for mode in BlendMode.ALL if mode != BlendMode.NORMAL},
     BlendMode.SRGB_MIX: 300,
+    BlendMode.REPLACE: 301,
 }
 
 

@@ -25,7 +25,27 @@ from sashimono.core.model.ids import (
 )
 from sashimono.core.timebase import FrameRate
 
-__all__ = ["Clip", "GeneratedSource", "Marker", "Timeline", "Track", "TrackKind"]
+__all__ = ["FILTER_KIND", "Clip", "GeneratedSource", "Marker", "Timeline", "Track", "TrackKind"]
+
+#: 下のトラックを重ね終えた絵にエフェクトを掛ける生成オブジェクトの種類（AviUtl の
+#: フィルタオブジェクト Issue #27） 掛けるエフェクトはクリップの :attr:`Clip.effects`
+#:
+#: トラックの種類（``TrackKind.EFFECT``）ではなく、映像トラックに置く生成オブジェクトに
+#: した 理由は 2 つ
+#:
+#: - 効くのは「重ね順でそれより下にある絵」 映像トラックと同じ並びの中に居ないと
+#:   上下が決まらない 種類を分けると、映像を重ねる所（描画・先読みの捨てる範囲・
+#:   音のシーン・タイムラインの並び・互換の読み込みなど 17 ファイル 36 か所）が
+#:   どれも「映像か効果か」を見分け直すことになり、1 か所でも忘れるとフィルタの
+#:   トラックだけ重ね順から抜ける
+#: - AviUtl も YMM4 も、フィルタ（エフェクトアイテム）は他のオブジェクトと同じ
+#:   レイヤーに並ぶ トラックの種類で分けると、同じレイヤーにテキストとフィルタが
+#:   交互に並ぶ作品を 1 本のトラックへ写せない
+#:
+#: 「エフェクトのトラック」が欲しいときは、映像トラックにフィルタのクリップだけを
+#: 並べればよい 音声トラックに置いて下の音全体に掛ける使い方も、同じ種類のまま
+#: ミキサが読めば足せる（いまは映像だけ）
+FILTER_KIND = "filter"
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,6 +167,11 @@ class Clip:
             return self.hold_at
         return seconds
 
+    @property
+    def is_filter(self) -> bool:
+        """下のトラックの絵へエフェクトを掛けるクリップか（:data:`FILTER_KIND`）"""
+        return self.source is not None and self.source.kind == FILTER_KIND
+
     def contains(self, frame: int) -> bool:
         return self.timeline_start <= frame < self.timeline_end
 
@@ -180,7 +205,9 @@ class Track:
     kind: TrackKind
     name: str = ""
     clips: tuple[Clip, ...] = ()
-    #: トラック全体に掛かるフィルタ（AviUtl のフィルタオブジェクト相当）
+    #: トラック全体に掛かるフィルタ いまのレンダラは読まない AviUtl のフィルタオブジェクトは
+    #: ここではなく、映像トラックに置くフィルタのクリップ（:data:`FILTER_KIND`）で表す
+    #: 効く時間をクリップの長さで決められ、同じトラックに他のクリップとも並べられるため
     effects: tuple[Effect, ...] = ()
     locked: bool = False
     muted: bool = False
