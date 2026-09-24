@@ -134,6 +134,39 @@ class TestStoreWrites:
         with pytest.raises(PresetStoreError, match="保存できなかった"):
             store.save([])
 
+    def test_a_failing_cleanup_does_not_hide_the_store_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """書きかけを消す所で失敗しても、画面が受け取れる PresetStoreError のまま上げる
+
+        POSIX では親がファイルの所の unlink が NotADirectoryError を出す それが上がると、
+        画面は拾えずにボタンが黙って落ちる Windows でも同じ道を通すため、消す所を失敗させる
+        """
+        blocker = tmp_path / "ファイル"
+        blocker.write_text("", encoding="utf-8")
+
+        def refuse(self: Path, missing_ok: bool = False) -> None:
+            raise NotADirectoryError(20, "Not a directory", str(self))
+
+        monkeypatch.setattr(Path, "unlink", refuse)
+        with pytest.raises(PresetStoreError, match="保存できなかった"):
+            ProjectPresetStore(blocker / "p.json").save([])
+
+    def test_a_list_saved_in_another_encoding_is_copied_aside(self, tmp_path: Path) -> None:
+        """UTF-8 で読めない一覧（メモ帳で Shift_JIS に保存し直した物）は壊れた一覧として扱う
+
+        分けないと、設定の画面を開くだけで UnicodeDecodeError で落ち、保存では写しも残らない
+        """
+        path = tmp_path / "p.json"
+        body = '{"version": 1, "presets": [{"name": "縦動画"}]}'
+        path.write_bytes(body.encode("shift_jis"))
+        store = ProjectPresetStore(path)
+        assert store.load() == []
+        store.put(ProjectPreset("新しい", 1280, 720, FrameRate(30), Blending.SRGB))
+        assert store.last_backup is not None
+        assert store.last_backup.read_bytes() == body.encode("shift_jis")
+        assert [p.name for p in store.load()] == ["新しい"]
+
     def test_no_half_written_file_is_left_after_saving(self, tmp_path: Path) -> None:
         # 書きかけが残ると、置き場に意味の分からないファイルが増えていく
         store = ProjectPresetStore(tmp_path / "p.json")

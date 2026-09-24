@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import shutil
 import time
@@ -101,7 +102,10 @@ class ProjectPresetStore:
             # 書き終えてから入れ替える 書いている途中で落ちると、一覧が半分だけ残る
             temporary.replace(self.path)
         except OSError as exc:
-            temporary.unlink(missing_ok=True)
+            # 後片付けの失敗で元の理由を隠さない 親がファイルの所では、POSIX の unlink は
+            # FileNotFoundError ではなく NotADirectoryError を出し、missing_ok では抑えられない
+            with contextlib.suppress(OSError):
+                temporary.unlink(missing_ok=True)
             raise PresetStoreError(f"テンプレートを保存できなかった: {self.path}（{exc}）") from exc
 
     def put(self, preset: ProjectPreset) -> list[ProjectPreset]:
@@ -126,6 +130,10 @@ class ProjectPresetStore:
             text = self.path.read_text(encoding="utf-8")
         except FileNotFoundError:
             return []
+        except UnicodeDecodeError as exc:
+            # メモ帳などで Shift_JIS に保存し直した一覧 ValueError の仲間で OSError ではないので、
+            # 分けないと画面を開くだけで落ちる 中身はあるので、壊れた一覧として写してから作り直す
+            raise _BrokenError(str(exc)) from exc
         try:
             data = json.loads(text)
         except ValueError as exc:
