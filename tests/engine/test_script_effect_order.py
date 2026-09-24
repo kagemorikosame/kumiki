@@ -10,12 +10,12 @@ AviUtl の ``obj.effect("ぼかし")`` はその場で絵を変える こちら�
 from __future__ import annotations
 
 from collections.abc import Iterator
-from dataclasses import replace
 
 import numpy as np
 import pytest
 
 from sashimono.compat.aviutl.catalog import ScriptCatalog, set_script_catalog
+from sashimono.core.commands import AddClip, AddTrack
 from sashimono.core.model import (
     AnimatedValue,
     Clip,
@@ -66,9 +66,10 @@ def _render(source: str, gl_context: OffscreenGLContext) -> np.ndarray:
         ),
         effects=(definition.create(),),
     )
-    project = Project.create(SETTINGS)
-    track = Track(TrackKind.VIDEO, "V1", (clip,))
-    project = replace(project, timeline=replace(project.timeline, tracks=(track,)))
+    # 編集と同じ Command で組む モデルを直接書き換えると、編集の経路が守る決まりを通らない
+    track = Track(TrackKind.VIDEO, "V1")
+    project = AddTrack(track).apply(Project.create(SETTINGS))
+    project = AddClip(track.id, clip).apply(project)
     renderer = FrameRenderer(project, context=gl_context)
     try:
         return renderer.render(5)
