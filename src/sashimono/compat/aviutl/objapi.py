@@ -343,10 +343,11 @@ class ObjApi:
         state = self.state
         if name in _WRITABLE:
             return getattr(state, name)
-        if name == "w":
-            return state.width
-        if name == "h":
-            return state.height
+        if name in ("w", "h"):
+            # 大きさは積んだ効果を掛けた後の物 AviUtl の obj.effect はその場で絵を変え、
+            # ぼかしや縁取りは絵を広げる 積んだまま読むと、広がる前の大きさが返る
+            self._settle_effects(f"obj.{name}")
+            return state.width if name == "w" else state.height
         if name in ("x", "y", "z"):
             # 表示基準座標（標準描画の X・Y・Z） 描く側がクリップの配置から入れる
             return getattr(state, f"base_{name}")
@@ -641,6 +642,13 @@ class ObjApi:
         if original == CLIP_EFFECT and not self.state.effects:
             self._clip(params)
             return
+        if original == EXPAND_EFFECT:
+            # 先に積んだ効果は広げる前の絵へ掛ける 掛けられなければ、広げるのも描くときへ
+            # 回して順を守る（そのときの大きさは広げる前のまま）
+            self._settle_effects("obj.effect(領域拡張)")
+            if not self.state.effects:
+                self._expand(params)
+                return
         self.state.effects.append(EffectRequest(kind=kind, params=params, original=original))
 
     def _clip(self, values: dict[str, float | str]) -> None:
@@ -679,6 +687,46 @@ class ObjApi:
             state.oy += shift_y
             state.cx -= shift_x
             state.cy -= shift_y
+
+    def _expand(self, values: dict[str, float | str]) -> None:
+        """``obj.effect("領域拡張", "上", 10, "下", 0, "左", 0, "右", 0, "塗りつぶし", 0)``
+
+        描くときではなく、ここで絵の周りを広げる sigma と PSDToolKit は広げた直後に
+        ``obj.getpixel()`` や ``obj.w`` で大きさを読み、``obj.copybuffer`` で広げた絵を取っておく
+        描くときまで待つと、その間の処理が広げる前の大きさを相手にする
+
+        広げた絵の真ん中がオブジェクトの位置へ来る 位置と回転の中心は戻さない
+        .exa の 領域拡張（:data:`~sashimono.effects.warp` の ``expand_area``）と同じく、元の絵は
+        広げた量の半分だけずれて見える 戻すと、同じ量を .exa とスクリプトで広げた絵が
+        別の場所に出る ``塗りつぶし`` が真なら、広げた所を縁の画素で埋める
+        """
+        state = self.state
+        amounts = {name: _as_float(values.get(name, 0.0)) for name in ("上", "下", "左", "右")}
+        if not all(math.isfinite(value) for value in amounts.values()):
+            self._report.note_missing("obj.effect(領域拡張) の量（数ではない）")
+            return
+        # 負の量は AviUtl でも広げない（設定の下限が 0） 切るのは クリッピング の役目
+        top, bottom, left, right = (
+            max(0, round(amounts[name])) for name in ("上", "下", "左", "右")
+        )
+        height, width = state.image.shape[:2]
+        if max(height + top + bottom, width + left + right) > MAX_FIGURE_SIZE:
+            # 量はスクリプトが決める そのまま作ると 1 回で数 GB になるので広げないが、
+            # 黙ると大きさが変わらなかった理由が互換性レポートに出ない
+            self._report.note_missing(
+                f"obj.effect(領域拡張) の大きさ {width + left + right}x{height + top + bottom}"
+                f"（上限 {MAX_FIGURE_SIZE} を超えるので広げなかった）"
+            )
+            return
+        if not (top or bottom or left or right):
+            return
+        fill = bool(_as_float(values.get("塗りつぶし", 0.0)))
+        state.image = np.pad(
+            state.image,
+            ((top, bottom), (left, right), (0, 0)),
+            mode="edge" if fill else "constant",
+        )
+        state.image_shared = False
 
     def _offscreen(self) -> None:
         """``obj.effect("オフスクリーン描画")``
@@ -967,6 +1015,9 @@ class ObjApi:
         絵として角度を求め、菱形が四角のまま残る
         """
         if not args:
+            # 大きさも obj.w と同じく積んだ効果を掛けた後の物 sigma は 領域拡張 や
+            # 縁取り の直後にこれで大きさを読む
+            self._settle_effects("obj.getpixel")
             return (self.state.width, self.state.height)
         return self._pixel(*args)
 
@@ -1214,6 +1265,9 @@ RESIZE_EFFECT = "リサイズ"
 
 #: 先に積んだ効果が無ければその場で絵を切るフィルタの名前（:meth:`ObjApi._clip`）
 CLIP_EFFECT = "クリッピング"
+
+#: その場で絵を広げるフィルタの名前（:meth:`ObjApi._expand`）
+EXPAND_EFFECT = "領域拡張"
 
 #: ``obj.load("figure")`` の線の太さがこれ以上なら塗りつぶし 図形オブジェクトの読み込み
 #: （:mod:`sashimono.compat.aviutl.mapping`）と同じ決まり AviUtl2 の既定値がこの値

@@ -19,6 +19,7 @@ from sashimono.compat.aviutl.catalog import ScriptCatalog, set_script_catalog
 from sashimono.core.model import (
     AnimatedValue,
     Clip,
+    Effect,
     GeneratedSource,
     Project,
     ProjectSettings,
@@ -29,6 +30,7 @@ from sashimono.core.timebase import FrameRate
 from sashimono.effects import registry
 from sashimono.engine.gpu import GLContextError, OffscreenGLContext
 from sashimono.engine.render import FrameRenderer
+from sashimono.engine.render.script_bake import BAKE_MARGIN, ScriptEffectBaker, bake_margin
 
 SETTINGS = ProjectSettings(width=96, height=96, frame_rate=FrameRate(30))
 
@@ -100,3 +102,45 @@ class TestOrder:
         row = _row(_render(f"{LOAD} {RESIZE} {BLUR}", gl_context))
         assert row[48] > 250
         assert row[4] < 4
+
+
+def _shadow(offset_x: float) -> Effect:
+    """真横へ ``offset_x`` ずらした濃い影 ぼかさない"""
+    definition = registry.get("shadow")
+    assert definition is not None
+    return definition.create(offset_x=offset_x, offset_y=0.0, blur=0.0, opacity=100.0)
+
+
+class TestMargin:
+    """効果を掛ける所の余白は、積んだ効果が絵を外へ動かす量から決める（#186）
+
+    余白を決め打ちにすると、それより遠くへ動かす影や広げる物が掛けた所で切れ、
+    ``obj.w`` や写し取った絵から消える
+    """
+
+    def test_a_far_shadow_survives_the_bake(self, gl_context: OffscreenGLContext) -> None:
+        # 影を 200 画素ずらす 128 画素の余白では影が作業場の外へ出て消える
+        image = np.full((8, 8, 4), 255, np.uint8)
+        baker = ScriptEffectBaker()
+        with gl_context:
+            try:
+                baked = baker.apply(image, (_shadow(200.0),), 0, 30.0, 30)
+            finally:
+                baker.release()
+        # 真ん中は動かさないので、影の分だけ左右へ同じ幅で広がる
+        assert baked.shape[1] >= 8 + 2 * 200
+        middle = baked[baked.shape[0] // 2]
+        assert middle[-4:, 3].max() > 0
+
+    def test_the_margin_covers_what_the_effects_move(self) -> None:
+        # 画素で決める項目の分だけ外へ出うる 足りない余白は掛けた所で切れる
+        assert bake_margin((_shadow(200.0),), 0) >= 200
+        definition = registry.get("expand_area")
+        assert definition is not None
+        grown = definition.create(top=300.0, left=40.0)
+        assert bake_margin((grown, _shadow(-150.0)), 0) >= 300 + 150
+
+    def test_the_margin_never_drops_below_the_old_floor(self) -> None:
+        # 画素の項目を持たない効果（色だけ変える物）でも、これまでの余白は残す
+        # 縮めると、範囲の決まらない広がり（グローの光など）が切れる
+        assert bake_margin((), 0) == BAKE_MARGIN

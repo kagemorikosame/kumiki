@@ -192,9 +192,16 @@ class TestFilters:
 
     def test_a_filter_the_import_knows_is_called(self) -> None:
         # 読み込みで写せる効果は、スクリプトからも同じ名前で呼べる（表を 1 つにした）
-        (effect,) = _requested('obj.effect("領域拡張", "上", 10)')
-        assert effect.kind == "expand_area"
-        assert _value(effect, "top") == 10.0
+        (effect,) = _requested('obj.effect("ミラー", "透明度", 10)')
+        assert effect.kind == "mirror"
+        assert _value(effect, "opacity") == 10.0
+
+    def test_expanding_left_for_the_draw_keeps_its_amounts(self) -> None:
+        # 領域拡張 はふだんその場で広げる（#186） 先に積んだ効果を掛けられずに描くときへ
+        # 回すときは、上・下・左・右を読み込みと同じ項目へ写す 写さないと何も広がらない
+        effects = _requested('obj.effect("ぼかし", "範囲", 2) obj.effect("領域拡張", "上", 10)')
+        assert [effect.kind for effect in effects] == ["blur", "expand_area"]
+        assert _value(effects[1], "top") == 10.0
 
 
 class TestPlacement:
