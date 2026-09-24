@@ -37,6 +37,7 @@ from sashimono.engine.render.prefetch import BYTES_PER_FRAME_PIXEL
 from sashimono.ui.media_match import MATCH_CHOICES
 from sashimono.ui.media_pool import VIEW_ICONS, VIEW_LIST
 from sashimono.ui.preview_handles import KEYFRAME_DRAG_CHOICES
+from sashimono.ui.project_settings_dialog import LAYER_MODE_CHOICES
 from sashimono.ui.workspace import DOCK_TABS_BOTTOM, DOCK_TABS_TOP, Preferences
 
 __all__ = [
@@ -231,6 +232,17 @@ class PreferencesDialog(QDialog):
             "動画と違えばどうするか フレームレートを変えられるのはタイムラインが空のときだけ"
         )
         form.addRow("最初の動画に合わせる", self._match_video)
+        self._new_project_layers = QComboBox(self)
+        for value, text in LAYER_MODE_CHOICES:
+            self._new_project_layers.addItem(text, value)
+        self._new_project_layers.setCurrentIndex(
+            max(0, self._new_project_layers.findData(preferences.new_project_layers))
+        )
+        self._new_project_layers.setToolTip(
+            "新しく作るプロジェクトと、起動した直後の空のプロジェクトの方式 "
+            "新規作成の窓でもプロジェクトごとに選べる 開いたプロジェクトの方式は変えない"
+        )
+        form.addRow("新しいプロジェクトの置き方", self._new_project_layers)
         self._dock_tabs = QComboBox(self)
         self._dock_tabs.addItem("上（既定）", DOCK_TABS_TOP)
         self._dock_tabs.addItem("下", DOCK_TABS_BOTTOM)
@@ -406,4 +418,5 @@ class PreferencesDialog(QDialog):
             preview_handles=self._preview_handles.isChecked(),
             keyframe_drag=str(self._keyframe_drag.currentData()),
             value_lines=self._value_lines.isChecked(),
+            new_project_layers=str(self._new_project_layers.currentData()),
         )
