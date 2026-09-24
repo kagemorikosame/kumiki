@@ -222,15 +222,25 @@ def _dispose(widget: QWidget) -> None:
     shiboken6.delete(widget)
 
 
-def _show_without_gl(window: MainWindow) -> None:
-    """プレビューを隠してから窓を出す タブの並びを確かめるだけなので GL は要らない
+@pytest.fixture
+def shown_window(window: MainWindow) -> Iterator[MainWindow]:
+    """プレビュー（GL の部品）を外してから出した窓 タブの並びを見るだけなので GL は要らない
 
-    GPU の無い CI では、プレビュー（GL の部品）を 1 度でも出した窓を閉じて片付けると、
-    プロセスごと落ちた（access violation 手元の GPU のある機械では起きない #149 と同じ筋）
-    隠したままなら GL の初期化が走らない
+    GL の部品を子に持つ窓を出すと、Qt は窓ごと GL で描くようになり、GL のコンテキストを
+    作って current のまま残す GPU の無い CI では、その窓を片付けるときにプロセスごと
+    落ち（access violation #149 と同じ筋）、落ちなくても残ったコンテキストのせいで
+    後のプレビューの試験（test_preview_prefetch.py）が「GL を使えない」と見て止まった
+    真ん中の部品ごと外せば、窓は GL を使わずに出る
     """
-    window._preview.hide()
+    viewer = window.takeCentralWidget()
     window.show()
+    QApplication.processEvents()
+    yield window
+    window.hide()
+    # 隠してから戻す 窓を閉じるときにプレビューを畳むので、窓の中に戻しておく
+    # 出していない窓へ戻すだけなら GL は作られない
+    if viewer is not None:
+        window.setCentralWidget(viewer)
 
 
 def _tab_positions(window: MainWindow) -> set[QTabBar.Shape]:
@@ -247,28 +257,27 @@ def _tab_positions(window: MainWindow) -> set[QTabBar.Shape]:
 
 
 class TestDockTabs:
-    def test_stacked_panels_show_their_tabs_on_top(self, window: MainWindow) -> None:
+    def test_stacked_panels_show_their_tabs_on_top(self, shown_window: MainWindow) -> None:
         # Qt の既定では下に出て、パネルを切り替えられることに気付かない
-        _show_without_gl(window)
-        QApplication.processEvents()
+        window = shown_window
         assert _tab_positions(window) == {QTabBar.Shape.RoundedNorth}
-        window.hide()
 
-    def test_the_preference_puts_them_back_at_the_bottom(self, window: MainWindow) -> None:
+    def test_the_preference_puts_them_back_at_the_bottom(self, shown_window: MainWindow) -> None:
         # 下が見慣れた人が戻せないと、設定がある意味が無い
+        window = shown_window
         window._apply_preferences(replace(window._preferences, dock_tabs=DOCK_TABS_BOTTOM))
-        _show_without_gl(window)
         QApplication.processEvents()
         assert _tab_positions(window) == {QTabBar.Shape.RoundedSouth}
         assert window.tabPosition(window.dockWidgetArea(window._subtitle_dock)) == (
             QTabWidget.TabPosition.South
         )
-        window.hide()
 
-    def test_switching_while_open_leaves_no_second_row_of_tabs(self, window: MainWindow) -> None:
+    def test_switching_while_open_leaves_no_second_row_of_tabs(
+        self, shown_window: MainWindow
+    ) -> None:
         # 重ねた後で向きを変えると、前の向きのタブが残って上下に 2 つ出ないか
         # 見える所に出ているタブの並びを、隅々まで点で当たって確かめる
-        _show_without_gl(window)
+        window = shown_window
         for position, shape in (
             (DOCK_TABS_BOTTOM, QTabBar.Shape.RoundedSouth),
             (DOCK_TABS_TOP, QTabBar.Shape.RoundedNorth),
@@ -287,7 +296,6 @@ class TestDockTabs:
             assert {bar.shape() for bar in seen} == {shape}
             # メディアと字幕、オブジェクト設定と AI アシスタントの 2 組だけ
             assert len(seen) == 2
-        window.hide()
 
     def test_the_default_is_top(self) -> None:
         # 既定が下に戻ると、設定を知らない人はまたパネルを切り替えられることに気付かない
@@ -567,11 +575,19 @@ class TestSnapshotMenu:
 
     def test_the_preview_menu_is_made_once(self, window: MainWindow) -> None:
         # 開くたびに作ると、閉じたメニューが窓の子として右クリックの回数だけ残る
-        before = len(window.findChildren(QMenu))
+        # 数えるのは静止画の項目を持つメニューだけ 全部を数えると、Qt が自分で作る
+        # メニュー（メニューバーの溢れた分など）が CI でだけ増えて数が合わない
+        def ours() -> int:
+            return sum(
+                window._snapshot_save_action in menu.actions()
+                for menu in window.findChildren(QMenu)
+            )
+
+        before = ours()
         for _ in range(3):
             window._show_preview_menu(QPoint(5, 5))
             window._preview_menu.hide()
-        assert len(window.findChildren(QMenu)) == before
+        assert ours() == before
         assert window._snapshot_save_action in window._preview_menu.actions()
 
     def test_the_actions_have_their_own_keys(self, window: MainWindow) -> None:
