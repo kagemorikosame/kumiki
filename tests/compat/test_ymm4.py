@@ -451,6 +451,50 @@ class TestVideoEffects:
         assert [k.frame for k in scale.keyframes] == [0, 300]
         assert scale.keyframes[0].interpolation is Interpolation.EASE_OUT
 
+    @staticmethod
+    def _mosaic(shape: str, size: dict[str, Any]) -> dict[str, Any]:
+        """実物と同じ形のモザイク 粒の大きさは形ごとの設定（MosaicParameter）の中にある"""
+        return {
+            "$type": "YukkuriMovieMaker.Project.Effects.MosaicEffect, YukkuriMovieMaker",
+            "MosaicType": shape,
+            "MosaicParameter": {
+                "$type": f"YukkuriMovieMaker.Project.Effects.MosaicParameters.{shape}"
+                "MosaicParameter, YukkuriMovieMaker",
+                "Size": size,
+            },
+            "IsEnabled": True,
+            "Remark": "",
+        }
+
+    def test_the_mosaic_size_is_read_from_the_shape_parameter(self) -> None:
+        # 上の段の Size だけを見ていると、実物 7 本がどれも既定の 16 で描かれる
+        # （ドット絵風加工は 4 のはずが 4 倍の粗さになる）
+        report = CompatibilityReport()
+        result = map_video_effects([self._mosaic("Rectangle", still(4.0))], report, length=300)
+        assert result.effects[0].kind == "mosaic"
+        assert value_at(result.effects[0].params["size"]) == 4.0
+        assert not report.missing
+
+    def test_a_moving_mosaic_keeps_moving(self) -> None:
+        # 場面切り替えの じわっと抽象化 は粒の大きさを動かして絵を崩す 止まると切り替わらない
+        effect = self._mosaic("Rectangle", moving(1.0, 20.0))
+        result = map_video_effects([effect], CompatibilityReport(), length=300)
+        size = result.effects[0].params["size"]
+        assert value_at(size, 0) == pytest.approx(1.0)
+        assert value_at(size, 300) == pytest.approx(20.0)
+
+    def test_triangle_and_delaunay_mosaics_are_counted(self) -> None:
+        # 四角の粒で代わりに描くので絵は同じにならない 数えずにいると、違うことに気付けない
+        report = CompatibilityReport()
+        result = map_video_effects(
+            [self._mosaic("Triangle", still(30.0)), self._mosaic("Delaunay", still(20.0))],
+            report,
+            length=300,
+        )
+        assert [value_at(e.params["size"]) for e in result.effects] == [30.0, 20.0]
+        assert report.missing["YMM4 のモザイクの形: Triangle"] == 1
+        assert report.missing["YMM4 のモザイクの形: Delaunay"] == 1
+
     def test_the_rotate_effect_uses_the_z_axis(self) -> None:
         effect = {
             "$type": "YukkuriMovieMaker.Project.Effects.RotateEffect, YukkuriMovieMaker",

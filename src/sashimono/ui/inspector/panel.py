@@ -318,6 +318,8 @@ class InspectorPanel(QWidget):
             section.add_note(
                 "このトラックより下を重ねた絵に、下に積んだエフェクトを掛けます"
                 " 不透明度は掛ける前と後の混ぜ具合です"
+                " 部分モザイク・ぼかしと部分フィルタの範囲は、画面の中央から数えます"
+                "（右と上が正）"
             )
         for spec in definition.parameters:
             path = ParamPath.of_source(clip.id, spec.name)
