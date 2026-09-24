@@ -24,7 +24,7 @@ from typing import Any
 
 from sashimono.compat.aviutl.report import CompatibilityReport
 from sashimono.compat.decoration import decoration_params, find_decoration
-from sashimono.compat.ymm4.brushes import fill_foreground, gradient_effect
+from sashimono.compat.ymm4.brushes import fill_foreground, gradient_effect, is_solid
 from sashimono.compat.ymm4.effects import CenterPoint, center_point, map_effect, mapped_names
 from sashimono.compat.ymm4.values import (
     animated,
@@ -37,7 +37,13 @@ from sashimono.compat.ymm4.values import (
 from sashimono.core.model import AnimatedValue, Effect, ParamValue
 from sashimono.effects.definition import registry
 
-__all__ = ["DecorationResult", "map_decorations", "map_video_effects"]
+__all__ = [
+    "DecorationResult",
+    "has_outline",
+    "map_decorations",
+    "map_video_effects",
+    "outlines_fit_text",
+]
 
 Colour = tuple[float, float, float, float]
 
@@ -168,13 +174,7 @@ def _map_video_effects(
     # テキストでも、載せられない縁取り（縁だけ・動く不透明度・ぼかし）が 1 つでもあれば
     # すべてをエフェクトにする 一部だけをテキストへ載せると、載せた方が並びの頭へ動いて
     # 重なり順が YMM4 と変わる
-    in_place = not text or any(
-        not _outline(entry, length, keyframes).fits_text
-        for entry in effects
-        if isinstance(entry, dict)
-        and entry.get("IsEnabled") is not False
-        and type_name(entry) == "OutlineEffect"
-    )
+    in_place = not text or not outlines_fit_text(effects, length=length, keyframes=keyframes)
     pivot: CenterPoint | None = None
     for entry in effects:
         if not isinstance(entry, dict):
@@ -194,7 +194,7 @@ def _map_video_effects(
             pivot, _ = center_point(entry, report, length=length, keyframes=keyframes)
             continue
         if name == "OutlineEffect":
-            outline = _outline(entry, length, keyframes)
+            outline = _outline(entry, length, keyframes, report)
             if in_place:
                 # 太さ 0 でも縁だけなら置く 元の絵を消すのは縁だけの役目で、落とすと
                 # 消えるはずの塗りが残る（#175）
@@ -424,16 +424,59 @@ class _Outline:
         )
 
 
-def _outline(entry: dict[str, Any], length: int, keyframes: Any) -> _Outline:
+def outlines_fit_text(effects: Any, *, length: int = 1, keyframes: Any = None) -> bool:
+    """列の中の効いている縁取りが、どれもテキストの縁取りの設定へ載せられるか
+
+    描画を遅らせる印で列を分けて読むときも、分ける前の列全体で 1 度だけ決める 区間ごとに
+    決めると、片側の縁取りだけがテキストへ移って並びの頭へ動き、重なり順が変わる
+    """
+    if not isinstance(effects, list):
+        return True
+    return all(
+        _outline(entry, length, keyframes).fits_text
+        for entry in effects
+        if isinstance(entry, dict)
+        and entry.get("IsEnabled") is not False
+        and type_name(entry) == "OutlineEffect"
+    )
+
+
+def has_outline(effects: Any) -> bool:
+    """列に効いている縁取りがあるか"""
+    return isinstance(effects, list) and any(
+        isinstance(entry, dict)
+        and entry.get("IsEnabled") is not False
+        and type_name(entry) == "OutlineEffect"
+        for entry in effects
+    )
+
+
+def _outline(
+    entry: dict[str, Any],
+    length: int,
+    keyframes: Any,
+    report: CompatibilityReport | None = None,
+) -> _Outline:
+    """`OutlineEffect` を読む `report` を渡したときだけ写せない所を数える
+
+    載せられるかを確かめるだけの読み（:func:outlines_fit_text）では渡さない 渡すと
+    同じ縁取りを 2 度数える
+    """
+
     def value(key: str, default: float) -> AnimatedValue:
         return animated(entry.get(key), default, length=length, keyframes=keyframes)
 
     # 4.56 の縁取りは太さを Thickness、色を Brush に持つ（実物はキラリンエフェクトの 1 件）
     # 古い名前だけを見ると、既定の太さ 4 の黒い縁になる
     newer = "StrokeThickness" not in entry and "Thickness" in entry
+    brush = entry.get("Brush" if newer else "StrokeBrush")
+    if report is not None and not is_solid(brush):
+        # 縁取りのエフェクトは色 1 つしか持たない 模様のブラシは色 1 つ（無ければ黒）で
+        # 描くので、違うことを数えて残す
+        report.note_missing("YMM4 の縁取りの単色以外のブラシ")
     return _Outline(
         width=_non_negative(value("Thickness" if newer else "StrokeThickness", 4.0)),
-        tint=brush_colour(entry.get("Brush" if newer else "StrokeBrush")),
+        tint=brush_colour(brush),
         # 縁の不透明度 読まずにいると、薄く光らせるつもりのグループの縁（SFっぽい
         # 吹き出し(右) は 50.9）が、格子の隙間を濃く埋める
         opacity=value("Opacity", 100.0),

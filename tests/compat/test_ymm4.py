@@ -51,8 +51,8 @@ from sashimono.core.model import (
     Project,
 )
 
-#: 実物と同じ書き方のブラシ
-BRUSH = {
+#: 実物と同じ書き方のブラシ 試験ごとに色を差し替えて使うので、中身を Any として持つ
+BRUSH: dict[str, Any] = {
     "Type": "YukkuriMovieMaker.Plugin.Brush.SolidColorBrushPlugin, YukkuriMovieMaker, Version=4.32",
     "Parameter": {
         "$type": "YukkuriMovieMaker.Plugin.Brush.SolidColorBrushParameter, YukkuriMovieMaker",
@@ -539,7 +539,7 @@ class TestVideoEffects:
         edge = outline(6.3)
         edge["StrokeBrush"] = {
             "Type": BRUSH["Type"],
-            "Parameter": {**BRUSH["Parameter"], "Color": "#FFFF0000"},  # type: ignore[dict-item]
+            "Parameter": {**BRUSH["Parameter"], "Color": "#FFFF0000"},
         }
         mapped = map_template([shape_item(VideoEffects=[edge])], report=CompatibilityReport())[0]
         borders = [e for e in mapped.clip.effects if e.kind == "border"]
@@ -574,6 +574,53 @@ class TestVideoEffects:
         (border,) = [e for e in mapped.clip.effects if e.kind == "border"]
         assert value_at(border.params["blur"]) == pytest.approx(2.5)
 
+    @pytest.mark.parametrize("plain_first", [True, False], ids=["plain-first", "plain-last"])
+    def test_outlines_across_a_lazy_marker_keep_their_order(self, plain_first: bool) -> None:
+        """描画を遅らせる印の両側に縁取りがあっても、どちらもテキストの縁取りへ移さない
+
+        印の前後を別々に読むと、ぼかした縁取りの無い側のふつうの縁取りだけがテキストへ
+        移り、並びの頭へ動いて重なり順が YMM4 と変わる（#191 のレビュー）
+        """
+        plain = outline(4.0)
+        soft = outline(6.0)
+        soft["Blur"] = still(2.5)
+        marker = {
+            "$type": "YukkuriMovieMaker.Project.Effects.DrawLazyEffectEffect, YukkuriMovieMaker",
+            "IsEnabled": True,
+        }
+        chain = [plain, marker, soft] if plain_first else [soft, marker, plain]
+        mapped = map_template([text_item(VideoEffects=chain)], report=CompatibilityReport())[0]
+        source = mapped.clip.source
+        assert source is not None
+        assert "border_width" not in source.params, "片側の縁取りがテキストへ移った"
+        widths = [value_at(e.params["width"]) for e in mapped.clip.effects if e.kind == "border"]
+        assert widths == ([4.0, 6.0] if plain_first else [6.0, 4.0])
+
+    def test_plain_outlines_on_both_sides_of_a_lazy_marker_are_both_kept(self) -> None:
+        """印の両側のふつうの縁取りは、どちらも残る 区間ごとに一番太いものを選んで
+        合わせると、前の区間の縁取りが落ちる
+        """
+        marker = {
+            "$type": "YukkuriMovieMaker.Project.Effects.DrawLazyEffectEffect, YukkuriMovieMaker",
+            "IsEnabled": True,
+        }
+        item = text_item(VideoEffects=[outline(4.0), marker, outline(6.0)])
+        mapped = map_template([item], report=CompatibilityReport())[0]
+        widths = [value_at(e.params["width"]) for e in mapped.clip.effects if e.kind == "border"]
+        assert widths == [4.0, 6.0]
+
+    def test_a_patterned_outline_brush_is_recorded(self) -> None:
+        """縁取りの模様のブラシは色 1 つで描くので、違うことを互換性の記録に 1 回だけ残す"""
+        edge = outline(4.0)
+        edge["StrokeBrush"] = {
+            "Type": "YukkuriMovieMaker.Brush.GridLineBrushPlugin, YukkuriMovieMaker",
+            "Parameter": {"StrokeColor": "#FF1C9F9D"},
+        }
+        report = CompatibilityReport()
+        map_template([shape_item(VideoEffects=[edge])], report=report)
+        lines = [line for line in report.lines() if "縁取りの単色以外のブラシ" in line]
+        assert len(lines) == 1, report.lines()
+
     def test_the_newer_outline_fields_are_read(self) -> None:
         """新しい版（4.56）の縁取りは太さを ``Thickness``、色を ``Brush`` に持つ
 
@@ -587,7 +634,7 @@ class TestVideoEffects:
             "Opacity": still(100.0),
             "Brush": {
                 "Type": BRUSH["Type"],
-                "Parameter": {**BRUSH["Parameter"], "Color": "#FFFFC039"},  # type: ignore[dict-item]
+                "Parameter": {**BRUSH["Parameter"], "Color": "#FFFFC039"},
             },
             "IsOutlineOnly": False,
             "IsEnabled": True,

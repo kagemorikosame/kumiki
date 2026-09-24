@@ -39,7 +39,13 @@ from typing import Any
 from sashimono.compat.aviutl.report import CompatibilityReport, global_report
 from sashimono.compat.mapped import MappedObject, fitted_effect
 from sashimono.compat.ymm4.brushes import BLEND_NAMES, brush_effect, is_solid
-from sashimono.compat.ymm4.decorations import map_decorations, map_video_effects, with_pivot
+from sashimono.compat.ymm4.decorations import (
+    has_outline,
+    map_decorations,
+    map_video_effects,
+    outlines_fit_text,
+    with_pivot,
+)
 from sashimono.compat.ymm4.effects import CenterPoint
 from sashimono.compat.ymm4.values import (
     animated,
@@ -670,10 +676,18 @@ def _video_chain(
         return video.params, list(video.effects), final
 
     marker = entries[lazy]
-    first = map_video_effects(entries[:lazy], log, length=length, keyframes=keyframes, text=text)
-    rest = map_video_effects(
-        entries[lazy + 1 :], log, length=length, keyframes=keyframes, text=text
+    # テキストの設定へ縁取りを載せるかは、分ける前の列全体で決める 区間ごとに決めると、
+    # 載せられない縁取り（縁だけ・ぼかしなど）が印の反対側にあるとき、こちら側だけが
+    # テキストへ移って並びの頭へ動く 両側に縁取りがあるときも載せない 区間ごとに一番太い
+    # ものを選ぶので、合わせるときに前の区間の分が落ちる
+    head, tail = entries[:lazy], entries[lazy + 1 :]
+    text = (
+        text
+        and outlines_fit_text(entries, length=length, keyframes=keyframes)
+        and not (has_outline(head) and has_outline(tail))
     )
+    first = map_video_effects(head, log, length=length, keyframes=keyframes, text=text)
+    rest = map_video_effects(tail, log, length=length, keyframes=keyframes, text=text)
     early = {key: _RESTING[key] for key in _RESTING}
     late = dict(item)
     for flag, keys in _LAZY_PARTS:
