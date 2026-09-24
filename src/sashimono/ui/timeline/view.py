@@ -57,6 +57,8 @@ from sashimono.core.model import (
     Clip,
     ClipId,
     GroupId,
+    MediaId,
+    MediaItem,
     Project,
     SceneId,
     Timeline,
@@ -567,6 +569,7 @@ class TimelineView(QWidget):
         start_frame, end_frame = self._layout.visible_range(width)
         scale = self._layout.pixels_per_frame
         selected = self._highlighted()
+        media: dict[MediaId, MediaItem] | None = None
         for band in self._layout.bands(timeline):
             if band.bottom <= Metrics.RULER_HEIGHT or band.top >= self.height():
                 continue
@@ -580,11 +583,13 @@ class TimelineView(QWidget):
                 rect = clip_rect_for(clip, band, self._layout, width)
                 if rect is not None:
                     self._paint_detailed(painter, band, clip, rect, clip.id in selected)
-            sound_only = (
-                self._sound_only(band.track)
-                if dense and band.track.kind is TrackKind.MIXED
-                else None
-            )
+            sound_only = None
+            if dense and band.track.kind is TrackKind.MIXED:
+                # 素材の引き表は、細い帯のあるレイヤーが出たときに 1 度だけ作って使い回す
+                # レイヤーごとに作ると、素材とレイヤーが多い作品で描くたびに掛け算で重くなる
+                if media is None:
+                    media = {item.id: item for item in self._project.media}
+                sound_only = self._sound_only(band.track, media)
             draw_dense_clips(painter, band, dense, self._layout, width, selected, sound_only)
 
         self._draw_drag_preview(painter)
@@ -610,13 +615,12 @@ class TimelineView(QWidget):
         draw_playhead(painter, self._layout, self._playhead, self.height())
         self._paint_drop_guide(painter)
 
-    def _sound_only(self, track: Track) -> Callable[[Clip], bool]:
+    def _sound_only(self, track: Track, media: dict[MediaId, MediaItem]) -> Callable[[Clip], bool]:
         """レイヤーのクリップが音だけか（細い帯を音声の色で塗るか）
 
-        素材は 1 度だけ引ける形にしておく 帯になるクリップは数千本あり、1 本ごとに素材の
+        素材は ``media`` の引き表から引く 帯になるクリップは数千本あり、1 本ごとに素材の
         一覧をなめると全体表示の描画が 60fps の予算を超える
         """
-        media = {item.id: item for item in self._project.media}
 
         def judge(clip: Clip) -> bool:
             item = media.get(clip.media_id) if clip.media_id is not None else None
