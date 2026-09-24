@@ -155,6 +155,44 @@ class TestOrder:
         assert "反転" not in _headings(panel)
 
 
+class TestMixedTrack:
+    def test_a_movie_on_a_layer_shows_both_picture_and_sound(
+        self, panel: InspectorPanel, video_media: MediaItem
+    ) -> None:
+        # 混合トラックの動画は 1 本で絵と音を持つ（#27 P3） トラックの種類で決めると、
+        # 音量の欄が出ないか、描画の組が消える
+        from sashimono.core.commands import AddClip, AddMedia, AddTrack
+        from sashimono.core.commands.fixed import with_fixed_items
+        from sashimono.core.model import Track
+
+        track = Track(kind=TrackKind.MIXED, name="レイヤー 1")
+        clip = with_fixed_items(
+            Clip(
+                timeline_start=0,
+                duration=30,
+                media_id=video_media.id,
+                stream_index=video_media.video_streams[0].index,
+                audio_stream=video_media.audio_streams[0].index,
+            ),
+            picture=True,
+            sound=True,
+        )
+        project = Project.create()
+        for command in (AddMedia(video_media), AddTrack(track), AddClip(track.id, clip)):
+            project = command.apply(project)
+        panel.set_project(project)
+        panel.set_clip(clip.id)
+        assert _headings(panel) == ["描画", "動画"]
+        assert _rows(_group(panel, "動画")) == [
+            "音量",
+            "パン",
+            "再生速度",
+            "再生開始位置",
+            "フェードイン",
+            "フェードアウト",
+        ]
+
+
 class TestOldFiles:
     def _old(self, project: Project, clip: Clip) -> Project:
         """前の版のファイルと同じく、欄を持たないクリップにする"""

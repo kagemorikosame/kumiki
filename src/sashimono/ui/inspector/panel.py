@@ -61,7 +61,8 @@ from sashimono.core.model import (
     ParamValue,
     Project,
     Track,
-    TrackKind,
+    draws_picture,
+    plays_sound,
 )
 from sashimono.effects import CheckSpec, ParameterSpec, TrackSpec, registry
 from sashimono.effects.blending import BLEND_MODES
@@ -266,23 +267,36 @@ class InspectorPanel(QWidget):
         self._show_identity(clip)
 
         # YMM4 のアイテムの並び 描画 → 中身 → 動画・音声 → 足したエフェクト
-        # 音声トラックのクリップは絵を描かないので描画の組を出さない（出すと、動かしても
-        # 何も変わらない合成方法や不透明度が並ぶ） 映像トラックのクリップは音を鳴らさない
-        # ので音声の組を出さない（リンクした音は音声トラックのクリップの側にある）
-        sound = track.kind is TrackKind.AUDIO
+        # 絵を描かないクリップ（音声トラック）には描画の組を出さない（出すと、動かしても
+        # 何も変わらない合成方法や不透明度が並ぶ） 音を鳴らさないクリップ（映像トラック）には
+        # 音量を出さない（リンクした音は音声トラックのクリップの側にある）
+        # 混合トラックはクリップが絵と音の両方を持てるので、トラックの種類ではなく
+        # draws_picture と plays_sound で決める
+        media = (
+            self._project.find_media(clip.media_id)
+            if self._project is not None and clip.media_id is not None
+            else None
+        )
+        picture = draws_picture(track, clip, media)
+        sound = (
+            clip.media_id is not None and clip.source is None and plays_sound(track, clip, media)
+        )
         shown: set[EffectId] = set()
-        if not sound:
+        if picture:
             self._body_layout.addWidget(self._build_picture_group(clip, shown))
         if clip.source is not None:
             section = self._build_source_section(clip)
             if section is not None:
                 self._body_layout.addWidget(section)
-        if sound:
+        if picture and self._is_movie(clip):
+            self._body_layout.addWidget(self._build_movie_group(clip, shown, sound=sound))
+        elif sound:
             self._body_layout.addWidget(self._build_sound_group(clip, shown))
-        elif self._is_movie(clip):
-            self._body_layout.addWidget(self._build_movie_group(clip))
 
-        self._body_layout.addWidget(_heading("音声エフェクト" if sound else "映像エフェクト"))
+        heading = "映像エフェクト" if picture else "音声エフェクト"
+        if picture and sound:
+            heading = "映像・音声エフェクト"
+        self._body_layout.addWidget(_heading(heading))
         for index, effect in enumerate(clip.effects):
             if effect.id in shown:
                 continue
@@ -459,10 +473,25 @@ class InspectorPanel(QWidget):
         media = self._project.find_media(clip.media_id)
         return media is not None and media.has_video and not media.is_still
 
-    def _build_movie_group(self, clip: Clip) -> QWidget:
-        """動画の組 再生速度・再生開始位置 音量とパンは音声トラックのクリップの側にある"""
+    def _build_movie_group(self, clip: Clip, shown: set[EffectId], *, sound: bool) -> QWidget:
+        """動画の組 YMM4 の並び（音量・パン・再生速度・再生開始位置）
+
+        音量とパンは ``sound``（混合トラックで音も鳴らすクリップ）のときだけ出す 分ける方式の
+        映像のクリップは鳴らないので、出すと動かしても音が変わらない
+        """
         section = _Section("動画")
+        fade: Effect | None = None
+        if sound:
+            volume = self._fixed_of(clip, VOLUME_EFFECT_KIND)
+            fade = self._fixed_of(clip, FADE_EFFECT_KIND)
+            shown.update((volume.id, fade.id))
+            self._fixed_header(section, clip, (volume, fade))
+            self._effect_row(section, clip, volume, "volume", "音量")
+            self._effect_row(section, clip, volume, "pan", "パン")
         self._playback_rows(section, clip)
+        if fade is not None:
+            self._effect_row(section, clip, fade, "fade_in", "フェードイン")
+            self._effect_row(section, clip, fade, "fade_out", "フェードアウト")
         if clip.hold_at is not None:
             # 止めた絵は読み込み（YMM4 の素材より長い動画・再生速度 0）で付く 見えないままだと、
             # 絵が動かない理由がどこにも出ず、素材の不具合と取り違える 外す道も置く
