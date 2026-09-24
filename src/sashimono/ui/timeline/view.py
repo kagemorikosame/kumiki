@@ -93,6 +93,7 @@ from sashimono.ui.timeline.painter import (
 )
 from sashimono.ui.timeline.painter import draw_clip as paint_clip
 from sashimono.ui.timeline.track_drag import TrackDragger
+from sashimono.ui.timeline.value_line import ValueGrab, ValueLineEditor
 from sashimono.ui.timeline.work_area import WorkAreaEditor
 from sashimono.ui.timeline.zoom_scrollbar import ZoomScrollBar
 
@@ -130,6 +131,10 @@ class DragKind(Enum):
     TRIM_TAIL = auto()
     RESIZE_TRACK = auto()
     MARQUEE = auto()
+    #: 値の線（不透明度・音量）を上下に動かす 中身は value_line.py
+    VALUE_LINE = auto()
+    #: 値の線の点を動かす
+    VALUE_KEY = auto()
 
 
 @dataclass(slots=True)
@@ -196,6 +201,9 @@ class TimelineView(QWidget):
     files_dropped = Signal(list, int, str)
     #: 素材一覧から素材を落とした 引数は素材 ID（文字列）の一覧・フレーム・トラックの ID
     media_dropped = Signal(list, int, str)
+    #: 値の線をドラッグしている途中の値 履歴に残さずプレビューだけ更新する
+    #: （設定パネルの :attr:`InspectorPanel.preview_requested` と同じ受け口へ繋ぐ）
+    preview_requested = Signal(object)
 
     def __init__(
         self, project: Project, analyzer: MediaAnalyzer, parent: QWidget | None = None
@@ -255,6 +263,10 @@ class TimelineView(QWidget):
         self._track_mover = TrackDragger(self._request)
         #: ドラッグ中に端へ寄ったら表示を送る
         self._edge_scroll = EdgeScroller(self._on_edge_scroll, self)
+        #: クリップの上の不透明度・音量の線
+        self._value_lines = ValueLineEditor(
+            self._request, self.preview_requested.emit, self._show_project, self.update
+        )
 
         self.setAcceptDrops(True)
         self.setMouseTracking(True)
@@ -281,6 +293,16 @@ class TimelineView(QWidget):
             self.set_selection(remaining)
         # 長さやトラックの数が変わると、スクロールできる幅と高さも変わる
         self._sync_scroll_bars()
+        self.update()
+
+    def set_value_lines(self, shown: bool) -> None:
+        """クリップの上に不透明度・音量の線を出すか 設定（:attr:`Preferences.value_lines`）から"""
+        self._value_lines.enabled = shown
+        self.update()
+
+    def _show_project(self, project: Project) -> None:
+        """値の線のドラッグの途中と終わりに、描くプロジェクトを差し替える 履歴には載せない"""
+        self._project = project
         self.update()
 
     # --- スクロール ---
@@ -655,6 +677,16 @@ class TimelineView(QWidget):
             else ("（消えたシーン）" if clip.scene_id else None),
         )
         draw_keyframes(painter, clip, self._layout, rect, selected=selected)
+        self._value_lines.paint(
+            painter,
+            self._project,
+            band.track,
+            clip,
+            self._layout,
+            rect,
+            band.height,
+            selected=selected,
+        )
 
     def _draw_drag_preview(self, painter: QPainter) -> None:
         """ドラッグ中の落下先を枠線で示す
@@ -884,6 +916,8 @@ class TimelineView(QWidget):
         modifiers = event.modifiers()
         if not modifiers and self._press_keyframe(position):
             return
+        if self._press_value_line(position, modifiers):
+            return
         adding = bool(modifiers & Qt.KeyboardModifier.ControlModifier)
         ranged = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
         hit = self._clip_at(position)
@@ -977,6 +1011,10 @@ class TimelineView(QWidget):
             self._update_marquee(position)
             return True
 
+        if self._drag.kind in (DragKind.VALUE_LINE, DragKind.VALUE_KEY):
+            self._value_lines.move(self._layout, position)
+            return True
+
         self._drag_clip_to(position)
         return True
 
@@ -1060,6 +1098,9 @@ class TimelineView(QWidget):
         drag, self._drag = self._drag, DragState()
         if drag.kind is DragKind.RESIZE_TRACK:
             self._finish_resize(drag)
+            return
+        if drag.kind in (DragKind.VALUE_LINE, DragKind.VALUE_KEY):
+            self._value_lines.release()
             return
         if drag.kind is DragKind.MARQUEE:
             # 選択は動かしている間に決まっている 枠を消すだけ
@@ -1156,7 +1197,16 @@ class TimelineView(QWidget):
         self.update()
 
     def contextMenuEvent(self, event: QContextMenuEvent) -> None:  # noqa: N802 - Qt の命名規約
+        if self._remove_value_key(event.pos()):
+            return
         self.build_context_menu(event.pos()).exec(event.globalPos())
+
+    def _remove_value_key(self, position: QPoint) -> bool:
+        """値の線の点の上の右クリックは、メニューを出さずにその点を消す"""
+        clip = self._value_line_clip(position)
+        return clip is not None and self._value_lines.remove_at(
+            self._project, self._layout, self.width(), clip, position
+        )
 
     def build_context_menu(self, position: QPoint) -> QMenu:
         """右クリックメニュー 表示と中身を分けてあるのはテストのため
@@ -1203,6 +1253,9 @@ class TimelineView(QWidget):
             located = self._project.timeline.locate_clip(hit[1].id)
             if located is not None:
                 self._add_menus.add_clip_items(menu, located[0], hit[1])
+                self._value_lines.add_menu_items(
+                    menu, self._project, located[0], hit[1], self._selection
+                )
 
         band = (
             self._layout.band_at(self._project.timeline, position.y())
@@ -1629,6 +1682,39 @@ class TimelineView(QWidget):
         self.playhead_moved.emit(self._playhead)
         return True
 
+    def _value_line_clip(self, position: QPoint) -> Clip | None:
+        """値の線を掴める所のクリップ トリムの端の近くは ``None``
+
+        端を先に見る 線は端まで引いてあるので、線を先に取ると短いクリップや
+        値が名前の帯の近くにあるクリップの端を掴めなくなる
+        """
+        hit = self._clip_at(position)
+        if hit is None or self._edge_at(position, hit[1]) is not DragKind.MOVE_CLIP:
+            return None
+        return hit[1]
+
+    def _press_value_line(self, position: QPoint, modifiers: Qt.KeyboardModifier) -> bool:
+        """値の線か点を押したなら、その操作を始めて真を返す
+
+        掴んだ 1 本だけに当てる 選んだほかのクリップは線の形も点の数も違い、同じだけ動かすと
+        見ていない線まで変わる（設定パネルの一括の変更は、値の欄を見て数を決めるときに使う）
+        """
+        clip = self._value_line_clip(position)
+        if clip is None:
+            return False
+        grab = self._value_lines.press(
+            self._project, self._layout, self.width(), clip, position, modifiers
+        )
+        if grab is None:
+            return False
+        if clip.id not in self._selection:
+            self.set_selection((*self._group_of(clip.id), clip.id))
+            self._anchor = clip.id
+        if grab is not ValueGrab.DONE:
+            kind = DragKind.VALUE_KEY if grab is ValueGrab.KEY else DragKind.VALUE_LINE
+            self._drag = DragState(kind=kind, clip_id=clip.id)
+        return True
+
     def _edge_at(self, position: QPoint, clip: Clip) -> DragKind:
         """クリップの端を掴んでいるならトリム、そうでなければ移動"""
         left = self._layout.frame_to_x(clip.timeline_start)
@@ -1671,6 +1757,18 @@ class TimelineView(QWidget):
             self.setCursor(Qt.CursorShape.ArrowCursor)
             return
         edge = self._edge_at(position, hit[1])
+        grab = (
+            self._value_lines.grab_at(self._project, self._layout, self.width(), hit[1], position)
+            if edge is DragKind.MOVE_CLIP
+            else None
+        )
+        if grab is not None:
+            # 線は上下にしか動かないので縦の矢印 点は時刻も動くので四方の矢印
+            vertical = grab is ValueGrab.LINE
+            self.setCursor(
+                Qt.CursorShape.SizeVerCursor if vertical else Qt.CursorShape.SizeAllCursor
+            )
+            return
         self.setCursor(
             Qt.CursorShape.SizeHorCursor
             if edge in (DragKind.TRIM_HEAD, DragKind.TRIM_TAIL)
