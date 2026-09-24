@@ -17,14 +17,12 @@ from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QColor, QImage
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
-    QAbstractSpinBox,
     QApplication,
     QDockWidget,
     QDoubleSpinBox,
     QLabel,
     QSpinBox,
     QStyle,
-    QStyleFactory,
     QStyleOptionSpinBox,
     QTabBar,
     QTabWidget,
@@ -36,11 +34,6 @@ from sashimono.core.model import ProjectSettings
 from sashimono.ui.main_window import MainWindow
 from sashimono.ui.project_settings_dialog import ProjectSettingsDialog
 from sashimono.ui.theme import STYLE_SHEET, Colors
-
-#: 確かめる元の見た目 Windows 11 は利用者の手元の既定で、崩れたのはこれ
-#: 入っていない環境（Linux の CI）では、あるものだけを見る
-_AVAILABLE = QStyleFactory.keys()
-_STYLES = [name for name in ("windows11", "windowsvista", "Fusion") if name in _AVAILABLE]
 
 
 def _contrast(first: QColor, second: QColor) -> float:
@@ -183,57 +176,30 @@ def _click_like_a_mouse(spin: QWidget, point: QPoint) -> None:
         QTest.mouseClick(target, Qt.MouseButton.LeftButton, pos=target.mapFrom(spin, point))
 
 
-def _use_style(root: QWidget, style_name: str) -> list[QStyle]:
-    """``root`` の中の数値欄とその数字の欄に、元の見た目 ``style_name`` を当てる
-
-    返した一覧は、``root`` を壊し終えるまで持っておくこと 部品は当てた見た目を
-    持たないので、Python 側が先に手放すと、部品が消えた見た目を触って落ちる
-
-    見た目は部品ごとに作る 1 つを何個もの部品で使い回すと、最初の部品を壊したときに
-    見た目まで消えることがあり、残りの部品が消えた見た目を触ってプロセスごと落ちる
-    （CI の access violation）
-    """
-    styles: list[QStyle] = []
-    for spin in root.findChildren(QAbstractSpinBox):
-        for widget in (spin, spin.lineEdit()):
-            created = QStyleFactory.create(style_name)
-            assert created is not None
-            widget.setStyle(created)
-            styles.append(created)
-    return styles
-
-
-def _dispose(root: QWidget, styles: list[QStyle] | None = None) -> None:
-    """窓をその場で壊し、そのあとで当てていた見た目を手放す
+def _dispose(root: QWidget) -> None:
+    """窓をその場で壊す
 
     閉じただけで残すと、いつかのごみ集めで壊され、そのとき走っている別の試験の
     途中で落ちたように見える どの試験の後始末なのかが分からなくなる
-    見た目を先に手放すと、窓を壊すときに消えた見た目を触る
     """
     root.close()
     shiboken6.delete(root)
-    if styles is not None:
-        styles.clear()
 
 
-@pytest.mark.parametrize("style_name", _STYLES)
 class TestSpinButtons:
-    @pytest.fixture
-    def style(self, style_name: str, qt_application: QApplication) -> str:
-        # 元の見た目は数値欄にだけ当てる（:func:`_use_style`） アプリ全体を切り替えると、
-        # 前の見た目が消されたあとも、それを土台にしていた部品（ほかの試験で閉じただけの
-        # 窓）が残り、ごみ集めで壊すときに消えた見た目を触ってプロセスごと落ちる
-        # 数字の欄の置き場は数値欄の見た目が決めるので、数値欄に当てれば足りる
-        del qt_application
-        return style_name
+    """元の見た目はアプリのものをそのまま使う（Windows 11 の手元では windows11）
 
-    def test_the_up_button_of_the_resolution_steps_up(self, style: str) -> None:
+    試験の中で見た目を差し替えない アプリ全体を切り替えても、部品ごとに当てても、
+    差し替えた見た目と部品の壊れる順がずれ、あとのごみ集めで消えた見た目を触って
+    CI がプロセスごと落ちた（access violation）
+    """
+
+    def test_the_up_button_of_the_resolution_steps_up(self) -> None:
         # Windows 11 の見た目では上下のボタンが横に並ぶのに、数字の欄がボタン 1 つぶん
         # しか空けずに広がり、上のボタンが数字の欄の下に隠れていた 押しても数字の欄が
         # 受け取るので、上だけ数が変わらなかった（Issue #27）
         dialog = ProjectSettingsDialog(ProjectSettings(), new=True)
         dialog.setStyleSheet(STYLE_SHEET)
-        styles = _use_style(dialog, style)
         dialog.show()
         QApplication.processEvents()
         try:
@@ -246,9 +212,9 @@ class TestSpinButtons:
             _click_like_a_mouse(spin, down)
             assert spin.value() == start - spin.singleStep()
         finally:
-            _dispose(dialog, styles)
+            _dispose(dialog)
 
-    def test_the_edit_field_leaves_the_buttons_free(self, style: str) -> None:
+    def test_the_edit_field_leaves_the_buttons_free(self) -> None:
         # 数字の欄がボタンに掛かると、掛かった所を押しても増えも減りもしない
         # 小数の数値欄（設定パネルの音量など）も同じ決まりで並ぶ
         host = QWidget()
@@ -261,7 +227,6 @@ class TestSpinButtons:
             layout.addWidget(spin)
         spins[1].setSuffix(" %")
         spins[1].setFixedWidth(96)
-        styles = _use_style(host, style)
         host.show()
         QApplication.processEvents()
         try:
@@ -277,4 +242,4 @@ class TestSpinButtons:
                 _click_like_a_mouse(spin, up)
                 assert spin.value() == 101, type(spin).__name__
         finally:
-            _dispose(host, styles)
+            _dispose(host)
