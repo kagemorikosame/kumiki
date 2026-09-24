@@ -77,6 +77,9 @@ class EffectProcessor:
         #: グローや影は「ぼかした結果」と「元の絵」の両方を要るので、
         #: ピンポンで上書きされる前に取っておく必要がある
         self._source = Framebuffer(width, height)
+        #: 部分フィルタへ来たときの絵 後ろのエフェクトを掛け終えたら、範囲の外をこれへ戻す
+        #: 使うまで作らない 部分フィルタを積まないクリップで画面 1 枚ぶんの GPU メモリを取らない
+        self._held: Framebuffer | None = None
         self._blit = Program(VERTEX_SHADER, _BLIT_FRAGMENT)
         self._programs: dict[str, _Compiled | None] = {}
         #: エフェクトが読む画像（画像合成の絵、縁取りの模様）
@@ -101,6 +104,8 @@ class EffectProcessor:
     def resize(self, width: int, height: int) -> None:
         for buffer in (*self._buffers, self._source):
             buffer.resize(width, height)
+        if self._held is not None:
+            self._held.resize(width, height)
 
     def has_work(self, effects: tuple[Effect, ...]) -> bool:
         """描画を伴うエフェクトが 1 つでもあるか
@@ -163,19 +168,34 @@ class EffectProcessor:
             )
         self._duration = max(duration, 0)
 
+        #: 開いている部分フィルタ 後ろのエフェクトはこの範囲の中だけに効く
+        scope: tuple[_Compiled, Effect] | None = None
         for effect in effects:
             if not effect.enabled:
                 continue
             compiled = self._compile(effect)
             if compiled is None:
                 continue
+            if compiled.definition.scopes_following:
+                # 次の部分フィルタで前の範囲を閉じる 入れ子にしないのは AviUtl の
+                # 部分フィルタと同じ 入れ子にすると、並びだけ見てどこまで効くか読めない
+                if scope is not None:
+                    self._close_scope(*scope, frame=frame, fps=fps)
+                self._copy(self._buffers[self._front], self._held_buffer())
+                scope = (compiled, effect)
+                continue
             self._apply_one(compiled, effect, frame=frame, fps=fps)
+        if scope is not None:
+            self._close_scope(*scope, frame=frame, fps=fps)
 
         return self._buffers[self._front]
 
     def release(self) -> None:
         for buffer in (*self._buffers, self._source):
             buffer.release()
+        if self._held is not None:
+            self._held.release()
+            self._held = None
         for compiled in self._programs.values():
             if compiled is not None:
                 compiled.program.release()
@@ -208,13 +228,39 @@ class EffectProcessor:
         self._blit.bind_texture("u_texture", handle)
         self._quad.draw()
 
-    def _apply_one(self, compiled: _Compiled, effect: Effect, *, frame: int, fps: float) -> None:
-        """エフェクト 1 つを、必要なパス数だけ掛ける"""
+    def _held_buffer(self) -> Framebuffer:
+        if self._held is None:
+            self._held = Framebuffer(self.width, self.height)
+        return self._held
+
+    def _close_scope(self, compiled: _Compiled, effect: Effect, *, frame: int, fps: float) -> None:
+        """部分フィルタを閉じる 範囲の外を、部分フィルタへ来たときの絵へ戻す
+
+        部分フィルタのシェーダは ``u_source`` を「掛ける前」、``u_texture`` を「掛けた後」
+        として範囲で混ぜる 取っておいた絵を ``u_source`` に置いてから掛ける
+        """
+        self._copy(self._held_buffer(), self._source)
+        self._apply_one(compiled, effect, frame=frame, fps=fps, keep_source=True)
+
+    def _apply_one(
+        self,
+        compiled: _Compiled,
+        effect: Effect,
+        *,
+        frame: int,
+        fps: float,
+        keep_source: bool = False,
+    ) -> None:
+        """エフェクト 1 つを、必要なパス数だけ掛ける
+
+        ``keep_source`` が真なら ``u_source`` を書き換えない（部分フィルタを閉じるとき）
+        """
         definition = compiled.definition
         program = compiled.program
 
         # 元の絵を控えておく u_source を使うエフェクト（グロー・影）が要る
-        self._copy(self._buffers[self._front], self._source)
+        if not keep_source:
+            self._copy(self._buffers[self._front], self._source)
 
         for index in range(definition.passes):
             source_buffer = self._buffers[self._front]
