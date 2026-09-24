@@ -14,6 +14,7 @@ import gc
 import threading
 import time
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 
@@ -22,7 +23,7 @@ import pytest
 import shiboken6
 from PySide6 import QtWidgets
 from PySide6.QtCore import QPoint, Qt, QTimer
-from PySide6.QtGui import QColor, QImage, QPalette
+from PySide6.QtGui import QColor, QImage, QOpenGLContext, QPalette
 from PySide6.QtWidgets import (
     QAbstractButton,
     QApplication,
@@ -73,6 +74,17 @@ from sashimono.ui.workspace import (
     Preferences,
     PreferenceStore,
 )
+
+
+@pytest.fixture(autouse=True)
+def no_gl_context_left() -> Iterator[None]:
+    """試験のあとに GL のコンテキストが current のまま残っていないこと
+
+    残すと、後のプレビューの試験（test_preview_prefetch.py）が「GL を使えない」と見て
+    先読みを止め、この試験とは関係の無い所で落ちる（GPU の無い CI で起きた）
+    """
+    yield
+    assert QOpenGLContext.currentContext() is None, "GL のコンテキストが current のまま残った"
 
 
 def _contrast(first: QColor, second: QColor) -> float:
@@ -141,10 +153,14 @@ class TestQtTranslation:
 
         QTimer.singleShot(0, answer)
         try:
-            assert not window._confirm_discard()
+            # 確認の窓を窓の上に出すと、Qt が親の窓を GL で描く支度をしてコンテキストを
+            # current のまま残し、GPU の無い CI では後のプレビューの試験が落ちた
+            # 尋ねる文言を見るだけなので、プレビューを外した窓で尋ねる
+            with _without_gl(window):
+                assert not window._confirm_discard()
         finally:
             window._confirm_unsaved = False
-            window.close()
+            _close(window)
         assert seen
         assert not {"Save", "Discard", "Cancel"} & set(seen)
         assert "保存" in seen
@@ -209,7 +225,7 @@ def window(qt_application: QApplication) -> Iterator[MainWindow]:
         project.with_timeline(replace(project.timeline, tracks=tracks)), confirm_unsaved=False
     )
     yield created
-    created.close()
+    _close(created)
 
 
 def _dispose(widget: QWidget) -> None:
@@ -232,15 +248,43 @@ def shown_window(window: MainWindow) -> Iterator[MainWindow]:
     後のプレビューの試験（test_preview_prefetch.py）が「GL を使えない」と見て止まった
     真ん中の部品ごと外せば、窓は GL を使わずに出る
     """
+    with _without_gl(window):
+        window.show()
+        QApplication.processEvents()
+        yield window
+        window.hide()
+
+
+@contextmanager
+def _without_gl(window: MainWindow) -> Iterator[None]:
+    """プレビュー（真ん中の部品）を外した間だけ窓を使う 抜けるときに戻す
+
+    GL の部品を子に持つ窓（または、その窓を親にした確認の窓）を出すと、Qt が窓ごと GL で
+    描く支度をしてコンテキストを current のまま残す 窓を片付けるまで残り、GPU の無い CI では
+    後のプレビューの試験（test_preview_prefetch.py）が「GL を使えない」と見て止まった
+
+    外した部品は窓へ戻さない 1 度でも出した窓（確認の窓の親になっただけでも）へ戻すと、
+    戻した時点で同じようにコンテキストが作られる 窓を閉じるとき（:func:`_close`）に壊す
+    """
     viewer = window.takeCentralWidget()
-    window.show()
-    QApplication.processEvents()
-    yield window
-    window.hide()
-    # 隠してから戻す 窓を閉じるときにプレビューを畳むので、窓の中に戻しておく
-    # 出していない窓へ戻すだけなら GL は作られない
-    if viewer is not None:
-        window.setCentralWidget(viewer)
+    try:
+        yield
+    finally:
+        if viewer is not None:
+            viewer.hide()
+            _DETACHED.append(viewer)
+
+
+#: :func:`_without_gl` が窓から外したプレビュー 窓を閉じるまで生かしておく
+#: 窓を閉じるときにプレビューを畳む（``shutdown``）ので、先に壊すと閉じるときに落ちる
+_DETACHED: list[QWidget] = []
+
+
+def _close(window: MainWindow) -> None:
+    """窓を閉じ、外しておいたプレビューもその場で壊す"""
+    window.close()
+    while _DETACHED:
+        _dispose(_DETACHED.pop())
 
 
 def _tab_positions(window: MainWindow) -> set[QTabBar.Shape]:
@@ -584,9 +628,12 @@ class TestSnapshotMenu:
             )
 
         before = ours()
-        for _ in range(3):
-            window._show_preview_menu(QPoint(5, 5))
-            window._preview_menu.hide()
+        # 窓を親にしたメニューを出すと、窓の側で GL の支度が走ってコンテキストが残る
+        # メニューの作り方を見るだけなので、プレビューを外した窓で出す
+        with _without_gl(window):
+            for _ in range(3):
+                window._show_preview_menu(QPoint(5, 5))
+                window._preview_menu.hide()
         assert ours() == before
         assert window._snapshot_save_action in window._preview_menu.actions()
 
