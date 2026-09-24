@@ -22,11 +22,35 @@ from sashimono.ai.bridge import EditorBridge
 from sashimono.ai.environment import bundled_claude_cli, find_claude_cli
 from sashimono.ai.models import effort_for
 from sashimono.ai.server import SERVER_NAME, build_server
+from sashimono.core.model import LayerMode
 
-__all__ = ["SYSTEM_PROMPT", "AgentEvent", "AgentSession", "EventKind"]
+__all__ = ["SYSTEM_PROMPT", "AgentEvent", "AgentSession", "EventKind", "system_prompt"]
 
-#: エージェントへの指示 ツールの意味と、この編集ソフト特有の約束事を伝える
-SYSTEM_PROMPT = """\
+#: 置き方の方式ごとの、素材の絵と音の持ち方の説明 :func:`system_prompt` が差し込む
+#: 方式を取り違えて伝えると、混合の作品で AI がリンクした音声クリップを探し回ったり、
+#: 分ける方式の作品で組の両方に同じ操作をして 2 回目で失敗したりする
+#: 方式が決めるのは**これから置く物**だけ 方式を途中で変えた作品や、分ける方式で
+#: レイヤーを足した作品には両方の形が並ぶので、置いてある物はクリップごとに確かめさせる
+_CLIP_SHAPES = """\
+- 置いてあるクリップの形は、方式ではなくクリップごとに確かめます list_clips の
+  link_group が同じ 2 本（映像トラックと音声トラック）は組で、片方を分割・削除・
+  移動・トリムすると、もう片方も同じように動きます **組の両方に同じ操作をしないで
+  ください**（2 回目は失敗します） track_kind が mixed のクリップは、絵と音を 1 本で
+  持つので、その 1 本に 1 回だけ操作します レイヤー（mixed のトラック）は番号が
+  大きいほど手前に描かれます"""
+
+_LINKED_CLIPS = {
+    LayerMode.SEPARATED: f"""\
+- このプロジェクトは分ける方式です これから置く音付きの動画は、映像トラックと
+  音声トラックの 2 本に分かれ、リンクで組になります
+{_CLIP_SHAPES}""",
+    LayerMode.MIXED: f"""\
+- このプロジェクトは混合の方式です これから置く音付きの動画は、絵と音を 1 本の
+  クリップで持ち、レイヤーに置かれます
+{_CLIP_SHAPES}""",
+}
+
+_PROMPT = """\
 あなたは動画編集ソフト Sashimono Edit の中で動く編集アシスタントです ユーザーの指示を、
 用意されたツールで実際の編集操作に変えてください
 
@@ -38,8 +62,9 @@ SYSTEM_PROMPT = """\
   操作してください 当てずっぽうの ID は失敗します
 - 何かを変えたら preview_frame でその位置を描いて、**自分の目で結果を確かめて**
   ください 数値が正しくても見た目が意図と違うことがあります
-- 映像と音声はリンクしています 片方を分割・削除・移動・トリムすると、もう片方も
-  同じように動きます **両方に同じ操作をしないでください**（2 回目は失敗します）
+{linked_clips}
+- 置き方の方式は get_project の layer_mode で分かります 途中で変わっていたら、
+  そちらに従ってください
 - 字幕は素材に紐付いていて、カットや分割には自動で追従します 字幕の位置を手で
   合わせ直す必要はありません
 - 色は #RRGGBB で指定します
@@ -50,6 +75,21 @@ SYSTEM_PROMPT = """\
 
 返事は日本語で、簡潔に 作業の実況ではなく、やったことと結果を伝えてください
 """
+
+
+def system_prompt(layer_mode: str = LayerMode.SEPARATED) -> str:
+    """エージェントへの指示 ``layer_mode`` はプロジェクトの置き方の方式
+
+    会話を始めるときの方式で書く 会話の途中で方式を変えることもあるので、確かめ方
+    （get_project の layer_mode）も添えてある
+    """
+    linked = _LINKED_CLIPS.get(layer_mode, _LINKED_CLIPS[LayerMode.SEPARATED])
+    # format ではなく置き換えにする 指示の文に波括弧を書いたときに壊れないように
+    return _PROMPT.replace("{linked_clips}", linked)
+
+
+#: 分ける方式（モデルの既定）での指示 会話を作る側が方式を渡さないときに使う
+SYSTEM_PROMPT = system_prompt()
 
 
 class EventKind(Enum):
