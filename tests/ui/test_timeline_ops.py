@@ -162,6 +162,8 @@ class TestSplit:
     def test_everything_under_the_playhead_without_a_selection(
         self, make_area: list[TimelineArea], analyzer: MediaAnalyzer
     ) -> None:
+        # 選んでいないときまで何も切らなくなると、S キーで再生ヘッドの下をまとめて割る
+        # いつもの使い方（Premiere の Ctrl+K や AviUtl の分割と同じ）ができなくなる
         view, _ = _open(make_area, analyzer, self._two_layers())
         view.set_playhead(50)
         view.split_at_playhead()
@@ -170,6 +172,7 @@ class TestSplit:
     def test_a_locked_track_is_left_alone(
         self, make_area: list[TimelineArea], analyzer: MediaAnalyzer
     ) -> None:
+        # ロックしたトラックまで割ると、ロックで守っているはずのクリップが変わる
         project = _project(
             Track(TrackKind.VIDEO, "V1", (_text(0, 100),)),
             Track(TrackKind.VIDEO, "V2", (_text(0, 100),), locked=True),
@@ -233,6 +236,8 @@ class TestSplit:
     def test_the_context_menu_follows_the_same_rule(
         self, make_area: list[TimelineArea], analyzer: MediaAnalyzer
     ) -> None:
+        # 右クリックの分割だけが選択を見ないと、S キーと右クリックで切れる物が変わり、
+        # 右クリックしたクリップ以外のレイヤーまで切れる
         view, _ = _open(make_area, analyzer, self._two_layers())
         view.set_playhead(50)
         menu = view.build_context_menu(_clip_point(view, "V2", 20))

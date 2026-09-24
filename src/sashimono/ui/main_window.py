@@ -259,6 +259,8 @@ class MainWindow(QMainWindow):
         self.resize(1440, 900)
 
         self._document = Document(project if project is not None else Project.create())
+        #: 再生ヘッドのフレームを数えているレート 変わったら数え直す（:meth:`_retime_playhead`）
+        self._playhead_rate = self._document.project.rate
         self._path: Path | None = path
         #: 最後に保存した（または開いた）時点のプロジェクト 同じオブジェクトなら
         #: 変更なし モデルは frozen なので、取り消して保存した状態へ戻れば
@@ -1032,12 +1034,29 @@ class MainWindow(QMainWindow):
         self._playback.set_project(project)
         self._transport.set_rate(project.rate)
         self._transport.set_duration(project.duration)
+        self._retime_playhead(project.rate)
         # 素材が増えたら画質を見直す 4K を 1 本置いた時点で重くなるので、
         # 置いたあとに自分で下げてもらうのでは遅い
         self._apply_auto_quality()
         self._update_history_actions()
         self._update_title()
         self.project_changed.emit(project)
+
+    def _retime_playhead(self, rate: FrameRate) -> None:
+        """フレームレートが変わったら、再生ヘッドを同じ時刻（秒）のまま数え直す
+
+        最初の動画に合わせたとき（とその取り消し）に起きる 数のまま残すと、30fps の
+        1 秒（フレーム 30）にあった再生ヘッドが 60fps では 0.5 秒を指し、表示の時刻も
+        再生を始める位置も変わる 長さで丸めない（:meth:`_seek` と違う） 合わせるのは
+        空のプロジェクトなので、丸めると置く前に先頭へ飛ぶ
+        """
+        before, self._playhead_rate = self._playhead_rate, rate
+        if before == rate:
+            return
+        frame = retime_frame(self._timeline.playhead, before, rate)
+        self._timeline.set_playhead(frame)
+        self._show_frame(frame)
+        self._playback.set_frame(frame)
 
     def _update_history_actions(self) -> None:
         self._undo_action.setEnabled(self._document.can_undo)

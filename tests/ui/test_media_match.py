@@ -104,6 +104,23 @@ class TestMatchingTheFirstVideo:
         clip = next(iter(window._document.project.timeline.video_tracks())).clips[0]
         assert clip.timeline_start == 60
 
+    def test_the_playhead_keeps_its_time(
+        self, window: MainWindow, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 数のまま残すと、30fps の 1 秒にあった再生ヘッドが 60fps では 0.5 秒を指し、
+        # 表示の時刻も再生を始める位置も変わる（PR #155 の指摘） 取り消しでも同じ
+        _answer(monkeypatch, True)
+        media = _video()
+        _pool(window, media)
+        window._timeline.set_playhead(30)
+        window._on_media_dropped([str(media.id)], 30, "")
+        assert window._timeline.playhead == 60
+        assert window._playback.frame == 60
+        window.undo()
+        window.undo()
+        assert window._document.project.rate == FrameRate(30)
+        assert window._timeline.playhead == 30
+
     def test_a_dropped_file_keeps_its_time(
         self, window: MainWindow, monkeypatch: pytest.MonkeyPatch, media_dir: Path
     ) -> None:
