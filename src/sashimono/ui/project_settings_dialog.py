@@ -174,7 +174,7 @@ class ProjectSettingsDialog(QDialog):
         )
 
         #: レイヤーの方式 新規作成のときだけ出す 作ったあとに変えるのは、置いてあるトラックを
-        #: 変換するかを尋ねる別の入口（:class:`~sashimono.core.commands.SetLayerMode` と変換の命令）
+        #: 変換するかを尋ねる別の入口（窓の :meth:`MainWindow.switch_layer_mode` P5 #163）
         #: ここで方式だけを黙って変えると、置いてあるトラックはそのままで置き方だけが変わる
         self._layers: QComboBox | None = None
         if new:
@@ -186,7 +186,9 @@ class ProjectSettingsDialog(QDialog):
                 "混合は YMM4・AviUtl と同じく、1 本のレイヤーに動画・音声・テキストを何でも置く\n"
                 "音付きの動画は 1 本のクリップになり、番号が大きい（下の）レイヤーほど手前に描く\n"
                 "分けるは映像トラックと音声トラックを別に並べ、動画は絵と音の 2 本を結んで置く\n"
-                "初めの値は 表示 → 設定… の「新しいプロジェクトのレイヤー」で変えられる"
+                "初めの値は 表示 → 設定… の「新しいプロジェクトの置き方」で変えられる\n"
+                "作ったあとは ファイル → 置き方の方式を切り替える… で変える"
+                "（置いてあるトラックも変換できる）"
             )
 
         self._warning = QLabel(self)
@@ -199,7 +201,7 @@ class ProjectSettingsDialog(QDialog):
         form.addRow("フレームレート", rate)
         form.addRow("重ね合わせ", self._blending)
         if self._layers is not None:
-            form.addRow("レイヤーの方式", self._layers)
+            form.addRow("置き方の方式", self._layers)
 
         self._buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, self

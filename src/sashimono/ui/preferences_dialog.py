@@ -242,7 +242,7 @@ class PreferencesDialog(QDialog):
             "新しく作るプロジェクトと、起動した直後の空のプロジェクトの方式 "
             "新規作成の窓でもプロジェクトごとに選べる 開いたプロジェクトの方式は変えない"
         )
-        form.addRow("新しいプロジェクトのレイヤー", self._new_project_layers)
+        form.addRow("新しいプロジェクトの置き方", self._new_project_layers)
         self._dock_tabs = QComboBox(self)
         self._dock_tabs.addItem("上（既定）", DOCK_TABS_TOP)
         self._dock_tabs.addItem("下", DOCK_TABS_BOTTOM)
