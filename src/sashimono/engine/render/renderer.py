@@ -606,6 +606,12 @@ class FrameRenderer:
                 self._draw_transition(tracks[:index], clip, frame, rate, depth)
                 below = None
                 continue
+            if clip.is_filter:
+                # 切り抜きや残像の道へは入れない どちらもクリップ 1 本だけを透明な所へ
+                # 描き直すので、下の絵を持たないフィルタは何も描かない（形も残さない）
+                self._draw_filter(track, clip, frame, rate, depth)
+                below = None
+                continue
             if clip.clip_to_below:
                 self._draw_clipped(track, clip, frame, rate, depth, below)
             else:
@@ -1094,7 +1100,10 @@ class FrameRenderer:
         if scripts:
             # スクリプトは CPU の画像を書き換える作り シーンの絵を 1 枚読み戻して渡す
             # （毎フレームの往復になるので、スクリプトを積んだシーンだけで行う）
-            self._draw_scripted(track, clip, nested.read(), gpu_effects, local_frame, rate, opacity)
+            # ストレートアルファで読む 事前乗算のまま渡すと、シーンの半透明の所が暗くなる
+            self._draw_scripted(
+                track, clip, nested.read(straight=True), gpu_effects, local_frame, rate, opacity
+            )
             return
         if not self._effects.has_work(gpu_effects):
             outer.draw_handle(
@@ -1184,6 +1193,72 @@ class FrameRenderer:
                 # エフェクトを通した結果はストレートアルファ 写しただけなら事前乗算のまま
                 premultiplied=source is self._grab,
             )
+
+    def _draw_filter(
+        self, track: Track, clip: Clip, frame: int, rate: FrameRate, depth: int
+    ) -> None:
+        """それまでに重ねた絵へエフェクトを掛けて、掛けた絵で置き換える（フィルタのクリップ）
+
+        フレームバッファ（:meth:`_draw_framebuffer`）と違い、黒を敷かず上へも重ねない
+        黒を敷くと入れ子のシーンの中で外の絵を隠し、上へ重ねると縮めたり動かしたりする
+        エフェクトで元の絵が後ろに残る 不透明度は掛ける前と後の混ぜ具合で、
+        合成方法は使わない（AviUtl のフィルタオブジェクトにも無い）
+
+        掛けるのはいまの合成先に溜まった絵だけ シーンの中なら、そのシーンの下の段だけに効く
+        """
+        gpu_effects, scripts = split_effects(clip.effects)
+        if not scripts and not self._effects.has_work(gpu_effects):
+            return
+        local_frame = frame - clip.timeline_start
+        opacity = clip.opacity.at(local_frame)
+        if opacity <= 0.0:
+            return
+        outer = self._compositor
+        width, height = outer.width, outer.height
+        full = Placement(0.0, 0.0, float(width), float(height))
+        # 描いている最中のキャンバスは、読みながら同じ所へ描けない 先に別の合成先へ写す
+        before = self._layer("filter_before", depth)
+        before.begin((0.0, 0.0, 0.0, 0.0))
+        before.draw_handle(outer.canvas.color, full, flip=False, premultiplied=True)
+        after = self._layer("filter_after", depth)
+        after.begin((0.0, 0.0, 0.0, 0.0))
+        if scripts:
+            # スクリプトは CPU の画像を書き換える作り 写した絵を 1 枚読み戻して渡す
+            # 不透明度はここでは当てない 置き換えるときに混ぜ具合として 1 度だけ当てる
+            # スクリプトの絵は素材と同じストレートアルファとして重なる 事前乗算のまま
+            # 渡すと、半透明の所で不透明度が 2 回掛かって暗くなる
+            self._compositor = after
+            try:
+                self._draw_scripted(
+                    track,
+                    replace(clip, blend_mode=BlendMode.NORMAL),
+                    before.read(straight=True),
+                    gpu_effects,
+                    local_frame,
+                    rate,
+                    1.0,
+                )
+            finally:
+                self._compositor = outer
+        else:
+            result = self._effects.apply(
+                before.canvas,
+                gpu_effects,
+                frame=local_frame,
+                fps=float(rate.fps),
+                flip_source=False,
+                duration=clip.duration,
+                premultiplied=True,
+            )
+            after.draw_handle(result.color, full, flip=False)
+        outer.draw_handle(
+            after.canvas.color,
+            full,
+            opacity=opacity,
+            flip=False,
+            blend=BlendMode.REPLACE,
+            premultiplied=True,
+        )
 
     def _draw_scripted(
         self,

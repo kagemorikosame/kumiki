@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sashimono.core.model import GeneratedSource, ParamValue
+from sashimono.core.model import FILTER_KIND, GeneratedSource, ParamValue
 from sashimono.effects.easing import EASING_KINDS, EASING_MODES
 from sashimono.effects.spec import (
     CheckSpec,
@@ -26,6 +26,7 @@ from sashimono.effects.spec import (
 )
 
 __all__ = [
+    "FILTER",
     "FRAMEBUFFER",
     "SHAPE",
     "TEXT",
@@ -266,6 +267,14 @@ SHAPE = SourceDefinition(
 FRAMEBUFFER = SourceDefinition(kind="framebuffer", label="フレームバッファ")
 
 
+#: 下のトラックを重ね終えた絵へ、クリップのエフェクトを掛ける（AviUtl のフィルタオブジェクト）
+#: 掛けた絵で下の絵を**置き換える** 上に重ねるフレームバッファと違い、黒を敷かないので
+#: 透明な所は透明のまま残る（入れ子のシーンの中で使っても、外の絵を黒で隠さない）
+#: 不透明度は掛ける前と後の混ぜ具合 合成方法は使わない（AviUtl のフィルタオブジェクトにも無い）
+#: 絵はレンダラが GPU の中で作る（:mod:`sashimono.engine.render.renderer`）
+FILTER = SourceDefinition(kind=FILTER_KIND, label="フィルタ")
+
+
 #: 下のトラックの絵を、前の場面から後の場面へ切り替える（YMM4 の ``TransitionItem``）
 #: 前の場面はクリップに掛けたエフェクト、後の場面は ``Clip.after_effects`` を通す
 #: 絵はレンダラが GPU の中で作る（:mod:`sashimono.engine.render.renderer`）
@@ -311,4 +320,4 @@ class SourceRegistry:
         return kind in self._definitions
 
 
-source_registry = SourceRegistry((TEXT, SHAPE, FRAMEBUFFER, TRANSITION))
+source_registry = SourceRegistry((TEXT, SHAPE, FRAMEBUFFER, FILTER, TRANSITION))

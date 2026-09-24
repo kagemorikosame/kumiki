@@ -56,6 +56,7 @@ from sashimono.core.commands import (
     RenameScene,
     SetBlending,
     SetResolution,
+    insert_filter,
     insert_generated,
     insert_media,
     insert_scene,
@@ -508,6 +509,7 @@ class MainWindow(QMainWindow):
         self._add(object_menu, "テキストを追加", QKeySequence("Ctrl+T"), self.add_text)
         self._add(object_menu, "図形を追加", QKeySequence("Ctrl+Shift+T"), self.add_shape)
         self._add(object_menu, "場面切り替えを追加", QKeySequence(), self.add_transition)
+        self._add(object_menu, "フィルタを追加", QKeySequence(), self.add_filter)
 
         scene_menu = self._menu("シーン")
         self._add(scene_menu, "新しいシーン…", QKeySequence("Ctrl+Alt+N"), self._ask_new_scene)
@@ -1174,8 +1176,21 @@ class MainWindow(QMainWindow):
         """再生ヘッドの位置に場面切り替えを置く 下のトラックの切れ目に重ねて使う"""
         self._insert_generated(TRANSITION.create(), "場面切り替えを追加")
 
+    def add_filter(self) -> None:
+        """再生ヘッドの位置に、下のトラックの絵全体へ掛かるフィルタを置く
+
+        エフェクトは積まずに置く 何を掛けたいかは人によるので、選んだ後に設定パネルで足す
+        """
+        self._place_generated(
+            insert_filter(self.view_project, at_frame=self._timeline.playhead), "フィルタを追加"
+        )
+
     def _insert_generated(self, source: GeneratedSource, label: str) -> None:
-        commands = insert_generated(self.view_project, source, at_frame=self._timeline.playhead)
+        self._place_generated(
+            insert_generated(self.view_project, source, at_frame=self._timeline.playhead), label
+        )
+
+    def _place_generated(self, commands: list[Command], label: str) -> None:
         if not self.execute_all(commands, label):
             # 断られたら選ばない 選ぶと再生ヘッドの位置に元からあったクリップが
             # 選ばれ、設定パネルが開いて、追加できたように見える
