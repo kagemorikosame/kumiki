@@ -12,6 +12,7 @@ from __future__ import annotations
 import math
 import struct
 from collections.abc import Callable
+from dataclasses import dataclass
 from functools import lru_cache
 
 import numpy as np
@@ -32,7 +33,14 @@ from PySide6.QtGui import (
     QTransform,
 )
 
-from sashimono.compat.aviutl.text_tags import TaggedLine, TextRun, TextStyle, parse_tags
+from sashimono.compat.aviutl.text_tags import (
+    DECORATION_NAMES,
+    TaggedLine,
+    TextRun,
+    TextStyle,
+    parse_tags,
+)
+from sashimono.compat.decoration import decoration_params, find_decoration
 from sashimono.core.model import AnimatedValue, GeneratedSource, ParamValue
 from sashimono.effects.sources import SourceDefinition, source_registry
 from sashimono.engine.audio_shapes import (
@@ -538,8 +546,23 @@ def _family_names(table: bytes) -> dict[int, str]:
     return names
 
 
-#: 描き分ける見た目 塗りの色・影と縁の色（16 進 ``None`` は設定欄の色）と太らせる量
-_Look = tuple[str | None, str | None, float]
+@dataclass(frozen=True)
+class _Look:
+    """描き分ける見た目 同じ見た目の字は 1 つの輪郭にまとめて描く
+
+    色は 16 進（``None`` は設定欄の色） ``decoration`` は文字装飾の番号 ``edge_width`` は
+    ``<s>`` の縁取りの太さ（AviUtl2 の数のまま） どちらも ``None`` なら設定欄の文字装飾
+    """
+
+    color: str | None = None
+    edge: str | None = None
+    embolden: float = 0.0
+    decoration: int | None = None
+    edge_width: float | None = None
+
+
+#: 1 文字ぶんの置き方 字・書体・送り幅・見た目・前に空ける字間・変形（横・縦の倍と時計回りの度）
+_Part = tuple[str, QFont, float, _Look, float, tuple[float, float, float]]
 
 
 def _aviutl_lines(
@@ -571,64 +594,107 @@ def _aviutl_lines(
       上の高さが最大のメイリオでは組んでいない
     - 文字の無い行は、その行の終わりの書体と大きさの行送り
     - 送り幅は字ごとにその字の書体と大きさで測る
+
+    制御文字の残り（#134 の見本 ``tag24``〜``tag52``）
+
+    - ``<gw>`` の字間はその字の前に入り、``<gh>`` の行間はその行の終わりの値で次の行との間に入る
+    - ``<tw>`` ``<th>`` ``<tr>`` は字の送り幅を変えず、字の枠（送り幅 x 行の高さ）の真ん中を
+      中心に 1 文字ずつ伸び縮み・回る（``<tw0.5>`` の H は枠の真ん中に半分の幅で出た）
     """
     letter_spacing = _number(values, "letter_spacing", 0.0)
     line_spacing = _number(values, "line_spacing", 0.0)
     italic = bool(values.get("italic", False))
-    measured: dict[tuple[str, int], tuple[QFont, QFontMetricsF, float]] = {}
+    measured: dict[tuple[str, int, bool], tuple[QFont, QFontMetricsF, float]] = {}
 
     def typeface(style: TextStyle) -> tuple[QFont, QFontMetricsF, float, int]:
         name = family if style.font is None else aviutl_font_family(style.font)
         pixels = size if style.size is None else max(1, round(style.size))
-        key = (name, pixels)
+        slanted = italic if style.italic is None else style.italic
+        key = (name, pixels, slanted)
         if key not in measured:
             font = QFont(name)
             font.setPixelSize(pixels)
-            font.setItalic(italic)
+            font.setItalic(slanted)
             metrics = QFontMetricsF(font)
             measured[key] = (font, metrics, metrics.height() + _external_leading(font))
         font, metrics, pitch = measured[key]
         return font, metrics, pitch, pixels
 
-    laid: list[tuple[list[tuple[str, QFont, float, _Look]], float, float, float]] = []
+    laid: list[tuple[list[_Part], float, float, float, float]] = []
     for line in lines:
-        parts: list[tuple[str, QFont, float, _Look]] = []
+        parts: list[_Part] = []
         # 行の高さを決める書体 行送りが同じなら先に出た方（max は最初の最大を返す）
         faces = [typeface(run.style) for run in line.runs if run.text] or [typeface(line.end)]
         _font, tallest, pitch, _pixels = max(faces, key=lambda face: face[2])
         for run in line.runs:
-            font, metrics, _pitch, pixels = typeface(run.style)
-            embolden = pixels * _AVIUTL_BOLD if bold else 0.0
-            look: _Look = (run.style.color, run.style.edge, embolden)
+            style = run.style
+            font, metrics, _pitch, pixels = typeface(style)
+            thick = bold if style.bold is None else style.bold
+            embolden = pixels * _AVIUTL_BOLD if thick else 0.0
+            look = _Look(style.color, style.edge, embolden, style.decoration, style.edge_width)
+            gap = letter_spacing if style.letter_gap is None else style.letter_gap
+            shape = (
+                1.0 if style.scale_x is None else style.scale_x,
+                1.0 if style.scale_y is None else style.scale_y,
+                0.0 if style.turn is None else style.turn,
+            )
             for part in _graphemes(run.text):
-                parts.append((part, font, metrics.horizontalAdvance(part) + embolden, look))
-        advance = sum(part[2] for part in parts) + letter_spacing * max(len(parts) - 1, 0)
-        laid.append((parts, advance, pitch, tallest.ascent()))
+                step = metrics.horizontalAdvance(part) + embolden
+                # 字間は行の最初の字の前には入れない（文字の間にだけ入る）
+                parts.append((part, font, step, look, gap if parts else 0.0, shape))
+        advance = sum(part[2] + part[4] for part in parts)
+        after = line_spacing if line.end.line_gap is None else line.end.line_gap
+        laid.append((parts, advance, pitch, tallest.ascent(), after))
 
-    widest = max((advance for _parts, advance, _pitch, _ascent in laid), default=0.0)
-    block_height = sum(pitch for _parts, _advance, pitch, _ascent in laid)
-    block_height += line_spacing * max(len(laid) - 1, 0)
+    widest = max((row[1] for row in laid), default=0.0)
+    # 最後の行の後ろには行間を入れない（行の間にだけ入る）
+    block_height = sum(row[2] for row in laid) + sum(row[4] for row in laid[:-1])
     align = str(values.get("align", "center"))
     left = centre_x - widest * {"left": 0.0, "right": 1.0}.get(align, 0.5)
     top = centre_y - block_height * _VERTICAL_SHARE.get(str(values.get("valign", "middle")), 0.5)
 
     paths: dict[_Look, QPainterPath] = {}
     line_top = top
-    for parts, advance, pitch, ascent in laid:
+    for parts, advance, pitch, ascent, after in laid:
         x = left + (widest - advance) * {"left": 0.0, "right": 1.0}.get(align, 0.5)
         baseline = line_top + ascent
         # 1 文字ずつ置く 太字の分だけ送り幅を広げるのは文字ごとで、行をまとめて
         # 置くと 2 文字目から先が太った分だけ前の字に食い込む
-        for part, font, step, look in parts:
-            paths.setdefault(look, QPainterPath()).addText(QPointF(x, baseline), font, part)
-            x += step + letter_spacing
-        line_top += pitch + line_spacing
+        for part, font, step, look, gap, shape in parts:
+            x += gap
+            target = paths.setdefault(look, QPainterPath())
+            if shape == (1.0, 1.0, 0.0):
+                target.addText(QPointF(x, baseline), font, part)
+            else:
+                glyph = QPainterPath()
+                glyph.addText(QPointF(x, baseline), font, part)
+                target.addPath(_shaped(glyph, x + step / 2.0, line_top + pitch / 2.0, shape))
+            x += step
+        line_top += pitch + after
 
     groups: list[tuple[QPainterPath, _Look]] = []
     for look, path in paths.items():
-        embolden = look[2]
+        embolden = look.embolden
         groups.append((_emboldened(path, embolden) if embolden > 0.0 else path, look))
     return groups, (left, top, left + widest, top + block_height)
+
+
+def _shaped(
+    glyph: QPainterPath, centre_x: float, centre_y: float, shape: tuple[float, float, float]
+) -> QPainterPath:
+    """``<tw>`` ``<th>`` ``<tr>`` 字の枠の真ん中を中心に伸び縮みさせてから時計回りに回す
+
+    見本 tag36 と tag49 で、送り幅と行の高さの枠の真ん中が動かなかった 字の形の真ん中を
+    中心にすると、下の深さの無い H では縦に縮めた字が 2 画素ほど上へずれる
+    """
+    across, tall, turn = shape
+    transform = QTransform()
+    transform.translate(centre_x, centre_y)
+    # 画面の Y は下向きなので、Qt の正の角度がそのまま時計回りになる
+    transform.rotate(turn)
+    transform.scale(across, tall)
+    transform.translate(-centre_x, -centre_y)
+    return transform.map(glyph)
 
 
 def _revealed_lines(lines: list[TaggedLine], values: dict[str, object]) -> list[TaggedLine]:
@@ -803,13 +869,51 @@ def _paint_groups(
     width: int,
     height: int,
 ) -> None:
-    """制御文字で色を変えた字を、色ごとに塗る 影・縁・塗りの順は全体で守る"""
+    """制御文字で色や装飾を変えた字を、見た目ごとに塗る 影・縁・塗りの順は全体で守る"""
     _paint_layers(
         painter,
-        [(path, _recoloured(values, look[0], look[1])) for path, look in groups],
+        [
+            (path, _redecorated(_recoloured(values, look.color, look.edge), look))
+            for path, look in groups
+        ],
         width,
         height,
     )
+
+
+#: 文字装飾の飾りの項目 ``<@書体,番号>`` で装飾を変えるときに一度外してから付け直す
+_DECORATION_KEYS = ("border_width", "shadow_x", "shadow_y", "shadow_blur")
+
+
+def _redecorated(values: dict[str, object], look: _Look) -> dict[str, object]:
+    """``<@書体,番号>`` の文字装飾と ``<s,,,太さ>`` の縁取りの太さを当てた値
+
+    飾りの割合は設定欄の文字装飾と同じ表（:data:`sashimono.compat.decoration.DECORATIONS`）
+    から、設定欄の大きさで引く 大きさを変えた字の縁の太さは測っていないので、設定欄の字と
+    揃えておく（:func:`sashimono.compat.aviutl.mapping._decoration_of` と同じ決まり）
+    """
+    if look.decoration is None and look.edge_width is None:
+        return values
+    changed = dict(values)
+    if look.decoration is not None:
+        decoration = find_decoration(DECORATION_NAMES[look.decoration])
+        if decoration is not None:
+            for key in _DECORATION_KEYS:
+                changed.pop(key, None)
+            colour = _color(values.get("border_color"))
+            rgba = (colour.redF(), colour.greenF(), colour.blueF(), 1.0)
+            params = decoration_params(decoration, _number(values, "size", 64.0), rgba)
+            # 描く所の値は解けた数 動く値の形のまま混ぜると数として読めない
+            changed.update(
+                {
+                    key: value.static if isinstance(value, AnimatedValue) else value
+                    for key, value in params.items()
+                }
+            )
+    if look.edge_width is not None and _number(changed, "border_width", 0.0) > 0.0:
+        # 縁は片側に指定の半分ずつ付いた（見本 tag44 0・4・8・20 で字の幅が 0・4・8・19 広がった）
+        changed["border_width"] = look.edge_width / 2.0
+    return changed
 
 
 def _paint_layers(

@@ -1459,14 +1459,15 @@ def test_frames_missing_from_the_export_fail_instead_of_passing_half_measured(
     assert tool.read_ceilings(tmp_path / "ceilings.json") == {"後光": 71.0}
 
 
-@pytest.mark.parametrize("broken", ["NaN", "Infinity", "-Infinity"])
+@pytest.mark.parametrize("broken", ["NaN", "Infinity", "-Infinity", "null", "[1]", '"高い"'])
 def test_a_ceiling_that_is_not_a_number_stops_before_comparing(
     tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, broken: str
 ) -> None:
     """上限に NaN や Infinity があれば、比べる前に終了コード 1
 
     どちらも float が受け取り、差と比べても「超えた」にならない 入っていると
-    そのテンプレートは差がいくら大きくても通る
+    そのテンプレートは差がいくら大きくても通る ``null`` や並びは float が TypeError を
+    投げ、ValueError だけを受けていたころは終了コードを返さずに落ちた（#183 のレビュー）
     """
     compared: list[bool] = []
 
