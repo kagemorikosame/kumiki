@@ -11,7 +11,7 @@ AviUtl のオブジェクトは「中身 1 つ + フィルタの列」ででき�
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from fractions import Fraction
 from pathlib import Path
@@ -29,15 +29,18 @@ from sashimono.compat.aviutl.motion import (
 )
 from sashimono.compat.aviutl.report import CompatibilityReport, global_report
 from sashimono.compat.decoration import decoration_params, find_decoration
+from sashimono.compat.layers import heard_stream, layer_tracks
 from sashimono.compat.mapped import MappedObject
 from sashimono.core.commands import AddClip, AddTrack, Command
 from sashimono.core.commands.fixed import fixed_rank, takes_picture_items, with_fixed_items
+from sashimono.core.commands.layers import places_mixed
 from sashimono.core.model import (
     AnimatedValue,
     Clip,
     Effect,
     GeneratedSource,
     MediaId,
+    MediaItem,
     ParamValue,
     Project,
     Track,
@@ -568,12 +571,21 @@ def map_exo(
     *,
     at_frame: int = 0,
     media: dict[str, MediaId] | None = None,
+    items: Iterable[MediaItem] = (),
     report: CompatibilityReport | None = None,
 ) -> list[Command]:
     """ファイル全体を、タイムラインへ置くコマンドの列にする
 
-    レイヤーはそのままトラックに対応させる AviUtl のレイヤー 1 が一番下なので、
-    こちらの映像トラックの並びと同じ向きになる
+    レイヤーはそのままトラックに対応させる AviUtl のレイヤー 1 が一番奥なので、
+    こちらの映像トラックの並び（先頭が一番奥）と同じ向きになる
+
+    混合の方式のプロジェクト（:func:`~sashimono.core.commands.layers.places_mixed`）では、
+    レイヤー n を n 本目の混合トラック（レイヤー）にする
+    （:func:`~sashimono.compat.layers.layer_tracks`）
+    音声ファイル は絵を隠して、素材の 1 本目の音を鳴らす 動画ファイル は音を持たせない
+    AviUtl は動画の音を別の 音声ファイル として書くので、持たせると二重に鳴る
+    ``items`` はこれから登録する素材 鳴らす音の番号を素材から引くのに使う
+    （登録済みの素材はプロジェクトから引く）
     """
     log = report if report is not None else global_report
     mapped = [map_object(obj, project.rate, report=log) for obj in exo.objects]
@@ -582,7 +594,15 @@ def map_exo(
         return []
 
     commands: list[Command] = []
-    tracks = _tracks_for(project, {item.layer for item in mapped if item is not None}, commands)
+    mixed = places_mixed(project)
+    layers = {item.layer for item in mapped if item is not None}
+    drawn = {item.layer for item in mapped if item is not None and item.kind != "音声ファイル"}
+    tracks = (
+        layer_tracks(project, layers, commands, heard_only=layers - drawn)
+        if mixed
+        else _tracks_for(project, layers, commands)
+    )
+    library = {item.id: item for item in (*project.media, *items)}
 
     known = media or {}
     for item in mapped:
@@ -607,6 +627,15 @@ def map_exo(
         sound = item.kind == "音声ファイル"
         picture = not sound and item.kind != "effects" and takes_picture_items(placed)
         placed = with_fixed_items(placed, picture=picture, sound=sound)
+        if mixed and sound:
+            linked = library.get(placed.media_id) if placed.media_id is not None else None
+            stream = heard_stream(linked, 0, log)
+            placed = replace(
+                placed,
+                show_picture=False,
+                audio_stream=stream,
+                stream_index=placed.stream_index if stream is None else stream,
+            )
         commands.append(AddClip(track.id, placed))
     return commands
 
@@ -942,6 +971,21 @@ def _spec_value(
     return raw
 
 
+def _note_sound_choice(entry: ExoEntry, log: CompatibilityReport) -> None:
+    """素材オブジェクトの、まだ写していない音と道の選び方を数えて残す
+
+    AviUtl2 の 動画ファイル は ``音声付き=1`` で自分の音も鳴らせる こちらは動画ファイルに
+    音を持たせない（同じ動画の音は 音声ファイル として別に書かれる前提 実物の配布物
+    270 本には音声付きの動画ファイルが無かった） 黙って落とすと、音声付きで作った
+    エイリアスの音が消えても互換性レポートに出ない
+    ``トラック`` は素材の中のどの道を読むか 0（1 本目）以外は選び直していない
+    """
+    if entry.name == "動画ファイル" and entry.params.get("音声付き", "0").strip() not in ("", "0"):
+        log.note_missing("AviUtl の動画ファイルの音声付き")
+    if entry.params.get("トラック", "0").strip() not in ("", "0"):
+        log.note_missing(f"AviUtl の{entry.name}のトラックの選択")
+
+
 def _content(
     entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport
 ) -> tuple[GeneratedSource | None, str, str]:
@@ -966,6 +1010,7 @@ def _content(
         path = _media_file(entry)
         return _waveform(entry, path, points, log), path, "shape"
     if entry.name in _MEDIA_NAMES:
+        _note_sound_choice(entry, log)
         return None, _media_file(entry), entry.name
     if entry.name in _SCRIPTED_CONTENTS:
         # スクリプトで中身を作るもの（AviUtl1 の カスタムオブジェクト と シーンチェンジ）
