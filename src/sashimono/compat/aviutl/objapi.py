@@ -191,7 +191,8 @@ class ObjectState:
 
     #: 明示的に呼ばれた描画 空なら実行後に 1 回だけ自動で描く
     draws: list[DrawCall] = field(default_factory=list)
-    #: 積まれたフィルタ 描画の直前に適用する
+    #: 積まれたフィルタ 描くときに GPU で掛ける 間に絵を読む・変える呼び出しが来たら
+    #: その場で掛けて空にする（:meth:`ObjApi._settle_effects`）
     effects: list[EffectRequest] = field(default_factory=list)
     #: ``obj.load("buffer")`` などで使う作業用バッファ
     buffers: dict[str, np.ndarray] = field(default_factory=dict)
@@ -322,6 +323,7 @@ class ObjApi:
         load_module: Any = None,
         load_script_module: Any = None,
         emit: Any = None,
+        apply_effects: Any = None,
     ) -> None:
         self.state = state
         self._report = report if report is not None else global_report
@@ -335,6 +337,9 @@ class ObjApi:
         #: テキスト欄に埋め込んだ Lua を走らせているときの書き出し先
         #: そこでの ``obj.mes`` は絵を作るのではなく、本文を書き出す
         self._emit = emit
+        #: 積んだ効果をいまの絵へ掛けて返す関数 ``(絵, 効果の組) -> 絵`` 効果は GPU で
+        #: 掛けるので外から渡す 無ければ焼き込めない（:meth:`_settle_effects`）
+        self._apply_effects = apply_effects
         self._random = random.Random(0)
 
     # --- 値の読み書き ---
@@ -437,6 +442,8 @@ class ObjApi:
             return
 
         if self._drawing_to_tempbuffer():
+            # 仮想バッファへはここで CPU が貼る 画面へ描くときに掛かる効果は、ここでは掛からない
+            self._settle_effects("obj.drawpoly")
             corners = [(values[i], values[i + 1]) for i in range(0, 12, 3)]
             rest = values[12:]
             uvs = None
@@ -513,6 +520,8 @@ class ObjApi:
             # 黙って等倍で描くと、形の違う絵ができても気づけない
             self._report.note_missing("obj.draw（仮想バッファへ、回転か拡大つき）")
             return
+        # 画面へ描くときに掛かる効果は、CPU が貼る仮想バッファには掛からない 先に掛けておく
+        self._settle_effects("obj.draw")
         raster.draw_image(
             self._tempbuffer(),
             self.state.image,
@@ -549,6 +558,7 @@ class ObjApi:
             for face in range(0, len(vertices), 4):
                 self._drawpoly_quad_to_screen(vertices[face : face + 4], alpha)
             return
+        self._settle_effects("obj.drawpoly")
         for face in range(0, len(vertices), count):
             points = vertices[face : face + count]
             corners = [(vertex[0], vertex[1]) for vertex in points]
@@ -639,11 +649,82 @@ class ObjApi:
 
         それまでに積んだ効果を絵へ焼き込む物 **積んだ効果が無いときは絵が
         変わらない**（配布物のテレビ字幕は、文字の直後にこれを呼んでいて、この形しか
-        確かめていない） 積んだ効果があるときの焼き込みはまだ写していないので、
-        黙って素通しにせず記録に残す
+        確かめていない）
         """
-        if self.state.effects:
-            self._report.note_missing("obj.effect(オフスクリーン描画)（先に積んだ効果の焼き込み）")
+        self._settle_effects("obj.effect(オフスクリーン描画)")
+
+    def _resize(self, args: tuple[Any, ...]) -> None:
+        """``obj.effect("リサイズ", "X", 120, "Y", 40, "ドット数でサイズ指定", 1)``
+
+        描画のときではなく、ここで絵の大きさを変える 後に続く ``obj.w`` や
+        ``obj.copybuffer`` が変えた後の大きさを見るため sigma の 単純図形σ は
+        1 画素の四角を読んでリサイズで幅と高さにする 描くときまで待つと、その間の
+        処理が 1 画素の絵を相手にする（以前は X と Y を位置のずれとして GPU へ渡していて、
+        1 画素のまま横へずれた）
+
+        ``ドット数でサイズ指定`` が真なら X と Y は画素 偽なら 拡大率 と X・Y の百分率を
+        掛ける ``補間なし`` が真なら最も近い画素を取る
+        """
+        values: dict[str, float] = {}
+        for index in range(0, len(args) - 1, 2):
+            values[str(args[index])] = _as_float(args[index + 1])
+        # 先に積んだ効果は広げる前の絵へ掛ける ぼかしてから広げればぼけ幅も広がる 描くときまで
+        # 待つと広げた後の絵へ掛かり、ぼけ幅も縁の太さも元のままになる（#176） 大きさは焼き込んだ
+        # 後の絵から測る AviUtl のぼかしは絵を広げるので、拡大率は広がった絵に掛かる
+        self._settle_effects("obj.effect(リサイズ)")
+        state = self.state
+        if values.get("ドット数でサイズ指定", 0.0):
+            width = values.get("X", float(state.width))
+            height = values.get("Y", float(state.height))
+        else:
+            zoom = values.get("拡大率", 100.0) / 100.0
+            width = state.width * zoom * values.get("X", 100.0) / 100.0
+            height = state.height * zoom * values.get("Y", 100.0) / 100.0
+        if not (math.isfinite(width) and math.isfinite(height)):
+            self._report.note_missing("obj.effect(リサイズ) の大きさ（数ではない）")
+            return
+        if max(round(width), round(height)) > MAX_FIGURE_SIZE:
+            # 大きさはスクリプトが決める そのまま作ると 1 回で数 GB になるので切るが、
+            # 黙って切ると要求より小さく描かれた理由が互換性レポートに出ない
+            self._report.note_missing(
+                f"obj.effect(リサイズ) の大きさ {round(width)}x{round(height)}"
+                f"（上限 {MAX_FIGURE_SIZE} で切った）"
+            )
+        size = (
+            max(1, min(round(width), MAX_FIGURE_SIZE)),
+            max(1, min(round(height), MAX_FIGURE_SIZE)),
+        )
+        state.image = raster.resize(state.image, *size, smooth=not values.get("補間なし", 0.0))
+        state.image_shared = False
+
+    def _settle_effects(self, caller: str) -> None:
+        """積んだ効果をいまの絵へ掛けてしまう その場で絵を読む・変える呼び出しの前に呼ぶ
+
+        AviUtl の ``obj.effect`` はその場で絵を変える こちらは積んでおいて描くときに GPU で
+        まとめて掛けるので、間に絵を読む・変える呼び出しが挟まると順が入れ替わる
+        （ぼかし → リサイズ が リサイズ → ぼかし になる #176） 挟まったときだけここで掛ける
+        いつも掛けると、効果を積んで描くだけのスクリプトまで 1 回ごとに GPU から読み戻す
+
+        掛ける関数が無い（GPU を持たない試験や道具）ときは焼き込めない 黙ると順が入れ替わった
+        理由が分からないので記録に残し、効果は描くときに掛かるまま残す
+        """
+        state = self.state
+        if not state.effects:
+            return
+        if self._apply_effects is None:
+            self._report.note_missing(f"{caller}（先に積んだ効果の焼き込み）")
+            return
+        state.image = self._apply_effects(state.image, tuple(state.effects))
+        state.image_shared = False
+        state.effects.clear()
+
+    def _drop_effects(self) -> None:
+        """絵を差し替える呼び出しの前に、積んだ効果を捨てる
+
+        AviUtl では効果は差し替える前の絵に掛かって、絵ごと消える 残すと、差し替えた後の
+        絵へ描くときに掛かり、読み込んだ図形や文字が前の絵のためのぼかしでぼける
+        """
+        self.state.effects.clear()
 
     def _resize(self, args: tuple[Any, ...]) -> None:
         """``obj.effect("リサイズ", "X", 120, "Y", 40, "ドット数でサイズ指定", 1)``
@@ -759,6 +840,7 @@ class ObjApi:
         # 貼るスクリプト（テレビ字幕の板）が、ほとんど透明な所を貼って板が消える
         top = max(0, (canvas.shape[0] - height) // 2)
         left = max(0, (canvas.shape[1] - width) // 2)
+        self._drop_effects()
         self.state.image = np.ascontiguousarray(canvas[top : top + height, left : left + width])
 
     def _load_text(self, args: tuple[Any, ...]) -> None:
@@ -771,6 +853,7 @@ class ObjApi:
         if stored is None:
             self._report.note_missing(f'obj.load("buffer", "{name}")')
             return
+        self._drop_effects()
         self.state.image = stored
         self.state.image_shared = True
 
@@ -783,12 +866,17 @@ class ObjApi:
         state = self.state
         origin_name = _buffer_name(str(source))
         target_name = _buffer_name(str(destination))
+        if origin_name == "obj" and target_name != "obj":
+            # 写す絵は効果を掛けた後の絵 sigma は 領域拡張 や 縁取り の直後に写して取っておく
+            self._settle_effects("obj.copybuffer")
 
         origin = state.image if origin_name == "obj" else state.buffers.get(origin_name)
         if origin is None:
             self._report.note_missing(f'obj.copybuffer(source="{source}")')
             return
         if target_name == "obj":
+            if origin_name != "obj":
+                self._drop_effects()
             state.image = origin.copy()
             state.image_shared = False
             return
@@ -825,6 +913,7 @@ class ObjApi:
         }
         width = self.state.screen_w
         height = self.state.screen_h
+        self._drop_effects()
         self.state.image = self._render_source("text", params, width, height)
 
     def lua_setfont(self, name: str = "", size: float = 48, *rest: Any) -> None:
@@ -872,6 +961,7 @@ class ObjApi:
 
     def lua_getpixel(self, x: int = 0, y: int = 0, kind: str = "col") -> Any:
         """1 画素を読む ``kind`` が ``"col"`` なら ``色, 不透明度``"""
+        self._settle_effects("obj.getpixel")
         image = self.state.image
         column, row = int(_as_float(x)), int(_as_float(y))
         if not (0 <= row < image.shape[0] and 0 <= column < image.shape[1]):
@@ -882,6 +972,8 @@ class ObjApi:
         return ((red << 16) | (green << 8) | blue, alpha / 255.0)
 
     def lua_putpixel(self, x: int = 0, y: int = 0, *values: Any) -> None:
+        # 先に積んだ効果の上へ書く 後で掛けると、書いた画素までぼける
+        self._settle_effects("obj.putpixel")
         image = self.state.writable_image()
         column, row = int(_as_float(x)), int(_as_float(y))
         if not (0 <= row < image.shape[0] and 0 <= column < image.shape[1]):
@@ -898,6 +990,7 @@ class ObjApi:
         image[row, column] = [*channels, max(0, min(255, alpha))]
 
     def lua_copypixel(self, dx: int, dy: int, sx: int, sy: int) -> None:
+        self._settle_effects("obj.copypixel")
         image = self.state.writable_image()
         target = (int(_as_float(dy)), int(_as_float(dx)))
         origin = (int(_as_float(sy)), int(_as_float(sx)))
@@ -934,6 +1027,8 @@ class ObjApi:
         name = str(target)
         key = _buffer_name(name)
         if key == "obj":
+            # 書き戻す絵は getpixeldata で効果を掛け終えた物 残した効果をもう 1 度掛けない
+            self._drop_effects()
             self.state.image = np.ascontiguousarray(pixels.copy())
             self.state.image_shared = False
         elif key == "tmp" or key.startswith("cache:"):
@@ -944,6 +1039,9 @@ class ObjApi:
     def _pixel_source(self, target: str) -> np.ndarray | None:
         key = _buffer_name(target)
         if key == "obj":
+            # DLL が受け取るのは効果を掛けた後の絵 掛ける前の絵を渡すと、
+            # 書き戻したときに効果ごと消える
+            self._settle_effects("obj.getpixeldata")
             return self.state.image
         if key == "tmp" or key.startswith("cache:"):
             stored = self.state.buffers.get(key)
