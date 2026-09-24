@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
-from PySide6.QtCore import QBuffer, QIODevice, Qt, QTimer, QUrl, Signal, qVersion
+from PySide6.QtCore import QBuffer, QIODevice, QPoint, Qt, QTimer, QUrl, Signal, qVersion
 from PySide6.QtGui import (
     QAction,
     QCloseEvent,
@@ -135,6 +135,7 @@ from sashimono.ui.workspace import (
     PreferenceStore,
     ShortcutStore,
     Workspace,
+    apply_dock_tabs,
 )
 
 if TYPE_CHECKING:
@@ -319,10 +320,15 @@ class MainWindow(QMainWindow):
         #: 控えと解析の進み具合を出していたか 終わったことを 1 度だけ知らせるため
         self._background_shown = False
 
+        # タブの向きはパネルを重ねる前に決める Qt は重ねたときに使わないタブの並びを
+        # 1 つ作って残し、それは作った時の向きのまま変わらない（ほかの部品の下に隠れて
+        # 見えはしない） 先に決めておけば、残った物まで同じ向きでそろう
+        apply_dock_tabs(self, self._preferences.dock_tabs)
         self._build_widgets()
         self._build_menus()
         self._connect()
         self._connect_drops()
+        self._connect_preview_menu()
 
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setInterval(ANALYSIS_REFRESH_MS)
@@ -486,6 +492,13 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         self._add(file_menu, "素材を読み込む…", QKeySequence("Ctrl+I"), self._import_dialog)
         self._add(file_menu, "書き出し…", QKeySequence("Ctrl+E"), self.export)
+        self._snapshot_save_action = self._add(
+            # triggered の checked（偽）が保存先として渡らないよう、引数なしで呼ぶ
+            file_menu,
+            "静止画を保存…",
+            QKeySequence("Ctrl+Alt+S"),
+            lambda: self.save_snapshot(),
+        )
         file_menu.addSeparator()
         self._add(file_menu, "終了", QKeySequence.StandardKey.Quit, self.close)
 
@@ -520,6 +533,10 @@ class MainWindow(QMainWindow):
         )
         self._add(
             edit_menu, "すべて選択", QKeySequence.StandardKey.SelectAll, self._timeline.select_all
+        )
+        # Ctrl+C はクリップのコピーが使っている 絵のコピーは Alt を足して分ける
+        self._snapshot_copy_action = self._add(
+            edit_menu, "静止画をコピー", QKeySequence("Ctrl+Alt+C"), self.copy_snapshot
         )
         # 範囲を決めるのは目盛りの Shift+ドラッグ 解除は右クリックのほかにここにも置く
         # 範囲が横へスクロールして見えていなくても、書き出す前に消せるようにするため
@@ -728,6 +745,7 @@ class MainWindow(QMainWindow):
             # 次の間隔を待たずに外す 切ったのに行の後ろに古い割合が残って見える
             self._media_pool.set_progress({})
         self._media_pool.set_view_mode(preferences.media_view)
+        apply_dock_tabs(self, preferences.dock_tabs)
         self._preview.set_proxies(self._proxies.store if preferences.use_proxy else None)
         self._preview.set_prefetch_bytes(preferences.prefetch_bytes())
         self._preview.set_prefetch_thread(preferences.prefetch_thread)
@@ -2196,6 +2214,81 @@ class MainWindow(QMainWindow):
         if not QImageWriter(buffer, b"PNG").write(picture):
             raise ToolError("プレビュー画像を作れませんでした")
         return bytes(buffer.data().data())
+
+    # --- 静止画 ---
+
+    def _connect_preview_menu(self) -> None:
+        """プレビューの右クリックに静止画の保存とコピーを出す
+
+        撮りたい絵を見ているのはプレビューなので、メニューバーまで行かずに撮れるようにする
+        """
+        # メニューは 1 つだけ作って使い回す 開くたびに作ると、閉じても窓の子として残り、
+        # 右クリックの回数だけ部品が増えていく
+        self._preview_menu = QMenu(self)
+        self._preview_menu.addAction(self._snapshot_save_action)
+        self._preview_menu.addAction(self._snapshot_copy_action)
+        self._preview.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._preview.customContextMenuRequested.connect(self._show_preview_menu)
+
+    def _show_preview_menu(self, position: QPoint) -> None:
+        self._preview_menu.popup(self._preview.mapToGlobal(position))
+
+    def _snapshot_frame(self) -> int:
+        """静止画にするフレーム 再生を止めてから再生ヘッドを 1 度だけ読む
+
+        止めずに読むと、保存先を尋ねている間も再生ヘッドが進み、名前に入れた
+        タイムコードと描いた絵のフレームが食い違う
+        """
+        from sashimono.ui.snapshot import snapshot_frame
+
+        self._playback.stop()
+        return snapshot_frame(self.view_project, self._timeline.playhead)
+
+    def snapshot_image(self, frame: int | None = None) -> QImage:
+        """``frame``（省けば再生ヘッドの位置）を、書き出しと同じ描き方でプロジェクトの解像度のまま描く
+
+        プレビューと同じく開いているシーンを描く 見ている絵と撮れた絵が食い違わないように
+        """
+        from sashimono.ui.snapshot import render_snapshot
+
+        if frame is None:
+            frame = self._snapshot_frame()
+        return render_snapshot(self.view_project, frame)
+
+    def save_snapshot(self, path: Path | None = None) -> Path | None:
+        """静止画を PNG で保存する ``path`` を省くと保存先を尋ねる 保存した場所を返す"""
+        from sashimono.ui.snapshot import SNAPSHOT_FILTER, snapshot_name, write_png
+
+        # 名前と絵の両方にこのフレームを使う 尋ねる前に決めておく
+        frame = self._snapshot_frame()
+        project = self.view_project
+        if path is None:
+            # 名前はメインのプロジェクト名で付ける シーンの中にいても、どの作品の絵かが分かる
+            name = snapshot_name(replace(project, name=self._document.project.name), frame)
+            folder = self._path.parent if self._path is not None else Path.home()
+            chosen, _ = QFileDialog.getSaveFileName(
+                self, "静止画を保存", str(folder / name), SNAPSHOT_FILTER
+            )
+            if not chosen:
+                return None
+            path = Path(chosen)
+            if path.suffix.lower() != ".png":
+                path = path.with_name(path.name + ".png")
+        if not write_png(self.snapshot_image(frame), path):
+            QMessageBox.warning(self, "静止画を保存", f"保存できなかった: {path}")
+            return None
+        self.statusBar().showMessage(f"静止画を保存した: {path}", 5000)
+        return path
+
+    def copy_snapshot(self) -> None:
+        """静止画をクリップボードへ置く"""
+        from sashimono.ui.snapshot import copy_to_clipboard
+
+        image = self.snapshot_image()
+        copy_to_clipboard(image)
+        self.statusBar().showMessage(
+            f"静止画をクリップボードへコピーした（{image.width()}x{image.height()}）", 5000
+        )
 
     def probe(self, path: Path) -> MediaItem:
         try:

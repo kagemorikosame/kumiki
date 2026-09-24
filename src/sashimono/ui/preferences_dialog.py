@@ -33,7 +33,7 @@ from sashimono.engine.render.background import MEASURED_PREFETCH_STALL_MS
 from sashimono.engine.render.prefetch import BYTES_PER_FRAME_PIXEL
 from sashimono.ui.media_match import MATCH_CHOICES
 from sashimono.ui.media_pool import VIEW_ICONS, VIEW_LIST
-from sashimono.ui.workspace import Preferences
+from sashimono.ui.workspace import DOCK_TABS_BOTTOM, DOCK_TABS_TOP, Preferences
 
 __all__ = [
     "DECODE_THREADS",
@@ -227,6 +227,15 @@ class PreferencesDialog(QDialog):
             "動画と違えばどうするか フレームレートを変えられるのはタイムラインが空のときだけ"
         )
         form.addRow("最初の動画に合わせる", self._match_video)
+        self._dock_tabs = QComboBox(self)
+        self._dock_tabs.addItem("上（既定）", DOCK_TABS_TOP)
+        self._dock_tabs.addItem("下", DOCK_TABS_BOTTOM)
+        self._dock_tabs.setCurrentIndex(max(0, self._dock_tabs.findData(preferences.dock_tabs)))
+        self._dock_tabs.setToolTip(
+            "オブジェクト設定と AI アシスタント、メディアと字幕のように、"
+            "重ねたパネルを切り替えるタブをどちらの辺に出すか"
+        )
+        form.addRow("重ねたパネルのタブ", self._dock_tabs)
 
         self._all_plugins = QCheckBox("AviUtl2 の汎用プラグインを全部読んで探す", self)
         self._all_plugins.setChecked(preferences.all_aviutl_plugins)
@@ -325,4 +334,5 @@ class PreferencesDialog(QDialog):
             all_aviutl_plugins=self._all_plugins.isChecked(),
             media_view=str(self._media_view.currentData()),
             match_video=str(self._match_video.currentData()),
+            dock_tabs=str(self._dock_tabs.currentData()),
         )
