@@ -18,6 +18,7 @@ from fractions import Fraction
 from sashimono.core.commands.base import Command
 from sashimono.core.commands.edit import AddClip, AddMedia, AddTrack
 from sashimono.core.commands.layers import (
+    active_layers,
     free_layer,
     media_placements,
     places_mixed,
@@ -418,6 +419,11 @@ def _wanted_track(project: Project, track_id: TrackId | None, start: int, end: i
     # 絵を描くトラック（映像とレイヤー）なら方式を問わず受ける 右クリックしたのは本人で、
     # 方式を切り替えた途中のプロジェクトでも、選んだ所から外すと探すことになる
     if track is None or track.kind is TrackKind.AUDIO or track.locked:
+        return None
+    if track.kind is TrackKind.MIXED and track not in active_layers(project, picture=True):
+        # ミュートやソロの外のレイヤーへ置くと、置いた直後から映らない 空いたレイヤーを
+        # 探す側（:func:`~sashimono.core.commands.layers.free_layer`）と同じ決まりにする
+        # 映像トラックは今までどおり受ける 分ける方式の置き方を変えないため
         return None
     if any(clip.overlaps(start, end) for clip in track.clips):
         return None

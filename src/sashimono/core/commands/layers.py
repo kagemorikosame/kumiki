@@ -33,6 +33,7 @@ from sashimono.core.model import (
 )
 
 __all__ = [
+    "active_layers",
     "free_layer",
     "media_placements",
     "new_layer",
@@ -75,6 +76,17 @@ def solo_for_new_track(project: Project, kind: TrackKind, *, picture: bool = Tru
     return any(t.solo and not t.muted for t in tracks)
 
 
+def active_layers(project: Project, *, picture: bool) -> tuple[Track, ...]:
+    """いま映る（``picture``）か鳴る（偽）レイヤー ミュートとソロの決まりは役割の中で見る
+
+    置く先を選ぶ所（空きを探す・選ばれた所を受ける）がこれで同じ答えを出す 片方だけ
+    ミュートを見ないと、右クリックやドロップで選んだ所へだけ見えない物が置ける
+    """
+    timeline = project.timeline
+    tracks = timeline.active_picture_tracks() if picture else timeline.active_sound_tracks()
+    return tuple(t for t in tracks if t.kind is TrackKind.MIXED)
+
+
 def _created(commands: Sequence[Command]) -> list[Track]:
     return [c.track for c in commands if isinstance(c, AddTrack)]
 
@@ -111,8 +123,8 @@ def free_layer(
 ) -> Track:
     """``[start, end)`` が空いているレイヤー 無ければ足すコマンドを積んで返す
 
-    ``preferred``（落とした所・右クリックした所）が空いていれば、重なり順を問わずそこへ置く
-    本人が選んだ所から外すと、どこへ入ったのかを探すことになる
+    ``preferred``（落とした所・右クリックした所）が空いていて映る（鳴る）なら、重なり順を
+    問わずそこへ置く 本人が選んだ所から外すと、どこへ入ったのかを探すことになる
 
     絵を描く物（``picture``）は、その範囲で絵を描いている一番手前のトラックより手前から
     探す 見るのは映る（ミュートとソロで残る）トラックだけで、置く先も映るレイヤーに限る
@@ -126,16 +138,21 @@ def free_layer(
     def free(track: Track) -> bool:
         return not track.locked and not any(clip.overlaps(start, end) for clip in track.clips)
 
+    # 作ったばかりのトラックはソロを引き継いでいるので、映る側に数える
+    active = {t.id for t in created} | {t.id for t in active_layers(project, picture=picture)}
+
     if preferred is not None:
         wanted = next((t for t in ordered if t.id == preferred), None)
-        if wanted is not None and wanted.kind is TrackKind.MIXED and free(wanted):
+        # 選んだ所でも、ミュートやソロの外で映らない・鳴らないレイヤーには置かない
+        # 置くと、置いた直後からプレビューにも書き出しにも出ない ほかの空きへ回す
+        if (
+            wanted is not None
+            and wanted.kind is TrackKind.MIXED
+            and wanted.id in active
+            and free(wanted)
+        ):
             return wanted
 
-    # 作ったばかりのトラックはソロを引き継いでいるので、映る側に数える
-    active = {t.id for t in created} | {
-        t.id
-        for t in (timeline.active_picture_tracks() if picture else timeline.active_sound_tracks())
-    }
     top = -1
     if picture:
         top = max(

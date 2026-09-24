@@ -237,6 +237,14 @@ class TestPictures:
         (added,) = _added(insert_generated(project, TEXT, at_frame=0, track_id=back.id))
         assert added.track_id == back.id
 
+    def test_a_right_clicked_muted_layer_is_not_used(self) -> None:
+        # 右クリックした所を鍵と空きだけで受けると、ミュートしたレイヤーへ置けて映らない
+        muted = Track(TrackKind.MIXED, "レイヤー 1", muted=True)
+        visible = Track(TrackKind.MIXED, "レイヤー 2")
+        project = _mixed(muted, visible)
+        (added,) = _added(insert_generated(project, TEXT, at_frame=0, track_id=muted.id))
+        assert added.track_id == visible.id
+
     def test_a_muted_layer_is_skipped(self) -> None:
         # ミュートしたレイヤーへ置くと、置いたのにプレビューにも書き出しにも出ない
         muted = Track(TrackKind.MIXED, "レイヤー 1", muted=True)
@@ -284,6 +292,26 @@ class TestDrop:
         assert added.track_id == back.id
         assert added.clip.timeline_start == 45
         assert added.clip.audio_stream == 1
+
+    def test_a_muted_layer_is_not_used_even_when_dropped_on(self, video_media: MediaItem) -> None:
+        # 落とした所を空きと鍵だけで受けると、ミュートしたレイヤーへ入り、映らず鳴らない
+        muted = Track(TrackKind.MIXED, "レイヤー 1", muted=True)
+        project = _mixed(muted)
+        commands = place_media(project, [video_media], at_frame=0, track_id=muted.id)
+        (added,) = _added(commands)
+        assert added.track_id != muted.id
+        placed = _apply(project, commands)
+        layer = placed.timeline.find_track(added.track_id)
+        assert layer is not None
+        assert layer in placed.timeline.active_picture_tracks()
+
+    def test_a_layer_outside_the_solo_is_not_used(self, video_media: MediaItem) -> None:
+        # ほかのレイヤーがソロの間に、その外のレイヤーへ入れると映らない
+        soloed = Track(TrackKind.MIXED, "レイヤー 1", solo=True)
+        outside = Track(TrackKind.MIXED, "レイヤー 2")
+        project = _mixed(soloed, outside)
+        (added,) = _added(place_media(project, [video_media], at_frame=0, track_id=outside.id))
+        assert added.track_id == soloed.id
 
     def test_a_busy_layer_moves_it_to_a_free_one(self, video_media: MediaItem) -> None:
         # 埋まった所へ無理に置くと、重なりで断られて何も置かれない
