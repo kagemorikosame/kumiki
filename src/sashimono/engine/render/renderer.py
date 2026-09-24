@@ -1433,6 +1433,7 @@ class FrameRenderer:
             image,
             frame=local_frame,
             fps=float(rate.fps),
+            framebuffer=self._screen_picture,
         )
         texture = self._texture_for(track.id)
         screen_width, screen_height = self._project.settings.resolution
@@ -1440,9 +1441,14 @@ class FrameRenderer:
         def shrunk(point: tuple[float, float]) -> tuple[float, float]:
             return point[0] * scale_x, point[1] * scale_y
 
+        # スクリプトが obj.effect で頼んだ効果は、置き場所を決める固定の欄（配置・反転）より
+        # 先に掛ける AviUtl でもスクリプトの中の効果は 標準描画 の前に掛かる 後に掛けると、
+        # 動かした後の絵を切ることになり、位置を変えた菱形が斜めの切り落としで消えていた
+        leading = tuple(effect for effect in gpu_effects if not effect.fixed)
+        placing = tuple(effect for effect in gpu_effects if effect.fixed)
         for call in calls:
             texture.upload(call.image)
-            combined = gpu_effects + requested_effects(call)
+            combined = leading + requested_effects(call) + placing
             alpha = opacity * call.alpha
 
             if call.quad is not None:
@@ -1549,6 +1555,41 @@ class FrameRenderer:
                 blend=clip.blend_mode,
                 matrix=matrix,
             )
+
+    def _screen_picture(self) -> np.ndarray:
+        """それまでに重ねた画面を、スクリプトへ渡す絵にする（``obj.copybuffer`` の ``frm``）
+
+        AviUtl のフレームバッファは何も描いていない所も不透明な黒 :meth:`_draw_framebuffer`
+        と同じく黒を敷いて写す 透明のまま渡すと、アクリル矩形のように下の絵をぼかして
+        透かす板が、何も無い所で透明になって消える
+
+        描いている最中の合成先は読みながら同じ所へ描けないので、いったん別の所へ写す
+        大きさは画面の画素 画質を落としたプレビューでも、スクリプトが切り出す量
+        （``obj.w`` から決める）は書き出しと同じにしておく（:meth:`_draw_scripted`）
+        """
+        width, height = self._compositor.width, self._compositor.height
+        with self._context:
+            if self._grab is None:
+                self._grab = Framebuffer(width, height)
+            self._grab.resize(width, height)
+            GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, self._compositor.canvas.handle)
+            GL.glBindFramebuffer(GL.GL_DRAW_FRAMEBUFFER, self._grab.handle)
+            GL.glBlitFramebuffer(
+                0, 0, width, height, 0, 0, width, height, GL.GL_COLOR_BUFFER_BIT, GL.GL_NEAREST
+            )
+            self._compositor.underlay((0.0, 0.0, 0.0, 1.0), target=self._grab)
+            copied = self._layer("script_framebuffer", 0)
+            copied.begin((0.0, 0.0, 0.0, 0.0))
+            copied.draw_handle(
+                self._grab.color,
+                Placement(0.0, 0.0, float(width), float(height)),
+                flip=False,
+                premultiplied=True,
+            )
+            picture = copied.read()
+        if self._scale != (1.0, 1.0):
+            picture = _resized(picture, self._project.settings.resolution)
+        return picture
 
     def _draw_on_quad(
         self,

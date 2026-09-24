@@ -208,6 +208,152 @@ def test_the_simple_shapes_draw_their_size(scripts: ScriptCatalog, qt_applicatio
         context.release()
 
 
+def _render_over_halves(
+    scripts: ScriptCatalog, label: str, *, position: tuple[float, float] = (0.0, 0.0)
+) -> tuple[np.ndarray, np.ndarray, CompatibilityReport]:
+    """左半分が赤・右半分が青の下地に、単純図形σ の ``label`` を右クリックと同じ形で置いて描く
+
+    返すのは置いた後の絵と置く前の絵（どちらも 640 x 360）と、その間の記録
+    """
+    from collections import Counter
+    from dataclasses import replace
+
+    from sashimono.compat.aviutl.report import global_report
+    from sashimono.core.commands import AddClip, AddTrack
+    from sashimono.core.commands.fixed import with_fixed_items
+    from sashimono.core.model import (
+        AnimatedValue,
+        Clip,
+        Effect,
+        GeneratedSource,
+        Project,
+        ProjectSettings,
+        Track,
+        TrackKind,
+    )
+    from sashimono.engine.gpu import GLContextError, OffscreenGLContext
+    from sashimono.engine.render import FrameRenderer
+
+    def placed(clip: Clip, x: float, y: float) -> Clip:
+        def move(effect: Effect) -> Effect:
+            if effect.kind != "transform":
+                return effect
+            return effect.with_param("pos_x", AnimatedValue(x)).with_param(
+                "pos_y", AnimatedValue(y)
+            )
+
+        clip = with_fixed_items(clip, picture=True, sound=False)
+        return replace(clip, effects=tuple(move(effect) for effect in clip.effects))
+
+    try:
+        context = OffscreenGLContext()
+    except GLContextError as exc:
+        pytest.skip(f"OpenGL コンテキストを作れない: {exc}")
+    settings = ProjectSettings(width=640, height=360, frame_rate=FrameRate(30), sample_rate=48000)
+    project = Project.create(settings)
+    for colour, x in (((1.0, 0.0, 0.0, 1.0), -160.0), ((0.0, 0.0, 1.0, 1.0), 160.0)):
+        half = GeneratedSource(
+            kind="shape",
+            params={
+                "shape": "rect",
+                "width": AnimatedValue(320.0),
+                "height": AnimatedValue(360.0),
+                "color": colour,
+            },
+        )
+        track = Track(kind=TrackKind.VIDEO, name="下地")
+        project = AddTrack(track).apply(project)
+        clip = placed(Clip(timeline_start=0, duration=30, source=half), x, 0.0)
+        project = AddClip(track.id, clip).apply(project)
+    (entry,) = [e for e in scripts.of_kind("obj") if e.label == label]
+    track = Track(kind=TrackKind.VIDEO, name="図形")
+    shape = placed(custom_object_clip(entry.definition().create(), duration=30), *position)
+    try:
+        renderer = FrameRenderer(project, context=context)
+        try:
+            under = renderer.render(0).copy()
+        finally:
+            renderer.close()
+        # 描く間に増えた記録だけを返す 記録はアプリ全体で 1 つで、ほかの試験の分も入っている
+        before = Counter(global_report.missing)
+        project = AddClip(track.id, shape).apply(AddTrack(track).apply(project))
+        renderer = FrameRenderer(project, context=context)
+        try:
+            drawn = renderer.render(0).copy()
+        finally:
+            renderer.close()
+    finally:
+        context.release()
+    report = CompatibilityReport(missing=Counter(global_report.missing) - before)
+    return drawn, under, report
+
+
+def _changed(drawn: np.ndarray, under: np.ndarray) -> np.ndarray:
+    difference = np.abs(drawn[..., :3].astype(int) - under[..., :3].astype(int)).max(axis=2)
+    changed: np.ndarray = difference > 8
+    return changed
+
+
+def test_the_diamond_is_cut_on_the_slant(scripts: ScriptCatalog, qt_application: object) -> None:
+    """単純図形σ の 菱形 が菱形に描かれる（#170）
+
+    正方形を読み、斜めクリッピング で 4 つの角を落とす 斜めクリッピング を呼べなかった
+    頃は 100 x 100 の四角のままだった 菱形の面積は四角の半分
+    """
+    del qt_application
+    _require(SIGMA)
+    drawn, under, _ = _render_over_halves(scripts, "菱形")
+    changed = _changed(drawn, under)
+    assert 4500 <= int(changed.sum()) <= 5500
+    # 真ん中は塗られ、四角の角（真ん中から 45 画素ずつ斜め）は下地のまま
+    assert changed[180, 320]
+    assert not changed[180 - 45, 320 - 45]
+    assert not changed[180 + 45, 320 + 45]
+    # 上下左右の頂点の近くは残る
+    assert changed[180 - 45, 320]
+    assert changed[180, 320 + 45]
+
+
+@pytest.mark.parametrize("label", ["アクリル矩形", "磨りガラス矩形"])
+def test_the_glass_shows_the_blurred_screen_below(
+    scripts: ScriptCatalog, qt_application: object, label: str
+) -> None:
+    """アクリル矩形・磨りガラス矩形 が、下に重ねた画面をぼかして透かした板になる（#170）
+
+    ``obj.copybuffer("obj", "frm")`` で画面を写し、板の所を切り出してぼかし、色を寄せる
+    画面を写せなかった頃は何も映らなかった 確かめるのは 3 つ
+    板の大きさ（100 x 100）で、板の外は下地のまま / 赤と青の境目がぼけて混ざる /
+    板の中でも左は赤寄り、右は青寄り（一色の板ではなく、下の絵を透かしている）
+    """
+    del qt_application
+    _require(SIGMA)
+    drawn, under, report = _render_over_halves(scripts, label)
+    rows, columns = np.nonzero(_changed(drawn, under))
+    assert (rows.min(), rows.max(), columns.min(), columns.max()) == (130, 229, 270, 369)
+    red, _, blue = (int(value) for value in drawn[180, 320, :3])
+    assert red > 40 and blue > 40, drawn[180, 320]
+    left, right = drawn[180, 290, :3].astype(int), drawn[180, 350, :3].astype(int)
+    assert left[0] > left[2] and right[2] > right[0], (left, right)
+    assert not [line for line in report.missing if "frm" in line or "obj.effect" in line]
+
+
+def test_the_glass_shows_what_is_below_where_it_is_moved(
+    scripts: ScriptCatalog, qt_application: object
+) -> None:
+    """動かしたアクリル矩形は、動かした先の下の絵を透かす（#170）
+
+    ``obj.x`` を 0 のまま渡すと、どこへ動かしても画面の真ん中（赤と青の境目）を映す
+    右へ 100 動かした板の真ん中の下は青だけなので、赤が混ざらない
+    """
+    del qt_application
+    _require(SIGMA)
+    drawn, under, _ = _render_over_halves(scripts, "アクリル矩形", position=(100.0, 40.0))
+    rows, columns = np.nonzero(_changed(drawn, under))
+    assert (rows.min(), rows.max(), columns.min(), columns.max()) == (90, 189, 370, 469)
+    red, _, blue = (int(value) for value in drawn[140, 420, :3])
+    assert blue > red + 40, drawn[140, 420]
+
+
 def test_what_is_left_is_only_the_scripted_contents(
     mapped: tuple[list[tuple[Path, MappedObject]], CompatibilityReport],
 ) -> None:
