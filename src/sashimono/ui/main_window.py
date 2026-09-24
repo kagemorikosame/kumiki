@@ -2176,14 +2176,16 @@ class MainWindow(QMainWindow):
 
         撮りたい絵を見ているのはプレビューなので、メニューバーまで行かずに撮れるようにする
         """
+        # メニューは 1 つだけ作って使い回す 開くたびに作ると、閉じても窓の子として残り、
+        # 右クリックの回数だけ部品が増えていく
+        self._preview_menu = QMenu(self)
+        self._preview_menu.addAction(self._snapshot_save_action)
+        self._preview_menu.addAction(self._snapshot_copy_action)
         self._preview.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._preview.customContextMenuRequested.connect(self._show_preview_menu)
 
     def _show_preview_menu(self, position: QPoint) -> None:
-        menu = QMenu(self)
-        menu.addAction(self._snapshot_save_action)
-        menu.addAction(self._snapshot_copy_action)
-        menu.exec(self._preview.mapToGlobal(position))
+        self._preview_menu.popup(self._preview.mapToGlobal(position))
 
     def _snapshot_frame(self) -> int:
         """静止画にするフレーム 再生を止めてから再生ヘッドを 1 度だけ読む

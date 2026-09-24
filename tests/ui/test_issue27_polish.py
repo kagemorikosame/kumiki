@@ -19,12 +19,15 @@ from pathlib import Path
 import numpy as np
 import pytest
 import shiboken6
-from PySide6.QtCore import QPoint, QTimer
+from PySide6 import QtWidgets
+from PySide6.QtCore import QPoint, Qt, QTimer
 from PySide6.QtGui import QColor, QImage, QPalette
 from PySide6.QtWidgets import (
+    QAbstractButton,
     QApplication,
     QDialogButtonBox,
     QFileDialog,
+    QMenu,
     QMessageBox,
     QPushButton,
     QTabBar,
@@ -32,6 +35,7 @@ from PySide6.QtWidgets import (
     QToolTip,
 )
 
+from sashimono import selfcheck
 from sashimono.core.commands import RenameProject
 from sashimono.core.model import (
     FILTER_KIND,
@@ -54,7 +58,7 @@ from sashimono.engine.audio.player import AudioPlayer
 from sashimono.ui import playback as playback_module
 from sashimono.ui import snapshot as snapshot_module
 from sashimono.ui.inspector import InspectorPanel
-from sashimono.ui.inspector.header import identify_clip
+from sashimono.ui.inspector.header import ClipHeader, ClipIdentity, identify_clip
 from sashimono.ui.main_window import MainWindow
 from sashimono.ui.playback import PlaybackController
 from sashimono.ui.preferences_dialog import PreferencesDialog
@@ -256,6 +260,7 @@ class TestDockTabs:
         window.hide()
 
     def test_the_default_is_top(self) -> None:
+        # 既定が下に戻ると、設定を知らない人はまたパネルを切り替えられることに気付かない
         assert Preferences().dock_tabs == DOCK_TABS_TOP
 
     def test_the_choice_is_saved_and_a_broken_value_falls_back(self, tmp_path: Path) -> None:
@@ -388,6 +393,8 @@ class TestPlayerClock:
         assert player.position_sample < 48000
 
     def test_the_drain_polls_finer_than_the_controller(self) -> None:
+        # 再生の側（8ms ごとに位置を読む）より粗く進めると、読んでも位置が変わらない回が出て
+        # 鳴り終わる間際の数フレームが飛んで見える
         assert player_module.DRAIN_POLL_SECONDS * 1000 < playback_module.POLL_INTERVAL_MS
 
 
@@ -405,6 +412,8 @@ def _colored_project() -> Project:
 
 class TestSnapshotName:
     def test_the_name_is_project_and_timecode(self) -> None:
+        # 名前にタイムコードが入らないと、何枚も撮ったときにどこの絵か分からず、同じ名前で
+        # 上書きの確認が出続ける 区切りの ``:`` が残ると Windows では保存できない
         project = _colored_project()
         assert snapshot_name(project, 45) == "作品_00-00-01-15.png"
 
@@ -419,6 +428,32 @@ class TestSnapshotName:
         project = _colored_project()
         assert snapshot_frame(project, project.duration) == project.duration - 1
         assert snapshot_frame(project, -3) == 0
+
+    def test_a_failed_write_keeps_the_previous_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 前の静止画へ上書きして途中で失敗したとき（容量が足りないなど）、前の絵まで壊さない
+        target = tmp_path / "shot.png"
+        target.write_bytes(b"previous")
+
+        class _FailsHalfway:
+            """書き始めてから失敗する書き手 保存先を直に開いていれば中身が消える"""
+
+            def __init__(self, destination: object, image_format: bytes) -> None:
+                del image_format
+                self._destination = destination
+
+            def write(self, image: QImage) -> bool:
+                del image
+                if isinstance(self._destination, str):
+                    Path(self._destination).write_bytes(b"half")
+                else:
+                    self._destination.write(b"half")  # type: ignore[attr-defined]
+                return False
+
+        monkeypatch.setattr(snapshot_module, "QImageWriter", _FailsHalfway)
+        assert not write_png(QImage(4, 4, QImage.Format.Format_RGBX8888), target)
+        assert target.read_bytes() == b"previous"
 
 
 @pytest.mark.usefixtures("gpu")
@@ -496,6 +531,15 @@ class TestSnapshotMenu:
         assert suggested[0].endswith("00-00-00-10.png")
         assert drawn == [10]
 
+    def test_the_preview_menu_is_made_once(self, window: MainWindow) -> None:
+        # 開くたびに作ると、閉じたメニューが窓の子として右クリックの回数だけ残る
+        before = len(window.findChildren(QMenu))
+        for _ in range(3):
+            window._show_preview_menu(QPoint(5, 5))
+            window._preview_menu.hide()
+        assert len(window.findChildren(QMenu)) == before
+        assert window._snapshot_save_action in window._preview_menu.actions()
+
     def test_the_actions_have_their_own_keys(self, window: MainWindow) -> None:
         # 割り当てが重なると Qt はどちらも動かさない（押しても何も起きない）
         keys = [action.shortcut().toString() for action, _ in window._actions.values()]
@@ -532,6 +576,7 @@ class TestClipIdentity:
         assert video.color == Colors.VIDEO_CLIP_BORDER
 
     def test_unlinked_media_uses_the_plain_name(self, audio_media: MediaItem) -> None:
+        # 結ばれていない音声にまで「の音」を付けると、映像の方がどこかにあるように読める
         clip = Clip(timeline_start=0, duration=30, media_id=audio_media.id)
         base = Project.create()
         tracks = (Track(TrackKind.AUDIO, "BGM", clips=(clip,)),)
@@ -583,7 +628,46 @@ class TestClipIdentity:
             assert "ほか 1 本" in panel.header.detail_text()
             panel.set_selection(())
             assert panel.header.identity is None
+            # 選んでいないのに前のクリップの名前が補足に残ると、何かを開いているように見える
+            assert panel.header.toolTip() == ""
         finally:
             # 親の無い部品を Python の片付けに任せると、後の試験の途中で壊されて落ちる
             panel.close()
             shiboken6.delete(panel)
+
+    def test_a_name_with_markup_is_shown_as_written(self, qt_application: QApplication) -> None:
+        # 名前は本人が付けた文字 ``<b>`` を装飾として読むと、書いた名前が出ない
+        del qt_application
+        header = ClipHeader()
+        try:
+            header.show_identity(
+                ClipIdentity("テキスト", "<b>見出し</b>", "V1", Colors.VIDEO_CLIP_BORDER)
+            )
+            assert header._title.textFormat() == Qt.TextFormat.PlainText
+            assert header.title_text() == "テキスト（<b>見出し</b>）"
+        finally:
+            header.close()
+            shiboken6.delete(header)
+
+
+class TestSelfCheckTranslation:
+    def test_a_translation_that_is_not_japanese_fails(
+        self, qt_application: QApplication, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 別の言語の翻訳を積み違えても「英語ではない」で通ると、配った zip の確認で見逃す
+        del qt_application
+
+        class _German(QMessageBox):
+            def button(self, which: QMessageBox.StandardButton) -> QAbstractButton:
+                found = super().button(which)
+                assert found is not None
+                found.setText("Abbrechen")
+                return found
+
+        monkeypatch.setattr(QtWidgets, "QMessageBox", _German)
+        with pytest.raises(RuntimeError, match="日本語にならない"):
+            selfcheck._qt_translation()
+
+    def test_the_japanese_translation_passes(self, qt_application: QApplication) -> None:
+        del qt_application
+        assert selfcheck._qt_translation() == selfcheck.JAPANESE_CANCEL

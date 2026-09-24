@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 
 import numpy as np
+from PySide6.QtCore import QIODevice, QSaveFile
 from PySide6.QtGui import QImage, QImageWriter
 from PySide6.QtWidgets import QApplication
 
@@ -89,9 +90,17 @@ def write_png(image: QImage, path: Path) -> bool:
 
     ``QImage.save`` の書式引数は、この PySide6 では str しか受け取らない
     （型情報は bytes だと言う） 食い違いを避けるため ``QImageWriter`` を使う
+
+    ``QSaveFile`` で一時ファイルへ書き、書き終えてから置き換える 前の静止画へ
+    上書きするとき、途中で失敗（容量が足りないなど）すると前の絵まで壊れるため
     """
-    writer = QImageWriter(str(path), b"PNG")
-    return writer.write(image)
+    output = QSaveFile(str(path))
+    if not output.open(QIODevice.OpenModeFlag.WriteOnly):
+        return False
+    if not QImageWriter(output, b"PNG").write(image):
+        output.cancelWriting()
+        return False
+    return output.commit()
 
 
 def copy_to_clipboard(image: QImage) -> None:

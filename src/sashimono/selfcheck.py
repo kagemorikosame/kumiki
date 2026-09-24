@@ -36,6 +36,9 @@ CPU_CODEC = "libx264"
 #: 偶数にする h.264 は幅も高さも偶数でないと符号化できない
 SAMPLE_SIZE = 64
 
+#: Qt の日本語訳を読めたときの、取り消しのボタンの文言
+JAPANESE_CANCEL = "キャンセル"
+
 
 @dataclass(frozen=True, slots=True)
 class CheckResult:
@@ -175,8 +178,10 @@ def _qt_translation() -> str:
     box = QMessageBox()
     box.setStandardButtons(QMessageBox.StandardButton.Cancel)
     label = box.button(QMessageBox.StandardButton.Cancel).text()
-    if label == "Cancel":
-        raise RuntimeError(f"{folder} の翻訳を読んだが、ボタンが英語のまま")
+    # 英語でないことではなく日本語であることを見る 別の言語の翻訳を積み違えても
+    # 「英語ではない」で通ってしまう
+    if label != JAPANESE_CANCEL:
+        raise RuntimeError(f"{folder} の翻訳を読んだが、ボタンが日本語にならない（{label}）")
     return label
 
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
@@ -142,6 +143,9 @@ class ClipHeader(QWidget):
         for label in (self._title, self._detail):
             # 長い名前で横に伸びてパネルの幅を押し広げない 収まらない分は切れて見える
             label.setMinimumWidth(1)
+            # 名前は本人が付けた文字 ``<b>`` などを含むと、既定の AutoText では装飾として
+            # 読まれ、名前がそのまま出ない
+            label.setTextFormat(Qt.TextFormat.PlainText)
 
         text = QVBoxLayout()
         text.setContentsMargins(0, 0, 0, 0)
@@ -179,6 +183,8 @@ class ClipHeader(QWidget):
             self._title.setStyleSheet(f"color: {Colors.TEXT_MUTED.name()};")
             self._detail.hide()
             self.setAccessibleName("クリップを選んでいない")
+            # 前のクリップの名前が補足に残ると、選んでいないのに何かを開いているように見える
+            self.setToolTip("")
             return
         self._band.setStyleSheet(f"background-color: {identity.color.name()};")
         self._title.setStyleSheet(f"color: {Colors.CLIP_LABEL.name()}; font-weight: bold;")
