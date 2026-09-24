@@ -20,7 +20,7 @@ from sashimono.engine.decode import AudioDecoder, ProbeError, VideoDecoder, prob
 from tests.media_fixtures import (
     SampleMedia,
     decode_all_frames,
-    ffmpeg_available,
+    encoder_available,
     libx264_available,
     make_delayed,
     make_rotated,
@@ -53,8 +53,10 @@ def _covered_mp3(directory: Path) -> Path:
     path = directory / "covered.mp3"
     if path.exists():
         return path
-    if not ffmpeg_available():
-        pytest.skip("ffmpeg が無いのでカバー画像付きの mp3 を作れない")
+    # 飛ばすのは使えない環境だけ（ffmpeg が無い・libmp3lame を入れずに組み立てた）
+    # 作る途中の失敗まで飛ばすと、引数の誤りでもカバー画像の試験が黙って走らなくなる
+    if not encoder_available("libmp3lame"):
+        pytest.skip("ffmpeg か libmp3lame が無いのでカバー画像付きの mp3 を作れない")
     # 画像を先に 1 枚作ってから重ねる 1 回で作ろうと -frames:v 1 を付けると、
     # 出力全体がその 1 枚の長さで切れて音が 26ms しか残らない
     cover = directory / "cover.png"
@@ -74,8 +76,7 @@ def _covered_mp3(directory: Path) -> Path:
     for step in steps:
         made = subprocess.run(step, capture_output=True, check=False)
         if made.returncode != 0:
-            # libmp3lame を入れずに組み立てた ffmpeg がある
-            pytest.skip(f"ffmpeg で mp3 を作れない: {made.stderr.decode(errors='replace')}")
+            pytest.fail(f"カバー画像付きの mp3 を作れない: {made.stderr.decode(errors='replace')}")
     return path
 
 
