@@ -1387,6 +1387,11 @@ def test_the_expectations_are_cut_by_the_screen(tool: ModuleType) -> None:
 
 
 def test_the_zoom_reading_names_the_nearer_placement(tool: ModuleType) -> None:
+    """測った印の大きさを、近い方の置き方の名前で読む
+
+    読み違えると、素材の画素で置く YMM4 を「画面に収める」と表に出し、#159 の結論を
+    取り違えて native_size を誤って直す
+    """
     expect = tool.zoom_expectations(640, 360, 100.0)
     assert tool.zoom_reading((800, 450, 321, 179), expect) == tool.ZOOM_NATIVE
     assert tool.zoom_reading((480, 270, 960, 540), expect) == tool.ZOOM_FIT

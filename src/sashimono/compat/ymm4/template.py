@@ -1161,7 +1161,11 @@ def _without_ignored_moves(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def _range_plugin(item: dict[str, Any]) -> str:
-    """エフェクトアイテムの範囲の種類（``BackgroundShapePlugin`` など）"""
+    """エフェクトアイテムの範囲の種類 型の名前の最後の部分（``BackgroundShapePlugin`` など）
+
+    ``ShapeType2`` は ``Version=4.32.0.2`` のようなアセンブリの版まで付いた名前で、同じ
+    範囲でも書き出した YMM4 の版で文字列が変わる 名前空間とアセンブリを落として比べる
+    """
     return str(item.get("ShapeType2") or "").partition(",")[0].rpartition(".")[2]
 
 
