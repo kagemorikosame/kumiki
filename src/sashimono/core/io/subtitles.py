@@ -7,14 +7,22 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
+from dataclasses import replace
 from pathlib import Path
 
 from sashimono.core.model import Project
 from sashimono.core.projection import ProjectedSubtitle, project_timeline
 from sashimono.core.timebase import FrameRate
 
-__all__ = ["SUBTITLE_FILTER", "save_subtitles", "to_srt", "to_text", "to_vtt"]
+__all__ = [
+    "SUBTITLE_FILTER",
+    "save_subtitles",
+    "subtitles_in_range",
+    "to_srt",
+    "to_text",
+    "to_vtt",
+]
 
 #: 保存ダイアログのフィルタ
 SUBTITLE_FILTER = "SubRip (*.srt);;WebVTT (*.vtt);;テキスト (*.txt)"
@@ -46,10 +54,42 @@ def to_text(subtitles: Iterable[ProjectedSubtitle]) -> str:
     return "\n".join(line for line in lines if line) + "\n"
 
 
-def save_subtitles(project: Project, path: Path) -> Path:
-    """タイムラインの字幕をファイルへ 形式は拡張子で決める"""
+def subtitles_in_range(
+    subtitles: Iterable[ProjectedSubtitle], frame_range: tuple[int, int]
+) -> Iterator[ProjectedSubtitle]:
+    """範囲 ``[start, end)`` にかかる字幕を、範囲の頭を 0 にずらして返す
+
+    書き出し範囲で出した動画は範囲の頭が 0 秒になる 字幕も同じだけずらさないと、
+    範囲の頭の分だけ遅れて出る 範囲の端にかかる字幕は端で切る 切らないと 1 枚目が
+    負の時刻から始まり、最後の 1 枚が動画の終わりより後ろまで出る
+    """
+    start, end = frame_range
+    for subtitle in subtitles:
+        head = max(subtitle.start_frame, start)
+        tail = min(subtitle.end_frame, end)
+        if tail <= head:
+            continue
+        yield replace(
+            subtitle,
+            start_frame=head - start,
+            end_frame=tail - start,
+            clipped_head=subtitle.clipped_head or head > subtitle.start_frame,
+            clipped_tail=subtitle.clipped_tail or tail < subtitle.end_frame,
+        )
+
+
+def save_subtitles(
+    project: Project, path: Path, *, frame_range: tuple[int, int] | None = None
+) -> Path:
+    """タイムラインの字幕をファイルへ 形式は拡張子で決める
+
+    ``frame_range`` を渡すと、その範囲だけを頭を 0 にずらして書く（:func:`subtitles_in_range`）
+    書き出し範囲で出した動画に合わせるため ``None`` ならタイムライン全体をその時刻のまま
+    """
     target = Path(path)
     subtitles = list(project_timeline(project))
+    if frame_range is not None:
+        subtitles = list(subtitles_in_range(subtitles, frame_range))
     suffix = target.suffix.lower()
 
     if suffix == ".vtt":

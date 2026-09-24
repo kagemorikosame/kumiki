@@ -21,6 +21,12 @@ import pytest
 
 from sashimono.compat.aviutl import catalog as catalog_module
 from sashimono.compat.aviutl.catalog import ScriptCatalog, set_script_catalog
+from sashimono.compat.aviutl.custom_object import (
+    custom_object_clip,
+    custom_object_script,
+    is_custom_object_kind,
+    script_label,
+)
 from sashimono.compat.aviutl.exo import load_exo
 from sashimono.compat.aviutl.mapping import map_object
 from sashimono.compat.aviutl.objapi import ObjectState
@@ -111,8 +117,80 @@ def test_every_animation_effect_finds_its_script(
     assert lost == []
     # 4 つそろえば 36 個（日本語版 34・英語版 2） 何も読めずに記録も空、という形で
     # 通らないよう、繋がった数そのものを見る
-    connected = [e for _, item in items for e in item.clip.effects if e.kind.startswith("aviutl:")]
+    # カスタムオブジェクト（中身を作るスクリプト）は数えない 数は下の試験で見る
+    connected = [
+        e
+        for _, item in items
+        for e in item.clip.effects
+        if e.kind.startswith("aviutl:") and not is_custom_object_kind(e.kind)
+    ]
     assert len(connected) == sum(n for folder, n in EFFECTS_IN.items() if folder.is_dir())
+
+
+def test_every_custom_object_is_placed_like_the_add_menu(
+    mapped: tuple[list[tuple[Path, MappedObject]], CompatibilityReport],
+) -> None:
+    """カスタムオブジェクトは右クリックの〔追加〕と同じ形（空のテキストとスクリプト）になる（#147）
+
+    以前は「カスタムオブジェクト: 矩形@単純図形σ」と数えるだけで、中身の無いクリップを置いていた
+    置いても何も映らず、右クリックから置いた物とも見分けが付かなかった
+    """
+    items, report = mapped
+    assert not [line for line in report.missing if line.startswith("カスタムオブジェクト")]
+    placed = sorted(
+        script_label(script.kind)
+        for _, item in items
+        if (script := custom_object_script(item.clip)) is not None
+    )
+    expected: list[str] = []
+    if SIGMA.is_dir():
+        expected += ["アクリル矩形", "楕円", "矩形", "磨りガラス矩形", "菱形"]
+    if PSDTOOLKIT.is_dir():
+        # 日本語版と英語版の組 口パク準備 は 2 組
+        expected += ["口パク準備"] * 4 + ["多目的スライダー"] * 2
+    assert placed == sorted(expected)
+
+
+def test_the_simple_shapes_draw_their_size(scripts: ScriptCatalog, qt_application: object) -> None:
+    """単純図形σ の 矩形 と 楕円 が 100 x 100 に描かれる（#147）
+
+    どちらも 1 画素か 400 画素の図形を読み、リサイズで 100 x 100 にする リサイズを位置の
+    ずれとして読んでいた頃は 矩形 が 1 画素、楕円 は太さ 8000 の輪郭で透明になり、
+    どちらも何も見えなかった
+    """
+    del qt_application
+    from sashimono.core.commands import AddClip, AddTrack
+    from sashimono.core.commands.fixed import with_fixed_items
+    from sashimono.core.model import Project, ProjectSettings, Track, TrackKind
+    from sashimono.engine.gpu import GLContextError, OffscreenGLContext
+    from sashimono.engine.render import FrameRenderer
+
+    _require(SIGMA)
+    try:
+        context = OffscreenGLContext()
+    except GLContextError as exc:
+        pytest.skip(f"OpenGL コンテキストを作れない: {exc}")
+    settings = ProjectSettings(width=640, height=360, frame_rate=FrameRate(30), sample_rate=48000)
+    try:
+        for label, least in (("矩形", 100 * 100), ("楕円", int(0.75 * 100 * 100))):
+            (entry,) = [e for e in scripts.of_kind("obj") if e.label == label]
+            clip = custom_object_clip(entry.definition().create(), duration=30)
+            clip = with_fixed_items(clip, picture=True, sound=False)
+            track = Track(kind=TrackKind.VIDEO, name="V1")
+            project = AddTrack(track).apply(Project.create(settings))
+            project = AddClip(track.id, clip).apply(project)
+            renderer = FrameRenderer(project, context=context)
+            try:
+                lit = renderer.render(0)[:, :, :3].max(axis=2) > 128
+            finally:
+                renderer.close()
+            rows, columns = np.nonzero(lit)
+            assert int(lit.sum()) >= least, label
+            # 真ん中に 100 x 100 の中に収まる
+            assert rows.max() - rows.min() + 1 <= 100, label
+            assert columns.max() - columns.min() + 1 <= 100, label
+    finally:
+        context.release()
 
 
 def test_what_is_left_is_only_the_scripted_contents(
@@ -124,11 +202,9 @@ def test_what_is_left_is_only_the_scripted_contents(
     """
     _, report = mapped
     kinds = {line.split(":", 1)[0] for line in report.missing}
-    # どの穴が出るかは置いた配布物で決まる カスタムオブジェクトは sigma と PSDToolKit、
-    # シーンチェンジは sigma、スクリプト制御は localfont2 にある
+    # どの穴が出るかは置いた配布物で決まる シーンチェンジは sigma、スクリプト制御は
+    # localfont2 にある カスタムオブジェクトはスクリプトが揃っていれば穴にならない（#147）
     expected = set()
-    if SIGMA.is_dir() or PSDTOOLKIT.is_dir():
-        expected.add("カスタムオブジェクト")
     if SIGMA.is_dir():
         expected.add("シーンチェンジ")
     if LOCALFONT.is_dir():

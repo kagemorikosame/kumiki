@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QMenu,
+    QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -41,6 +42,7 @@ from sashimono.core.commands import (
     SetTranscript,
     SplitSegment,
     burn_subtitles,
+    export_range,
 )
 from sashimono.core.io import SUBTITLE_FILTER, save_subtitles
 from sashimono.core.jetcut import plan_cuts
@@ -50,12 +52,13 @@ from sashimono.core.timebase import format_timecode, seconds_to_frame
 from sashimono.effects.sources import TEXT
 from sashimono.engine.audio.silence import SilenceOptions, detect_silence, keep_speech
 from sashimono.engine.cache import MediaAnalyzer
+from sashimono.ui.export_dialog import RANGE_ALL, RANGE_WORK_AREA
 from sashimono.ui.subtitle.dialogs import CleanupDialog, JetCutDialog
 from sashimono.ui.subtitle.transcribe_dialog import TranscribeDialog
 from sashimono.ui.system_clipboard import clipboard
 from sashimono.ui.theme import Colors
 
-__all__ = ["SubtitlePanel"]
+__all__ = ["SubtitlePanel", "ask_subtitle_range"]
 
 #: 焼き込むテキストの既定 下寄せで、縁取りを付けて読めるようにする
 BURN_DEFAULTS = {"size": 48.0, "pos_y": -380.0, "border_width": 4.0}
@@ -577,8 +580,52 @@ class SubtitlePanel(QWidget):
         self.commands_requested.emit(commands, "字幕を焼き込み")
 
     def export_file(self) -> None:
+        frame_range = export_range(self._project.timeline)
+        if frame_range is not None:
+            choice = ask_subtitle_range(self, self._project)
+            if choice is None:
+                return
+            if choice != RANGE_WORK_AREA:
+                frame_range = None
         name, _ = QFileDialog.getSaveFileName(self, "字幕を書き出す", "字幕.srt", SUBTITLE_FILTER)
         if not name:
             return
-        written = save_subtitles(self._project, Path(name))
+        written = save_subtitles(self._project, Path(name), frame_range=frame_range)
         self.status_message.emit(f"書き出した: {written}")
+
+
+def ask_subtitle_range(parent: QWidget | None, project: Project) -> str | None:
+    """書き出し範囲があるときに、字幕を範囲だけにするか全体にするかを尋ねる
+
+    返すのは :data:`RANGE_WORK_AREA` か :data:`RANGE_ALL` 取り消したら ``None``
+    既定は範囲の側 書き出しダイアログと同じく、範囲を決めた人はその所を出したくて
+    決めている 全体を既定にすると、動画は範囲・字幕は全体で出して、範囲の頭の分だけ
+    ずれていることに再生するまで気付かない
+    """
+    area = export_range(project.timeline)
+    if area is None:
+        return RANGE_ALL
+    rate = project.settings.frame_rate
+    start, end = area
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Icon.Question)
+    box.setWindowTitle("字幕を書き出す")
+    box.setText(
+        f"書き出し範囲（{format_timecode(start, rate)} 〜 {format_timecode(end, rate)}）が"
+        "指定されている"
+    )
+    box.setInformativeText(
+        "範囲だけを書くと、範囲の頭を 0 秒にずらし、範囲の端にかかる字幕は端で切る"
+        " 範囲で書き出した動画に合う"
+    )
+    in_range = box.addButton("範囲だけ", QMessageBox.ButtonRole.AcceptRole)
+    whole = box.addButton("全体", QMessageBox.ButtonRole.AcceptRole)
+    box.addButton(QMessageBox.StandardButton.Cancel)
+    box.setDefaultButton(in_range)
+    box.exec()
+    clicked = box.clickedButton()
+    if clicked is in_range:
+        return RANGE_WORK_AREA
+    if clicked is whole:
+        return RANGE_ALL
+    return None
