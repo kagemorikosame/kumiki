@@ -479,8 +479,10 @@ def _add_track(host: EditorHost, arguments: dict[str, Any]) -> object:
         track_kind = TrackKind(kind)
     except ValueError:
         raise ToolError("kind は video・audio・mixed のどれかです") from None
-    index = sum(1 for t in _project(host).timeline.tracks if t.kind is track_kind) + 1
-    name = str(arguments.get("name") or default_track_name(track_kind, index))
+    tracks = _project(host).timeline.tracks
+    index = sum(1 for t in tracks if t.kind is track_kind) + 1
+    taken = {t.name for t in tracks}
+    name = str(arguments.get("name") or default_track_name(track_kind, index, taken))
     track = Track(kind=track_kind, name=name)
     host.apply_commands([AddTrack(track)], f"トラックを追加: {track.name}")
     return {"track_id": str(track.id), "name": track.name}

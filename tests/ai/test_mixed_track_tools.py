@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 
 from sashimono.ai.host import ToolError
-from sashimono.core.commands import AddClip
+from sashimono.core.commands import AddClip, RemoveTrack
 from sashimono.core.model import Clip, TrackKind
 from tests.ai.conftest import FakeHost
 from tests.ai.test_operations import run
@@ -20,6 +20,17 @@ def test_a_layer_is_added_with_a_ymm4_name(host: FakeHost) -> None:
     track = host.document.project.timeline.tracks[-1]
     assert track.kind is TrackKind.MIXED
     assert result["name"] == track.name == "レイヤー 1"
+
+
+def test_a_removed_layer_does_not_cause_a_twin(host: FakeHost) -> None:
+    # 本数だけで数えると、消した後にもう 1 本の「レイヤー 2」ができる
+    run(host, "add_track", kind="mixed")
+    run(host, "add_track", kind="mixed")
+    first = next(t for t in host.document.project.timeline.tracks if t.name == "レイヤー 1")
+    host.apply_commands([RemoveTrack(first.id)], "消す")
+    run(host, "add_track", kind="mixed")
+    names = [t.name for t in host.document.project.timeline.tracks if t.kind is TrackKind.MIXED]
+    assert sorted(names) == ["レイヤー 2", "レイヤー 3"]
 
 
 def test_the_list_says_mixed(host: FakeHost) -> None:

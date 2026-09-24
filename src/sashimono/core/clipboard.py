@@ -160,6 +160,8 @@ def _landing_track(
         if not busy:
             return track
 
-    track = Track(kind=copied.kind, name=default_track_name(copied.kind, len(same_kind) + 1))
+    names = {t.name for t in (*project.timeline.tracks, *created)}
+    name = default_track_name(copied.kind, len(same_kind) + 1, names)
+    track = Track(kind=copied.kind, name=name)
     commands.append(AddTrack(track))
     return track

@@ -290,11 +290,12 @@ def _encode(
     rate = project.rate
     width, height = project.settings.resolution
     # 混合トラックは音を鳴らすクリップがあるときだけ数える 絵だけの混合トラックで音の
-    # 道を作ると、今まで無音の道を持たなかった書き出しに黙った音声が付く
+    # 道を作ると、今まで無音の道を持たなかった書き出しに黙った音声が付く 無効にした
+    # クリップはミキサが飛ばすので、同じく数えない
     has_audio = any(
         bool(track.clips)
         if track.kind is TrackKind.AUDIO
-        else any(project.plays_sound(track, clip) for clip in track.clips)
+        else any(clip.enabled and project.plays_sound(track, clip) for clip in track.clips)
         for track in project.timeline.active_sound_tracks()
     )
 

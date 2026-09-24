@@ -195,6 +195,11 @@ class TestClipRoles:
         assert not draws_picture(Track(TrackKind.AUDIO), clip, video_media)
         assert plays_sound(Track(TrackKind.AUDIO), clip, video_media)
 
+    def test_a_stream_the_media_lacks_stays_silent(self, video_media: MediaItem) -> None:
+        # 手で直したファイルや差し替えた素材で番号が外れても、先頭の音を鳴らさない
+        clip = _mixed_clip(video_media, audio_stream=7)
+        assert not plays_sound(Track(TrackKind.MIXED), clip, video_media)
+
     def test_a_negative_stream_is_refused(self) -> None:
         with pytest.raises(ValueError, match="音声ストリーム"):
             Clip(0, 30, audio_stream=-1)
@@ -203,6 +208,10 @@ class TestClipRoles:
         assert default_track_name(TrackKind.MIXED, 1) == "レイヤー 1"
         assert default_track_name(TrackKind.VIDEO, 2) == "V2"
         assert default_track_name(TrackKind.AUDIO, 3) == "A3"
+
+    def test_a_name_left_behind_is_skipped(self) -> None:
+        # レイヤー 1 を消してレイヤー 2 が残ると、本数で数えた名前がもう 1 本のレイヤー 2 になる
+        assert default_track_name(TrackKind.MIXED, 2, {"レイヤー 2"}) == "レイヤー 3"
 
 
 class TestCommands:
@@ -228,6 +237,54 @@ class TestCommands:
         video = project.timeline.tracks[2]
         moved = MoveClip(clip.id, 0, video.id).apply(project)
         assert moved.timeline.tracks[2].clips[0].id == clip.id
+
+    def test_a_stream_the_media_lacks_is_refused(self, mixed_project: Project) -> None:
+        # デコーダは無い番号を頼まれると先頭の音へ逃げる 置けると、選んでいない言語が鳴る
+        layer = mixed_project.timeline.tracks[1]
+        clip = _mixed_clip(mixed_project.media[0], audio_stream=5)
+        with pytest.raises(ValueError, match="音声ストリーム 5"):
+            AddClip(layer.id, clip).apply(mixed_project)
+
+    def test_an_audio_clip_keeps_its_sound_on_a_layer_and_back(
+        self, mixed_project: Project, video_media: MediaItem
+    ) -> None:
+        # 移し替えないと、音声クリップをレイヤーへ移しただけで音が消え、戻すと
+        # 絵のストリームの番号で音を開く
+        audio = Track(TrackKind.AUDIO, "A1")
+        project = AddTrack(audio).apply(mixed_project)
+        clip = Clip(0, 30, media_id=video_media.id, stream_index=1)
+        project = AddClip(audio.id, clip).apply(project)
+        layer_2 = project.timeline.tracks[1]
+
+        on_layer = MoveClip(clip.id, 0, layer_2.id).apply(project)
+        (moved,) = on_layer.timeline.tracks[1].clips
+        assert (moved.audio_stream, moved.stream_index) == (1, 0)
+        assert on_layer.plays_sound(on_layer.timeline.tracks[1], moved)
+
+        back = MoveClip(clip.id, 0, audio.id).apply(
+            _set_clip(on_layer, replace(moved, show_picture=False))
+        )
+        (returned,) = back.timeline.tracks[-1].clips
+        assert (returned.stream_index, returned.audio_stream) == (1, None)
+
+    def test_a_drawn_clip_cannot_move_to_an_audio_track(self, mixed_project: Project) -> None:
+        # 映像トラックへ音を鳴らすクリップを移せないのと同じく、絵が黙って消える
+        audio = Track(TrackKind.AUDIO, "A1")
+        project = AddTrack(audio).apply(mixed_project)
+        clip = project.timeline.tracks[0].clips[0]
+        with pytest.raises(ValueError, match="絵が消える"):
+            MoveClip(clip.id, 0, audio.id).apply(project)
+
+    def test_a_silent_layer_clip_cannot_move_to_an_audio_track(
+        self, mixed_project: Project
+    ) -> None:
+        # 音声トラックはクリップの音を鳴らすので、黙らせていた音が鳴り出す
+        audio = Track(TrackKind.AUDIO, "A1")
+        project = AddTrack(audio).apply(mixed_project)
+        clip = project.timeline.tracks[0].clips[0]
+        project = _set_clip(project, replace(clip, show_picture=False, audio_stream=None))
+        with pytest.raises(ValueError, match="鳴り出して"):
+            MoveClip(clip.id, 0, audio.id).apply(project)
 
     def test_moving_between_layers_keeps_picture_and_sound(self, mixed_project: Project) -> None:
         clip = mixed_project.timeline.tracks[0].clips[0]

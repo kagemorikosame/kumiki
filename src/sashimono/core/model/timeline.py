@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from fractions import Fraction
@@ -99,12 +99,18 @@ class TrackKind(Enum):
 _NAME_PREFIX = {TrackKind.VIDEO: "V", TrackKind.AUDIO: "A", TrackKind.MIXED: "レイヤー "}
 
 
-def default_track_name(kind: TrackKind, number: int) -> str:
+def default_track_name(kind: TrackKind, number: int, taken: Collection[str] = ()) -> str:
     """``number`` 本目の ``kind`` のトラックに付ける名前（``V1`` ``A1`` ``レイヤー 1``）
 
     トラックを作る所が同じ名前を付けるため 映像か音声かの 2 択で頭の文字を
     書き分けると、混合トラックだけ「A3」のような名前が付く
+
+    ``taken`` にある名前は飛ばして番号を進める 消したトラックの名前が残っていると、
+    本数を数えただけでは同じ名前が 2 本並ぶ（レイヤー 1 を消してレイヤー 2 が残ると、
+    もう 1 本のレイヤー 2 ができる）
     """
+    while f"{_NAME_PREFIX[kind]}{number}" in taken:
+        number += 1
     return f"{_NAME_PREFIX[kind]}{number}"
 
 
@@ -493,8 +499,8 @@ def plays_sound(track: Track, clip: Clip, media: MediaItem | None) -> bool:
 
     - 音声トラック 素材を持つクリップと、置いたシーン
     - 映像トラック 置いたシーンだけ（シーンの中の BGM やナレーションを消さないため）
-    - 混合トラック 置いたシーンと、:attr:`Clip.audio_stream` を持ち音のある素材の
-      クリップ 番号が ``None`` なら鳴らさない
+    - 混合トラック 置いたシーンと、素材にある :attr:`Clip.audio_stream` を持つクリップ
+      番号が ``None`` か素材に無い番号なら鳴らさない
 
     素材を探せなかったときは鳴らす側に数える（ミキサが開けずに無音になる）
     無効かどうかは :func:`draws_picture` と同じく見ない
@@ -507,4 +513,6 @@ def plays_sound(track: Track, clip: Clip, media: MediaItem | None) -> bool:
         return True
     if clip.audio_stream is None:
         return False
-    return media is None or media.has_audio
+    # 素材に無い番号は鳴らさない デコーダは無い番号を頼まれると先頭の音へ逃げるので、
+    # 手で直したファイルや差し替えた素材で、選んでいない言語が鳴る
+    return media is None or any(s.index == clip.audio_stream for s in media.audio_streams)

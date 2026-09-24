@@ -233,6 +233,11 @@ class TestSound:
     def test_no_stream_is_silent(self, two_voices: MediaItem) -> None:
         assert _rms(_mix(_layer_project(two_voices, _video_clip(two_voices, None)))) == 0.0
 
+    def test_a_stream_the_media_lacks_is_silent(self, two_voices: MediaItem) -> None:
+        # デコーダは無い番号を頼まれると先頭の音へ逃げる 1 本目の言語が鳴ってはいけない
+        clip = replace(_video_clip(two_voices, 0), audio_stream=9)
+        assert _rms(_mix(_layer_project(two_voices, clip))) == 0.0
+
     def test_a_hidden_picture_still_plays(self, two_voices: MediaItem) -> None:
         # 音だけ使いたい動画 絵を隠したら音まで消えると、クリップを分けるしかなくなる
         clip = _video_clip(two_voices, 0, show_picture=False)
@@ -304,6 +309,18 @@ class TestExport:
         output = tmp_path / "silent.mp4"
         export_project(
             _layer_project(two_voices, _video_clip(two_voices, None)),
+            ExportSettings(path=output, frame_range=(0, 10)),
+        )
+        with av.open(str(output)) as container:
+            assert not container.streams.audio
+
+    def test_a_disabled_clip_writes_no_sound_track(
+        self, two_voices: MediaItem, tmp_path: Path
+    ) -> None:
+        # ミキサは無効にしたクリップを飛ばす 数えると、黙った音声だけが付く
+        output = tmp_path / "disabled.mp4"
+        export_project(
+            _layer_project(two_voices, _video_clip(two_voices, 0, enabled=False)),
             ExportSettings(path=output, frame_range=(0, 10)),
         )
         with av.open(str(output)) as container:
