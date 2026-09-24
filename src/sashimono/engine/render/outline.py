@@ -25,6 +25,7 @@ from sashimono.engine.render.scripts import split_effects
 __all__ = [
     "Outline",
     "Point",
+    "canvas_scale",
     "clip_outline",
     "has_outline",
     "is_generated",
@@ -57,6 +58,17 @@ class Outline:
     #: 近い値でしかない 固定の配置より後ろに絵を変えるエフェクトがある、奥行きの回転がある、
     #: スクリプトを積んでいる、のどれか 枠を点線にして、ぴったりではないと分かるようにする
     approximate: bool
+
+
+def canvas_scale(resolution: tuple[int, int], canvas: tuple[int, int]) -> tuple[float, float]:
+    """合成の画素 1 つが、画面（プロジェクトの解像度）の画素いくつ分かの逆数（横, 縦）
+
+    画質を落としたプレビューは合成が小さい 画素で決める値（位置・大きさ・ぼかしの強さ）は
+    これを掛けて合成の画素へ直す 割り切れない解像度（1366 の 1/4 は 341）もあるので、
+    分母ではなく実際の大きさの比で数える 描く側（レンダラ）・外枠・ドラッグの換算が同じ物を
+    使う 別々に数えると、枠と絵が端数の分だけずれる
+    """
+    return canvas[0] / max(resolution[0], 1), canvas[1] / max(resolution[1], 1)
 
 
 def is_generated(clip: Clip) -> bool:
@@ -103,8 +115,14 @@ def media_pixel_size(project: Project, clip: Clip) -> tuple[int, int] | None:
     return stream.width, stream.height
 
 
-def transform_values(effect: Effect, local_frame: int) -> dict[str, float | str | bool]:
-    """配置のエフェクトの、その時刻の値 欠けた項目は定義の既定で埋める"""
+def transform_values(
+    effect: Effect, local_frame: int, scale: float = 1.0
+) -> dict[str, float | str | bool]:
+    """配置のエフェクトの、その時刻の値 欠けた項目は定義の既定で埋める
+
+    ``scale`` は画素の値（X・Y・中心）を合成の画素へ縮める割合（:func:`canvas_scale`）
+    描く側（EffectProcessor）と同じく縮める 省くと設定の値そのもの（ドラッグの始めの値）
+    """
     definition = registry.get(effect.kind)
     values: dict[str, float | str | bool] = {}
     if definition is None:
@@ -112,9 +130,10 @@ def transform_values(effect: Effect, local_frame: int) -> dict[str, float | str 
     for spec in definition.parameters:
         raw = effect.params.get(spec.name)
         if isinstance(spec, TrackSpec):
-            number = spec.coerce(spec.default_value() if raw is None else raw).at(local_frame)
-            # 壊れた数は描く側（EffectProcessor）と同じく既定へ戻す
-            values[spec.name] = number if math.isfinite(number) else spec.default
+            # 壊れた数は描く側と同じく既定へ戻す（scaled_at）
+            values[spec.name] = spec.scaled_at(
+                spec.coerce(spec.default_value() if raw is None else raw), local_frame, scale
+            )
         elif isinstance(spec, SelectSpec | CheckSpec):
             values[spec.name] = spec.coerce(spec.default_value() if raw is None else raw)
     return values
@@ -182,13 +201,19 @@ def clip_outline(
         offset = (0.0, 0.0)
         rect = (left, top, left + placed_width, top + placed_height)
 
-    return _follow_effects(clip, local, rect, space, offset)
+    # 描く側（EffectProcessor.pixel_scale）と同じく横の比 1 つで縮める
+    scale = canvas_scale(project.settings.resolution, (width, height))[0]
+    return _follow_effects(clip, local, rect, space, offset, scale)
 
 
 def _follow_effects(
-    clip: Clip, local: int, rect: Box, space: tuple[float, float], offset: Point
+    clip: Clip, local: int, rect: Box, space: tuple[float, float], offset: Point, scale: float
 ) -> Outline:
-    """置いた矩形に、クリップのエフェクトの並びのうち形を動かす物を順に当てる"""
+    """置いた矩形に、クリップのエフェクトの並びのうち形を動かす物を順に当てる
+
+    ``scale`` は画素の値を合成の画素へ縮める割合 画質を落としたプレビューでは、描く側が
+    X・Y や広げる量を縮めて当てる 枠だけ縮めずに当てると、掴む枠が絵から 2 倍・4 倍離れる
+    """
     space_width, space_height = space
     # ここから先はシェーダと同じ向き（Y は上が正）で数える
     left, top, right, bottom = rect
@@ -218,7 +243,7 @@ def _follow_effects(
         if effect.kind == TRANSFORM_EFFECT_KIND:
             # 既定のままの配置も通す 描く側は飛ばすが、絵は動かないので点も動かない
             # 飛ばすと、中心だけをずらした配置で拡大の中心を見失う
-            values = transform_values(effect, local)
+            values = transform_values(effect, local, scale)
             points, center, tilted = _transform(points, values, space, obj)
             approximate = approximate or tilted or after_fixed
             if effect.fixed:
@@ -238,7 +263,7 @@ def _follow_effects(
             # 枠は置いた矩形のままなので、ぴったりだと言わない
             approximate = True
         if definition.expands_object is not None:
-            obj = _grow(obj, definition.expands_object, effect, local)
+            obj = _grow(obj, definition.expands_object, effect, local, scale)
 
     def screen(point: Point) -> Point:
         return (point[0] + offset[0], space_height - point[1] + offset[1])
@@ -327,7 +352,9 @@ def _flip(points: Sequence[Point], effect: Effect, obj: Box) -> list[Point]:
     ]
 
 
-def _grow(obj: Box, names: tuple[str, str, str, str], effect: Effect, local: int) -> Box:
+def _grow(
+    obj: Box, names: tuple[str, str, str, str], effect: Effect, local: int, scale: float
+) -> Box:
     """入れ物を広げるエフェクトの後の範囲（EffectProcessor._grow_object と同じ）"""
     definition = registry.get(effect.kind)
     amounts: list[float] = []
@@ -335,10 +362,10 @@ def _grow(obj: Box, names: tuple[str, str, str, str], effect: Effect, local: int
         spec = definition.spec(name) if definition is not None else None
         raw = effect.params.get(name)
         if isinstance(spec, TrackSpec):
-            amount = spec.coerce(spec.default_value() if raw is None else raw).at(local)
-            # 壊れた数は描く側（EffectProcessor）と同じく既定へ戻す そのまま足すと枠が
-            # 描けない座標になる
-            amounts.append(amount if math.isfinite(amount) else spec.default)
+            # 壊れた数は描く側（EffectProcessor）と同じく既定へ戻す（scaled_at） そのまま
+            # 足すと枠が描けない座標になる
+            raw_value = spec.default_value() if raw is None else raw
+            amounts.append(spec.scaled_at(spec.coerce(raw_value), local, scale))
         else:
             amounts.append(0.0)
     grow_top, grow_bottom, grow_left, grow_right = amounts
