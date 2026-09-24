@@ -323,7 +323,10 @@ void main() {
     float amount = clamp(opacity * 0.01, 0.0, 1.0) * paint.a;
     if (pattern_only) {
         // 模様だけで塗る 元の絵の色は使わず、形（不透明度）だけを借りる
-        frag_color = vec4(to_linear(paint.rgb), base.a * amount);
+        // 透明な所は色も 0 にする 後ろの変形は隣の画素と RGB のまま混ぜるので、
+        // 透明な白（YMM4 の格子の背景に多い）を残すと、縮めた格子が白っぽい板になる
+        float alpha = base.a * amount;
+        frag_color = alpha > 0.0 ? vec4(to_linear(paint.rgb), alpha) : vec4(0.0);
         return;
     }
     vec3 under = to_srgb(base.rgb);
