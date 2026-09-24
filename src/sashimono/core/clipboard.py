@@ -14,6 +14,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, replace
 
 from sashimono.core.commands import AddClip, AddTrack, Command, RemoveClip
+from sashimono.core.commands.layers import shows_picture_on_layer, solo_for_new_track
 from sashimono.core.model import (
     Clip,
     ClipId,
@@ -162,6 +163,13 @@ def _landing_track(
 
     names = {t.name for t in (*project.timeline.tracks, *created)}
     name = default_track_name(copied.kind, len(same_kind) + 1, names)
-    track = Track(kind=copied.kind, name=name)
+    # 作るのが元と同じ種類なのは方式を問わない レイヤーのクリップ（絵と音の 1 本）を
+    # 映像トラックへ貼ると音が消え、映像と音声の組をレイヤーへ貼ると絵が 2 枚重なる
+    # ソロで絞っている間は、作ったトラックにもソロを付ける 付けないと貼った物が出ない
+    # レイヤーは、貼る物が絵を描くなら絵の側・音だけなら音の側のソロを見る
+    solo = solo_for_new_track(
+        project, copied.kind, picture=shows_picture_on_layer(project, copied.clip)
+    )
+    track = Track(kind=copied.kind, name=name, solo=solo)
     commands.append(AddTrack(track))
     return track

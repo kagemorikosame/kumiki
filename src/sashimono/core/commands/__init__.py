@@ -6,6 +6,12 @@ Undo の対象から漏れる変更が存在しなくなり、AI の一連の操
 """
 
 from sashimono.core.commands.base import Command
+from sashimono.core.commands.convert import (
+    ConvertLayers,
+    LayerConversion,
+    convert_layers,
+    switch_layer_mode,
+)
 from sashimono.core.commands.edit import (
     AddClip,
     AddMedia,
@@ -94,10 +100,12 @@ __all__ = [
     "AddTrack",
     "ClearKeyframes",
     "Command",
+    "ConvertLayers",
     "Document",
     "GroupClips",
     "HistoryEntry",
     "InScene",
+    "LayerConversion",
     "MergeWithNext",
     "MoveClip",
     "MoveClips",
@@ -139,6 +147,7 @@ __all__ = [
     "UngroupClips",
     "VideoFormat",
     "burn_subtitles",
+    "convert_layers",
     "export_range",
     "format_to_match",
     "insert_clip",
@@ -151,4 +160,5 @@ __all__ = [
     "place_media",
     "reorder_group",
     "resolve_param",
+    "switch_layer_mode",
 ]

@@ -18,9 +18,15 @@ from PySide6.QtWidgets import QApplication, QComboBox, QWidget
 
 from sashimono.ai.bridge import Approval, EditorBridge
 from sashimono.ai.models import MODELS
-from sashimono.ai.session import AgentEvent, AgentSession, EventKind
-from sashimono.core.commands import SplitClip
-from sashimono.core.model import MediaItem, Project, Transcript
+from sashimono.ai.session import (
+    SYSTEM_PROMPT,
+    AgentEvent,
+    AgentSession,
+    EventKind,
+    system_prompt,
+)
+from sashimono.core.commands import SetLayerMode, SplitClip
+from sashimono.core.model import LayerMode, MediaItem, Project, Transcript
 from sashimono.ui.chat import ChatPanel
 from sashimono.ui.workspace import Preferences
 from tests.ai.conftest import FakeHost, make_loaded
@@ -320,10 +326,18 @@ class _RecordingSession:
 
     made: ClassVar[list[_RecordingSession]] = []
 
-    def __init__(self, bridge: object, *, model: str | None, effort: str | None) -> None:
+    def __init__(
+        self,
+        bridge: object,
+        *,
+        model: str | None,
+        effort: str | None,
+        system_prompt: str = SYSTEM_PROMPT,
+    ) -> None:
         del bridge
         self.model = model
         self.effort = effort
+        self.system_prompt = system_prompt
         self.prompts: list[str] = []
         self.closed = False
         self.busy = False
@@ -376,6 +390,72 @@ class TestModelChoice:
         widget._input.setPlainText("切って")
         widget.send()
         assert (made[0].model, made[0].effort) == (None, None)
+
+    def test_a_mixed_project_gets_the_mixed_instructions(
+        self,
+        recorded: tuple[ChatPanel, list[_RecordingSession]],
+        panel: tuple[ChatPanel, FakeHost],
+    ) -> None:
+        # 分ける方式の指示のまま混合の作品を触らせると、AI が無い組の片方を探し回る
+        # モデルの選択と一緒に渡すので、どちらかを落とすとここで分かる
+        widget, made = recorded
+        _, host = panel
+        host.apply_commands([SetLayerMode(LayerMode.MIXED)], "方式")
+        _choose(widget._model, "claude-sonnet-5")
+        widget._input.setPlainText("切って")
+        widget.send()
+        assert made[0].system_prompt == system_prompt(LayerMode.MIXED)
+        assert made[0].model == "claude-sonnet-5"
+
+    def test_a_mode_change_restarts_before_the_next_instruction(
+        self,
+        recorded: tuple[ChatPanel, list[_RecordingSession]],
+        panel: tuple[ChatPanel, FakeHost],
+    ) -> None:
+        # 指示の文は会話を作るときにしか渡せない 作り直さないと、混合にした後も
+        # 分ける方式の説明のまま話し続け、AI が無い組の片方を探し回る
+        widget, made = recorded
+        _, host = panel
+        widget._input.setPlainText("切って")
+        widget.send()
+        widget._handle(AgentEvent(EventKind.TURN_DONE))
+        host.apply_commands([SetLayerMode(LayerMode.MIXED)], "方式")
+        widget._input.setPlainText("もう少し")
+        widget.send()
+        assert len(made) == 2
+        assert made[0].closed
+        assert made[1].system_prompt == system_prompt(LayerMode.MIXED)
+        assert made[1].prompts == ["もう少し"]
+
+    def test_the_same_mode_keeps_the_conversation(
+        self, recorded: tuple[ChatPanel, list[_RecordingSession]]
+    ) -> None:
+        # 方式が同じなのに作り直すと、送るたびにそれまでのやり取りが消える
+        widget, made = recorded
+        for prompt in ("切って", "もう少し"):
+            widget._input.setPlainText(prompt)
+            widget.send()
+            widget._handle(AgentEvent(EventKind.TURN_DONE))
+        assert len(made) == 1
+
+    def test_a_mode_change_waits_for_the_pending_instruction(
+        self,
+        recorded: tuple[ChatPanel, list[_RecordingSession]],
+        panel: tuple[ChatPanel, FakeHost],
+    ) -> None:
+        # 応答を待っている間に畳むと、送った指示が消える 終わった所で作り直す
+        widget, made = recorded
+        _, host = panel
+        widget._input.setPlainText("切って")
+        widget.send()
+        host.apply_commands([SetLayerMode(LayerMode.MIXED)], "方式")
+        widget._input.setPlainText("もう少し")
+        widget.send()
+        assert len(made) == 1
+        assert made[0].prompts == ["切って", "もう少し"]
+        for _ in range(2):
+            widget._handle(AgentEvent(EventKind.TURN_DONE))
+        assert made[0].closed
 
     def test_the_listed_models_are_the_current_ones(self) -> None:
         # 一覧はネットに取りに行かない定数 欠けると、そのモデルを選ぶ手段が無くなる

@@ -62,12 +62,14 @@ from sashimono.core.commands import (
     RenameScene,
     SetBlending,
     SetResolution,
+    convert_layers,
     insert_filter,
     insert_generated,
     insert_media,
     insert_scene,
     new_scene,
     place_media,
+    switch_layer_mode,
 )
 from sashimono.core.commands.project_format import retime_frame
 from sashimono.core.io import (
@@ -90,6 +92,7 @@ from sashimono.core.io import (
 from sashimono.core.model import (
     ClipId,
     GeneratedSource,
+    LayerMode,
     MediaId,
     MediaItem,
     Project,
@@ -99,6 +102,7 @@ from sashimono.core.model import (
     TrackKind,
 )
 from sashimono.core.timebase import FrameRate
+from sashimono.effects import registry as effect_registry
 from sashimono.effects.sources import SHAPE, TEXT, TRANSITION
 from sashimono.engine.audio.waveform import Waveform
 from sashimono.engine.cache import MediaAnalyzer
@@ -514,6 +518,7 @@ class MainWindow(QMainWindow):
         )
         file_menu.addSeparator()
         self._add(file_menu, "プロジェクト設定…", QKeySequence("Ctrl+Shift+P"), self.edit_settings)
+        self._add(file_menu, "置き方の方式を切り替える…", QKeySequence(), self.switch_layer_mode)
         file_menu.addSeparator()
         self._add(file_menu, "素材を読み込む…", QKeySequence("Ctrl+I"), self._import_dialog)
         self._add(file_menu, "書き出し…", QKeySequence("Ctrl+E"), self.export)
@@ -1875,6 +1880,45 @@ class MainWindow(QMainWindow):
         # 1 回の OK で変えたものは 1 回の取り消しで戻す 分けると、取り消しの途中で
         # 解像度だけ戻った、見たことのない組み合わせを通る
         self.execute_all(commands, "プロジェクト設定を変更")
+
+    def switch_layer_mode(self) -> bool:
+        """置き方の方式を、今と逆の方式へ切り替える 置いてあるトラックも変換するかを毎回尋ねる
+
+        変換はメインとすべてのシーンに掛かるので、開いているシーンの中へ包まずに実行する
+        （:meth:`execute_all` は包む） 包むと、開いているシーンだけが変わり、メインは
+        前の方式のまま残る 方式と変換は 1 回の取り消しで戻す
+
+        変えたら真 やめたとき・断られたときは偽
+        """
+        from sashimono.ui.layer_mode_dialog import LayerModeDialog
+
+        project = self._document.project
+        target = (
+            LayerMode.SEPARATED
+            if project.settings.layer_mode == LayerMode.MIXED
+            else LayerMode.MIXED
+        )
+        sound_kinds = effect_registry.sound_kinds()
+        conversion = convert_layers(project, target, sound_kinds)
+        dialog = LayerModeDialog(
+            target, conversion.notices, self, convertible=conversion.project is not project
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.convert is None:
+            return False
+        commands = switch_layer_mode(
+            project, target, convert=dialog.convert, sound_kinds=sound_kinds
+        )
+        label = "置き方の方式を切り替えて変換" if dialog.convert else "置き方の方式を切り替え"
+        try:
+            with self._document.checkpoint(label):
+                for command in commands:
+                    self._document.execute(command)
+        except (ValueError, KeyError) as exc:
+            self.statusBar().showMessage(str(exc), 4000)
+            self._on_project_changed()
+            return False
+        self._on_project_changed()
+        return True
 
     # --- 退避と復元 ---
 
