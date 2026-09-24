@@ -163,3 +163,15 @@ class TestSplitScripts:
         sections = split_scripts("@あ\nobj.ox = 1\n@い\nobj.oy = 2")
         assert "obj.oy" not in sections[0].source
         assert "obj.ox" not in sections[1].source
+
+    def test_the_text_before_the_first_marker_is_not_a_script(self) -> None:
+        """最初の ``@名前`` より前（使用許諾の注釈）はどのスクリプトにも属さない（#170）
+
+        sigma の配布物は全部、頭に MIT の注釈を置いてから ``@矩形`` を始める
+        ここを 1 本として数えると、右クリックの〔追加〕に ``@単純図形σ`` という
+        名前の、置いても何も描かない項目が並ぶ
+        """
+        text = "--[[\nThe MIT License (MIT)\n]]\n\n@矩形\nobj.ox = 1\n@楕円\nobj.oy = 2"
+        sections = split_scripts(text)
+        assert [section.header.name for section in sections] == ["矩形", "楕円"]
+        assert all("MIT" not in section.source for section in sections)

@@ -151,6 +151,21 @@ def test_every_custom_object_is_placed_like_the_add_menu(
     assert placed == sorted(expected)
 
 
+def test_the_file_heads_are_not_listed(scripts: ScriptCatalog) -> None:
+    """``@`` で束ねたファイルの頭（使用許諾の注釈）が一覧に項目として出ない（#170）
+
+    AviUtl は ``@名前`` の行から次の ``@名前`` までを 1 本とし、最初の ``@`` より前は
+    どのスクリプトにも属さない 配布物 8 本のうち 6 本は頭に注釈を置いていて、
+    どれも注釈だけ（コードは無い） 以前はこれがファイル名（``@単純図形σ``）の
+    項目として並び、置いても何も描かなかった
+    """
+    _require(SIGMA)
+    listed = [entry.label for entry in scripts.all()]
+    assert not [label for label in listed if label.startswith("@")], listed
+    objects = sorted(entry.label for entry in scripts.of_kind("obj") if "sigma" in str(entry.path))
+    assert objects == sorted(["矩形", "楕円", "菱形", "アクリル矩形", "磨りガラス矩形"])
+
+
 def test_the_simple_shapes_draw_their_size(scripts: ScriptCatalog, qt_application: object) -> None:
     """単純図形σ の 矩形 と 楕円 が 100 x 100 に描かれる（#147）
 
