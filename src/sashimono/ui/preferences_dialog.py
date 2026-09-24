@@ -34,7 +34,7 @@ from sashimono.engine.encode import (
 from sashimono.engine.render.background import MEASURED_PREFETCH_STALL_MS
 from sashimono.engine.render.prefetch import BYTES_PER_FRAME_PIXEL
 from sashimono.ui.media_pool import VIEW_ICONS, VIEW_LIST
-from sashimono.ui.workspace import Preferences
+from sashimono.ui.workspace import DOCK_TABS_BOTTOM, DOCK_TABS_TOP, Preferences
 
 __all__ = [
     "DECODE_THREADS",
@@ -217,6 +217,16 @@ class PreferencesDialog(QDialog):
         self._media_view.setToolTip("素材一覧の上の「一覧」「アイコン」のボタンと同じ")
         form.addRow("素材一覧の表示", self._media_view)
 
+        self._dock_tabs = QComboBox(self)
+        self._dock_tabs.addItem("上（既定）", DOCK_TABS_TOP)
+        self._dock_tabs.addItem("下", DOCK_TABS_BOTTOM)
+        self._dock_tabs.setCurrentIndex(max(0, self._dock_tabs.findData(preferences.dock_tabs)))
+        self._dock_tabs.setToolTip(
+            "オブジェクト設定と AI アシスタント、メディアと字幕のように、"
+            "重ねたパネルを切り替えるタブをどちらの辺に出すか"
+        )
+        form.addRow("重ねたパネルのタブ", self._dock_tabs)
+
         self._all_plugins = QCheckBox("AviUtl2 の汎用プラグインを全部読んで探す", self)
         self._all_plugins.setChecked(preferences.all_aviutl_plugins)
         self._all_plugins.setToolTip(
@@ -344,4 +354,5 @@ class PreferencesDialog(QDialog):
             ai_model=str(self._ai_model.currentData()),
             ai_effort=str(self._ai_effort.currentData()),
             chat_enter_sends=self._chat_enter_sends.isChecked(),
+            dock_tabs=str(self._dock_tabs.currentData()),
         )

@@ -13,8 +13,8 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QSettings
-from PySide6.QtWidgets import QMainWindow
+from PySide6.QtCore import QByteArray, QSettings, Qt
+from PySide6.QtWidgets import QMainWindow, QTabWidget
 
 from sashimono.ai.models import DEFAULT_EFFORT as DEFAULT_AI_EFFORT
 from sashimono.ai.models import DEFAULT_MODEL as DEFAULT_AI_MODEL
@@ -27,6 +27,9 @@ from sashimono.ui.media_pool import VIEW_LIST, VIEW_MODES
 
 __all__ = [
     "AUTO_QUALITY_HEIGHT",
+    "DOCK_TABS_BOTTOM",
+    "DOCK_TABS_TOP",
+    "DOCK_TAB_POSITIONS",
     "LAYOUT_VERSION",
     "MAX_PREFETCH_MB",
     "MIN_PREFETCH_MB",
@@ -34,6 +37,7 @@ __all__ = [
     "Preferences",
     "ShortcutStore",
     "Workspace",
+    "apply_dock_tabs",
     "config_root",
     "find_conflicts",
 ]
@@ -46,6 +50,27 @@ LAYOUT_VERSION = 1
 def config_root() -> Path:
     """本人の設定を置く場所"""
     return userdirs.config_root()
+
+
+def apply_dock_tabs(window: QMainWindow, position: str) -> None:
+    """重ねたパネルのタブを、どの辺に出すかを窓の全部の置き場へ当てる
+
+    置き場（左右上下）ごとに決まるので 4 つとも当てる 1 つだけだと、パネルを
+    別の辺へ動かしたときに下のタブへ戻る 画面配置の保存（``saveState``）には入らないので、
+    起動のたびに当て直す
+    """
+    tab = (
+        QTabWidget.TabPosition.South
+        if position == DOCK_TABS_BOTTOM
+        else QTabWidget.TabPosition.North
+    )
+    for area in (
+        Qt.DockWidgetArea.LeftDockWidgetArea,
+        Qt.DockWidgetArea.RightDockWidgetArea,
+        Qt.DockWidgetArea.TopDockWidgetArea,
+        Qt.DockWidgetArea.BottomDockWidgetArea,
+    ):
+        window.setTabPosition(area, tab)
 
 
 class Workspace:
@@ -115,6 +140,11 @@ def find_conflicts(bindings: dict[str, str]) -> dict[str, list[str]]:
             owners.setdefault(key, []).append(action)
     return {key: actions for key, actions in owners.items() if len(actions) > 1}
 
+
+#: 重ねたパネルのタブの置き場 :attr:`Preferences.dock_tabs` の値
+DOCK_TABS_TOP = "top"
+DOCK_TABS_BOTTOM = "bottom"
+DOCK_TAB_POSITIONS = (DOCK_TABS_TOP, DOCK_TABS_BOTTOM)
 
 #: プレビューの画質を自動で落とし始める縦の画素数
 #: 1080p までは等倍で 60fps に入るので、落とす値打ちが無い
@@ -204,6 +234,11 @@ class Preferences:
     #: 既定は入 チャットの多くが Enter で送る形で、知らない人はまずそう押す
     #: 長い指示を何行も書く人が、うっかり途中で送らないように切れるようにする
     chat_enter_sends: bool = True
+    #: 重ねたパネル（オブジェクト設定と AI アシスタント、メディアと字幕など）の
+    #: タブを上（``top``）に出すか下（``bottom``）に出すか
+    #: 既定は上 Qt の既定の下だと、パネルの名前を探して窓の一番下まで目を動かすことになり、
+    #: タブがあること自体に気付かない人がいた（Issue #27） 下の方が見慣れた人は戻せる
+    dock_tabs: str = DOCK_TABS_TOP
 
     def prefetch_bytes(self) -> int:
         """先読みに使えるバイト数 切ってあれば 0
@@ -269,6 +304,7 @@ class PreferenceStore:
                 data.get("ai_effort"), tuple(e.value for e in AI_EFFORTS), plain.ai_effort
             ),
             chat_enter_sends=_flag(data.get("chat_enter_sends"), plain.chat_enter_sends),
+            dock_tabs=_choice(data.get("dock_tabs"), DOCK_TAB_POSITIONS, plain.dock_tabs),
         )
 
     def save(self, preferences: Preferences) -> None:
