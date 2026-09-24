@@ -362,14 +362,18 @@ def _drawn(item: dict[str, Any], size: int = 200) -> np.ndarray:
         context = OffscreenGLContext()
     except GLContextError as exc:
         pytest.skip(f"OpenGL コンテキストを作れない: {exc}")
-    project = Project.create(ProjectSettings(width=size, height=size, frame_rate=FrameRate(30)))
-    for command in place(map_template([item], report=CompatibilityReport()), project):
-        project = command.apply(project)
-    renderer = FrameRenderer(project, context=context)
+    # 読み込みや置く所で落ちてもコンテキストは返す 返さないと後ろの GPU の試験が道連れになる
     try:
-        return renderer.render(0)
+        settings = ProjectSettings(width=size, height=size, frame_rate=FrameRate(30))
+        project = Project.create(settings)
+        for command in place(map_template([item], report=CompatibilityReport()), project):
+            project = command.apply(project)
+        renderer = FrameRenderer(project, context=context)
+        try:
+            return renderer.render(0)
+        finally:
+            renderer.close()
     finally:
-        renderer.close()
         context.release()
 
 

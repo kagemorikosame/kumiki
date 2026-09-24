@@ -1435,6 +1435,51 @@ def test_a_missing_ceilings_file_fails_but_can_be_written(
     assert tool.command_compare(_compare_arguments(tmp_path, ceilings=missing)) == 0
 
 
+def test_frames_missing_from_the_export_fail_instead_of_passing_half_measured(
+    tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """一部のフレームしか比べられなかったテンプレートがあれば終了コード 1
+
+    書き出しが途中で切れると、前半の行だけが残る そのまま上限を見ると後半の
+    フレームを見ないまま通り、``--write-ceilings`` は半端な測りで上限を書き換える
+    """
+    row = (10.0, "後光", "a.ymmt", 1, "x", "")
+
+    def half(
+        *args: object, missing: list[tuple[str, int]] | None = None, **kwargs: object
+    ) -> list[object]:
+        assert missing is not None, "比べられなかったフレームを受け取る入れ物を渡していない"
+        missing.append(("後光", 60))
+        return [row]
+
+    monkeypatch.setattr(tool, "compare_work", half)
+    (tmp_path / "ceilings.json").write_text(json.dumps({"後光": 71.0}), encoding="utf-8")
+    assert tool.command_compare(_compare_arguments(tmp_path)) == 1
+    assert tool.command_compare(_compare_arguments(tmp_path, write_ceilings=True)) == 1
+    assert tool.read_ceilings(tmp_path / "ceilings.json") == {"後光": 71.0}
+
+
+def test_templates_the_export_never_reached_are_told_apart_by_their_ceiling(
+    tool: ModuleType,
+) -> None:
+    """1 枚も比べられなかったテンプレートは、上限を持つときだけ困る物に数える
+
+    上限があるのに比べられないのは、前は書き出しに届いていた物が見張れなくなった印
+    上限の無い物は前から見張っていないので、落とすと途中で切れた手元の書き出し
+    （15766 フレームまで）では道具がいつまでも通らない 書き換えでは前の上限が残る
+    """
+    rows = [(10.0, "後光", "a.ymmt", 1, "x", "")]
+    missing = [("雨", 4047), ("雨", 4089), ("時計", 16300)]
+    problems, unmeasured = tool.unmeasured_templates(rows, missing, {"後光": 71.0, "雨": 27.0})
+    assert [line.split(" ")[0] for line in problems] == ["雨"]
+    assert unmeasured == ["時計"]
+    problems, unmeasured = tool.unmeasured_templates(
+        rows, missing, {"後光": 71.0, "雨": 27.0}, writing=True
+    )
+    assert problems == []
+    assert unmeasured == ["雨", "時計"]
+
+
 REAL_WORK = ROOT / ".work" / "ymm4-compare"
 
 
@@ -1447,7 +1492,10 @@ def test_the_real_templates_stay_within_their_ceilings(tool: ModuleType, tmp_pat
     """
     if not (REAL_WORK / "ymm4.mp4").exists() or not (REAL_WORK / "manifest.json").exists():
         pytest.skip(f"YMM4 の書き出しが {REAL_WORK} に無い")
-    rows = tool.compare_work(REAL_WORK, tmp_path)
+    missing: list[tuple[str, int]] = []
+    rows = tool.compare_work(REAL_WORK, tmp_path, missing=missing)
     assert rows, "比べた絵が 1 枚も無い（書き出しと並べ方が食い違っている）"
     ceilings = tool.read_ceilings(tool.CEILINGS)
+    problems, _ = tool.unmeasured_templates(rows, missing, ceilings)
+    assert problems == [], "上限を持つテンプレートのフレームが書き出しに無い"
     assert tool.over_ceilings(tool.worst_by_template(rows), ceilings) == []

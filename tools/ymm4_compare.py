@@ -461,6 +461,41 @@ def over_ceilings(worst: dict[str, float], ceilings: dict[str, float]) -> list[s
     ]
 
 
+def unmeasured_templates(
+    rows: list[Row],
+    missing: list[tuple[str, int]],
+    ceilings: dict[str, float],
+    *,
+    writing: bool = False,
+) -> tuple[list[str], list[str]]:
+    """書き出しに無くて比べられなかったフレームを、困る物と困らない物に分ける
+
+    困る物（1 つ目）
+    - 一部のフレームだけ比べたテンプレート 書き出しが途中で切れると前半だけが残り、
+      上限を見れば後半を見ずに通り、書き換えれば半端な測りが上限になる
+    - 上限があるのに 1 枚も比べられなかったテンプレート（比べるときだけ） 前は
+      書き出しに届いていたのに見張れなくなっている 書き換えでは前の上限が残るので困らない
+
+    困らない物（2 つ目）は、上限が無く 1 枚も比べなかったテンプレート 手元の aomoya の
+    書き出しは 15766 フレームで切れていて、後ろの 18 本は一度も測っていない 上限を
+    持たないので、見張りから外れていることは前と変わらない
+    """
+    measured = worst_by_template(rows)
+    short: dict[str, int] = {}
+    for name, _ in missing:
+        short[name] = short.get(name, 0) + 1
+    problems: list[str] = []
+    unmeasured: list[str] = []
+    for name, count in short.items():
+        if name in measured:
+            problems.append(f"{name} 一部だけ比べた（{count} 枚足りない）")
+        elif name in ceilings and not writing:
+            problems.append(f"{name} 上限があるのに 1 枚も比べられない")
+        else:
+            unmeasured.append(name)
+    return problems, unmeasured
+
+
 def ceilings_from(worst: dict[str, float], margin: float = CEILING_MARGIN) -> dict[str, float]:
     """測った差にゆとりを足した上限 0.5 刻みへ切り上げて、少しの揺れで書き換えない"""
     return {
@@ -496,8 +531,14 @@ def command_compare(arguments: argparse.Namespace) -> int:
         print(f"{arguments.ceilings} がありません 作るなら --write-ceilings を付けてください")
         return 1
     words = [word for word in arguments.only.split(",") if word]
+    missing: list[tuple[str, int]] = []
     rows = compare_work(
-        work, output, only=words, every=arguments.every, blending=arguments.blending
+        work,
+        output,
+        only=words,
+        every=arguments.every,
+        blending=arguments.blending,
+        missing=missing,
     )
     if not rows:
         # 0 枚のまま上限を見ると、何も比べていないのに「超えなかった」で通る
@@ -508,12 +549,24 @@ def command_compare(arguments: argparse.Namespace) -> int:
     for difference, name, _, frame, _, _ in rows[: arguments.top]:
         print(f"{difference:6.1f}  {name}  フレーム {frame}")
 
+    ceilings = read_ceilings(arguments.ceilings)
+    problems, unmeasured = unmeasured_templates(
+        rows, missing, ceilings, writing=arguments.write_ceilings
+    )
+    if unmeasured:
+        print(f"\n書き出しが届いておらず比べなかったテンプレート（上限なし）: {len(unmeasured)} 本")
+    if problems:
+        print("\n書き出しに無いフレームがあり、測りが足りない")
+        for line in problems:
+            print(f"  {line}")
+        return 1
+
     worst = worst_by_template(rows)
     if arguments.write_ceilings:
         write_ceilings(arguments.ceilings, worst)
         print(f"上限を書き換えた: {arguments.ceilings}")
         return 0
-    exceeded = over_ceilings(worst, read_ceilings(arguments.ceilings))
+    exceeded = over_ceilings(worst, ceilings)
     if exceeded:
         print(f"\n差の上限を超えた（{arguments.ceilings.name}）")
         for line in exceeded:
@@ -529,11 +582,13 @@ def compare_work(
     only: list[str] | None = None,
     every: bool = False,
     blending: str = "srgb",
+    missing: list[tuple[str, int]] | None = None,
 ) -> list[Row]:
     """``work`` の書き出しと Sashimono の絵を比べ、差の大きい順の行を返す
 
     一覧（report.html / report.json）と並べた絵は ``output`` へ書く 試験が
     手元の作業フォルダの一覧を書き換えないように、読む所と書く所を分けてある
+    書き出しに無くて比べられなかったフレームは ``missing`` へ（名前・フレーム）で足す
     """
     from sashimono.core.model import Project, ProjectSettings
     from sashimono.core.timebase import FrameRate
@@ -575,6 +630,8 @@ def compare_work(
             for frame in case.sample_frames(every=every):
                 reference = references.get(frame)
                 if reference is None:
+                    if missing is not None:
+                        missing.append((case.name, frame))
                     continue
                 ours = renderer.render(frame)
                 a, b = _shrink(reference), _shrink(ours)
