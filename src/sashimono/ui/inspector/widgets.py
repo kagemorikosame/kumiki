@@ -44,6 +44,19 @@ __all__ = ["ParameterEditor", "create_editor"]
 
 #: スライダーは整数しか扱えないので、この倍率で小数を載せる
 _SLIDER_SCALE = 1000
+#: Qt の整数の欄（``QSpinBox`` ``QSlider``）が持てる範囲 C++ の ``int`` は 4 バイト
+_INT_MIN = -(2**31)
+_INT_MAX = 2**31 - 1
+
+
+def _qt_int(number: float) -> int:
+    """Qt の整数の欄へ渡せる値へ丸める
+
+    収まらない値をそのまま渡すと、shiboken が警告を出したうえで Qt 側の値が化け、
+    入れられる範囲が意図と違ってしまう（#148） 仕様は AviUtl のスクリプトからも
+    来るので、どれほど大きな範囲が書かれていてもここで収める
+    """
+    return min(max(int(number), _INT_MIN), _INT_MAX)
 
 
 class ParameterEditor(QWidget):
@@ -92,7 +105,9 @@ class TrackEditor(ParameterEditor):
         self._spec = spec
 
         self._slider = QSlider(Qt.Orientation.Horizontal, self)
-        self._slider.setRange(int(spec.minimum * _SLIDER_SCALE), int(spec.maximum * _SLIDER_SCALE))
+        self._slider.setRange(
+            _qt_int(spec.minimum * _SLIDER_SCALE), _qt_int(spec.maximum * _SLIDER_SCALE)
+        )
         self._slider.valueChanged.connect(self._on_slider)
         self._slider.sliderReleased.connect(self._on_release)
 
@@ -125,7 +140,7 @@ class TrackEditor(ParameterEditor):
         self._updating = True
         try:
             self._number.setValue(number)
-            self._slider.setValue(int(number * _SLIDER_SCALE))
+            self._slider.setValue(_qt_int(number * _SLIDER_SCALE))
         finally:
             self._updating = False
 
@@ -150,7 +165,7 @@ class TrackEditor(ParameterEditor):
             return
         self._updating = True
         try:
-            self._slider.setValue(int(number * _SLIDER_SCALE))
+            self._slider.setValue(_qt_int(number * _SLIDER_SCALE))
         finally:
             self._updating = False
         self._emit(AnimatedValue(static=number))
@@ -351,7 +366,7 @@ class ValueEditor(ParameterEditor):
         super().__init__(spec, parent)
         self._spec = spec
         self._box = QSpinBox(self)
-        self._box.setRange(spec.minimum, spec.maximum)
+        self._box.setRange(_qt_int(spec.minimum), _qt_int(spec.maximum))
         self._box.setKeyboardTracking(False)
         self._box.valueChanged.connect(self._emit)
 
@@ -364,7 +379,7 @@ class ValueEditor(ParameterEditor):
     def set_value(self, value: ParamValue | None) -> None:
         self._updating = True
         try:
-            self._box.setValue(self._spec.coerce(value))
+            self._box.setValue(_qt_int(self._spec.coerce(value)))
         finally:
             self._updating = False
 
