@@ -42,7 +42,7 @@ from sashimono.asr import (
 )
 from sashimono.asr.service import Job
 from sashimono.core.model import MediaItem, Transcript
-from sashimono.runtime import refresh_runtime, restart_note
+from sashimono.runtime import refresh_runtime, restart_note, snapshot_runtime_modules
 from sashimono.ui.theme import Colors
 
 __all__ = ["TranscribeDialog"]
@@ -82,6 +82,8 @@ class TranscribeDialog(QDialog):
         self._install_log: queue.Queue[str] = queue.Queue()
         self._install_done: threading.Event | None = None
         self._install_code = 0
+        #: この導入を始める前に、専用フォルダから読み込み済みだった物
+        self._before: dict[str, int] = {}
 
         self._build()
         self._timer = QTimer(self)
@@ -205,6 +207,9 @@ class TranscribeDialog(QDialog):
         command = install_command(
             cuda=self._gpu.isChecked(), upgrade=runtime_status().needs_upgrade
         )
+        # pip が上書きする前の読み込み済みの物を、この導入の分として控える
+        # 導入ごとに持つので、アシスタントの導入と重なっても控えが混ざらない
+        self._before = snapshot_runtime_modules()
         self._log.setVisible(True)
         self._log.clear()
         self._set_busy(True, message="導入しています 数分かかります")
@@ -268,7 +273,7 @@ class TranscribeDialog(QDialog):
         self._progress.setRange(0, 1000)
         # ボタンの有効・無効を決め直す前に import の道を作り直す 先に決めると、
         # 配布版では入れたばかりの faster-whisper が見えず「起こす」が押せないまま残る
-        loaded = refresh_runtime() if self._install_code == 0 else ()
+        loaded = refresh_runtime(self._before) if self._install_code == 0 else ()
         self._set_busy(False)
         self._refresh_availability()
         if self._install_code == 0:

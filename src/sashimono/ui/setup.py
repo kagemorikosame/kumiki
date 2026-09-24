@@ -32,6 +32,7 @@ from sashimono.runtime import (
     install_runtime,
     refresh_runtime,
     restart_note,
+    snapshot_runtime_modules,
 )
 from sashimono.ui.theme import Colors
 
@@ -58,6 +59,9 @@ class SetupSection(QWidget):
         #: 最後の導入のあとに出した案内 使える状態になると導入欄ごと隠す画面
         #: （アシスタント）があるので、そちらが自分の見える所へ写せるように持つ
         self.note = ""
+        #: この導入を始める前に、専用フォルダから読み込み済みだった物
+        #: 導入ごとに持つ 字幕起こしの導入と重なっても、控えが混ざらない
+        self._before: dict[str, int] = {}
 
         self._status = QLabel(self)
         self._status.setWordWrap(True)
@@ -141,6 +145,8 @@ class SetupSection(QWidget):
         if self.busy:
             return
         argv = self._command()
+        # pip が上書きする前の読み込み済みの物を、この導入の分として控える
+        self._before = snapshot_runtime_modules()
         self._log.setVisible(True)
         self._log.clear()
         self._progress.setVisible(True)
@@ -187,7 +193,7 @@ class SetupSection(QWidget):
         succeeded = self._code == 0
         # 状態を見直す前に import の道を作り直す 先に見直すと、配布版では
         # 入れたばかりのものが見えず「未導入」のまま止まる
-        loaded = refresh_runtime() if succeeded else ()
+        loaded = refresh_runtime(self._before) if succeeded else ()
         self.refresh()
         self.note = ""
         if succeeded:

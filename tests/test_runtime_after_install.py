@@ -223,13 +223,33 @@ class TestRestartNote:
         source = frozen / module / "__init__.py"
         before = source.stat().st_mtime_ns
 
-        # 本物の pip の代わりに、何もしない子プロセスで導入の流れだけを通す
-        # 通すことで、上書きの前に読み込み済みの物が控えられる
-        assert install_runtime(command=[REAL_PYTHON, "-c", "pass"]) == 0
+        snapshot = runtime.snapshot_runtime_modules()  # 導入を始める前に控える
         source.write_text("VALUE = 43\n", encoding="utf-8")  # pip が新しい版で上書きした
         os.utime(source, ns=(before + 10**9, before + 10**9))
 
-        assert refresh_runtime() == (module,)
+        assert refresh_runtime(snapshot) == (module,)
+
+    def test_overlapping_installs_keep_their_own_snapshot(self, frozen: Path) -> None:
+        """字幕起こしとアシスタントの導入が重なっても、控えが混ざらない
+
+        控えを 1 か所で共有すると、あとから始めた導入の控えで上書きされ、先の
+        導入が上書きされたモジュールを見落として再起動を勧めない
+        """
+        dist, module = _unique()
+        write_distribution(frozen, dist, module, "1.0")
+        refresh_runtime()
+        importlib.import_module(module)
+        source = frozen / module / "__init__.py"
+        stamp = source.stat().st_mtime_ns
+
+        first = runtime.snapshot_runtime_modules()  # 先に始めた導入の控え
+        # あとから始めた導入が、何もしない子プロセスで流れを最後まで通す
+        assert install_runtime(command=[REAL_PYTHON, "-c", "pass"]) == 0
+        assert refresh_runtime({}) == ()
+        source.write_text("VALUE = 43\n", encoding="utf-8")  # 先の導入の pip が上書きした
+        os.utime(source, ns=(stamp + 10**9, stamp + 10**9))
+
+        assert refresh_runtime(first) == (module,)
 
     def test_nothing_to_restart_says_so(self) -> None:
         # 再起動する物が無いのに再起動を勧めると、導入のたびに要らない再起動をさせる

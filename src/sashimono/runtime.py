@@ -19,7 +19,7 @@ import os
 import shutil
 import subprocess
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from importlib import metadata
 from pathlib import Path
@@ -270,11 +270,14 @@ def activate_runtime() -> Path | None:
     return target
 
 
-def refresh_runtime() -> tuple[str, ...]:
+def refresh_runtime(before: Mapping[str, int] | None = None) -> tuple[str, ...]:
     """導入を終えた直後に呼び、入れたものを再起動なしで使えるようにする
 
     戻り値は「入れ直したのに、古い方がもう読み込まれていて入れ替えられなかった」
     モジュールの名前 空でなければ、再起動を勧める
+
+    ``before`` は導入を始める前の :func:`snapshot_runtime_modules` 渡すと、専用
+    フォルダから読み込み済みの物が同じ場所で上書きされたことも見分けられる
 
     これが無いと配布版では導入が済んだことに気付けなかった 初めて導入する人は
     起動時に専用フォルダがまだ無いので :func:`activate_runtime` が何もせず、
@@ -290,25 +293,22 @@ def refresh_runtime() -> tuple[str, ...]:
     # パッケージの探し手と、配布メタデータ（導入状況の判定に使う）の探し手の
     # 両方の控えがここで捨てられる
     importlib.invalidate_caches()
-    before = dict(_loaded_before_install)
-    _loaded_before_install.clear()
     if target is None:
         return ()
     loaded = list(_already_loaded_elsewhere(target))
-    for name in _replaced_in_place(before):
+    for name in _replaced_in_place(before or {}):
         if name not in loaded:
             loaded.append(name)
     return tuple(loaded)
 
 
-#: 導入を始める前に、専用フォルダから読み込み済みだったモジュールと、その
-#: ファイルの更新時刻（ns） :func:`install_runtime` が書き、:func:`refresh_runtime`
-#: が読んで空にする
-_loaded_before_install: dict[str, int] = {}
-
-
 def snapshot_runtime_modules() -> dict[str, int]:
-    """専用フォルダから読み込み済みのモジュールと、そのファイルの更新時刻"""
+    """専用フォルダから読み込み済みのモジュールと、そのファイルの更新時刻（ns）
+
+    導入を始める前に呼び、結果をその導入の :func:`refresh_runtime` へ渡す
+    導入ごとに持たせるのは、字幕起こしとアシスタントの導入が重なっても、
+    片方の控えがもう片方に上書きされないため
+    """
     target = runtime_target_dir()
     if target is None or not target.exists():
         return {}
@@ -327,7 +327,7 @@ def snapshot_runtime_modules() -> dict[str, int]:
     return found
 
 
-def _replaced_in_place(before: dict[str, int]) -> list[str]:
+def _replaced_in_place(before: Mapping[str, int]) -> list[str]:
     """専用フォルダから読み込み済みだったのに、導入で同じ場所のファイルが入れ替わった物
 
     ``invalidate_caches`` は ``sys.modules`` の読み込み済みの物を入れ替えない
@@ -523,10 +523,6 @@ def install_runtime(
     target = runtime_target_dir()
     if target is not None:
         target.mkdir(parents=True, exist_ok=True)
-    # pip が上書きする前に、今読み込んでいる物を控える 上書きされたかどうかを
-    # 導入のあとで比べ、読み込み済みの古い版が残るなら再起動を勧めるため
-    _loaded_before_install.clear()
-    _loaded_before_install.update(snapshot_runtime_modules())
 
     creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     # 子プロセスの出力を UTF-8 に揃える Windows の既定は cp932 で、素材やユーザー名に
