@@ -140,7 +140,12 @@ class PlaybackController(QObject):
             # 終わりの手前の位置のまま「デバイスが止まった」側へ入ってしまう
             position = self._player.position_sample
             if not self._reached_end(position):
-                # デバイスが抜かれた等 止まった所で止める
+                # デバイスが抜かれた等 止まった所で止める 最後に読んだ位置も知らせる
+                # 知らせないと再生ヘッドが前の回の所に残り、そこから再生し直すことになる
+                frame = _sample_to_frame(position, self._project.rate, self._mixer.sample_rate)
+                if frame != self._frame:
+                    self._frame = frame
+                    self.frame_changed.emit(frame)
                 self.stop()
                 return
 

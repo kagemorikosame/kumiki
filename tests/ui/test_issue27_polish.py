@@ -426,9 +426,15 @@ class TestPlaybackEnd:
         controller.play()
         player.position_sample = 48000  # 1 秒
         controller._tick()
+        # 前の回から少し進んだ所で出口が止まる 最後に読んだ位置を知らせずに止めると、
+        # 再生ヘッドが前の回の所（30）に残り、聞いた所より手前から再生し直すことになる
+        frames: list[int] = []
+        controller.frame_changed.connect(frames.append)
+        player.position_sample = 48000 + 1600 * 7  # 37 フレーム目
         player.is_playing = False
         controller._tick()
-        assert controller.frame == 30
+        assert controller.frame == 37
+        assert frames == [37]
         assert not controller.is_playing
         controller.close()
 
@@ -436,11 +442,18 @@ class TestPlaybackEnd:
 class _FakeStream:
     """音の出口の代わり 書き込みはすぐ返り、バッファには ``latency`` 秒ぶん残る"""
 
-    def __init__(self, latency: float) -> None:
+    def __init__(self, latency: float, player: AudioPlayer | None = None) -> None:
         self.latency = latency
+        self._player = player
+        #: ``stop``（積んだ音を鳴らし切るまで待つ）を呼ばれたときの時計の位置
+        self.stopped_at: list[int] = []
 
     def write(self, block: np.ndarray) -> None:
         del block
+
+    def stop(self) -> None:
+        if self._player is not None:
+            self.stopped_at.append(self._player._position)
 
 
 class _SilentMixer:
@@ -464,6 +477,20 @@ class TestPlayerClock:
         assert player.position_sample == 4800
         # 残りが鳴り終わるまで待ってから終わりに置く すぐ終わりへ飛ばすと、絵が音より先に終わる
         assert time.monotonic() - started >= 0.04
+
+    def test_the_end_waits_for_the_device_to_finish(self) -> None:
+        # latency は見積もりで、残っている量そのものではない 見積もりの時間が過ぎただけで
+        # 終わりに置くと、短い区間では音がまだ出ている間に再生ヘッドが終わりへ着いて止まる
+        # 鳴らし切るまで待つ ``stop`` を呼んでから終わりに置くこと
+        player = AudioPlayer(_SilentMixer())  # type: ignore[arg-type]
+        stream = _FakeStream(latency=0.5, player=player)
+        player._stream = stream
+        player._start_sample = 0
+        player._end_sample = 480  # 10ms 見積もりの遅れより短い区間
+        player._run()
+        assert len(stream.stopped_at) == 1
+        assert stream.stopped_at[0] < 480
+        assert player.position_sample == 480
 
     def test_stopping_during_the_drain_does_not_jump_to_the_end(self) -> None:
         # 止めた時点で止める 止めたのに終わりまで進むと、止めた所から再生し直せない
@@ -557,6 +584,8 @@ class TestSnapshotImage:
     def test_the_window_saves_what_the_playhead_shows(
         self, qt_application: QApplication, tmp_path: Path
     ) -> None:
+        # 窓の保存が書き出しと同じ描き方を通らないと、プレビューの表示倍率や画質の
+        # 設定で大きさが変わった絵（窓の大きさの絵）が保存される
         del qt_application
         window = MainWindow(_colored_project(), confirm_unsaved=False)
         try:
@@ -685,6 +714,9 @@ class TestClipIdentity:
         assert identity.summary() == "音声（bgm.wav） / BGM"
 
     def test_generated_clips_name_their_kind(self) -> None:
+        # 種類の言葉が無いと、テキストもフィルタもシーンも同じ見た目の見出しになり、
+        # どのクリップの設定を触っているのかが分からない
+        # テキストは 1 行目だけを名前にする 全文を出すと見出しが何行にも伸びて設定が押し下がる
         text = Clip(timeline_start=0, duration=30, source=TEXT.create(text="こんにちは\n2 行目"))
         effect = Effect(kind="blur")
         filter_clip = Clip(
@@ -722,7 +754,11 @@ class TestClipIdentity:
             assert panel.header.title_text() == "音声（本編.mp4 の音）"
             assert "A1" in panel.header.detail_text()
             # 何本も選んでいると、触った値がほかにも当たることを言う
-            assert "ほか 1 本" in panel.header.detail_text()
+            detail = panel.header.detail_text()
+            assert "ほか 1 本も選択中" in detail
+            # 「当てる」と言い切ると、エフェクトの追加のように主のクリップにしか入らない
+            # 操作でも、ほかにも入ったと思い込む
+            assert "当てる" not in detail
             panel.set_selection(())
             assert panel.header.identity is None
             # 選んでいないのに前のクリップの名前が補足に残ると、何かを開いているように見える
@@ -766,5 +802,6 @@ class TestSelfCheckTranslation:
             selfcheck._qt_translation()
 
     def test_the_japanese_translation_passes(self, qt_application: QApplication) -> None:
+        # 日本語訳を正しく積んだのに自己診断が落ちると、正しい配布物を配れない
         del qt_application
         assert selfcheck._qt_translation() == selfcheck.JAPANESE_CANCEL

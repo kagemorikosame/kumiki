@@ -173,7 +173,7 @@ class ClipHeader(QWidget):
     def show_identity(self, identity: ClipIdentity | None, *, others: int = 0) -> None:
         """見ているクリップを出す ``None`` なら選んでいないことを出す
 
-        ``others`` は一緒に選んでいるほかのクリップの本数 触った値はそちらにも当たるので、
+        ``others`` は一緒に選んでいるほかのクリップの本数 同じ設定の値はそちらにも当たるので、
         知らずに何本もまとめて変えないよう添える
         """
         self._identity = identity
@@ -191,7 +191,9 @@ class ClipHeader(QWidget):
         self._title.setText(identity.title)
         detail = f"トラック {identity.track}"
         if others:
-            detail += f"  ほか {others} 本にも当てる"
+            # 「当てる」と言い切らない 当たるのは同じ設定を持つクリップの値だけで、
+            # エフェクトの追加や並べ替えは主のクリップにしか入らない（``_for_clip``）
+            detail += f"  ほか {others} 本も選択中（同じ設定の値だけ一緒に変わる）"
         self._detail.setText(detail)
         self._detail.show()
         self.setAccessibleName(identity.summary())
