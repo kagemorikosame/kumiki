@@ -1483,6 +1483,8 @@ def test_templates_the_export_never_reached_are_told_apart_by_their_ceiling(
 REAL_WORK = ROOT / ".work" / "ymm4-compare"
 
 
+# 描き比べは中で OpenGL のコンテキストを作る 書き出しがあっても GPU の無い所では飛ばす
+@pytest.mark.usefixtures("gpu")
 def test_the_real_templates_stay_within_their_ceilings(tool: ModuleType, tmp_path: Path) -> None:
     """実物のテンプレート（aomoya）を YMM4 の書き出しと描き比べ、上限を超えないこと
 
