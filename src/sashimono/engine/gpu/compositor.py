@@ -90,11 +90,15 @@ in vec2 v_uv;
 out vec4 frag_color;
 uniform sampler2D u_texture;
 uniform bool u_encoded;
+// 事前乗算を外して読む（ストレートアルファの絵として CPU へ渡すとき）
+// 符号化より前に外す リニアのキャンバスで符号化した後に割ると、半透明の所の色がずれる
+uniform bool u_straight;
 """
     + _SRGB_FUNCTIONS
     + """
 void main() {
     vec4 color = texture(u_texture, v_uv);
+    if (u_straight && color.a > 0.0001) color.rgb /= color.a;
     // sRGB で混ぜたキャンバスは符号化済み ここで掛けると 2 回になって明るく飛ぶ
     vec3 rgb = u_encoded ? clamp(color.rgb, 0.0, 1.0) : srgb_encode(color.rgb);
     frag_color = vec4(rgb, color.a);
@@ -176,6 +180,9 @@ vec3 blend(vec3 below, vec3 above) {
 
 void main() {
     vec4 source = texture(u_texture, v_uv);
+    // 置き換えで使う、事前乗算のままの値 ストレートへ戻してからもう 1 度掛けると、
+    // 戻すのを飛ばすごく薄い所（0.0001 以下）で不透明度が 2 回掛かって暗くなる
+    vec4 sampled = source;
     if (u_premultiplied && source.a > 0.0001) source.rgb /= source.a;
     if (u_encoded && !u_premultiplied) source.rgb = srgb_encode(source.rgb);
     float above_alpha = clamp(source.a * u_opacity, 0.0, 1.0);
@@ -195,6 +202,15 @@ void main() {
         vec3 lower = srgb_encode(below) * below_alpha;
         vec3 upper = srgb_encode(source.rgb) * upper_alpha;
         frag_color = vec4(srgb_decode(mix(lower, upper, amount)), 1.0);
+        return;
+    }
+    if (u_mode == 301) {
+        // 置き換え 下の絵もキャンバスに溜まった値（事前乗算）のまま混ぜる 混ぜる色の空間は
+        // キャンバスに従う（プロジェクトの重ね合わせの設定） 事前乗算のまま混ぜないと、
+        // 透明な所と混ぜたときに色だけが残って縁が明るく浮く
+        float amount = clamp(u_opacity, 0.0, 1.0);
+        vec4 upper = u_premultiplied ? sampled : vec4(source.rgb * source.a, source.a);
+        frag_color = mix(backdrop, upper, amount);
         return;
     }
 
@@ -272,6 +288,11 @@ class BlendMode:
     #: 黒の上に置いた 2 枚の絵を sRGB の値で混ぜる 不透明度が混ぜる割合 選べる合成ではなく、
     #: 場面切り替えのフェードでレンダラが使う
     SRGB_MIX = "srgb_mix"
+    #: 下の絵を、描く絵へ置き換える 不透明度が置き換える割合（0 で下の絵のまま、1 で描く絵
+    #: だけ） 選べる合成ではなく、フィルタのクリップが掛けた後の絵を戻すときにレンダラが使う
+    #: 通常の重ね方だと、掛けた後の絵の透明な所から掛ける前の絵が透けて残る（縮めたり
+    #: 動かしたりするエフェクトで、元の絵が後ろに居残る）
+    REPLACE = "replace"
 
 
 def _encode(value: float) -> float:
@@ -289,6 +310,7 @@ _SHADER_BLENDS: dict[str, int] = {
     # 乗算を係数で書くと、下に何も無い所（透明）で絵ごと消えるという違いもある
     **{mode: 100 + blend_index(mode) for mode in BlendMode.ALL if mode != BlendMode.NORMAL},
     BlendMode.SRGB_MIX: 300,
+    BlendMode.REPLACE: 301,
 }
 
 
@@ -709,13 +731,21 @@ class Compositor:
         GL.glActiveTexture(GL.GL_TEXTURE0)
         return shaded
 
-    def read(self) -> np.ndarray:
-        """合成結果を sRGB 符号化した ``(高さ, 幅, 4)`` の uint8 配列で返す"""
+    def read(self, *, straight: bool = False) -> np.ndarray:
+        """合成結果を sRGB 符号化した ``(高さ, 幅, 4)`` の uint8 配列で返す
+
+        色は事前乗算のまま返す（黒を敷いた後の画面なら不透明なので同じこと）
+        ``straight`` を立てるとストレートアルファで返す 半透明の絵を素材として
+        スクリプトへ渡すときに使う 事前乗算のまま渡すと、素材として重ねるときに
+        不透明度がもう 1 度掛かって半透明の所が暗くなる
+        """
         # リニアの結果をもう 1 パス通して sRGB へ符号化する glReadPixels に
         # RGBA16F から直接 uint8 で読ませると、変換式が実装依存になる
         # 符号化のついでに上下も返しておく GL は左下から行を返すので、返して
         # おけば CPU で並べ替えずに済む（4K で 33MB の写しが 1 回消える）
-        self._resolve(self._resolved.handle, (0, 0, self.width, self.height), flip=True)
+        self._resolve(
+            self._resolved.handle, (0, 0, self.width, self.height), flip=True, straight=straight
+        )
 
         GL.glPixelStorei(GL.GL_PACK_ALIGNMENT, 1)
         # 受け皿を先に作って、そこへ直接書かせる 受け取り先を省くと PyOpenGL が
@@ -881,18 +911,25 @@ class Compositor:
         return (_encode(red), _encode(green), _encode(blue), alpha)
 
     def _resolve(
-        self, framebuffer: int, viewport: tuple[int, int, int, int], *, flip: bool = False
+        self,
+        framebuffer: int,
+        viewport: tuple[int, int, int, int],
+        *,
+        flip: bool = False,
+        straight: bool = False,
     ) -> None:
         """合成結果を sRGB で符号化した値にして ``framebuffer`` へ描く
 
         ``flip`` を立てると上下を返して描く 読み戻す側のためのもので、GL は
         左下から行を返すので、先に返しておけば CPU で並べ替えずに済む
+        ``straight`` を立てると事前乗算を外してから符号化する（:meth:`read`）
         """
         GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, framebuffer)
         GL.glViewport(*viewport)
         GL.glDisable(GL.GL_BLEND)
         self._resolve_program.use()
         self._resolve_program.set_bool("u_encoded", self.encoded)
+        self._resolve_program.set_bool("u_straight", straight)
         self._resolve_program.set_vec4("u_rect", FULL_RECT)
         self._resolve_program.set_bool("u_flip", flip)
         self._resolve_program.bind_texture("u_texture", self._canvas.color)

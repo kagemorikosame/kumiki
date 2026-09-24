@@ -34,6 +34,7 @@ from sashimono.core.model.ids import (
 from sashimono.core.model.media import AudioStreamInfo, MediaItem, VideoStreamInfo
 from sashimono.core.model.project import Blending, Project, ProjectSettings, Scene
 from sashimono.core.model.timeline import (
+    FILTER_KIND,
     Clip,
     GeneratedSource,
     Marker,
@@ -44,6 +45,7 @@ from sashimono.core.model.timeline import (
 from sashimono.core.model.transcript import Transcript, TranscriptSegment, Word
 
 __all__ = [
+    "FILTER_KIND",
     "AnimatedValue",
     "AudioStreamInfo",
     "Blending",

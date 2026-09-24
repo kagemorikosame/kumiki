@@ -266,10 +266,8 @@ class InspectorPanel(QWidget):
                 return media.name
         return "クリップ"
 
-    def _build_clip_section(self, clip: Clip) -> QWidget:
-        section = _Section("クリップ")
-
-        blend = QComboBox(section)
+    def _blend_editor(self, parent: QWidget, clip: Clip) -> QComboBox:
+        blend = QComboBox(parent)
         for mode in BlendMode.ALL:
             blend.addItem(BLEND_LABELS.get(mode, mode), mode)
         blend.setCurrentIndex(max(0, blend.findData(clip.blend_mode)))
@@ -278,7 +276,15 @@ class InspectorPanel(QWidget):
                 SetClipProperty(clip.id, "blend_mode", str(blend.itemData(index)))
             )
         )
-        section.add_row("合成方法", blend)
+        return blend
+
+    def _build_clip_section(self, clip: Clip) -> QWidget:
+        section = _Section("クリップ")
+
+        # フィルタは下の絵を置き換えるだけで、合成方法を使わない 出しておくと、
+        # 選んでも何も変わらない欄を触らせることになる
+        if not clip.is_filter:
+            section.add_row("合成方法", self._blend_editor(section, clip))
 
         opacity_spec = TrackSpec("opacity", "不透明度", 0, 1, 1, step=0.01)
         editor = self._make_editor(
@@ -306,6 +312,12 @@ class InspectorPanel(QWidget):
             return None
 
         section = _Section(definition.label)
+        if clip.is_filter:
+            # 設定の項目を持たないので、何もしない箱に見える 何に効くのかをここで言う
+            section.add_note(
+                "このトラックより下を重ねた絵に、下に積んだエフェクトを掛けます"
+                " 不透明度は掛ける前と後の混ぜ具合です"
+            )
         for spec in definition.parameters:
             path = ParamPath.of_source(clip.id, spec.name)
             value = clip.source.params.get(spec.name)

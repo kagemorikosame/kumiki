@@ -223,6 +223,8 @@ def draw_clip(
     is_video = band.track.kind is TrackKind.VIDEO
     body = Colors.VIDEO_CLIP if is_video else Colors.AUDIO_CLIP
     border = Colors.VIDEO_CLIP_BORDER if is_video else Colors.AUDIO_CLIP_BORDER
+    if clip.is_filter:
+        body, border = Colors.FILTER_CLIP, Colors.FILTER_CLIP_BORDER
 
     painter.save()
     painter.setClipRect(clip_rect)
