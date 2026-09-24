@@ -95,15 +95,22 @@ class AudioMixer:
     def _render_timeline(
         self, timeline: Timeline, start_sample: int, count: int, *, depth: int
     ) -> np.ndarray:
-        """1 本のタイムラインの音 入れ子のシーンも同じ道を通る"""
+        """1 本のタイムラインの音 入れ子のシーンも同じ道を通る
+
+        混ぜるのは 3 通り 音声トラックと混合トラックは、鳴らすクリップ
+        （:meth:`~sashimono.core.model.Project.plays_sound`）にトラックの音量と定位を掛ける
+        映像トラックはシーンの音だけを、トラックの音量と定位を掛けずに混ぜる
+        映像トラックのシーンを外すと、シーンの中の BGM やナレーションが消える
+        映像トラックのソロとミュートは絵の側（:meth:`Timeline.active_picture_tracks`）で決まる
+        シーンは絵と音が 1 つなので、絵を隠したトラックのシーンは音も止める（今までと同じ）
+        """
         out = np.zeros((count, self.channels), dtype=np.float32)
         rate = self._project.rate
-        for track in timeline.active_tracks(TrackKind.AUDIO):
+        for track in timeline.active_sound_tracks():
             self._mix_track(out, track, start_sample, count, rate, depth)
-        # シーンを置いたクリップは映像トラックにいる 音も一緒に鳴らさないと、
-        # シーンの中の BGM やナレーションが消える
-        for track in timeline.active_tracks(TrackKind.VIDEO):
-            self._mix_track(out, track, start_sample, count, rate, depth, scenes_only=True)
+        for track in timeline.active_picture_tracks():
+            if track.kind is TrackKind.VIDEO:
+                self._mix_track(out, track, start_sample, count, rate, depth)
         return out
 
     def render_frames(self, start_frame: int, frame_count: int) -> np.ndarray:
@@ -121,27 +128,29 @@ class AudioMixer:
         count: int,
         rate: FrameRate,
         depth: int = 0,
-        *,
-        scenes_only: bool = False,
     ) -> None:
         # 映像トラックの音量と定位は使わない決まり（画面にも出ていない） 置いたシーンの
         # 音だけを混ぜるときに掛けると、見えない値で音が変わる
-        gain = 1.0 if scenes_only else _db_to_gain(track.volume_db)
-        pan = 0.0 if scenes_only else np.clip(track.pan, -1.0, 1.0)
+        picture_only = track.kind is TrackKind.VIDEO
+        gain = 1.0 if picture_only else _db_to_gain(track.volume_db)
+        pan = 0.0 if picture_only else np.clip(track.pan, -1.0, 1.0)
 
         for clip in track.clips:
             if not clip.enabled:
-                continue
-            if scenes_only and clip.scene_id is None:
                 continue
             clip_start = _frame_to_sample(clip.timeline_start, rate, self.sample_rate)
             clip_end = _frame_to_sample(clip.timeline_end, rate, self.sample_rate)
             begin = max(start_sample, clip_start)
             end = min(start_sample + count, clip_end)
-            if begin >= end:
+            # 鳴らすかは重なったクリップだけで見る 混合トラックでは素材の一覧を引くので、
+            # 先に見ると塊ごとにトラックの全クリップぶん引くことになる
+            if begin >= end or not self._project.plays_sound(track, clip):
                 continue
 
-            samples = self._read_clip(clip, begin - clip_start, end - begin, rate, depth)
+            stream = clip.audio_stream if track.kind is TrackKind.MIXED else clip.stream_index
+            samples = self._read_clip(
+                clip, begin - clip_start, end - begin, rate, depth, stream=stream
+            )
             if samples is None:
                 continue
             samples = _apply_effects(
@@ -152,18 +161,30 @@ class AudioMixer:
             out[offset : offset + len(samples)] += _apply_pan(samples * gain, float(pan))
 
     def _read_clip(
-        self, clip: Clip, offset_samples: int, count: int, rate: FrameRate, depth: int = 0
+        self,
+        clip: Clip,
+        offset_samples: int,
+        count: int,
+        rate: FrameRate,
+        depth: int = 0,
+        *,
+        stream: int | None,
     ) -> np.ndarray | None:
-        """クリップ内の位置からサンプルを読む 速度変更があればここで反映する"""
+        """クリップ内の位置からサンプルを読む 速度変更があればここで反映する
+
+        ``stream`` は開く音声ストリームの番号 音声トラックは :attr:`Clip.stream_index`、
+        混合トラックは :attr:`Clip.audio_stream` 混合トラックのクリップの
+        ``stream_index`` は絵のストリームを指すので、それで開くと別の音が鳴る
+        """
         if clip.scene_id is not None:
             return self._read_scene(clip, offset_samples, count, depth)
-        if clip.media_id is None:
+        if clip.media_id is None or stream is None:
             return None
         media = self._project.find_media(clip.media_id)
         if media is None or not media.has_audio:
             return None
 
-        decoder = self._decoder_for(clip.media_id, clip.stream_index)
+        decoder = self._decoder_for(clip.media_id, stream)
         if decoder is None:
             return None
 

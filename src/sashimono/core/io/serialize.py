@@ -31,6 +31,7 @@ from sashimono.core.model import (
     GroupId,
     Interpolation,
     Keyframe,
+    LayerMode,
     Marker,
     MediaId,
     MediaItem,
@@ -116,7 +117,12 @@ FORMAT_NAME = "sashimono-project"
 #: 種類を知らないので、下の絵に掛かるはずのエフェクトを黙って描かず、何も無い所として
 #: 扱う 3 と同じく「更新してください」で止める方がよいので版を上げた
 #: 5 までのファイルはフィルタを持たないので、何も直さずにそのまま読める
-FORMAT_VERSION = 6
+#: 7 で混合トラック（トラックの種類 ``mixed``）と、そこで読むクリップの
+#: ``audio_stream`` ``show_picture``、置き方の方式（``settings.layer_mode``）を足した
+#: （Issue #27） 6 までの本体は種類を知らないので「未知のトラック種別」で開けないか、
+#: 項目を捨てて音の鳴らないクリップにする 3 と同じく「更新してください」で止める
+#: 6 までのファイルは混合トラックを持たないので、分ける方式のまま何も直さずに読める
+FORMAT_VERSION = 7
 
 #: 映像の終わり（``end_time``）を素材の頭から数え始めた版 これより前の値は捨てる
 MEDIA_CLOCK_VERSION = 5
@@ -562,6 +568,8 @@ def clip_to_json(clip: Clip) -> dict[str, Any]:
         "scene_id": clip.scene_id,
         "group_id": clip.group_id,
         "clip_to_below": clip.clip_to_below,
+        "audio_stream": clip.audio_stream,
+        "show_picture": clip.show_picture,
         "enabled": clip.enabled,
         "effects": [effect_to_json(e) for e in clip.effects],
         "after_effects": [effect_to_json(e) for e in clip.after_effects],
@@ -602,6 +610,12 @@ def clip_from_json(raw: object, *, on_audio_track: bool = False) -> Clip:
     source_raw = data.get("source")
     # 版 3 までは項目が無い そのころは絵を止める仕組みが無かったので、止めないで開く
     hold_raw = data.get("hold_at")
+    # 版 6 までは項目が無い 混合トラックが無く、どちらも読まれないので既定で開く
+    audio_stream = data.get("audio_stream")
+    if audio_stream is not None and (
+        not isinstance(audio_stream, int) or isinstance(audio_stream, bool)
+    ):
+        raise ProjectFileError(f"audio_stream が整数ではない: {audio_stream!r}")
     raw_effects = _get_list(data, "effects")
     effects = _promote_placed_volume(
         tuple(effect_from_json(e) for e in raw_effects),
@@ -628,6 +642,8 @@ def clip_from_json(raw: object, *, on_audio_track: bool = False) -> Clip:
         scene_id=SceneId(scene_id) if scene_id is not None else None,
         group_id=GroupId(group_id) if group_id is not None else None,
         clip_to_below=_get_bool(data, "clip_to_below", False),
+        audio_stream=audio_stream,
+        show_picture=_get_bool(data, "show_picture", True),
         enabled=_get_bool(data, "enabled", True),
         id=ClipId(_get_str(data, "id")),
         # 項目が無ければ画面に収める（:func:`clip_to_json`）
@@ -731,6 +747,7 @@ def project_to_dict(project: Project) -> dict[str, Any]:
             "channels": settings.channels,
             "color_space": settings.color_space,
             "blending": settings.blending,
+            "layer_mode": settings.layer_mode,
         },
         "media": [_media_to_json(m) for m in project.media],
         "timeline": _timeline_to_json(project.timeline),
@@ -796,6 +813,8 @@ def _project_from_dict(data: object) -> Project:
         # 版 3 は必ず書くので、無ければ壊れたファイル リニアで補うと sRGB の作品が
         # 黙って明るくなるので、空の値として断る（モデルの検査が ProjectFileError にする）
         blending=_get_str(settings_data, "blending", Blending.LINEAR if version <= 2 else ""),
+        # 版 6 までは項目が無い そのころは分ける方式しか無かった
+        layer_mode=_get_str(settings_data, "layer_mode", LayerMode.SEPARATED),
     )
 
     timeline = _timeline_from_json(root.get("timeline", {"rate": "30/1"}))

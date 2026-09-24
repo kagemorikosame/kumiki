@@ -32,7 +32,6 @@ from sashimono.core.model import (
     Project,
     Timeline,
     Track,
-    TrackKind,
 )
 from sashimono.core.timebase import FrameRate, seconds_to_frame
 from sashimono.effects.easing import ease
@@ -573,8 +572,12 @@ class FrameRenderer:
         self._compositor.underlay((0.0, 0.0, 0.0, 1.0))
 
     def _compose_timeline(self, timeline: Timeline, frame: int, *, depth: int) -> None:
-        """1 本のタイムラインを、いまの合成先へ重ねる シーンの入れ子でも同じ道を通る"""
-        self._compose_tracks(list(timeline.active_tracks(TrackKind.VIDEO)), frame, depth)
+        """1 本のタイムラインを、いまの合成先へ重ねる シーンの入れ子でも同じ道を通る
+
+        映像トラックと混合トラックを、並びの順（先頭が一番奥）に重ねる
+        （:class:`~sashimono.core.model.Timeline` の重なり順）
+        """
+        self._compose_tracks(list(timeline.active_picture_tracks()), frame, depth)
 
     def _compose_tracks(
         self,
@@ -588,6 +591,10 @@ class FrameRenderer:
 
         ``started_before`` を渡すと、その時刻より前に始まったクリップだけを重ねる
         場面切り替えの前の場面を作るため
+
+        絵を描かないクリップ（混合トラックの音だけのクリップ）はここで外す 残すと
+        すぐ上のクリップの切り抜き（``clip_to_below``）の相手になり、形の無い物で
+        切り抜いて何も映らない
         """
         rate = self._project.rate
         visible = [
@@ -596,6 +603,7 @@ class FrameRenderer:
             if (clip := track.clip_at(frame)) is not None
             and clip.enabled
             and (started_before is None or clip.timeline_start < started_before)
+            and self._project.draws_picture(track, clip)
         ]
         # 描き始める前に、この段のクリップぶんのデコードを走らせておく
         # 描きながら 1 本ずつデコードすると、重ねた枚数だけ待ちが直列に並ぶ
@@ -688,6 +696,7 @@ class FrameRenderer:
                 for track in tracks
                 for other in track.clips
                 if other.enabled
+                and self._project.draws_picture(track, other)
                 and other.timeline_start < start
                 and start < other.timeline_end <= end
             ),
@@ -781,16 +790,18 @@ class FrameRenderer:
             put(before_image)
             put(after_image)
 
-    @staticmethod
-    def _starts_within(tracks: list[Track], frame: int, start: int) -> bool:
+    def _starts_within(self, tracks: list[Track], frame: int, start: int) -> bool:
         """前の場面を描き直さず、いまの合成結果（後の場面）を写して済ませてよいかを決める
 
         頭以降に始まったクリップが映っていると、前の場面は後の場面と別の絵になる
         それでも写すと、前の場面に後の場面が混ざって黒から出る切り替えが明るくなる
         映っていなければ同じ絵なので、描き直す手間を省ける（``True`` は描き直しが要る）
+        絵を描かないクリップは映っていないので数えない
         """
         return any(
-            clip.enabled and clip.timeline_start >= start
+            clip.enabled
+            and clip.timeline_start >= start
+            and self._project.draws_picture(track, clip)
             for track in tracks
             if (clip := track.clip_at(frame)) is not None
         )
@@ -1814,9 +1825,11 @@ class FrameRenderer:
         素材は端を越えたところで鍵フレームから読み直し、頼んだ意味が無くなる
         深さの上限も描く道と同じ 描かない段のデコーダを開いても使われない
         """
-        for track in timeline.active_tracks(TrackKind.VIDEO):
+        for track in timeline.active_picture_tracks():
             clip = track.clip_at(frame)
-            if clip is None or not clip.enabled:
+            # 描く道（:meth:`_compose_tracks`）と同じ物だけを頼む 描かないクリップの
+            # デコーダを開くと、使われない絵のために走り係を 1 本塞ぐ
+            if clip is None or not clip.enabled or not self._project.draws_picture(track, clip):
                 continue
             if clip.scene_id is None:
                 placed.append((clip, frame))
