@@ -441,34 +441,204 @@ class References:
         return self._current[1]() if self._current[0] == wanted else None
 
 
+#: 比べた結果の 1 行 差・名前・ファイル・フレーム・並べた絵の名前・注
+Row = tuple[float, str, str, int, str, str]
+
+#: テンプレートごとの差の上限 描き方の変更で YMM4 の絵から大きく離れたら気付けるように
+#: 置く 値は 2026-09-24 の main（#168 の直し込み）で測った差に :data:`CEILING_MARGIN` を
+#: 足したもの 良くなったら ``compare --write-ceilings`` で下げる
+CEILINGS = ROOT / "tools" / "ymm4_compare_ceilings.json"
+#: 上限に足すゆとり GPU や書体の違いで 1 前後は揺れる それより大きく動いたら
+#: 描き方が変わったと見る（9-18 からの変化で一番小さい悪化が 3.6 だった）
+CEILING_MARGIN = 3.0
+
+
+def worst_by_template(rows: list[Row]) -> dict[str, float]:
+    """テンプレートごとに、比べたフレームのうち一番大きい差"""
+    worst: dict[str, float] = {}
+    for difference, name, *_ in rows:
+        worst[name] = max(difference, worst.get(name, 0.0))
+    return worst
+
+
+def over_ceilings(worst: dict[str, float], ceilings: dict[str, float]) -> list[str]:
+    """上限を超えたテンプレートを、超えた分の大きい順に並べる
+
+    上限の無いテンプレート（あとから ``build`` に足したもの）は見ない 上限を持たない
+    ものまで落とすと、テンプレートを足すたびに上限を書き足すまで道具が通らない
+    """
+    exceeded = [
+        (difference - ceilings[name], name, difference)
+        for name, difference in worst.items()
+        if name in ceilings and difference > ceilings[name]
+    ]
+    return [
+        f"{name} 差 {difference:.1f}（上限 {ceilings[name]:.1f}）"
+        for _, name, difference in sorted(exceeded, reverse=True)
+    ]
+
+
+def unmeasured_templates(
+    rows: list[Row],
+    missing: list[tuple[str, int]],
+    ceilings: dict[str, float],
+    *,
+    writing: bool = False,
+) -> tuple[list[str], list[str]]:
+    """書き出しに無くて比べられなかったフレームを、困る物と困らない物に分ける
+
+    困る物（1 つ目）
+    - 一部のフレームだけ比べたテンプレート 書き出しが途中で切れると前半だけが残り、
+      上限を見れば後半を見ずに通り、書き換えれば半端な測りが上限になる
+    - 上限があるのに 1 枚も比べられなかったテンプレート（比べるときだけ） 前は
+      書き出しに届いていたのに見張れなくなっている 書き換えでは前の上限が残るので困らない
+
+    困らない物（2 つ目）は、上限が無く 1 枚も比べなかったテンプレート 手元の aomoya の
+    書き出しは 15766 フレームで切れていて、後ろの 18 本は一度も測っていない 上限を
+    持たないので、見張りから外れていることは前と変わらない
+    """
+    measured = worst_by_template(rows)
+    short: dict[str, int] = {}
+    for name, _ in missing:
+        short[name] = short.get(name, 0) + 1
+    problems: list[str] = []
+    unmeasured: list[str] = []
+    for name, count in short.items():
+        if name in measured:
+            problems.append(f"{name} 一部だけ比べた（{count} 枚足りない）")
+        elif name in ceilings and not writing:
+            problems.append(f"{name} 上限があるのに 1 枚も比べられない")
+        else:
+            unmeasured.append(name)
+    return problems, unmeasured
+
+
+def ceilings_from(worst: dict[str, float], margin: float = CEILING_MARGIN) -> dict[str, float]:
+    """測った差にゆとりを足した上限 0.5 刻みへ切り上げて、少しの揺れで書き換えない"""
+    return {
+        name: math.ceil((difference + margin) * 2.0) / 2.0 for name, difference in worst.items()
+    }
+
+
+def read_ceilings(path: Path) -> dict[str, float]:
+    if not path.exists():
+        return {}
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    ceilings = {str(name): float(value) for name, value in raw.items()}
+    # NaN や Infinity は float が受け取ってしまう どちらも「超えた」にならないので、
+    # 入っていると差がいくら大きくても通る
+    broken = [name for name, value in ceilings.items() if not math.isfinite(value)]
+    if broken:
+        raise ValueError(f"{path} の上限が数でない: {', '.join(broken)}")
+    return ceilings
+
+
+def write_ceilings(path: Path, worst: dict[str, float]) -> None:
+    """測った分だけ上限を書き換える ``--only`` で一部を測ったときに残りを消さない"""
+    merged = read_ceilings(path) | ceilings_from(worst)
+    path.write_text(
+        json.dumps(dict(sorted(merged.items())), ensure_ascii=False, indent=1) + "\n",
+        encoding="utf-8",
+    )
+
+
 def command_compare(arguments: argparse.Namespace) -> int:
+    work: Path = arguments.work
+    output: Path = arguments.output or work
+    if not (work / "ymm4.mp4").exists():
+        print(f"{work / 'ymm4.mp4'} がありません YMM4 で書き出してから走らせてください")
+        return 1
+    # 上限のファイルが無いまま比べて通すと、打ち間違いでどのテンプレートも見張られない
+    # 書き換えるときだけは、新しく作れるように無くてもよい
+    if not arguments.write_ceilings and not arguments.ceilings.exists():
+        print(f"{arguments.ceilings} がありません 作るなら --write-ceilings を付けてください")
+        return 1
+    # 比べるのに 1 分ほど掛かる 壊れた上限は比べる前に知らせる
+    try:
+        ceilings = read_ceilings(arguments.ceilings)
+    except ValueError as error:
+        print(f"上限を読めない: {error}")
+        return 1
+    words = [word for word in arguments.only.split(",") if word]
+    missing: list[tuple[str, int]] = []
+    rows = compare_work(
+        work,
+        output,
+        only=words,
+        every=arguments.every,
+        blending=arguments.blending,
+        missing=missing,
+    )
+    if not rows:
+        # 0 枚のまま上限を見ると、何も比べていないのに「超えなかった」で通る
+        print(
+            "比べた絵が 1 枚もない --only の語か、書き出しと manifest.json の食い違いを見てください"
+        )
+        return 1
+    for difference, name, _, frame, _, _ in rows[: arguments.top]:
+        print(f"{difference:6.1f}  {name}  フレーム {frame}")
+
+    problems, unmeasured = unmeasured_templates(
+        rows, missing, ceilings, writing=arguments.write_ceilings
+    )
+    if unmeasured:
+        print(f"\n書き出しが届いておらず比べなかったテンプレート（上限なし）: {len(unmeasured)} 本")
+    if problems:
+        print("\n書き出しに無いフレームがあり、測りが足りない")
+        for line in problems:
+            print(f"  {line}")
+        return 1
+
+    worst = worst_by_template(rows)
+    if arguments.write_ceilings:
+        write_ceilings(arguments.ceilings, worst)
+        print(f"上限を書き換えた: {arguments.ceilings}")
+        return 0
+    exceeded = over_ceilings(worst, ceilings)
+    if exceeded:
+        print(f"\n差の上限を超えた（{arguments.ceilings.name}）")
+        for line in exceeded:
+            print(f"  {line}")
+        return 1
+    return 0
+
+
+def compare_work(
+    work: Path,
+    output: Path,
+    *,
+    only: list[str] | None = None,
+    every: bool = False,
+    blending: str = "srgb",
+    missing: list[tuple[str, int]] | None = None,
+) -> list[Row]:
+    """``work`` の書き出しと Sashimono の絵を比べ、差の大きい順の行を返す
+
+    一覧（report.html / report.json）と並べた絵は ``output`` へ書く 試験が
+    手元の作業フォルダの一覧を書き換えないように、読む所と書く所を分けてある
+    書き出しに無くて比べられなかったフレームは ``missing`` へ（名前・フレーム）で足す
+    """
     from sashimono.core.model import Project, ProjectSettings
     from sashimono.core.timebase import FrameRate
     from sashimono.engine.render import FrameRenderer
 
-    work: Path = arguments.work
     manifest = json.loads((work / "manifest.json").read_text(encoding="utf-8"))
     video = work / "ymm4.mp4"
-    if not video.exists():
-        print(f"{video} がありません YMM4 で書き出してから走らせてください")
-        return 1
 
     cases = manifest["cases"]
-    if arguments.only:
-        # カンマで区切って何語でも 名前にどれかを含むものを比べる
-        words = [word for word in arguments.only.split(",") if word]
-        cases = [case for case in cases if any(word in case["name"] for word in words)]
+    if only:
+        # 名前にどれかの語を含むものを比べる
+        cases = [case for case in cases if any(word in case["name"] for word in only)]
     # 動画を頭から順に読むので、枠も頭から順に比べる
     cases = sorted(cases, key=lambda raw: int(raw["start"]))
-    every: bool = arguments.every
     references = References(_ymm4_frames(video))
 
     settings = ProjectSettings(
-        width=WIDTH, height=HEIGHT, frame_rate=FrameRate(FPS), blending=arguments.blending
+        width=WIDTH, height=HEIGHT, frame_rate=FrameRate(FPS), blending=blending
     )
-    images = work / "images"
-    images.mkdir(exist_ok=True)
-    rows: list[tuple[float, str, str, int, str, str]] = []
+    images = output / "images"
+    images.mkdir(parents=True, exist_ok=True)
+    rows: list[Row] = []
     report = CompatibilityReport()
     renderer: FrameRenderer | None = None
     try:
@@ -488,6 +658,8 @@ def command_compare(arguments: argparse.Namespace) -> int:
             for frame in case.sample_frames(every=every):
                 reference = references.get(frame)
                 if reference is None:
+                    if missing is not None:
+                        missing.append((case.name, frame))
                     continue
                 ours = renderer.render(frame)
                 a, b = _shrink(reference), _shrink(ours)
@@ -504,8 +676,8 @@ def command_compare(arguments: argparse.Namespace) -> int:
             renderer.close()
 
     rows.sort(reverse=True)
-    _write_report(work / "report.html", rows, manifest.get("skipped", []), report)
-    (work / "report.json").write_text(
+    _write_report(output / "report.html", rows, manifest.get("skipped", []), report)
+    (output / "report.json").write_text(
         json.dumps(
             [
                 {"difference": d, "name": n, "file": f, "frame": fr, "image": s, "note": note}
@@ -516,14 +688,12 @@ def command_compare(arguments: argparse.Namespace) -> int:
         ),
         encoding="utf-8",
     )
-    for difference, name, _, frame, _, _ in rows[: arguments.top]:
-        print(f"{difference:6.1f}  {name}  フレーム {frame}")
-    return 0
+    return rows
 
 
 def _saved_row(
     images: Path, case: Case, frame: int, difference: float, a: np.ndarray, b: np.ndarray
-) -> tuple[float, str, str, int, str, str]:
+) -> Row:
     """並べた絵を書き出し、一覧の 1 行を返す"""
     stem = f"{case.start:06d}_{frame:06d}"
     side = np.concatenate([a, b, np.abs(a - b) * 3.0], axis=1)
@@ -533,7 +703,7 @@ def _saved_row(
 
 def _write_report(
     target: Path,
-    rows: list[tuple[float, str, str, int, str, str]],
+    rows: list[Row],
     skipped: list[str],
     report: CompatibilityReport,
 ) -> None:
@@ -3028,6 +3198,20 @@ def main() -> int:
     # 既定は新しく作るプロジェクトと同じ sRGB（YMM4 の混ぜ方） リニアを選べば、
     # 設定ができる前に保存したプロジェクトの見え方で比べられる
     compare.add_argument("--blending", choices=("srgb", "linear"), default="srgb")
+    compare.add_argument(
+        "--output", type=Path, default=None, help="一覧と絵を書く所（既定は --work と同じ）"
+    )
+    compare.add_argument(
+        "--ceilings",
+        type=Path,
+        default=CEILINGS,
+        help="テンプレートごとの差の上限 超えたら終了コード 1",
+    )
+    compare.add_argument(
+        "--write-ceilings",
+        action="store_true",
+        help="測った差にゆとりを足して上限を書き換える（直して差が減ったときに下げる）",
+    )
     commands.add_parser("audio-build")
     commands.add_parser("audio-measure")
     commands.add_parser("mesh-build")

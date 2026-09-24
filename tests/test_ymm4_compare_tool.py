@@ -1350,6 +1350,184 @@ def test_the_picture_probe_guides_show_the_export_command_without_touching_the_s
     assert not any("--no-compressor" in line for line in lines)
 
 
+def test_a_template_drawn_further_from_ymm4_than_its_ceiling_is_reported(
+    tool: ModuleType,
+) -> None:
+    """上限を超えたテンプレートだけを、超えた分の大きい順に出す
+
+    上限が無いと、描き方の変更で YMM4 の絵から離れても気付けない（#168 では 9-18 の
+    一覧が 4 本だけを比べた物で、全体の最大を知らないまま大きな差を悪化と取り違えた）
+    """
+    rows = [
+        (20.0, "後光", "a.ymmt", 1, "x", ""),
+        (26.0, "後光", "a.ymmt", 2, "y", ""),
+        (5.0, "雨", "b.ymmt", 3, "z", ""),
+        (9.0, "吹き出し", "c.ymmt", 4, "w", ""),
+        (99.0, "上限の無いテンプレート", "d.ymmt", 5, "v", ""),
+    ]
+    worst = tool.worst_by_template(rows)
+    assert worst["後光"] == 26.0
+    exceeded = tool.over_ceilings(worst, {"後光": 25.0, "雨": 8.0, "吹き出し": 4.0})
+    assert [line.split(" ")[0] for line in exceeded] == ["吹き出し", "後光"]
+
+
+def test_writing_ceilings_keeps_the_templates_that_were_not_measured(
+    tool: ModuleType, tmp_path: Path
+) -> None:
+    """``--only`` で一部だけ測って上限を書くと、測っていない分の上限が消えてはならない
+
+    ゆとりを足して 0.5 刻みに切り上げる 測り直すたびに小数の端で書き換わらないように
+    """
+    path = tmp_path / "ceilings.json"
+    path.write_text(json.dumps({"雨": 8.0, "後光": 90.0}), encoding="utf-8")
+    tool.write_ceilings(path, {"後光": 67.66})
+    assert tool.read_ceilings(path) == {"雨": 8.0, "後光": 71.0}
+
+
+def _compare_arguments(tmp_path: Path, **overrides: object) -> SimpleNamespace:
+    (tmp_path / "ymm4.mp4").write_bytes(b"")
+    values: dict[str, object] = {
+        "work": tmp_path,
+        "output": None,
+        "only": "",
+        "every": False,
+        "blending": "srgb",
+        "top": 5,
+        "ceilings": tmp_path / "ceilings.json",
+        "write_ceilings": False,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def test_comparing_nothing_fails_instead_of_passing_the_ceilings(
+    tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """比べた絵が 0 枚なら終了コード 1 上限の判定にも書き換えにも進まない
+
+    ``--only`` がどの名前にも当たらないときや、書き出しにそのフレームが無いときに
+    0 枚になる 0 枚のまま上限を見ると、何も見ていないのに「超えなかった」で通る
+    """
+    monkeypatch.setattr(tool, "compare_work", lambda *args, **kwargs: [])
+    (tmp_path / "ceilings.json").write_text(json.dumps({"後光": 71.0}), encoding="utf-8")
+    assert tool.command_compare(_compare_arguments(tmp_path, only="無い名前")) == 1
+    written = _compare_arguments(tmp_path, write_ceilings=True)
+    assert tool.command_compare(written) == 1
+    assert tool.read_ceilings(tmp_path / "ceilings.json") == {"後光": 71.0}
+
+
+def test_a_missing_ceilings_file_fails_but_can_be_written(
+    tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """上限のファイルが無ければ比べるだけでは通さない 書き換えなら新しく作る
+
+    無いファイルを空の上限と読むと、``--ceilings`` の打ち間違いでどのテンプレートも
+    見張られず、どれだけ離れても終了コード 0 になる
+    """
+    row = (80.0, "後光", "a.ymmt", 1, "x", "")
+    monkeypatch.setattr(tool, "compare_work", lambda *args, **kwargs: [row])
+    missing = tmp_path / "打ち間違い.json"
+    assert tool.command_compare(_compare_arguments(tmp_path, ceilings=missing)) == 1
+    assert not missing.exists()
+    written = _compare_arguments(tmp_path, ceilings=missing, write_ceilings=True)
+    assert tool.command_compare(written) == 0
+    assert tool.read_ceilings(missing) == {"後光": 83.0}
+    assert tool.command_compare(_compare_arguments(tmp_path, ceilings=missing)) == 0
+
+
+def test_frames_missing_from_the_export_fail_instead_of_passing_half_measured(
+    tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """一部のフレームしか比べられなかったテンプレートがあれば終了コード 1
+
+    書き出しが途中で切れると、前半の行だけが残る そのまま上限を見ると後半の
+    フレームを見ないまま通り、``--write-ceilings`` は半端な測りで上限を書き換える
+    """
+    row = (10.0, "後光", "a.ymmt", 1, "x", "")
+
+    def half(
+        *args: object, missing: list[tuple[str, int]] | None = None, **kwargs: object
+    ) -> list[object]:
+        assert missing is not None, "比べられなかったフレームを受け取る入れ物を渡していない"
+        missing.append(("後光", 60))
+        return [row]
+
+    monkeypatch.setattr(tool, "compare_work", half)
+    (tmp_path / "ceilings.json").write_text(json.dumps({"後光": 71.0}), encoding="utf-8")
+    assert tool.command_compare(_compare_arguments(tmp_path)) == 1
+    assert tool.command_compare(_compare_arguments(tmp_path, write_ceilings=True)) == 1
+    assert tool.read_ceilings(tmp_path / "ceilings.json") == {"後光": 71.0}
+
+
+@pytest.mark.parametrize("broken", ["NaN", "Infinity", "-Infinity"])
+def test_a_ceiling_that_is_not_a_number_stops_before_comparing(
+    tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, broken: str
+) -> None:
+    """上限に NaN や Infinity があれば、比べる前に終了コード 1
+
+    どちらも float が受け取り、差と比べても「超えた」にならない 入っていると
+    そのテンプレートは差がいくら大きくても通る
+    """
+    compared: list[bool] = []
+
+    def compare(*args: object, **kwargs: object) -> list[object]:
+        compared.append(True)
+        return [(500.0, "後光", "a.ymmt", 1, "x", "")]
+
+    monkeypatch.setattr(tool, "compare_work", compare)
+    path = tmp_path / "ceilings.json"
+    path.write_text(f'{{"後光": {broken}, "雨": 27.0}}', encoding="utf-8")
+    assert tool.command_compare(_compare_arguments(tmp_path, ceilings=path)) == 1
+    assert (
+        tool.command_compare(_compare_arguments(tmp_path, ceilings=path, write_ceilings=True)) == 1
+    )
+    assert compared == []
+
+
+def test_templates_the_export_never_reached_are_told_apart_by_their_ceiling(
+    tool: ModuleType,
+) -> None:
+    """1 枚も比べられなかったテンプレートは、上限を持つときだけ困る物に数える
+
+    上限があるのに比べられないのは、前は書き出しに届いていた物が見張れなくなった印
+    上限の無い物は前から見張っていないので、落とすと途中で切れた手元の書き出し
+    （15766 フレームまで）では道具がいつまでも通らない 書き換えでは前の上限が残る
+    """
+    rows = [(10.0, "後光", "a.ymmt", 1, "x", "")]
+    missing = [("雨", 4047), ("雨", 4089), ("時計", 16300)]
+    problems, unmeasured = tool.unmeasured_templates(rows, missing, {"後光": 71.0, "雨": 27.0})
+    assert [line.split(" ")[0] for line in problems] == ["雨"]
+    assert unmeasured == ["時計"]
+    problems, unmeasured = tool.unmeasured_templates(
+        rows, missing, {"後光": 71.0, "雨": 27.0}, writing=True
+    )
+    assert problems == []
+    assert unmeasured == ["雨", "時計"]
+
+
+REAL_WORK = ROOT / ".work" / "ymm4-compare"
+
+
+# 描き比べは中で OpenGL のコンテキストを作る 書き出しがあっても GPU の無い所では飛ばす
+@pytest.mark.usefixtures("gpu")
+def test_the_real_templates_stay_within_their_ceilings(tool: ModuleType, tmp_path: Path) -> None:
+    """実物のテンプレート（aomoya）を YMM4 の書き出しと描き比べ、上限を超えないこと
+
+    書き出し（``ymm4.mp4``）と並べ方（``manifest.json``）は配布物の絵を含むので
+    リポジトリに入れない 手元の作業フォルダに無ければ飛ばす（CI では飛ぶ）
+    一覧と絵は一時フォルダへ書き、手元の report.json は書き換えない
+    """
+    if not (REAL_WORK / "ymm4.mp4").exists() or not (REAL_WORK / "manifest.json").exists():
+        pytest.skip(f"YMM4 の書き出しが {REAL_WORK} に無い")
+    missing: list[tuple[str, int]] = []
+    rows = tool.compare_work(REAL_WORK, tmp_path, missing=missing)
+    assert rows, "比べた絵が 1 枚も無い（書き出しと並べ方が食い違っている）"
+    ceilings = tool.read_ceilings(tool.CEILINGS)
+    problems, _ = tool.unmeasured_templates(rows, missing, ceilings)
+    assert problems == [], "上限を持つテンプレートのフレームが書き出しに無い"
+    assert tool.over_ceilings(tool.worst_by_template(rows), ceilings) == []
+
+
 def _on_screen(tool: ModuleType, width: int, height: int) -> np.ndarray:
     """素材を画面の真ん中に素材の画素のまま置いた絵 はみ出す分は切る"""
     screen = np.zeros((tool.HEIGHT, tool.WIDTH, 3), dtype=np.uint8)
