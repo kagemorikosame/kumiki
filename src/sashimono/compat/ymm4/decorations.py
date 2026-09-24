@@ -39,6 +39,8 @@ from sashimono.effects.definition import registry
 
 __all__ = ["DecorationResult", "map_decorations", "map_video_effects"]
 
+Colour = tuple[float, float, float, float]
+
 #: YMM4 の ``Style``（テキストの文字装飾）と、AviUtl2 での呼び名
 #:
 #: 中身は同じものなので、:mod:`sashimono.compat.decoration` の表に寄せて
@@ -94,7 +96,7 @@ def map_decorations(
     if not isinstance(decorations, list):
         return result
 
-    borders: list[tuple[float, tuple[float, float, float, float]]] = []
+    borders: list[tuple[AnimatedValue, Colour]] = []
     for entry in decorations:
         if not isinstance(entry, dict):
             continue
@@ -153,7 +155,17 @@ def _map_video_effects(
     if not isinstance(effects, list):
         return result
 
-    borders: list[tuple[float, tuple[float, float, float, float]]] = []
+    borders: list[tuple[AnimatedValue, Colour]] = []
+    # テキストの縁取りへ載せられない縁取り（縁だけ・動く不透明度）が 1 つでもあれば、
+    # 縁取りはすべて並びのその位置へエフェクトとして置く 一部だけをテキストへ載せると、
+    # 載せた方が並びの頭へ動いて重なり順が YMM4 と変わり、図形では載せた方が落ちる
+    in_place = any(
+        not _outline(entry, length, keyframes).fits_text
+        for entry in effects
+        if isinstance(entry, dict)
+        and entry.get("IsEnabled") is not False
+        and type_name(entry) == "OutlineEffect"
+    )
     pivot: CenterPoint | None = None
     for entry in effects:
         if not isinstance(entry, dict):
@@ -173,12 +185,14 @@ def _map_video_effects(
             pivot, _ = center_point(entry, report, length=length, keyframes=keyframes)
             continue
         if name == "OutlineEffect":
-            borders.append(
-                (
-                    max(0.0, number(entry.get("StrokeThickness"), 4.0)),
-                    brush_colour(entry.get("StrokeBrush")),
-                )
-            )
+            outline = _outline(entry, length, keyframes)
+            if in_place:
+                # 縁だけは元の絵を消す 図形には縁取りの設定そのものが無いので、テキストへ
+                # 載せる形のままだと縁が落ちて塗りが残る（#175）
+                if _peak(outline.width) > 0.0 or outline.outline_only:
+                    result.effects.append(outline.effect())
+                continue
+            borders.append(outline.baked())
             continue
 
         if name == "FillForegroundEffect":
@@ -357,14 +371,68 @@ def _video_effect(name: str, entry: dict[str, Any], length: int, keyframes: Any)
     return None
 
 
-def _border(entry: dict[str, Any]) -> tuple[float, tuple[float, float, float, float]]:
+def _border(entry: dict[str, Any]) -> tuple[AnimatedValue, Colour]:
     thickness = number(entry.get("Thickness"), number(entry.get("StrokeThickness"), 4.0))
     tint = brush_colour(entry.get("StrokeBrush"), colour(entry.get("Color"), (0.0, 0.0, 0.0, 1.0)))
-    return max(0.0, thickness), tint
+    return AnimatedValue(max(0.0, thickness)), tint
+
+
+@dataclass(frozen=True, slots=True)
+class _Outline:
+    """``OutlineEffect`` 1 つ分"""
+
+    width: AnimatedValue
+    tint: Colour
+    #: 0〜100 動くことがある
+    opacity: AnimatedValue
+    outline_only: bool
+
+    @property
+    def fits_text(self) -> bool:
+        """テキストの縁取りの設定（太さと色）へ載せられるか
+
+        縁だけは文字の塗りと一緒に描かれる縁取りでは表せない 動く不透明度は、色の濃さへ
+        焼き込むと最初の値で止まる
+        """
+        return not self.outline_only and not self.opacity.keyframes
+
+    def baked(self) -> tuple[AnimatedValue, Colour]:
+        """動かない不透明度を色の濃さへ焼き込んだ太さと色"""
+        red, green, blue, alpha = self.tint
+        return self.width, (red, green, blue, alpha * _unit(self.opacity.static / 100.0))
+
+    def effect(self) -> Effect:
+        return _border_effect(
+            self.width, self.tint, opacity=self.opacity, outline_only=self.outline_only
+        )
+
+
+def _outline(entry: dict[str, Any], length: int, keyframes: Any) -> _Outline:
+    def value(key: str, default: float) -> AnimatedValue:
+        return animated(entry.get(key), default, length=length, keyframes=keyframes)
+
+    return _Outline(
+        width=_non_negative(value("StrokeThickness", 4.0)),
+        tint=brush_colour(entry.get("StrokeBrush")),
+        # 縁の不透明度 読まずにいると、薄く光らせるつもりのグループの縁（SFっぽい
+        # 吹き出し(右) は 50.9）が、格子の隙間を濃く埋める
+        opacity=value("Opacity", 100.0),
+        outline_only=entry.get("IsOutlineOnly") is True,
+    )
+
+
+def _non_negative(value: AnimatedValue) -> AnimatedValue:
+    if value.keyframes:
+        return value
+    return AnimatedValue(max(0.0, value.static))
+
+
+def _peak(value: AnimatedValue) -> float:
+    return max((key.value for key in value.keyframes), default=value.static)
 
 
 def _place_borders(
-    borders: list[tuple[float, tuple[float, float, float, float]]],
+    borders: list[tuple[AnimatedValue, Colour]],
     result: DecorationResult,
 ) -> None:
     """縁取りを、テキスト側 1 本とエフェクト側の残りに分ける
@@ -373,23 +441,41 @@ def _place_borders(
     細いほうをテキストに載せると、太いほうをエフェクトで足したときに二重の縁の
     間隔が変わる
     """
-    usable = [item for item in borders if item[0] > 0.0]
+    usable = [item for item in borders if _peak(item[0]) > 0.0]
     if not usable:
         return
 
-    widest = max(usable, key=lambda item: item[0])
-    result.params["border_width"] = AnimatedValue(widest[0])
+    widest = max(usable, key=lambda item: _peak(item[0]))
+    result.params["border_width"] = widest[0]
     result.params["border_color"] = widest[1]
 
-    definition = registry.get("border")
-    if definition is None:  # pragma: no cover - 標準エフェクトは必ずある
-        return
     seen_widest = False
     for thickness, tint in usable:
         if not seen_widest and (thickness, tint) == widest:
             seen_widest = True
             continue
-        result.effects.append(definition.create(width=thickness, color=tint))
+        result.effects.append(_border_effect(thickness, tint))
+
+
+def _border_effect(
+    thickness: AnimatedValue,
+    tint: Colour,
+    *,
+    opacity: AnimatedValue | None = None,
+    outline_only: bool = False,
+) -> Effect:
+    definition = registry.get("border")
+    assert definition is not None  # 標準エフェクトは必ずある
+    return definition.create(
+        width=thickness,
+        color=tint,
+        opacity=opacity if opacity is not None else AnimatedValue(100.0),
+        outline_only=outline_only,
+    )
+
+
+def _unit(value: float) -> float:
+    return min(1.0, max(0.0, value))
 
 
 def _shadow(entry: dict[str, Any], result: DecorationResult, size: float) -> None:

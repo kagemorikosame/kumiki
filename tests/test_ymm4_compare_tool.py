@@ -1459,14 +1459,15 @@ def test_frames_missing_from_the_export_fail_instead_of_passing_half_measured(
     assert tool.read_ceilings(tmp_path / "ceilings.json") == {"後光": 71.0}
 
 
-@pytest.mark.parametrize("broken", ["NaN", "Infinity", "-Infinity"])
+@pytest.mark.parametrize("broken", ["NaN", "Infinity", "-Infinity", "null", "[1]", '"高い"'])
 def test_a_ceiling_that_is_not_a_number_stops_before_comparing(
     tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, broken: str
 ) -> None:
     """上限に NaN や Infinity があれば、比べる前に終了コード 1
 
     どちらも float が受け取り、差と比べても「超えた」にならない 入っていると
-    そのテンプレートは差がいくら大きくても通る
+    そのテンプレートは差がいくら大きくても通る ``null`` や並びは float が TypeError を
+    投げ、ValueError だけを受けていたころは終了コードを返さずに落ちた（#183 のレビュー）
     """
     compared: list[bool] = []
 
@@ -1482,6 +1483,37 @@ def test_a_ceiling_that_is_not_a_number_stops_before_comparing(
         tool.command_compare(_compare_arguments(tmp_path, ceilings=path, write_ceilings=True)) == 1
     )
     assert compared == []
+
+
+@pytest.mark.parametrize(
+    "broken",
+    [
+        '{"後光": null}',
+        '{"後光": [1]}',
+        '{"後光": {"a": 1}}',
+        '{"後光": "71"}',
+        '{"後光": 1' + "0" * 310 + "}",
+        "[71]",
+        "{",
+    ],
+)
+def test_a_ceilings_file_of_the_wrong_shape_stops_with_guidance(
+    tool: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    broken: str,
+) -> None:
+    """上限のファイルの形が崩れていても、トレースバックでなく案内を出して終了コード 1
+
+    null や配列は float や .items() が TypeError や AttributeError を投げ、呼ぶ側が
+    受ける ValueError をすり抜けていた
+    """
+    monkeypatch.setattr(tool, "compare_work", lambda *args, **kwargs: [])
+    path = tmp_path / "ceilings.json"
+    path.write_text(broken, encoding="utf-8")
+    assert tool.command_compare(_compare_arguments(tmp_path, ceilings=path)) == 1
+    assert "上限を読めない" in capsys.readouterr().out
 
 
 def test_templates_the_export_never_reached_are_told_apart_by_their_ceiling(

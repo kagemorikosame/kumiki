@@ -308,6 +308,28 @@ def test_previews_of_aliases_with_the_same_name_do_not_overwrite(
     assert len({tool.preview_name(case) for case in cases}) == 2
 
 
+def test_an_alias_whose_picture_is_missing_is_left_out(
+    tool: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """素材の見つからないエイリアスは描かずに外し、どの素材が無いかを出す（#183 のレビュー）
+
+    素材の無い絵を見本に残すと、描けたものと取り違える 比べる側では差が素材の欠けを
+    測っただけの数になり、平均を汚す
+    """
+    lost = tmp_path / "無い画像.png"
+    path = tmp_path / "画像.object"
+    path.write_text(
+        f"[Object]\nframe=0,29\n[Object.0]\neffect.name=画像ファイル\nファイル={lost}\n",
+        encoding="utf-8",
+    )
+    arguments = SimpleNamespace(work=tmp_path / "work", files=[str(path)], app_data=None)
+    assert tool.command_preview(arguments) == 0
+    assert not any((tmp_path / "work" / "preview").iterdir())
+    output = capsys.readouterr().out
+    assert "素材が見つからないので比べない" in output
+    assert str(lost) in output
+
+
 class TestAppDataPath:
     @pytest.fixture(autouse=True)
     def reset(self) -> Any:

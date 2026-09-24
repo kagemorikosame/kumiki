@@ -523,8 +523,24 @@ def ceilings_from(worst: dict[str, float], margin: float = CEILING_MARGIN) -> di
 def read_ceilings(path: Path) -> dict[str, float]:
     if not path.exists():
         return {}
+    # 形の崩れは ValueError にそろえる 呼ぶ側はそれだけを受けて案内を出すので、
+    # null や配列が TypeError のまま抜けると、案内の代わりにトレースバックで止まる
+    # JSON の読み違い（json.JSONDecodeError）も ValueError の仲間
     raw = json.loads(path.read_text(encoding="utf-8"))
-    ceilings = {str(name): float(value) for name, value in raw.items()}
+    if not isinstance(raw, dict):
+        raise ValueError(f"{path} が名前と上限の組になっていない")
+    ceilings: dict[str, float] = {}
+    for name, value in raw.items():
+        # null や並びは float が TypeError を投げる ValueError にそろえないと、呼ぶ側が
+        # 終了コード 1 で知らせずに落ちる 真偽値は float が 0 と 1 にしてしまうので断る
+        # 文字列は "71" なら float が読めてしまうが、上限を文字で書くのは書き間違いなので断る
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            raise ValueError(f"{path} の上限が数でない: {name}")
+        try:
+            ceilings[str(name)] = float(value)
+        except OverflowError:
+            # float に収まらない桁の整数 OverflowError は ValueError の仲間でない
+            raise ValueError(f"{path} の上限が大きすぎる: {name}") from None
     # NaN や Infinity は float が受け取ってしまう どちらも「超えた」にならないので、
     # 入っていると差がいくら大きくても通る
     broken = [name for name, value in ceilings.items() if not math.isfinite(value)]
