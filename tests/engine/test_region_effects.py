@@ -151,6 +151,7 @@ class TestRegionBlur:
 
     def test_the_blur_mixes_the_stripes_into_grey(self, apply: Apply) -> None:
         # 2 画素の縞を 8 画素でぼかせば、白と黒が混ざって中間になる
+        # 混ざらないと、ぼかしたつもりの所で縞（顔の輪郭や字）が読めてしまう
         done = apply(stripes(), (region(mode="blur", blur_radius=8.0, **CENTRE_BOX),))
         red = done[at(0, 0)][0]
         assert 0.3 < red < 0.7
@@ -164,6 +165,7 @@ class TestRegionBlur:
         assert not moved[at(0, -16)[0], :].any()
 
     def test_positive_x_moves_the_region_right(self, apply: Apply) -> None:
+        # X は右が正 逆だと、右の顔を隠すつもりで左が崩れ、右の顔は見えたままになる
         plain = apply(stripes(), ())
         done = apply(stripes(), (region(center_x=40.0, region_width=20.0, region_height=20.0),))
         moved = changed(plain, done)

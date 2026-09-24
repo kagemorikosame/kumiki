@@ -27,7 +27,6 @@ __all__ = ["PARTIAL_FILTER", "REGION_BLUR", "REGION_GLSL", "register_region_effe
 
 #: 部分フィルタの種別 エンジンがこの種別の後ろを範囲の中だけに効かせる
 PARTIAL_FILTER = "partial_filter"
-#: 部分モザイク・ぼかしの種別
 REGION_BLUR = "region_blur"
 
 #: 範囲の項目 2 つのエフェクトで同じ並び・同じ名前にする
