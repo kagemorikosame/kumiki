@@ -42,6 +42,10 @@ Box = tuple[float, float, float, float]
 Extent = tuple[Box, tuple[int, int]]
 
 
+#: 絵の見える範囲や位置を変えうる分類（切り抜き・形・動き・登場と退場） 色やぼかしは変えない
+_SHAPING_CATEGORIES = frozenset({"変形", "形", "動き", "登場・退場"})
+
+
 @dataclass(frozen=True, slots=True)
 class Outline:
     """クリップの外枠（合成の画素 Y は下が正）"""
@@ -229,6 +233,10 @@ def _follow_effects(
         if after_fixed:
             # 置いた後の絵に掛かる物は、形を変えるかどうかを中身から決められない
             approximate = True
+        elif definition.category in _SHAPING_CATEGORIES or definition.expands_object is not None:
+            # 置く前でも、切り抜き・領域拡張・動きの効果は絵の見える範囲や位置を変える
+            # 枠は置いた矩形のままなので、ぴったりだと言わない
+            approximate = True
         if definition.expands_object is not None:
             obj = _grow(obj, definition.expands_object, effect, local)
 
@@ -327,7 +335,10 @@ def _grow(obj: Box, names: tuple[str, str, str, str], effect: Effect, local: int
         spec = definition.spec(name) if definition is not None else None
         raw = effect.params.get(name)
         if isinstance(spec, TrackSpec):
-            amounts.append(spec.coerce(spec.default_value() if raw is None else raw).at(local))
+            amount = spec.coerce(spec.default_value() if raw is None else raw).at(local)
+            # 壊れた数は描く側（EffectProcessor）と同じく既定へ戻す そのまま足すと枠が
+            # 描けない座標になる
+            amounts.append(amount if math.isfinite(amount) else spec.default)
         else:
             amounts.append(0.0)
     grow_top, grow_bottom, grow_left, grow_right = amounts

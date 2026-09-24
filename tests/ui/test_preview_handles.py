@@ -427,6 +427,93 @@ class TestKeyframes:
         assert [k.frame for k in value.keyframes] == [0, 20]
         assert [k.value for k in value.keyframes] == pytest.approx([30.0, 130.0])
 
+    def test_shifting_every_point_stays_in_range(self) -> None:
+        # 再生ヘッドの値が範囲の中でも、別の時刻の点は上限の近くにあることがある
+        # 範囲の外の拡大率は、設定パネルで開いたときに黙って端へ丸められる
+        media = _media()
+        clip = _clip(media)
+        effects = tuple(
+            e.with_param(
+                "scale", AnimatedValue(100.0, keyframes=(Keyframe(0, 100.0), Keyframe(20, 700.0)))
+            )
+            if e.kind == TRANSFORM_EFFECT_KIND
+            else e
+            for e in clip.effects
+        )
+        clip = replace(clip, effects=effects)
+        project, _ = _project(clip)
+        commands = transform_commands(
+            project, clip.id, {"scale": 300.0}, 0, keyframes=KEYFRAME_DRAG_SHIFT_ALL
+        )
+        assert [c.value for c in commands if isinstance(c, SetKeyframe)] == [300.0, 800.0]
+
+    def test_returning_to_the_start_adds_no_point(self) -> None:
+        # 元の値へ戻して離しただけで、その時刻に直線の点が入ると曲線の出方が変わる
+        media = _media()
+        clip = self._animated(media)
+        project, _ = _project(clip)
+        assert transform_commands(project, clip.id, {"pos_x": 50.0}, 10) == []
+        shifted = transform_commands(
+            project, clip.id, {"pos_x": 50.0}, 10, keyframes=KEYFRAME_DRAG_SHIFT_ALL
+        )
+        assert shifted == []
+
+
+class TestDragEndings:
+    def test_releasing_another_button_keeps_the_drag(self, make_widget: MakeWidget) -> None:
+        # 左で掴んだまま右を離しただけで掴むのが消えると、途中の絵が残ったままになる
+        media = _media()
+        clip = _clip(media)
+        project, _ = _project(clip)
+        widget = make_widget(project, clip.id)
+        seen = _Recorder(widget)
+        _send(widget, QEvent.Type.MouseButtonPress, (160, 90))
+        _send(widget, QEvent.Type.MouseMove, (180, 90))
+        right = QMouseEvent(
+            QEvent.Type.MouseButtonRelease,
+            QPointF(180, 90),
+            QPointF(180, 90),
+            Qt.MouseButton.RightButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        QApplication.sendEvent(widget, right)
+        assert seen.committed == []
+        _send(widget, QEvent.Type.MouseButtonRelease, (180, 90))
+        assert len(seen.committed) == 1
+
+    def test_a_change_from_elsewhere_drops_the_drag(self, make_widget: MakeWidget) -> None:
+        # 掴んでいる途中に取り消しなどで中身が変わった 掴んだ時点から作った値を離したときに
+        # 当てると、その変更を上書きする
+        media = _media()
+        clip = _clip(media)
+        project, _ = _project(clip)
+        widget = make_widget(project, clip.id)
+        seen = _Recorder(widget)
+        widget.preview_requested.connect(
+            lambda commands: widget.set_project(_apply(project, list(commands)))
+        )
+        _send(widget, QEvent.Type.MouseButtonPress, (160, 90))
+        _send(widget, QEvent.Type.MouseMove, (180, 90))
+        changed = _apply(project, transform_commands(project, clip.id, {"scale": 200.0}, 0))
+        widget.set_project(changed)
+        _send(widget, QEvent.Type.MouseMove, (190, 90))
+        _send(widget, QEvent.Type.MouseButtonRelease, (190, 90))
+        assert seen.committed == []
+
+    def test_a_muted_track_has_no_outline(self, make_widget: MakeWidget) -> None:
+        # ミュートしたトラックの絵は描かれない 枠が残ると見えない絵を動かすことになる
+        media = _media()
+        clip = _clip(media)
+        project, _ = _project(clip)
+        timeline = project.timeline
+        muted = tuple(replace(track, muted=True) for track in timeline.tracks)
+        project = project.with_timeline(replace(timeline, tracks=muted))
+        widget = make_widget(project, clip.id)
+        seen = _Recorder(widget)
+        _drag(widget, (160, 90), (200, 90))
+        assert seen.committed == [] and seen.previewed == []
+
 
 class TestOldClips:
     def test_a_clip_without_the_placement_gets_it_in_the_same_step(

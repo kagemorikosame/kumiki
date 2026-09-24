@@ -177,6 +177,8 @@ class PreviewWidget(QOpenGLWidget):
         #: キーフレームのある値を動かしたときの決まり（設定）
         self._keyframe_drag = KEYFRAME_DRAG_AT_PLAYHEAD
         self._drag: _Drag | None = None
+        #: 掴んだ途中の絵を頼んでいる最中 その頼みで届く中身は掴むのをやめる理由にならない
+        self._showing_drag = False
         # 押していない間も矢印の形を変えるため 掴める所が見えるように
         self.setMouseTracking(True)
         # Esc で掴むのをやめられるように
@@ -188,6 +190,11 @@ class PreviewWidget(QOpenGLWidget):
         return self._renderer
 
     def set_project(self, project: Project) -> None:
+        if self._drag is not None and not self._showing_drag:
+            # 掴んでいる途中に別の道（取り消しやほかのパネル）で中身が変わった 掴んだ時点の
+            # プロジェクトから作った値を離したときに当てると、その変更を上書きしてしまう
+            # 途中の絵はこの新しい中身で描き直されるので、元へ戻す頼みは要らない
+            self._drag = None
         previous = self._project
         self._project = project
         if self._renderer is not None:
@@ -596,6 +603,10 @@ class PreviewWidget(QOpenGLWidget):
         track, clip = located
         if not clip.enabled or not self._project.draws_picture(track, clip):
             return None
+        # ミュートやほかのトラックのソロで映っていないクリップは掴ませない 描かれていない
+        # 物の枠が残ると、見えない絵を動かすことになる
+        if all(t.id != track.id for t in self._project.timeline.active_picture_tracks()):
+            return None
         outline = self.outline_of(clip)
         return None if outline is None else (track, clip, outline)
 
@@ -737,14 +748,20 @@ class PreviewWidget(QOpenGLWidget):
             drag.project, drag.clip_id, changes, self._frame, keyframes=self._keyframe_drag
         )
         # 履歴に積まずに見せる 1 回のドラッグで何十段も積まない 離したときに 1 段
-        self.preview_requested.emit(list(drag.commands))
+        self._showing_drag = True
+        try:
+            self.preview_requested.emit(list(drag.commands))
+        finally:
+            self._showing_drag = False
         event.accept()
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt の命名規約
-        drag, self._drag = self._drag, None
-        if drag is None or event.button() != Qt.MouseButton.LeftButton:
+        # 左を離したときだけ終える 先に消すと、左で掴んだまま右を離しただけで、確定も
+        # 取り消しもされずに途中の絵がプレビューに残る
+        if self._drag is None or event.button() != Qt.MouseButton.LeftButton:
             super().mouseReleaseEvent(event)
             return
+        drag, self._drag = self._drag, None
         if drag.commands:
             self.commands_requested.emit(list(drag.commands), _LABELS[drag.hit.grip])
         else:

@@ -242,14 +242,20 @@ def transform_commands(
     if effect is None:
         effect = fixed_effect(TRANSFORM_EFFECT_KIND)
         commands.append(AddEffect(clip.id, effect))
-    for name, value in changes.items():
+    for name, wanted in changes.items():
+        # 設定パネルと同じ範囲に収める 範囲の外の値は、パネルで開いたときに端へ丸められる
+        value = _clamp(name, wanted)
         path = ParamPath.of_effect(clip.id, effect.id, name)
         current = effect.params.get(name)
         if isinstance(current, AnimatedValue) and current.is_animated:
+            delta = value - current.at(local)
+            if abs(delta) < 1e-9:
+                # 元の所へ戻した 点を打つと、その時刻に無かった直線の点が入って、
+                # 前後の曲線の出方まで変わる
+                continue
             if keyframes == KEYFRAME_DRAG_SHIFT_ALL:
-                delta = value - current.at(local)
                 commands.extend(
-                    SetKeyframe(path, point.frame, point.value + delta)
+                    SetKeyframe(path, point.frame, _clamp(name, point.value + delta))
                     for point in current.keyframes
                 )
             else:

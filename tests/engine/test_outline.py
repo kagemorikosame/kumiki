@@ -295,6 +295,31 @@ class TestApproximate:
         outline = clip_outline(_project(clip, picture), clip, 0)
         assert outline is not None and not outline.approximate
 
+    @pytest.mark.parametrize(
+        ("kind", "values"),
+        [("crop", {"left": 10.0}), ("expand_area", {"right": 20.0})],
+    )
+    def test_a_shaping_effect_before_the_placement_makes_it_approximate(
+        self, picture: MediaItem, kind: str, values: dict[str, float]
+    ) -> None:
+        # 切り抜きは見える範囲を狭め、片側だけの領域拡張は絵をずらす 置いた矩形の枠を
+        # 実線で出すと、見えていない所まで絵だと思わせる
+        effect = registry.require(kind).create(**values)
+        clip = _picture_clip(picture)
+        clip = replace(clip, effects=(effect, *clip.effects))
+        outline = clip_outline(_project(clip, picture), clip, 0)
+        assert outline is not None and outline.approximate
+
+    def test_a_broken_expansion_keeps_the_outline_finite(self, picture: MediaItem) -> None:
+        # 描く側は壊れた数を既定へ戻す 枠だけが無限大の座標になると描けも掴めもしない
+        expand = registry.require("expand_area").create()
+        expand = expand.with_param("left", AnimatedValue(math.inf))
+        clip = _picture_clip(picture, pivot_h="left", rotation=30)
+        clip = replace(clip, effects=(expand, *clip.effects))
+        outline = clip_outline(_project(clip, picture), clip, 0)
+        assert outline is not None
+        assert all(math.isfinite(v) for corner in outline.corners for v in corner)
+
     def test_a_tilt_makes_it_approximate(self, picture: MediaItem) -> None:
         clip = _picture_clip(picture, rotation_x=30)
         outline = clip_outline(_project(clip, picture), clip, 0)
