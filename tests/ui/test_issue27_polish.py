@@ -24,6 +24,7 @@ from PySide6.QtGui import QColor, QImage, QPalette
 from PySide6.QtWidgets import (
     QApplication,
     QDialogButtonBox,
+    QFileDialog,
     QMessageBox,
     QPushButton,
     QTabBar,
@@ -228,6 +229,30 @@ class TestDockTabs:
         assert window.tabPosition(window.dockWidgetArea(window._subtitle_dock)) == (
             QTabWidget.TabPosition.South
         )
+        window.hide()
+
+    def test_switching_while_open_leaves_no_second_row_of_tabs(self, window: MainWindow) -> None:
+        # 重ねた後で向きを変えると、前の向きのタブが残って上下に 2 つ出ないか
+        # 見える所に出ているタブの並びを、隅々まで点で当たって確かめる
+        window.show()
+        for position, shape in (
+            (DOCK_TABS_BOTTOM, QTabBar.Shape.RoundedSouth),
+            (DOCK_TABS_TOP, QTabBar.Shape.RoundedNorth),
+            (DOCK_TABS_BOTTOM, QTabBar.Shape.RoundedSouth),
+        ):
+            window._apply_preferences(replace(window._preferences, dock_tabs=position))
+            QApplication.processEvents()
+            seen: set[QTabBar] = set()
+            for bar in window.findChildren(QTabBar):
+                rect = bar.geometry()
+                for x in range(rect.left(), rect.right() + 1, 4):
+                    for y in range(rect.top(), rect.bottom() + 1, 2):
+                        hit = window.childAt(x, y)
+                        if isinstance(hit, QTabBar) and hit.count() > 1:
+                            seen.add(hit)
+            assert {bar.shape() for bar in seen} == {shape}
+            # メディアと字幕、オブジェクト設定と AI アシスタントの 2 組だけ
+            assert len(seen) == 2
         window.hide()
 
     def test_the_default_is_top(self) -> None:
@@ -436,6 +461,40 @@ class TestSnapshotImage:
             window.close()
         (image,) = copied
         assert (image.width(), image.height()) == (64, 48)
+
+
+class TestSnapshotMenu:
+    """GPU の要らない所 描く所は差し替える"""
+
+    def test_the_name_and_the_picture_use_the_same_frame(
+        self, qt_application: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # 保存先を尋ねている間に再生ヘッドが進んでも、名前のタイムコードと描く絵は同じフレーム
+        # 尋ねた後に再生ヘッドを読み直すと、名前は 10 フレーム目なのに絵は 20 フレーム目になる
+        del qt_application
+        window = MainWindow(_colored_project(), confirm_unsaved=False)
+        window._seek(10)
+        suggested: list[str] = []
+        drawn: list[int] = []
+
+        def ask(*args: object) -> tuple[str, str]:
+            suggested.append(str(args[2]))
+            window._timeline.set_playhead(20)
+            return str(tmp_path / "shot.png"), ""
+
+        def render(project: Project, frame: int) -> QImage:
+            del project
+            drawn.append(frame)
+            return QImage(4, 4, QImage.Format.Format_RGBX8888)
+
+        monkeypatch.setattr(QFileDialog, "getSaveFileName", ask)
+        monkeypatch.setattr(snapshot_module, "render_snapshot", render)
+        try:
+            assert window.save_snapshot() == tmp_path / "shot.png"
+        finally:
+            window.close()
+        assert suggested[0].endswith("00-00-00-10.png")
+        assert drawn == [10]
 
     def test_the_actions_have_their_own_keys(self, window: MainWindow) -> None:
         # 割り当てが重なると Qt はどちらも動かさない（押しても何も起きない）

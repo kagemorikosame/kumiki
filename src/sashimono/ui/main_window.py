@@ -2184,29 +2184,36 @@ class MainWindow(QMainWindow):
         menu.addAction(self._snapshot_copy_action)
         menu.exec(self._preview.mapToGlobal(position))
 
-    def snapshot_image(self) -> QImage:
-        """再生ヘッドの位置を、書き出しと同じ描き方でプロジェクトの解像度のまま描く
+    def _snapshot_frame(self) -> int:
+        """静止画にするフレーム 再生を止めてから再生ヘッドを 1 度だけ読む
+
+        止めずに読むと、保存先を尋ねている間も再生ヘッドが進み、名前に入れた
+        タイムコードと描いた絵のフレームが食い違う
+        """
+        from sashimono.ui.snapshot import snapshot_frame
+
+        self._playback.stop()
+        return snapshot_frame(self.view_project, self._timeline.playhead)
+
+    def snapshot_image(self, frame: int | None = None) -> QImage:
+        """``frame``（省けば再生ヘッドの位置）を、書き出しと同じ描き方でプロジェクトの解像度のまま描く
 
         プレビューと同じく開いているシーンを描く 見ている絵と撮れた絵が食い違わないように
         """
-        from sashimono.ui.snapshot import render_snapshot, snapshot_frame
+        from sashimono.ui.snapshot import render_snapshot
 
-        self._playback.stop()
-        project = self.view_project
-        return render_snapshot(project, snapshot_frame(project, self._timeline.playhead))
+        if frame is None:
+            frame = self._snapshot_frame()
+        return render_snapshot(self.view_project, frame)
 
     def save_snapshot(self, path: Path | None = None) -> Path | None:
         """静止画を PNG で保存する ``path`` を省くと保存先を尋ねる 保存した場所を返す"""
-        from sashimono.ui.snapshot import (
-            SNAPSHOT_FILTER,
-            snapshot_frame,
-            snapshot_name,
-            write_png,
-        )
+        from sashimono.ui.snapshot import SNAPSHOT_FILTER, snapshot_name, write_png
 
+        # 名前と絵の両方にこのフレームを使う 尋ねる前に決めておく
+        frame = self._snapshot_frame()
         project = self.view_project
         if path is None:
-            frame = snapshot_frame(project, self._timeline.playhead)
             # 名前はメインのプロジェクト名で付ける シーンの中にいても、どの作品の絵かが分かる
             name = snapshot_name(replace(project, name=self._document.project.name), frame)
             folder = self._path.parent if self._path is not None else Path.home()
@@ -2218,7 +2225,7 @@ class MainWindow(QMainWindow):
             path = Path(chosen)
             if path.suffix.lower() != ".png":
                 path = path.with_name(path.name + ".png")
-        if not write_png(self.snapshot_image(), path):
+        if not write_png(self.snapshot_image(frame), path):
             QMessageBox.warning(self, "静止画を保存", f"保存できなかった: {path}")
             return None
         self.statusBar().showMessage(f"静止画を保存した: {path}", 5000)
