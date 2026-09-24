@@ -15,6 +15,7 @@ import pytest
 
 from sashimono.core.commands import (
     AddClip,
+    AddScene,
     AddTrack,
     GroupClips,
     MoveClip,
@@ -25,6 +26,7 @@ from sashimono.core.commands import (
     SetLayerMode,
     SplitClip,
     TrimClip,
+    new_scene,
     reorder_group,
 )
 from sashimono.core.io import ProjectFileError, project_from_dict, project_to_dict
@@ -106,6 +108,7 @@ class TestRoles:
 
     def test_the_old_kind_query_still_answers_for_separated_projects(self) -> None:
         # 分ける方式だけのタイムラインでは、今までの active_tracks と同じ答え
+        # 答えが変わると、分ける方式の作品で今までの呼び手（画面の行の表示など）のソロの結果が変わる
         line = _line(
             Track(TrackKind.VIDEO, "V1"),
             Track(TrackKind.VIDEO, "V2", solo=True),
@@ -199,6 +202,7 @@ class TestClipRoles:
 
     def test_separated_tracks_keep_their_rules(self, video_media: MediaItem) -> None:
         # 映像トラックの動画は鳴らさず（音は組の音声クリップが鳴らす）、音声トラックは描かない
+        # 映像トラックが鳴ると組の音声クリップと 2 重に鳴り、音声トラックが描くと絵が 2 枚重なる
         clip = _mixed_clip(video_media, audio_stream=None, show_picture=False)
         assert draws_picture(Track(TrackKind.VIDEO), clip, video_media)
         assert not plays_sound(Track(TrackKind.VIDEO), clip, video_media)
@@ -307,6 +311,35 @@ class TestCommands:
         with pytest.raises(ValueError, match="絵が消える"):
             MoveClip(clip.id, 0, audio.id).apply(project)
 
+    def test_a_text_or_scene_on_a_layer_cannot_move_to_an_audio_track(
+        self, mixed_project: Project
+    ) -> None:
+        # 素材が無いからと確かめを飛ばすと、レイヤーで描いていたテキストやシーンの絵が消える
+        audio = Track(TrackKind.AUDIO, "A1")
+        project, scene_id = _with_scene(AddTrack(audio).apply(mixed_project))
+        layer_2 = project.timeline.tracks[1]
+        text = Clip(0, 30, source=GeneratedSource(kind="text"))
+        scene = Clip(40, 30, scene_id=scene_id)
+        project = AddClip(layer_2.id, text).apply(project)
+        project = AddClip(layer_2.id, scene).apply(project)
+        for clip in (text, scene):
+            with pytest.raises(ValueError, match="絵が消える"):
+                MoveClip(clip.id, clip.timeline_start, audio.id).apply(project)
+
+    def test_a_scene_from_an_audio_track_stays_sound_only_on_a_layer(
+        self, mixed_project: Project
+    ) -> None:
+        # 音声トラックでは音だけを出していたシーンが、レイヤーへ移しただけで絵を描き始める
+        audio = Track(TrackKind.AUDIO, "A1")
+        project, scene_id = _with_scene(AddTrack(audio).apply(mixed_project))
+        scene = Clip(0, 30, scene_id=scene_id)
+        project = AddClip(audio.id, scene).apply(project)
+        layer_2 = project.timeline.tracks[1]
+        moved = MoveClip(scene.id, 0, layer_2.id).apply(project)
+        (arrived,) = moved.timeline.tracks[1].clips
+        assert not moved.draws_picture(moved.timeline.tracks[1], arrived)
+        assert moved.plays_sound(moved.timeline.tracks[1], arrived)
+
     def test_a_silent_layer_clip_cannot_move_to_an_audio_track(
         self, mixed_project: Project
     ) -> None:
@@ -411,6 +444,7 @@ class TestSaving:
 
     def test_version_6_opens_as_separated(self, project: Project, video_media: MediaItem) -> None:
         # 6 までのファイルに項目は無い 変換なしで、分ける方式のまま開けること
+        # 既定値で補わないと、形式 6 までに保存した作品がすべて開けなくなる
         placed = AddClip(project.timeline.tracks[0].id, Clip(0, 30, media_id=video_media.id)).apply(
             project
         )
@@ -488,6 +522,12 @@ class TestTrackOrderAndFormat:
         # 混合トラックのクリップを数え忘れると、置いた動画の長さと位置が黙って換算される
         with pytest.raises(ValueError, match="フレームレート"):
             SetFrameRate(FrameRate(60)).apply(mixed_project)
+
+
+def _with_scene(project: Project) -> tuple[Project, SceneId]:
+    """空のシーンを 1 つ足す 無いシーンを指すクリップはプロジェクトが断る"""
+    scene = new_scene(project, "中")
+    return AddScene(scene).apply(project), scene.id
 
 
 def _set_clip(project: Project, clip: Clip) -> Project:

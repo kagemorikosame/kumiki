@@ -732,7 +732,19 @@ def _carried_across(project: Project, source: Track, target: Track, clip: Clip) 
     （音声トラックでは鳴り出してしまう） 映像トラックへ移すときの決まり（音を鳴らす
     クリップと絵を隠したクリップを断る）は :func:`_validate_clip_media` が持つ
     """
-    if source.kind is target.kind or clip.media_id is None:
+    if source.kind is target.kind:
+        return clip
+    # 素材を持たないシーンやテキストもレイヤーでは絵を描く 素材の有無より先に見る
+    if (
+        source.kind is TrackKind.MIXED
+        and target.kind is TrackKind.AUDIO
+        and project.draws_picture(source, clip)
+    ):
+        raise ValueError("絵を描くクリップは音声トラックへ置けない（絵が消える）")
+    if clip.media_id is None:
+        if source.kind is TrackKind.AUDIO and target.kind is TrackKind.MIXED:
+            # 音声トラックのシーンは音だけを出している レイヤーでも音だけのまま置く
+            return replace(clip, show_picture=False)
         return clip
     if source.kind is TrackKind.AUDIO and target.kind is TrackKind.MIXED:
         media = project.require_media(clip.media_id)
@@ -745,8 +757,6 @@ def _carried_across(project: Project, source: Track, target: Track, clip: Clip) 
             clip, audio_stream=clip.stream_index, stream_index=picture, show_picture=False
         )
     if source.kind is TrackKind.MIXED and target.kind is TrackKind.AUDIO:
-        if project.draws_picture(source, clip):
-            raise ValueError("絵を描くクリップは音声トラックへ置けない（絵が消える）")
         if clip.audio_stream is None:
             raise ValueError("音を鳴らさないクリップは音声トラックへ置けない（鳴り出してしまう）")
         return replace(clip, stream_index=clip.audio_stream, audio_stream=None)
