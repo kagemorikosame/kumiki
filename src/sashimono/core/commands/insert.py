@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from fractions import Fraction
 
 from sashimono.core.commands.base import Command
@@ -23,6 +24,7 @@ from sashimono.core.model import (
     MediaItem,
     Project,
     Track,
+    TrackId,
     TrackKind,
     new_group_id,
 )
@@ -36,7 +38,11 @@ __all__ = [
     "insert_filter",
     "insert_generated",
     "insert_media",
+    "place_media",
 ]
+
+#: 置く先のトラックを選ぶ関数 （種類, 置く長さ, 積んでいるコマンド）→ トラック
+_TrackPicker = Callable[[TrackKind, int, list[Command]], Track]
 
 #: 静止画をタイムラインへ置くときの既定の長さ（フレーム）
 #: 30fps で 5 秒 Premiere の既定と同じくらい
@@ -54,6 +60,48 @@ def insert_media(
     映像と音声を持つ素材は、別々のトラックへ展開して同じリンクグループに入れる
     片方を動かせばもう片方も追従し、分割も同時に行われる
     """
+    start = project.duration if at_frame is None else max(0, at_frame)
+    return _place(
+        project,
+        media,
+        start,
+        lambda kind, _duration, commands: _find_or_create(project, kind, commands),
+    )
+
+
+def place_media(
+    project: Project,
+    media: Sequence[MediaItem],
+    *,
+    at_frame: int,
+    track_id: TrackId | None = None,
+) -> list[Command]:
+    """素材を、落とした位置（フレームとトラック）から順に並べて置く
+
+    タイムラインへのドラッグ＆ドロップのためのもの 何本かを落としたら、
+    落とした位置から隙間なく後ろへ並べる（読み込みの並び順と同じ）
+
+    トラックは、落としたトラックが種類に合って空いていればそこへ置く 合わない・
+    ロックしている・その範囲に別のクリップがいるときは、同じ種類で空いている
+    トラックへ回し、それも無ければ新しく作る 落とした所へ無理に置くと、
+    重なりで断られて何も置かれない
+    映像と音声を持つ素材は、落とした側の種類だけがそのトラックへ入り、
+    もう片方は合う種類の空いたトラックへ入る
+    """
+    commands: list[Command] = []
+    cursor = max(0, at_frame)
+    for item in media:
+        placed = _place(project, item, cursor, _free_picker(project, cursor, track_id))
+        for command in placed:
+            project = command.apply(project)
+        commands.extend(placed)
+        ends = [c.clip.timeline_end for c in placed if isinstance(c, AddClip)]
+        cursor = max([cursor, *ends])
+    return commands
+
+
+def _place(project: Project, media: MediaItem, start: int, pick: _TrackPicker) -> list[Command]:
+    """素材を 1 本、``start`` から置くコマンド トラックは ``pick`` が決める"""
     commands: list[Command] = []
     if project.find_media(media.id) is None:
         commands.append(AddMedia(media))
@@ -62,13 +110,12 @@ def insert_media(
     if duration <= 0:
         return commands
 
-    start = project.duration if at_frame is None else max(0, at_frame)
     # 映像と音声の両方があるときだけリンクする 1 本しかないのにグループを
     # 付けると、あとで別の素材と誤って連動する余地を残すことになる
     group = new_group_id() if media.has_video and media.has_audio else None
 
     if media.has_video or media.is_still:
-        track = _find_or_create(project, TrackKind.VIDEO, commands)
+        track = pick(TrackKind.VIDEO, duration, commands)
         commands.append(
             AddClip(
                 track.id,
@@ -83,7 +130,7 @@ def insert_media(
         )
 
     if media.has_audio:
-        track = _find_or_create(project, TrackKind.AUDIO, commands)
+        track = pick(TrackKind.AUDIO, duration, commands)
         commands.append(
             AddClip(
                 track.id,
@@ -145,6 +192,42 @@ def _find_or_create(project: Project, kind: TrackKind, commands: list[Command]) 
     if existing:
         return existing[0]
 
+    return _new_track(project, kind, commands)
+
+
+def _free_picker(project: Project, start: int, preferred: TrackId | None) -> _TrackPicker:
+    def pick(kind: TrackKind, duration: int, commands: list[Command]) -> Track:
+        return _free_or_create(project, kind, start, duration, commands, preferred)
+
+    return pick
+
+
+def _free_or_create(
+    project: Project,
+    kind: TrackKind,
+    start: int,
+    duration: int,
+    commands: list[Command],
+    preferred: TrackId | None,
+) -> Track:
+    """``[start, start + duration)`` が空いている ``kind`` のトラック 無ければ作る
+
+    落としたトラック（``preferred``）を先に見る 並びの順だけで探すと、
+    V3 へ落としたのに空いている V1 へ入り、落とした所と違う所に出る
+    """
+    for command in commands:
+        if isinstance(command, AddTrack) and command.track.kind is kind:
+            return command.track
+
+    candidates = [t for t in project.timeline.tracks if t.kind is kind and not t.locked]
+    candidates.sort(key=lambda track: track.id != preferred)
+    for track in candidates:
+        if not any(clip.overlaps(start, start + duration) for clip in track.clips):
+            return track
+    return _new_track(project, kind, commands)
+
+
+def _new_track(project: Project, kind: TrackKind, commands: list[Command]) -> Track:
     prefix = "V" if kind is TrackKind.VIDEO else "A"
     index = sum(1 for t in project.timeline.tracks if t.kind is kind) + 1
     track = Track(kind=kind, name=f"{prefix}{index}")
