@@ -26,6 +26,7 @@ from sashimono.core.io.serialize import (
 from sashimono.core.io.subtitles import (
     SUBTITLE_FILTER,
     save_subtitles,
+    subtitles_in_range,
     to_srt,
     to_text,
     to_vtt,
@@ -58,6 +59,7 @@ __all__ = [
     "project_to_dict",
     "save_project",
     "save_subtitles",
+    "subtitles_in_range",
     "to_srt",
     "to_text",
     "to_vtt",

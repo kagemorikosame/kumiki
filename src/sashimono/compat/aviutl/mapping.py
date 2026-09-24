@@ -18,6 +18,7 @@ from pathlib import Path
 
 from sashimono.compat.aviutl.catalog import ScriptEntry
 from sashimono.compat.aviutl.control import lua_string, split_dialog
+from sashimono.compat.aviutl.custom_object import empty_object
 from sashimono.compat.aviutl.encoding import decode_utf16_hex
 from sashimono.compat.aviutl.exo import ExoEntry, ExoFile, ExoObject
 from sashimono.compat.aviutl.motion import (
@@ -133,6 +134,10 @@ _EFFECT_ONLY = frozenset({"アニメーション効果"})
 
 #: スクリプトが中身を作る要素 ``name=矩形@単純図形σ`` のようにスクリプトを名前で指す
 _SCRIPTED_CONTENTS = frozenset({"カスタムオブジェクト", "シーンチェンジ"})
+
+#: 手元にスクリプトがあれば、右クリックの〔追加〕と同じ形で置く中身
+#: （:mod:`sashimono.compat.aviutl.custom_object`）
+_CUSTOM_OBJECT = "カスタムオブジェクト"
 
 
 @dataclass(frozen=True, slots=True)
@@ -659,6 +664,12 @@ def map_object(
         source, media_path, kind = _content(content, obj.relative_points(), log)
         stacked = tuple(obj.filters())
     effects: list[Effect] = []
+    if kind == _CUSTOM_OBJECT and source is not None:
+        # 中身を作るスクリプトは列の先頭 後ろのフィルタは、スクリプトが作った絵に掛かる
+        found = _find_script(content.params.get("name", ""), "obj")
+        script = _script_values(found, content, obj.relative_points(), log) if found else None
+        if script is not None:
+            effects.append(script)
     opacity = AnimatedValue(1.0)
     blend = "normal"
     # 中間点はオブジェクトの持ち物 トラックバーの値はこの点の数だけ並ぶ
@@ -1138,6 +1149,10 @@ def _content(
     if entry.name in _MEDIA_NAMES:
         _note_sound_choice(entry, log)
         return None, _media_file(entry), entry.name
+    if entry.name == _CUSTOM_OBJECT and _find_script(entry.params.get("name", ""), "obj"):
+        # 手元にあるスクリプトは、右クリックの〔追加〕と同じ形（空のテキスト）で置く
+        # スクリプトは :func:`map_object` が最初のエフェクトとして積む
+        return empty_object(), "", entry.name
     if entry.name in _SCRIPTED_CONTENTS:
         # スクリプトで中身を作るもの（AviUtl1 の カスタムオブジェクト と シーンチェンジ）
         # どのスクリプトかで出来る絵がまるで違うので、名前ごとに数える
@@ -2097,7 +2112,16 @@ def _animation(entry: ExoEntry, points: tuple[int, ...], log: CompatibilityRepor
     if found is None:
         log.note_missing(f"アニメーション効果: {name}")
         return None
+    return _script_values(found, entry, points, log)
 
+
+def _script_values(
+    found: ScriptEntry, entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport
+) -> Effect | None:
+    """AviUtl1 の書き方（track0..3・check0・param）の値を、見つけたスクリプトへ入れる
+
+    アニメーション効果とカスタムオブジェクトは同じ書き方をする
+    """
     definition = registry.get(found.identifier)
     if definition is None:  # pragma: no cover - 登録済みのはず
         return None
