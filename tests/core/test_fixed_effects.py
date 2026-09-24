@@ -97,9 +97,10 @@ class TestTheMark:
 
     def test_placed_sound_gets_a_fixed_volume(self, audio_media: MediaItem) -> None:
         # 置いたときに付く音量調整が外せると、YMM4 の音声アイテムと違って音量の欄が消える
-        (effect,) = _sound(_placed(audio_media)).effects
-        assert effect.kind == VOLUME_EFFECT_KIND
-        assert effect.fixed
+        # 後ろのフェードも音声の欄（P2）
+        effects = _sound(_placed(audio_media)).effects
+        assert [e.kind for e in effects] == [VOLUME_EFFECT_KIND, "audio_fade"]
+        assert all(e.fixed for e in effects)
 
 
 class TestCommands:
@@ -114,8 +115,9 @@ class TestCommands:
         # 固定の物のついでに、ふつうのエフェクトまで外せなくなっていないこと
         project = _with_effects(_placed(audio_media), _blur())
         clip = _sound(project)
-        project = RemoveEffect(clip.id, clip.effects[1].id).apply(project)
-        assert len(_sound(project).effects) == 1
+        (loose,) = [e for e in clip.effects if not e.fixed]
+        project = RemoveEffect(clip.id, loose.id).apply(project)
+        assert all(e.fixed for e in _sound(project).effects)
 
     def test_a_fixed_effect_can_be_turned_off(self, audio_media: MediaItem) -> None:
         # 外せない代わりに、効かせたくないときは無効にする 無効まで断ると逃げ道が無い
@@ -130,33 +132,36 @@ class TestCommands:
         # 分からなくなる
         project = _with_effects(_placed(audio_media), _blur())
         clip = _sound(project)
+        fixed = next(e for e in clip.effects if e.fixed)
         with pytest.raises(ValueError, match="並べ替えられない"):
-            MoveEffect(clip.id, clip.effects[0].id, 1).apply(project)
+            MoveEffect(clip.id, fixed.id, 0).apply(project)
 
     def test_a_normal_effect_cannot_jump_over_a_fixed_one(self, audio_media: MediaItem) -> None:
-        # 固定の欄の前へ割り込ませると、どこまでが最初からある欄か見分けが付かなくなる
+        # 固定の欄の後ろへ回り込ませると、足したエフェクトが置いた後の絵や音に掛かり、
+        # どこまでが最初からある欄か見分けが付かなくなる
         project = _with_effects(_placed(audio_media), _blur())
         clip = _sound(project)
+        assert not clip.effects[0].fixed
         with pytest.raises(ValueError, match="またいで"):
-            MoveEffect(clip.id, clip.effects[1].id, 0).apply(project)
+            MoveEffect(clip.id, clip.effects[0].id, len(clip.effects) - 1).apply(project)
 
     def test_normal_effects_still_swap_among_themselves(self, audio_media: MediaItem) -> None:
-        # 固定の物の後ろにあるふつうのエフェクトどうしは、今までどおり並べ替えられる
+        # 固定の物の前にあるふつうのエフェクトどうしは、今までどおり並べ替えられる
         project = _with_effects(_placed(audio_media), _blur(), _volume(50))
         clip = _sound(project)
-        project = MoveEffect(clip.id, clip.effects[2].id, 1).apply(project)
+        project = MoveEffect(clip.id, clip.effects[1].id, 0).apply(project)
         kinds = [e.kind for e in _sound(project).effects]
-        assert kinds == [VOLUME_EFFECT_KIND, VOLUME_EFFECT_KIND, "blur"]
+        assert kinds == [VOLUME_EFFECT_KIND, "blur", VOLUME_EFFECT_KIND, "audio_fade"]
 
     def test_the_same_kind_can_be_stacked(self, audio_media: MediaItem) -> None:
         # 重ねがけは YMM4 と同じく許す 同じ種類だからと断ると、音量を 2 段で絞れない
         project = _with_effects(_placed(audio_media), _volume(50))
         effects = _sound(project).effects
-        assert [e.kind for e in effects] == [VOLUME_EFFECT_KIND, VOLUME_EFFECT_KIND]
-        assert [e.fixed for e in effects] == [True, False]
+        assert [e.kind for e in effects] == [VOLUME_EFFECT_KIND, VOLUME_EFFECT_KIND, "audio_fade"]
+        assert [e.fixed for e in effects] == [False, True, True]
         # 足した方は外せる
-        project = RemoveEffect(_sound(project).id, effects[1].id).apply(project)
-        assert len(_sound(project).effects) == 1
+        project = RemoveEffect(_sound(project).id, effects[0].id).apply(project)
+        assert all(e.fixed for e in _sound(project).effects)
 
     def test_stacked_volumes_both_apply(self, audio_media: MediaItem) -> None:
         # 重ねた方が鳴らないと、足したのに何も変わらないように見える 50% を 2 回で 25%
@@ -202,12 +207,12 @@ class TestFile:
         # #145 の本体で置いた音量調整は印を持たない そのまま開くと、後で固定の音量調整が
         # 足されたときに同じ物が 2 つ並び、どちらが最初からある欄か分からなくなる
         # 置いた後で音量を動かしていても、置いたときに付いた物に変わりはない
+        # 前の本体は置いた音量調整だけを付け、足したエフェクトを末尾へ積んだ その並びを作る
         project = _placed(audio_media)
         clip = _sound(project)
-        project = SetParam(
-            ParamPath.of_effect(clip.id, clip.effects[0].id, "volume"), AnimatedValue(70.0)
-        ).apply(project)
-        project = _with_effects(project, _volume(50))
+        track = next(t for t in project.timeline.tracks if t.kind is TrackKind.AUDIO)
+        old = replace(clip, effects=(_volume(70, fixed=True), _volume(50)))
+        project = project.with_timeline(project.timeline.replace_track(track.with_clips((old,))))
         loaded = project_from_dict(self._as_old_file(project))
         assert [e.fixed for e in _sound(loaded).effects] == [True, False]
 

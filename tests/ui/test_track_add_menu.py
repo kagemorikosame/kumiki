@@ -360,7 +360,8 @@ class TestAddingFromTheEmptySpace:
             view.build_context_menu(_point(view, "V2", 120)), "追加", "カスタムオブジェクト", "円"
         ).trigger()
         (clip,) = _track(view, "V2").clips
-        assert [e.kind for e in clip.effects] == [entry.identifier]
+        # スクリプトの後ろに描画の欄（反転・配置）が付く（#27 P2）
+        assert [e.kind for e in clip.effects] == [entry.identifier, "flip", "transform"]
         assert clip.source is not None and clip.source.params.get("text") == ""
 
     def test_the_script_catalog_is_not_read_until_the_submenu_opens(

@@ -172,7 +172,8 @@ class TestShaders:
             processor = EffectProcessor(16, 16, quad)
             try:
                 for definition in builtin_effects():
-                    assert processor.has_work((definition.create(),)), (
+                    # has_work では見ない 既定のままの変形は何もしない値なので、組めても偽になる
+                    assert processor._compile(definition.create()) is not None, (
                         f"{definition.kind}: シェーダをコンパイルできない"
                     )
             finally:

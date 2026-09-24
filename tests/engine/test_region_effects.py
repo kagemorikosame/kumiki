@@ -255,6 +255,14 @@ class TestPartialFilter:
         assert done[at(40, 0)][0] < 0.02
         assert done[at(0, 0)][0] > 0.98
 
+    def test_the_fixed_items_close_the_range(self, apply: Apply) -> None:
+        # 置いたクリップの描画の欄（配置・反転）は足したエフェクトの後ろにある 範囲に含めると、
+        # 部分フィルタを足したクリップを X で動かしたとき、範囲の中の絵だけが動く
+        fixed = replace(invert(), fixed=True)
+        done = apply(white(), (partial(**CENTRE_BOX), invert(), fixed))
+        assert done[at(0, 0)][0] > 0.98
+        assert done[at(40, 0)][0] < 0.02
+
     def test_alone_it_changes_nothing(self, apply: Apply) -> None:
         # 積んだばかり（後ろに何も無い）の部分フィルタで絵が消えたり欠けたりしない
         plain = apply(stripes(), ())

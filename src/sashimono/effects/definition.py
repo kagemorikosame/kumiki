@@ -11,7 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from sashimono.core.model import Effect, ParamValue
+from sashimono.core.model import AnimatedValue, Effect, ParamValue
 from sashimono.effects.spec import ParameterGroup, ParameterSpec, ParamInput
 
 __all__ = ["EffectDefinition", "EffectRegistry", "registry"]
@@ -70,6 +70,13 @@ class EffectDefinition:
     #: 並びの終わりで、このシェーダに ``u_source``（取っておいた絵）と ``u_texture``
     #: （後ろを掛け終えた絵）を渡して混ぜさせる その場では何も描かない
     scopes_following: bool = False
+    #: この値の組なら絵を変えない、という項目と値（動かない値だけが当たる）
+    #:
+    #: クリップが最初から持つ配置と反転（固定の項目）は、置いたクリップすべてに付く
+    #: 既定のままでもシェーダを通すと、全クリップで画面 1 枚ぶんのパスが増え、中間の
+    #: バッファを通る分だけ絵も前と変わる ここに当たる物はエンジンが掛けずに飛ばす
+    #: （:meth:`is_idle`） 挙げていない項目は結果に効かない物に限る
+    idle_when: tuple[tuple[str, float | bool], ...] = ()
 
     def __post_init__(self) -> None:
         if self.passes < 1:
@@ -77,6 +84,30 @@ class EffectDefinition:
         names = [spec.name for spec in self.parameters]
         if len(set(names)) != len(names):
             raise ValueError(f"{self.kind}: パラメータ名が重複している")
+        unknown = [name for name, _ in self.idle_when if name not in names]
+        if unknown:
+            raise ValueError(f"{self.kind}: 何もしない値の項目が定義に無い: {unknown}")
+
+    def is_idle(self, effect: Effect) -> bool:
+        """``effect`` が絵を何も変えない値か :attr:`idle_when` が空なら常に偽
+
+        動く値（キーフレームを持つ値）は、途中の点がすべて同じでも偽にする 描くたびに
+        すべての点を見るのは、飛ばして得る分より高く付く
+        """
+        if not self.idle_when:
+            return False
+        for name, idle in self.idle_when:
+            spec = self.spec(name)
+            if spec is None:  # pragma: no cover - __post_init__ で断っている
+                return False
+            raw = effect.params.get(name)
+            value = spec.coerce(spec.default_value() if raw is None else raw)
+            if isinstance(value, AnimatedValue):
+                if value.is_animated or value.static != idle:
+                    return False
+            elif value != idle:
+                return False
+        return True
 
     def spec(self, name: str) -> ParameterSpec | None:
         for parameter in self.parameters:

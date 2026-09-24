@@ -39,6 +39,12 @@ from sashimono.core.commands import (
     new_scene,
     place_media,
 )
+from sashimono.core.commands.fixed import (
+    FIXED_ORDER,
+    PICTURE_FIXED,
+    SOUND_FIXED,
+    with_fixed_items,
+)
 from sashimono.core.commands.insert import VOLUME_EFFECT_KIND, is_effect_track, new_track
 from sashimono.core.model import (
     Clip,
@@ -165,6 +171,63 @@ class TestMedia:
         assert video.clip.link_group is not None
         assert video.clip.link_group == audio.clip.link_group
         assert _kinds(_apply(base, commands)) == [TrackKind.VIDEO, TrackKind.AUDIO]
+
+
+def _fixed_kinds(clip: Clip) -> list[str]:
+    return [e.kind for e in clip.effects if e.fixed]
+
+
+class TestFixedItems:
+    """置いた 1 本のクリップが、絵と音の両方の固定の項目を持つこと（P2 #158）"""
+
+    def test_a_video_with_sound_has_picture_and_sound_items(self, video_media: MediaItem) -> None:
+        # 絵の側だけ・音の側だけを付けると、パネルに位置か音量の欄が欠ける
+        # 両方から同じ種類を 2 つ持つと、どちらがパネルの欄なのか分からなくなる
+        (added,) = _added(insert_media(_mixed(), video_media))
+        bare = replace(added.clip, effects=())
+        expected = with_fixed_items(bare, picture=True, sound=True)
+
+        # ID は作るたびに違うので、種類・値・印で比べる
+        def shape(clip: Clip) -> list[tuple[str, object, bool]]:
+            return [(e.kind, e.params, e.fixed) for e in clip.effects]
+
+        assert shape(added.clip) == shape(expected)
+        assert _fixed_kinds(added.clip) == list(FIXED_ORDER)
+
+    def test_the_picture_is_placed_at_its_own_size(self, video_media: MediaItem) -> None:
+        # 画面に収めて置くと、分ける方式で置いた絵と大きさが変わる
+        (added,) = _added(insert_media(_mixed(), video_media))
+        assert added.clip.native_size
+
+    def test_an_image_has_only_picture_items(self, still_media: MediaItem) -> None:
+        # 音の無い素材に音量やフェードの欄があると、効かない欄がパネルに並ぶ
+        (added,) = _added(insert_media(_mixed(), still_media))
+        assert _fixed_kinds(added.clip) == list(PICTURE_FIXED)
+        assert added.clip.native_size
+
+    def test_sound_only_media_has_only_sound_items(self, audio_media: MediaItem) -> None:
+        # 絵を出さないクリップに反転や配置の欄があると、効かない欄がパネルに並ぶ
+        (added,) = _added(insert_media(_mixed(), audio_media))
+        assert _fixed_kinds(added.clip) == list(SOUND_FIXED)
+
+    def test_the_items_match_the_separated_pair(self, video_media: MediaItem) -> None:
+        # 分ける方式の 2 本と中身が違うと、方式を変えただけで絵や音が変わる
+        base = Project.create(ProjectSettings(frame_rate=RATE_30))
+        video, audio = _added(insert_media(base, video_media))
+        (mixed,) = _added(insert_media(_mixed(), video_media))
+        assert [e.kind for e in mixed.clip.effects] == [
+            *(e.kind for e in video.clip.effects),
+            *(e.kind for e in audio.clip.effects),
+        ]
+        assert [e.params for e in mixed.clip.effects] == [
+            *(e.params for e in video.clip.effects),
+            *(e.params for e in audio.clip.effects),
+        ]
+
+    def test_text_on_a_layer_has_picture_items(self) -> None:
+        # テキストだけ描画の欄が無いと、位置を直すのに変形を探して足すことになる
+        (added,) = _added(insert_generated(_mixed(), TEXT, at_frame=0))
+        assert _fixed_kinds(added.clip) == list(PICTURE_FIXED)
 
 
 class TestPictures:
