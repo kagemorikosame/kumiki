@@ -65,7 +65,7 @@ __all__ = [
     "map_exo",
     "map_object",
     "media_paths",
-    "script_filter_effect",
+    "script_filter_effects",
     "script_filter_kind",
 ]
 
@@ -1915,7 +1915,7 @@ def _filter(
 ) -> Effect | None:
     """フィルタをエフェクトへ
 
-    ``names`` は項目の対応を差し替えるとき（:func:`script_filter_effect`）
+    ``names`` は項目の対応を差し替えるとき（:func:`script_filter_effects`）
     """
     if entry.name == "アニメーション効果":
         return _animation(entry, points, log)
@@ -2024,29 +2024,50 @@ def script_filter_kind(name: str) -> str | None:
     return _FILTERS.get(name)
 
 
-def script_filter_effect(
+def script_filter_effects(
     name: str, values: dict[str, float | str], *, report: CompatibilityReport | None = None
-) -> Effect | None:
-    """``obj.effect(名前, 項目, 値, …)`` をエフェクトにする
+) -> tuple[Effect, ...]:
+    """``obj.effect(名前, 項目, 値, …)`` をエフェクトにする 写せなければ空
 
     エイリアスの読み込み（:func:`_filter`）と同じ対応表を引く 項目名はどちらも設定の
     ダイアログの名前で、表を 2 つ持つと片方だけ直して食い違う 色だけは ``color`` と
     いう名前の数（0xRRGGBB）で来るので、そのフィルタの色の項目へ移す
+
+    クリッピング の 中心の位置を変更 は、読み込みと同じく切った後の平行移動を続けて返す
+    （:func:`_clip_recentre`） 返さないと、先に効果を積んでから切るスクリプトで、
+    残りを真ん中へ戻す動きだけが落ちる
     """
     if name not in _FILTERS:
-        return None
+        return ()
+    log = report if report is not None else global_report
     colours = _COLOR_PARAMS.get(name, {})
     params: dict[str, str] = {}
     for key, value in values.items():
         if key == _SCRIPT_COLOR and colours:
-            params[next(iter(colours))] = (
-                f"{int(value) & 0xFFFFFF:06x}" if isinstance(value, int | float) else str(value)
-            )
+            if isinstance(value, int | float):
+                if not math.isfinite(value):
+                    # int() が例外を出してフレームの描画ごと止まる 色の欄は既定のまま
+                    log.note_missing(f"{name}の color（数ではない）")
+                    continue
+                params[next(iter(colours))] = f"{int(value) & 0xFFFFFF:06x}"
+            else:
+                params[next(iter(colours))] = str(value)
             continue
         params[key] = _number_text(value)
+    if name == "クリッピング":
+        # 読み込みの _clip_recentre は 4 辺が揃っている前提（エイリアスは全部書く）
+        # スクリプトは渡した辺しか書かないので、渡さなかった辺は切らない
+        for side in ("上", "下", "左", "右"):
+            params.setdefault(side, "0")
     entry = ExoEntry(name=name, params=params)
-    log = report if report is not None else global_report
-    return _filter(entry, (), log, names=_SCRIPT_PARAMS.get(name))
+    effect = _filter(entry, (), log, names=_SCRIPT_PARAMS.get(name))
+    if effect is None:
+        return ()
+    if name == "クリッピング":
+        recentred = _clip_recentre(entry, (), log)
+        if recentred is not None:
+            return (effect, recentred)
+    return (effect,)
 
 
 def _number_text(value: float | str) -> str:

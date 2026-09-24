@@ -922,8 +922,20 @@ class FrameRenderer:
             self._context.release()
 
     def _draw_clip(
-        self, track: Track, clip: Clip, frame: int, rate: FrameRate, depth: int = 0
+        self,
+        track: Track,
+        clip: Clip,
+        frame: int,
+        rate: FrameRate,
+        depth: int = 0,
+        *,
+        below: Compositor | None = None,
     ) -> None:
+        """クリップ 1 本を描く
+
+        ``below`` はスクリプトの ``frm`` として読む合成先 別の合成先へ描き分けるとき
+        （:meth:`_draw_into`）に、下の絵を溜めた外側を渡す
+        """
         if clip.scene_id is not None:
             self._draw_scene(track, clip, frame, rate, depth)
             return
@@ -961,6 +973,7 @@ class FrameRenderer:
                 rate,
                 opacity,
                 offset=offset,
+                below=below,
             )
             return
 
@@ -1100,7 +1113,9 @@ class FrameRenderer:
         self._compositor = layer
         try:
             layer.begin((0.0, 0.0, 0.0, 0.0))
-            self._draw_clip(track, clip, frame, rate, depth)
+            # 描く先は空の layer に切り替えてある スクリプトが画面（frm）として写すのは
+            # 下の絵を溜めた outer 空の方を写すと、下の絵ではなく黒を写す
+            self._draw_clip(track, clip, frame, rate, depth, below=outer)
         finally:
             self._compositor = outer
 

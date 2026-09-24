@@ -19,7 +19,7 @@ import numpy as np
 from sashimono.compat.aviutl import PREFIX
 from sashimono.compat.aviutl.catalog import ScriptCatalog, script_catalog
 from sashimono.compat.aviutl.control import lua_value
-from sashimono.compat.aviutl.mapping import script_filter_effect
+from sashimono.compat.aviutl.mapping import script_filter_effects
 from sashimono.compat.aviutl.objapi import DrawCall, EffectRequest, ObjectState
 from sashimono.compat.aviutl.runtime import LuaScriptRuntime, blank_image
 from sashimono.core.commands.fixed import TRANSFORM_EFFECT_KIND
@@ -272,16 +272,17 @@ def _as_params(kind: str, values: dict[str, object]) -> dict[str, ParamValue]:
 
 def requested_effects(call: DrawCall) -> tuple[Effect, ...]:
     """``obj.effect`` で頼まれたフィルタを、こちらのエフェクトへ"""
-    return tuple(_to_effect(request) for request in call.effects)
+    return tuple(effect for request in call.effects for effect in _to_effects(request))
 
 
-def _to_effect(request: EffectRequest) -> Effect:
+def _to_effects(request: EffectRequest) -> tuple[Effect, ...]:
     """項目名と値はエイリアスの読み込みと同じ対応表で写す
 
     以前はここに別の小さな表を持っていて、``輝度`` と ``明るさ`` が同じ項目へ入り、
-    Y の向きも直していなかった
+    Y の向きも直していなかった 1 つの頼みが 2 つになることがある（クリッピング の
+    中心の位置を変更 は切った後の平行移動が続く）
     """
-    effect = script_filter_effect(request.original, request.params)
-    if effect is None:  # pragma: no cover - 対応表にある名前しか頼まれない
-        return Effect(kind=request.kind, params={})
-    return effect
+    effects = script_filter_effects(request.original, request.params)
+    if not effects:  # pragma: no cover - 対応表にある名前しか頼まれない
+        return (Effect(kind=request.kind, params={}),)
+    return effects
