@@ -19,6 +19,7 @@ from sashimono.core.model import MediaItem, Project, Transcript
 from tests.ai.conftest import FakeHost, make_loaded
 from tests.test_runtime_after_install import (
     _fake_installer,
+    _slow_cancelled_installer,
     _wait_for,
     frozen,
     isolated_imports,
@@ -64,6 +65,34 @@ class TestTranscribeAfterInstall:
 
         assert dialog._run_button.isEnabled() is True
         assert "再起動しなくても" in dialog._status.text()
+        dialog.deleteLater()
+
+
+class TestTranscribeInstallCancelled:
+    def test_closing_during_the_install_does_not_report_success(
+        self,
+        frozen: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        qt_application: QApplication,
+        video_media: MediaItem,
+    ) -> None:
+        """導入中に「閉じる（中断）」を押した瞬間に、成功と読まないこと
+
+        読むと、pip が走っている最中に「再起動しなくてもそのまま使えます」と出て、
+        まだ入っていないのに起こすボタンを押せるように見える
+        """
+        from sashimono.ui.subtitle import transcribe_dialog
+
+        monkeypatch.setattr(transcribe_dialog, "install_runtime", _slow_cancelled_installer())
+        service = cast(TranscriptionService, _IdleService())
+        dialog = transcribe_dialog.TranscribeDialog(video_media, service)
+
+        dialog._start_install()
+        dialog.reject()  # 中断を頼む
+        _wait_for(lambda: dialog._install_done is None, qt_application)
+
+        assert "使えます" not in dialog._status.text()
+        assert "導入に失敗しました" in dialog._log.toPlainText()
         dialog.deleteLater()
 
 

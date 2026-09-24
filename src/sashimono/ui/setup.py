@@ -55,6 +55,8 @@ class SetupSection(QWidget):
         self._pack = pack
         self._log_queue: queue.Queue[str] = queue.Queue()
         self._done: threading.Event | None = None
+        #: 導入の中断の頼み 終わった知らせ（_done）とは分けて持つ
+        self._cancel = threading.Event()
         self._code = 0
         #: 最後の導入のあとに出した案内 使える状態になると導入欄ごと隠す画面
         #: （アシスタント）があるので、そちらが自分の見える所へ写せるように持つ
@@ -154,12 +156,18 @@ class SetupSection(QWidget):
         self._extra.setEnabled(False)
         self._status.setText("導入しています 数分かかることがあります")
 
+        # 中断の頼みと、終わった知らせを分ける 同じ旗にすると、中断した瞬間に
+        # 「終わった」と読まれ、pip が走っている最中に成功の案内が出る
         done = threading.Event()
+        cancel = threading.Event()
         self._done = done
+        self._cancel = cancel
+        # 終わるまでは成功ではない 前の導入の 0 が残っていると成功に見える
+        self._code = -1
 
         def run() -> None:
             code = install_runtime(
-                command=argv, on_output=self._log_queue.put, should_cancel=done.is_set
+                command=argv, on_output=self._log_queue.put, should_cancel=cancel.is_set
             )
             self._code = code
             self._log_queue.put(
@@ -173,8 +181,9 @@ class SetupSection(QWidget):
         self._timer.start()
 
     def cancel(self) -> None:
+        """導入を止めるよう頼む 終わったかどうかはワーカーが知らせる"""
         if self._done is not None:
-            self._done.set()
+            self._cancel.set()
 
     def _poll(self) -> None:
         while True:

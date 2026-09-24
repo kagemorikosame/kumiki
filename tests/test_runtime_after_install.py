@@ -256,6 +256,7 @@ class TestRestartNote:
         assert "再起動しなくても" in restart_note(())
 
     def test_an_install_that_cannot_be_seen_asks_for_a_restart(self) -> None:
+        # 再起動を頼まないと、押せないボタンが残ったまま次にすることが分からない
         assert "再起動" in restart_note((), visible=False)
 
 
@@ -274,6 +275,31 @@ def _fake_installer(write: Callable[[], object], code: int = 0) -> Callable[...,
         if code == 0:
             write()
         return code
+
+    return install
+
+
+def _slow_cancelled_installer() -> Callable[..., int]:
+    """中断を頼まれてから、少し遅れて失敗を返す ``install_runtime`` の差し替え
+
+    本物の pip も、止めるよう頼んでから子プロセスが終わるまで間がある その間に
+    画面が「終わった」と読むかどうかを見分けるため、わざと遅らせる
+    """
+
+    def install(
+        *,
+        command: Sequence[str],
+        on_output: Callable[[str], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> int:
+        del command, on_output
+        assert should_cancel is not None
+        for _ in range(500):
+            if should_cancel():
+                break
+            threading.Event().wait(0.01)
+        threading.Event().wait(0.3)
+        return 1
 
     return install
 
@@ -351,6 +377,31 @@ class TestSetupSection:
         assert section.note == ""
         assert "使えます" not in section._status.text()
         assert "sashimono-fake-command" in section._status.text()
+        section.deleteLater()
+
+    def test_a_cancelled_install_is_not_called_a_success(
+        self, frozen: Path, monkeypatch: pytest.MonkeyPatch, qt_application: QApplication
+    ) -> None:
+        """中断を頼んだ瞬間に「終わった」と読まないこと
+
+        読むと、pip が走っている最中に「再起動しなくても使えます」と出て、
+        まだ入っていない機能を使えると案内してしまう
+        """
+        from sashimono.ui import setup
+
+        dist, _module = _unique()
+        pack = FeaturePack(key="fake", label="偽物", required=(dist,))
+        monkeypatch.setattr(setup, "install_runtime", _slow_cancelled_installer())
+        section = setup.SetupSection(pack)
+        results: list[bool] = []
+        section.finished.connect(results.append)
+
+        section.start()
+        section.cancel()
+        _wait_for(lambda: bool(results), qt_application)
+
+        assert results == [False]
+        assert "使えます" not in section._status.text()
         section.deleteLater()
 
     def test_a_failed_install_does_not_claim_success(

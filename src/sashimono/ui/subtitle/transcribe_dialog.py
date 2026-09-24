@@ -81,6 +81,8 @@ class TranscribeDialog(QDialog):
         #: 導入ワーカーからのログ スレッドをまたぐのでキューで受ける
         self._install_log: queue.Queue[str] = queue.Queue()
         self._install_done: threading.Event | None = None
+        #: 導入の中断の頼み 終わった知らせ（_install_done）とは分けて持つ
+        self._install_cancel = threading.Event()
         self._install_code = 0
         #: この導入を始める前に、専用フォルダから読み込み済みだった物
         self._before: dict[str, int] = {}
@@ -215,12 +217,18 @@ class TranscribeDialog(QDialog):
         self._set_busy(True, message="導入しています 数分かかります")
         self._progress.setRange(0, 0)  # 進み具合が分からないので流れる表示にする
 
+        # 中断の頼みと、終わった知らせを分ける 同じ旗にすると、中断した瞬間に
+        # 「終わった」と読まれ、pip が走っている最中に成功の案内が出る
         done = threading.Event()
+        cancel = threading.Event()
         self._install_done = done
+        self._install_cancel = cancel
+        # 終わるまでは成功ではない 前の導入の 0 が残っていると成功に見える
+        self._install_code = -1
 
         def run() -> None:
             code = install_runtime(
-                command=command, on_output=self._install_log.put, should_cancel=done.is_set
+                command=command, on_output=self._install_log.put, should_cancel=cancel.is_set
             )
             self._install_code = code
             self._install_log.put(
@@ -311,7 +319,8 @@ class TranscribeDialog(QDialog):
             self._status.setText("中断しています")
             return
         if self._install_done is not None:
-            self._install_done.set()
+            # 止めるよう頼むだけ 終わったかどうかはワーカーが知らせる
+            self._install_cancel.set()
             self._status.setText("中断しています")
             return
         self._timer.stop()
