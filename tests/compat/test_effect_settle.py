@@ -89,6 +89,17 @@ class TestSettle:
         assert state.effects == []
         assert state.image.shape[:2] == (4, 4)
 
+    def test_an_unchanged_picture_stays_shared(self) -> None:
+        # 掛ける物が無いと、掛ける関数は受けた配列をそのまま返す（ScriptEffectBaker） そこで
+        # 共有の印を消すと、putpixel が記録済みの描画の絵へ直に書き、先に描いた方まで変わる
+        state = ObjectState(image=np.full((4, 4, 4), 255, np.uint8), screen_w=320, screen_h=180)
+        runtime = LuaScriptRuntime(apply_effects=lambda image, effects: image)
+        result = runtime.run(f"obj.draw() {BLUR} obj.putpixel(0, 0, 0x000000, 1)", state)
+        assert not result.failed, result.message
+        drawn = state.draws[0].image
+        assert tuple(drawn[0, 0]) == (255, 255, 255, 255)
+        assert tuple(state.image[0, 0]) == (0, 0, 0, 255)
+
     def test_without_a_baker_the_order_is_recorded(self) -> None:
         # 掛ける関数を持たない所（GPU の無い道具）では焼き込めない 黙ると順が入れ替わった
         # 理由が分からないので、互換性レポートに残す

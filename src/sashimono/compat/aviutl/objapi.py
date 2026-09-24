@@ -714,8 +714,13 @@ class ObjApi:
         if self._apply_effects is None:
             self._report.note_missing(f"{caller}（先に積んだ効果の焼き込み）")
             return
-        state.image = self._apply_effects(state.image, tuple(state.effects))
-        state.image_shared = False
+        original = state.image
+        baked = self._apply_effects(original, tuple(state.effects))
+        # 掛ける物が無い（範囲 0 のぼかしなど）と同じ配列が返る そのときに共有の印を消すと、
+        # 後の putpixel が記録済みの描画やバッファの絵へ直に書く
+        if baked is not original:
+            state.image = baked
+            state.image_shared = False
         state.effects.clear()
 
     def _drop_effects(self) -> None:
