@@ -726,51 +726,6 @@ class ObjApi:
         """
         self.state.effects.clear()
 
-    def _resize(self, args: tuple[Any, ...]) -> None:
-        """``obj.effect("リサイズ", "X", 120, "Y", 40, "ドット数でサイズ指定", 1)``
-
-        描画のときではなく、ここで絵の大きさを変える 後に続く ``obj.w`` や
-        ``obj.copybuffer`` が変えた後の大きさを見るため sigma の 単純図形σ は
-        1 画素の四角を読んでリサイズで幅と高さにする 描くときまで待つと、その間の
-        処理が 1 画素の絵を相手にする（以前は X と Y を位置のずれとして GPU へ渡していて、
-        1 画素のまま横へずれた）
-
-        ``ドット数でサイズ指定`` が真なら X と Y は画素 偽なら 拡大率 と X・Y の百分率を
-        掛ける ``補間なし`` が真なら最も近い画素を取る
-        """
-        values: dict[str, float] = {}
-        for index in range(0, len(args) - 1, 2):
-            values[str(args[index])] = _as_float(args[index + 1])
-        state = self.state
-        if values.get("ドット数でサイズ指定", 0.0):
-            width = values.get("X", float(state.width))
-            height = values.get("Y", float(state.height))
-        else:
-            zoom = values.get("拡大率", 100.0) / 100.0
-            width = state.width * zoom * values.get("X", 100.0) / 100.0
-            height = state.height * zoom * values.get("Y", 100.0) / 100.0
-        if not (math.isfinite(width) and math.isfinite(height)):
-            self._report.note_missing("obj.effect(リサイズ) の大きさ（数ではない）")
-            return
-        if max(round(width), round(height)) > MAX_FIGURE_SIZE:
-            # 大きさはスクリプトが決める そのまま作ると 1 回で数 GB になるので切るが、
-            # 黙って切ると要求より小さく描かれた理由が互換性レポートに出ない
-            self._report.note_missing(
-                f"obj.effect(リサイズ) の大きさ {round(width)}x{round(height)}"
-                f"（上限 {MAX_FIGURE_SIZE} で切った）"
-            )
-        if state.effects:
-            # 先に積んだ効果は描くときに掛かる（GPU） ここで焼き込めないので、
-            # リサイズの後の絵へ掛かって順が入れ替わる 黙るとぼかしの幅などが違う理由が
-            # 分からないので記録に残す（オフスクリーン描画 と同じ扱い）
-            self._report.note_missing("obj.effect(リサイズ)（先に積んだ効果の焼き込み）")
-        size = (
-            max(1, min(round(width), MAX_FIGURE_SIZE)),
-            max(1, min(round(height), MAX_FIGURE_SIZE)),
-        )
-        state.image = raster.resize(state.image, *size, smooth=not values.get("補間なし", 0.0))
-        state.image_shared = False
-
     def lua_filter(self, *args: Any) -> None:
         del args
         self._report.note_missing("obj.filter")
