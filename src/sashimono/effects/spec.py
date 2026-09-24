@@ -28,6 +28,7 @@ type ParamInput = ParamValue | float | None
 __all__ = [
     "IMAGE_FILTER",
     "IMAGE_SUFFIXES",
+    "PIXEL_UNITS",
     "CheckSpec",
     "ColorSpec",
     "FileSpec",
@@ -41,6 +42,11 @@ __all__ = [
     "TrackSpec",
     "ValueSpec",
 ]
+
+
+#: 画面の画素で数える長さを表す単位 :attr:`TrackSpec.pixels` を省いたとき、これで決める
+#: 画素の値に単位を添えておけば、設定の画面にも「px」が出て、画質の分だけ縮める印にもなる
+PIXEL_UNITS = frozenset({"px", "px/フレーム"})
 
 
 class ParameterKind(Enum):
@@ -85,6 +91,13 @@ class TrackSpec:
     step: float = 0.1
     #: 画面に添える単位（``"px"`` ``"%"`` ``"度"`` など）
     unit: str = ""
+    #: 値が画面（プロジェクトの解像度）の画素で数える長さか 省くと単位で決める
+    #: （:data:`PIXEL_UNITS` なら真） 単位と食い違う物だけ明に書く
+    #:
+    #: 真の値は、プレビューの画質を落として小さく合成するとき、合成の画素へ縮めて渡す
+    #: （:meth:`scaled_at`） 縮めないと、1/2 画質では位置も大きさも 2 倍に出る
+    #: 素材の画像の画素で数える物（読み込んだ画像の中の位置など）は画面の画素ではないので偽
+    pixels: bool | None = None
 
     kind = ParameterKind.TRACK
 
@@ -93,6 +106,24 @@ class TrackSpec:
             raise ValueError(f"{self.name}: 最小値が最大値より大きい")
         if not self.minimum <= self.default <= self.maximum:
             raise ValueError(f"{self.name}: 既定値が範囲外")
+
+    @property
+    def in_pixels(self) -> bool:
+        """画面の画素で数える長さか（:attr:`pixels`）"""
+        if self.pixels is not None:
+            return self.pixels
+        return self.unit in PIXEL_UNITS
+
+    def scaled_at(self, value: AnimatedValue, frame: int, scale: float) -> float:
+        """``frame`` の値を、合成の画素 1 つが画面の画素 ``1 / scale`` つに当たる所で使う形で返す
+
+        壊れた数（NaN や無限大）は既定へ戻す 範囲では切らない 読み込んだテンプレートは
+        表示の範囲を超える値を正しく使っていることがある
+        """
+        number = value.at(frame)
+        if not math.isfinite(number):
+            number = self.default
+        return number * scale if self.in_pixels else number
 
     def default_value(self) -> AnimatedValue:
         return AnimatedValue(static=self.default)
@@ -362,6 +393,9 @@ class GridSpec:
     #: 1 辺の点の数の下限と上限 上限はシェーダの配列の大きさと同じにすること
     minimum: int = 2
     maximum: int = 9
+    #: 点のずれが画面の画素か（:attr:`TrackSpec.pixels` と同じ意味） 真なら、画質を落とした
+    #: プレビューでは合成の画素へ縮めて渡す
+    pixels: bool = False
 
     kind = ParameterKind.GRID
 

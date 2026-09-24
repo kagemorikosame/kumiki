@@ -549,7 +549,10 @@ def register_optics_effects() -> None:
                 TrackSpec("exponent", "鋭さ", 0.01, 128, 1, step=0.01),
                 ColorSpec("color", "光の色", (1.0, 1.0, 1.0, 1.0)),
                 SelectSpec("blend", "合成", BLEND_MODES, "add"),
-                TrackSpec("surface_scale", "高さの倍率", 0, 100, 10, step=0.1),
+                # 見た目は倍率だが、シェーダは 1 画素あたりの高さの差に掛けて面の傾きを出す
+                # 縁の太さを縮めた合成では 1 画素あたりの差が大きくなるので、倍率も同じだけ
+                # 縮めないと、1/2 画質で面が 2 倍急になって光り方が変わる
+                TrackSpec("surface_scale", "高さの倍率", 0, 100, 10, step=0.1, pixels=True),
                 SelectSpec(
                     "profile",
                     "縁の形",
@@ -738,10 +741,12 @@ def register_optics_effects() -> None:
                 TrackSpec("emit_range", "放つ幅", 0, 10000, 0, step=1, unit="px"),
                 TrackSpec("emit_angle", "放つ角度", -360, 360, 90, unit="度"),
                 TrackSpec("spread", "広がり", 0, 360, 0, unit="度"),
-                TrackSpec("speed", "速さ", 0, 10000, 100, unit="px/秒"),
-                TrackSpec("gravity", "重力", -100000, 100000, 0, unit="px/秒²"),
+                # 速さと重力は秒あたりの画面の画素 単位が PIXEL_UNITS に無いので明に書く
+                # 書かないと、1/2 画質で粒が 2 倍遠くまで飛ぶ
+                TrackSpec("speed", "速さ", 0, 10000, 100, unit="px/秒", pixels=True),
+                TrackSpec("gravity", "重力", -100000, 100000, 0, unit="px/秒²", pixels=True),
                 TrackSpec("wind_angle", "風の角度", -360, 360, 0, unit="度"),
-                TrackSpec("wind_speed", "風の速さ", 0, 10000, 0, unit="px/秒"),
+                TrackSpec("wind_speed", "風の速さ", 0, 10000, 0, unit="px/秒", pixels=True),
                 TrackSpec("turbulence", "揺らぎ", 0, 1000, 0, unit="px"),
                 TrackSpec("rotation", "回転", -3600, 3600, 0, unit="度"),
                 TrackSpec("fade", "消えていく割合", 0, 100, 0, unit="%"),
