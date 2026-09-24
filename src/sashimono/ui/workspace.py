@@ -23,6 +23,7 @@ from sashimono.ai.models import MODELS as AI_MODELS
 from sashimono.core import userdirs
 from sashimono.engine.encode import DEFAULT_PIPELINE_DEPTH, MAX_PIPELINE_DEPTH
 from sashimono.engine.render import DEFAULT_DECODE_THREADS, MAX_DECODE_THREADS
+from sashimono.ui.media_match import MATCH_ASK, MATCH_MODES
 from sashimono.ui.media_pool import VIEW_LIST, VIEW_MODES
 
 __all__ = [
@@ -234,6 +235,11 @@ class Preferences:
     #: 既定は入 チャットの多くが Enter で送る形で、知らない人はまずそう押す
     #: 長い指示を何行も書く人が、うっかり途中で送らないように切れるようにする
     chat_enter_sends: bool = True
+    #: 空のプロジェクトへ最初の動画を置いたとき、プロジェクトの解像度とフレームレートを
+    #: 動画に合わせるか 尋ねる（``ask``）・常に合わせる（``always``）・合わせない（``never``）
+    #: 既定は尋ねる 黙って合わせると決まった形で作る人が困り、黙って合わせないと
+    #: 60fps の動画が 30fps で書き出されたことに、書き出すまで気付けない
+    match_video: str = MATCH_ASK
     #: 重ねたパネル（オブジェクト設定と AI アシスタント、メディアと字幕など）の
     #: タブを上（``top``）に出すか下（``bottom``）に出すか
     #: 既定は上 Qt の既定の下だと、パネルの名前を探して窓の一番下まで目を動かすことになり、
@@ -304,6 +310,7 @@ class PreferenceStore:
                 data.get("ai_effort"), tuple(e.value for e in AI_EFFORTS), plain.ai_effort
             ),
             chat_enter_sends=_flag(data.get("chat_enter_sends"), plain.chat_enter_sends),
+            match_video=_choice(data.get("match_video"), MATCH_MODES, plain.match_video),
             dock_tabs=_choice(data.get("dock_tabs"), DOCK_TAB_POSITIONS, plain.dock_tabs),
         )
 
