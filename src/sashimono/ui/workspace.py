@@ -19,6 +19,7 @@ from PySide6.QtWidgets import QMainWindow
 from sashimono.core import userdirs
 from sashimono.engine.encode import DEFAULT_PIPELINE_DEPTH, MAX_PIPELINE_DEPTH
 from sashimono.engine.render import DEFAULT_DECODE_THREADS, MAX_DECODE_THREADS
+from sashimono.ui.media_pool import VIEW_LIST, VIEW_MODES
 
 __all__ = [
     "AUTO_QUALITY_HEIGHT",
@@ -185,6 +186,10 @@ class Preferences:
     #: Python を起動したりウィンドウを作ったり、本人の AviUtl2 の置き場へ書いたりする
     #: （Issue #135） 表に無いプラグインのモジュールを使いたい人だけが入れる
     all_aviutl_plugins: bool = False
+    #: 素材一覧の表示 一覧（``list``）かアイコン（``icons``）か
+    #: 既定は一覧 名前と長さと大きさが 1 行で読めて、素材が何本あっても見渡せる
+    #: 絵で選びたい人は一覧の上のボタンで切り替え、次に開いたときもそのままにする
+    media_view: str = VIEW_LIST
 
     def prefetch_bytes(self) -> int:
         """先読みに使えるバイト数 切ってあれば 0
@@ -244,6 +249,7 @@ class PreferenceStore:
             native_modules=_flag(data.get("native_modules"), plain.native_modules),
             pool_progress=_flag(data.get("pool_progress"), plain.pool_progress),
             all_aviutl_plugins=_flag(data.get("all_aviutl_plugins"), plain.all_aviutl_plugins),
+            media_view=_choice(data.get("media_view"), VIEW_MODES, plain.media_view),
         )
 
     def save(self, preferences: Preferences) -> None:
@@ -257,6 +263,15 @@ class PreferenceStore:
 
 def _flag(value: object, default: bool) -> bool:
     return value if isinstance(value, bool) else default
+
+
+def _choice(value: object, choices: tuple[str, ...], default: str) -> str:
+    """決まった言葉のどれか 知らない言葉は既定へ戻す
+
+    新しい版で足した表示を古い版で開いたときに、分からない値のまま当てると
+    何も選ばれていない画面になる
+    """
+    return value if isinstance(value, str) and value in choices else default
 
 
 def _size(value: object, default: int) -> int:
