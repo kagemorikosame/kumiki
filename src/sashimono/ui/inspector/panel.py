@@ -55,6 +55,7 @@ from sashimono.effects import ParameterSpec, TrackSpec, registry
 from sashimono.effects.blending import BLEND_MODES
 from sashimono.effects.sources import source_registry
 from sashimono.engine.gpu import BlendMode
+from sashimono.ui.inspector.header import ClipHeader, identify_clip
 from sashimono.ui.inspector.widgets import ParameterEditor, TrackEditor, create_editor
 from sashimono.ui.theme import Colors
 
@@ -142,8 +143,8 @@ class InspectorPanel(QWidget):
         #: パラメータごとの入力欄 プロジェクトが変わったときに値を入れ直す
         self._editors: dict[tuple[str, str], ParameterEditor] = {}
 
-        self._title = QLabel("クリップを選んでください", self)
-        self._title.setStyleSheet(f"color: {Colors.TEXT_MUTED.name()}; padding: 6px 8px;")
+        #: 何のクリップの設定を見ているか（種類・名前・トラック）
+        self._title = ClipHeader(self)
 
         self._body = QWidget(self)
         self._body_layout = QVBoxLayout(self._body)
@@ -229,7 +230,7 @@ class InspectorPanel(QWidget):
 
         clip = self._clip()
         if clip is None:
-            self._title.setText("クリップを選んでください")
+            self._title.show_identity(None)
             self._add_button.setEnabled(False)
             self._preset_button.setEnabled(False)
             self._body_layout.addStretch(1)
@@ -237,7 +238,7 @@ class InspectorPanel(QWidget):
 
         self._add_button.setEnabled(True)
         self._preset_button.setEnabled(True)
-        self._title.setText(self._describe(clip))
+        self._show_identity(clip)
 
         self._body_layout.addWidget(self._build_clip_section(clip))
         if clip.source is not None:
@@ -256,6 +257,16 @@ class InspectorPanel(QWidget):
 
         self._body_layout.addStretch(1)
         self._refresh_animated()
+
+    def _show_identity(self, clip: Clip) -> None:
+        identity = identify_clip(self._project, clip.id) if self._project is not None else None
+        others = sum(1 for clip_id in self._selection if clip_id != clip.id)
+        self._title.show_identity(identity, others=others)
+
+    @property
+    def header(self) -> ClipHeader:
+        """上の見出し（何のクリップの設定か）"""
+        return self._title
 
     def _describe(self, clip: Clip) -> str:
         if clip.source is not None:

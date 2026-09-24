@@ -10,7 +10,9 @@ A/V 同期はオーディオを基準にする 映像を基準にすると、映
 
 from __future__ import annotations
 
+import contextlib
 import threading
+import time
 from collections.abc import Callable
 
 import numpy as np
@@ -25,6 +27,10 @@ BLOCK_SAMPLES = 1024
 
 #: 出力デバイスに要求する遅延 小さくしすぎると音が途切れる
 LATENCY = "low"
+
+#: 書き終えたあと、残りが鳴り終わるまで時計を進める間隔（秒）
+#: 再生の側が位置を見に行く間隔（8ms）より細かくして、最後の数フレームも飛ばさず出す
+DRAIN_POLL_SECONDS = 0.004
 
 
 class PlaybackError(RuntimeError):
@@ -113,12 +119,14 @@ class AudioPlayer:
             return
 
         cursor = self._start_sample
+        buffered = 0
         try:
             while not self._stop.is_set():
                 count = BLOCK_SAMPLES
                 if self._end_sample is not None:
                     count = min(count, self._end_sample - cursor)
                     if count <= 0:
+                        self._drain(stream, cursor, buffered)
                         break
 
                 block = self._mixer.render(cursor, count)
@@ -140,6 +148,40 @@ class AudioPlayer:
         finally:
             if not self._stop.is_set() and self._on_finished is not None:
                 self._on_finished()
+
+    def _drain(self, stream: sd.OutputStream, end: int, buffered: int) -> None:
+        """終わりまで書き込んだあと、デバイスに残った分が鳴り終わるまで時計を進める
+
+        書き込みを終えた時点の位置は、終わりからデバイスのバッファの分（数フレーム）
+        手前 ここで抜けると時計がそこで止まり、終わりまで再生したのに再生ヘッドが
+        終わりの少し前で止まった（Issue #27 13:26:01 の所が 13:25:27）
+        鳴っている間は経過時間で進め、鳴り終えたら終わりちょうどに置く
+
+        ``latency`` は遅れの見積もりで、残っている量そのものではない 見積もりの時間が
+        過ぎても鳴り終わっているとは限らないので、終わりに置く前に出口を止めて
+        （``stop`` は積んだ音を鳴らし切るまで戻らない）本当に鳴り終えるのを待つ
+        待たないと、音がまだ出ている間に再生ヘッドが終わりへ着いて止まる
+        """
+        rate = self._mixer.sample_rate
+        # 書いた量よりバッファの方が大きい（短い区間だけ鳴らした）ときは、書いた分しか残っていない
+        buffered = min(buffered, end - self._start_sample)
+        started = time.monotonic()
+        while buffered > 0 and not self._stop.is_set():
+            played = int((time.monotonic() - started) * rate)
+            if played >= buffered:
+                break
+            with self._lock:
+                self._position = max(self._position, end - buffered + played)
+            self._stop.wait(DRAIN_POLL_SECONDS)
+        if self._stop.is_set():
+            return
+        # 止め方の失敗は握る 鳴り終わりを待てなかっただけで、終わりに置けないと
+        # 再生ヘッドが手前で止まったままになる（外から閉じるときにもう 1 度止めに行く）
+        with contextlib.suppress(sd.PortAudioError):
+            stream.stop()
+        if not self._stop.is_set():
+            with self._lock:
+                self._position = end
 
     def _close_stream(self) -> None:
         stream, self._stream = self._stream, None

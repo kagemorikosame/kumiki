@@ -26,6 +26,8 @@ class Colors:
     ACCENT = QColor("#7f8cf0")
     #: 選んでいるタブの地 選んでいないタブ（窓の地）より一段明るく、上の文字が読める暗さ
     TAB_SELECTED = QColor("#34343c")
+    #: 補足（ツールチップ）の地 窓の地より明るくして、下の部品と重なっても浮いて見せる
+    TOOL_TIP = QColor("#3a3a44")
 
     #: プレビューの周囲 映像の明るさを判断しやすいよう、真っ黒より少し上げる
     VIEWER_BACKGROUND = QColor("#0f0f11")
@@ -149,7 +151,8 @@ QAbstractSpinBox::down-arrow:disabled, QAbstractSpinBox::down-arrow:off {{
 #: 白い文字が読めなかった（Issue #27） 選んだタブは地を少し明るくして文字を
 #: 白に近くし、アクセント色の線を引く 選んでいないタブは文字を薄くするだけにして、
 #: どれを見ているかが色の差と線の 2 つで分かるようにする
-#: 線は画面の中身の側に引く ドックのタブは下に付くので、下に付くタブは上に引く
+#: 線は画面の中身の側に引く ドックのタブは設定で上にも下にも付くので、
+#: 上に付くタブは下に、下に付くタブは上に引く
 _TABS = f"""
 QTabWidget::pane {{
     border: 1px solid {Colors.BORDER.name()};
@@ -177,6 +180,21 @@ QTabBar::tab:selected {{
 }}
 QTabBar::tab:top:selected {{ border-bottom-color: {Colors.ACCENT.name()}; }}
 QTabBar::tab:bottom:selected {{ border-top-color: {Colors.ACCENT.name()}; }}
+"""
+
+#: 部品に載せたときに出る補足（ツールチップ）
+#:
+#: 指定が無いと、補足の地と文字は OS の配色（パレットの ToolTipBase / ToolTipText）から
+#: 取られる Windows の暗い配色では地も文字も暗くなり、再生ボタンなどの補足が
+#: 読めなかった（Issue #27） スタイルシートで地と文字の両方を決め打ちにして、
+#: OS の配色に左右されないようにする 枠を書かないと地の色が効かない（Qt の決まり）
+_TOOL_TIP = f"""
+QToolTip {{
+    background-color: {Colors.TOOL_TIP.name()};
+    color: {Colors.CLIP_LABEL.name()};
+    border: 1px solid {Colors.TEXT_MUTED.name()};
+    padding: 3px 6px;
+}}
 """
 
 #: アプリ全体のスタイル ウィジェットごとに色を書くと、変えたいときに全部を
@@ -257,6 +275,7 @@ QComboBox, QAbstractSpinBox, QLineEdit {{
 }}
 {_SPIN_BOX}
 {_TABS}
+{_TOOL_TIP}
 QProgressBar {{
     background-color: {Colors.PANEL_ALT.name()};
     border: 1px solid {Colors.BORDER.name()};
