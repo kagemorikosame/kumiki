@@ -15,6 +15,11 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
+from sashimono.compat.aviutl.custom_object import (
+    CUSTOM_OBJECT_LABEL,
+    custom_object_script,
+    script_label,
+)
 from sashimono.core.model import Clip, ClipId, GeneratedSource, Project, Track, TrackKind
 from sashimono.effects import registry
 from sashimono.effects.sources import source_registry
@@ -79,6 +84,10 @@ def _kind_and_name(project: Project, track: Track, clip: Clip) -> tuple[str, str
 
 
 def _generated(clip: Clip, source: GeneratedSource) -> tuple[str, str]:
+    script = custom_object_script(clip)
+    if script is not None:
+        # 土台は空のテキスト 「テキスト」と出すと、下に並ぶ書体の欄を触ればよいと読める
+        return CUSTOM_OBJECT_LABEL, script_label(script.kind)
     definition = source_registry.get(source.kind)
     kind = definition.label if definition is not None else source.kind
     if clip.is_filter:
