@@ -53,4 +53,5 @@ def test_a_frame_that_already_has_a_point_is_left_alone() -> None:
 
 
 def test_a_static_value_gets_one_point_at_the_same_value() -> None:
+    # 別の値で点を打つと、動かしていない線へ点を足しただけで、クリップ全体の値が変わる
     assert AnimatedValue(0.4).with_keyframe_at(12).keyframes == (Keyframe(12, 0.4),)

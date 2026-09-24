@@ -273,6 +273,21 @@ class TestKeyframes:
         assert moved[0].value == pytest.approx(0.8, abs=0.05)
         assert moved[1] == value.keyframes[1], "掴んでいない点まで動いた"
 
+    def test_a_point_grabbed_off_centre_keeps_its_value_when_moved_sideways(
+        self, made: list[TimelineArea], analyzer: MediaAnalyzer
+    ) -> None:
+        # 指の位置をそのまま値にすると、中心から少し外れて掴んだだけで、時刻だけ動かす
+        # つもりの横のドラッグで値が飛ぶ
+        value = AnimatedValue(1.0, (Keyframe(10, 0.4), Keyframe(70, 0.6)))
+        clip = _text(value)
+        view, _ = _open(made, analyzer, _project(Track(TrackKind.VIDEO, "V1", (clip,))))
+        start = _line_point(view, clip, 20, 0.4, 1.0) + QPoint(0, 3)
+        end = _line_point(view, clip, 30, 0.4, 1.0) + QPoint(0, 3)
+        _drag(view, start, end)
+        moved = _opacity(view, clip).keyframes
+        assert moved[0].frame == pytest.approx(20, abs=1)
+        assert moved[0].value == pytest.approx(0.4)
+
     def test_a_point_does_not_pass_its_neighbour(
         self, made: list[TimelineArea], analyzer: MediaAnalyzer
     ) -> None:

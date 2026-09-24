@@ -178,10 +178,6 @@ def value_to_y(area: QRect, kind: ValueKind, value: float) -> float:
     return area.bottom() - kind.clamp(value) / kind.maximum * area.height()
 
 
-def _y_to_value(area: QRect, kind: ValueKind, y: float) -> float:
-    return kind.clamp((area.bottom() - y) / max(1, area.height()) * kind.maximum)
-
-
 def _points(
     clip: Clip, kind: ValueKind, value: AnimatedValue, layout: TimelineLayout, area: QRect
 ) -> list[tuple[int, QPointF]]:
@@ -526,7 +522,10 @@ class ValueLineEditor:
             drag.shown = drag.kind.clamp(drag.grab_value + delta)
         else:
             frame = self._key_frame(clip, value, drag.key, layout, position)
-            level = _y_to_value(drag.area, drag.kind, position.y())
+            # 掴んだ位置からの差で決める 指の位置をそのまま値にすると、点の中心から外れて
+            # 掴んだだけで、動かし始めに値が飛ぶ（既定の高さで 1 画素が不透明度の約 4%）
+            span = drag.kind.maximum / max(1, drag.area.height())
+            level = drag.kind.clamp(drag.grab_value + (drag.grab_y - position.y()) * span)
             path = _path(clip, drag.kind)
             same = frame == drag.key and level == drag.grab_value
             command = None if path is None or same else MoveKeyframe(path, drag.key, frame, level)
