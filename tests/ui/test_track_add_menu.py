@@ -60,6 +60,7 @@ def _sources(tmp_path: Path, **overrides: object) -> AddSources:
         templates=lambda: (),
         aliases=AliasStore(tmp_path / "aliases"),
         ask_name=lambda _parent, suggestion: suggestion,
+        confirm_overwrite=lambda _parent, _name: True,
     )
     for name, value in overrides.items():
         setattr(sources, name, value)
@@ -261,6 +262,24 @@ class TestTrackMenu:
         assert "トラックを追加" in _texts(menu)
 
 
+class TestNextToTheWorkArea:
+    def test_clearing_the_range_comes_before_the_track_items(self, view: TimelineView) -> None:
+        # トラックを足す・消すは最後のまとまり 範囲の項目が後ろに来ると、トラックの項目の
+        # 間に時間の操作が挟まって見える
+        view.set_project(
+            view.project.with_timeline(replace(view.project.timeline, work_area=(100, 300)))
+        )
+        texts = _texts(view.build_context_menu(_point(view, "V2", 200)))
+        assert texts.index("追加") < texts.index("範囲を解除") < texts.index("トラックを追加")
+        assert texts[-1] == "トラックを削除（V2）"
+
+    def test_the_ruler_offers_no_track_items(self, view: TimelineView) -> None:
+        # 目盛りはトラックの欄ではない ここでトラックを消す項目が出ると、何を消すのか分からない
+        texts = _texts(view.build_context_menu(QPoint(400, 5)))
+        assert "トラックを追加" not in texts
+        assert "追加" not in texts
+
+
 class TestAddingFromTheEmptySpace:
     def test_the_add_menu_lists_every_kind(self, view: TimelineView) -> None:
         menu = view.build_context_menu(_point(view, "V2", 200))
@@ -429,6 +448,32 @@ class TestAliases:
         view.add_sources = _sources(tmp_path, ask_name=lambda _p, _s: None)
         _find(view.build_context_menu(_point(view, "V1", 10)), "エイリアスとして保存…").trigger()
         assert view.add_sources.aliases.all() == ()
+
+    def test_the_same_name_is_not_overwritten_without_asking(
+        self, view: TimelineView, tmp_path: Path
+    ) -> None:
+        # 既定の名前はテキストの頭から作る 同じ文言の別の見た目を保存すると、黙って前の物が消える
+        asked: list[str] = []
+
+        def refuse(_parent: object, name: str) -> bool:
+            asked.append(name)
+            return False
+
+        view.add_sources = _sources(tmp_path, confirm_overwrite=refuse)
+        save = ("エイリアスとして保存…",)
+        _find(view.build_context_menu(_point(view, "V1", 10)), *save).trigger()
+        first = view.add_sources.aliases.all()
+        assert asked == []
+        v1 = _track(view, "V1")
+        blurred = replace(v1.clips[0], blend_mode="add")
+        view.set_project(
+            view.project.with_timeline(
+                view.project.timeline.replace_track(v1.with_clips((blurred,)))
+            )
+        )
+        _find(view.build_context_menu(_point(view, "V1", 10)), *save).trigger()
+        assert asked == ["テキスト 見出し"]
+        assert view.add_sources.aliases.all() == first
 
 
 class TestInTheWindow:

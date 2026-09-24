@@ -20,6 +20,7 @@ AviUtl のエイリアスと同じ使い方をする 作り込んだテロップ
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -53,6 +54,13 @@ SUFFIX = ".smea"
 
 #: ファイル名に使えない文字 Windows の制限に合わせる（プリセットと同じ）
 _UNSAFE_CHARACTERS = '<>:"/\\|?*'
+
+#: Windows が機器の名前として取っておく名前 大文字と小文字は区別しない
+_RESERVED_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{number}" for number in range(10)}
+    | {f"LPT{number}" for number in range(10)}
+)
 
 
 def alias_refusal(clip: Clip) -> str | None:
@@ -148,7 +156,17 @@ class AliasStore:
     root: Path = field(default_factory=default_alias_root)
 
     def path_for(self, name: str) -> Path:
-        return self.root / f"{_safe_name(name)}{SUFFIX}"
+        """名前ごとのファイル 違う名前が同じファイルに落ちないようにする
+
+        ファイル名に使えない文字を置き換えると ``赤:文字`` と ``赤?文字`` が同じ名前になり、
+        Windows は大文字と小文字も区別しない 置き換えた・大文字を含む・予約された名前には
+        元の名前から作る短い印を添える 添えないと、後から保存した方が前の物を黙って消す
+        """
+        return self.root / f"{_file_stem(name)}{SUFFIX}"
+
+    def exists(self, name: str) -> bool:
+        """同じ名前のエイリアスが保存されているか 上書きの確かめに使う"""
+        return self.path_for(name).is_file()
 
     def save(self, alias: Alias) -> Path:
         target = self.path_for(alias.name)
@@ -165,6 +183,10 @@ class AliasStore:
             data = json.loads(Path(path).read_text(encoding="utf-8"))
         except OSError as exc:
             raise ProjectFileError(f"エイリアスを開けない: {path}") from exc
+        except UnicodeDecodeError as exc:
+            # ValueError の子で JSONDecodeError とは別 ここで変えないと :meth:`all` の
+            # 読み飛ばしを抜け、壊れた 1 つで一覧全体が出なくなる
+            raise ProjectFileError(f"エイリアスが UTF-8 として読めない: {path}") from exc
         except json.JSONDecodeError as exc:
             raise ProjectFileError(f"エイリアスが JSON として読めない: {path} ({exc})") from exc
         return Alias.from_dict(data)
@@ -185,11 +207,17 @@ class AliasStore:
         self.path_for(name).unlink(missing_ok=True)
 
 
-def _safe_name(name: str) -> str:
-    """ファイル名に使える形へ 空になったら既定の名前を返す"""
+def _file_stem(name: str) -> str:
+    """ファイル名に使える形へ 元の名前と違う形になったら、元の名前から作る印を添える"""
     cleaned = "".join(
         "_" if character in _UNSAFE_CHARACTERS or ord(character) < 0x20 else character
         for character in name
     )
-    cleaned = cleaned.strip().strip(".")
-    return cleaned or "無題"
+    cleaned = cleaned.strip().strip(".") or "無題"
+    # CON や NUL は拡張子を付けても Windows が機器として扱い、書き込みが失敗する
+    # 見るのは最初の点より前（aux.txt も機器の名前） 後ろに印を足しても逃げられないので頭に付ける
+    reserved = cleaned.split(".")[0].strip().upper() in _RESERVED_NAMES
+    if cleaned == name and name == name.lower() and not reserved:
+        return cleaned
+    mark = hashlib.sha1(name.encode("utf-8")).hexdigest()[:8]
+    return f"{'_' if reserved else ''}{cleaned}-{mark}"

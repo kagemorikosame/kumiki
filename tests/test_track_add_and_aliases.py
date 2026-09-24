@@ -18,8 +18,10 @@ from sashimono.core.model import (
     GroupId,
     MediaItem,
     Project,
+    SceneId,
     Track,
     TrackKind,
+    new_clip_id,
 )
 from sashimono.effects import registry
 from sashimono.effects.sources import TEXT
@@ -103,6 +105,17 @@ class TestPlacingOnAChosenTrack:
         assert isinstance(add, AddClip) and add.track_id == v1.id
         assert add.clip.is_filter
 
+    def test_a_new_track_for_a_filter_skips_a_name_in_use(self) -> None:
+        # V2 を消して V1 と V3 が残ると、本数を数えただけではもう 1 本の V3 ができる
+        busy = Clip(timeline_start=0, duration=100, source=TEXT.create())
+        v1 = Track(TrackKind.VIDEO, "V1", (busy,))
+        v3 = Track(TrackKind.VIDEO, "V3", (replace(busy, id=new_clip_id()),))
+        project = _project(v1, v3)
+        placed = _apply(project, insert_filter(project, at_frame=10, track_id=v1.id))
+        assert [t.name for t in placed.timeline.tracks] == ["V1", "V3", "V4"]
+        placed = _apply(project, insert_generated(project, TEXT.create(), at_frame=10))
+        assert [t.name for t in placed.timeline.tracks] == ["V1", "V3", "V4"]
+
     def test_the_old_callers_are_unchanged(self) -> None:
         # 位置を渡せるように広げても、渡さなければ前と同じ所へ置く
         busy = Clip(timeline_start=0, duration=100, source=TEXT.create())
@@ -154,6 +167,10 @@ class TestAliases:
         assert alias_refusal(movie) is not None
         with pytest.raises(ValueError):
             Alias.of("動画", movie)
+        scene_clip = Clip(timeline_start=0, duration=30, scene_id=SceneId("s1"))
+        assert alias_refusal(scene_clip) is not None
+        with pytest.raises(ValueError):
+            Alias.of("シーン", scene_clip)
         assert alias_refusal(_styled_text()) is None
 
     def test_a_newer_alias_is_not_read(self, tmp_path: Path) -> None:
@@ -169,6 +186,31 @@ class TestAliases:
         (tmp_path / "壊れ.smea").write_text("{", "utf-8")
         (tmp_path / "別物.smea").write_text(json.dumps({"format": "other"}), "utf-8")
         assert [a.name for a in store.all()] == ["残る"]
+
+    def test_a_file_that_is_not_utf8_does_not_hide_the_others(self, tmp_path: Path) -> None:
+        # UnicodeDecodeError は JSON の失敗とは別 変えずに通すと一覧を作る所で落ちる
+        store = AliasStore(tmp_path)
+        store.save(Alias.of("残る", _styled_text()))
+        (tmp_path / "シフトJIS.smea").write_bytes('{"name": "字"}'.encode("cp932"))
+        assert [a.name for a in store.all()] == ["残る"]
+
+    def test_names_that_fold_to_one_file_are_kept_apart(self, tmp_path: Path) -> None:
+        # 使えない文字を置き換えると同じ名前になり、Windows は大文字と小文字も区別しない
+        # 同じファイルへ書くと、後から保存した方が前の物を黙って消す
+        store = AliasStore(tmp_path)
+        names = ["赤:文字", "赤?文字", "Abc", "abc", "ABC"]
+        paths = {store.save(Alias.of(name, _styled_text())).name.casefold() for name in names}
+        assert len(paths) == len(names)
+        assert sorted(a.name for a in store.all()) == sorted(names)
+
+    @pytest.mark.parametrize("name", ["CON", "nul", "Com1", "LPT1", "aux.txt"])
+    def test_windows_device_names_still_save(self, tmp_path: Path, name: str) -> None:
+        # CON.smea は Windows が機器として扱い、書き込みが失敗する
+        store = AliasStore(tmp_path)
+        path = store.save(Alias.of(name, _styled_text()))
+        assert path.stem.split(".")[0].upper() not in {"CON", "NUL", "COM1", "LPT1", "AUX"}
+        assert [a.name for a in store.all()] == [name]
+        assert store.exists(name)
 
     def test_names_that_windows_rejects_still_save(self, tmp_path: Path) -> None:
         store = AliasStore(tmp_path)

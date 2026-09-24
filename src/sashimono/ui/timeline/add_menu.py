@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QInputDialog, QMenu, QWidget
+from PySide6.QtWidgets import QInputDialog, QMenu, QMessageBox, QWidget
 
 from sashimono.compat.aviutl.catalog import KIND_LABELS, ScriptEntry, script_catalog
 from sashimono.compat.catalog import (
@@ -97,6 +97,17 @@ def _ask_name(parent: QWidget, suggestion: str) -> str | None:
     return name.strip() if accepted and name.strip() else None
 
 
+def _confirm_overwrite(parent: QWidget, name: str) -> bool:
+    answer = QMessageBox.question(
+        parent,
+        "エイリアスとして保存",
+        f"エイリアス「{name}」はもうあります 上書きしますか",
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        QMessageBox.StandardButton.No,
+    )
+    return answer == QMessageBox.StandardButton.Yes
+
+
 @dataclass
 class AddSources:
     """〔追加〕に並べる物の出どころ 試験では置き場の無い物へ差し替える"""
@@ -109,6 +120,8 @@ class AddSources:
     aliases: AliasStore = field(default_factory=AliasStore)
     #: エイリアスの名前を尋ねる 断られたら ``None``
     ask_name: Callable[[QWidget, str], str | None] = _ask_name
+    #: 同じ名前のエイリアスを上書きしてよいか 断られたら偽
+    confirm_overwrite: Callable[[QWidget, str], bool] = _confirm_overwrite
 
 
 def effects_for(kind: TrackKind) -> tuple[EffectDefinition, ...]:
@@ -375,6 +388,10 @@ class TimelineAddMenus:
         sources = self._view.add_sources
         name = sources.ask_name(self._view, _suggested_name(clip))
         if name is None:
+            return False
+        # 同じ名前があると黙って差し替わり、前に保存した物が消える 既定の名前は
+        # テキストの頭から作るので、同じ文言の別の見た目を続けて保存すると重なりやすい
+        if sources.aliases.exists(name) and not sources.confirm_overwrite(self._view, name):
             return False
         try:
             sources.aliases.save(Alias.of(name, clip))

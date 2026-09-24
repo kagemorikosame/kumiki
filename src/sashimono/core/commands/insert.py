@@ -217,7 +217,7 @@ def _free_or_create(
 def _new_track(project: Project, kind: TrackKind, commands: list[Command]) -> Track:
     prefix = "V" if kind is TrackKind.VIDEO else "A"
     index = sum(1 for t in project.timeline.tracks if t.kind is kind) + 1
-    track = Track(kind=kind, name=f"{prefix}{index}")
+    track = Track(kind=kind, name=_unused_name(project, prefix, index))
     commands.append(AddTrack(track))
     return track
 
@@ -240,18 +240,26 @@ def new_track(project: Project, kind: TrackKind, *, effect: bool = False) -> Add
     if effect and kind is not TrackKind.VIDEO:
         raise ValueError("エフェクトトラックは映像トラックとして作る")
     same = [t for t in project.timeline.tracks if t.kind is kind]
-    names = {t.name for t in project.timeline.tracks}
     if effect:
-        prefix = EFFECT_TRACK_PREFIX
-        number = sum(1 for t in same if is_effect_track(t)) + 1
+        name = _unused_name(
+            project, EFFECT_TRACK_PREFIX, sum(1 for t in same if is_effect_track(t)) + 1
+        )
     else:
-        prefix = "V" if kind is TrackKind.VIDEO else "A"
-        number = len(same) + 1
-    # 消したトラックの名前が残っていると同じ名前が 2 本並ぶ 空いている番号まで進める
+        name = _unused_name(project, "V" if kind is TrackKind.VIDEO else "A", len(same) + 1)
+    soloed = any(t.solo and not t.muted for t in same)
+    return AddTrack(Track(kind=kind, name=name, solo=soloed))
+
+
+def _unused_name(project: Project, prefix: str, number: int) -> str:
+    """``prefix`` と番号の、まだ使われていないトラック名 ``number`` から数える
+
+    消したトラックの名前が残っていると、本数を数えただけでは同じ名前が 2 本並ぶ
+    （V2 を消して V1 と V3 が残ると、もう 1 本の V3 ができる） 空いている番号まで進める
+    """
+    names = {t.name for t in project.timeline.tracks}
     while f"{prefix}{number}" in names:
         number += 1
-    soloed = any(t.solo and not t.muted for t in same)
-    return AddTrack(Track(kind=kind, name=f"{prefix}{number}", solo=soloed))
+    return f"{prefix}{number}"
 
 
 def is_effect_track(track: Track) -> bool:
@@ -385,7 +393,8 @@ def _filter_track(project: Project, start: int, end: int, commands: list[Command
     )
     if track is None:
         soloed = any(t.solo and not t.muted for t in video)
-        track = Track(kind=TrackKind.VIDEO, name=f"V{len(video) + 1}", solo=soloed)
+        name = _unused_name(project, "V", len(video) + 1)
+        track = Track(kind=TrackKind.VIDEO, name=name, solo=soloed)
         # 末尾へ足す 映像トラックの重ね順は並びの順なので、末尾が一番上になる
         commands.append(AddTrack(track))
     return track
@@ -402,6 +411,6 @@ def _free_video_track(
             return track
 
     index = sum(1 for t in project.timeline.tracks if t.kind is TrackKind.VIDEO) + 1
-    track = Track(kind=TrackKind.VIDEO, name=f"V{index}")
+    track = Track(kind=TrackKind.VIDEO, name=_unused_name(project, "V", index))
     commands.append(AddTrack(track))
     return track
