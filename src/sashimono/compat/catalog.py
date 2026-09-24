@@ -43,7 +43,12 @@ from sashimono.core.commands import (
     SetSource,
     new_scene,
 )
-from sashimono.core.commands.fixed import takes_picture_items, with_fixed_items
+from sashimono.core.commands.fixed import (
+    PICTURE_FIXED,
+    fixed_effect,
+    takes_picture_items,
+    with_fixed_items,
+)
 from sashimono.core.commands.insert import DEFAULT_GENERATED_FRAMES
 from sashimono.core.model import (
     AnimatedValue,
@@ -715,6 +720,15 @@ def restyle(objects: list[MappedObject], clip: Clip) -> list[Command]:
     # 固定の項目（クリップが最初から持つ欄）は外せないので残す 外そうとすると
     # 命令が断られ、着せる操作ごと取り消しになる
     commands.extend(RemoveEffect(clip.id, effect.id) for effect in clip.effects if not effect.fixed)
+    carried = {effect.kind for effect in template.clip.effects if effect.fixed}
+    for kept in clip.effects:
+        if kept.fixed and kept.kind in PICTURE_FIXED and kept.kind not in carried:
+            # テンプレートが欄を持たないのは既定のまま（読み込みは既定の配置や反転を写さない）
+            # 戻さないと、前に着せたテンプレートの位置や反転が残り、着せ直しても見た目が揃わない
+            commands.extend(
+                SetParam(ParamPath.of_effect(clip.id, kept.id, name), value)
+                for name, value in fixed_effect(kept.kind).params.items()
+            )
     for effect in template.clip.effects:
         fitted = fitted_effect(effect, span, clip.duration - 1)
         own = next((e for e in clip.effects if e.fixed and e.kind == effect.kind), None)

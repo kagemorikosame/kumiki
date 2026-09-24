@@ -240,6 +240,27 @@ def _value(number: float) -> dict[str, object]:
     return {"Values": [{"Value": number}], "Span": 0.0, "AnimationType": "なし"}
 
 
+class TestAviUtl:
+    def test_the_placement_goes_after_the_filters(self) -> None:
+        # 標準描画 を列の先頭に置くと、読み込んだフィルタが固定の欄の後ろに閉じ込められ、
+        # あとで足したエフェクト（欄の前へ入る）と並べ替えられない AviUtl もフィルタを
+        # 掛けた絵を最後に置く
+        from sashimono.compat.aviutl.exo import parse_exo
+        from sashimono.compat.aviutl.mapping import map_object
+        from sashimono.compat.aviutl.report import CompatibilityReport
+
+        text = (
+            "[0]\nstart=1\nend=60\nlayer=1\n"
+            "[0.0]\n_name=図形\n"
+            "[0.1]\n_name=ぼかし\n範囲=4\n"
+            "[0.2]\n_name=標準描画\nX=120.0\n"
+        )
+        mapped = map_object(parse_exo(text).objects[0], FrameRate(30), report=CompatibilityReport())
+        assert mapped is not None
+        kinds = [(e.kind, e.fixed) for e in mapped.clip.effects]
+        assert kinds == [("blur", False), ("transform", True)]
+
+
 class TestYmm4:
     def test_the_placement_of_an_item_becomes_the_fixed_transform(self) -> None:
         # 写した配置に印が無いと、置くときに既定の配置がもう 1 つ足され、パネルの X には
@@ -285,3 +306,17 @@ class TestYmm4:
         project = _apply(_on_a_track(target), commands)
         (clip,) = _clips(project, TrackKind.VIDEO)
         assert clip.effects[0].params["pos_y"] == AnimatedValue(-400.0)
+
+        # 既定の位置のテンプレート（読み込みは既定の配置を写さない）を着せ直すと、欄は既定へ
+        # 戻る 残すと、前に着せたテンプレートの位置のまま新しい見た目になる
+        plain = MappedObject(
+            clip=Clip(
+                timeline_start=0,
+                duration=30,
+                source=GeneratedSource(kind="text", params={"text": "見本"}),
+            ),
+            layer=1,
+        )
+        project = _apply(project, restyle([plain], clip))
+        (clip,) = _clips(project, TrackKind.VIDEO)
+        assert clip.effects[0].params["pos_y"] == AnimatedValue(0.0)

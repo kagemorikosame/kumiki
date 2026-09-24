@@ -136,6 +136,11 @@ def _for_clip(command: Command, primary: Clip, other: Clip) -> Command | None:
     if isinstance(command, SetParam | SetKeyframe | RemoveKeyframe | ClearKeyframes):
         path = _moved_path(command.path, primary, other)
         return None if path is None else replace(command, path=path)
+    if isinstance(command, SetEffectEnabled):
+        # 描画・音声の組の切り替えは選んだ全部へ 主だけ切り替わると、一緒に値を変えた
+        # ほかのクリップと欄の効き方が食い違う
+        twin = _same_effect(primary, other, command.effect_id, after=command.after)
+        return None if twin is None else replace(command, clip_id=other.id, effect_id=twin.id)
     # エフェクトの追加や並べ替えは、主のクリップだけに当てる（増やすと元へ戻しにくい）
     return None
 
@@ -387,7 +392,12 @@ class InspectorPanel(QWidget):
         toggle.setAutoRaise(True)
         toggle.toggled.connect(
             lambda state: self._send(
-                [SetEffectEnabled(clip.id, effect.id, bool(state)) for effect in effects],
+                [
+                    command
+                    for effect in effects
+                    for base in (SetEffectEnabled(clip.id, effect.id, bool(state)),)
+                    for command in (base, *self._also_for_others(base))
+                ],
                 "欄を有効化" if state else "欄を無効化",
             )
         )

@@ -46,6 +46,13 @@ def _placed(media: MediaItem) -> Project:
     return project
 
 
+def _placed_again(project: Project, media: MediaItem) -> Project:
+    """同じ素材をもう 1 本、後ろへ置く"""
+    for command in insert_media(project, media):
+        project = command.apply(project)
+    return project
+
+
 def _clip(project: Project, kind: TrackKind) -> Clip:
     return next(c for t in project.timeline.tracks if t.kind is kind for c in t.clips)
 
@@ -262,6 +269,30 @@ class TestClipFields:
             (picture.id, Fraction(3, 2)),
             (sound.id, Fraction(3, 2)),
         }
+
+    def test_the_group_toggle_reaches_every_selected_clip(
+        self, panel: InspectorPanel, video_media: MediaItem
+    ) -> None:
+        # 主のクリップだけ切り替わると、一緒に値を変えたほかのクリップと欄の効き方が食い違う
+        from PySide6.QtWidgets import QToolButton
+
+        from sashimono.core.commands import SetEffectEnabled
+
+        project = _placed(video_media)
+        project = _placed_again(project, video_media)
+        first, second = [
+            c for t in project.timeline.tracks if t.kind is TrackKind.VIDEO for c in t.clips
+        ]
+        panel.set_project(project)
+        panel.set_selection((first.id, second.id))
+        sent = _requests(panel)
+        toggle = _group(panel, "描画").findChild(QToolButton, "fixed_toggle")
+        assert toggle is not None
+        toggle.setChecked(False)
+        ((commands, _),) = sent
+        switched = {(c.clip_id, c.effect_id) for c in commands if isinstance(c, SetEffectEnabled)}
+        expected = {(clip.id, e.id) for clip in (first, second) for e in clip.effects if e.fixed}
+        assert switched == expected
 
     def test_the_native_size_can_be_switched(
         self, panel: InspectorPanel, video_media: MediaItem

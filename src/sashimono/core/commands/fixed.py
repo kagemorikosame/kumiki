@@ -27,6 +27,7 @@ __all__ = [
     "TRANSFORM_EFFECT_KIND",
     "VOLUME_EFFECT_KIND",
     "fixed_effect",
+    "fixed_rank",
     "fixed_slot",
     "loose_slot",
     "takes_picture_items",
@@ -87,7 +88,8 @@ def fixed_effect(kind: str) -> Effect:
     return Effect(kind=kind, params={name: _param(value) for name, value in defaults}, fixed=True)
 
 
-def _rank(kind: str) -> int:
+def fixed_rank(kind: str) -> int:
+    """固定の項目どうしの並びでの順番 知らない種類は一番後ろ"""
     return FIXED_ORDER.index(kind) if kind in FIXED_ORDER else len(FIXED_ORDER)
 
 
@@ -97,12 +99,12 @@ def fixed_slot(effects: tuple[Effect, ...] | list[Effect], kind: str) -> int:
     自分より後ろに並ぶはずの固定の項目の前 無ければ列の末尾 途中に割り込ませると、
     音量のあとに反転が来るなど、パネルの欄の並びとエフェクトの掛かる順が食い違う
     """
-    rank = _rank(kind)
+    rank = fixed_rank(kind)
     return next(
         (
             index
             for index, effect in enumerate(effects)
-            if effect.fixed and _rank(effect.kind) > rank
+            if effect.fixed and fixed_rank(effect.kind) > rank
         ),
         len(effects),
     )

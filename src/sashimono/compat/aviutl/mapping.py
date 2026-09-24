@@ -31,7 +31,7 @@ from sashimono.compat.aviutl.report import CompatibilityReport, global_report
 from sashimono.compat.decoration import decoration_params, find_decoration
 from sashimono.compat.mapped import MappedObject
 from sashimono.core.commands import AddClip, AddTrack, Command
-from sashimono.core.commands.fixed import takes_picture_items, with_fixed_items
+from sashimono.core.commands.fixed import fixed_rank, takes_picture_items, with_fixed_items
 from sashimono.core.model import (
     AnimatedValue,
     Clip,
@@ -690,7 +690,13 @@ def map_object(
         if transform is not None:
             # 標準描画 はオブジェクトが最初から持つ欄 置くときに同じ種類を足さないよう
             # 印を付ける（:func:`sashimono.core.commands.fixed.with_fixed_items`）
-            effects.insert(0, replace(transform.create(**placement), fixed=True))
+            effects.append(replace(transform.create(**placement), fixed=True))
+    # 固定の欄（配置・音量）は列の末尾へ集める AviUtl も フィルタを掛けた絵を最後に
+    # 標準描画 で置き、音声再生 で鳴らす 先頭や途中に残すと、読み込んだフィルタが
+    # 欄の後ろに閉じ込められ、あとで足したエフェクトと並べ替えられない
+    effects = [e for e in effects if not e.fixed] + sorted(
+        (e for e in effects if e.fixed), key=lambda e: fixed_rank(e.kind)
+    )
 
     source_in, speed = _playback(content, rate, log)
     clip = Clip(

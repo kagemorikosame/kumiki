@@ -719,7 +719,8 @@ def _set_clip_property(host: EditorHost, arguments: dict[str, Any]) -> object:
         value = _hold_at(value)
     elif name == "source_in":
         # 読み方は絵を止める時刻と同じ（素材の頭からの秒） 解除の null は無い
-        value = _hold_at(value)
+        # 誤りの文面には項目名を出す hold_at の名前で返すと、AI が別の項目を直しに行く
+        value = _hold_at(value, name)
         if value is None:
             raise ToolError("source_in は 0 以上の秒で渡してください")
     elif name in ("clip_to_below", "native_size"):
@@ -728,7 +729,7 @@ def _set_clip_property(host: EditorHost, arguments: dict[str, Any]) -> object:
     return {"name": name, "value": str(value)}
 
 
-def _hold_at(value: object) -> Fraction | None:
+def _hold_at(value: object, name: str = "hold_at") -> Fraction | None:
     """絵を止める素材の時刻（秒）を :class:`~fractions.Fraction` にする ``None`` は解除
 
     直さずに渡すと、文字列はクリップを作る所で落ち、整数や小数はモデルに入ったまま
@@ -738,13 +739,13 @@ def _hold_at(value: object) -> Fraction | None:
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, int | float | str):
-        raise ToolError(f"hold_at は秒の数か null で渡してください: {value!r}")
+        raise ToolError(f"{name} は秒の数か null で渡してください: {value!r}")
     try:
         seconds = Fraction(str(value)).limit_denominator(1000000)
     except (ValueError, ZeroDivisionError) as exc:
-        raise ToolError(f"hold_at を秒として読めません: {value!r}") from exc
+        raise ToolError(f"{name} を秒として読めません: {value!r}") from exc
     if seconds < 0:
-        raise ToolError(f"hold_at は 0 以上の秒です: {value!r}")
+        raise ToolError(f"{name} は 0 以上の秒です: {value!r}")
     return seconds
 
 
