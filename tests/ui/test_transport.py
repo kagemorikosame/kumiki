@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 import pytest
+import shiboken6
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication, QPushButton
 
@@ -25,6 +26,7 @@ def bar(qt_application: QApplication) -> Iterator[TransportBar]:
     created = TransportBar(FrameRate(30))
     yield created
     created.close()
+    shiboken6.delete(created)
 
 
 def _image(name: str) -> QImage:

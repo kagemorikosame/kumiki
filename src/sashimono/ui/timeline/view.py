@@ -176,10 +176,13 @@ class TimelineView(QWidget):
         #: 枠を描くクリップの控え ``(プロジェクト, 選択, 結果)`` :meth:`_highlighted` を見る
         self._highlight_cache: tuple[Project, tuple[ClipId, ...], frozenset[ClipId]] | None = None
 
-        #: スクロールバーはビューの外（下と右）に並べるので、親を持たせずに作る
-        #: 置くのは :class:`TimelineArea` ビューの子にすると、描いた絵の上に重なる
-        self._hbar = QScrollBar(Qt.Orientation.Horizontal)
-        self._vbar = QScrollBar(Qt.Orientation.Vertical)
+        #: スクロールバーはビューの外（下と右）に並べる 置くのは :class:`TimelineArea` で、
+        #: そこで親が付け替わる それまではビューの子として隠しておく 親を持たせずに作ると、
+        #: Python だけが持つ窓になり、ビューと別々の順でごみ集めに壊されて落ちることがある
+        self._hbar = QScrollBar(Qt.Orientation.Horizontal, self)
+        self._vbar = QScrollBar(Qt.Orientation.Vertical, self)
+        self._hbar.hide()
+        self._vbar.hide()
         self._hbar.setAccessibleName("タイムラインの横スクロール")
         self._vbar.setAccessibleName("タイムラインの縦スクロール")
         self._hbar.valueChanged.connect(self._on_hbar)
@@ -297,7 +300,8 @@ class TimelineView(QWidget):
         finally:
             self._syncing_bars = False
         # トラックが全部見えているときは縦のバーを隠す 使えないバーが幅を取るだけ
-        self._vbar.setVisible(vertical_max > 0 and self._vbar.parent() is not None)
+        # 並べる前（まだビューの子のとき）は出さない 出すとビューの絵の上に重なる
+        self._vbar.setVisible(vertical_max > 0 and self._vbar.parentWidget() is not self)
 
     def _on_hbar(self, value: int) -> None:
         if self._syncing_bars:
@@ -1383,6 +1387,8 @@ class TimelineArea(QWidget):
         grid.addWidget(view.horizontal_scroll_bar, 1, 1)
         grid.setColumnStretch(1, 1)
         grid.setRowStretch(0, 1)
+        # ビューの子として隠してあったので、並べたら出す 縦は要るときだけ出る
+        view.horizontal_scroll_bar.show()
         view.set_project(view.project)
 
     @property

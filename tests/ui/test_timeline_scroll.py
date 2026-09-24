@@ -11,6 +11,7 @@ from collections.abc import Iterator
 from dataclasses import replace
 
 import pytest
+import shiboken6
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QImage, QWheelEvent
 from PySide6.QtTest import QTest
@@ -52,6 +53,8 @@ def area(qt_application: QApplication, analyzer: MediaAnalyzer) -> Iterator[Time
     QApplication.processEvents()
     yield created
     created.close()
+    # 閉じただけで残すと、いつかのごみ集めで壊され、そのとき走っている別の試験で落ちる
+    shiboken6.delete(created)
 
 
 def _wheel(view: TimelineView, *, x: int = 0, y: int = 0, modifiers: Qt.KeyboardModifier) -> None:
@@ -181,6 +184,7 @@ class TestVerticalBar:
             assert not bar.isVisible()
         finally:
             area.close()
+            shiboken6.delete(area)
 
     def test_shown_and_working_when_tracks_overflow(
         self, qt_application: QApplication, analyzer: MediaAnalyzer
@@ -201,6 +205,7 @@ class TestVerticalBar:
             assert bands[-1].bottom <= view.height() + 1
         finally:
             area.close()
+            shiboken6.delete(area)
 
 
 def _linked_view(view: TimelineView, media: MediaItem) -> tuple[Project, Clip, Clip]:
@@ -234,6 +239,7 @@ class TestLinkedSelection:
         created = TimelineView(Project.create(), analyzer)
         created.resize(900, 300)
         yield created
+        shiboken6.delete(created)
 
     def test_selecting_the_picture_outlines_the_sound(
         self, view: TimelineView, video_media: MediaItem

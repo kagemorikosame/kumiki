@@ -11,6 +11,7 @@ from collections.abc import Iterator
 
 import numpy as np
 import pytest
+import shiboken6
 from PySide6.QtWidgets import QApplication
 
 from sashimono.core.commands import AddClip, insert_generated, insert_media
@@ -95,6 +96,7 @@ class TestInspector:
         created = InspectorPanel()
         yield created
         created.close()
+        shiboken6.delete(created)
 
     def test_the_volume_is_ready_to_change(
         self, panel: InspectorPanel, audio_media: MediaItem

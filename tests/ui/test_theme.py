@@ -12,10 +12,12 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 import pytest
+import shiboken6
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QColor, QImage
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
     QApplication,
     QDockWidget,
     QDoubleSpinBox,
@@ -89,7 +91,7 @@ class TestTabs:
         host.show()
         QApplication.processEvents()
         yield widget
-        host.close()
+        _dispose(host)
 
     def test_the_chosen_tab_is_readable(self) -> None:
         # 選んだタブの地が明るい灰色だと、白に近い文字が読めなかった（Issue #27）
@@ -181,24 +183,43 @@ def _click_like_a_mouse(spin: QWidget, point: QPoint) -> None:
         QTest.mouseClick(target, Qt.MouseButton.LeftButton, pos=target.mapFrom(spin, point))
 
 
+def _use_style(root: QWidget, style: QStyle) -> None:
+    """``root`` の中の数値欄とその数字の欄に、元の見た目 ``style`` を当てる"""
+    for spin in root.findChildren(QAbstractSpinBox):
+        spin.setStyle(style)
+        spin.lineEdit().setStyle(style)
+
+
+def _dispose(root: QWidget) -> None:
+    """窓をその場で壊す 見た目より先に壊しておく
+
+    Qt は部品に当てた見た目を持ち主として扱わない 閉じただけで残すと、試験が
+    終わって見た目が先に消えたあと、ごみ集めで窓を壊すときに消えた見た目を触る
+    """
+    root.close()
+    shiboken6.delete(root)
+
+
 @pytest.mark.parametrize("style_name", _STYLES)
 class TestSpinButtons:
     @pytest.fixture
-    def style(self, style_name: str, qt_application: QApplication) -> Iterator[None]:
-        # 元の見た目はアプリ全体で切り替える 部品ごとに変えると、数値欄の中の数字の欄が
-        # 元の見た目のまま残り、利用者の手元と同じ組み合わせにならない
-        previous = qt_application.style().name()
-        qt_application.setStyle(style_name)
-        yield
-        qt_application.setStyle(previous)
+    def style(self, style_name: str, qt_application: QApplication) -> Iterator[QStyle]:
+        # 元の見た目は数値欄にだけ当てる アプリ全体を切り替えると、前の見た目が
+        # 消されたあとも、それを土台にしていた部品（ほかの試験で閉じただけの窓）が
+        # 残り、ごみ集めで壊すときに消えた見た目を触ってプロセスごと落ちた（CI）
+        # 数字の欄の置き場は数値欄の見た目が決めるので、数値欄に当てれば足りる
+        del qt_application
+        created = QStyleFactory.create(style_name)
+        assert created is not None
+        yield created
 
-    def test_the_up_button_of_the_resolution_steps_up(self, style: None) -> None:
+    def test_the_up_button_of_the_resolution_steps_up(self, style: QStyle) -> None:
         # Windows 11 の見た目では上下のボタンが横に並ぶのに、数字の欄がボタン 1 つぶん
         # しか空けずに広がり、上のボタンが数字の欄の下に隠れていた 押しても数字の欄が
         # 受け取るので、上だけ数が変わらなかった（Issue #27）
-        del style
         dialog = ProjectSettingsDialog(ProjectSettings(), new=True)
         dialog.setStyleSheet(STYLE_SHEET)
+        _use_style(dialog, style)
         dialog.show()
         QApplication.processEvents()
         try:
@@ -211,12 +232,11 @@ class TestSpinButtons:
             _click_like_a_mouse(spin, down)
             assert spin.value() == start - spin.singleStep()
         finally:
-            dialog.close()
+            _dispose(dialog)
 
-    def test_the_edit_field_leaves_the_buttons_free(self, style: None) -> None:
+    def test_the_edit_field_leaves_the_buttons_free(self, style: QStyle) -> None:
         # 数字の欄がボタンに掛かると、掛かった所を押しても増えも減りもしない
         # 小数の数値欄（設定パネルの音量など）も同じ決まりで並ぶ
-        del style
         host = QWidget()
         host.setStyleSheet(STYLE_SHEET)
         layout = QVBoxLayout(host)
@@ -227,6 +247,7 @@ class TestSpinButtons:
             layout.addWidget(spin)
         spins[1].setSuffix(" %")
         spins[1].setFixedWidth(96)
+        _use_style(host, style)
         host.show()
         QApplication.processEvents()
         try:
@@ -242,4 +263,4 @@ class TestSpinButtons:
                 _click_like_a_mouse(spin, up)
                 assert spin.value() == 101, type(spin).__name__
         finally:
-            host.close()
+            _dispose(host)
