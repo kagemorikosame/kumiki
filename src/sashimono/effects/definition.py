@@ -179,6 +179,14 @@ class EffectRegistry:
         """登録順ではなく、分類 → 表示名の順で返す UI の一覧用"""
         return tuple(sorted(self._definitions.values(), key=lambda d: (d.category, d.label)))
 
+    def sound_kinds(self) -> frozenset[str]:
+        """音を加工するエフェクト（:attr:`EffectDefinition.audio_process` を持つ物）の種類
+
+        コア層は定義を読めないので、絵と音のエフェクトを振り分ける命令
+        （:class:`~sashimono.core.commands.ConvertLayers`）へはこれを渡す
+        """
+        return frozenset(k for k, d in self._definitions.items() if d.audio_process is not None)
+
     def categories(self) -> tuple[str, ...]:
         seen: list[str] = []
         for definition in self.all():
