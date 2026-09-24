@@ -713,11 +713,15 @@ void main() {
     // 絵を size 四方の欠片に割り、欠片ごとに飛ばして落とす
     // 出力の画素に来る欠片を探すため、見込み位置の周り 7x7 の欠片だけを調べる
     // それより遠くまで散った欠片は描かない（画面の外へ飛んでいく最中にあたる）
-    float cell = max(size, 4.0);
+    //
+    // 下限・重さ・飛ぶ速さ・散る速さの定数は画面の画素で決めた値なので u_pixel_scale を掛ける
+    // 欠片の大きさ（size）だけ縮めてこちらを縮めないと、画質を落としたプレビューで
+    // 欠片が 2 倍・4 倍の速さで飛び散り、書き出しと崩れ方が変わる
+    float cell = max(size, 4.0 * u_pixel_scale);
     float elapsed = max(u_time - start, 0.0) * speed / 100.0;
     vec2 pixel = v_uv * u_size;
     vec2 centre = object_center();
-    float gravity = 1500.0 * fall / 100.0;
+    float gravity = 1500.0 * u_pixel_scale * fall / 100.0;
     vec2 base_drop = vec2(0.0, -0.5 * gravity * elapsed * elapsed);
     vec2 guess = floor((pixel - base_drop) / cell);
 
@@ -728,10 +732,10 @@ void main() {
             vec2 home = (index + 0.5) * cell;
             float wait = hash(index + 3.1) * 0.5 * delay / 100.0;
             float t = max(elapsed - wait, 0.0);
-            vec2 outward = normalize(home - centre + vec2(0.001)) * 300.0 * fly / 100.0
-                         * impact / 100.0;
+            vec2 outward = normalize(home - centre + vec2(0.001)) * 300.0 * u_pixel_scale
+                         * fly / 100.0 * impact / 100.0;
             vec2 scatter = (vec2(hash(index + 1.7), hash(index + 9.3)) - 0.5) * 400.0
-                         * impact / 100.0 * spread / 100.0;
+                         * u_pixel_scale * impact / 100.0 * spread / 100.0;
             vec2 moved = home + (outward + scatter) * t + vec2(0.0, -0.5 * gravity * t * t);
             // 欠片ごとに向きと速さの違う回転 経過に比例して回る
             float turn_angle = (hash(index + 5.1) * 2.0 - 1.0) * 2.0 * PI * spin / 100.0 * t;
@@ -824,8 +828,10 @@ float channel(vec2 p, float z, float salt) {
 void main() {
     // ノイズの値でずらす 100% のノイズの粒は 50 画素、移動量 100 で最大 40 画素ほど
     // どちらも YMM4 に縞を歪めさせた絵（tools/ymm4_probes.py の 3 回目）に合わせた
+    // 50 画素は画面の画素なので合成の画素へ縮める 縮めないと、画質を落としたプレビューで
+    // 粒が 2 倍・4 倍に粗く出る（位置と速さはエンジンが縮めて渡すので、ここと揃う）
     vec2 pixel = v_uv * u_size;
-    vec2 scale = max(vec2(scale_x, scale_y) / 100.0 * 50.0, vec2(1.0));
+    vec2 scale = max(vec2(scale_x, scale_y) / 100.0 * 50.0 * u_pixel_scale, vec2(1.0));
     vec2 position = (pixel + vec2(offset_x, offset_y) + vec2(speed_x, speed_y) * u_time) / scale;
     float z = (offset_z + speed_z * u_time) / max(scale_z, 1.0);
 
@@ -1270,7 +1276,9 @@ def register_motion_effects() -> None:
                     for axis in ("x", "y")
                 ),
                 # 四隅より細かい格子 互換層が入れる 入っていなければ上の四隅で動く
-                GridSpec("grid", "格子", maximum=MESH_MAX_POINTS),
+                # 点は四隅のスライダと同じく画面の画素のずれ 縮めずに渡すと、画質を
+                # 落としたプレビューでだけ格子の歪みが 2 倍・4 倍に出る
+                GridSpec("grid", "格子", maximum=MESH_MAX_POINTS, pixels=True),
             ),
             fragment_shader=_MESH,
         ),
@@ -1329,8 +1337,10 @@ def register_motion_effects() -> None:
                 TrackSpec("offset_x", "位置 X", -10000, 10000, 0, step=1, unit="px"),
                 TrackSpec("offset_y", "位置 Y", -10000, 10000, 0, step=1, unit="px"),
                 TrackSpec("offset_z", "位置 Z", -10000, 10000, 0, step=1),
-                TrackSpec("speed_x", "速さ X", -10000, 10000, 0, step=1, unit="px/秒"),
-                TrackSpec("speed_y", "速さ Y", -10000, 10000, 0, step=1, unit="px/秒"),
+                # 1 秒に進む画面の画素 単位の px/秒 は PIXEL_UNITS に無いので明に書く
+                # 縮めないと、画質を落としたプレビューでだけ模様が速く流れる
+                TrackSpec("speed_x", "速さ X", -10000, 10000, 0, step=1, unit="px/秒", pixels=True),
+                TrackSpec("speed_y", "速さ Y", -10000, 10000, 0, step=1, unit="px/秒", pixels=True),
                 TrackSpec("speed_z", "速さ Z", -10000, 10000, 0, step=1),
                 TrackSpec("scale_x", "大きさ X", 1, 10000, 100, unit="%"),
                 TrackSpec("scale_y", "大きさ Y", 1, 10000, 100, unit="%"),
