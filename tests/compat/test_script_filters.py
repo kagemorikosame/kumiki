@@ -65,6 +65,8 @@ class TestSize:
         assert (state.ox, state.oy) == (40.0, 20.0)
 
     def test_getpixel_with_a_position_still_reads_the_colour(self) -> None:
+        # 位置を渡したときまで大きさを返すと、色を読むスクリプトが幅を色として読み、
+        # 縁取りや塗りの色が幅の数（0x28 など）の暗い色になる
         state = _state(4, 4)
         state.image[1, 2] = (255, 0, 0, 255)
         _run("local c, a = obj.getpixel(2, 1) obj.ox = c obj.oy = a", state)
@@ -130,6 +132,27 @@ class TestClip:
         _run('obj.effect("クリッピング", "上", 2, "下", 4, "左", 6, "右", 10)', state)
         assert (state.ox, state.oy) == (-2.0, -1.0)
         assert (state.cx, state.cy) == (2.0, 1.0)
+
+    def test_a_deferred_uneven_recentre_is_recorded(self) -> None:
+        # 描くときへ回した クリッピング は切り口を元の場所に残す 中心の位置を変更 で真ん中へ
+        # 寄せ直す分はそこでは写せない 黙ると、切った絵がオブジェクトの位置へ来ない理由が出ない
+        report = CompatibilityReport()
+        _requested(
+            'obj.effect("ぼかし", "範囲", 4)'
+            ' obj.effect("クリッピング", "上", 3, "下", 1, "中心の位置を変更", 1)',
+            report,
+        )
+        assert any("中心の位置を変更" in line for line in report.lines())
+
+    def test_a_deferred_even_recentre_is_not_recorded(self) -> None:
+        # 上下と左右が同じ量なら真ん中は動かない 記録すると、本当に写せない物が埋もれる
+        report = CompatibilityReport()
+        _requested(
+            'obj.effect("ぼかし", "範囲", 4)'
+            ' obj.effect("クリッピング", "上", 3, "下", 3, "中心の位置を変更", 1)',
+            report,
+        )
+        assert not any("中心の位置を変更" in line for line in report.lines())
 
     def test_a_clip_after_other_effects_waits_for_them(self) -> None:
         # 先に積んだぼかしより前に切ると、ぼかしが切り口の外の絵を混ぜなくなる

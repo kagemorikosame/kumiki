@@ -172,6 +172,8 @@ class TestMargin:
         assert any("余白" in line for line in report.missing)
 
     def test_a_margin_that_fits_is_kept_and_not_recorded(self) -> None:
+        # 収まる余白まで縮めると、遠くへ動かす影の外側が欠ける 収まるのに記録すると、
+        # 本当に足りなかったときの記録が埋もれる
         report = CompatibilityReport()
         assert fitted_margin(100, 60, 300, report) == 300
         assert not report.missing
