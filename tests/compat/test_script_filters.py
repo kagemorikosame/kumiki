@@ -8,6 +8,7 @@ sigma の 単純図形σ の 菱形・アクリル矩形・磨りガラス矩形
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -22,10 +23,15 @@ from sashimono.core.model import AnimatedValue, Clip, Effect
 from sashimono.engine.render.scripts import ScriptStage, requested_effects
 
 
-def _state(width: int = 40, height: int = 20, **fields: object) -> ObjectState:
+def _state(
+    width: int = 40,
+    height: int = 20,
+    *,
+    framebuffer: Callable[[], np.ndarray | None] | None = None,
+) -> ObjectState:
     image = np.zeros((height, width, 4), np.uint8)
     image[..., 3] = 255
-    return ObjectState(image=image, **fields)  # type: ignore[arg-type]
+    return ObjectState(image=image, framebuffer=framebuffer)
 
 
 def _run(code: str, state: ObjectState, report: CompatibilityReport | None = None) -> None:

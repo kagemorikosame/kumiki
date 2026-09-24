@@ -259,6 +259,22 @@ class TestRendering:
         assert _near(_rgb(actual, LEFT), _rgb(expected, LEFT), 4)
         assert _near(_rgb(actual, RIGHT), _rgb(expected, RIGHT), 4)
 
+    def test_a_script_filter_reads_the_screen_below(self, gl_context: OffscreenGLContext) -> None:
+        """フィルタに積んだスクリプトの ``obj.copybuffer("obj", "frm")`` は下の絵を写す（#170）
+
+        フィルタは掛けた結果を空の合成先へ描く その空の方を画面として写すと、黒一色の絵に
+        置き換わって下の赤と緑が消える
+        """
+        catalog = ScriptCatalog(roots=())
+        catalog.add_text("aviutl:試験.anm:画面を写す", 'obj.copybuffer("obj", "frm")')
+        set_script_catalog(catalog)
+        definition = registry.get("aviutl:試験.anm:画面を写す")
+        assert definition is not None
+        project = _project(filter_clip=_filter(effects=(definition.create(),)))
+        (image,) = _render(project, gl_context, 15)
+        assert _near(_rgb(image, LEFT), (255, 0, 0))
+        assert _near(_rgb(image, RIGHT), (0, 255, 0))
+
     def test_replacing_keeps_a_very_faint_picture(self, gl_context: OffscreenGLContext) -> None:
         # 置き換えは事前乗算の値をそのまま写す 一度ストレートへ戻そうとすると、戻すのを
         # 飛ばすごく薄い所（不透明度 0.0001 以下）で不透明度が 2 回掛かり、色が消える
