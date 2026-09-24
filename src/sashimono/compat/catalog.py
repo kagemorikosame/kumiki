@@ -457,8 +457,15 @@ def place(
                 source_in=item.scene_offset * project.rate.frame_duration,
             )
         if _is_sound(item, known):
+            if linked is not None and not linked.audio_streams:
+                # 音の無い素材を指す音声ファイルは、元のソフトでも何も鳴らず何も描かない
+                # 置くと ``AddClip`` が断り、1 回の Undo にまとめた配置が全部取り消される
+                continue
             # 音だけの素材を読む動画アイテムでも、止めるのは絵だけ 音のクリップには持たせない
             heard = replace(placed, hold_at=None, native_size=False)
+            if linked is not None:
+                # 動画を指すときに 0 番のまま鳴らすと、映像のストリームを音として読みに行く
+                heard = replace(heard, stream_index=linked.audio_streams[0].index)
             prepared.append((item, None, _with_audio_effects(heard, item)))
             continue
         prepared.append((item, *_split_sound(placed, item, linked)))
@@ -577,14 +584,17 @@ def _media_of(item: MappedObject, known: Mapping[str, MediaItem]) -> MediaItem |
 def _is_sound(item: MappedObject, known: Mapping[str, MediaItem]) -> bool:
     """音声トラックへ置くものか
 
-    素材が見つかっていれば、映像を持つかどうかで決める（映像も持つ動画は映像トラック）
-    見つからなければ種類の名前で決める 素材の無い音声を映像トラックへ置くと、
-    あとで素材を足しても映像トラックでは鳴らない
+    音声ファイル（YMM4 の音声アイテムも同じ種類）は、指す素材に映像があっても音だけ
+    AviUtl は動画の音の半分を、同じ .mp4 を指す音声ファイルとして書く 素材の中身で
+    決めると映像トラックへ置かれ、動画がもう 1 枚描かれて音は鳴らない
+    素材の無い音声を映像トラックへ置くと、あとで素材を足しても映像トラックでは鳴らない
+
+    ほかの種類は、素材が見つかっていれば映像を持つかどうかで決める
     """
+    if item.kind == "音声ファイル" and item.clip.source is None:
+        return True
     linked = _media_of(item, known)
-    if linked is not None:
-        return not (linked.has_video or linked.is_still)
-    return item.kind == "音声ファイル" and item.clip.source is None
+    return linked is not None and not (linked.has_video or linked.is_still)
 
 
 def _sound_tracks_for(

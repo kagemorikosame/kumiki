@@ -11,7 +11,7 @@ AviUtl のオブジェクトは「中身 1 つ + フィルタの列」ででき�
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from fractions import Fraction
 from pathlib import Path
@@ -38,6 +38,7 @@ from sashimono.core.model import (
     Effect,
     GeneratedSource,
     MediaId,
+    MediaItem,
     ParamValue,
     Project,
     Track,
@@ -568,27 +569,51 @@ def map_exo(
     *,
     at_frame: int = 0,
     media: dict[str, MediaId] | None = None,
+    items: Mapping[MediaId, MediaItem] | None = None,
     report: CompatibilityReport | None = None,
 ) -> list[Command]:
     """ファイル全体を、タイムラインへ置くコマンドの列にする
 
     レイヤーはそのままトラックに対応させる AviUtl のレイヤー 1 が一番下なので、
     こちらの映像トラックの並びと同じ向きになる
+
+    音声ファイルは音声トラックへ置く（テンプレートを置く
+    :func:`~sashimono.compat.catalog.place` と同じ） 映像トラックへ置くと、音だけの素材は
+    ``AddClip`` に断られて読み込み全体が失敗し、動画を指すものは動画がもう 1 枚描かれる
+
+    ``items`` はこれから登録する素材の中身（``media`` の鍵の先） 音のストリームの番号と
+    音の有無をここから引く まだプロジェクトに無いので ``project`` からは引けない
     """
+    # catalog はこのモジュールを読み込むので、頭で読むと輪になる
+    from sashimono.compat.catalog import _sound_tracks_for
+
     log = report if report is not None else global_report
-    mapped = [map_object(obj, project.rate, report=log) for obj in exo.objects]
-    mapped = [item for item in mapped if item is not None]
+    written = [map_object(obj, project.rate, report=log) for obj in exo.objects]
+    known = media or {}
+
+    def content(item: MappedObject) -> MediaItem | None:
+        media_id = known.get(item.media_path) if item.media_path else None
+        if media_id is None:
+            return None
+        found = (items or {}).get(media_id)
+        return found if found is not None else project.find_media(media_id)
+
+    def silent(item: MappedObject) -> bool:
+        # 音の無い素材を指す音声ファイルは元のソフトでも何も鳴らさない 置くと断られる
+        linked = content(item) if _heard(item) else None
+        return linked is not None and not linked.audio_streams
+
+    mapped = [item for item in written if item is not None and not silent(item)]
     if not mapped:
         return []
 
     commands: list[Command] = []
-    tracks = _tracks_for(project, {item.layer for item in mapped if item is not None}, commands)
+    shown = {item.layer for item in mapped if not _heard(item)}
+    tracks = _tracks_for(project, shown, commands) if shown else {}
 
-    known = media or {}
+    placements: list[tuple[MappedObject, Clip]] = []
     for item in mapped:
-        if item is None:  # pragma: no cover - 直前で除いている
-            continue
-        track = tracks[item.layer]
+        linked = content(item)
         placed = Clip(
             timeline_start=item.clip.timeline_start + at_frame,
             duration=item.clip.duration,
@@ -604,11 +629,28 @@ def map_exo(
         # 素材を置いたときと同じ欄を持たせる 標準描画 と 音声再生 から写した物は印が
         # 付いているので、既定のままで写さなかった欄だけが足される
         # 中身の無いエイリアス（効果だけ）は置いても何も映らないので、欄も持たせない
-        sound = item.kind == "音声ファイル"
+        sound = _heard(item)
         picture = not sound and item.kind != "effects" and takes_picture_items(placed)
         placed = with_fixed_items(placed, picture=picture, sound=sound)
-        commands.append(AddClip(track.id, placed))
+        if sound and linked is not None:
+            # 動画を指すときに 0 番のまま鳴らすと、映像のストリームを音として読みに行く
+            placed = replace(placed, stream_index=linked.audio_streams[0].index)
+        placements.append((item, placed))
+
+    # 音声トラックの割り当ては重なりを見て空いている所を探す 映像と同じくレイヤー番号を
+    # そのまま番号にすると、10 段目の効果音のために音声トラックを 10 本作ることになる
+    heard = _sound_tracks_for(
+        project, [(item, clip) for item, clip in placements if _heard(item)], commands
+    )
+    for item, clip in placements:
+        track = heard[id(clip)] if _heard(item) else tracks[item.layer]
+        commands.append(AddClip(track.id, clip))
     return commands
+
+
+def _heard(item: MappedObject) -> bool:
+    """音声トラックへ置くものか 音声ファイルは指す素材に映像があっても音だけを使う"""
+    return item.kind == "音声ファイル"
 
 
 def map_object(

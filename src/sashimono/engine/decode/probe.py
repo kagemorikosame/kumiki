@@ -14,7 +14,7 @@ import av.error
 from sashimono.core.model import AudioStreamInfo, MediaItem, VideoStreamInfo
 from sashimono.core.timebase import FrameRate
 
-__all__ = ["ProbeError", "media_origin", "probe_media"]
+__all__ = ["ProbeError", "media_origin", "moving_pictures", "probe_media"]
 
 #: 静止画として扱う拡張子 長さを持たず、タイムライン上で任意に伸ばせる
 STILL_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff"})
@@ -48,7 +48,7 @@ def probe_media(path: Path) -> MediaItem:
 
         origin = media_origin(container)
         video_streams = tuple(
-            _video_info(stream, rotation, origin) for stream in container.streams.video
+            _video_info(stream, rotation, origin) for stream in moving_pictures(container)
         )
         audio_streams = tuple(_audio_info(stream) for stream in container.streams.audio)
         if not video_streams and not audio_streams:
@@ -62,6 +62,21 @@ def probe_media(path: Path) -> MediaItem:
         video_streams=video_streams,
         audio_streams=audio_streams,
     )
+
+
+def moving_pictures(container: av.container.InputContainer) -> list[av.VideoStream]:
+    """映像として読む映像ストリーム カバー画像（``attached_pic``）は除く
+
+    mp3 や m4a に付いたジャケットの絵は、ffmpeg では映像ストリームとして見える
+    数えると音楽の素材が動画として扱われ、映像トラックへ置かれて描かれる
+    絵は 1 枚しか無いので、デコーダが時刻でシークすると途中から PermissionError で落ちる
+    静止画のファイル（png など）の絵は印が付いていないので、ここでは残る
+    """
+    return [
+        stream
+        for stream in container.streams.video
+        if not stream.disposition & av.stream.Disposition.attached_pic
+    ]
 
 
 def media_origin(container: av.container.InputContainer) -> Fraction:
@@ -89,7 +104,7 @@ def media_origin(container: av.container.InputContainer) -> Fraction:
     秒は分数で持つ コンテナの頭（マイクロ秒に丸めてある）から作ると、フレームの時刻が
     ちょうどの境目から 1µs 未満ずれ、境目の時刻で 1 つ前の絵が出る
     """
-    for stream in container.streams.video[:1]:
+    for stream in moving_pictures(container)[:1]:
         start = _stream_start(stream)
         if start is not None:
             return max(Fraction(0), start)
@@ -119,7 +134,7 @@ def _container_duration(container: av.container.InputContainer, origin: Fraction
     終わりの後なので何も映らない 原点より前の区間は長さから除く 頭が 0 以下の素材は
     もとから原点が 0 なので、長さは変わらない
     """
-    streams = (*container.streams.video, *container.streams.audio)
+    streams = (*moving_pictures(container), *container.streams.audio)
     if container.duration is not None:
         whole = Fraction(container.duration, av.time_base)
         if container.start_time is not None:

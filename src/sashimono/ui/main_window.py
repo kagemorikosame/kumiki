@@ -1969,7 +1969,12 @@ class MainWindow(QMainWindow):
             return
 
         found = self._resolve_exo_media(exo, source)
-        commands = map_exo(exo, self.view_project, media=found.ids)
+        commands = map_exo(
+            exo,
+            self.view_project,
+            media=found.ids,
+            items={media.id: media for media in found.items},
+        )
         if not commands:
             self.statusBar().showMessage("読み込めるオブジェクトがありませんでした", 5000)
             return
