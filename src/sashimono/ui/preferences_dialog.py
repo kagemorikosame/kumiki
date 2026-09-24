@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 
 from sashimono.ai.models import EFFORTS as AI_EFFORTS
 from sashimono.ai.models import MODELS as AI_MODELS
+from sashimono.ai.models import find_model
 from sashimono.engine.cache.proxy import (
     BUDGET_MS,
     MEASURED_ONE_LAYER_MS,
@@ -278,6 +279,10 @@ class PreferencesDialog(QDialog):
             "Claude Haiku 4.5 はこの指定を受け付けないので、選んでも渡さない"
         )
         form.addRow("アシスタントの考える深さ", self._ai_effort)
+        # 受け付けないモデルでは選べなくする アシスタント欄の上と同じ振る舞い
+        # 選べたままだと、変えても応答に何も効かない
+        self._ai_model.currentIndexChanged.connect(self._update_effort_enabled)
+        self._update_effort_enabled()
 
         self._chat_enter_sends = QCheckBox(
             "アシスタントの入力欄で Enter だけで送る（改行は Shift+Enter）", self
@@ -341,6 +346,10 @@ class PreferencesDialog(QDialog):
         # DLL を読まない設定では汎用プラグインも読まないので、選んでも効かない
         self._native_modules.toggled.connect(self._all_plugins.setEnabled)
         self._all_plugins.setEnabled(preferences.native_modules)
+
+    def _update_effort_enabled(self, _index: int = -1) -> None:
+        choice = find_model(str(self._ai_model.currentData()))
+        self._ai_effort.setEnabled(choice is None or choice.effort)
 
     @staticmethod
     def _select(box: QComboBox, value: int) -> None:

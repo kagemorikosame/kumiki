@@ -218,6 +218,27 @@ class _QuietBridge:
         return
 
 
+class TestSettingsDialogEffort:
+    def test_the_effort_is_disabled_for_haiku(self, qt_application: object) -> None:
+        """設定画面でも、Haiku 4.5 では考える深さを選べなくする
+
+        選べたままだと、変えても Haiku には渡さないので、応答に何も効かず、
+        設定が壊れているように見える
+        """
+        del qt_application
+        from sashimono.ui.preferences_dialog import PreferencesDialog
+
+        dialog = PreferencesDialog(Preferences(ai_model="claude-haiku-4-5-20251001"))
+        assert dialog._ai_effort.isEnabled() is False  # 開いた時点で
+
+        dialog._ai_model.setCurrentIndex(dialog._ai_model.findData("claude-sonnet-5"))
+        assert dialog._ai_effort.isEnabled() is True  # 受け付けるモデルへ替えたら戻る
+
+        dialog._ai_model.setCurrentIndex(dialog._ai_model.findData("claude-haiku-4-5-20251001"))
+        assert dialog._ai_effort.isEnabled() is False
+        dialog.deleteLater()
+
+
 class TestReconnect:
     def test_a_prompt_left_by_a_failed_connection_is_not_run_later(
         self, monkeypatch: pytest.MonkeyPatch
