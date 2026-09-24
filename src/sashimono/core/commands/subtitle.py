@@ -15,6 +15,7 @@ from fractions import Fraction
 
 from sashimono.core.commands.base import Command
 from sashimono.core.commands.edit import AddClip, AddTrack
+from sashimono.core.commands.layers import new_layer, places_mixed
 from sashimono.core.model import (
     Clip,
     GeneratedSource,
@@ -213,8 +214,14 @@ def burn_subtitles(
     if not projected:
         return []
 
-    track = Track(kind=TrackKind.VIDEO, name=track_name)
-    commands: list[Command] = [AddTrack(track)]
+    commands: list[Command] = []
+    if places_mixed(project):
+        # 混合の方式ではレイヤーにする 並びの末尾（一番手前）に入るので、動画の上に出る
+        # 映像トラックにすると、方式を混合にしたのに字幕だけ別の種類のトラックへ入る
+        track = new_layer(project, commands, name=track_name)
+    else:
+        track = Track(kind=TrackKind.VIDEO, name=track_name)
+        commands.append(AddTrack(track))
 
     placed: list[tuple[int, int, str]] = []
     for subtitle in projected:

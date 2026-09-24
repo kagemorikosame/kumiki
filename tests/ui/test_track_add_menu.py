@@ -22,6 +22,7 @@ from sashimono.core.commands import AddEffect, Command
 from sashimono.core.io.aliases import AliasStore
 from sashimono.core.model import (
     Clip,
+    LayerMode,
     MediaItem,
     Project,
     Scene,
@@ -169,6 +170,19 @@ class TestTrackAddButton:
             "音声トラック",
             "エフェクトトラック（フィルタ用）",
         ]
+
+    def test_a_mixed_project_offers_layers(self, view: TimelineView) -> None:
+        # 混合の作品で映像・音声のトラックを足せると、方式を混合にしたのに分けたトラックが増える
+        settings = replace(view.project.settings, layer_mode=LayerMode.MIXED)
+        view.set_project(replace(view.project, settings=settings))
+        _wire(view)
+        assert _texts(view.build_track_add_menu()) == [
+            "レイヤー",
+            "エフェクトレイヤー（フィルタ用）",
+        ]
+        _find(view.build_track_add_menu(), "レイヤー").trigger()
+        added = view.project.timeline.tracks[-1]
+        assert (added.name, added.kind) == ("レイヤー 1", TrackKind.MIXED)
 
     def test_a_video_track_goes_on_top_and_audio_at_the_bottom(self, view: TimelineView) -> None:
         # 映像は並びの末尾ほど手前 足したトラックが間に挟まると、重なり順が変わる

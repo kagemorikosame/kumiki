@@ -8,8 +8,17 @@ from __future__ import annotations
 import pytest
 
 from sashimono.ai.host import ToolError
-from sashimono.core.commands import AddClip, RemoveTrack
-from sashimono.core.model import Clip, TrackKind
+from sashimono.ai.session import SYSTEM_PROMPT, system_prompt
+from sashimono.core.commands import AddClip, RemoveTrack, SetTrackState
+from sashimono.core.model import (
+    Clip,
+    LayerMode,
+    MediaItem,
+    Project,
+    ProjectSettings,
+    TrackKind,
+)
+from sashimono.core.timebase import FrameRate
 from tests.ai.conftest import FakeHost
 from tests.ai.test_operations import run
 
@@ -57,3 +66,63 @@ def test_layer_clips_show_what_they_play(host: FakeHost) -> None:
     assert listed["show_picture"] is False
     others = [c for c in run(host, "list_clips") if c["track_kind"] != "mixed"]
     assert all("audio_stream" not in c for c in others)
+
+
+def _mixed_host(video_media: MediaItem) -> FakeHost:
+    """混合の方式で、素材を 1 本読み込んだ（まだ置いていない）プロジェクト"""
+    settings = ProjectSettings(frame_rate=FrameRate(30), layer_mode=LayerMode.MIXED)
+    return FakeHost(Project.create(settings, media=(video_media,)))
+
+
+class TestMixedMode:
+    """混合の方式のプロジェクトでは、AI の操作も方式に従う"""
+
+    def test_add_track_defaults_to_a_layer(self, video_media: MediaItem) -> None:
+        # 省いたときに映像トラックを足すと、混合の作品に AI の置いた物だけ別の種類で並ぶ
+        host = _mixed_host(video_media)
+        result = run(host, "add_track")
+        track = host.document.project.timeline.tracks[-1]
+        assert track.kind is TrackKind.MIXED
+        assert result["name"] == "レイヤー 1"
+
+    def test_add_track_still_defaults_to_video_when_separated(self, host: FakeHost) -> None:
+        # 分ける方式（既定）の既定まで変わると、今までの頼み方で別の種類のトラックが増える
+        run(host, "add_track")
+        assert host.document.project.timeline.tracks[-1].kind is TrackKind.VIDEO
+
+    def test_add_track_joins_the_solo(self, video_media: MediaItem) -> None:
+        # ソロの間に足したレイヤーにソロが無いと、AI がそこへ置いた物が出ない
+        host = _mixed_host(video_media)
+        run(host, "add_track")
+        layer = host.document.project.timeline.tracks[0]
+        host.apply_commands([SetTrackState(layer.id, solo=True)], "ソロ")
+        run(host, "add_track", name="テロップ")
+        added = host.document.project.timeline.tracks[-1]
+        assert added.name == "テロップ"
+        assert added.solo
+
+    def test_place_media_makes_one_clip(self, video_media: MediaItem) -> None:
+        # 映像と音声の 2 本に分けて置くと、混合の作品で音声トラックが増える
+        host = _mixed_host(video_media)
+        run(host, "place_media", media_id=str(video_media.id))
+        (layer,) = host.document.project.timeline.tracks
+        assert layer.kind is TrackKind.MIXED
+        (clip,) = layer.clips
+        assert clip.audio_stream == video_media.audio_streams[0].index
+        assert clip.link_group is None
+
+    def test_get_project_tells_the_mode(self, video_media: MediaItem) -> None:
+        # 方式が分からないと、AI は混合の作品でもリンクした音声クリップを探しに行く
+        assert run(_mixed_host(video_media), "get_project")["layer_mode"] == "mixed"
+
+
+class TestPrompt:
+    def test_the_prompt_explains_the_mode(self) -> None:
+        # 分ける方式の説明のまま混合の作品を触らせると、無い組の片方を探し回る
+        separated = system_prompt(LayerMode.SEPARATED)
+        mixed = system_prompt(LayerMode.MIXED)
+        assert "リンクしています" in separated
+        assert "リンクしています" not in mixed
+        assert "1 本のクリップ" in mixed
+        assert "{linked_clips}" not in mixed
+        assert system_prompt() == SYSTEM_PROMPT == separated

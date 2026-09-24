@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from sashimono.ai import AI_PACK, Approval, EditorBridge, EditorHost
-from sashimono.ai.session import AgentEvent, AgentSession, EventKind
+from sashimono.ai.session import AgentEvent, AgentSession, EventKind, system_prompt
 from sashimono.ui.setup import SetupSection
 from sashimono.ui.theme import Colors
 
@@ -180,7 +180,10 @@ class ChatPanel(QWidget):
         self._open_checkpoint(prompt)
 
         if self._session is None:
-            self._session = AgentSession(self._bridge)
+            # 会話を始めた時点の方式で指示を書く 分ける方式の説明のまま混合の作品を
+            # 触らせると、リンクした音声クリップを探し回る
+            layer_mode = self._host.project.settings.layer_mode
+            self._session = AgentSession(self._bridge, system_prompt=system_prompt(layer_mode))
         self._session.send(prompt)
         self._stop_button.setEnabled(True)
 

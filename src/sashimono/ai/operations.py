@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
@@ -49,6 +49,8 @@ from sashimono.core.commands import (
     insert_scene,
     new_scene,
 )
+from sashimono.core.commands.insert import new_track
+from sashimono.core.commands.layers import places_mixed
 from sashimono.core.jetcut import plan_cuts
 from sashimono.core.model import (
     AnimatedValue,
@@ -65,7 +67,6 @@ from sashimono.core.model import (
     Track,
     TrackId,
     TrackKind,
-    default_track_name,
 )
 from sashimono.core.projection import project_timeline
 from sashimono.core.timebase import format_timecode
@@ -260,6 +261,9 @@ def _get_project(host: EditorHost, arguments: dict[str, Any]) -> object:
         "can_undo": host.document.can_undo,
         "active_scene": str(host.active_scene) if host.active_scene is not None else None,
         "scene_count": len(project.scenes),
+        # 置き方の方式 混合（mixed）なら素材は絵と音の 1 本、分ける（separated）なら
+        # 映像と音声の 2 本をリンクで結ぶ 知らないと、AI が組の片方を探しに行く
+        "layer_mode": settings.layer_mode,
     }
 
 
@@ -481,16 +485,19 @@ def _import_media(host: EditorHost, arguments: dict[str, Any]) -> object:
 
 
 def _add_track(host: EditorHost, arguments: dict[str, Any]) -> object:
-    kind = str(arguments.get("kind", "video")).lower()
+    project = _project(host)
+    # 省いたときは方式に合わせる 混合の作品で映像トラックを足すと、AI が置いた物だけ
+    # 分けた方式のトラックへ入り、画面で足した物と並びが食い違う
+    fallback = TrackKind.MIXED.value if places_mixed(project) else TrackKind.VIDEO.value
+    kind = str(arguments.get("kind") or fallback).lower()
     try:
         track_kind = TrackKind(kind)
     except ValueError:
         raise ToolError("kind は video・audio・mixed のどれかです") from None
-    tracks = _project(host).timeline.tracks
-    index = sum(1 for t in tracks if t.kind is track_kind) + 1
-    taken = {t.name for t in tracks}
-    name = str(arguments.get("name") or default_track_name(track_kind, index, taken))
-    track = Track(kind=track_kind, name=name)
+    # 画面の「トラックを追加」と同じ所で作る 名前とソロの引き継ぎを 1 か所で決めるため
+    track = new_track(project, track_kind).track
+    if arguments.get("name"):
+        track = replace(track, name=str(arguments["name"]))
     host.apply_commands([AddTrack(track)], f"トラックを追加: {track.name}")
     return {"track_id": str(track.id), "name": track.name}
 
@@ -1212,6 +1219,7 @@ OPERATIONS: tuple[Operation, ...] = (
                 "kind": _string(
                     "video・audio・mixed のどれか mixed は映像・音声・テキストを何でも置ける"
                     "レイヤー（YMM4 と同じ 番号が大きいレイヤーほど手前に描く）"
+                    " 省くとプロジェクトの方式（get_project の layer_mode）に合わせる"
                 ),
                 "name": _string("表示名"),
             }

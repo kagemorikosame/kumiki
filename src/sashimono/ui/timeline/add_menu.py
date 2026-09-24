@@ -38,6 +38,7 @@ from sashimono.core.commands import (
     insert_scene,
 )
 from sashimono.core.commands.insert import DEFAULT_GENERATED_FRAMES, is_effect_track, new_track
+from sashimono.core.commands.layers import places_mixed
 from sashimono.core.io.aliases import Alias, AliasStore, alias_refusal
 from sashimono.core.io.serialize import ProjectFileError
 from sashimono.core.model import (
@@ -57,6 +58,7 @@ if TYPE_CHECKING:
     from sashimono.ui.timeline.view import TimelineView
 
 __all__ = [
+    "LAYER_CHOICES",
     "TRACK_CHOICES",
     "AddSources",
     "TimelineAddMenus",
@@ -68,6 +70,13 @@ TRACK_CHOICES: tuple[tuple[str, TrackKind, bool], ...] = (
     ("映像トラック", TrackKind.VIDEO, False),
     ("音声トラック", TrackKind.AUDIO, False),
     ("エフェクトトラック（フィルタ用）", TrackKind.VIDEO, True),
+)
+
+#: 混合の方式（:attr:`~sashimono.core.model.LayerMode.MIXED`）での選択肢 映像と音声を
+#: 分けて足せると、方式を混合にしたのに分けたトラックが増えていく
+LAYER_CHOICES: tuple[tuple[str, TrackKind, bool], ...] = (
+    ("レイヤー", TrackKind.MIXED, False),
+    ("エフェクトレイヤー（フィルタ用）", TrackKind.MIXED, True),
 )
 
 #: カスタムオブジェクト（中身を作るスクリプト）の分類 エフェクトの一覧には出さない
@@ -153,7 +162,8 @@ class TimelineAddMenus:
     def track_add_menu(self, parent: QWidget | None = None, *, title: str = "") -> QMenu:
         """映像・音声・エフェクトのどれを足すかを選ぶメニュー"""
         menu = QMenu(title, parent)
-        for label, kind, effect in TRACK_CHOICES:
+        choices = LAYER_CHOICES if places_mixed(self._project) else TRACK_CHOICES
+        for label, kind, effect in choices:
             _action(menu, label, functools.partial(self.add_track, kind, effect=effect))
         return menu
 
