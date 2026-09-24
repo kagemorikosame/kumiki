@@ -442,11 +442,13 @@ void main() {
     float from_top = u_object.w - pixel.y;
     float from_bottom = pixel.y - u_object.y;
 
+    // 切る量が 0 の辺は切らない u_object は前の縁取りなどで外へ広がった分を含まない
+    // ので、0 の辺まで u_object で切ると、縁取りの後に置いただけで縁が消える
     float edge = max(feather, 0.0001);
-    float alpha = smoothstep(0.0, edge, from_top - top)
-                * smoothstep(0.0, edge, from_bottom - bottom)
-                * smoothstep(0.0, edge, pixel.x - u_object.x - left)
-                * smoothstep(0.0, edge, (u_object.z - pixel.x) - right);
+    float alpha = (top > 0.0 ? smoothstep(0.0, edge, from_top - top) : 1.0)
+                * (bottom > 0.0 ? smoothstep(0.0, edge, from_bottom - bottom) : 1.0)
+                * (left > 0.0 ? smoothstep(0.0, edge, pixel.x - u_object.x - left) : 1.0)
+                * (right > 0.0 ? smoothstep(0.0, edge, (u_object.z - pixel.x) - right) : 1.0);
 
     vec4 color = texture(u_texture, v_uv);
     frag_color = vec4(color.rgb, color.a * alpha);
@@ -459,6 +461,8 @@ uniform float width;
 uniform vec4 color;
 uniform sampler2D pattern;
 uniform vec2 pattern_size;
+uniform bool outline_only;
+uniform float opacity;
 
 // 縁の色 模様の画像があれば色の代わりにそれで塗る
 //
@@ -478,7 +482,9 @@ vec4 edge_color() {
 void main() {
     vec4 base = texture(u_texture, v_uv);
     if (width <= 0.0) {
-        frag_color = base;
+        // 縁だけで縁が無ければ何も残らない 元の絵を返すと、太さを 0 へ動かした所で
+        // 消えていた塗りが急に現れる
+        frag_color = outline_only ? vec4(0.0) : base;
         return;
     }
 
@@ -504,7 +510,15 @@ void main() {
 
     // 縁の上に元の絵を重ねる（over 合成）
     vec4 paint = edge_color();
-    vec4 edge = vec4(paint.rgb, paint.a * coverage);
+    vec4 edge = vec4(paint.rgb, paint.a * coverage * clamp(opacity * 0.01, 0.0, 1.0));
+    if (outline_only) {
+        // 縁だけ（YMM4 の IsOutlineOnly） 元の絵は描かず、元の絵が覆っていた分だけ
+        // 縁を抜いて外側の輪にする 抜かないと縁の色で塗った形がそのまま残る
+        // 抜いた所の色は縁の色のまま残す 後ろの変形は隣の画素と RGB のまま混ぜるので、
+        // 0（黒）にすると縮めた輪の内側の縁が黒ずむ 縁の色なら混ざっても同じ色になる
+        frag_color = vec4(edge.rgb, edge.a * (1.0 - base.a));
+        return;
+    }
     vec3 rgb = base.rgb * base.a + edge.rgb * edge.a * (1.0 - base.a);
     float alpha = base.a + edge.a * (1.0 - base.a);
     frag_color = unpremul(vec4(rgb, alpha));
@@ -1018,6 +1032,8 @@ def register_builtin_effects() -> None:
                 TrackSpec("width", "太さ", 0, 32, 4, unit="px"),
                 ColorSpec("color", "色", (1.0, 1.0, 1.0, 1.0)),
                 FileSpec("pattern", "模様の画像", filter=IMAGE_FILTER, texture=True),
+                CheckSpec("outline_only", "縁だけ", False),
+                TrackSpec("opacity", "不透明度", 0, 100, 100, unit="%"),
             ),
             fragment_shader=_BORDER,
         )

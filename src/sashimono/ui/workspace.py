@@ -21,6 +21,7 @@ from sashimono.ai.models import DEFAULT_MODEL as DEFAULT_AI_MODEL
 from sashimono.ai.models import EFFORTS as AI_EFFORTS
 from sashimono.ai.models import MODELS as AI_MODELS
 from sashimono.core import userdirs
+from sashimono.core.model import LayerMode
 from sashimono.engine.encode import DEFAULT_PIPELINE_DEPTH, MAX_PIPELINE_DEPTH
 from sashimono.engine.render import DEFAULT_DECODE_THREADS, MAX_DECODE_THREADS
 from sashimono.ui.media_match import MATCH_ASK, MATCH_MODES
@@ -258,6 +259,12 @@ class Preferences:
     #: 見て気付く サムネイルや波形に線が重なるのが目障りな人、クリップの真ん中を掴んで動かす
     #: つもりで線を掴んでしまう人は切れるようにする
     value_lines: bool = True
+    #: 新しく作るプロジェクトのトラックの方式（:class:`~sashimono.core.model.LayerMode`）
+    #: 新規作成の窓の初期値と、起動した直後の空のプロジェクトに使う
+    #: 既定は混合（YMM4・AviUtl と同じ 1 本のレイヤーに何でも置く 利用者の決定）
+    #: 映像と音声を別のトラックに分けて並べる方が慣れている人は切り替えられる
+    #: モデルの既定（分ける）とは別に持つ 古いファイルと試験の動きを変えないため
+    new_project_layers: str = LayerMode.MIXED
 
     def prefetch_bytes(self) -> int:
         """先読みに使えるバイト数 切ってあれば 0
@@ -330,6 +337,9 @@ class PreferenceStore:
                 data.get("keyframe_drag"), KEYFRAME_DRAG_MODES, plain.keyframe_drag
             ),
             value_lines=_flag(data.get("value_lines"), plain.value_lines),
+            new_project_layers=_choice(
+                data.get("new_project_layers"), LayerMode.ALL, plain.new_project_layers
+            ),
         )
 
     def save(self, preferences: Preferences) -> None:
