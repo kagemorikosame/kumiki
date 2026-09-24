@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import importlib
+import os
 import sys
 import threading
 import uuid
@@ -24,7 +25,16 @@ import pytest
 from PySide6.QtWidgets import QApplication
 
 from sashimono import runtime
-from sashimono.runtime import FeaturePack, refresh_runtime, restart_note, runtime_target_dir
+from sashimono.runtime import (
+    FeaturePack,
+    install_runtime,
+    refresh_runtime,
+    restart_note,
+    runtime_target_dir,
+)
+
+#: 配布版のふりをする試験は sys.executable を差し替えるので、本物は読み込んだ時点で控える
+REAL_PYTHON = sys.executable
 
 
 def write_distribution(site: Path, dist: str, module: str, version: str = "1.0") -> None:
@@ -200,7 +210,29 @@ class TestRestartNote:
         importlib.import_module(module)
         assert refresh_runtime() == ()
 
+    def test_a_module_updated_in_place_is_reported(self, frozen: Path) -> None:
+        """専用フォルダから読み込み済みの物を、同じ場所の新しい版で上書きしたとき
+
+        場所だけを比べると「専用フォルダの物だから問題ない」と見て、古い版の
+        まま動いているのに「再起動しなくても使えます」と言ってしまう
+        """
+        dist, module = _unique()
+        write_distribution(frozen, dist, module, "1.0")
+        refresh_runtime()
+        importlib.import_module(module)
+        source = frozen / module / "__init__.py"
+        before = source.stat().st_mtime_ns
+
+        # 本物の pip の代わりに、何もしない子プロセスで導入の流れだけを通す
+        # 通すことで、上書きの前に読み込み済みの物が控えられる
+        assert install_runtime(command=[REAL_PYTHON, "-c", "pass"]) == 0
+        source.write_text("VALUE = 43\n", encoding="utf-8")  # pip が新しい版で上書きした
+        os.utime(source, ns=(before + 10**9, before + 10**9))
+
+        assert refresh_runtime() == (module,)
+
     def test_nothing_to_restart_says_so(self) -> None:
+        # 再起動する物が無いのに再起動を勧めると、導入のたびに要らない再起動をさせる
         assert "再起動しなくても" in restart_note(())
 
     def test_an_install_that_cannot_be_seen_asks_for_a_restart(self) -> None:

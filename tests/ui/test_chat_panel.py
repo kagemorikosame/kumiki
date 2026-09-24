@@ -268,6 +268,7 @@ class TestSendKey:
         assert sent == [True]
 
     def test_shift_enter_breaks_the_line(self, typed: tuple[ChatPanel, list[bool]]) -> None:
+        # 壊れると、改行のつもりの Shift+Enter で書きかけの指示が送られる
         widget, sent = typed
         _press(widget._input, Qt.Key.Key_Return, Qt.KeyboardModifier.ShiftModifier)
         assert sent == []
@@ -275,7 +276,8 @@ class TestSendKey:
         assert widget._input.toPlainText() == "冒頭を切って\n"
 
     def test_ctrl_enter_still_sends(self, typed: tuple[ChatPanel, list[bool]]) -> None:
-        # 前の版で覚えた押し方も効く
+        # 前の版で覚えた押し方も効く 壊れると、前の版の Ctrl+Enter で送っていた人が
+        # 押しても何も起きず、送れなくなったように見える
         widget, sent = typed
         _press(widget._input, Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
         assert sent == [True]
@@ -548,6 +550,7 @@ class TestLogin:
         tmp_path: Path,
     ) -> None:
         # ログインは Claude Code 自身の画面で済ませる このソフトは鍵を受け取らない
+        # 壊れると、「ログイン…」を押しても何も開かず、ソフトの中からログインする手段が無い
         from sashimono.ui.chat import panel as panel_module
 
         widget, _ = recorded

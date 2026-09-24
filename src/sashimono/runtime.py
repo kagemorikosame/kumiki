@@ -43,6 +43,7 @@ __all__ = [
     "restart_note",
     "run_pip",
     "runtime_target_dir",
+    "snapshot_runtime_modules",
 ]
 
 #: 導入したものを置くフォルダの名前（パッケージ版のみ）
@@ -289,9 +290,64 @@ def refresh_runtime() -> tuple[str, ...]:
     # パッケージの探し手と、配布メタデータ（導入状況の判定に使う）の探し手の
     # 両方の控えがここで捨てられる
     importlib.invalidate_caches()
+    before = dict(_loaded_before_install)
+    _loaded_before_install.clear()
     if target is None:
         return ()
-    return _already_loaded_elsewhere(target)
+    loaded = list(_already_loaded_elsewhere(target))
+    for name in _replaced_in_place(before):
+        if name not in loaded:
+            loaded.append(name)
+    return tuple(loaded)
+
+
+#: 導入を始める前に、専用フォルダから読み込み済みだったモジュールと、その
+#: ファイルの更新時刻（ns） :func:`install_runtime` が書き、:func:`refresh_runtime`
+#: が読んで空にする
+_loaded_before_install: dict[str, int] = {}
+
+
+def snapshot_runtime_modules() -> dict[str, int]:
+    """専用フォルダから読み込み済みのモジュールと、そのファイルの更新時刻"""
+    target = runtime_target_dir()
+    if target is None or not target.exists():
+        return {}
+    root = target.resolve()
+    found: dict[str, int] = {}
+    for name, module in list(sys.modules.items()):
+        location = getattr(module, "__file__", None)
+        if location is None:
+            continue
+        path = Path(location)
+        try:
+            if path.resolve().is_relative_to(root):
+                found[name] = path.stat().st_mtime_ns
+        except OSError:
+            continue
+    return found
+
+
+def _replaced_in_place(before: dict[str, int]) -> list[str]:
+    """専用フォルダから読み込み済みだったのに、導入で同じ場所のファイルが入れ替わった物
+
+    ``invalidate_caches`` は ``sys.modules`` の読み込み済みの物を入れ替えない
+    同じ場所へ新しい版を上書きすると、場所の比べ方では見分けられず、古い版の
+    まま動いているのに「再起動しなくても使えます」と言ってしまう
+    """
+    replaced: list[str] = []
+    for name, stamp in before.items():
+        module = sys.modules.get(name)
+        location = getattr(module, "__file__", None) if module is not None else None
+        if location is None:
+            continue
+        try:
+            changed = Path(location).stat().st_mtime_ns != stamp
+        except OSError:
+            changed = True  # 消えた 入れ替えで無くなった
+        top = name.split(".", 1)[0]
+        if changed and top not in replaced:
+            replaced.append(top)
+    return replaced
 
 
 def remove_stale_metadata(target: Path) -> tuple[Path, ...]:
@@ -467,6 +523,10 @@ def install_runtime(
     target = runtime_target_dir()
     if target is not None:
         target.mkdir(parents=True, exist_ok=True)
+    # pip が上書きする前に、今読み込んでいる物を控える 上書きされたかどうかを
+    # 導入のあとで比べ、読み込み済みの古い版が残るなら再起動を勧めるため
+    _loaded_before_install.clear()
+    _loaded_before_install.update(snapshot_runtime_modules())
 
     creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     # 子プロセスの出力を UTF-8 に揃える Windows の既定は cp932 で、素材やユーザー名に
