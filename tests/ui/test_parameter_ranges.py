@@ -46,6 +46,29 @@ def test_a_huge_value_range_is_clamped_to_what_qt_can_hold(qt_application: QAppl
     assert box.value() == INT_MAX
 
 
+@pytest.mark.filterwarnings("error")
+def test_a_fine_lower_end_is_not_rounded_out_of_the_range(qt_application: QApplication) -> None:
+    # 数値欄の桁が 2 のままだと下限 0.004 が 0.00 に丸められ、スライダーを左端へ
+    # 戻したときに仕様の範囲の外の 0.0 がプレビューと保存へ流れる
+    del qt_application
+    spec = TrackSpec("fine", "細かい", 0.004, 10.0**7, 0.004, step=0.001)
+    editor = create_editor(spec)
+    slider = editor.findChild(QSlider)
+    box = editor.findChild(QDoubleSpinBox)
+    assert slider is not None
+    assert box is not None
+    assert box.minimum() == 0.004
+    previewed: list[float] = []
+    changed: list[float] = []
+    editor.value_previewed.connect(lambda value: previewed.append(value.static))
+    editor.value_changed.connect(lambda value: changed.append(value.static))
+    slider.setValue(slider.maximum() // 2)
+    slider.setValue(slider.minimum())
+    slider.sliderReleased.emit()
+    assert previewed[-1] == changed[-1] == box.value() == 0.004
+    assert all(spec.minimum <= value <= spec.maximum for value in previewed + changed)
+
+
 def test_a_value_spec_keeps_its_range_inside_what_qt_can_hold() -> None:
     # 範囲が int を超えたまま残ると、仕様では入れられる値が数値欄では入れられず、
     # 数値欄に出る値も仕様の値と食い違う

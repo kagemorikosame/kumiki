@@ -59,6 +59,31 @@ def _qt_int(number: float) -> int:
     return min(max(int(number), _INT_MIN), _INT_MAX)
 
 
+#: 数値欄に出す小数の桁の上限 これより細かい刻みは画面で読めない
+_MAX_DECIMALS = 6
+
+
+def _decimals_for(spec: TrackSpec) -> int:
+    """刻みと範囲の両端をそのまま表せる小数の桁数
+
+    刻みが 1 以上なら整数、それより細かければ小数第 2 位までをまず取り、刻みや端が
+    それより細かい桁を持つなら、その桁まで広げる 足りないと端が丸められ、数値欄が
+    仕様の範囲の外の値を返す
+    """
+    decimals = 0 if spec.step >= 1 else 2
+    for number in (spec.step, spec.minimum, spec.maximum):
+        needed = next(
+            (
+                places
+                for places in range(_MAX_DECIMALS + 1)
+                if abs(round(number, places) - number) <= 1e-9 * max(1.0, abs(number))
+            ),
+            _MAX_DECIMALS,
+        )
+        decimals = max(decimals, needed)
+    return decimals
+
+
 class ParameterEditor(QWidget):
     """パラメータ入力欄の共通の親
 
@@ -119,9 +144,11 @@ class TrackEditor(ParameterEditor):
         self._slider.sliderReleased.connect(self._on_release)
 
         self._number = QDoubleSpinBox(self)
+        # 桁数は範囲より先に決める Qt は範囲も値も今の桁数へ丸めるので、後から決めると
+        # 下限 0.004 が 0.00 になり、仕様の範囲の外の値が数値欄からプレビューと保存へ流れる
+        self._number.setDecimals(_decimals_for(spec))
         self._number.setRange(spec.minimum, spec.maximum)
         self._number.setSingleStep(spec.step)
-        self._number.setDecimals(0 if spec.step >= 1 else 2)
         self._number.setSuffix(f" {spec.unit}" if spec.unit else "")
         self._number.setFixedWidth(96)
         self._number.setKeyboardTracking(False)
@@ -162,14 +189,15 @@ class TrackEditor(ParameterEditor):
             self._updating = False
         # 数値欄が表示の桁へ丸めた値を使う 広い範囲ではスライダー 1 目盛りが表示の桁より
         # 細かく、元の値を流すと、画面の数字とプレビュー・保存の値が食い違う
-        number = self._number.value()
+        # 桁が上限で足りないほど細かい端でも範囲の外へ出さない
+        number = self._spec.clamp(self._number.value())
         # ドラッグ中は履歴に残さない 1 回のドラッグで数十の取り消し段ができると
         # 元の値まで戻すのに数十回押すことになる
         self._preview(AnimatedValue(static=number))
 
     def _on_release(self) -> None:
         # 確定もプレビューと同じ、数値欄に出ている値にそろえる
-        self._emit(AnimatedValue(static=self._number.value()))
+        self._emit(AnimatedValue(static=self._spec.clamp(self._number.value())))
 
     def _to_slider(self, number: float) -> int:
         """仕様の値をスライダーの位置へ 範囲の外は端へ寄せる"""
