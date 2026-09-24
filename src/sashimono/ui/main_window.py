@@ -258,7 +258,11 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Sashimono Edit")
         self.resize(1440, 900)
 
-        self._document = Document(project if project is not None else Project.create())
+        #: 本人の好みの設定 プロジェクトではなく本人に付く
+        #: 最初の空のプロジェクトを作る前に読む 起動した直後のプロジェクトも、新規作成と
+        #: 同じくレイヤーの方式の好み（:attr:`Preferences.new_project_layers`）に従わせるため
+        self._preferences = PreferenceStore().load()
+        self._document = Document(project if project is not None else self._blank_project())
         #: 再生ヘッドのフレームを数えているレート 変わったら数え直す（:meth:`_retime_playhead`）
         self._playhead_rate = self._document.project.rate
         self._path: Path | None = path
@@ -275,7 +279,7 @@ class MainWindow(QMainWindow):
             # 別の窓で開いていて、開くのをやめると選ばれた 中身だけ見せて保存先を
             # 持たないと、錠を持たないまま同じファイルへ保存できてしまう 空で始める
             self._path = None
-            self._document.reset(Project.create())
+            self._document.reset(self._blank_project())
             self._saved = self._autosaved = self._document.project
         #: 操作の名前 → （QAction、既定のキー） ショートカットの設定が使う
         self._actions: dict[str, tuple[QAction, str]] = {}
@@ -283,8 +287,6 @@ class MainWindow(QMainWindow):
             sample_rate=self._document.project.settings.sample_rate,
             channels=self._document.project.settings.channels,
         )
-        #: 本人の好みの設定 プロジェクトではなく本人に付く
-        self._preferences = PreferenceStore().load()
         # 描画と書き出しの両方が見るので、窓を組み立てる前に決めておく
         native.set_enabled(self._preferences.native_modules)
         plugin.set_scan_all(self._preferences.all_aviutl_plugins)
@@ -1335,17 +1337,20 @@ class MainWindow(QMainWindow):
             return
         # 置いたものをすぐ選ぶ 設定パネルが開いていないと、
         # 追加したのに何も起きていないように見える
-        placed = self._last_added_clip()
+        placed = self._last_added_clip(commands)
         if placed is not None:
             self._timeline.select(placed)
 
-    def _last_added_clip(self) -> ClipId | None:
-        """再生ヘッドの位置にある、生成オブジェクトのクリップ"""
-        frame = self._timeline.playhead
-        for track in reversed(list(self.view_project.timeline.video_tracks())):
-            clip = track.clip_at(frame)
-            if clip is not None and clip.source is not None:
-                return clip.id
+    def _last_added_clip(self, commands: list[Command]) -> ClipId | None:
+        """置いた生成オブジェクトのクリップ
+
+        置いた命令から取る 再生ヘッドの所を映像トラックから探すと、レイヤー（混合）に
+        置いた物が見つからず、追加したのに設定パネルが開かない
+        """
+        timeline = self.view_project.timeline
+        for command in reversed(commands):
+            if isinstance(command, AddClip) and timeline.locate_clip(command.clip.id) is not None:
+                return command.clip.id
         return None
 
     def show_subtitles(self) -> None:
@@ -1683,7 +1688,7 @@ class MainWindow(QMainWindow):
 
         if not self._confirm_discard():
             return
-        dialog = ProjectSettingsDialog(ProjectSettings(), self, new=True)
+        dialog = ProjectSettingsDialog(self._new_settings(), self, new=True)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         self._playback.stop()
@@ -1695,6 +1700,18 @@ class MainWindow(QMainWindow):
         self._mark_saved()
         self._on_project_changed()
         self._seek(0)
+
+    def _new_settings(self) -> ProjectSettings:
+        """新しく作るプロジェクトの初めの設定 方式は本人の好み
+
+        モデルの既定（分ける）は変えない 古いファイルを開いたときと、既定の設定で
+        組み立てる試験の動きを保つため 画面から新しく作るときだけ好みを当てる
+        """
+        return ProjectSettings(layer_mode=self._preferences.new_project_layers)
+
+    def _blank_project(self) -> Project:
+        """起動した直後や、開くのをやめたときの空のプロジェクト"""
+        return Project.create(self._new_settings())
 
     def _mark_saved(self) -> None:
         """いまの状態を「保存済み」とする 守るものが無くなるので退避も消す"""

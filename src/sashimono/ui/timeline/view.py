@@ -80,6 +80,7 @@ from sashimono.ui.timeline.painter import (
     ADD_TRACK_BUTTON_SPACE,
     ADD_TRACK_BUTTON_TEXT,
     DETAIL_MIN_WIDTH,
+    clip_content,
     clip_rect_for,
     clips_in_range,
     draw_dense_clips,
@@ -574,17 +575,23 @@ class TimelineView(QWidget):
                 rect = clip_rect_for(clip, band, self._layout, width)
                 if rect is not None:
                     self._paint_detailed(painter, band, clip, rect, clip.id in selected)
-            draw_dense_clips(painter, band, dense, self._layout, width, selected)
+            sound_only = (
+                self._sound_only(band.track)
+                if dense and band.track.kind is TrackKind.MIXED
+                else None
+            )
+            draw_dense_clips(painter, band, dense, self._layout, width, selected, sound_only)
 
         self._draw_drag_preview(painter)
         self._work_area.paint_tracks(
             painter, self._layout, width, self.height(), timeline.work_area
         )
 
+        # 役割（絵と音）で見る 種類で見ると、レイヤーはどちらにも入らず、ミュートもソロも
+        # していないのに名前が薄く出る レイヤーは絵か音のどちらかが出ていれば出ている側
         active = {
             track.id
-            for kind in (TrackKind.VIDEO, TrackKind.AUDIO)
-            for track in timeline.active_tracks(kind)
+            for track in (*timeline.active_picture_tracks(), *timeline.active_sound_tracks())
         }
         for band in self._layout.bands(timeline):
             if band.bottom <= Metrics.RULER_HEIGHT or band.top >= self.height():
@@ -597,6 +604,21 @@ class TimelineView(QWidget):
         self._work_area.paint_ruler(painter, self._layout, width, timeline.work_area)
         draw_playhead(painter, self._layout, self._playhead, self.height())
         self._paint_drop_guide(painter)
+
+    def _sound_only(self, track: Track) -> Callable[[Clip], bool]:
+        """レイヤーのクリップが音だけか（細い帯を音声の色で塗るか）
+
+        素材は 1 度だけ引ける形にしておく 帯になるクリップは数千本あり、1 本ごとに素材の
+        一覧をなめると全体表示の描画が 60fps の予算を超える
+        """
+        media = {item.id: item for item in self._project.media}
+
+        def judge(clip: Clip) -> bool:
+            item = media.get(clip.media_id) if clip.media_id is not None else None
+            picture, sound = clip_content(track, clip, item)
+            return sound and not picture
+
+        return judge
 
     def _highlighted(self) -> frozenset[ClipId]:
         """選んだ枠を描くクリップ 選んだものと、リンクした相手（映像と音声の組）
@@ -712,12 +734,16 @@ class TimelineView(QWidget):
         if self._drag.group:
             # 何本かをまとめて動かすときは、動く全員の落下先を出す 掴んだ 1 本の枠
             # だけだと、ほかのクリップがどこへ落ちるか分からない
+            # トラックを跨いだぶんも :class:`MoveClips` と同じ決まり（同じ種類の並びで数える）で
+            # ずらして出す 元のトラックに出すと、離した後に別のトラックへ移って驚く
             delta = self._drag.preview_start - clip.timeline_start
+            shift = self._track_delta(self._drag)
             for track_id, member in self._moving_members():
-                if track_id in bands:
+                landing = self._shifted_track(track_id, shift)
+                if landing in bands:
                     self._dash_rect(
                         painter,
-                        bands[track_id],
+                        bands[landing],
                         member.timeline_start + delta,
                         member.timeline_end + delta,
                     )
@@ -1176,6 +1202,22 @@ class TimelineView(QWidget):
             return 0
         same = [t.id for t in timeline.tracks if t.kind is origin.kind]
         return same.index(target.id) - same.index(origin.id)
+
+    def _shifted_track(self, track_id: TrackId, shift: int) -> TrackId:
+        """``track_id`` から同じ種類の並びで ``shift`` 本ずらしたトラック 外へ出れば元のまま
+
+        :class:`MoveClips` の行き先と同じ数え方 外へ出るときは離しても断られるので、
+        元の所に枠を出しておく
+        """
+        if not shift:
+            return track_id
+        timeline = self._project.timeline
+        track = timeline.find_track(track_id)
+        if track is None:
+            return track_id
+        same = [t.id for t in timeline.tracks if t.kind is track.kind]
+        index = same.index(track_id) + shift
+        return same[index] if 0 <= index < len(same) else track_id
 
     def _preview_height(self, y: int) -> None:
         """ドラッグ中の高さを描画にだけ当てる 履歴には載せない"""

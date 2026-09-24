@@ -24,13 +24,14 @@ from PySide6.QtWidgets import (
 )
 
 from sashimono.core.commands.edit import MAX_RESOLUTION, MIN_RESOLUTION
-from sashimono.core.model import Blending, ProjectSettings
+from sashimono.core.model import Blending, LayerMode, ProjectSettings
 from sashimono.core.timebase import FrameRate
 from sashimono.ui.project_presets import PresetStoreError, ProjectPreset, ProjectPresetStore
 
 __all__ = [
     "BLENDING_CHOICES",
     "FRAME_RATE_PRESETS",
+    "LAYER_MODE_CHOICES",
     "RESOLUTION_PRESETS",
     "SAVED_PREFIX",
     "ProjectSettingsDialog",
@@ -41,6 +42,12 @@ __all__ = [
 BLENDING_CHOICES: tuple[tuple[str, str], ...] = (
     (Blending.SRGB, "sRGB（AviUtl・YMM4 と同じ 黒に 50% の白で 128）"),
     (Blending.LINEAR, "リニア（光の量で混ぜる 黒に 50% の白で 188）"),
+)
+
+#: レイヤーの方式 新規作成の窓と、設定（新しいプロジェクトの初期値）の両方に並べる
+LAYER_MODE_CHOICES: tuple[tuple[str, str], ...] = (
+    (LayerMode.MIXED, "混合（YMM4・AviUtl と同じ 1 本のレイヤーに何でも置く）"),
+    (LayerMode.SEPARATED, "分ける（映像トラックと音声トラック）"),
 )
 
 #: 選べるフレームレート 分数のものは分数のまま持つ 29.97 を小数で持つと、
@@ -166,6 +173,22 @@ class ProjectSettingsDialog(QDialog):
             "この設定ができる前に保存したプロジェクトはリニアで開く"
         )
 
+        #: レイヤーの方式 新規作成のときだけ出す 作ったあとに変えるのは、置いてあるトラックを
+        #: 変換するかを尋ねる別の入口（:class:`~sashimono.core.commands.SetLayerMode` と変換の命令）
+        #: ここで方式だけを黙って変えると、置いてあるトラックはそのままで置き方だけが変わる
+        self._layers: QComboBox | None = None
+        if new:
+            self._layers = QComboBox(self)
+            for value, label in LAYER_MODE_CHOICES:
+                self._layers.addItem(label, value)
+            self._layers.setCurrentIndex(max(0, self._layers.findData(settings.layer_mode)))
+            self._layers.setToolTip(
+                "混合は YMM4・AviUtl と同じく、1 本のレイヤーに動画・音声・テキストを何でも置く\n"
+                "音付きの動画は 1 本のクリップになり、番号が大きい（下の）レイヤーほど手前に描く\n"
+                "分けるは映像トラックと音声トラックを別に並べ、動画は絵と音の 2 本を結んで置く\n"
+                "初めの値は 表示 → 設定… の「新しいプロジェクトのレイヤー」で変えられる"
+            )
+
         self._warning = QLabel(self)
         self._warning.setStyleSheet("color: #e07a5f;")
         self._warning.setWordWrap(True)
@@ -175,6 +198,8 @@ class ProjectSettingsDialog(QDialog):
         form.addRow("", size_row)
         form.addRow("フレームレート", rate)
         form.addRow("重ね合わせ", self._blending)
+        if self._layers is not None:
+            form.addRow("レイヤーの方式", self._layers)
 
         self._buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, self
@@ -202,8 +227,14 @@ class ProjectSettingsDialog(QDialog):
         """選んだ内容を反映した設定 音声の設定などは渡されたものを引き継ぐ"""
         width, height = self.resolution()
         blending = str(self._blending.currentData())
+        layers = str(self._layers.currentData()) if self._layers is not None else None
         return replace(
-            self._base, width=width, height=height, frame_rate=self._frame_rate(), blending=blending
+            self._base,
+            width=width,
+            height=height,
+            frame_rate=self._frame_rate(),
+            blending=blending,
+            layer_mode=layers if layers is not None else self._base.layer_mode,
         )
 
     @property
