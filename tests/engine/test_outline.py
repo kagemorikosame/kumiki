@@ -233,6 +233,39 @@ class TestTheOutlineIsWhereThePictureIs:
         assert image.shape[:2] == (90, 160)
         _assert_matches(image, outline)
 
+    @pytest.mark.parametrize("divisor", [2, 4])
+    def test_a_lighter_preview_moved_and_turned(
+        self, gl_context: OffscreenGLContext, picture: MediaItem, divisor: int
+    ) -> None:
+        # X・Y・中心は画面の画素 描く側は画質の分だけ縮めて当てる（Issue #151） 枠だけ
+        # 縮めずに当てると、1/4 では絵から 3 倍ずれた所に枠が出て、掴んでも絵が付いて来ない
+        clip = _picture_clip(picture, pos_x=48, pos_y=-24, anchor_x=16, rotation=30)
+        image, outline = _outline_of(_project(clip, picture), gl_context, RenderQuality(divisor))
+        assert image.shape[:2] == (180 // divisor, 320 // divisor)
+        _assert_matches(image, outline)
+
+    @pytest.mark.parametrize("divisor", [2, 4])
+    def test_a_lighter_preview_of_a_shape(
+        self, gl_context: OffscreenGLContext, divisor: int
+    ) -> None:
+        # 図形は自分の設定（幅・位置）も画面の画素 描く絵ごと縮めるので、入れ物も縮んで届く
+        shape = Clip(
+            timeline_start=0,
+            duration=10,
+            source=GeneratedSource(
+                kind="shape",
+                params={
+                    "shape": "rect",
+                    "width": AnimatedValue(80.0),
+                    "height": AnimatedValue(40.0),
+                    "pos_x": AnimatedValue(-40.0),
+                },
+            ),
+        )
+        project = _project(_placed(shape, pos_y=20, rotation=15))
+        image, outline = _outline_of(project, gl_context, RenderQuality(divisor))
+        _assert_matches(image, outline)
+
     def test_a_shape_uses_its_painted_extent(self, gl_context: OffscreenGLContext) -> None:
         # 生成オブジェクトの絵は画面いっぱいの大きさ 絵の大きさで枠を出すと画面全体が枠になる
         shape = Clip(

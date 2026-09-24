@@ -61,6 +61,20 @@ float height_at(vec2 uv) {
     return inverted ? -h : h;
 }
 
+float shade(vec3 normal, vec3 light, float k) {
+    if (lighting == 0) {
+        vec3 halfway = normalize(light + vec3(0.0, 0.0, 1.0));
+        return k * pow(max(dot(normal, halfway), 0.0), max(exponent, 0.01));
+    }
+    return k * max(dot(normal, light), 0.0);
+}
+
+// YMM4 は光の色を sRGB の値へ足す（加算） 平らな面にも光が当たって明るくなる
+vec3 lit_color(vec3 under, float amount) {
+    if (blend == 0) return mix(under, color.rgb, clamp(amount * color.a, 0.0, 1.0));
+    return blend_colors(blend, under, clamp(color.rgb * amount * color.a, 0.0, 1.0));
+}
+
 void main() {
     if (u_pass == 0) {
         // 縁からの距離を太さで割った値（0 が縁、1 が太さ以上の内側）を作る
@@ -92,23 +106,23 @@ void main() {
     vec2 step_ = 1.0 / u_size;
     float gx = (height_at(v_uv + vec2(step_.x, 0.0)) - height_at(v_uv - vec2(step_.x, 0.0))) * 0.5;
     float gy = (height_at(v_uv + vec2(0.0, step_.y)) - height_at(v_uv - vec2(0.0, step_.y))) * 0.5;
-    vec3 normal = normalize(vec3(-gx * surface_scale, -gy * surface_scale, 1.0));
+    // 1 画素に満たない太さ（画質を落とした合成で細い縁を縮めた時）は、1 画素の帯として
+    // 描いてから、帯の画素に占める縁の割合だけ平らな面の光と混ぜる 書き出しを縮めると、
+    // 細い縁の急な面と内側の平らな面が 1 画素の中で平均される 1 画素に切り上げたままだと、
+    // 面が緩く帯が太い別の光り方になる 傾きは太さで割って、書き出しの急な面に合わせる
+    float share = clamp(thickness, 0.0001, 1.0);
+    vec3 normal = normalize(vec3(-gx * surface_scale, -gy * surface_scale, share));
     // 方位は画面で右が 0、時計回り（YMM4 に描かせた絵で、-85 は上から当たった）
     float a = radians(azimuth);
     float e = radians(elevation);
     vec3 light = normalize(vec3(cos(e) * cos(a), -cos(e) * sin(a), sin(e)));
     float k = max(constant, 0.0) * 0.01;
-    float amount;
-    if (lighting == 0) {
-        vec3 halfway = normalize(light + vec3(0.0, 0.0, 1.0));
-        amount = k * pow(max(dot(normal, halfway), 0.0), max(exponent, 0.01));
-    } else {
-        amount = k * max(dot(normal, light), 0.0);
-    }
-    // YMM4 は光の色を sRGB の値へ足す（加算） 平らな面にも光が当たって明るくなる
     vec3 under = to_srgb(base.rgb);
-    vec3 lit = blend_colors(blend, under, clamp(color.rgb * amount * color.a, 0.0, 1.0));
-    if (blend == 0) lit = mix(under, color.rgb, clamp(amount * color.a, 0.0, 1.0));
+    vec3 lit = lit_color(under, shade(normal, light, k));
+    // 混ぜるのは色にしてから 光の量で混ぜると、強く当てて白く飽和する所が縁の割合より濃く出る
+    if (share < 1.0) {
+        lit = mix(lit_color(under, shade(vec3(0.0, 0.0, 1.0), light, k)), lit, share);
+    }
     frag_color = vec4(to_linear(lit), base.a);
 }
 """
@@ -549,7 +563,10 @@ def register_optics_effects() -> None:
                 TrackSpec("exponent", "鋭さ", 0.01, 128, 1, step=0.01),
                 ColorSpec("color", "光の色", (1.0, 1.0, 1.0, 1.0)),
                 SelectSpec("blend", "合成", BLEND_MODES, "add"),
-                TrackSpec("surface_scale", "高さの倍率", 0, 100, 10, step=0.1),
+                # 見た目は倍率だが、シェーダは 1 画素あたりの高さの差に掛けて面の傾きを出す
+                # 縁の太さを縮めた合成では 1 画素あたりの差が大きくなるので、倍率も同じだけ
+                # 縮めないと、1/2 画質で面が 2 倍急になって光り方が変わる
+                TrackSpec("surface_scale", "高さの倍率", 0, 100, 10, step=0.1, pixels=True),
                 SelectSpec(
                     "profile",
                     "縁の形",
@@ -738,10 +755,12 @@ def register_optics_effects() -> None:
                 TrackSpec("emit_range", "放つ幅", 0, 10000, 0, step=1, unit="px"),
                 TrackSpec("emit_angle", "放つ角度", -360, 360, 90, unit="度"),
                 TrackSpec("spread", "広がり", 0, 360, 0, unit="度"),
-                TrackSpec("speed", "速さ", 0, 10000, 100, unit="px/秒"),
-                TrackSpec("gravity", "重力", -100000, 100000, 0, unit="px/秒²"),
+                # 速さと重力は秒あたりの画面の画素 単位が PIXEL_UNITS に無いので明に書く
+                # 書かないと、1/2 画質で粒が 2 倍遠くまで飛ぶ
+                TrackSpec("speed", "速さ", 0, 10000, 100, unit="px/秒", pixels=True),
+                TrackSpec("gravity", "重力", -100000, 100000, 0, unit="px/秒²", pixels=True),
                 TrackSpec("wind_angle", "風の角度", -360, 360, 0, unit="度"),
-                TrackSpec("wind_speed", "風の速さ", 0, 10000, 0, unit="px/秒"),
+                TrackSpec("wind_speed", "風の速さ", 0, 10000, 0, unit="px/秒", pixels=True),
                 TrackSpec("turbulence", "揺らぎ", 0, 1000, 0, unit="px"),
                 TrackSpec("rotation", "回転", -3600, 3600, 0, unit="度"),
                 TrackSpec("fade", "消えていく割合", 0, 100, 0, unit="%"),

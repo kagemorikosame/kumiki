@@ -41,11 +41,17 @@ uniform float u_fps;           // 1 秒あたりのフレーム数
 uniform float u_duration;      // クリップの長さ（秒） 退場の動きは終わりから逆算する
 uniform vec4 u_object;         // 絵が置かれた範囲（画素、左・下・右・上 Y は上が正）
 uniform vec2 u_origin;         // 絵の原点（画素、Y は上が正） ふつうは範囲の中央
+// 合成の画素 1 つが、画面（プロジェクトの解像度）の画素いくつ分かの逆数 等倍で 1、1/2 画質で 0.5
+// 画素で決める設定（TrackSpec の pixels）はエンジンがこれを掛けてから渡す シェーダの中に
+// 書いた画素の長さは、これを掛けて使う 掛けないと、画質を落としたプレビューで 2 倍に出る
+uniform float u_pixel_scale;
 
 const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);  // Rec.709
 const float PI = 3.14159265358979;
 // 画面からカメラまでの距離 sashimono.engine.gpu.projection.CAMERA_DISTANCE と同じ値
-const float CAMERA = 1024.0;
+// 画面の画素で数えた距離なので、合成の画素へ縮める 縮めないと、画質を落としたプレビューで
+// 奥行きの付き方（傾けた板の遠近・奥へ置いた絵の縮み方）が書き出しと変わる
+#define CAMERA (1024.0 * u_pixel_scale)
 
 vec2 object_center() { return (u_object.xy + u_object.zw) * 0.5; }
 vec2 object_size() { return max(abs(u_object.zw - u_object.xy), vec2(1.0)); }
@@ -176,7 +182,9 @@ float hash(vec2 p) {
 // 画素（Y は下が正） 画像は上の行から積んであるので、そのまま割れば UV になる
 // loop が偽なら画像の外は透明 真なら敷き詰める（AviUtl2 の ループ画像）
 vec4 image_pixel(sampler2D image, vec2 size, vec2 p, bool loop) {
-    vec2 uv = p / max(size, vec2(1.0));
+    // 大きさは合成の画素（画質を落とすと画像の画素より小さい） 1 で止めると、画質を
+    // 落としたプレビューで小さな模様だけ縮まずに大きく出る 0 で割らないためだけに止める
+    vec2 uv = p / max(size, vec2(1e-4));
     if (loop) {
         uv = fract(uv);
     } else if (uv.x < 0.0 || uv.y < 0.0 || uv.x >= 1.0 || uv.y >= 1.0) {
@@ -425,15 +433,17 @@ uniform float feather;
 
 void main() {
     vec2 pixel = v_uv * u_size;
-    // v_uv は GL の向き（下が 0） 上下の指定を画像の向きに合わせる
-    float from_top = u_size.y - pixel.y;
-    float from_bottom = pixel.y;
+    // 切る量は絵の置かれた範囲（u_object 左・下・右・上 Y は上が正）の端から数える
+    // 画面の端から数えると、画面より小さい図形や文字は切る量がその余白に吸われて
+    // 切れない（SFっぽい吹き出しの上 280 が 1 画素も切れず、板が上へはみ出した）
+    float from_top = u_object.w - pixel.y;
+    float from_bottom = pixel.y - u_object.y;
 
     float edge = max(feather, 0.0001);
     float alpha = smoothstep(0.0, edge, from_top - top)
                 * smoothstep(0.0, edge, from_bottom - bottom)
-                * smoothstep(0.0, edge, pixel.x - left)
-                * smoothstep(0.0, edge, (u_size.x - pixel.x) - right);
+                * smoothstep(0.0, edge, pixel.x - u_object.x - left)
+                * smoothstep(0.0, edge, (u_object.z - pixel.x) - right);
 
     vec4 color = texture(u_texture, v_uv);
     frag_color = vec4(color.rgb, color.a * alpha);
@@ -454,7 +464,9 @@ uniform vec2 pattern_size;
 // （四角形の左端 860 から縁の太さぶん外）だった 中央を起点にする画像合成とは違う
 // 縁色は模様に混ざらない 縁色を赤にしても、縁は模様の色のままだった
 vec4 edge_color() {
-    if (pattern_size.x < 1.0 || pattern_size.y < 1.0) return color;
+    // 読めたかどうかは 0 かどうかで見る pattern_size は画質に合わせて縮めてあり、
+    // 1 未満で比べると、小さな模様の画像が画質を落としたプレビューでだけ消える
+    if (pattern_size.x <= 0.0 || pattern_size.y <= 0.0) return color;
     vec2 origin = vec2(u_object.x - width, u_object.w + width);
     vec2 pixel = v_uv * u_size;
     return image_pixel(pattern, pattern_size, vec2(pixel.x - origin.x, origin.y - pixel.y), true);
@@ -462,19 +474,28 @@ vec4 edge_color() {
 
 void main() {
     vec4 base = texture(u_texture, v_uv);
-    if (width < 0.5) {
+    if (width <= 0.0) {
         frag_color = base;
         return;
     }
 
     // 周囲を見て、近くに不透明な画素があれば縁として塗る
+    // 太さの端数（1 画素に満たない太さも）は、1 つ外の輪を端数の割合だけ薄く塗る
+    // 画質を落とした合成では、太さ 1 の縁が 0.25 画素、3 の縁が 1.5 画素になる 書き出しを
+    // 縮めると、端数の分は外の画素と平均されて淡い線になる 端数を切り捨てると縁が細るか
+    // 消え、切り上げると 2 倍・4 倍の太さに見える 整数の太さは今までと同じ絵になる
+    float reach = min(width, 32.0);
+    float whole = floor(reach);
+    float part = reach - whole;
     float coverage = 0.0;
-    int steps = int(min(width, 32.0));
+    int steps = int(whole) + 1;
     for (int y = -steps; y <= steps; ++y) {
         for (int x = -steps; x <= steps; ++x) {
             vec2 offset = vec2(float(x), float(y));
-            if (length(offset) > width) continue;
-            coverage = max(coverage, texture(u_texture, v_uv + offset / u_size).a);
+            float d = length(offset);
+            float weight = d <= reach ? 1.0 : (d <= whole + 1.0 ? part : 0.0);
+            if (weight <= 0.0) continue;
+            coverage = max(coverage, texture(u_texture, v_uv + offset / u_size).a * weight);
         }
     }
 
@@ -501,7 +522,9 @@ void main() {
     vec4 base = texture(u_texture, v_uv);
     // 画像が無い・読めないときは何もしない 絵を消すと、ファイルを
     // 動かしただけで文字が見えなくなり、何が起きたか分からない
-    if (image_file_size.x < 1.0 || image_file_size.y < 1.0) {
+    // 読めたかどうかは 0 かどうかで見る image_file_size は画質に合わせて縮めてあり、
+    // 1 未満で比べると、小さな画像が画質を落としたプレビューでだけ効かなくなる
+    if (image_file_size.x <= 0.0 || image_file_size.y <= 0.0) {
         frag_color = base;
         return;
     }
@@ -614,19 +637,46 @@ uniform bool monochrome;
 uniform int seed;
 uniform bool animate;
 
+vec3 grain(vec2 p) {
+    p += float(seed) * 17.0;
+    if (animate) p += u_frame * 13.0;
+    if (monochrome) return vec3(hash(p) - 0.5);
+    return vec3(hash(p), hash(p + 41.7), hash(p + 93.1)) - 0.5;
+}
+
+// 1 を超える明るさも止めずに通す sRGB の式 等倍では行って戻るだけなので、明るい絵が変わらない
+vec3 encode(vec3 c) {
+    return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+vec3 decode(vec3 c) {
+    return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
+}
+
 void main() {
     vec4 color = texture(u_texture, v_uv);
-    vec2 p = v_uv * u_size + float(seed) * 17.0;
-    if (animate) p += u_frame * 13.0;
-
-    vec3 noise;
-    if (monochrome) {
-        noise = vec3(hash(p) - 0.5);
-    } else {
-        noise = vec3(hash(p), hash(p + 41.7), hash(p + 93.1)) - 0.5;
+    // 粒は画面の 1 画素 画質を落とした合成の 1 画素は画面の数画素ぶんなので、座標を
+    // pixel_scale で割って画面の画素へ戻し、覆う画面の画素の粒を平均する
+    // 合成の画素ごとに 1 粒を置くと、粒が 2 倍・4 倍の大きさで濃いまま出て、書き出しを
+    // 縮めた絵（粒が周りと平均されて薄まる）と別物に見える
+    // 座標は絵の範囲の角から数える 入れ物の余白は画質で縮まり方が変わり、入れ物の
+    // 角から数えると、縮めた絵の升目と画面の画素の升目がずれて別の粒を拾う
+    float scale = max(u_pixel_scale, 0.125);
+    vec2 here = v_uv * u_size - u_object.xy;
+    // 覆う画面の画素の中心は、合成の画素の左下の辺から右上の辺までの間にある物
+    vec2 first = ceil((here - 0.5) / scale - 0.5);
+    vec2 last = ceil((here + 0.5) / scale - 0.5) - 1.0;
+    vec2 count = clamp(last - first + 1.0, vec2(1.0), vec2(8.0));
+    // 平均は粒を足して 0 で止めた後の色で、書き出しの絵と同じ sRGB の値で取る
+    // 粒だけを平均してから足すと、暗い絵で 0 に止まる粒が数に入らず、リニアの値で
+    // 平均すると明るい粒が勝つ どちらも縮めた書き出しより明るく出る
+    vec3 sum = vec3(0.0);
+    for (int y = 0; y < int(count.y); ++y) {
+        for (int x = 0; x < int(count.x); ++x) {
+            vec3 noise = grain(first + vec2(float(x), float(y)) + 0.5);
+            sum += encode(max(color.rgb + noise * (strength / 100.0), 0.0));
+        }
     }
-
-    frag_color = vec4(max(color.rgb + noise * (strength / 100.0), 0.0), color.a);
+    frag_color = vec4(decode(sum / (count.x * count.y)), color.a);
 }
 """)
 
@@ -709,7 +759,8 @@ void main() {
     vec2 pixel = (v_uv - 0.5) * u_size;
     pixel.y = -pixel.y;
     vec2 centre = vec2(center_x, -center_y);
-    float length_ = max(span, 1.0);
+    // 下限は画面の 1 画素 合成の 1 画素で止めると、1/4 画質で幅 1 の帯が 4 倍に広がる
+    float length_ = max(span, u_pixel_scale);
 
     float t;
     if (shape == 1) {

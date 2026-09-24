@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import logging
-import math
 from collections.abc import Collection
 from dataclasses import dataclass
 
@@ -92,6 +91,11 @@ class EffectProcessor:
         #: 重ね合わせを sRGB で行うプロジェクトで真にする（:class:`Compositor` の ``encoded``）
         #: 素材のテクスチャやエフェクトの結果はどちらでもリニアなので、事前乗算の絵だけに効く
         self.canvas_encoded = False
+        #: 合成の画素 1 つが画面（プロジェクトの解像度）の画素いくつ分かの逆数
+        #: 等倍の書き出しは 1、1/2 画質のプレビューは 0.5 画素で決める設定
+        #: （:attr:`TrackSpec.in_pixels`）はこれを掛けてから渡す 掛けないと、小さく
+        #: 合成したプレビューで位置もぼかしの強さも 2 倍・4 倍に出る（Issue #151）
+        self.pixel_scale = 1.0
 
     @property
     def width(self) -> int:
@@ -291,6 +295,7 @@ class EffectProcessor:
             program.set_float("u_duration", float(self._duration) / fps if fps else 0.0)
             program.set_vec4("u_object", self._object)
             program.set_vec2("u_origin", self._origin)
+            program.set_float("u_pixel_scale", self.pixel_scale)
             program.bind_texture("u_texture", source_buffer.color, unit=0)
             program.bind_texture("u_source", self._source.color, unit=1)
             self._set_parameters(program, definition, effect, frame)
@@ -309,7 +314,8 @@ class EffectProcessor:
         if definition.expands_object is None:
             return
         top, bottom, left, right = (
-            _number(definition, effect, name, frame) for name in definition.expands_object
+            _number(definition, effect, name, frame, self.pixel_scale)
+            for name in definition.expands_object
         )
         self._object = (
             self._object[0] - left,
@@ -336,11 +342,9 @@ class EffectProcessor:
                 value = spec.default_value()
 
             if isinstance(spec, TrackSpec):
-                animated = spec.coerce(value)
-                number = animated.at(frame)
-                # 範囲では切らない 読み込んだテンプレートは表示の範囲を超える値を
-                # 正しく使っていることがある 壊れた数（NaN や無限大）だけを既定へ戻す
-                program.set_float(spec.name, number if math.isfinite(number) else spec.default)
+                program.set_float(
+                    spec.name, spec.scaled_at(spec.coerce(value), frame, self.pixel_scale)
+                )
             elif isinstance(spec, ColorSpec):
                 color = spec.coerce(value)
                 program.set_vec4(
@@ -377,7 +381,11 @@ class EffectProcessor:
         program.set_int(f"{spec.name}_rows", rows)
         if columns < 2 or rows < 2:
             return
-        points = [(value[2 + index * 2], value[3 + index * 2]) for index in range(columns * rows)]
+        scale = self.pixel_scale if spec.pixels else 1.0
+        points = [
+            (value[2 + index * 2] * scale, value[3 + index * 2] * scale)
+            for index in range(columns * rows)
+        ]
         program.set_vec2_array(f"{spec.name}_points", points)
 
     def _bind_image(self, program: Program, spec: FileSpec, path: str, unit: int) -> int:
@@ -391,7 +399,13 @@ class EffectProcessor:
             program.set_vec2(f"{spec.name}_size", (0.0, 0.0))
             return unit
         program.bind_texture(spec.name, texture.handle, unit=unit)
-        program.set_vec2(f"{spec.name}_size", (float(texture.width), float(texture.height)))
+        # 大きさは画像の画素ではなく、画像を等倍で置いたときに占める合成の画素で渡す
+        # 画像は画面の画素 1 つに画像の画素 1 つで重なる物なので、画質を落とした
+        # プレビューでは画像も同じだけ縮めて置かないと、模様だけ 2 倍に出る
+        program.set_vec2(
+            f"{spec.name}_size",
+            (float(texture.width) * self.pixel_scale, float(texture.height) * self.pixel_scale),
+        )
         return unit + 1
 
     def retain_images(self, keep: Collection[str]) -> None:
@@ -446,19 +460,21 @@ def _idle(effect: Effect) -> bool:
     return definition is not None and definition.is_idle(effect)
 
 
-def _number(definition: EffectDefinition, effect: Effect, name: str, frame: int) -> float:
-    """エフェクトの数の項目を 1 つ読む 読めなければ 0
+def _number(
+    definition: EffectDefinition, effect: Effect, name: str, frame: int, scale: float
+) -> float:
+    """エフェクトの数の項目を 1 つ、シェーダへ渡すのと同じ形で読む 読めなければ 0
 
     値の通し方は :meth:`EffectProcessor._set_parameters` と**同じにする**
-    （``spec.coerce`` を通し、壊れた数は既定へ戻す） 別の読み方をすると、
+    （``spec.coerce`` と :meth:`TrackSpec.scaled_at` を通す） 別の読み方をすると、
     シェーダへ渡る値と入れ物を広げる量が食い違い、後ろのエフェクトだけずれる
     """
     spec = definition.spec(name)
     if not isinstance(spec, TrackSpec):
         return 0.0
     value = effect.params.get(name)
-    number = spec.coerce(spec.default_value() if value is None else value).at(frame)
-    return float(number) if math.isfinite(number) else float(spec.default)
+    raw = spec.default_value() if value is None else value
+    return float(spec.scaled_at(spec.coerce(raw), frame, scale))
 
 
 _BLIT_FRAGMENT = """

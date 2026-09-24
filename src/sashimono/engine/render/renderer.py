@@ -16,6 +16,8 @@ from pathlib import Path
 
 import numpy as np
 from OpenGL import GL
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QImage
 
 from sashimono.compat.aviutl.embedded import has_embedded
 from sashimono.compat.aviutl.report import global_report
@@ -54,7 +56,7 @@ from sashimono.engine.gpu import (
 from sashimono.engine.gpu.projection import project
 from sashimono.engine.motion_shapes import TrailPaths
 from sashimono.engine.render.invalidate import image_paths
-from sashimono.engine.render.outline import is_generated, media_pixel_size
+from sashimono.engine.render.outline import canvas_scale, is_generated, media_pixel_size
 from sashimono.engine.render.scripts import (
     ScriptStage,
     requested_effects,
@@ -211,6 +213,29 @@ def _object_sized(image: np.ndarray, found: Frame | None) -> tuple[np.ndarray, t
         return image, (0.0, 0.0)
     offset = ((left + right) / 2.0 - width / 2.0, (top + bottom) / 2.0 - height / 2.0)
     return image[top:bottom, left:right], offset
+
+
+def _resized(image: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+    """RGBA uint8 の絵を ``size``（幅, 高さ）へ引き伸ばす 画質を落とした合成の絵を、
+    スクリプトへ画面の画素の絵として渡すため（:meth:`FrameRenderer._draw_scripted`）
+
+    滑らかには伸ばさず、升目を並べるだけにする スクリプトの後で同じ所へ縮め戻すので、
+    分母の升目がそろっていれば元の画素へそのまま戻る 滑らかに伸ばすと、行きと帰りで
+    2 回補間され、絵に何もしないスクリプトでも下の絵がぼける
+    """
+    height, width = int(image.shape[0]), int(image.shape[1])
+    data = np.ascontiguousarray(image, dtype=np.uint8)
+    source = QImage(data.tobytes(), width, height, width * 4, QImage.Format.Format_RGBA8888)
+    scaled = source.scaled(
+        max(1, size[0]),
+        max(1, size[1]),
+        Qt.AspectRatioMode.IgnoreAspectRatio,
+        Qt.TransformationMode.FastTransformation,
+    ).convertToFormat(QImage.Format.Format_RGBA8888)
+    stride = scaled.bytesPerLine()
+    raw = np.frombuffer(scaled.constBits(), dtype=np.uint8, count=stride * scaled.height())
+    rows = raw.reshape(scaled.height(), stride)[:, : scaled.width() * 4]
+    return rows.reshape(scaled.height(), scaled.width(), 4).copy()
 
 
 def _as_corners(points: tuple[tuple[float, float], ...] | None) -> Corners | None:
@@ -422,6 +447,8 @@ class FrameRenderer:
             # エフェクト処理は合成と同じ全画面四角形を使い回す
             self._effects = EffectProcessor(width, height, self._compositor.quad)
             self._effects.canvas_encoded = self._encoded
+        # 画素で決める設定を合成の画素へ縮める割合 画質を落としたプレビューで 1 より小さい
+        self._effects.pixel_scale = self._scale[0]
         #: 素材ごとのデコーダ 最近使ったものを残す
         self._decoders: OrderedDict[_DecodeKey, VideoDecoder] = OrderedDict()
         #: レイヤーごとの並列デコードに使うスレッドの数 1 なら並べない
@@ -527,6 +554,15 @@ class FrameRenderer:
         with self._context:
             self._compositor.resize(width, height)
             self._effects.resize(width, height)
+        self._effects.pixel_scale = self._scale[0]
+
+    @property
+    def _scale(self) -> tuple[float, float]:
+        """合成の画素 1 つが画面の画素いくつ分かの逆数（:func:`canvas_scale`） 書き出しは 1"""
+        return canvas_scale(
+            self._project.settings.resolution,
+            (self._compositor.width, self._compositor.height),
+        )
 
     @property
     def _encoded(self) -> bool:
@@ -894,13 +930,18 @@ class FrameRenderer:
         if clip.source is not None and clip.source.kind == "framebuffer":
             self._draw_framebuffer(track, clip, frame, rate, depth)
             return
-        image = self._image_for(clip, frame, rate)
-        if image is None:
-            return
-
         local_frame = frame - clip.timeline_start
         opacity = clip.opacity.at(local_frame)
         gpu_effects, scripts = split_effects(clip.effects)
+        # スクリプトは画面の画素で数える（:meth:`_draw_scripted`） 画質を落としていても
+        # 書き出しと同じ大きさの絵を渡す 縮めた絵を渡すと obj.w から決める位置や大きさがずれる
+        image = (
+            self._generate(clip, frame, rate, screen=True)
+            if scripts and _is_generated(clip)
+            else self._image_for(clip, frame, rate)
+        )
+        if image is None:
+            return
 
         if scripts:
             # スクリプトは渡した絵を書き換えることがある 覚えておいた絵は渡さない
@@ -1003,6 +1044,11 @@ class FrameRenderer:
         """
         if not is_generated(clip):
             return None
+        if split_effects(clip.effects)[1]:
+            # スクリプトを積んだ物は、描く側が画面の画素で作った絵を使う 合成の画素で作り直すと、
+            # 選んでいる間は描くたびに 2 つの大きさを作り直すことになる 枠はスクリプト次第で
+            # 近い値でしかないので、画面の画素の入れ物を合成の画素へ縮めて返す
+            return self._screen_extent(clip, frame)
         image = self._generate(clip, frame, self._project.rate)
         if image is None:
             return None
@@ -1014,6 +1060,27 @@ class FrameRenderer:
         if box is None:
             return None
         return box, (width, height)
+
+    def _screen_extent(
+        self, clip: Clip, frame: int
+    ) -> tuple[tuple[float, float, float, float], tuple[int, int]] | None:
+        """:meth:`object_extent` を画面の画素で作った絵から求め、合成の画素へ縮めた物"""
+        image = self._generate(clip, frame, self._project.rate, screen=True)
+        if image is None:
+            return None
+        height, width = int(image.shape[0]), int(image.shape[1])
+        screen_width, screen_height = self._project.settings.resolution
+        if width > screen_width or height > screen_height:
+            box = _merged_box(self._content_box_of(clip, image), None)
+        else:
+            box = self._object_box_of(clip, image)
+        if box is None:
+            return None
+        scale_x, scale_y = self._scale
+        return (
+            (box[0] * scale_x, box[1] * scale_y, box[2] * scale_x, box[3] * scale_y),
+            (max(1, round(width * scale_x)), max(1, round(height * scale_y))),
+        )
 
     def _layer(self, role: str, depth: int) -> Compositor:
         """クリップ 1 本ぶんを描く透明な合成先 役目と入れ子の深さごとに使い回す"""
@@ -1161,7 +1228,14 @@ class FrameRenderer:
             # （毎フレームの往復になるので、スクリプトを積んだシーンだけで行う）
             # ストレートアルファで読む 事前乗算のまま渡すと、シーンの半透明の所が暗くなる
             self._draw_scripted(
-                track, clip, nested.read(straight=True), gpu_effects, local_frame, rate, opacity
+                track,
+                clip,
+                nested.read(straight=True),
+                gpu_effects,
+                local_frame,
+                rate,
+                opacity,
+                on_canvas=True,
             )
             return
         if not self._effects.has_work(gpu_effects):
@@ -1230,6 +1304,7 @@ class FrameRenderer:
                     local_frame,
                     rate,
                     clip.opacity.at(local_frame),
+                    on_canvas=True,
                 )
                 return
             source: Framebuffer = self._grab
@@ -1296,6 +1371,7 @@ class FrameRenderer:
                     local_frame,
                     rate,
                     1.0,
+                    on_canvas=True,
                 )
             finally:
                 self._compositor = outer
@@ -1329,16 +1405,28 @@ class FrameRenderer:
         rate: FrameRate,
         opacity: float,
         offset: tuple[float, float] = (0.0, 0.0),
+        *,
+        on_canvas: bool = False,
     ) -> None:
         """AviUtl スクリプトを積んだクリップを描く
 
         スクリプトは「何回・どこへ・どう変形して描くか」を返す 1 回とは限らない
         （残像や複製を作るスクリプトがある）ので、返ってきた分だけ合成する
+
+        スクリプトは**画面（プロジェクトの解像度）の画素**で動かす 画質を落としたプレビューでも、
+        スクリプトが見る画面の大きさ・絵の大きさ（obj.w）・トラックバーの値は書き出しと同じで、
+        返ってきた位置と大きさを描く直前に合成の画素へ縮める スクリプトの値はどれが画素かを
+        定義から読めない（``--track@`` に単位が無い）ので、値ではなく結果の方を縮める
+        ``on_canvas`` は ``image`` が合成の画素の絵（写し取った画面・シーン）のとき 画面の
+        画素へ引き伸ばしてから渡す
         """
         stage = self._script_stage()
         if stage is None:
             return
 
+        scale_x, scale_y = self._scale
+        if on_canvas and (scale_x, scale_y) != (1.0, 1.0):
+            image = _resized(image, self._project.settings.resolution)
         calls = stage.run(
             clip,
             script_effects(clip.effects),
@@ -1347,7 +1435,10 @@ class FrameRenderer:
             fps=float(rate.fps),
         )
         texture = self._texture_for(track.id)
-        width, height = self._compositor.width, self._compositor.height
+        screen_width, screen_height = self._project.settings.resolution
+
+        def shrunk(point: tuple[float, float]) -> tuple[float, float]:
+            return point[0] * scale_x, point[1] * scale_y
 
         for call in calls:
             texture.upload(call.image)
@@ -1356,8 +1447,9 @@ class FrameRenderer:
 
             if call.quad is not None:
                 shifted = tuple((x + offset[0], y + offset[1], z) for x, y, z in call.quad)
-                projected = [project(point, width, height) for point in shifted]
-                points = [point for point in projected if point is not None]
+                # 遠近は画面の画素で写してから縮める カメラの距離は画面の画素で決まっている
+                projected = [project(point, screen_width, screen_height) for point in shifted]
+                points = [shrunk(point) for point in projected if point is not None]
                 if len(points) != 4:
                     # カメラを越えた隅がある 写せる隅だけで描くと形の違う板になる
                     continue
@@ -1395,12 +1487,19 @@ class FrameRenderer:
                 rotation_y=call.ry,
             )
             if not transform.is_flat:
-                corners = transform.corners(texture.width, texture.height, width, height)
+                corners = transform.corners(
+                    texture.width, texture.height, screen_width, screen_height
+                )
                 if corners is None:
                     continue
                 self._draw_on_quad(
                     texture,
-                    corners,
+                    (
+                        shrunk(corners[0]),
+                        shrunk(corners[1]),
+                        shrunk(corners[2]),
+                        shrunk(corners[3]),
+                    ),
                     None,
                     combined,
                     local_frame,
@@ -1412,8 +1511,16 @@ class FrameRenderer:
                 )
                 continue
 
-            placement = transform.placement(texture.width, texture.height, width, height)
-            matrix = transform.matrix(width, height)
+            placed = transform.placement(texture.width, texture.height, screen_width, screen_height)
+            placement = Placement(
+                placed.left * scale_x,
+                placed.top * scale_y,
+                placed.width * scale_x,
+                placed.height * scale_y,
+            )
+            # 回転の行列はクリップ空間（画面の幅と高さを 1 にした物差し）で決まるので、
+            # 画面の画素で求めた物がそのまま小さい合成にも当たる
+            matrix = transform.matrix(screen_width, screen_height)
 
             if not self._effects.has_work(combined):
                 self._compositor.draw(
@@ -1461,6 +1568,10 @@ class FrameRenderer:
         エフェクトは画面と同じ大きさのバッファで動く 傾けてから掛けると、
         ぼかしや縁取りの幅まで遠近で歪む 平らな板に掛けてから板ごと傾けるのが
         AviUtl の見え方と同じ
+
+        絵は画面の画素の大きさで届く（スクリプトの絵） 画質を落としていれば、バッファへは
+        合成の画素へ縮めて置く 縮めずに置くと、エフェクトの掛かり方が絵に対して半分になり、
+        小さいバッファから絵がはみ出して切れる
         """
         width, height = self._compositor.width, self._compositor.height
         own = Placement(0.0, 0.0, float(texture.width), float(texture.height))
@@ -1476,11 +1587,13 @@ class FrameRenderer:
             )
             return
 
+        scale_x, scale_y = self._scale
+        placed_width, placed_height = texture.width * scale_x, texture.height * scale_y
         centred = Placement(
-            (width - texture.width) / 2.0,
-            (height - texture.height) / 2.0,
-            float(texture.width),
-            float(texture.height),
+            (width - placed_width) / 2.0,
+            (height - placed_height) / 2.0,
+            placed_width,
+            placed_height,
         )
         result = self._effects.apply(
             texture,
@@ -1497,8 +1610,8 @@ class FrameRenderer:
             # 結果のバッファは GL の向き（下が 0）なので、縦は裏返す
             placed = tuple(
                 (
-                    (centred.left + u * texture.width) / width,
-                    1.0 - (centred.top + v * texture.height) / height,
+                    (centred.left + u * centred.width) / width,
+                    1.0 - (centred.top + v * centred.height) / height,
                 )
                 for u, v in uv
             )
@@ -1529,11 +1642,10 @@ class FrameRenderer:
         プロジェクトでその代金を払わせない
         """
         if self._scripts is None:
-            self._scripts = ScriptStage(
-                script_catalog(), screen=(self._compositor.width, self._compositor.height)
-            )
+            self._scripts = ScriptStage(script_catalog(), screen=self._project.settings.resolution)
         else:
-            self._scripts.set_screen(self._compositor.width, self._compositor.height)
+            # スクリプトへ見せる画面は画質に関わらずプロジェクトの解像度（:meth:`_draw_scripted`）
+            self._scripts.set_screen(*self._project.settings.resolution)
         return self._scripts
 
     def _waveform_audio(
@@ -1637,8 +1749,15 @@ class FrameRenderer:
             return self._generate(clip, frame, rate)
         return self._decode(clip, frame, rate)
 
-    def _generate(self, clip: Clip, frame: int, rate: FrameRate) -> np.ndarray | None:
-        """素材を持たないクリップ（テキスト・図形）の絵を作る"""
+    def _generate(
+        self, clip: Clip, frame: int, rate: FrameRate, *, screen: bool = False
+    ) -> np.ndarray | None:
+        """素材を持たないクリップ（テキスト・図形）の絵を作る
+
+        ふつうは合成の画素で作る（画質を落としたプレビューでは縮めて作る）
+        ``screen`` なら画面（プロジェクトの解像度）の画素で作る スクリプトへ渡す絵で、
+        スクリプトは書き出しと同じ大きさの絵を相手に位置や大きさを数える
+        """
         source = clip.source
         if source is None:
             return None
@@ -1660,9 +1779,11 @@ class FrameRenderer:
                     font=text_font(source.params, local_frame),
                 )
                 source = source.with_param("text", expanded)
-        width, height = source_canvas(
-            source, self._compositor.width, self._compositor.height, frame=local_frame
-        )
+        if screen:
+            canvas, scale = self._project.settings.resolution, (1.0, 1.0)
+        else:
+            canvas, scale = (self._compositor.width, self._compositor.height), self._scale
+        width, height = source_canvas(source, *canvas, frame=local_frame, scale=scale)
         # 同じ絵をもう一度作らない テキストは 1 枚で数ミリ秒かかり、動かない字幕を
         # 何本も重ねたタイムラインでは、そこが再生の足を引っ張る
         # 時間で変わらない絵は、フレームを鍵に入れない（毎フレーム作り直さない）
@@ -1674,6 +1795,7 @@ class FrameRenderer:
             source.kind,
             width,
             height,
+            scale,
             when,
             clip.duration,
             clip.source_in,
@@ -1699,6 +1821,7 @@ class FrameRenderer:
             audio=heard[0] if heard is not None else None,
             audio_rate=heard[1] if heard is not None else 44100,
             trail_paths=self._trail_paths,
+            scale=scale,
         )
         if image is not None:
             # 入れ替えのときは減らない 先に捨てると、関係ないクリップの絵が消える

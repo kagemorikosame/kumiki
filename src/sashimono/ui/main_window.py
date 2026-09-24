@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QDockWidget,
     QFileDialog,
     QInputDialog,
+    QLabel,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -108,6 +109,7 @@ from sashimono.engine.cache import MediaAnalyzer
 from sashimono.engine.cache.proxy import ProxyBuilder, ProxyStore
 from sashimono.engine.decode import ProbeError, probe_media
 from sashimono.engine.decode.batch import ProbeBatch
+from sashimono.engine.gpu import opengl_usable
 from sashimono.engine.render import FrameRenderer, RenderQuality
 from sashimono.links import MANUAL_URL, REPORT_URL
 from sashimono.ui import media_match
@@ -400,7 +402,25 @@ class MainWindow(QMainWindow):
         viewer_layout = QVBoxLayout(viewer)
         viewer_layout.setContentsMargins(0, 0, 0, 0)
         viewer_layout.setSpacing(0)
-        viewer_layout.addWidget(self._preview, 1)
+        if opengl_usable():
+            viewer_layout.addWidget(self._preview, 1)
+        else:
+            # GL を使えない機械では、プレビューを窓に入れない 入れると窓ごと GL で
+            # 描くようになり、閉じた後の片付け（ごみ集めか Python の終わり）でプロセス
+            # ごと落ちる（#149） 片付けの順を変えても直らなかった 隠すだけでは足りない
+            # Qt は GL の部品が子にいるだけで、隠れていても窓を GL で描く 部品そのものは
+            # 窓の外に作っておく 窓のほかの所がプレビューへ話しかけるのを、全部で分けずに済む
+            self._preview.setParent(None)
+            self._preview.hide()
+            notice = QLabel(
+                "OpenGL 4.3 を使えないため、プレビューを出せません\n"
+                "GPU のドライバを確かめてください 編集と保存はできます",
+                viewer,
+            )
+            notice.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            notice.setWordWrap(True)
+            notice.setStyleSheet(f"color: {Colors.TEXT_MUTED.name()};")
+            viewer_layout.addWidget(notice, 1)
         viewer_layout.addWidget(self._transport)
         viewer.setStyleSheet(f"background-color: {Colors.VIEWER_BACKGROUND.name()};")
         self.setCentralWidget(viewer)
@@ -2013,7 +2033,7 @@ class MainWindow(QMainWindow):
             return
 
         found = self._resolve_exo_media(exo, source)
-        commands = map_exo(exo, self.view_project, media=found.ids)
+        commands = map_exo(exo, self.view_project, media=found.ids, items=found.items)
         if not commands:
             self.statusBar().showMessage("読み込めるオブジェクトがありませんでした", 5000)
             return
@@ -2138,7 +2158,10 @@ class MainWindow(QMainWindow):
             clip = pictures[0].clip
             end = frame + (clip.duration if pictures[0].has_span else DEFAULT_GENERATED_FRAMES)
             free = track is not None and not any(c.overlaps(frame, end) for c in track.clips)
-            if free and track is not None and track.kind is TrackKind.VIDEO and not track.locked:
+            # レイヤー（混合トラック）も受ける 映像トラックに限ると、混合の方式では
+            # 右クリックしたレイヤーを無視して元のレイヤー番号の所へ入る
+            placeable = (TrackKind.VIDEO, TrackKind.MIXED)
+            if free and track is not None and track.kind in placeable and not track.locked:
                 target = track_id
         commands = place(objects, project, at_frame=frame, track_id=target, media=plan.media)
         if not commands:

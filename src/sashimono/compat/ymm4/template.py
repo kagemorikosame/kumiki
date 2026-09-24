@@ -720,6 +720,8 @@ def _map_item(item: dict[str, Any], log: CompatibilityReport) -> MappedObject | 
         return None
     if name == "TransitionItem":
         return _transition(item, length, keyframes, log)
+    if name == "EffectItem":
+        item = _without_ignored_moves(item)
     source, media_path, kind = _content(item, name, log)
     if source is None and not media_path:
         return None
@@ -801,7 +803,31 @@ def _map_item(item: dict[str, Any], log: CompatibilityReport) -> MappedObject | 
         # 分かるので、印だけ立てる 繰り返し（IsLooped）の物は止めずに、繰り返しを写せない
         # ことを数えて残す（:func:`_audio_effects`） 止めると繰り返すはずの所が止まった絵になる
         hold_last_frame=name == "VideoItem" and item.get("IsLooped") is not True,
+        audio_track=_audio_track(item, name, log),
     )
+
+
+def _audio_track(item: dict[str, Any], name: str, log: CompatibilityReport) -> int:
+    """素材の何本目の音を鳴らすか（``AudioTrackIndex`` 0 始まり）
+
+    素材の中の番号（ストリームの番号）ではなく、音の道だけを数えた順番として持つ
+    番号に直すのは素材を読んだ置く側（:func:`~sashimono.compat.catalog.place`）
+    YMM4 の画面の「音声トラック」は素材の音を 1 本目・2 本目と並べて選ばせるので、
+    映像を含めた番号として読むと 1 つずれた音が鳴る
+
+    読めない値や負の値は 1 本目として置き、数えて残す 黙って 1 本目にすると、
+    選んだはずの言語と違う音が鳴っても互換性レポートに出ない
+    """
+    if name not in _SOUND_ITEMS:
+        return 0
+    raw = item.get("AudioTrackIndex")
+    if raw is None or raw == "":
+        return 0
+    value = number(raw, 0.0) if _readable_number(raw) else -1.0
+    if value < 0 or value != int(value):
+        log.note_missing(f"YMM4 の音声トラックの選択（AudioTrackIndex）が読めない値: {raw!r}")
+        return 0
+    return int(value)
 
 
 def _content_offset(item: dict[str, Any], log: CompatibilityReport) -> Fraction:
@@ -885,8 +911,6 @@ def _audio_effects(
             return any(point.value != default for point in value.keyframes)
         return value.static != default
 
-    if int(number(item.get("AudioTrackIndex"), 0.0)) != 0:
-        log.note_missing("YMM4 の音声トラックの選択（AudioTrackIndex）")
     if item.get("IsLooped") is True:
         log.note_missing("YMM4 の素材の繰り返し（IsLooped）")
     if item.get("EchoIsEnabled") is True:
@@ -1131,6 +1155,42 @@ _EASING_NAMES = {
 _EASING_MODE_NAMES = {"In": "in", "Out": "out", "InOut": "inout"}
 
 
+#: エフェクトアイテムに積んでも YMM4 の絵が変わらなかったエフェクト（2026-09-24 YMM4 4.56.1.1
+#: ``tools/ymm4_compare.py`` の ``effectitem-build`` 範囲は画面全体） 画面いっぱいの絵の上で
+#: 拡大率 50 も X 300 も、書き出しは下の絵のままだった 写すと、縮めた・ずらした写しが
+#: 下の絵の上に重なる（差 16.8 と 83.7 → 1.2 前後）
+_EFFECT_ITEM_IGNORED = frozenset({"ZoomEffect", "DrawPositionEffect"})
+
+
+def _without_ignored_moves(item: dict[str, Any]) -> dict[str, Any]:
+    """エフェクトアイテムから、YMM4 が絵に当てなかったエフェクトを除いた写し
+
+    除くのは測った条件（範囲が画面全体の背景）だけ ほかの範囲では変形が範囲を動かす
+    かもしれず、測っていない 除くと利用者は変形が消えたことを知る手立てが無いので、
+    そのまま写す（範囲そのものは :func:`_content` が未対応として記録する）
+    """
+    if not _range_plugin(item).startswith("Background"):
+        return item
+    raw = item.get("VideoEffects")
+    if not isinstance(raw, list):
+        return item
+    kept = [
+        entry
+        for entry in raw
+        if not (isinstance(entry, dict) and type_name(entry) in _EFFECT_ITEM_IGNORED)
+    ]
+    return item if len(kept) == len(raw) else {**item, "VideoEffects": kept}
+
+
+def _range_plugin(item: dict[str, Any]) -> str:
+    """エフェクトアイテムの範囲の種類 型の名前の最後の部分（``BackgroundShapePlugin`` など）
+
+    ``ShapeType2`` は ``Version=4.32.0.2`` のようなアセンブリの版まで付いた名前で、同じ
+    範囲でも書き出した YMM4 の版で文字列が変わる 名前空間とアセンブリを落として比べる
+    """
+    return str(item.get("ShapeType2") or "").partition(",")[0].rpartition(".")[2]
+
+
 def _preview_only(item: dict[str, Any]) -> bool:
     """編集中の画面にだけ映すアイテムか YMM4 は書き出した動画に出さない
 
@@ -1166,7 +1226,11 @@ def _content(
         # 下のレイヤーの絵にエフェクトを掛けるアイテム（範囲は図形で決める） 図形として
         # 読むと、範囲の図形（多くは画面全体の背景）がそのまま画面を塗りつぶす
         # 写し取った画面にエフェクトを掛けるフレームバッファと同じ形で読む
-        plugin = str(item.get("ShapeType2") or "").partition(",")[0].rpartition(".")[2]
+        # フィルタのクリップ（下の絵に掛けて置き換える 透明は透明のまま）とは読まない
+        # YMM4 は下の絵の透明な所も黒として掛けた（2026-09-24 YMM4 4.56.1.1 ``effectitem-build``
+        # 周りが透明な図形に反転を掛けると周りが白くなり、前景の塗りつぶしは周りまで塗った
+        # フィルタで読むと周りが黒のままで、差が 0.1 → 226.8）
+        plugin = _range_plugin(item)
         if plugin and not plugin.startswith("Background"):
             log.note_missing(f"YMM4 のエフェクトアイテムの範囲: {plugin}")
         if number(item.get("Blur"), 0.0) > 0 or item.get("InvertMask") is True:
@@ -1521,11 +1585,13 @@ def _placement(
     if not moves and not any(value.is_animated or value.static != rest for value, rest in resting):
         return []
 
+    # 縦の拡大率（``scale_y``）は拡大率に掛ける比なので既定の 100 のまま 拡大率を
+    # 両方へ入れると縦だけ 2 回掛かり、拡大率 200 の 640x360 が 1280x1440 になる
+    # （2026-09-24 YMM4 4.56.1.1 の書き出しは 1280x720 ``zoom-build`` の拡大率 200 の枠）
     placed = definition.create(
         pos_x=pos_x,
         pos_y=pos_y,
         scale=zoom,
-        scale_y=zoom,
         rotation=rotation,
         # 中心点で「位置を保つ」を切ると、選んだ点がアイテムの位置へ来る
         move_to_pivot=moves,

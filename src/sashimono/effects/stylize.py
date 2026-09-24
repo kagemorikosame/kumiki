@@ -145,7 +145,9 @@ void main() {
     soft /= total;
 
     vec2 pixel = v_uv * u_size;
-    float pitch = max(spacing, 1.0) * 4.0;
+    // 下限は画面の 1 画素（縮小表示なら 1 画素より細かい） 1.0 のままだと 1/4 表示で
+    // 間隔 1〜4 がみな同じ粗さになり、書き出しと網目の細かさが食い違う
+    float pitch = max(spacing, u_pixel_scale) * 4.0;
     if (grid == 0) {
         // 菱形 格子を 45 度回す
         pixel = mat2(0.7071, 0.7071, -0.7071, 0.7071) * pixel;
@@ -288,7 +290,8 @@ void main() {
     // 影の濃さを網点の大きさで表す 点の中心で影を読み、濃さの平方根に比例した半径で描く
     // 濃さ 1 で半径が格子の対角の半分になり、隣の点と重なって隙間なく塗る
     // 半径は隣のマスまで届くので、周りの 9 マスの点を調べる
-    float pitch = max(spacing, 1.0);
+    // 下限は画面の 1 画素 網点の輪郭ぼかしと同じく、縮小表示の 1 画素に合わせると粗くなる
+    float pitch = max(spacing, u_pixel_scale);
     vec2 pixel = v_uv * u_size - object_center();
     vec2 lattice = grid == 0 ? TURN * pixel : pixel;
     vec2 cell = floor(lattice / pitch);
@@ -957,7 +960,9 @@ def register_stylize_effects() -> None:
                 TrackSpec("corner", "角の丸み", 0, 10000, 0, step=1, unit="px"),
                 TrackSpec("span", "扇の角度", 0, 360, 360, unit="度"),
                 TrackSpec("center_x", "X", -20000, 20000, 0, step=1, unit="px"),
-                TrackSpec("center_y", "Y（下が正）", -20000, 20000, 0, step=1, unit="px"),
+                # Y は上が正（シェーダが符号を合わせる） YMM4 と AviUtl の下が正の値は
+                # 読み込みが裏返して入れる 表示に「下が正」と書くと、入れた値が上下逆に出る
+                TrackSpec("center_y", "Y", -20000, 20000, 0, step=1, unit="px"),
                 TrackSpec("rotation", "回転", -3600, 3600, 0, unit="度"),
                 TrackSpec("blur", "ぼかし", 0, 1000, 0, unit="px"),
                 CheckSpec("invert", "反転", False),
