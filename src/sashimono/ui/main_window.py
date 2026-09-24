@@ -2050,7 +2050,7 @@ class MainWindow(QMainWindow):
             return
 
         found = self._resolve_exo_media(exo, source)
-        commands = map_exo(exo, self.view_project, media=found.ids)
+        commands = map_exo(exo, self.view_project, media=found.ids, items=found.items)
         if not commands:
             self.statusBar().showMessage("読み込めるオブジェクトがありませんでした", 5000)
             return
@@ -2175,7 +2175,10 @@ class MainWindow(QMainWindow):
             clip = pictures[0].clip
             end = frame + (clip.duration if pictures[0].has_span else DEFAULT_GENERATED_FRAMES)
             free = track is not None and not any(c.overlaps(frame, end) for c in track.clips)
-            if free and track is not None and track.kind is TrackKind.VIDEO and not track.locked:
+            # レイヤー（混合トラック）も受ける 映像トラックに限ると、混合の方式では
+            # 右クリックしたレイヤーを無視して元のレイヤー番号の所へ入る
+            placeable = (TrackKind.VIDEO, TrackKind.MIXED)
+            if free and track is not None and track.kind in placeable and not track.locked:
                 target = track_id
         commands = place(objects, project, at_frame=frame, track_id=target, media=plan.media)
         if not commands:
