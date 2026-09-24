@@ -19,6 +19,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from importlib import metadata
@@ -548,13 +549,34 @@ def install_runtime(
         return 1
 
     assert process.stdout is not None
+    finished = threading.Event()
+    cancelled = threading.Event()
+
+    def watch(ask: Callable[[], bool]) -> None:
+        # 出力を読む所とは別に見張る 読む所は次の 1 行が来るまで止まるので、
+        # そこで中断を見ると、pip が黙って落としている間（数分ある）は止まらない
+        while not finished.wait(_CANCEL_POLL_SECONDS):
+            if ask():
+                cancelled.set()
+                try:
+                    process.terminate()
+                except OSError:
+                    return  # もう終わっていた
+                return
+
+    if should_cancel is not None:
+        threading.Thread(target=watch, args=(should_cancel,), daemon=True).start()
     with process:
+        # 止めた後も最後まで読む 途中で読むのをやめると、子の書き込みが詰まって
+        # 終わらず、終了コードも取れない
         for line in process.stdout:
             if on_output is not None:
                 on_output(line.rstrip())
-            if should_cancel is not None and should_cancel():
-                process.terminate()
-                if on_output is not None:
-                    on_output("中断した")
-                break
+    finished.set()
+    if cancelled.is_set() and on_output is not None:
+        on_output("中断した")
     return process.returncode if process.returncode is not None else 1
+
+
+#: 導入の中断の頼みを見る間隔（秒） 長いと、閉じるボタンを押してから止まるまでが延びる
+_CANCEL_POLL_SECONDS = 0.1
