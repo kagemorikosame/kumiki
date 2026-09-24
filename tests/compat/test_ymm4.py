@@ -427,6 +427,51 @@ class TestVideoEffects:
         assert value_at(source.params["border_width"]) == pytest.approx(12.0)
         assert [e.kind for e in mapped.clip.effects] == ["border"]
 
+    def test_an_outline_only_shape_keeps_just_the_edge(self) -> None:
+        """図形の縁取りの「縁だけ」は、塗りを消して縁の輪だけを残すエフェクトになる
+
+        読まずにいると縁が落ちて塗りが残り、SFっぽい吹き出し(右)（配布物）が
+        水色の塗りの四角のまま出る（#175）
+        """
+        edge = outline(5.4)
+        edge["IsOutlineOnly"] = True
+        mapped = map_template([shape_item(VideoEffects=[edge])], report=CompatibilityReport())[0]
+        borders = [e for e in mapped.clip.effects if e.kind == "border"]
+        assert len(borders) == 1, "図形の縁取りが落ちた"
+        assert borders[0].params["outline_only"] is True
+        assert value_at(borders[0].params["width"]) == pytest.approx(5.4)
+
+    def test_an_outline_only_text_is_not_a_text_border(self) -> None:
+        """文字の縁取りでも「縁だけ」はテキストの縁取りに載せない
+
+        テキストの縁取りは文字の塗りと一緒に描かれるので、載せると縁だけにならない
+        縁だけのエフェクトより前にある縁取りは、並びの順を保って先に掛かる
+        """
+        edge = outline(10.0)
+        edge["IsOutlineOnly"] = True
+        item = text_item(VideoEffects=[outline(4.0), edge])
+        mapped = map_template([item], report=CompatibilityReport())[0]
+        source = mapped.clip.source
+        assert source is not None
+        assert value_at(source.params["border_width"]) == pytest.approx(4.0)
+        borders = [e for e in mapped.clip.effects if e.kind == "border"]
+        assert [b.params["outline_only"] for b in borders] == [True]
+        assert value_at(borders[0].params["width"]) == pytest.approx(10.0)
+
+    def test_the_outline_opacity_thins_the_colour(self) -> None:
+        """縁取りの不透明度は縁の色の濃さになる
+
+        読まずにいると、半分の濃さで光らせるグループの縁（SFっぽい吹き出し(右) の
+        50.9）が、格子の隙間を濃い色で埋める
+        """
+        effect = outline(6.0)
+        effect["Opacity"] = still(50.0)
+        source = map_template([text_item(VideoEffects=[effect])], report=CompatibilityReport())[
+            0
+        ].clip.source
+        assert source is not None
+        assert source.params["border_color"] == pytest.approx((1.0, 1.0, 1.0, 0.5))
+
     def test_a_disabled_effect_is_skipped(self) -> None:
         effect = outline(9.0)
         effect["IsEnabled"] = False

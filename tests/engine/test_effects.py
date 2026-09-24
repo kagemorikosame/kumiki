@@ -390,6 +390,47 @@ class TestDecorationEffects:
         assert just_outside[1] < 80, "縁が赤くない"
         assert centre(bordered)[1] > 200, "中身が塗り潰されている"
 
+    def test_border_outline_only_drops_the_inside(self, draw: Callable[..., np.ndarray]) -> None:
+        """縁だけにすると、縁の輪が残って元の絵が消える
+
+        YMM4 の縁取りの「縁だけ」（``IsOutlineOnly``）はこの絵になる 中身が残ると
+        SFっぽい吹き出しが縁の線ではなく塗りの四角のまま出る（#175）
+        """
+        square = white_square(60)
+        effect = registry.require("border").create(
+            width=8, color=(1.0, 0.0, 0.0, 1.0), outline_only=True
+        )
+        ring = draw(square, (effect,))
+        just_outside = ring[HEIGHT // 2, WIDTH // 2 + 34]
+        assert just_outside[0] > 100, "縁が描かれていない"
+        assert just_outside[1] < 80, "縁が赤くない"
+        assert max(centre(ring)) < 20, "縁だけなのに中身が残っている"
+
+    def test_a_transparent_pattern_colour_does_not_bleed(
+        self, draw: Callable[..., np.ndarray]
+    ) -> None:
+        """模様の透明な色の RGB は、縮めたときに隣の色へ混ざらない
+
+        YMM4 の格子のブラシは背景が透明な白（``#00FFFFFF``）のことが多い 透明な所に
+        白を残すと、縮めたり動かしたりして隣の画素と混ぜたときに白が浮き出し、
+        暗い格子が白っぽい板になる（SFっぽい吹き出し(右) #175）
+        """
+        stripes = registry.require("brush_fill").create(
+            pattern="stripe",
+            pattern_only=True,
+            stops=2,
+            color0=(1.0, 0.0, 0.0, 1.0),
+            color1=(1.0, 1.0, 1.0, 0.0),
+            width_a=1,
+            width_b=1,
+            angle=0,
+        )
+        shrink = registry.require("transform").create(scale=50)
+        image = draw(white_square(100), (stripes, shrink))
+        red, green, blue = centre(image)
+        assert red > 40, "縞が描かれていない"
+        assert max(green, blue) < 20, "透明な所の白が混ざった"
+
     def test_shadow_falls_in_the_requested_direction(self, draw: Callable[..., np.ndarray]) -> None:
         # Y は正が上 変形の pos_y と揃っていないと、同じ「Y」の表示で
         # 上下が反対に動くことになる

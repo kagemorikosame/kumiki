@@ -154,6 +154,9 @@ def _map_video_effects(
         return result
 
     borders: list[tuple[float, tuple[float, float, float, float]]] = []
+    # 縁だけの縁取りの後ろにある縁取りは、テキストの縁取りに載せると縁だけより先に
+    # 描かれて消える 1 度でも出たら、残りはエフェクトとして並びの後ろに積む
+    outlined_only = False
     pivot: CenterPoint | None = None
     for entry in effects:
         if not isinstance(entry, dict):
@@ -173,12 +176,24 @@ def _map_video_effects(
             pivot, _ = center_point(entry, report, length=length, keyframes=keyframes)
             continue
         if name == "OutlineEffect":
-            borders.append(
-                (
-                    max(0.0, number(entry.get("StrokeThickness"), 4.0)),
-                    brush_colour(entry.get("StrokeBrush")),
-                )
+            # 縁の不透明度は色の濃さに掛ける 読まずにいると、薄く光らせるつもりの
+            # グループの縁（SFっぽい吹き出し(右) は 50.9）が、格子の隙間を濃く埋める
+            red, green, blue, alpha = brush_colour(entry.get("StrokeBrush"))
+            stroke = (
+                max(0.0, number(entry.get("StrokeThickness"), 4.0)),
+                (red, green, blue, alpha * _unit(number(entry.get("Opacity"), 100.0) / 100.0)),
             )
+            if entry.get("IsOutlineOnly") is True:
+                # 縁だけは元の絵を消すので、テキストの縁取りには載せられない（文字の塗りと
+                # 一緒に描かれる） 図形では縁取りの設定そのものが無いので、載せる先を
+                # 探すと縁が落ちて塗りが残る（#175） 並びのこの位置に縁だけのエフェクトを
+                # 置き、先に集めた縁取りは順を保つためにここで配っておく
+                _place_borders(borders, result, on_text=not outlined_only)
+                borders = []
+                outlined_only = True
+                result.effects.append(_border_effect(*stroke, outline_only=True))
+                continue
+            borders.append(stroke)
             continue
 
         if name == "FillForegroundEffect":
@@ -207,7 +222,7 @@ def _map_video_effects(
             built = with_pivot(built, pivot)
         result.effects.append(built)
 
-    _place_borders(borders, result)
+    _place_borders(borders, result, on_text=not outlined_only)
     result.pivot = pivot
     return result
 
@@ -366,30 +381,42 @@ def _border(entry: dict[str, Any]) -> tuple[float, tuple[float, float, float, fl
 def _place_borders(
     borders: list[tuple[float, tuple[float, float, float, float]]],
     result: DecorationResult,
+    *,
+    on_text: bool = True,
 ) -> None:
     """縁取りを、テキスト側 1 本とエフェクト側の残りに分ける
 
     一番太いものをテキストに持たせるのは、それが文字の形をいちばん強く決めるから
     細いほうをテキストに載せると、太いほうをエフェクトで足したときに二重の縁の
-    間隔が変わる
+    間隔が変わる ``on_text`` が偽なら、テキストへは載せずすべてエフェクトにする
     """
     usable = [item for item in borders if item[0] > 0.0]
     if not usable:
         return
 
-    widest = max(usable, key=lambda item: item[0])
-    result.params["border_width"] = AnimatedValue(widest[0])
-    result.params["border_color"] = widest[1]
+    widest = max(usable, key=lambda item: item[0]) if on_text else None
+    if widest is not None:
+        result.params["border_width"] = AnimatedValue(widest[0])
+        result.params["border_color"] = widest[1]
 
-    definition = registry.get("border")
-    if definition is None:  # pragma: no cover - 標準エフェクトは必ずある
-        return
     seen_widest = False
     for thickness, tint in usable:
         if not seen_widest and (thickness, tint) == widest:
             seen_widest = True
             continue
-        result.effects.append(definition.create(width=thickness, color=tint))
+        result.effects.append(_border_effect(thickness, tint))
+
+
+def _border_effect(
+    thickness: float, tint: tuple[float, float, float, float], *, outline_only: bool = False
+) -> Effect:
+    definition = registry.get("border")
+    assert definition is not None  # 標準エフェクトは必ずある
+    return definition.create(width=thickness, color=tint, outline_only=outline_only)
+
+
+def _unit(value: float) -> float:
+    return min(1.0, max(0.0, value))
 
 
 def _shadow(entry: dict[str, Any], result: DecorationResult, size: float) -> None:

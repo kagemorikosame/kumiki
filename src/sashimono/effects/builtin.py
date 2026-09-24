@@ -456,6 +456,7 @@ uniform float width;
 uniform vec4 color;
 uniform sampler2D pattern;
 uniform vec2 pattern_size;
+uniform bool outline_only;
 
 // 縁の色 模様の画像があれば色の代わりにそれで塗る
 //
@@ -475,7 +476,9 @@ vec4 edge_color() {
 void main() {
     vec4 base = texture(u_texture, v_uv);
     if (width < 0.5) {
-        frag_color = base;
+        // 縁だけで縁が無ければ何も残らない 元の絵を返すと、太さを 0 へ動かした所で
+        // 消えていた塗りが急に現れる
+        frag_color = outline_only ? vec4(0.0) : base;
         return;
     }
 
@@ -493,6 +496,12 @@ void main() {
     // 縁の上に元の絵を重ねる（over 合成）
     vec4 paint = edge_color();
     vec4 edge = vec4(paint.rgb, paint.a * coverage);
+    if (outline_only) {
+        // 縁だけ（YMM4 の IsOutlineOnly） 元の絵は描かず、元の絵が覆っていた分だけ
+        // 縁を抜いて外側の輪にする 抜かないと縁の色で塗った形がそのまま残る
+        frag_color = vec4(edge.rgb, edge.a * (1.0 - base.a));
+        return;
+    }
     vec3 rgb = base.rgb * base.a + edge.rgb * edge.a * (1.0 - base.a);
     float alpha = base.a + edge.a * (1.0 - base.a);
     frag_color = unpremul(vec4(rgb, alpha));
@@ -971,6 +980,7 @@ def register_builtin_effects() -> None:
                 TrackSpec("width", "太さ", 0, 32, 4, unit="px"),
                 ColorSpec("color", "色", (1.0, 1.0, 1.0, 1.0)),
                 FileSpec("pattern", "模様の画像", filter=IMAGE_FILTER, texture=True),
+                CheckSpec("outline_only", "縁だけ", False),
             ),
             fragment_shader=_BORDER,
         )
