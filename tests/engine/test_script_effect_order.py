@@ -14,6 +14,7 @@ from collections.abc import Iterator
 import numpy as np
 import pytest
 
+from sashimono.compat.aviutl import catalog as catalog_module
 from sashimono.compat.aviutl.catalog import ScriptCatalog, set_script_catalog
 from sashimono.core.commands import AddClip, AddTrack
 from sashimono.core.model import (
@@ -50,9 +51,21 @@ def gl_context() -> Iterator[OffscreenGLContext]:
 
 def _render(source: str, gl_context: OffscreenGLContext) -> np.ndarray:
     """``source`` を積んだクリップを 1 枚描く 画面は黒 絵は真ん中"""
+    saved = catalog_module._catalog
     catalog = ScriptCatalog(roots=())
     catalog.add_text("aviutl:試験.anm:順", source)
     set_script_catalog(catalog)
+    try:
+        return _render_with(gl_context)
+    finally:
+        # 戻さないと、後に走る試験の script_catalog() が中身の無い試験用の一覧を返し、
+        # 配布物のスクリプトを探す試験が走らせる順によって落ちる
+        catalog_module._catalog = saved
+        if saved is not None:
+            saved.register_all()
+
+
+def _render_with(gl_context: OffscreenGLContext) -> np.ndarray:
     definition = registry.get("aviutl:試験.anm:順")
     assert definition is not None
     clip = Clip(
