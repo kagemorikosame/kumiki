@@ -640,6 +640,9 @@ class ObjApi:
         for index in range(1, len(args) - 1, 2):
             params[str(args[index])] = _as_param(args[index + 1])
         if original == CLIP_EFFECT and not self.state.effects:
+            # 先に積んだ効果があるときは焼き込まずに描くときへ回す 焼き込みはぼかしの
+            # サイズ固定（絵を広げない）を持たないので、アクリル矩形のように ぼかし の広がりを
+            # 見込んで切る配布物で、焼き込んで広がった分だけ板が大きく残る
             self._clip(params)
             return
         if original == EXPAND_EFFECT:

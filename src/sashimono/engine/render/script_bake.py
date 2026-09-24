@@ -15,12 +15,13 @@ import math
 
 import numpy as np
 
+from sashimono.compat.aviutl.report import CompatibilityReport, global_report
 from sashimono.core.model import Effect
 from sashimono.effects.definition import registry
 from sashimono.effects.spec import TrackSpec
 from sashimono.engine.gpu import Compositor, EffectProcessor, Placement, Texture
 
-__all__ = ["BAKE_MARGIN", "BAKE_MARGIN_LIMIT", "ScriptEffectBaker", "bake_margin"]
+__all__ = ["BAKE_CANVAS_LIMIT", "BAKE_MARGIN", "ScriptEffectBaker", "bake_margin", "fitted_margin"]
 
 #: 絵の周りに空ける余白の下限（画素） ぼかしや影は絵の外へ広がる AviUtl のぼかしも絵を
 #: 広げるので、広がった所まで残す 画素で決める項目から読める分は :func:`bake_margin` が
@@ -28,9 +29,10 @@ __all__ = ["BAKE_MARGIN", "BAKE_MARGIN_LIMIT", "ScriptEffectBaker", "bake_margin
 #: 上限 96 が収まる
 BAKE_MARGIN = 128
 
-#: 余白の上限（画素） 項目の値はスクリプトが決める 影を何万画素もずらす値で作業場を
-#: 作ると、1 回で数 GB になる AviUtl の絵の大きさの上限（obj.load の図形と同じ 4096）に揃える
-BAKE_MARGIN_LIMIT = 4096
+#: 絵と余白を合わせた作業場の一辺の上限（画素） 作業場は RGBA16F のバッファを何枚も
+#: 同時に持つ 絵の上限 4096 に同じだけの余白を足した 12288 画素四方では、1 回で数 GB になり
+#: GPU のメモリが尽きる 6144 なら 1 枚 300MB 足らずで、4096 の絵にも両側 1024 の余白が残る
+BAKE_CANVAS_LIMIT = 6144
 
 
 class ScriptEffectBaker:
@@ -63,7 +65,7 @@ class ScriptEffectBaker:
         height, width = image.shape[:2]
         # 余白は効果が絵を運ぶ量から決める 決め打ちにすると、それより遠くへずらす影が
         # 作業場の外へ出て消え、obj.w や写し取った絵からも消える（#186）
-        margin = bake_margin(effects, frame)
+        margin = fitted_margin(width, height, bake_margin(effects, frame))
         canvas_w, canvas_h = width + 2 * margin, height + 2 * margin
         compositor, processor, texture = self._prepared(canvas_w, canvas_h)
         if not processor.has_work(effects):
@@ -138,7 +140,8 @@ def bake_margin(effects: tuple[Effect, ...], frame: int) -> int:
     （``expands_object``）は広げる量のうち大きい方 順に掛かるので、効果ごとの量を足す
 
     どの効果の項目か分からない物（範囲を画素で持たない光など）のために、
-    :data:`BAKE_MARGIN` より狭くはしない 上限は :data:`BAKE_MARGIN_LIMIT`
+    :data:`BAKE_MARGIN` より狭くはしない ここでは上限で丸めない 丸めると、足りない余白で
+    掛けたことが分からなくなる 作業場に収まるかは :func:`fitted_margin` が見る
     """
     reach = 0.0
     for effect in effects:
@@ -159,7 +162,25 @@ def bake_margin(effects: tuple[Effect, ...], frame: int) -> int:
             else:
                 reach += amount
         reach += growth
-    return max(BAKE_MARGIN, min(math.ceil(reach), BAKE_MARGIN_LIMIT))
+    return max(BAKE_MARGIN, math.ceil(reach))
+
+
+def fitted_margin(
+    width: int, height: int, needed: int, report: CompatibilityReport | None = None
+) -> int:
+    """``width`` x ``height`` の絵に ``needed`` の余白を付けて、作業場が上限に収まる余白
+
+    収まらなければ上限まで縮め、縮めたことを互換性レポートに残す 黙って縮めると、
+    遠くへ動かす効果の外側が欠けた理由が分からない 絵そのものが上限を超えていれば余白は 0
+    """
+    room = max(0, (BAKE_CANVAS_LIMIT - max(width, height)) // 2)
+    if needed <= room:
+        return needed
+    (report if report is not None else global_report).note_missing(
+        f"obj.effect の焼き込みの余白 {needed} 画素（作業場の上限 {BAKE_CANVAS_LIMIT} に"
+        f"収めるため {room} 画素にした）"
+    )
+    return room
 
 
 def _pixels(spec: TrackSpec, effect: Effect, frame: int) -> float:

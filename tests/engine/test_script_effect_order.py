@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 
 from sashimono.compat.aviutl.catalog import ScriptCatalog, set_script_catalog
+from sashimono.compat.aviutl.report import CompatibilityReport
 from sashimono.core.commands import AddClip, AddTrack
 from sashimono.core.model import (
     AnimatedValue,
@@ -30,7 +31,13 @@ from sashimono.core.timebase import FrameRate
 from sashimono.effects import registry
 from sashimono.engine.gpu import GLContextError, OffscreenGLContext
 from sashimono.engine.render import FrameRenderer
-from sashimono.engine.render.script_bake import BAKE_MARGIN, ScriptEffectBaker, bake_margin
+from sashimono.engine.render.script_bake import (
+    BAKE_CANVAS_LIMIT,
+    BAKE_MARGIN,
+    ScriptEffectBaker,
+    bake_margin,
+    fitted_margin,
+)
 
 SETTINGS = ProjectSettings(width=96, height=96, frame_rate=FrameRate(30))
 
@@ -145,3 +152,25 @@ class TestMargin:
         # 画素の項目を持たない効果（色だけ変える物）でも、これまでの余白は残す
         # 縮めると、範囲の決まらない広がり（グローの光など）が切れる
         assert bake_margin((), 0) == BAKE_MARGIN
+
+    def test_the_reach_is_not_cut_silently(self) -> None:
+        # 効果を重ねた到達距離は上限で丸めない 丸めると、足りない余白で掛けて外側が
+        # 黙って欠ける 足りないかどうかは作業場の大きさを決める所（fitted_margin）が見る
+        definition = registry.get("displacement_map")
+        assert definition is not None
+        far = definition.create(move_x=4000.0)
+        assert bake_margin((far, _shadow(200.0)), 0) >= 4200
+
+    def test_the_canvas_stays_within_the_limit(self) -> None:
+        # 絵と余白を合わせた作業場の一辺は上限までに抑える 4096 画素の絵に 4096 画素の
+        # 余白を足すと 12288 画素四方のバッファを何枚も作り、GPU のメモリが尽きる
+        report = CompatibilityReport()
+        margin = fitted_margin(4096, 100, 4096, report)
+        assert 4096 + 2 * margin <= BAKE_CANVAS_LIMIT
+        # 足りない余白で掛けたことは記録に残す 黙ると絵の外側が欠けた理由が分からない
+        assert any("余白" in line for line in report.missing)
+
+    def test_a_margin_that_fits_is_kept_and_not_recorded(self) -> None:
+        report = CompatibilityReport()
+        assert fitted_margin(100, 60, 300, report) == 300
+        assert not report.missing
