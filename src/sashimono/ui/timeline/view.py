@@ -916,7 +916,9 @@ class TimelineView(QWidget):
         modifiers = event.modifiers()
         if not modifiers and self._press_keyframe(position):
             return
-        if self._press_value_line(position, modifiers):
+        # Shift+クリックは範囲選択 線の上でも線を掴まない（掴むと選び直しになって範囲が取れない）
+        shifted = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
+        if not shifted and self._press_value_line(position, modifiers):
             return
         adding = bool(modifiers & Qt.KeyboardModifier.ControlModifier)
         ranged = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
@@ -977,7 +979,7 @@ class TimelineView(QWidget):
                 position, self._drag_bounds(), horizontal=horizontal, vertical=vertical
             )
             return
-        self._update_cursor(position)
+        self._update_cursor(position, event.modifiers())
         button = self._track_button_at(position)
         self.setToolTip(button[1] if button is not None else "")
         self._hover_add_button(position)
@@ -1738,7 +1740,11 @@ class TimelineView(QWidget):
                 return band
         return None
 
-    def _update_cursor(self, position: QPoint) -> None:
+    def _update_cursor(
+        self,
+        position: QPoint,
+        modifiers: Qt.KeyboardModifier = Qt.KeyboardModifier.NoModifier,
+    ) -> None:
         if self._resize_band_at(position) is not None:
             self.setCursor(Qt.CursorShape.SizeVerCursor)
             return
@@ -1759,7 +1765,7 @@ class TimelineView(QWidget):
         edge = self._edge_at(position, hit[1])
         grab = (
             self._value_lines.grab_at(self._project, self._layout, self.width(), hit[1], position)
-            if edge is DragKind.MOVE_CLIP
+            if edge is DragKind.MOVE_CLIP and not modifiers & Qt.KeyboardModifier.ShiftModifier
             else None
         )
         if grab is not None:

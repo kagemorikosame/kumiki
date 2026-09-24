@@ -30,16 +30,14 @@ from sashimono.core.commands import (
     MoveKeyframe,
     ParamPath,
     RemoveKeyframe,
-    SetKeyframe,
     SetParam,
 )
-from sashimono.core.commands.insert import VOLUME_EFFECT_KIND, default_volume_effect
+from sashimono.core.commands.fixed import VOLUME_EFFECT_KIND, fixed_effect, fixed_slot
 from sashimono.core.model import (
     AnimatedValue,
     Clip,
     ClipId,
     Effect,
-    Keyframe,
     Project,
     Track,
     TrackKind,
@@ -218,16 +216,6 @@ def _shifted(value: AnimatedValue, kind: ValueKind, delta: float) -> AnimatedVal
     )
 
 
-def _volume_slot(effects: tuple[Effect, ...]) -> int:
-    """固定の音量を差し込む位置 固定のフェードの前、無ければ末尾
-
-    固定の項目どうしは 反転 → 配置 → 音量 → フェード の順（P2 #158 の ``fixed_slot`` と同じ決まり）
-    """
-    return next(
-        (i for i, e in enumerate(effects) if e.fixed and e.kind == "audio_fade"), len(effects)
-    )
-
-
 def _path(clip: Clip, kind: ValueKind) -> ParamPath | None:
     """値の在りか 固定の音量をまだ持たないクリップは ``None``"""
     if kind is ValueKind.OPACITY:
@@ -245,8 +233,10 @@ def _set_value(clip: Clip, kind: ValueKind, value: AnimatedValue) -> Command:
     path = _path(clip, kind)
     if path is not None:
         return SetParam(path, value)
-    effect = default_volume_effect().with_param("volume", value)
-    return AddEffect(clip.id, effect, index=_volume_slot(clip.effects))
+    # 差し込む位置は置いたときと同じ決まり（fixed_slot） 自前で決めると、固定の項目どうしの
+    # 並び（反転 → 配置 → 音量 → フェード）が置いたクリップと食い違う
+    effect = fixed_effect(VOLUME_EFFECT_KIND).with_param("volume", value)
+    return AddEffect(clip.id, effect, index=fixed_slot(clip.effects, VOLUME_EFFECT_KIND))
 
 
 @dataclass(slots=True)
@@ -510,16 +500,11 @@ class ValueLineEditor:
         """Ctrl+クリックの所へ、今の線の値のまま点を打つ 線の形は変えない"""
         frame = round(layout.x_to_frame(position.x())) - clip.timeline_start
         frame = min(max(frame, 0), clip.duration - 1)
-        level = value.at(frame)
-        path = _path(clip, kind)
-        command: Command
-        if path is not None:
-            command = SetKeyframe(path, frame, level)
-        else:
-            command = _set_value(
-                clip, kind, AnimatedValue(static=level, keyframes=(Keyframe(frame, level),))
-            )
-        self._request([command], f"{kind.title}にキーフレーム")
+        # SetKeyframe で足すと新しい点は直線になり、イージングや瞬間移動の区間の途中へ
+        # 打つと形が変わる 左の点の出方まで直した値を丸ごと入れる
+        added = value.with_keyframe_at(frame)
+        if added != value:
+            self._request([_set_value(clip, kind, added)], f"{kind.title}にキーフレーム")
 
     def move(self, layout: TimelineLayout, position: QPoint) -> None:
         drag = self._drag
@@ -533,10 +518,12 @@ class ValueLineEditor:
         command: Command | None
         if drag.key is None:
             span = drag.kind.maximum / max(1, drag.area.height())
-            level = drag.kind.clamp(drag.grab_value + (drag.grab_y - position.y()) * span)
-            changed = _shifted(value, drag.kind, level - drag.grab_value)
+            # 差は止めずに渡し、止めるのは点ごと（_shifted） 掴んだ所の値で先に止めると、
+            # そこが端に着いた時点で、まだ動けるほかの点まで止まる
+            delta = (drag.grab_y - position.y()) * span
+            changed = _shifted(value, drag.kind, delta)
             command = None if changed == value else _set_value(clip, drag.kind, changed)
-            drag.shown = level
+            drag.shown = drag.kind.clamp(drag.grab_value + delta)
         else:
             frame = self._key_frame(clip, value, drag.key, layout, position)
             level = _y_to_value(drag.area, drag.kind, position.y())

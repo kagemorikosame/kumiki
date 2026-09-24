@@ -24,15 +24,16 @@ from sashimono.core.commands import (
     MoveClip,
     MoveKeyframe,
     RemoveKeyframe,
-    SetKeyframe,
     SetParam,
     TrimClip,
 )
-from sashimono.core.commands.insert import VOLUME_EFFECT_KIND, default_volume_effect
+from sashimono.core.commands.fixed import FADE_EFFECT_KIND, VOLUME_EFFECT_KIND, fixed_effect
+from sashimono.core.commands.insert import default_volume_effect
 from sashimono.core.model import (
     AnimatedValue,
     Clip,
     ClipId,
+    Interpolation,
     Keyframe,
     MediaItem,
     Project,
@@ -205,11 +206,26 @@ class TestDragTheLine:
         assert deltas[0] == pytest.approx(0.2, abs=0.05)
         assert [k.frame for k in moved.keyframes] == [10, 70]
 
+    @pytest.mark.parametrize(("direction", "expected"), [(-1, 1.0), (1, 0.0)])
+    def test_every_point_can_reach_the_limit(
+        self, made: list[TimelineArea], analyzer: MediaAnalyzer, direction: int, expected: float
+    ) -> None:
+        # 掴んだ所の値で先に止めると、そこが端に着いた時点でほかの点も止まり、
+        # 大きく動かしても一番遠い点を端まで持っていけない
+        value = AnimatedValue(1.0, (Keyframe(10, 0.2), Keyframe(70, 0.8)))
+        clip = _text(value)
+        view, _ = _open(made, analyzer, _project(Track(TrackKind.VIDEO, "V1", (clip,))))
+        _, _, height = _area_of(view, clip)
+        start = _line_point(view, clip, 50, value.at(40), 1.0)
+        _drag(view, start, start + QPoint(0, direction * height))
+        assert [k.value for k in _opacity(view, clip).keyframes] == [expected, expected]
+
 
 class TestKeyframes:
     def test_ctrl_click_on_the_line_sets_a_keyframe_without_changing_the_shape(
         self, made: list[TimelineArea], analyzer: MediaAnalyzer
     ) -> None:
+        # 点を打っただけで値が変わると、フェードの途中へ点を足して後半だけ直すことができない
         clip = _text(AnimatedValue(0.5))
         view, harness = _open(made, analyzer, _project(Track(TrackKind.VIDEO, "V1", (clip,))))
         point = _line_point(view, clip, 40, 0.5, 1.0)
@@ -217,14 +233,31 @@ class TestKeyframes:
 
         assert len(harness.received) == 1
         (command,) = harness.received[0]
-        assert isinstance(command, SetKeyframe)
+        assert isinstance(command, SetParam)
         keyframes = _opacity(view, clip).keyframes
         assert [k.frame for k in keyframes] == [30]
         assert keyframes[0].value == pytest.approx(0.5)
 
+    def test_ctrl_click_inside_an_eased_fade_keeps_its_curve(
+        self, made: list[TimelineArea], analyzer: MediaAnalyzer
+    ) -> None:
+        # 新しい点を直線で足すと、イージングの区間の途中へ打っただけで曲線が直線に変わる
+        before = AnimatedValue(
+            1.0, (Keyframe(10, 0.0, Interpolation.EASE_IN_OUT), Keyframe(70, 1.0))
+        )
+        clip = _text(before)
+        view, _ = _open(made, analyzer, _project(Track(TrackKind.VIDEO, "V1", (clip,))))
+        QTest.mouseClick(view, _LEFT, _CTRL, _line_point(view, clip, 40, before.at(30), 1.0))
+
+        after = _opacity(view, clip)
+        assert [k.frame for k in after.keyframes] == [10, 30, 70]
+        for frame in range(0, 90):
+            assert after.at(frame) == pytest.approx(before.at(frame), abs=1e-4)
+
     def test_dragging_a_point_moves_its_time_and_value(
         self, made: list[TimelineArea], analyzer: MediaAnalyzer
     ) -> None:
+        # 時刻か値の片方しか動かないと、フェードの始まりを線の上で決められない
         value = AnimatedValue(1.0, (Keyframe(10, 0.2), Keyframe(70, 0.6)))
         clip = _text(value)
         view, harness = _open(made, analyzer, _project(Track(TrackKind.VIDEO, "V1", (clip,))))
@@ -254,6 +287,7 @@ class TestKeyframes:
     def test_right_click_on_a_point_removes_it(
         self, made: list[TimelineArea], analyzer: MediaAnalyzer
     ) -> None:
+        # 消えずにメニューが出ると、点を消す手段が設定パネルだけになる
         value = AnimatedValue(1.0, (Keyframe(10, 0.2), Keyframe(70, 0.6)))
         clip = _text(value)
         view, harness = _open(made, analyzer, _project(Track(TrackKind.VIDEO, "V1", (clip,))))
@@ -298,6 +332,22 @@ class TestWhereTheLineIsNotGrabbed:
         (command,) = harness.received[0]
         assert isinstance(command, MoveClip)
 
+    def test_shift_click_on_the_line_selects_a_range(
+        self, made: list[TimelineArea], analyzer: MediaAnalyzer
+    ) -> None:
+        # 線を掴むと選び直しになり、Shift+クリックで範囲を取れない
+        first = _text(AnimatedValue(0.5))
+        second = replace(_text(AnimatedValue(0.5)), id=ClipId("second"), timeline_start=120)
+        view, harness = _open(
+            made, analyzer, _project(Track(TrackKind.VIDEO, "V1", (first, second)))
+        )
+        view.select(first.id)
+        QTest.mouseClick(
+            view, _LEFT, Qt.KeyboardModifier.ShiftModifier, _line_point(view, second, 150, 0.5, 1.0)
+        )
+        assert set(view.selected_clips) == {first.id, second.id}
+        assert harness.received == []
+
     def test_the_line_is_drawn_on_a_default_track(
         self, made: list[TimelineArea], analyzer: MediaAnalyzer
     ) -> None:
@@ -336,6 +386,7 @@ class TestPreferences:
         assert _opacity(view, clip) == AnimatedValue(0.5)
 
     def test_the_setting_is_saved_and_defaults_to_shown(self, tmp_path: object) -> None:
+        # 保存されないと、切った線が次の起動でまた出る
         from pathlib import Path
 
         assert isinstance(tmp_path, Path)
@@ -345,6 +396,7 @@ class TestPreferences:
         assert store.load().value_lines is False
 
     def test_the_dialog_carries_the_setting(self, qt_application: QApplication) -> None:
+        # 画面が値を返さないと、設定を開いて OK を押しただけで線が出る側へ戻る
         from sashimono.ui.preferences_dialog import PreferencesDialog
 
         del qt_application
@@ -382,9 +434,24 @@ class TestVolume:
         assert located is not None
         assert located[1].effects == ()
 
+    def test_the_added_volume_goes_before_the_fixed_fade(
+        self, made: list[TimelineArea], analyzer: MediaAnalyzer, audio_media: MediaItem
+    ) -> None:
+        # 置いたときと違う位置へ足すと、固定の項目の並び（音量 → フェード）がクリップごとに崩れる
+        fade = fixed_effect(FADE_EFFECT_KIND)
+        clip = Clip(timeline_start=10, duration=90, media_id=audio_media.id, effects=(fade,))
+        project = _project(Track(TrackKind.AUDIO, "A1", (clip,)), media=(audio_media,))
+        view, _ = _open(made, analyzer, project)
+        start = _line_point(view, clip, 50, 100.0, 400.0)
+        _drag(view, start, start + QPoint(0, -6))
+        located = view.project.timeline.locate_clip(clip.id)
+        assert located is not None
+        assert [e.kind for e in located[1].effects] == [VOLUME_EFFECT_KIND, FADE_EFFECT_KIND]
+
     def test_a_fixed_volume_is_changed_in_place(
         self, made: list[TimelineArea], analyzer: MediaAnalyzer, audio_media: MediaItem
     ) -> None:
+        # 持っている固定の音量を書き換えずに足すと、音量調整が 2 つ重なって 2 重に掛かる
         clip = Clip(
             timeline_start=10,
             duration=90,
