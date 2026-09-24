@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from sashimono.effects.blending import BLEND_FUNCTIONS, BLEND_MODES
 from sashimono.effects.definition import EffectDefinition, registry
+from sashimono.effects.sampling import AREA_SAMPLING
 from sashimono.effects.spec import (
     IMAGE_FILTER,
     CheckSpec,
@@ -26,7 +27,8 @@ __all__ = ["PRELUDE", "register_builtin_effects"]
 
 #: すべてのフラグメントシェーダの先頭に付く共通部分
 #: uniform の宣言と、よく使う小さな関数を置く
-PRELUDE = """
+PRELUDE = (
+    """
 #version 430 core
 in vec2 v_uv;
 out vec4 frag_color;
@@ -52,7 +54,9 @@ const float PI = 3.14159265358979;
 // 画面の画素で数えた距離なので、合成の画素へ縮める 縮めないと、画質を落としたプレビューで
 // 奥行きの付き方（傾けた板の遠近・奥へ置いた絵の縮み方）が書き出しと変わる
 #define CAMERA (1024.0 * u_pixel_scale)
-
+"""
+    + AREA_SAMPLING
+    + """
 vec2 object_center() { return (u_object.xy + u_object.zw) * 0.5; }
 vec2 object_size() { return max(abs(u_object.zw - u_object.xy), vec2(1.0)); }
 // 絵の原点 YMM4 が位置の設定を足し込む点 素材や図形では範囲の中央と同じだが、
@@ -61,10 +65,13 @@ vec2 object_origin() { return u_origin; }
 
 // 画素の位置で読む 外は透明 端を引き伸ばして読むと、動かした絵の外側に
 // 縁の色が帯になって伸びる
+// 画素の間は事前乗算で補う GL の補間のままだと、ずらしたり回したりした縁へ透明な所に
+// 残った色がにじむ（:mod:`sashimono.effects.sampling` #179）
 vec4 sample_pixel(vec2 pixel) {
     vec2 uv = pixel / u_size;
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return vec4(0.0);
-    return texture(u_texture, uv);
+    vec4 c = bilinear_premul(u_texture, pixel, false);
+    return c.a > 0.0001 ? vec4(c.rgb / c.a, c.a) : vec4(0.0);
 }
 
 // ストレートアルファどうしの重ね（上が手前）
@@ -193,6 +200,7 @@ vec4 image_pixel(sampler2D image, vec2 size, vec2 p, bool loop) {
     return texture(image, uv);
 }
 """
+)
 
 
 def _shader(body: str) -> str:
@@ -414,12 +422,17 @@ void main() {
     pixel /= vec2(sx, sy);
     pixel += anchor;
 
+    // 覆う範囲は分かれ道より前に測る 分かれた先では隣の画素の値が揃わず、測れない
     vec2 uv = pixel / u_size;
+    vec2 du = dFdx(uv);
+    vec2 dv = dFdy(uv);
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
         frag_color = vec4(0.0);
         return;
     }
-    frag_color = texture(u_texture, uv);
+    // 事前乗算で平均する（:mod:`sashimono.effects.sampling`） 縮めても透明な所の色が
+    // 縁へにじまず、細かい格子に縞が浮かない
+    frag_color = unpremul(area_premul(u_texture, uv, du, dv, false));
 }
 """)
 
@@ -460,6 +473,7 @@ uniform sampler2D pattern;
 uniform vec2 pattern_size;
 uniform bool outline_only;
 uniform float opacity;
+uniform float blur;
 
 // 縁の色 模様の画像があれば色の代わりにそれで塗る
 //
@@ -491,17 +505,37 @@ void main() {
     // 縮めると、端数の分は外の画素と平均されて淡い線になる 端数を切り捨てると縁が細るか
     // 消え、切り上げると 2 倍・4 倍の太さに見える 整数の太さは今までと同じ絵になる
     float reach = min(width, 32.0);
-    float whole = floor(reach);
-    float part = reach - whole;
     float coverage = 0.0;
-    int steps = int(whole) + 1;
-    for (int y = -steps; y <= steps; ++y) {
-        for (int x = -steps; x <= steps; ++x) {
-            vec2 offset = vec2(float(x), float(y));
-            float d = length(offset);
-            float weight = d <= reach ? 1.0 : (d <= whole + 1.0 ? part : 0.0);
-            if (weight <= 0.0) continue;
-            coverage = max(coverage, texture(u_texture, v_uv + offset / u_size).a * weight);
+    if (blur <= 0.0) {
+        float whole = floor(reach);
+        float part = reach - whole;
+        int steps = int(whole) + 1;
+        for (int y = -steps; y <= steps; ++y) {
+            for (int x = -steps; x <= steps; ++x) {
+                vec2 offset = vec2(float(x), float(y));
+                float d = length(offset);
+                float weight = d <= reach ? 1.0 : (d <= whole + 1.0 ? part : 0.0);
+                if (weight <= 0.0) continue;
+                coverage = max(coverage, texture(u_texture, v_uv + offset / u_size).a * weight);
+            }
+        }
+    } else {
+        // 縁のぼかし（YMM4 の縁取りの Blur） 縁の輪郭を太さの前後 blur の幅でなだらかに
+        // 落とす 縁の形をぼかしたのと同じ見た目になり、画素を 2 度畳むより軽い
+        // くっきり描いてから全体をぼかすと、元の絵の輪郭まで溶けて中身がにじむ
+        // 遠くまで届く大きなぼかしは、読む間隔を広げて読む数を抑える
+        float soft = min(blur, 64.0);
+        float outer = reach + soft;
+        float stride = max(1.0, outer / 24.0);
+        int steps = int(ceil(outer / stride));
+        for (int y = -steps; y <= steps; ++y) {
+            for (int x = -steps; x <= steps; ++x) {
+                vec2 offset = vec2(float(x), float(y)) * stride;
+                float d = length(offset);
+                float weight = 1.0 - smoothstep(reach - soft, outer, d);
+                if (weight <= 0.0) continue;
+                coverage = max(coverage, texture(u_texture, v_uv + offset / u_size).a * weight);
+            }
         }
     }
 
@@ -1023,6 +1057,7 @@ def register_builtin_effects() -> None:
                 FileSpec("pattern", "模様の画像", filter=IMAGE_FILTER, texture=True),
                 CheckSpec("outline_only", "縁だけ", False),
                 TrackSpec("opacity", "不透明度", 0, 100, 100, unit="%"),
+                TrackSpec("blur", "ぼかし", 0, 64, 0, unit="px"),
             ),
             fragment_shader=_BORDER,
         )

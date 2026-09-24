@@ -530,6 +530,75 @@ class TestVideoEffects:
         assert source is not None
         assert source.params["border_color"] == pytest.approx((1.0, 1.0, 1.0, 0.5))
 
+    def test_a_plain_outline_on_a_shape_is_kept(self) -> None:
+        """図形に付いたふつうの縁取りは、太さと色を持った縁取りのエフェクトになる
+
+        テキストの縁取りの設定へ載せると、図形にはその設定が無いので黙って落ちる
+        実物では矢印_ピンク・リボンのテロップなど 10 件の縁が消えていた（#179）
+        """
+        edge = outline(6.3)
+        edge["StrokeBrush"] = {
+            "Type": BRUSH["Type"],
+            "Parameter": {**BRUSH["Parameter"], "Color": "#FFFF0000"},  # type: ignore[dict-item]
+        }
+        mapped = map_template([shape_item(VideoEffects=[edge])], report=CompatibilityReport())[0]
+        borders = [e for e in mapped.clip.effects if e.kind == "border"]
+        assert len(borders) == 1, "図形の縁取りが落ちた"
+        assert value_at(borders[0].params["width"]) == pytest.approx(6.3)
+        assert borders[0].params["color"] == pytest.approx((1.0, 0.0, 0.0, 1.0))
+        assert borders[0].params["outline_only"] is False
+
+    def test_the_outline_blur_is_read(self) -> None:
+        """縁取りのぼかし（``Blur``）は縁取りのエフェクトのぼかしになる
+
+        読まずにいると、ぼかして薄く光らせるグループの縁（SFっぽい吹き出し(右) の 2.5）が
+        くっきりした太い縁になり、格子の隙間を埋める
+        """
+        edge = outline(4.0)
+        edge["Blur"] = moving(0.0, 8.0)
+        mapped = map_template(
+            [shape_item(VideoEffects=[edge], Length=100)], report=CompatibilityReport()
+        )[0]
+        (border,) = [e for e in mapped.clip.effects if e.kind == "border"]
+        assert value_at(border.params["blur"], 0) == pytest.approx(0.0)
+        assert value_at(border.params["blur"], 99) == pytest.approx(8.0, abs=0.2)
+
+    def test_a_blurred_text_outline_is_not_a_text_border(self) -> None:
+        """ぼかした縁取りはテキストの縁取りへ載せない テキストの縁取りはぼかせない"""
+        edge = outline(4.0)
+        edge["Blur"] = still(2.5)
+        mapped = map_template([text_item(VideoEffects=[edge])], report=CompatibilityReport())[0]
+        source = mapped.clip.source
+        assert source is not None
+        assert "border_width" not in source.params
+        (border,) = [e for e in mapped.clip.effects if e.kind == "border"]
+        assert value_at(border.params["blur"]) == pytest.approx(2.5)
+
+    def test_the_newer_outline_fields_are_read(self) -> None:
+        """新しい版（4.56）の縁取りは太さを ``Thickness``、色を ``Brush`` に持つ
+
+        古い名前（``StrokeThickness`` と ``StrokeBrush``）だけを見ると、既定の太さ 4 の
+        白い縁になる（キラリンエフェクトの黄色い縁 3）
+        """
+        edge = {
+            "$type": "YukkuriMovieMaker.Project.Effects.OutlineEffect, YukkuriMovieMaker",
+            "Thickness": still(3.0),
+            "Blur": still(2.5),
+            "Opacity": still(100.0),
+            "Brush": {
+                "Type": BRUSH["Type"],
+                "Parameter": {**BRUSH["Parameter"], "Color": "#FFFFC039"},  # type: ignore[dict-item]
+            },
+            "IsOutlineOnly": False,
+            "IsEnabled": True,
+        }
+        mapped = map_template([shape_item(VideoEffects=[edge])], report=CompatibilityReport())[0]
+        (border,) = [e for e in mapped.clip.effects if e.kind == "border"]
+        assert value_at(border.params["width"]) == pytest.approx(3.0)
+        assert border.params["color"] == pytest.approx(
+            (1.0, 0xC0 / 255.0, 0x39 / 255.0, 1.0), abs=0.01
+        )
+
     def test_a_disabled_effect_is_skipped(self) -> None:
         effect = outline(9.0)
         effect["IsEnabled"] = False

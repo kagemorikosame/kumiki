@@ -136,30 +136,39 @@ _VIDEO_EFFECTS: dict[str, str] = {
 
 
 def map_video_effects(
-    effects: Any, report: CompatibilityReport, *, length: int = 1, keyframes: Any = None
+    effects: Any,
+    report: CompatibilityReport,
+    *,
+    length: int = 1,
+    keyframes: Any = None,
+    text: bool = False,
 ) -> DecorationResult:
     """``VideoEffects`` の列を読む
 
-    縁取り（``OutlineEffect``）はテキストの飾りとして扱えるので、
-    :class:`DecorationResult` に分けて返す
+    ``text`` が真なら、縁取り（``OutlineEffect``）をテキストの飾りとして
+    :class:`DecorationResult` の ``params`` へ分けて返す 偽なら並びの位置のまま
+    縁取りのエフェクトにする
     """
     # 知らない移動方法の形を、渡された記録へ書く（値を読む所は記録を受け取らない）
     with reporting(report):
-        return _map_video_effects(effects, report, length=length, keyframes=keyframes)
+        return _map_video_effects(effects, report, length=length, keyframes=keyframes, text=text)
 
 
 def _map_video_effects(
-    effects: Any, report: CompatibilityReport, *, length: int, keyframes: Any
+    effects: Any, report: CompatibilityReport, *, length: int, keyframes: Any, text: bool
 ) -> DecorationResult:
     result = DecorationResult()
     if not isinstance(effects, list):
         return result
 
     borders: list[tuple[AnimatedValue, Colour]] = []
-    # テキストの縁取りへ載せられない縁取り（縁だけ・動く不透明度）が 1 つでもあれば、
-    # 縁取りはすべて並びのその位置へエフェクトとして置く 一部だけをテキストへ載せると、
-    # 載せた方が並びの頭へ動いて重なり順が YMM4 と変わり、図形では載せた方が落ちる
-    in_place = any(
+    # テキスト以外は縁取りの設定を持たないので、縁取りはいつも並びのその位置へ
+    # エフェクトとして置く テキストの設定の形で返すと、読む側が拾わない図形や素材では
+    # 縁が黙って落ちる（矢印_ピンク・リボンのテロップの図形の縁 #179）
+    # テキストでも、載せられない縁取り（縁だけ・動く不透明度・ぼかし）が 1 つでもあれば
+    # すべてをエフェクトにする 一部だけをテキストへ載せると、載せた方が並びの頭へ動いて
+    # 重なり順が YMM4 と変わる
+    in_place = not text or any(
         not _outline(entry, length, keyframes).fits_text
         for entry in effects
         if isinstance(entry, dict)
@@ -187,8 +196,8 @@ def _map_video_effects(
         if name == "OutlineEffect":
             outline = _outline(entry, length, keyframes)
             if in_place:
-                # 縁だけは元の絵を消す 図形には縁取りの設定そのものが無いので、テキストへ
-                # 載せる形のままだと縁が落ちて塗りが残る（#175）
+                # 太さ 0 でも縁だけなら置く 元の絵を消すのは縁だけの役目で、落とすと
+                # 消えるはずの塗りが残る（#175）
                 if _peak(outline.width) > 0.0 or outline.outline_only:
                     result.effects.append(outline.effect())
                 continue
@@ -227,8 +236,10 @@ def _map_video_effects(
 
 
 #: 支点（中心点エフェクト）を受け取れる変形
+#: 角度で切り抜きは支点から帯の位置を測る（SFっぽい吹き出し(右) の名札 #179）
 _PIVOTED_KINDS = frozenset(
     {
+        "crop_angle",
         "transform",
         "inout_zoom",
         "random_rotate",
@@ -386,15 +397,17 @@ class _Outline:
     #: 0〜100 動くことがある
     opacity: AnimatedValue
     outline_only: bool
+    #: 縁のぼかし（画素）
+    blur: AnimatedValue
 
     @property
     def fits_text(self) -> bool:
         """テキストの縁取りの設定（太さと色）へ載せられるか
 
         縁だけは文字の塗りと一緒に描かれる縁取りでは表せない 動く不透明度は、色の濃さへ
-        焼き込むと最初の値で止まる
+        焼き込むと最初の値で止まる テキストの縁取りはぼかせない
         """
-        return not self.outline_only and not self.opacity.keyframes
+        return not self.outline_only and not self.opacity.keyframes and _peak(self.blur) <= 0.0
 
     def baked(self) -> tuple[AnimatedValue, Colour]:
         """動かない不透明度を色の濃さへ焼き込んだ太さと色"""
@@ -403,7 +416,11 @@ class _Outline:
 
     def effect(self) -> Effect:
         return _border_effect(
-            self.width, self.tint, opacity=self.opacity, outline_only=self.outline_only
+            self.width,
+            self.tint,
+            opacity=self.opacity,
+            outline_only=self.outline_only,
+            blur=self.blur,
         )
 
 
@@ -411,13 +428,17 @@ def _outline(entry: dict[str, Any], length: int, keyframes: Any) -> _Outline:
     def value(key: str, default: float) -> AnimatedValue:
         return animated(entry.get(key), default, length=length, keyframes=keyframes)
 
+    # 4.56 の縁取りは太さを Thickness、色を Brush に持つ（実物はキラリンエフェクトの 1 件）
+    # 古い名前だけを見ると、既定の太さ 4 の黒い縁になる
+    newer = "StrokeThickness" not in entry and "Thickness" in entry
     return _Outline(
-        width=_non_negative(value("StrokeThickness", 4.0)),
-        tint=brush_colour(entry.get("StrokeBrush")),
+        width=_non_negative(value("Thickness" if newer else "StrokeThickness", 4.0)),
+        tint=brush_colour(entry.get("Brush" if newer else "StrokeBrush")),
         # 縁の不透明度 読まずにいると、薄く光らせるつもりのグループの縁（SFっぽい
         # 吹き出し(右) は 50.9）が、格子の隙間を濃く埋める
         opacity=value("Opacity", 100.0),
         outline_only=entry.get("IsOutlineOnly") is True,
+        blur=_non_negative(value("Blur", 0.0)),
     )
 
 
@@ -463,6 +484,7 @@ def _border_effect(
     *,
     opacity: AnimatedValue | None = None,
     outline_only: bool = False,
+    blur: AnimatedValue | None = None,
 ) -> Effect:
     definition = registry.get("border")
     assert definition is not None  # 標準エフェクトは必ずある
@@ -471,6 +493,7 @@ def _border_effect(
         color=tint,
         opacity=opacity if opacity is not None else AnimatedValue(100.0),
         outline_only=outline_only,
+        blur=blur if blur is not None else AnimatedValue(0.0),
     )
 
 
