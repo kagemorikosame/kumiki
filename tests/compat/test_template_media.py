@@ -811,3 +811,30 @@ def test_an_audio_object_pointing_at_a_silent_video_is_left_out(tmp_path: Path) 
     assert clips_of(project, TrackKind.AUDIO) == []
     # 黙って落とすと読み込んだ数が合わない理由を追えない 落とした数だけ数える
     assert report.missing[SILENT_SOUND] == 2
+
+
+def test_a_left_out_audio_object_does_not_push_the_rest_back(tmp_path: Path) -> None:
+    """置かない音声ファイルが一番早くても、残りは指定した位置から始まる
+
+    頭を揃える基準に落とす物まで入れると、10 フレーム後ろにある画像が
+    ``at_frame`` ではなく 10 フレーム後ろへ置かれる
+    """
+    silent = tmp_path / "無音.mp4"
+    silent.write_bytes(b"")
+    picture = tmp_path / "絵.png"
+    picture.write_bytes(b"")
+
+    def probe(path: Path) -> MediaItem | None:
+        if path.suffix == ".png":
+            return still(path)
+        return replace(movie(path), audio_streams=())
+
+    objects = [
+        media_object(silent, "音声ファイル", layer=2, start=0),
+        media_object(picture, "画像ファイル", layer=1, start=10),
+    ]
+    project = put(objects, Project.create(), probe, at_frame=30)
+
+    (clip,) = clips_of(project, TrackKind.VIDEO)
+    assert clip.timeline_start == 30
+    assert clips_of(project, TrackKind.AUDIO) == []

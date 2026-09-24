@@ -432,6 +432,20 @@ def place(
 
     known = media or {}
     log = report if report is not None else global_report
+    mixed = places_mixed(project)
+    if not mixed:
+        # 分ける方式では、音の無い素材を指す音声ファイルを置かない 元のソフトでも何も
+        # 鳴らず何も描かず、置くと ``AddClip`` が断って 1 回の Undo にまとめた配置が全部
+        # 取り消される 下で頭を揃える前に除く 除かずに一番早い物がこれだと、残りが
+        # ``at_frame`` ではなくその分だけ後ろへ置かれる
+        # 黙って落とすと、読み込んだ数が合わない理由を追えないので数えて残す
+        # （混合のレイヤーは絵を隠して鳴らさずに置けるので、そのまま置く）
+        kept = [item for item in objects if not _silent_sound(item, known)]
+        for _ in range(len(objects) - len(kept)):
+            log.note_missing(SILENT_SOUND)
+        objects = kept
+        if not objects:
+            return []
     seen = [item for item in objects if not _is_sound(item, known)]
 
     # 一番早いオブジェクトが ``at_frame`` に来るように、まとめてずらす
@@ -452,7 +466,6 @@ def place(
     # 含めて重なりを見ないと、同じトラックへ重ねて置いて ``AddClip`` に断られる
     prepared: list[tuple[MappedObject, Clip | None, Clip | None]] = []
     # 混合の方式で置く物（レイヤーの番号とクリップ） 分けないので 1 つに 1 本
-    mixed = places_mixed(project)
     layered: list[tuple[MappedObject, Clip]] = []
     for item in objects:
         placed = timed(item)
@@ -476,12 +489,6 @@ def place(
             # 選び直すと、今までと違う音が鳴り出す 混合の方式でだけ選んだ音を鳴らす
             log.note_missing("YMM4 の音声トラックの選択（AudioTrackIndex）")
         if _is_sound(item, known):
-            if linked is not None and not linked.audio_streams:
-                # 音の無い素材を指す音声ファイルは、元のソフトでも何も鳴らず何も描かない
-                # 置くと ``AddClip`` が断り、1 回の Undo にまとめた配置が全部取り消される
-                # 黙って落とすと、読み込んだ数が合わない理由を追えないので数えて残す
-                log.note_missing(SILENT_SOUND)
-                continue
             # 音だけの素材を読む動画アイテムでも、止めるのは絵だけ 音のクリップには持たせない
             heard = replace(placed, hold_at=None, native_size=False)
             if linked is not None:
@@ -709,6 +716,12 @@ def _is_sound(item: MappedObject, known: Mapping[str, MediaItem]) -> bool:
         return True
     linked = _media_of(item, known)
     return linked is not None and not (linked.has_video or linked.is_still)
+
+
+def _silent_sound(item: MappedObject, known: Mapping[str, MediaItem]) -> bool:
+    """音の無い素材を指す音声ファイルか 素材が見つからない物は分からないので偽"""
+    linked = _media_of(item, known)
+    return _is_sound(item, known) and linked is not None and not linked.audio_streams
 
 
 def _sound_tracks_for(
