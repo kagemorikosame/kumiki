@@ -8,12 +8,17 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 import pytest
 
 from sashimono.compat.aviutl.report import CompatibilityReport
+from sashimono.compat.catalog import place
 from sashimono.compat.ymm4.decorations import map_video_effects
 from sashimono.compat.ymm4.template import map_template
-from sashimono.core.model import AnimatedValue, Effect
+from sashimono.core.model import AnimatedValue, Effect, Project, ProjectSettings
+from sashimono.core.timebase import FrameRate
+from sashimono.engine.gpu import GLContextError, OffscreenGLContext
+from sashimono.engine.render import FrameRenderer
 
 
 def _still(amount: float) -> dict[str, Any]:
@@ -349,6 +354,73 @@ class TestShapes:
         kinds = [effect.kind for effect in clip.effects]
         assert kinds == ["flip", "transform"]
         assert clip.effects[0].params["horizontal"] is True
+
+
+def _drawn(item: dict[str, Any], size: int = 200) -> np.ndarray:
+    """YMM4 のアイテム 1 つを読み、画面の真ん中に置いて 1 枚描く"""
+    try:
+        context = OffscreenGLContext()
+    except GLContextError as exc:
+        pytest.skip(f"OpenGL コンテキストを作れない: {exc}")
+    project = Project.create(ProjectSettings(width=size, height=size, frame_rate=FrameRate(30)))
+    for command in place(map_template([item], report=CompatibilityReport()), project):
+        project = command.apply(project)
+    renderer = FrameRenderer(project, context=context)
+    try:
+        return renderer.render(0)
+    finally:
+        renderer.close()
+        context.release()
+
+
+def _cropped_by_angle(angle: float) -> np.ndarray:
+    white = {
+        "$type": "YukkuriMovieMaker.Plugin.Brush.SolidColorBrushParameter, YukkuriMovieMaker",
+        "Color": "#FFFFFFFF",
+    }
+    return _drawn(
+        _shape_item(
+            "QuadrilateralShapePlugin",
+            {
+                "SizeMode": "WidthHeight",
+                "Width": _still(160.0),
+                "Height": _still(160.0),
+                "Brush": {"Type": "N.SolidColorBrushPlugin, YukkuriMovieMaker", "Parameter": white},
+            },
+            VideoEffects=[
+                {
+                    "$type": "N.CropByAngleEffect, YukkuriMovieMaker",
+                    "IsEnabled": True,
+                    "X": _still(0.0),
+                    "Y": _still(0.0),
+                    "Angle": _still(angle),
+                    "Blur": _still(0.0),
+                    "Width": _still(40.0),
+                }
+            ],
+        )
+    )
+
+
+class TestCropByAngle:
+    """角度で切り抜きは、角度の向きに伸びる帯を残す（YMM4 の書き出しから読んだ）
+
+    ドッグタグ風テロップ（角度 0・幅 304 で円を切る）は、YMM4 では横長の札になる
+    帯を角度に直交する向きに取ると縦長の細い板になり、SFっぽい吹き出しの 45 度の
+    切り欠きも反対の角へ付く（``tools/ymm4_compare.py`` の差 12.6 と 26.5）
+    """
+
+    def test_an_angle_of_zero_keeps_a_level_band(self) -> None:
+        image = _cropped_by_angle(0.0)
+        assert image[100, 30, 0] > 200, "横の帯の端が切れている"
+        assert image[30, 100, 0] < 20, "帯の上まで残っている（縦の帯になっている）"
+
+    def test_a_positive_angle_turns_the_band_clockwise(self) -> None:
+        # YMM4 の角度は画面の上で時計回り 45 度なら左上から右下へ下がる帯
+        image = _cropped_by_angle(45.0)
+        assert image[45, 45, 0] > 200, "左上が切れている"
+        assert image[155, 155, 0] > 200, "右下が切れている"
+        assert image[45, 155, 0] < 20, "右上が残っている（帯が反対の斜めに伸びている）"
 
 
 class TestBrokenValues:

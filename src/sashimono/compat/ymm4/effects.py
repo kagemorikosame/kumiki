@@ -235,7 +235,10 @@ def _crop_by_angle(r: _Reader) -> Effect | None:
         "crop_angle",
         center_x=r.track("X"),
         center_y=r.track("Y", flip=True),
-        angle=r.track("Angle", flip=True),
+        # YMM4 の角度は残す帯の伸びる向き（画面で時計回り） こちらの ``angle`` は帯の
+        # 幅を測る向き（法線 反時計回り）なので 90 度回す 回さないと角度 0 のドッグタグ風
+        # テロップが横長の札ではなく縦長の細い板に切られ、45 度の切り欠きは反対の角へ付く
+        angle=_shifted_angle(r.track("Angle"), 90.0, negate=True),
         width=r.track("Width", 400.0),
         blur=r.track("Blur"),
     )

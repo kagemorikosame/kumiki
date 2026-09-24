@@ -425,15 +425,17 @@ uniform float feather;
 
 void main() {
     vec2 pixel = v_uv * u_size;
-    // v_uv は GL の向き（下が 0） 上下の指定を画像の向きに合わせる
-    float from_top = u_size.y - pixel.y;
-    float from_bottom = pixel.y;
+    // 切る量は絵の置かれた範囲（u_object 左・下・右・上 Y は上が正）の端から数える
+    // 画面の端から数えると、画面より小さい図形や文字は切る量がその余白に吸われて
+    // 切れない（SFっぽい吹き出しの上 280 が 1 画素も切れず、板が上へはみ出した）
+    float from_top = u_object.w - pixel.y;
+    float from_bottom = pixel.y - u_object.y;
 
     float edge = max(feather, 0.0001);
     float alpha = smoothstep(0.0, edge, from_top - top)
                 * smoothstep(0.0, edge, from_bottom - bottom)
-                * smoothstep(0.0, edge, pixel.x - left)
-                * smoothstep(0.0, edge, (u_size.x - pixel.x) - right);
+                * smoothstep(0.0, edge, pixel.x - u_object.x - left)
+                * smoothstep(0.0, edge, (u_object.z - pixel.x) - right);
 
     vec4 color = texture(u_texture, v_uv);
     frag_color = vec4(color.rgb, color.a * alpha);

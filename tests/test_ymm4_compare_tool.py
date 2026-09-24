@@ -1348,3 +1348,55 @@ def test_the_picture_probe_guides_show_the_export_command_without_touching_the_s
     assert str(tmp_path / "mesh" / "mesh-probe.mp4") in lines[0]
     assert str(tmp_path / "rate" / "video-rate-probe.mp4") in lines[1]
     assert not any("--no-compressor" in line for line in lines)
+
+
+def test_a_template_drawn_further_from_ymm4_than_its_ceiling_is_reported(
+    tool: ModuleType,
+) -> None:
+    """上限を超えたテンプレートだけを、超えた分の大きい順に出す
+
+    上限が無いと、描き方の変更で YMM4 の絵から離れても気付けない（#168 では 9-18 の
+    一覧が 4 本だけを比べた物で、全体の最大を知らないまま大きな差を悪化と取り違えた）
+    """
+    rows = [
+        (20.0, "後光", "a.ymmt", 1, "x", ""),
+        (26.0, "後光", "a.ymmt", 2, "y", ""),
+        (5.0, "雨", "b.ymmt", 3, "z", ""),
+        (9.0, "吹き出し", "c.ymmt", 4, "w", ""),
+        (99.0, "上限の無いテンプレート", "d.ymmt", 5, "v", ""),
+    ]
+    worst = tool.worst_by_template(rows)
+    assert worst["後光"] == 26.0
+    exceeded = tool.over_ceilings(worst, {"後光": 25.0, "雨": 8.0, "吹き出し": 4.0})
+    assert [line.split(" ")[0] for line in exceeded] == ["吹き出し", "後光"]
+
+
+def test_writing_ceilings_keeps_the_templates_that_were_not_measured(
+    tool: ModuleType, tmp_path: Path
+) -> None:
+    """``--only`` で一部だけ測って上限を書くと、測っていない分の上限が消えてはならない
+
+    ゆとりを足して 0.5 刻みに切り上げる 測り直すたびに小数の端で書き換わらないように
+    """
+    path = tmp_path / "ceilings.json"
+    path.write_text(json.dumps({"雨": 8.0, "後光": 90.0}), encoding="utf-8")
+    tool.write_ceilings(path, {"後光": 67.66})
+    assert tool.read_ceilings(path) == {"雨": 8.0, "後光": 71.0}
+
+
+REAL_WORK = ROOT / ".work" / "ymm4-compare"
+
+
+def test_the_real_templates_stay_within_their_ceilings(tool: ModuleType, tmp_path: Path) -> None:
+    """実物のテンプレート（aomoya）を YMM4 の書き出しと描き比べ、上限を超えないこと
+
+    書き出し（``ymm4.mp4``）と並べ方（``manifest.json``）は配布物の絵を含むので
+    リポジトリに入れない 手元の作業フォルダに無ければ飛ばす（CI では飛ぶ）
+    一覧と絵は一時フォルダへ書き、手元の report.json は書き換えない
+    """
+    if not (REAL_WORK / "ymm4.mp4").exists() or not (REAL_WORK / "manifest.json").exists():
+        pytest.skip(f"YMM4 の書き出しが {REAL_WORK} に無い")
+    rows = tool.compare_work(REAL_WORK, tmp_path)
+    assert rows, "比べた絵が 1 枚も無い（書き出しと並べ方が食い違っている）"
+    ceilings = tool.read_ceilings(tool.CEILINGS)
+    assert tool.over_ceilings(tool.worst_by_template(rows), ceilings) == []
