@@ -64,6 +64,12 @@ class EffectDefinition:
     #: （ミラーの折り返す線・角丸・中心基準の動き）も広げた後の範囲で動くべき
     #: 印を付けないと、広げる前の範囲のまま後ろが動いて位置がずれる
     expands_object: tuple[str, str, str, str] | None = None
+    #: 後ろに積んだエフェクトを、このエフェクトの決めた範囲の中だけに効かせるか（部分フィルタ）
+    #:
+    #: 真のとき、エンジンはここへ来た時点の絵を取っておき、次の同じ印のエフェクトか
+    #: 並びの終わりで、このシェーダに ``u_source``（取っておいた絵）と ``u_texture``
+    #: （後ろを掛け終えた絵）を渡して混ぜさせる その場では何も描かない
+    scopes_following: bool = False
 
     def __post_init__(self) -> None:
         if self.passes < 1:
