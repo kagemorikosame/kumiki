@@ -23,6 +23,12 @@ from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QInputDialog, QMenu, QMessageBox, QWidget
 
 from sashimono.compat.aviutl.catalog import KIND_LABELS, ScriptEntry, script_catalog
+from sashimono.compat.aviutl.custom_object import (
+    CUSTOM_OBJECT_LABEL,
+    custom_object_clip,
+    custom_object_script,
+    script_label,
+)
 from sashimono.compat.catalog import (
     TemplateEntry,
     default_template_roots,
@@ -355,18 +361,11 @@ class TimelineAddMenus:
     def place_custom_object(self, entry: ScriptEntry, frame: int, track_id: TrackId | None) -> None:
         """カスタムオブジェクトを置く 空のテキストにスクリプトを 1 つ積んだクリップ
 
-        AviUtl のカスタムオブジェクトは、何も持たないオブジェクトから始めて、
-        スクリプトが ``obj.load`` で中身を作る こちらのスクリプトはクリップの絵を
-        受け取って描き直すので、何も描かない生成オブジェクト（空のテキスト）を土台にする
-        専用の種類を作ると保存の形が変わり、古い版で開けなくなる
+        形と見分け方は :mod:`sashimono.compat.aviutl.custom_object` の 1 か所
+        ``.exa`` の読み込みも同じ形で置く
         """
         definition = registry.get(entry.identifier) or entry.definition()
-        clip = Clip(
-            timeline_start=0,
-            duration=DEFAULT_GENERATED_FRAMES,
-            source=TEXT.create(text=""),
-            effects=(definition.create(),),
-        )
+        clip = custom_object_clip(definition.create(), duration=DEFAULT_GENERATED_FRAMES)
         self._view.place(
             insert_clip(self._project, clip, at_frame=frame, track_id=track_id),
             f"{entry.label}を追加",
@@ -445,6 +444,9 @@ def _suggested_name(clip: Clip) -> str:
     source = clip.source
     if source is None:
         return "エイリアス"
+    script = custom_object_script(clip)
+    if script is not None:
+        return f"{CUSTOM_OBJECT_LABEL} {script_label(script.kind)}"
     definition = source_registry.get(source.kind)
     label = definition.label if definition is not None else source.kind
     text = source.params.get("text")
