@@ -24,6 +24,7 @@ from sashimono.core.model import (
 )
 from sashimono.core.timebase import FrameRate
 from sashimono.effects.definition import registry
+from sashimono.effects.sources import FILTER
 from sashimono.engine.gpu import GLContextError, OffscreenGLContext
 from sashimono.engine.render import FrameRenderer, RenderQuality
 
@@ -63,6 +64,10 @@ local t = (obj.h - 40) / 2
 obj.drawpoly(-10,-20,0, 10,-20,0, 40,20,0, -40,20,0, l,t, l+40,t, l+40,t+40, l,t+40)
 """
 
+#: 絵に何もしないスクリプト 積んだ前と後で絵が変わらないことを見る
+NOTHING = """obj.ox = 0
+"""
+
 SCREEN = (320, 240)
 
 
@@ -84,6 +89,7 @@ def catalog() -> ScriptCatalog:
     created.add_text("aviutl:試験.anm:傾き", TILT)
     created.add_text("aviutl:試験.anm:自分の幅", OWN_SIZE)
     created.add_text("aviutl:試験.anm:四隅", POLY)
+    created.add_text("aviutl:試験.anm:何もしない", NOTHING)
     set_script_catalog(created)
     return created
 
@@ -297,3 +303,25 @@ class TestALighterPreview:
         # 外接矩形の端を縮めた所と、縮めた合成の丸めの幅で重なる
         for got, want in zip(light, full, strict=True):
             assert got == pytest.approx(want / divisor, abs=1.5), (light, full)
+
+    def test_a_script_on_a_filter_keeps_the_screen_sharp(
+        self, gl_context: OffscreenGLContext, catalog: ScriptCatalog, divisor: int
+    ) -> None:
+        # フィルタのクリップは描き終えた合成の画素の絵をスクリプトへ渡す 画面の画素へ
+        # 滑らかに引き伸ばしてから縮め戻すと、何もしないスクリプトでも下の絵がぼける
+        # 升目を並べるだけに伸ばせば、同じ所へ縮め戻したときに元の画素へ戻る
+        del catalog
+        project = build("aviutl:試験.anm:移動")
+        track = Track(kind=TrackKind.VIDEO, name="V2")
+        project = AddTrack(track).apply(project)
+        filter_clip = Clip(timeline_start=0, duration=30, source=FILTER.create())
+        project = AddClip(track.id, filter_clip).apply(project)
+        without = render_at(project, gl_context, divisor)
+        definition = registry.get("aviutl:試験.anm:何もしない")
+        assert definition is not None
+        project = AddEffect(filter_clip.id, definition.create()).apply(project)
+        with_script = render_at(project, gl_context, divisor)
+        difference = np.abs(with_script.astype(int) - without.astype(int))[..., :3]
+        assert without[..., :3].max() > 200
+        # 読み戻しと載せ直しの 8 ビットの丸めだけが残る
+        assert difference.max() <= 2

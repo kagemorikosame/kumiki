@@ -233,8 +233,8 @@ def source_canvas(
     reach = (shape_width**2 + shape_height**2) ** 0.5 / 2.0 + line
     # 設定は画面の画素 画質を落とした合成（``scale`` が 1 より小さい）では、その分だけ小さい
     # 絵で足りる 縮めずに見積もると、画面より大きいと見なして毎フレーム余分に広い絵を作る
-    needed_width = 2.0 * (abs(float(values.get("pos_x", 0.0))) + reach) * scale[0]  # type: ignore[arg-type]
-    needed_height = 2.0 * (abs(float(values.get("pos_y", 0.0))) + reach) * scale[1]  # type: ignore[arg-type]
+    needed_width = 2.0 * (abs(_number(values, "pos_x", 0.0)) + reach) * scale[0]
+    needed_height = 2.0 * (abs(_number(values, "pos_y", 0.0)) + reach) * scale[1]
     grown_width = min(MAX_CANVAS, max(width, int(np.ceil(needed_width))))
     grown_height = min(MAX_CANVAS, max(height, int(np.ceil(needed_height))))
     # 画面と偶奇をそろえる 差が奇数だと、中心が半画素ずれて輪郭がにじむ

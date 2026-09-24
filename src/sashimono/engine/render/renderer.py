@@ -219,8 +219,9 @@ def _resized(image: np.ndarray, size: tuple[int, int]) -> np.ndarray:
     """RGBA uint8 の絵を ``size``（幅, 高さ）へ引き伸ばす 画質を落とした合成の絵を、
     スクリプトへ画面の画素の絵として渡すため（:meth:`FrameRenderer._draw_scripted`）
 
-    ストレートアルファの絵として滑らかに伸ばす 近い画素を並べるだけだと、斜めの縁が
-    階段になってスクリプトが縁取りや切り抜きの形として拾う
+    滑らかには伸ばさず、升目を並べるだけにする スクリプトの後で同じ所へ縮め戻すので、
+    分母の升目がそろっていれば元の画素へそのまま戻る 滑らかに伸ばすと、行きと帰りで
+    2 回補間され、絵に何もしないスクリプトでも下の絵がぼける
     """
     height, width = int(image.shape[0]), int(image.shape[1])
     data = np.ascontiguousarray(image, dtype=np.uint8)
@@ -229,7 +230,7 @@ def _resized(image: np.ndarray, size: tuple[int, int]) -> np.ndarray:
         max(1, size[0]),
         max(1, size[1]),
         Qt.AspectRatioMode.IgnoreAspectRatio,
-        Qt.TransformationMode.SmoothTransformation,
+        Qt.TransformationMode.FastTransformation,
     ).convertToFormat(QImage.Format.Format_RGBA8888)
     stride = scaled.bytesPerLine()
     raw = np.frombuffer(scaled.constBits(), dtype=np.uint8, count=stride * scaled.height())
