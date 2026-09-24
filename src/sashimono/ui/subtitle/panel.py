@@ -14,7 +14,7 @@ from fractions import Fraction
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, Qt, Signal
-from PySide6.QtGui import QGuiApplication, QResizeEvent
+from PySide6.QtGui import QResizeEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -52,6 +52,7 @@ from sashimono.engine.audio.silence import SilenceOptions, detect_silence, keep_
 from sashimono.engine.cache import MediaAnalyzer
 from sashimono.ui.subtitle.dialogs import CleanupDialog, JetCutDialog
 from sashimono.ui.subtitle.transcribe_dialog import TranscribeDialog
+from sashimono.ui.system_clipboard import clipboard
 from sashimono.ui.theme import Colors
 
 __all__ = ["SubtitlePanel"]
@@ -423,9 +424,8 @@ class SubtitlePanel(QWidget):
                 self.seek_requested.emit(start)
         elif chosen is copy:
             item = self._table.item(row, 1)
-            clipboard = QGuiApplication.clipboard()
-            if item is not None and clipboard is not None:
-                clipboard.setText(item.text())
+            if item is not None:
+                clipboard().setText(item.text())
         elif chosen is remove:
             self.commands_requested.emit([RemoveSegment(self._media_id, segment_id)], "字幕を削除")
         elif chosen is merge:

@@ -13,7 +13,6 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from PySide6.QtWidgets import (
-    QApplication,
     QDialog,
     QDialogButtonBox,
     QLabel,
@@ -27,6 +26,7 @@ from sashimono import __version__
 from sashimono.compat.aviutl.catalog import script_catalog
 from sashimono.compat.aviutl.report import CompatibilityReport, global_report
 from sashimono.ui.report_masking import marked_root_labels, mask_report, root_lines
+from sashimono.ui.system_clipboard import clipboard
 from sashimono.ui.theme import Colors
 
 __all__ = ["CompatibilityDialog", "report_text"]
@@ -117,9 +117,8 @@ class CompatibilityDialog(QDialog):
 
     def copy_to_clipboard(self) -> None:
         """画面の記録を、報告に貼れる形でクリップボードへ写す"""
-        clipboard = QApplication.clipboard()
         catalog = script_catalog()
-        clipboard.setText(report_text(self._report, len(catalog.all()), roots=catalog.roots))
+        clipboard().setText(report_text(self._report, len(catalog.all()), roots=catalog.roots))
 
     def _clear(self) -> None:
         self._report.clear()
