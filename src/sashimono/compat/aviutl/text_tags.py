@@ -37,6 +37,7 @@ GUI に依存しない 書体の引き当てと組版は描く側（``engine.sou
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -293,6 +294,9 @@ def _size_tag(
         try:
             width = float(edge)
         except ValueError:
+            return None
+        if not math.isfinite(width):
+            # inf の縁は描けず、nan は max で黙って 0 になる 読めない指定として文字のまま残す
             return None
         changed = replace(changed, edge_width=max(0.0, width))
     return changed

@@ -78,6 +78,13 @@ class TestTheTableIsKeyedByTheAviutlName:
         assert _value(effect, "scale_y") == 100.0
         assert _value(effect, "pos_x") == 0.0
 
+    def test_a_flip_reached_only_by_a_later_keyframe_is_recorded(self) -> None:
+        # Y が 100 から -100 へ動くと AviUtl2 では途中で裏返る 変形は裏返せないので
+        # 大きさだけを写す 初めの値だけを見ると記録が空のまま裏返しが消える（#183 のレビュー）
+        effects, report = _effects("拡大率\n拡大率=100\nX=100\nY=100,-100,直線移動,0\nZ=100")
+        assert len(effects) == 1
+        assert any("負の拡大率" in line for line in report.lines())
+
     def test_the_zoom_filter_x_and_y_scale_each_axis(self) -> None:
         # X と Y は拡大率に重ねて掛かる軸ごとの拡大率 AviUtl2 で拡大率 150・X 200・Y 50 の
         # 200x200 の四角は 600x150 だった 横 = 150 x 2 縦 = 横 x (50 / 200)

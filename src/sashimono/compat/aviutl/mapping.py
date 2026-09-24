@@ -970,14 +970,20 @@ def _axis_scales(
     if wide.is_animated:
         log.note_missing(f"{label}の横の拡大率が動く（最初の値で止める）")
     across = wide.static / 100.0
-    if across < 0.0 or tall.static < 0.0:
+    if any(_turns_negative(value) for value in (rate, wide, tall)):
         # 負の拡大率は AviUtl2 では裏返す 変形は裏返せないので、大きさだけ写して残す
+        # 途中のキーフレームだけが負（100 から -100 へ動く）でも裏返しは消えるので数える
         log.note_missing(f"{label}の負の拡大率（裏返しは写さない）")
     across = abs(across)
     scale = _mapped(rate, lambda value: value * across)
     divisor = max(across, _THINNEST)
     scale_y = _mapped(tall, lambda value: abs(value) / divisor)
     return scale, scale_y
+
+
+def _turns_negative(value: AnimatedValue) -> bool:
+    """初めの値かどれかのキーフレームが負か"""
+    return value.static < 0.0 or any(keyframe.value < 0.0 for keyframe in value.keyframes)
 
 
 #: 拡大率と縦横別の X Y を持つフィルタ 2026-09-25 に AviUtl2 v2.1.6a で 200x200 の四角へ

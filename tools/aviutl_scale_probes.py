@@ -256,7 +256,11 @@ def command_measure(work: Path) -> int:
                 for obj in load_exo(Path(case.source)).objects
                 if (item := map_object(obj, settings.frame_rate, report=report)) is not None
             ]
-            project = aviutl_compare.placed_project(objects, settings, case.start)
+            project, missing = aviutl_compare.placed_project(objects, settings, case.start)
+            if missing:
+                # 見本の画像はその場で作る 無ければ作業フォルダが壊れているので測らない
+                print(aviutl_compare.lacking_note(case.name, missing))
+                return 1
             if renderer is None:
                 renderer = FrameRenderer(project)
             else:

@@ -132,6 +132,14 @@ class TestSize:
         assert (first[-1][1].font, first[-1][1].size) == (None, 50.0)
         assert (second[-1][1].font, second[-1][1].size) == (None, 80.0)
 
+    def test_an_outline_width_that_is_not_a_number_stays_as_text(self) -> None:
+        # float は inf や nan も受け取る inf は描けない縁になり、nan は黙って 0 になって
+        # 読めない指定が消える（#183 のレビュー）
+        for width in ("inf", "nan", "1e999"):
+            text = f"H<s,,,{width}>H"
+            (line,) = runs(text)
+            assert "".join(part for part, _style in line) == text
+
     def test_size_styles_and_outline_width_are_undone_by_the_reset(self) -> None:
         # 見本 tag30 tag44 <s,,B> の字は太字、<s,,,8> の字は縁の太さ 8、<s> の後は元へ戻った
         (line,) = runs("H<s,,B>H<s>H<s,,,8>H<s>H")
