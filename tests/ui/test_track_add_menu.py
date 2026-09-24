@@ -35,6 +35,7 @@ from sashimono.effects.sources import TEXT
 from sashimono.engine.cache import MediaAnalyzer
 from sashimono.ui.main_window import MainWindow
 from sashimono.ui.media_pool import MEDIA_MIME
+from sashimono.ui.theme import Colors
 from sashimono.ui.timeline import TimelineView
 from sashimono.ui.timeline.add_menu import AddSources
 from tests.conftest import make_clip
@@ -162,6 +163,7 @@ class TestTrackAddButton:
         assert view.playhead == 40
 
     def test_the_menu_offers_video_audio_and_effect_tracks(self, view: TimelineView) -> None:
+        # 欠けると、その種類のトラックはボタンから足せず、読み込みやフィルタの置き場任せになる
         assert _texts(view.build_track_add_menu()) == [
             "映像トラック",
             "音声トラック",
@@ -188,12 +190,15 @@ class TestTrackAddButton:
         rect = view.track_add_button()
         assert rect is not None
         image = view.grab().toImage()
+        # 枠は矩形の縁の画素に乗るので、縁まで含めて拾う 内側だけを見ると、文字を
+        # なめらかに描かない環境（CI）では下地と文字の 2 色しか拾えない
         inside = {
             image.pixelColor(x, y).name()
-            for x in range(rect.left() + 1, rect.right(), 2)
-            for y in range(rect.top() + 1, rect.bottom(), 2)
+            for x in range(rect.left(), rect.right() + 1)
+            for y in range(rect.top(), rect.bottom() + 1)
         }
         # 枠と文字と下地で 3 色以上 何も描かなければタイムラインの下地 1 色になる
+        assert Colors.BORDER.name() in inside
         assert len(inside) >= 3
 
 
@@ -238,6 +243,8 @@ class TestWhileDragging:
 
 class TestTrackMenu:
     def test_a_track_can_be_added_from_its_menu(self, view: TimelineView) -> None:
+        # 右クリックから足せないと、トラックが多くて下のボタンが隠れているとき、
+        # 一番下まで送ってボタンを探すことになる
         _wire(view)
         menu = view.build_context_menu(_point(view, "A1", 100))
         _find(menu, "トラックを追加", "音声トラック").trigger()
@@ -282,6 +289,7 @@ class TestNextToTheWorkArea:
 
 class TestAddingFromTheEmptySpace:
     def test_the_add_menu_lists_every_kind(self, view: TimelineView) -> None:
+        # 欠けた種類は右クリックから置けず、メニューバーから再生ヘッドの位置へ置き直すことになる
         menu = view.build_context_menu(_point(view, "V2", 200))
         texts = _texts(_menu(menu, "追加"))
         for expected in (
@@ -445,6 +453,7 @@ class TestAliases:
         assert not _find(menu, "エイリアスとして保存…").isEnabled()
 
     def test_saving_can_be_cancelled(self, view: TimelineView, tmp_path: Path) -> None:
+        # 名前を尋ねる所で取り消しても保存されると、要らないエイリアスが一覧に増える
         view.add_sources = _sources(tmp_path, ask_name=lambda _p, _s: None)
         _find(view.build_context_menu(_point(view, "V1", 10)), "エイリアスとして保存…").trigger()
         assert view.add_sources.aliases.all() == ()
@@ -487,6 +496,7 @@ class TestInTheWindow:
         created.close()
 
     def test_an_added_track_can_be_undone(self, window: MainWindow) -> None:
+        # 取り消せないと、押し間違えて足したトラックを右クリックから 1 本ずつ消すことになる
         _find(window._timeline.build_track_add_menu(), "映像トラック").trigger()
         assert len(window.document.project.timeline.tracks) == 4
         window.undo()
@@ -508,6 +518,8 @@ class TestInTheWindow:
         assert window._timeline.selected_clips == (placed.id,)
 
     def test_the_open_scene_reaches_the_timeline(self, window: MainWindow) -> None:
+        # 届かないと〔追加〕→〔シーン〕に開いているシーン自身が並び、選ぶと入れ子が
+        # 自分へ戻って断られる
         scene_id = window.create_scene("中")
         assert window._timeline.open_scene == scene_id
 

@@ -40,6 +40,8 @@ def _apply(project: Project, commands: list[Command]) -> Project:
 
 class TestNewTrack:
     def test_names_count_up_per_kind(self) -> None:
+        # 種類ごとに数えないと、音声を足しただけで V2 が抜けたり A3 から始まったりして、
+        # どのトラックが何本目か名前から読めない
         project = _project(Track(TrackKind.VIDEO, "V1"), Track(TrackKind.AUDIO, "A1"))
         assert new_track(project, TrackKind.VIDEO).track.name == "V2"
         assert new_track(project, TrackKind.AUDIO).track.name == "A2"
@@ -60,6 +62,7 @@ class TestNewTrack:
         assert not is_effect_track(Track(TrackKind.AUDIO, "FX1"))
 
     def test_an_audio_effect_track_is_refused(self) -> None:
+        # 音声のエフェクトトラックを作れると、そこへ置いたフィルタは映像に何も掛からない
         with pytest.raises(ValueError):
             new_track(_project(), TrackKind.AUDIO, effect=True)
 
@@ -140,6 +143,7 @@ def _styled_text() -> Clip:
 
 class TestAliases:
     def test_a_round_trip_keeps_the_contents_but_not_the_place(self, tmp_path: Path) -> None:
+        # 中身が落ちると置き直したテロップの見た目が変わり、位置を持つと右クリックした所へ来ない
         store = AliasStore(tmp_path)
         clip = _styled_text()
         store.save(Alias.of("見出し", clip))
@@ -181,6 +185,7 @@ class TestAliases:
                 Alias.from_dict({**data, key: value})
 
     def test_a_broken_file_does_not_hide_the_others(self, tmp_path: Path) -> None:
+        # 壊れた 1 つで例外になると、〔エイリアス〕の一覧全体が出ず、正しい物も置けない
         store = AliasStore(tmp_path)
         store.save(Alias.of("残る", _styled_text()))
         (tmp_path / "壊れ.smea").write_text("{", "utf-8")
@@ -213,6 +218,7 @@ class TestAliases:
         assert store.exists(name)
 
     def test_names_that_windows_rejects_still_save(self, tmp_path: Path) -> None:
+        # ファイル名に使えない文字で書き込みが失敗すると、その名前ではいつまでも保存できない
         store = AliasStore(tmp_path)
         path = store.save(Alias.of('見出し: "赤"?', _styled_text()))
         assert path.parent == tmp_path
