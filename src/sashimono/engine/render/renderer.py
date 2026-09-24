@@ -1372,6 +1372,9 @@ class FrameRenderer:
                     rate,
                     1.0,
                     on_canvas=True,
+                    # 合成先は空の after に切り替えてある 画面として写すのは下の絵を
+                    # 溜めた outer 空の方を写すと黒一色の絵で下の絵を置き換える
+                    below=outer,
                 )
             finally:
                 self._compositor = outer
@@ -1407,8 +1410,11 @@ class FrameRenderer:
         offset: tuple[float, float] = (0.0, 0.0),
         *,
         on_canvas: bool = False,
+        below: Compositor | None = None,
     ) -> None:
         """AviUtl スクリプトを積んだクリップを描く
+
+        ``below`` は ``obj.copybuffer`` の ``frm`` で読む合成先（:meth:`_screen_picture`）
 
         スクリプトは「何回・どこへ・どう変形して描くか」を返す 1 回とは限らない
         （残像や複製を作るスクリプトがある）ので、返ってきた分だけ合成する
@@ -1433,7 +1439,7 @@ class FrameRenderer:
             image,
             frame=local_frame,
             fps=float(rate.fps),
-            framebuffer=self._screen_picture,
+            framebuffer=lambda: self._screen_picture(below),
         )
         texture = self._texture_for(track.id)
         screen_width, screen_height = self._project.settings.resolution
@@ -1556,8 +1562,11 @@ class FrameRenderer:
                 matrix=matrix,
             )
 
-    def _screen_picture(self) -> np.ndarray:
+    def _screen_picture(self, below: Compositor | None = None) -> np.ndarray:
         """それまでに重ねた画面を、スクリプトへ渡す絵にする（``obj.copybuffer`` の ``frm``）
+
+        ``below`` は読む合成先 省けばいまの合成先 フィルタのクリップは掛けた結果を空の
+        合成先へ描くので、下の絵を溜めた外側の合成先を渡す（:meth:`_draw_filter`）
 
         AviUtl のフレームバッファは何も描いていない所も不透明な黒 :meth:`_draw_framebuffer`
         と同じく黒を敷いて写す 透明のまま渡すと、アクリル矩形のように下の絵をぼかして
@@ -1567,17 +1576,18 @@ class FrameRenderer:
         大きさは画面の画素 画質を落としたプレビューでも、スクリプトが切り出す量
         （``obj.w`` から決める）は書き出しと同じにしておく（:meth:`_draw_scripted`）
         """
-        width, height = self._compositor.width, self._compositor.height
+        source = below if below is not None else self._compositor
+        width, height = source.width, source.height
         with self._context:
             if self._grab is None:
                 self._grab = Framebuffer(width, height)
             self._grab.resize(width, height)
-            GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, self._compositor.canvas.handle)
+            GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, source.canvas.handle)
             GL.glBindFramebuffer(GL.GL_DRAW_FRAMEBUFFER, self._grab.handle)
             GL.glBlitFramebuffer(
                 0, 0, width, height, 0, 0, width, height, GL.GL_COLOR_BUFFER_BIT, GL.GL_NEAREST
             )
-            self._compositor.underlay((0.0, 0.0, 0.0, 1.0), target=self._grab)
+            source.underlay((0.0, 0.0, 0.0, 1.0), target=self._grab)
             copied = self._layer("script_framebuffer", 0)
             copied.begin((0.0, 0.0, 0.0, 0.0))
             copied.draw_handle(
