@@ -197,6 +197,38 @@ class TestLayerOrder:
         )
         assert _names(_project(*tracks).timeline) == ["V2", "V1", "レイヤー 1", "レイヤー 2", "A1"]
 
+    @pytest.mark.parametrize("family", ["", "Yu Gothic UI", "Meiryo UI", "Meiryo"])
+    @pytest.mark.parametrize("points", [9.0, 10.0])
+    def test_the_layer_name_is_not_cut_in_the_header(
+        self, qt_application: QApplication, family: str, points: float
+    ) -> None:
+        # 前はヘッダが狭く、「レイヤー 1」が「レイ… 1」に切れて読めなかった
+        # 空の family は画面に使う既定のフォント
+        from PySide6.QtGui import QFont, QFontMetrics
+
+        from sashimono.ui.timeline.painter import shown_track_name
+
+        del qt_application
+        font = QFont(family) if family else QApplication.font()
+        font.setPointSizeF(points)
+        metrics = QFontMetrics(font)
+        for number in (1, 10, 100):
+            track = _layer(number)
+            assert shown_track_name(track, metrics) == track.name
+        assert shown_track_name(Track(TrackKind.MIXED), metrics) == "レイヤー"
+
+    def test_the_name_fits_beside_the_buttons_at_the_smallest_height(self) -> None:
+        # 名前とボタンは 1 行 最小の高さ（28）でも、名前の所もボタンも帯の中に収まる
+        from sashimono.ui.theme import Metrics
+        from sashimono.ui.timeline.painter import track_button_rects, track_name_rect
+
+        band = TrackBand(_layer(1), 100, Metrics.MIN_TRACK_HEIGHT)
+        name = track_name_rect(band)
+        buttons = [rect for _, _, rect in track_button_rects(band)]
+        assert name.right() < buttons[0].left()
+        assert all(band.top <= r.top() and r.bottom() < band.bottom for r in (name, *buttons))
+        assert buttons[-1].right() < Metrics.TRACK_HEADER_WIDTH
+
     def test_every_track_gets_a_band(self) -> None:
         # 帯を持たないトラックがあると、縦の長さ（content_height）と並びが食い違い、
         # 一番下のトラックまで送れない

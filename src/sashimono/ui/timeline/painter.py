@@ -49,9 +49,11 @@ __all__ = [
     "draw_track_add_button",
     "draw_track_background",
     "draw_track_header",
+    "shown_track_name",
     "to_qimage",
     "track_add_button_rect",
     "track_button_rects",
+    "track_name_rect",
 ]
 
 #: 目盛りの間隔として使える値（フレーム数の基準となる秒数）
@@ -181,6 +183,24 @@ def track_button_rects(band: TrackBand) -> list[tuple[str, str, QRect]]:
     ]
 
 
+def track_name_rect(band: TrackBand) -> QRect:
+    """ヘッダの名前を書く所 左の余白からボタンの手前まで"""
+    left = 8
+    right = track_button_rects(band)[0][2].left() - 4
+    return QRect(left, band.top + 5, right - left, _BUTTON_HEIGHT)
+
+
+def shown_track_name(track: Track, metrics: QFontMetrics) -> str:
+    """ヘッダに出す名前 描くのと試験が同じ物を見る
+
+    収まらない名前は真ん中を詰める 末尾を詰めると「レイヤー 1」から「レイヤー 4」までが
+    どれも「レイヤ…」になり、何番のレイヤーなのかが読めない（番号は名前の末尾にある）
+    """
+    name = track.name or _KIND_NAMES[track.kind]
+    width = track_name_rect(TrackBand(track, 0, 0)).width()
+    return metrics.elidedText(name, Qt.TextElideMode.ElideMiddle, width)
+
+
 def draw_track_header(painter: QPainter, band: TrackBand, *, active: bool = True) -> None:
     """トラック名と、ミュート・ソロ・ロックの切り替えボタン
 
@@ -198,13 +218,10 @@ def draw_track_header(painter: QPainter, band: TrackBand, *, active: bool = True
     track = band.track
     buttons = track_button_rects(band)
     painter.setPen(QPen(Colors.TEXT if active else Colors.TEXT_MUTED, 1))
-    name = track.name or _KIND_NAMES[track.kind]
-    name_width = buttons[0][2].left() - 8 - 4
-    # 収まらない名前は真ん中を詰める 末尾を詰めると「レイヤー 1」から「レイヤー 4」までが
-    # どれも「レイヤ…」になり、何番のレイヤーなのかが読めない（番号は名前の末尾にある）
-    elided = QFontMetrics(painter.font()).elidedText(name, Qt.TextElideMode.ElideMiddle, name_width)
     painter.drawText(
-        QRect(8, band.top + 5, name_width, _BUTTON_HEIGHT), Qt.AlignmentFlag.AlignVCenter, elided
+        track_name_rect(band),
+        Qt.AlignmentFlag.AlignVCenter,
+        shown_track_name(track, QFontMetrics(painter.font())),
     )
 
     font = QFont(painter.font())
