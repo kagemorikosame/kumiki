@@ -312,6 +312,23 @@ class TestYmm4:
         assert first.clips == ()
         assert only_clip(second).audio_stream is not None
 
+    def test_a_scene_needs_a_chosen_layer_that_is_heard(self) -> None:
+        """まとめた中身（シーン）も鳴る物として見る シーンは音の番号を持たずに鳴る
+
+        番号の有無で決めると、音のソロで鳴らないレイヤーへ置き、シーンの中の音が
+        聞こえない（PR #165 のレビュー）
+        """
+        chosen = Track(kind=TrackKind.MIXED, name="レイヤー 1")
+        soloed = Track(kind=TrackKind.AUDIO, name="A1", solo=True)
+        project = apply(project_of(LayerMode.MIXED), [AddTrack(chosen), AddTrack(soloed)])
+        group = ymm4_item("GroupItem", Layer=1, Length=60, GroupRange=1, IsComposite=True)
+        objects = mapped([group, text_item(Layer=2)])
+        project = put(objects, project, track_id=chosen.id)
+
+        first, *rest = layers(project)
+        assert first.clips == ()
+        assert [clip.scene_id is not None for track in rest for clip in track.clips] == [True]
+
     def test_a_silent_picture_ignores_what_is_heard(self, files: dict[str, Path]) -> None:
         # 音を鳴らさない文字は映れば足りる 鳴るかまで見ると、音のソロの間は選んだ所へ置けない
         chosen = Track(kind=TrackKind.MIXED, name="レイヤー 1")
@@ -336,6 +353,9 @@ class TestSeparatedStaysTheSame:
     """分ける方式（既定）は今までどおり 絵と音を 2 本に分けてリンクで結ぶ"""
 
     def test_a_video_item_is_still_split(self, files: dict[str, Path]) -> None:
+        # 分けないと音声トラックに音のクリップが無く鳴らない リンクが外れると、片方だけ
+        # 動かしたときに絵と音がずれる 番号（audio_stream）を持たせると、映像トラックへ
+        # 置く時点で断られる
         project = put(mapped([video_item(files["movie"])]), project_of(LayerMode.SEPARATED))
 
         kinds = sorted(track.kind.value for track in project.timeline.tracks)

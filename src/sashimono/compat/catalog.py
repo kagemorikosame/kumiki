@@ -660,10 +660,13 @@ def _put_on_layers(
         if target is None:
             return False
         if target.kind is TrackKind.MIXED:
-            # 絵と音を両方持つ動画は両方を見る 絵だけ見ると、音声トラックのソロで
-            # 鳴らなくなったレイヤーへ置き、置いた動画の音が聞こえない
+            # 絵と音を両方持つ物は両方を見る 絵だけ見ると、音声トラックのソロで
+            # 鳴らなくなったレイヤーへ置き、置いた動画やシーンの音が聞こえない
+            # 鳴るかは audio_stream から推さずに plays_sound で決める シーンは番号を
+            # 持たずに鳴る 音だけの物は素材が見つからなくても鳴らす側に数える
+            sounds = project.plays_sound(target, clip) or not clip.show_picture
             return (not clip.show_picture or target.id in shown) and (
-                (clip.audio_stream is None and clip.show_picture) or target.id in heard
+                not sounds or target.id in heard
             )
         return target.kind is TrackKind.VIDEO and clip.show_picture and clip.audio_stream is None
 
