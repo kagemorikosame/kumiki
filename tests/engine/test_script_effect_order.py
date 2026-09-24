@@ -135,6 +135,7 @@ class TestMargin:
                 baked = baker.apply(image, (_shadow(200.0),), 0, 30.0, 30)
             finally:
                 baker.release()
+        assert baked is not None
         # 真ん中は動かさないので、影の分だけ左右へ同じ幅で広がる
         assert baked.shape[1] >= 8 + 2 * 200
         middle = baked[baked.shape[0] // 2]
@@ -174,3 +175,15 @@ class TestMargin:
         report = CompatibilityReport()
         assert fitted_margin(100, 60, 300, report) == 300
         assert not report.missing
+
+    def test_a_canvas_over_the_gpu_limit_is_not_baked(self, gl_context: OffscreenGLContext) -> None:
+        # GPU が作れる大きさを超える作業場は作らない 作ろうとするとフレームバッファの例外が
+        # 描画まで伝わり、フレームごと描けなくなる 焼き込まずに None を返し、効果は描くときへ回る
+        image = np.full((8, 8, 4), 255, np.uint8)
+        baker = ScriptEffectBaker()
+        baker.gpu_limit = 64
+        with gl_context:
+            try:
+                assert baker.apply(image, (_shadow(200.0),), 0, 30.0, 30) is None
+            finally:
+                baker.release()

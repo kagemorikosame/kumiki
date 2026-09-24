@@ -247,3 +247,14 @@ class TestPlacement:
         )
         assert isinstance(call, DrawCall)
         assert (call.x, call.y) == (100.0, -40.0)
+
+
+class TestBrokenColour:
+    def test_a_colour_that_is_not_a_number_is_recorded(self) -> None:
+        # Lua の 0/0 や math.huge が color に来ても、描くときに例外でフレームごと止めない
+        # 既定の色で描き、数でなかったことを記録に残す
+        for broken in (float("nan"), float("inf")):
+            report = CompatibilityReport()
+            effect = script_filter_effect("単色化", {"color": broken}, report=report)
+            assert effect is not None
+            assert any("color" in line for line in report.lines())

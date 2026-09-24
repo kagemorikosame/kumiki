@@ -38,8 +38,9 @@ __all__ = [
 
 
 #: 積んだ効果を絵へ掛けて返す関数 ``(絵, 効果, フレーム, fps, クリップの長さ) -> 絵``
+#: 掛けられないとき（GPU の作れる大きさを超える）は ``None``
 #: GPU を持つレンダラが渡す（:class:`~sashimono.engine.render.script_bake.ScriptEffectBaker`）
-ApplyEffects = Callable[[np.ndarray, tuple[Effect, ...], int, float, int], np.ndarray]
+ApplyEffects = Callable[[np.ndarray, tuple[Effect, ...], int, float, int], np.ndarray | None]
 
 
 def split_effects(effects: tuple[Effect, ...]) -> tuple[tuple[Effect, ...], tuple[Effect, ...]]:
@@ -159,7 +160,7 @@ class ScriptStage:
 
     def _apply_requested(
         self, image: np.ndarray, requests: tuple[EffectRequest, ...]
-    ) -> np.ndarray:
+    ) -> np.ndarray | None:
         """``obj.effect`` で積んだ効果を、いまの絵へ掛ける"""
         if self._apply_effects is None:  # pragma: no cover - 渡されたときだけランタイムへ渡す
             return image

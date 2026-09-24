@@ -139,3 +139,18 @@ class TestSizeAfterStackedEffects:
         baker = _Baker()
         _run("obj.ox = obj.w local w, h = obj.getpixel()", baker=baker)
         assert baker.calls == []
+
+
+class TestBakerRefuses:
+    def test_effects_stay_stacked_when_the_baker_cannot_apply_them(self) -> None:
+        # 焼き込めない大きさ（GPU の上限を超える作業場）では、掛ける関数が None を返す
+        # そのときは効果を積んだまま描くときへ回す 例外で止めると、フレームごと描けなくなる
+        def refuse(image: np.ndarray, effects: tuple[EffectRequest, ...]) -> None:
+            del image, effects
+
+        state = ObjectState(image=_picture(), screen_w=320, screen_h=180)
+        runtime = LuaScriptRuntime(report=CompatibilityReport(), apply_effects=refuse)
+        result = runtime.run(f"{BLUR} obj.ox = obj.w", state)
+        assert not result.failed, result.message
+        assert state.ox == 6.0
+        assert [effect.kind for effect in state.effects] == ["blur"]

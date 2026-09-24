@@ -204,7 +204,7 @@ class TestPixels:
     def test_the_slant_clip_moves_with_its_centre(
         self, gl_context: OffscreenGLContext, processor: EffectProcessor
     ) -> None:
-        # 中心 Y は上が正 上へ 8 ずらすと、真ん中の行も残る側に入る
+        # 中心 Y は上が正 -8 で線が下へ 8 動き、真ん中より少し下の行も残る側に入る
         result = _run(gl_context, processor, _make("crop_slant", center_y=-8, blur=0))
         assert result[28, 32, 3] > 0.9
         assert result[20, 32, 3] < 0.1

@@ -46,6 +46,9 @@ class ScriptEffectBaker:
         self._compositor: Compositor | None = None
         self._effects: EffectProcessor | None = None
         self._texture: Texture | None = None
+        #: GPU が作れるテクスチャとレンダーターゲットの一辺の上限（画素） 初めて使うときに GL から
+        #: 読む 試験は小さい値を入れて、上限を超えたときの動きを確かめる
+        self.gpu_limit: int | None = None
 
     def apply(
         self,
@@ -54,8 +57,10 @@ class ScriptEffectBaker:
         frame: int,
         fps: float,
         duration: int,
-    ) -> np.ndarray:
+    ) -> np.ndarray | None:
         """``image`` へ ``effects`` を掛けた絵 広がった所まで含め、真ん中は動かさない
+
+        作業場が GPU の作れる大きさを超えるときは掛けずに ``None`` を返す
 
         戻す絵は、余白のうち透明なままの所を左右（上下）同じ幅だけ削った物
         同じ幅で削るのは、絵の真ん中がオブジェクトの位置だから 片側だけ削ると、
@@ -67,6 +72,14 @@ class ScriptEffectBaker:
         # 作業場の外へ出て消え、obj.w や写し取った絵からも消える（#186）
         margin = fitted_margin(width, height, bake_margin(effects, frame))
         canvas_w, canvas_h = width + 2 * margin, height + 2 * margin
+        if max(canvas_w, canvas_h) > self._gpu_limit():
+            # 作れない大きさのフレームバッファを作ろうとすると例外が描画まで伝わり、フレームごと
+            # 描けなくなる 焼き込まずに返し、効果は積んだまま描くときに掛ける（順は入れ替わる）
+            global_report.note_missing(
+                f"obj.effect の焼き込み（作業場 {canvas_w}x{canvas_h} が GPU の上限"
+                f" {self._gpu_limit()} を超える）"
+            )
+            return None
         compositor, processor, texture = self._prepared(canvas_w, canvas_h)
         if not processor.has_work(effects):
             return image
@@ -97,6 +110,16 @@ class ScriptEffectBaker:
         # もう 1 度掛かって、ぼけた縁が暗くなる
         baked = compositor.read(straight=True)
         return _trimmed(baked, margin)
+
+    def _gpu_limit(self) -> int:
+        """テクスチャとレンダーターゲットの両方で作れる一辺の上限 GL のコンテキストの中で読む"""
+        if self.gpu_limit is None:
+            from OpenGL.GL import GL_MAX_RENDERBUFFER_SIZE, GL_MAX_TEXTURE_SIZE, glGetIntegerv
+
+            self.gpu_limit = int(
+                min(glGetIntegerv(GL_MAX_TEXTURE_SIZE), glGetIntegerv(GL_MAX_RENDERBUFFER_SIZE))
+            )
+        return self.gpu_limit
 
     def release(self) -> None:
         if self._compositor is not None:

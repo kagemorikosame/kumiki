@@ -801,7 +801,12 @@ class ObjApi:
         if self._apply_effects is None:
             self._report.note_missing(f"{caller}（先に積んだ効果の焼き込み）")
             return
-        state.image = self._apply_effects(state.image, tuple(state.effects))
+        applied = self._apply_effects(state.image, tuple(state.effects))
+        if applied is None:
+            # 掛ける側が断った（GPU の作れる大きさを超える） 理由は掛ける側が記録に残す
+            # 効果は描くときに掛かるまま残す 捨てると効果ごと消える
+            return
+        state.image = applied
         state.image_shared = False
         state.effects.clear()
 

@@ -1892,16 +1892,21 @@ def script_filter_effect(
     if name not in _FILTERS:
         return None
     colours = _COLOR_PARAMS.get(name, {})
+    log = report if report is not None else global_report
     params: dict[str, str] = {}
     for key, value in values.items():
         if key == _SCRIPT_COLOR and colours:
+            if isinstance(value, int | float) and not math.isfinite(value):
+                # Lua の 0/0 や math.huge が来ると int() が例外を投げ、描くときにフレームごと
+                # 止まる 既定の色のまま描いて、数でなかったことを記録に残す
+                log.note_missing(f"obj.effect({name}) の color（数ではない）")
+                continue
             params[next(iter(colours))] = (
                 f"{int(value) & 0xFFFFFF:06x}" if isinstance(value, int | float) else str(value)
             )
             continue
         params[key] = _number_text(value)
     entry = ExoEntry(name=name, params=params)
-    log = report if report is not None else global_report
     return _filter(entry, (), log, names=_SCRIPT_PARAMS.get(name))
 
 
