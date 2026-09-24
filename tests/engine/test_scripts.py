@@ -24,8 +24,9 @@ from sashimono.core.model import (
 )
 from sashimono.core.timebase import FrameRate
 from sashimono.effects.definition import registry
+from sashimono.effects.sources import FILTER
 from sashimono.engine.gpu import GLContextError, OffscreenGLContext
-from sashimono.engine.render import FrameRenderer
+from sashimono.engine.render import FrameRenderer, RenderQuality
 
 #: 位置と回転をスライダーで動かすだけのスクリプト
 MOVE = """--track0:X,-500,500,0,1
@@ -63,6 +64,10 @@ local t = (obj.h - 40) / 2
 obj.drawpoly(-10,-20,0, 10,-20,0, 40,20,0, -40,20,0, l,t, l+40,t, l+40,t+40, l,t+40)
 """
 
+#: 絵に何もしないスクリプト 積んだ前と後で絵が変わらないことを見る
+NOTHING = """obj.ox = 0
+"""
+
 SCREEN = (320, 240)
 
 
@@ -84,6 +89,7 @@ def catalog() -> ScriptCatalog:
     created.add_text("aviutl:試験.anm:傾き", TILT)
     created.add_text("aviutl:試験.anm:自分の幅", OWN_SIZE)
     created.add_text("aviutl:試験.anm:四隅", POLY)
+    created.add_text("aviutl:試験.anm:何もしない", NOTHING)
     set_script_catalog(created)
     return created
 
@@ -253,3 +259,69 @@ class TestMultipleDraws:
         third = int(image[middle, SCREEN[0] // 2 + 60, 0])
         # 後ろの枚ほど薄くなる
         assert first > third > 0
+
+
+def render_at(project: Project, context: OffscreenGLContext, divisor: int) -> np.ndarray:
+    renderer = FrameRenderer(project, context=context, quality=RenderQuality(divisor))
+    try:
+        return renderer.render(0)
+    finally:
+        renderer.close()
+
+
+@pytest.mark.parametrize("divisor", [2, 4])
+class TestALighterPreview:
+    """画質を落としたプレビューでも、スクリプトの絵が書き出しを縮めた所に出る（Issue #151）
+
+    スクリプトの値（obj.ox や obj.draw の位置）はどれが画素かを定義から読めない
+    スクリプトは画面の画素で走らせ、返った位置と大きさを描く直前に縮める 合成の画素で
+    走らせると、1/2 画質で位置も残像の間隔も 2 倍に出る
+    """
+
+    @pytest.mark.parametrize(
+        ("identifier", "params"),
+        [
+            ("aviutl:試験.anm:移動", {"track0": 80.0, "track1": 30.0, "track2": 150.0}),
+            ("aviutl:試験.anm:残像", {"track0": 3.0}),
+            ("aviutl:試験.anm:傾き", {"track1": 40.0, "track2": 200.0}),
+            ("aviutl:試験.anm:自分の幅", {}),
+            ("aviutl:試験.anm:四隅", {}),
+        ],
+    )
+    def test_the_drawing_is_the_export_shrunk(
+        self,
+        gl_context: OffscreenGLContext,
+        catalog: ScriptCatalog,
+        divisor: int,
+        identifier: str,
+        params: dict[str, float],
+    ) -> None:
+        del catalog
+        project = build(identifier, **params)
+        full = bounds(render(project, gl_context))
+        light = bounds(render_at(project, gl_context, divisor))
+        # 外接矩形の端を縮めた所と、縮めた合成の丸めの幅で重なる
+        for got, want in zip(light, full, strict=True):
+            assert got == pytest.approx(want / divisor, abs=1.5), (light, full)
+
+    def test_a_script_on_a_filter_keeps_the_screen_sharp(
+        self, gl_context: OffscreenGLContext, catalog: ScriptCatalog, divisor: int
+    ) -> None:
+        # フィルタのクリップは描き終えた合成の画素の絵をスクリプトへ渡す 画面の画素へ
+        # 滑らかに引き伸ばしてから縮め戻すと、何もしないスクリプトでも下の絵がぼける
+        # 升目を並べるだけに伸ばせば、同じ所へ縮め戻したときに元の画素へ戻る
+        del catalog
+        project = build("aviutl:試験.anm:移動")
+        track = Track(kind=TrackKind.VIDEO, name="V2")
+        project = AddTrack(track).apply(project)
+        filter_clip = Clip(timeline_start=0, duration=30, source=FILTER.create())
+        project = AddClip(track.id, filter_clip).apply(project)
+        without = render_at(project, gl_context, divisor)
+        definition = registry.get("aviutl:試験.anm:何もしない")
+        assert definition is not None
+        project = AddEffect(filter_clip.id, definition.create()).apply(project)
+        with_script = render_at(project, gl_context, divisor)
+        difference = np.abs(with_script.astype(int) - without.astype(int))[..., :3]
+        assert without[..., :3].max() > 200
+        # 読み戻しと載せ直しの 8 ビットの丸めだけが残る
+        assert difference.max() <= 2

@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QDockWidget,
     QFileDialog,
     QInputDialog,
+    QLabel,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -108,6 +109,7 @@ from sashimono.engine.cache import MediaAnalyzer
 from sashimono.engine.cache.proxy import ProxyBuilder, ProxyStore
 from sashimono.engine.decode import ProbeError, probe_media
 from sashimono.engine.decode.batch import ProbeBatch
+from sashimono.engine.gpu import opengl_usable
 from sashimono.engine.render import FrameRenderer, RenderQuality
 from sashimono.links import MANUAL_URL, REPORT_URL
 from sashimono.ui import media_match
@@ -400,7 +402,25 @@ class MainWindow(QMainWindow):
         viewer_layout = QVBoxLayout(viewer)
         viewer_layout.setContentsMargins(0, 0, 0, 0)
         viewer_layout.setSpacing(0)
-        viewer_layout.addWidget(self._preview, 1)
+        if opengl_usable():
+            viewer_layout.addWidget(self._preview, 1)
+        else:
+            # GL を使えない機械では、プレビューを窓に入れない 入れると窓ごと GL で
+            # 描くようになり、閉じた後の片付け（ごみ集めか Python の終わり）でプロセス
+            # ごと落ちる（#149） 片付けの順を変えても直らなかった 隠すだけでは足りない
+            # Qt は GL の部品が子にいるだけで、隠れていても窓を GL で描く 部品そのものは
+            # 窓の外に作っておく 窓のほかの所がプレビューへ話しかけるのを、全部で分けずに済む
+            self._preview.setParent(None)
+            self._preview.hide()
+            notice = QLabel(
+                "OpenGL 4.3 を使えないため、プレビューを出せません\n"
+                "GPU のドライバを確かめてください 編集と保存はできます",
+                viewer,
+            )
+            notice.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            notice.setWordWrap(True)
+            notice.setStyleSheet(f"color: {Colors.TEXT_MUTED.name()};")
+            viewer_layout.addWidget(notice, 1)
         viewer_layout.addWidget(self._transport)
         viewer.setStyleSheet(f"background-color: {Colors.VIEWER_BACKGROUND.name()};")
         self.setCentralWidget(viewer)

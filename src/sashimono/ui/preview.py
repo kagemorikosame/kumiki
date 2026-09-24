@@ -30,7 +30,13 @@ from sashimono.engine.render import (
     image_spans,
 )
 from sashimono.engine.render.background import BackgroundPrefetch
-from sashimono.engine.render.outline import Outline, Point, clip_outline, is_generated
+from sashimono.engine.render.outline import (
+    Outline,
+    Point,
+    canvas_scale,
+    clip_outline,
+    is_generated,
+)
 from sashimono.ui.preview_handles import (
     KEYFRAME_DRAG_AT_PLAYHEAD,
     Grip,
@@ -544,6 +550,13 @@ class PreviewWidget(QOpenGLWidget):
         """合成の大きさ 画質を落としていれば小さい 枠はこの画素で数える"""
         return self._quality.apply(*self._project.settings.resolution)
 
+    def canvas_scale(self) -> float:
+        """合成の画素 1 つが画面の画素いくつ分かの逆数 描く側と同じく横の比で数える
+
+        ドラッグで動かした合成の画素を設定の X・Y（画面の画素）へ直すのに使う
+        """
+        return canvas_scale(self._project.settings.resolution, self.canvas_size())[0]
+
     def canvas_rect(self) -> tuple[float, float, float, float]:
         """絵が出ている所（ウィジェットの座標 左・上・幅・高さ）
 
@@ -751,7 +764,9 @@ class PreviewWidget(QOpenGLWidget):
         modifiers = event.modifiers()
         shift = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
         if drag.hit.grip is Grip.MOVE:
-            changes = moved_values(drag.start, drag.press, current, one_axis=shift)
+            changes = moved_values(
+                drag.start, drag.press, current, one_axis=shift, scale=self.canvas_scale()
+            )
         elif drag.hit.grip is Grip.SCALE:
             changes = scaled_values(
                 drag.start,
