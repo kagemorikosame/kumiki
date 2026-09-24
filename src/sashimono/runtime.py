@@ -24,6 +24,8 @@ from dataclasses import dataclass, field
 from importlib import metadata
 from pathlib import Path
 
+from packaging.version import InvalidVersion, Version
+
 from sashimono.core import userdirs
 
 __all__ = [
@@ -69,7 +71,7 @@ class PackageStatus:
         """入ってはいるが、求める版より古い"""
         if self.version is None or self.minimum is None:
             return False
-        return _version_key(self.version) < _version_key(self.minimum)
+        return _is_older(self.version, self.minimum)
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,28 +190,18 @@ def _package_status(requirement: str) -> PackageStatus:
     return PackageStatus(requirement, _version(_name_of(requirement)), minimum)
 
 
-def _version_key(version: str) -> tuple[int, ...]:
-    """版を比べられる形へ 数字の並びだけを見る
+def _is_older(version: str, minimum: str) -> bool:
+    """``version`` が ``minimum`` より古いか 版の決まり（PEP 440）どおりに比べる
 
-    ``packaging`` は配布版に積んでいない ここで比べるのは自分で書いた
-    ``>=`` の条件だけで、``1.2.0rc1`` のような印は数字の後ろを捨てて読めば足りる
+    数字だけを拾って比べると ``0.2.152rc1`` を ``0.2.152`` と同じに読み、
+    まだ出ていない版の前触れを「条件を満たす」と見てしまう
+    読めない版は古いと見ない 入っている物を使えないと決めつけて止めるより、
+    使わせてみて失敗の文面を見せる方が、次にすることが分かる
     """
-    parts: list[int] = []
-    for piece in version.split("."):
-        digits = ""
-        for char in piece:
-            if not char.isdigit():
-                break
-            digits += char
-        if not digits:
-            break
-        parts.append(int(digits))
-        if len(digits) != len(piece):
-            break
-    while parts and parts[-1] == 0:
-        # 1.2 と 1.2.0 を同じ版として扱う
-        parts.pop()
-    return tuple(parts)
+    try:
+        return Version(version) < Version(minimum)
+    except InvalidVersion:
+        return False
 
 
 def _version(name: str) -> str | None:

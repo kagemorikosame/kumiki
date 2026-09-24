@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import html
 import re
+from collections import deque
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QInputMethodEvent, QKeyEvent
@@ -110,8 +111,9 @@ class ChatPanel(QWidget):
         self._checkpoint_open = False
         #: 応答が 1 往復終わった回数 無人での確認に使う
         self._turns_done = 0
-        #: 送ってまだ応答が終わっていない指示の数 会話を繋ぎ直してよいかの判断に使う
-        self._pending_turns = 0
+        #: 送ってまだ応答が終わっていない指示（送った順） 会話を繋ぎ直してよいかの
+        #: 判断と、続けて送った指示の取り消しの段を、その指示の名前で開くのに使う
+        self._queued: deque[str] = deque()
 
         self._build()
         self._timer = QTimer(self)
@@ -304,7 +306,7 @@ class ChatPanel(QWidget):
         session = self._session
         if (
             session is not None
-            and self._pending_turns == 0
+            and not self._queued
             and not session.busy
             and (session.model, session.effort) != self._wanted()
         ):
@@ -319,7 +321,7 @@ class ChatPanel(QWidget):
         if session is None:
             return
         self._session = None
-        self._pending_turns = 0
+        self._queued.clear()
         session.close(wait=False)
         label = self._model.currentText()
         self._note(
@@ -350,13 +352,16 @@ class ChatPanel(QWidget):
         self._login_box.setVisible(not credentials_found())
         self._input.clear()
         self._say("あなた", prompt)
-        self._open_checkpoint(prompt)
+        self._queued.append(prompt)
+        if len(self._queued) == 1:
+            # 応答待ちの指示が他に無いときだけ段を開く 残っているときは、前の
+            # 指示が終わった所（_handle）で、この指示の段を開く
+            self._open_checkpoint(prompt)
 
         if self._session is None:
             model, effort = self._wanted()
             self._session = AgentSession(self._bridge, model=model, effort=effort)
         self._session.send(prompt)
-        self._pending_turns += 1
         self._stop_button.setEnabled(True)
 
     def interrupt(self) -> None:
@@ -416,15 +421,23 @@ class ChatPanel(QWidget):
             self._say("エラー", event.text)
         elif event.kind is EventKind.TURN_DONE or event.kind is EventKind.CLOSED:
             self._turns_done += 1
+            self._close_checkpoint()
             if event.kind is EventKind.TURN_DONE:
-                self._pending_turns = max(0, self._pending_turns - 1)
+                if self._queued:
+                    self._queued.popleft()
+                if self._queued:
+                    # 続けて送った指示の段を、その指示が始まる前に開く
+                    self._open_checkpoint(self._queued[0])
+                if self._session is not None:
+                    # 段を付け替え終えてから次の指示を始めさせる 先に始めると、
+                    # 次の指示の編集が前の段へ混ざる
+                    self._session.acknowledge_turn()
             else:
                 # 会話が終わった 残っていた指示はもう返ってこない
-                self._pending_turns = 0
-            if self._pending_turns == 0:
+                self._queued.clear()
+            if not self._queued:
                 # 続けて送った指示がまだ残っているなら、中断ボタンは生かしておく
                 self._stop_button.setEnabled(False)
-            self._close_checkpoint()
             # 応答の途中で選び直した分を、送った指示が全部終わった所で当てる
             self._restart_when_idle()
 

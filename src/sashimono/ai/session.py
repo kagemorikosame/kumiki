@@ -102,6 +102,11 @@ class AgentSession:
         self._client: Any = None
         self._busy = threading.Event()
         self._closed = threading.Event()
+        #: 画面が前の指示の区切り（取り消しの段）を付け終えたか
+        #: 付け終える前に次の指示を始めると、次の指示の編集が前の段へ混ざり、
+        #: 1 回の取り消しで 2 つの指示の編集がまとめて戻る
+        self._boundary = threading.Event()
+        self._boundary.set()
 
     # --- UI スレッドから ---
 
@@ -137,6 +142,14 @@ class AgentSession:
         self._bridge.resume()
         self._prompts.put(prompt)
 
+    def acknowledge_turn(self) -> None:
+        """TURN_DONE を受けて区切りを付け終えた 次の指示を始めてよい
+
+        画面が TURN_DONE を拾うのはタイマーの次の回なので、それまで会話の
+        スレッドを待たせる
+        """
+        self._boundary.set()
+
     def poll(self) -> list[AgentEvent]:
         """溜まった出来事を取り出す ブロックしない"""
         drained: list[AgentEvent] = []
@@ -162,6 +175,7 @@ class AgentSession:
         if not self.running:
             return
         self._closed.set()
+        self._boundary.set()  # 区切り待ちのまま畳まれずに残らないように
         self._bridge.cancel()
         self._prompts.put(None)
         thread = self._thread
@@ -195,9 +209,13 @@ class AgentSession:
             self._client = client
             self._emit(AgentEvent(EventKind.READY))
             while not self._closed.is_set():
+                await asyncio.to_thread(self._boundary.wait)
                 prompt = await asyncio.to_thread(self._prompts.get)
                 if prompt is None:
                     break
+                # TURN_DONE を出す前に下ろす 出した後だと、画面が先に区切りを
+                # 付け終えて立てた旗を、ここで消してしまうことがある
+                self._boundary.clear()
                 await self._turn(client, prompt)
 
     def option_values(self) -> dict[str, Any]:

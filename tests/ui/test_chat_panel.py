@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, cast
 
 import pytest
 from PySide6.QtCore import Qt
@@ -16,9 +16,9 @@ from PySide6.QtGui import QInputMethodEvent, QTextCursor
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QComboBox, QWidget
 
-from sashimono.ai.bridge import Approval
+from sashimono.ai.bridge import Approval, EditorBridge
 from sashimono.ai.models import MODELS
-from sashimono.ai.session import AgentEvent, EventKind
+from sashimono.ai.session import AgentEvent, AgentSession, EventKind
 from sashimono.core.commands import SplitClip
 from sashimono.core.model import MediaItem, Project, Transcript
 from sashimono.ui.chat import ChatPanel
@@ -322,7 +322,11 @@ class _RecordingSession:
         self.prompts: list[str] = []
         self.closed = False
         self.busy = False
+        self.acknowledged = 0
         _RecordingSession.made.append(self)
+
+    def acknowledge_turn(self) -> None:
+        self.acknowledged += 1
 
     def send(self, prompt: str) -> None:
         self.prompts.append(prompt)
@@ -469,6 +473,46 @@ class TestModelChoice:
         widget.apply_preferences(Preferences(ai_model="claude-sonnet-5", ai_effort="low"))
         assert (widget.model, widget.effort) == ("claude-sonnet-5", "low")
         assert announced == []
+
+
+class TestQueuedPrompts:
+    def test_each_queued_prompt_gets_its_own_undo_step(
+        self,
+        recorded: tuple[ChatPanel, list[_RecordingSession]],
+        loaded: Project,
+    ) -> None:
+        """応答を待つ間に続けて送った指示も、指示ごとに 1 回の取り消しで戻せる
+
+        前の指示の段を閉じる前に次の指示の編集が入ると、2 つの指示の編集が
+        1 つの段にまとまり、取り消し 1 回で両方が戻る
+        """
+        del loaded
+        widget, made = recorded
+        host = cast(FakeHost, widget._host)
+        clip = host.document.project.timeline.tracks[0].clips[0].id
+
+        widget._input.setPlainText("1 つ目")
+        widget.send()
+        widget._input.setPlainText("2 つ目")
+        widget.send()
+        host.apply_commands([SplitClip(clip, 60)], "分割")  # 1 つ目の指示の編集
+        widget._handle(AgentEvent(EventKind.TURN_DONE))
+        # 段を付け替え終えてから、次の指示を始めさせる
+        assert made[0].acknowledged == 1
+        assert host.document.in_checkpoint is True
+        host.apply_commands([SplitClip(clip, 30)], "分割")  # 2 つ目の指示の編集
+        widget._handle(AgentEvent(EventKind.TURN_DONE))
+
+        assert host.document.history_labels == ("AI: 1 つ目", "AI: 2 つ目")
+        assert host.document.in_checkpoint is False
+
+    def test_the_session_waits_for_the_boundary(self) -> None:
+        # 区切りを待たずに次の指示を始めると、次の指示の編集が前の段へ混ざる
+        session = AgentSession(cast(EditorBridge, object()))
+        session._boundary.clear()  # 1 つ目の指示を始めた所
+        assert session._boundary.is_set() is False
+        session.acknowledge_turn()
+        assert session._boundary.is_set() is True
 
 
 class TestLogin:
