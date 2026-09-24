@@ -222,7 +222,9 @@ float cell_noise(vec2 q, float z, float salt, bool distance_only) {
 
 // YMM4 のノイズのブラシ 大きさ 100% の目の粗さは、YMM4 に描かせた絵の粒の数から決めた
 float noise_value(vec2 p, float salt) {
-    vec2 scale = max(vec2(noise_scale_x, noise_scale_y) * 0.01, vec2(0.0001));
+    // 粒の大きさ（下の 2〜60）は画面の画素 画質を落とした下書きでも粒が絵に対して同じ大きさに
+    // 見えるよう、画面 1 画素あたりの画素数を掛ける 掛けないと下書きだけ粒が 2〜4 倍に粗くなる
+    vec2 scale = max(vec2(noise_scale_x, noise_scale_y) * 0.01, vec2(0.0001)) * u_pixel_scale;
     vec2 moved = rotated(p, -angle) + vec2(noise_x, noise_y) + vec2(speed_x, speed_y) * u_time;
     float z = noise_z + speed_z * u_time;
     float v;
@@ -263,7 +265,9 @@ vec4 pattern_color(vec2 p) {
     if (pattern == 1 || pattern == 3) {
         vec2 direction = vec2(cos(radians(angle)), sin(radians(angle)));
         // 割合で指定したときは絵の幅が 100（YMM4 の CoordinateMode が Relative）
-        float unit = relative ? object_size().x * 0.01 : 1.0;
+        // 長さとずらしは画素の値として画質の倍率を掛けて届くが、割合のときは倍率が要らない
+        // 絵の幅がもう下書きの画素で測られているので、ここで倍率を戻さないと二重に縮む
+        float unit = relative ? object_size().x * 0.01 / max(u_pixel_scale, 0.0001) : 1.0;
         float along = dot(q, direction) - offset * unit;
         float length_ = max(size * unit, 1.0);
         // 山形は中心で終わりの色、長さの半分で始まりの色に戻る
@@ -394,8 +398,14 @@ def register_paint_effects() -> None:
                 TrackSpec("noise_x", "ノイズの位置 X", -100000, 100000, 0, step=1, unit="px"),
                 TrackSpec("noise_y", "ノイズの位置 Y", -100000, 100000, 0, step=1, unit="px"),
                 TrackSpec("noise_z", "ノイズの奥行き", -100000, 100000, 0, step=0.01),
-                TrackSpec("speed_x", "ノイズの速さ X", -100000, 100000, 0, unit="px/秒"),
-                TrackSpec("speed_y", "ノイズの速さ Y", -100000, 100000, 0, unit="px/秒"),
+                # 速さは 1 秒あたりの画面の画素 単位の表示が px/秒 なので画素の長さだと明に書く
+                # 書かないと下書きでノイズの流れだけが 2〜4 倍に速く見える
+                TrackSpec(
+                    "speed_x", "ノイズの速さ X", -100000, 100000, 0, unit="px/秒", pixels=True
+                ),
+                TrackSpec(
+                    "speed_y", "ノイズの速さ Y", -100000, 100000, 0, unit="px/秒", pixels=True
+                ),
                 TrackSpec("speed_z", "奥行きの速さ", -1000, 1000, 0, step=0.01, unit="/秒"),
             ),
             fragment_shader=_PAINT,

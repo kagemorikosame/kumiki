@@ -25,7 +25,7 @@ from sashimono.core.model import (
 from sashimono.core.timebase import FrameRate
 from sashimono.effects.definition import registry
 from sashimono.engine.gpu import GLContextError, OffscreenGLContext
-from sashimono.engine.render import FrameRenderer
+from sashimono.engine.render import FrameRenderer, RenderQuality
 
 #: 位置と回転をスライダーで動かすだけのスクリプト
 MOVE = """--track0:X,-500,500,0,1
@@ -253,3 +253,47 @@ class TestMultipleDraws:
         third = int(image[middle, SCREEN[0] // 2 + 60, 0])
         # 後ろの枚ほど薄くなる
         assert first > third > 0
+
+
+def render_at(project: Project, context: OffscreenGLContext, divisor: int) -> np.ndarray:
+    renderer = FrameRenderer(project, context=context, quality=RenderQuality(divisor))
+    try:
+        return renderer.render(0)
+    finally:
+        renderer.close()
+
+
+@pytest.mark.parametrize("divisor", [2, 4])
+class TestALighterPreview:
+    """画質を落としたプレビューでも、スクリプトの絵が書き出しを縮めた所に出る（Issue #151）
+
+    スクリプトの値（obj.ox や obj.draw の位置）はどれが画素かを定義から読めない
+    スクリプトは画面の画素で走らせ、返った位置と大きさを描く直前に縮める 合成の画素で
+    走らせると、1/2 画質で位置も残像の間隔も 2 倍に出る
+    """
+
+    @pytest.mark.parametrize(
+        ("identifier", "params"),
+        [
+            ("aviutl:試験.anm:移動", {"track0": 80.0, "track1": 30.0, "track2": 150.0}),
+            ("aviutl:試験.anm:残像", {"track0": 3.0}),
+            ("aviutl:試験.anm:傾き", {"track1": 40.0, "track2": 200.0}),
+            ("aviutl:試験.anm:自分の幅", {}),
+            ("aviutl:試験.anm:四隅", {}),
+        ],
+    )
+    def test_the_drawing_is_the_export_shrunk(
+        self,
+        gl_context: OffscreenGLContext,
+        catalog: ScriptCatalog,
+        divisor: int,
+        identifier: str,
+        params: dict[str, float],
+    ) -> None:
+        del catalog
+        project = build(identifier, **params)
+        full = bounds(render(project, gl_context))
+        light = bounds(render_at(project, gl_context, divisor))
+        # 外接矩形の端を縮めた所と、縮めた合成の丸めの幅で重なる
+        for got, want in zip(light, full, strict=True):
+            assert got == pytest.approx(want / divisor, abs=1.5), (light, full)

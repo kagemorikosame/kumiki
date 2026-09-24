@@ -41,11 +41,17 @@ uniform float u_fps;           // 1 秒あたりのフレーム数
 uniform float u_duration;      // クリップの長さ（秒） 退場の動きは終わりから逆算する
 uniform vec4 u_object;         // 絵が置かれた範囲（画素、左・下・右・上 Y は上が正）
 uniform vec2 u_origin;         // 絵の原点（画素、Y は上が正） ふつうは範囲の中央
+// 合成の画素 1 つが、画面（プロジェクトの解像度）の画素いくつ分かの逆数 等倍で 1、1/2 画質で 0.5
+// 画素で決める設定（TrackSpec の pixels）はエンジンがこれを掛けてから渡す シェーダの中に
+// 書いた画素の長さは、これを掛けて使う 掛けないと、画質を落としたプレビューで 2 倍に出る
+uniform float u_pixel_scale;
 
 const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);  // Rec.709
 const float PI = 3.14159265358979;
 // 画面からカメラまでの距離 sashimono.engine.gpu.projection.CAMERA_DISTANCE と同じ値
-const float CAMERA = 1024.0;
+// 画面の画素で数えた距離なので、合成の画素へ縮める 縮めないと、画質を落としたプレビューで
+// 奥行きの付き方（傾けた板の遠近・奥へ置いた絵の縮み方）が書き出しと変わる
+#define CAMERA (1024.0 * u_pixel_scale)
 
 vec2 object_center() { return (u_object.xy + u_object.zw) * 0.5; }
 vec2 object_size() { return max(abs(u_object.zw - u_object.xy), vec2(1.0)); }
@@ -176,7 +182,9 @@ float hash(vec2 p) {
 // 画素（Y は下が正） 画像は上の行から積んであるので、そのまま割れば UV になる
 // loop が偽なら画像の外は透明 真なら敷き詰める（AviUtl2 の ループ画像）
 vec4 image_pixel(sampler2D image, vec2 size, vec2 p, bool loop) {
-    vec2 uv = p / max(size, vec2(1.0));
+    // 大きさは合成の画素（画質を落とすと画像の画素より小さい） 1 で止めると、画質を
+    // 落としたプレビューで小さな模様だけ縮まずに大きく出る 0 で割らないためだけに止める
+    vec2 uv = p / max(size, vec2(1e-4));
     if (loop) {
         uv = fract(uv);
     } else if (uv.x < 0.0 || uv.y < 0.0 || uv.x >= 1.0 || uv.y >= 1.0) {
@@ -454,7 +462,9 @@ uniform vec2 pattern_size;
 // （四角形の左端 860 から縁の太さぶん外）だった 中央を起点にする画像合成とは違う
 // 縁色は模様に混ざらない 縁色を赤にしても、縁は模様の色のままだった
 vec4 edge_color() {
-    if (pattern_size.x < 1.0 || pattern_size.y < 1.0) return color;
+    // 読めたかどうかは 0 かどうかで見る pattern_size は画質に合わせて縮めてあり、
+    // 1 未満で比べると、小さな模様の画像が画質を落としたプレビューでだけ消える
+    if (pattern_size.x <= 0.0 || pattern_size.y <= 0.0) return color;
     vec2 origin = vec2(u_object.x - width, u_object.w + width);
     vec2 pixel = v_uv * u_size;
     return image_pixel(pattern, pattern_size, vec2(pixel.x - origin.x, origin.y - pixel.y), true);
@@ -501,7 +511,9 @@ void main() {
     vec4 base = texture(u_texture, v_uv);
     // 画像が無い・読めないときは何もしない 絵を消すと、ファイルを
     // 動かしただけで文字が見えなくなり、何が起きたか分からない
-    if (image_file_size.x < 1.0 || image_file_size.y < 1.0) {
+    // 読めたかどうかは 0 かどうかで見る image_file_size は画質に合わせて縮めてあり、
+    // 1 未満で比べると、小さな画像が画質を落としたプレビューでだけ効かなくなる
+    if (image_file_size.x <= 0.0 || image_file_size.y <= 0.0) {
         frag_color = base;
         return;
     }
@@ -709,7 +721,8 @@ void main() {
     vec2 pixel = (v_uv - 0.5) * u_size;
     pixel.y = -pixel.y;
     vec2 centre = vec2(center_x, -center_y);
-    float length_ = max(span, 1.0);
+    // 下限は画面の 1 画素 合成の 1 画素で止めると、1/4 画質で幅 1 の帯が 4 倍に広がる
+    float length_ = max(span, u_pixel_scale);
 
     float t;
     if (shape == 1) {
