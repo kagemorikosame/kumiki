@@ -17,6 +17,7 @@ import numpy as np
 import pytest
 
 from sashimono.compat.aviutl import catalog as catalog_module
+from sashimono.compat.aviutl import raster
 from sashimono.compat.aviutl.catalog import ScriptCatalog, ScriptEntry, set_script_catalog
 from sashimono.compat.aviutl.custom_object import (
     custom_object_clip,
@@ -25,7 +26,7 @@ from sashimono.compat.aviutl.custom_object import (
 )
 from sashimono.compat.aviutl.exo import parse_exo
 from sashimono.compat.aviutl.mapping import map_object
-from sashimono.compat.aviutl.objapi import ObjectState
+from sashimono.compat.aviutl.objapi import MAX_FIGURE_SIZE, ObjectState
 from sashimono.compat.aviutl.report import CompatibilityReport
 from sashimono.compat.aviutl.runtime import LuaScriptRuntime
 from sashimono.core.model import AnimatedValue, Effect, GeneratedSource, ParamValue
@@ -216,6 +217,42 @@ class TestShapesTheScriptsUse:
         )
         # 拡大率 50 に X 200 を掛けて横は 40 x 0.5 x 2、縦は 40 x 0.5
         assert state.image.shape == (20, 40, 4)
+
+    def test_a_resize_past_the_limit_is_recorded(self, qt_application: object) -> None:
+        # 上限で黙って切ると、要求より小さく描かれた理由が互換性レポートに出ない
+        del qt_application
+        state = _state()
+        report = CompatibilityReport()
+        runtime = LuaScriptRuntime(render_source=_source, report=report)
+        runtime.run(
+            'obj.effect("リサイズ", "X", 5000, "Y", 10, "ドット数でサイズ指定", 1, "補間なし", 1)',
+            state,
+        )
+        assert state.image.shape[:2] == (10, MAX_FIGURE_SIZE)
+        assert any("リサイズ" in line and "上限" in line for line in report.missing)
+
+    def test_effects_stacked_before_a_resize_are_recorded(self, qt_application: object) -> None:
+        # 先に積んだぼかしは描くときに掛かるので、リサイズの後の絵へ掛かり順が入れ替わる
+        # 焼き込めないまま黙ると、ぼかしの幅が違う理由が分からない
+        del qt_application
+        state = _state()
+        report = CompatibilityReport()
+        runtime = LuaScriptRuntime(render_source=_source, report=report)
+        runtime.run(
+            'obj.load("figure", "四角形", 0xffffff, 10) obj.effect("ぼかし", "範囲", 4)'
+            ' obj.effect("リサイズ", "拡大率", 200)',
+            state,
+        )
+        assert state.image.shape[:2] == (20, 20)
+        assert any("リサイズ" in line and "先に積んだ" in line for line in report.missing)
+
+    def test_a_large_smooth_resize_matches_row_by_row(self) -> None:
+        # 大きな絵は行の束ごとに補間する 束の継ぎ目で値が変わると横縞が出る
+        rng = np.random.default_rng(0)
+        image = rng.integers(0, 256, (37, 53, 4), dtype=np.uint8)
+        whole = raster.resize(image, 301, 523)
+        banded = raster.resize(image, 301, 523, band=17)
+        assert np.array_equal(whole, banded)
 
     def test_a_line_as_wide_as_the_figure_fills_it(self, qt_application: object) -> None:
         # ``楕円`` は線の幅に 8000 を渡して塗りつぶしを頼む 図形オブジェクトの読み込みと

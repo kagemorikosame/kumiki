@@ -671,6 +671,18 @@ class ObjApi:
         if not (math.isfinite(width) and math.isfinite(height)):
             self._report.note_missing("obj.effect(リサイズ) の大きさ（数ではない）")
             return
+        if max(round(width), round(height)) > MAX_FIGURE_SIZE:
+            # 大きさはスクリプトが決める そのまま作ると 1 回で数 GB になるので切るが、
+            # 黙って切ると要求より小さく描かれた理由が互換性レポートに出ない
+            self._report.note_missing(
+                f"obj.effect(リサイズ) の大きさ {round(width)}x{round(height)}"
+                f"（上限 {MAX_FIGURE_SIZE} で切った）"
+            )
+        if state.effects:
+            # 先に積んだ効果は描くときに掛かる（GPU） ここで焼き込めないので、
+            # リサイズの後の絵へ掛かって順が入れ替わる 黙るとぼかしの幅などが違う理由が
+            # 分からないので記録に残す（オフスクリーン描画 と同じ扱い）
+            self._report.note_missing("obj.effect(リサイズ)（先に積んだ効果の焼き込み）")
         size = (
             max(1, min(round(width), MAX_FIGURE_SIZE)),
             max(1, min(round(height), MAX_FIGURE_SIZE)),

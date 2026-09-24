@@ -19,12 +19,19 @@ import numpy as np
 __all__ = ["draw_image", "draw_triangle", "resize"]
 
 
-def resize(image: np.ndarray, width: int, height: int, *, smooth: bool = True) -> np.ndarray:
+#: 双線形のリサイズで 1 度に補間する行の数 出力全体を一度に float で持つと、
+#: 上限の 4096 x 4096 で 1 枚 256 MiB の作業用の配列が 3 枚並び、描画ごと止まりうる
+RESIZE_BAND = 256
+
+
+def resize(
+    image: np.ndarray, width: int, height: int, *, smooth: bool = True, band: int = RESIZE_BAND
+) -> np.ndarray:
     """絵を ``width`` x ``height`` へ引き伸ばす（``obj.effect("リサイズ")``）
 
     ``smooth`` が偽なら最も近い画素を取る（リサイズの 補間なし） 真なら双線形で、
     色は不透明度を掛けてから混ぜる ストレートのまま混ぜると、透明な所の色（黒）が
-    縁へにじんで暗い輪が出る
+    縁へにじんで暗い輪が出る 双線形は ``band`` 行ずつ補間して作業用の配列を小さく保つ
     """
     h, w = image.shape[:2]
     width, height = max(1, width), max(1, height)
@@ -38,24 +45,35 @@ def resize(image: np.ndarray, width: int, height: int, *, smooth: bool = True) -
         picked: np.ndarray = np.ascontiguousarray(image[rows][:, cols])
         return picked
 
-    source = image.astype(np.float32) / 255.0
-    source[..., :3] *= source[..., 3:4]
     ys = np.clip((np.arange(height) + 0.5) * h / height - 0.5, 0, h - 1)
     xs = np.clip((np.arange(width) + 0.5) * w / width - 0.5, 0, w - 1)
-    y0 = np.floor(ys).astype(np.intp)
     x0 = np.floor(xs).astype(np.intp)
-    y1 = np.minimum(y0 + 1, h - 1)
     x1 = np.minimum(x0 + 1, w - 1)
-    fy = (ys - y0)[:, None, None]
     fx = (xs - x0)[None, :, None]
-    top = source[y0][:, x0] * (1 - fx) + source[y0][:, x1] * fx
-    bottom = source[y1][:, x0] * (1 - fx) + source[y1][:, x1] * fx
-    mixed = top * (1 - fy) + bottom * fy
-    alpha = mixed[..., 3:4]
-    with np.errstate(divide="ignore", invalid="ignore"):
-        mixed[..., :3] = np.where(alpha > 0, mixed[..., :3] / alpha, 0.0)
-    resized: np.ndarray = np.clip(np.rint(mixed * 255.0), 0, 255).astype(np.uint8)
+    resized = np.empty((height, width, 4), np.uint8)
+    for start in range(0, height, max(1, band)):
+        rows = ys[start : start + max(1, band)]
+        y0 = np.floor(rows).astype(np.intp)
+        y1 = np.minimum(y0 + 1, h - 1)
+        fy = (rows - y0)[:, None, None]
+        # 元の絵も要る行だけを float にする 元の絵を丸ごと float にすると、
+        # 上限の大きさの絵では 1 枚でまた 256 MiB になる
+        upper, lower = _premultiplied(image[y0]), _premultiplied(image[y1])
+        top = upper[:, x0] * (1 - fx) + upper[:, x1] * fx
+        bottom = lower[:, x0] * (1 - fx) + lower[:, x1] * fx
+        mixed = top * (1 - fy) + bottom * fy
+        alpha = mixed[..., 3:4]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            mixed[..., :3] = np.where(alpha > 0, mixed[..., :3] / alpha, 0.0)
+        resized[start : start + len(rows)] = np.clip(np.rint(mixed * 255.0), 0, 255)
     return resized
+
+
+def _premultiplied(pixels: np.ndarray) -> np.ndarray:
+    """0〜255 のストレートを 0〜1 の事前乗算へ"""
+    values = pixels.astype(np.float32) / 255.0
+    values[..., :3] *= values[..., 3:4]
+    return values
 
 
 def _over(target: np.ndarray, color: np.ndarray, alpha: np.ndarray) -> np.ndarray:
