@@ -445,18 +445,76 @@ class TestVideoEffects:
         """文字の縁取りでも「縁だけ」はテキストの縁取りに載せない
 
         テキストの縁取りは文字の塗りと一緒に描かれるので、載せると縁だけにならない
-        縁だけのエフェクトより前にある縁取りは、並びの順を保って先に掛かる
+        ほかの縁取りもテキストへ載せず、並びの順のままエフェクトにする 一番太いものだけを
+        テキストへ載せると、それが並びの頭へ動いて重なり順が変わる
         """
         edge = outline(10.0)
         edge["IsOutlineOnly"] = True
-        item = text_item(VideoEffects=[outline(4.0), edge])
+        item = text_item(VideoEffects=[outline(4.0), outline(12.0), edge])
         mapped = map_template([item], report=CompatibilityReport())[0]
         source = mapped.clip.source
         assert source is not None
-        assert value_at(source.params["border_width"]) == pytest.approx(4.0)
+        assert "border_width" not in source.params
         borders = [e for e in mapped.clip.effects if e.kind == "border"]
-        assert [b.params["outline_only"] for b in borders] == [True]
-        assert value_at(borders[0].params["width"]) == pytest.approx(10.0)
+        assert [(value_at(b.params["width"]), b.params["outline_only"]) for b in borders] == [
+            (4.0, False),
+            (12.0, False),
+            (10.0, True),
+        ]
+
+    def test_a_shape_border_before_an_outline_only_is_kept(self) -> None:
+        """図形で縁だけより前にあるふつうの縁取りも、エフェクトとして順に残る
+
+        テキストの縁取りの設定へ移すと、図形にはその設定が無いので黙って落ちる
+        """
+        edge = outline(5.0)
+        edge["IsOutlineOnly"] = True
+        mapped = map_template(
+            [shape_item(VideoEffects=[outline(3.0), edge])], report=CompatibilityReport()
+        )[0]
+        borders = [e for e in mapped.clip.effects if e.kind == "border"]
+        assert [(value_at(b.params["width"]), b.params["outline_only"]) for b in borders] == [
+            (3.0, False),
+            (5.0, True),
+        ]
+
+    def test_a_border_after_an_outline_only_comes_before_the_next_effect(self) -> None:
+        """縁だけの後ろのふつうの縁取りは、その次のエフェクトより前に掛かる
+
+        並びの最後へ回すと、後ろのぼかしが縁取りに掛からない
+        """
+        edge = outline(5.0)
+        edge["IsOutlineOnly"] = True
+        blur = {
+            "$type": "YukkuriMovieMaker.Project.Effects.GaussianBlurEffect, YukkuriMovieMaker",
+            "Blur": still(8.0),
+            "IsEnabled": True,
+        }
+        mapped = map_template(
+            [shape_item(VideoEffects=[edge, outline(3.0), blur])], report=CompatibilityReport()
+        )[0]
+        kinds = [e.kind for e in mapped.clip.effects if e.kind in ("border", "blur")]
+        assert kinds == ["border", "border", "blur"]
+
+    def test_a_moving_outline_keeps_moving(self) -> None:
+        """動く太さと不透明度は、最初の値で止めずに動きのまま写す
+
+        不透明度を色の濃さへ焼き込むと最初の値で止まるので、縁取りのエフェクトの
+        不透明度として持つ
+        """
+        effect = outline(4.0)
+        effect["StrokeThickness"] = moving(2.0, 10.0)
+        effect["Opacity"] = moving(100.0, 0.0)
+        item = text_item(VideoEffects=[effect], Length=100)
+        mapped = map_template([item], report=CompatibilityReport())[0]
+        source = mapped.clip.source
+        assert source is not None
+        assert "border_width" not in source.params
+        (border,) = [e for e in mapped.clip.effects if e.kind == "border"]
+        assert value_at(border.params["width"], 0) == pytest.approx(2.0)
+        assert value_at(border.params["width"], 99) == pytest.approx(10.0, abs=0.2)
+        assert value_at(border.params["opacity"], 0) == pytest.approx(100.0)
+        assert value_at(border.params["opacity"], 99) == pytest.approx(0.0, abs=2.0)
 
     def test_the_outline_opacity_thins_the_colour(self) -> None:
         """縁取りの不透明度は縁の色の濃さになる

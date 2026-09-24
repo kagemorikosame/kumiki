@@ -1484,6 +1484,29 @@ def test_a_ceiling_that_is_not_a_number_stops_before_comparing(
     assert compared == []
 
 
+@pytest.mark.parametrize(
+    "broken",
+    ['{"後光": null}', '{"後光": [1]}', '{"後光": {"a": 1}}', '{"後光": "71"}', "[71]", "{"],
+)
+def test_a_ceilings_file_of_the_wrong_shape_stops_with_guidance(
+    tool: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    broken: str,
+) -> None:
+    """上限のファイルの形が崩れていても、トレースバックでなく案内を出して終了コード 1
+
+    null や配列は float や .items() が TypeError や AttributeError を投げ、呼ぶ側が
+    受ける ValueError をすり抜けていた
+    """
+    monkeypatch.setattr(tool, "compare_work", lambda *args, **kwargs: [])
+    path = tmp_path / "ceilings.json"
+    path.write_text(broken, encoding="utf-8")
+    assert tool.command_compare(_compare_arguments(tmp_path, ceilings=path)) == 1
+    assert "上限を読めない" in capsys.readouterr().out
+
+
 def test_templates_the_export_never_reached_are_told_apart_by_their_ceiling(
     tool: ModuleType,
 ) -> None:

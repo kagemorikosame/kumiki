@@ -406,6 +406,27 @@ class TestDecorationEffects:
         assert just_outside[1] < 80, "縁が赤くない"
         assert max(centre(ring)) < 20, "縁だけなのに中身が残っている"
 
+    def test_border_opacity_thins_the_edge(self, draw: Callable[..., np.ndarray]) -> None:
+        """縁取りの不透明度は縁の濃さだけを変え、中身は変えない"""
+        square = white_square(60)
+        border = registry.require("border")
+        half = draw(square, (border.create(width=8, color=(1.0, 0.0, 0.0, 1.0), opacity=50),))
+        just_outside = half[HEIGHT // 2, WIDTH // 2 + 34]
+        assert 90 < just_outside[0] < 170, "縁の濃さが半分になっていない"
+        assert centre(half)[1] > 200, "中身まで薄くなった"
+
+    def test_a_crop_of_nothing_keeps_the_border_outside(
+        self, draw: Callable[..., np.ndarray]
+    ) -> None:
+        """切る量が 0 の辺では、前の縁取りが絵の範囲の外に描いた縁を消さない"""
+        square = white_square(60)
+        border = registry.require("border").create(width=8, color=(1.0, 0.0, 0.0, 1.0))
+        crop = registry.require("crop").create(top=10)
+        image = draw(square, (border, crop))
+        just_outside = image[HEIGHT // 2, WIDTH // 2 + 34]
+        assert just_outside[0] > 100, "切っていない右の辺の縁が消えた"
+        assert image[HEIGHT // 2 - 28, WIDTH // 2][0] < 20, "切った上の辺が残った"
+
     def test_a_transparent_pattern_colour_does_not_bleed(
         self, draw: Callable[..., np.ndarray]
     ) -> None:

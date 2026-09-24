@@ -523,7 +523,19 @@ def ceilings_from(worst: dict[str, float], margin: float = CEILING_MARGIN) -> di
 def read_ceilings(path: Path) -> dict[str, float]:
     if not path.exists():
         return {}
+    # 形の崩れは ValueError にそろえる 呼ぶ側はそれだけを受けて案内を出すので、
+    # null や配列が TypeError のまま抜けると、案内の代わりにトレースバックで止まる
+    # JSON の読み違い（json.JSONDecodeError）も ValueError の仲間
     raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError(f"{path} はテンプレートの名前と上限の組（JSON のオブジェクト）でない")
+    odd = [
+        str(name)
+        for name, value in raw.items()
+        if isinstance(value, bool) or not isinstance(value, int | float)
+    ]
+    if odd:
+        raise ValueError(f"{path} の上限が数でない: {', '.join(odd)}")
     ceilings = {str(name): float(value) for name, value in raw.items()}
     # NaN や Infinity は float が受け取ってしまう どちらも「超えた」にならないので、
     # 入っていると差がいくら大きくても通る
