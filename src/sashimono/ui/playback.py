@@ -117,23 +117,40 @@ class PlaybackController(QObject):
             self.state_changed.emit(False)
             self.failed.emit(str(exc))
 
+    def _reached_end(self, position: int) -> bool:
+        """音の位置がプロジェクトの終わりに届いたか
+
+        フレームへ直してから比べない 29.97fps のように割り切れない速さでは、
+        終わりのサンプル（切り捨て）をフレームへ戻すと（これも切り捨て）1 つ手前になり、
+        最後まで鳴らしても終わりに届かないまま止まる
+        """
+        end = self._project.duration
+        rate, sample_rate = self._project.rate, self._mixer.sample_rate
+        if position >= _frame_to_sample(end, rate, sample_rate):
+            return True
+        return _sample_to_frame(position, rate, sample_rate) >= end
+
     def _tick(self) -> None:
         if not self._playing:
             return
 
-        frame = _sample_to_frame(
-            self._player.position_sample, self._project.rate, self._mixer.sample_rate
-        )
-        if frame >= self._project.duration:
+        position = self._player.position_sample
+        if not self._player.is_playing:
+            # 止まったのを見てから位置を読み直す 読んだ直後に鳴り終えていると、
+            # 終わりの手前の位置のまま「デバイスが止まった」側へ入ってしまう
+            position = self._player.position_sample
+            if not self._reached_end(position):
+                # デバイスが抜かれた等 止まった所で止める
+                self.stop()
+                return
+
+        if self._reached_end(position):
             self._frame = self._project.duration
             self.frame_changed.emit(self._frame)
             self.stop()
             return
 
-        if not self._player.is_playing:
-            # デバイスが止まった 位置だけ末尾へ送って停止する
-            self.stop()
-            return
+        frame = _sample_to_frame(position, self._project.rate, self._mixer.sample_rate)
 
         if frame != self._frame:
             self._frame = frame

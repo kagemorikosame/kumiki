@@ -57,6 +57,7 @@ def run_self_check() -> list[CheckResult]:
     checks: list[tuple[str, Callable[[], str], bool]] = [
         ("版", _version, False),
         ("Qt", _qt, False),
+        ("Qt の日本語訳", _qt_translation, False),
         ("編集画面を組み立てる", _editor, False),
         ("GL で描く", _render, False),
         ("書き出す（FFmpeg）", _export, False),
@@ -153,6 +154,30 @@ def _qt() -> str:
     if QApplication.instance() is None:
         _application = QApplication([sys.argv[0] if sys.argv else "sashimono"])
     return f"Qt {qVersion()}"
+
+
+def _qt_translation() -> str:
+    """Qt 標準の文言の日本語訳を積んだか
+
+    積み忘れても起動はするが、確認の窓のボタンが Save / Discard / Cancel と英語で出る
+    起動しただけでは気付きにくいので、ここで落とす
+    """
+    from PySide6.QtWidgets import QApplication, QMessageBox
+
+    from sashimono.ui.translation import QT_TRANSLATION, install_qt_translation
+
+    application = QApplication.instance()
+    if application is None:
+        raise RuntimeError("Qt のアプリケーションが無い（Qt の項目が落ちている）")
+    folder = install_qt_translation(application)
+    if folder is None:
+        raise RuntimeError(f"{QT_TRANSLATION}.qm が見つからない")
+    box = QMessageBox()
+    box.setStandardButtons(QMessageBox.StandardButton.Cancel)
+    label = box.button(QMessageBox.StandardButton.Cancel).text()
+    if label == "Cancel":
+        raise RuntimeError(f"{folder} の翻訳を読んだが、ボタンが英語のまま")
+    return label
 
 
 #: 編集画面が読み書きする、本人の置き場 確かめる間だけ一時フォルダへ向ける
