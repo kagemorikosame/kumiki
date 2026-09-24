@@ -307,8 +307,9 @@ class TestOffscreen:
         assert np.array_equal(state.image, before)
         assert not any("オフスクリーン" in line for line in report.lines())
 
-    def test_with_effects_stacked_it_is_recorded(self) -> None:
-        # 積んだ効果の焼き込みはまだ写していない 黙って素通しにしない
+    def test_with_effects_stacked_and_no_baker_it_is_recorded(self) -> None:
+        # 効果を掛ける関数（GPU を持つ描画側が渡す）が無いと焼き込めない 黙って素通しにしない
+        # 渡したときは焼き込む（tests/compat/test_effect_settle.py）
         report = CompatibilityReport()
         runtime = LuaScriptRuntime(render_source=_source, report=report)
         runtime.run('obj.effect("ぼかし", "範囲", 5)\nobj.effect("オフスクリーン描画")', _state())

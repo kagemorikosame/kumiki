@@ -57,6 +57,7 @@ from sashimono.engine.gpu.projection import project
 from sashimono.engine.motion_shapes import TrailPaths
 from sashimono.engine.render.invalidate import image_paths
 from sashimono.engine.render.outline import canvas_scale, is_generated, media_pixel_size
+from sashimono.engine.render.script_bake import ScriptEffectBaker
 from sashimono.engine.render.scripts import (
     ScriptStage,
     requested_effects,
@@ -462,6 +463,8 @@ class FrameRenderer:
         self._textures: dict[str, Texture] = {}
         #: AviUtl スクリプトを走らせる係 使うまで作らない
         self._scripts: ScriptStage | None = None
+        #: スクリプトが積んだ効果を、その場で絵へ掛ける係（#176） GPU の物は使うまで作らない
+        self._script_baker = ScriptEffectBaker()
         #: フレームバッファのクリップが画面を写し取る先 使うまで作らない
         self._grab: Framebuffer | None = None
         #: クリップごとに作った絵 同じ設定と同じフレームなら作り直さない
@@ -911,6 +914,7 @@ class FrameRenderer:
                 texture.release()
             self._textures.clear()
             self._effects.release()
+            self._script_baker.release()
             if self._grab is not None:
                 self._grab.release()
             for nested in (*self._nested.values(), *self._layers.values()):
@@ -1642,7 +1646,11 @@ class FrameRenderer:
         プロジェクトでその代金を払わせない
         """
         if self._scripts is None:
-            self._scripts = ScriptStage(script_catalog(), screen=self._project.settings.resolution)
+            self._scripts = ScriptStage(
+                script_catalog(),
+                screen=self._project.settings.resolution,
+                apply_effects=self._script_baker.apply,
+            )
         else:
             # スクリプトへ見せる画面は画質に関わらずプロジェクトの解像度（:meth:`_draw_scripted`）
             self._scripts.set_screen(*self._project.settings.resolution)

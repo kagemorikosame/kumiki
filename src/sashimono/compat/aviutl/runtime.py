@@ -297,6 +297,7 @@ class LuaScriptRuntime:
         report: CompatibilityReport | None = None,
         render_source: Any = None,
         instruction_limit: int = INSTRUCTION_LIMIT,
+        apply_effects: Any = None,
     ) -> None:
         module = _load_module()
         if module is None:  # pragma: no cover - lupa は既定で入っている
@@ -304,6 +305,8 @@ class LuaScriptRuntime:
 
         self._report = report if report is not None else global_report
         self._render_source = render_source
+        #: 積んだ効果をその場で掛ける関数（:meth:`ObjApi._settle_effects`） GPU を持つ描画側が渡す
+        self._apply_effects = apply_effects
         self._instruction_limit = instruction_limit
         self._lua = _new_runtime(module)
         #: 値の種類を Lua の見方で調べる（表かどうか） DLL へ渡す前に写すため
@@ -400,6 +403,7 @@ class LuaScriptRuntime:
             load_module=self.load_module,
             load_script_module=self.load_script_module,
             emit=emit,
+            apply_effects=self._apply_effects,
         )
         with self._lock:
             self._folder = folder
