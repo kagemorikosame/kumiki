@@ -133,6 +133,11 @@ class AgentSession:
         if self.running:
             return
         self._closed.clear()
+        # 前の接続が繋がる前に落ちると（Claude Code が見つからない・ログインが
+        # まだ、など）、取られなかった指示が残る 残したまま繋ぎ直すと、画面が
+        # 捨てた指示を黙って先に実行し、その編集が次の指示の取り消しの段へ入る
+        self._prompts = queue.Queue()
+        self._boundary.set()
         self._thread = threading.Thread(target=self._run, name="sashimono-agent", daemon=True)
         self._thread.start()
 

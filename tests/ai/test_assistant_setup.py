@@ -18,7 +18,7 @@ from sashimono.ai import environment
 from sashimono.ai.bridge import EditorBridge
 from sashimono.ai.environment import AI_PACK
 from sashimono.ai.models import effort_for
-from sashimono.ai.session import AgentSession
+from sashimono.ai.session import AgentSession, EventKind
 from sashimono.runtime import install_command
 from sashimono.ui.workspace import Preferences, PreferenceStore
 from tests.test_runtime_after_install import write_distribution
@@ -29,7 +29,10 @@ def machine(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     """SDK も claude も入っていない機械 戻り値は、導入先に見立てたフォルダ"""
     site = tmp_path / "site"
     site.mkdir()
-    monkeypatch.setattr(sys, "path", [str(site)])
+    # 標準ライブラリは残す メタデータの読み取りが初めて読む部品（email など）を
+    # 引けなくなる 開発機に入っている SDK が見える site-packages だけを外す
+    kept = [p for p in sys.path if "site-packages" not in p.replace("\\", "/")]
+    monkeypatch.setattr(sys, "path", [str(site), *kept])
     for name in list(sys.modules):
         if name == "claude_agent_sdk" or name.startswith("claude_agent_sdk."):
             monkeypatch.delitem(sys.modules, name)
@@ -107,6 +110,8 @@ class TestBundledClaudeCode:
         assert environment.runtime_status().ready is True
 
     def test_an_old_sdk_without_the_bundle_still_asks_for_claude(self, machine: Path) -> None:
+        # 壊れると、Claude Code が無いのに入力欄が開き、最初の送信が
+        # CLINotFoundError で落ちる 入れ方の案内も出ない
         _install_sdk(machine, bundled=False)
         status = environment.runtime_status()
         assert status.ready is False
@@ -115,10 +120,13 @@ class TestBundledClaudeCode:
 
 class TestCredentials:
     def test_no_login_is_detected(self, machine: Path) -> None:
+        # 壊れると、ログインしていない人にログインの案内が出ず、送った指示が
+        # 英語の認証エラーで返るまで何をすればよいか分からない
         del machine
         assert environment.credentials_found() is False
 
     def test_a_logged_in_claude_code_is_detected(self, machine: Path, tmp_path: Path) -> None:
+        # 壊れると、ログイン済みの人にもログインの案内が出続け、済んだのか分からない
         del machine
         folder = tmp_path / "home" / ".claude"
         folder.mkdir()
@@ -129,6 +137,7 @@ class TestCredentials:
         self, machine: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         del machine
+        # 壊れると、API キーで使っている人にも、要らないログインの案内が出続ける
         # 値の中身は見ない 在るかどうかだけ
         monkeypatch.setenv("ANTHROPIC_API_KEY", "dummy")
         assert environment.credentials_found() is True
@@ -136,6 +145,8 @@ class TestCredentials:
     def test_the_login_window_runs_only_claude_code(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
+        # 壊れると、ログインのつもりで余計な引数や shell を通した起動が混ざる
+        # 起動するのは見つけた Claude Code の実行ファイルただ 1 つに限る
         started: list[list[str]] = []
 
         def popen(argv: list[str], **_kwargs: object) -> None:
@@ -181,6 +192,8 @@ class TestSessionOptions:
     def test_an_old_sdk_gets_the_separately_installed_claude(
         self, machine: Path, tmp_path: Path
     ) -> None:
+        # 壊れると、エクスプローラから起動した画面では PATH に無い ~/.local/bin の
+        # claude を SDK が見つけられず、入れてあるのに会話が始まらない
         _install_sdk(machine, bundled=False)
         local = tmp_path / "home" / ".local" / "bin" / "claude.exe"
         local.parent.mkdir(parents=True)
@@ -195,8 +208,53 @@ class TestSessionOptions:
         assert set(values) <= fields
 
 
+class _QuietBridge:
+    """会話が送るときと畳むときに呼ぶ所だけを持つ 編集の依頼はここへ来ない"""
+
+    def resume(self) -> None:
+        return
+
+    def cancel(self) -> None:
+        return
+
+
+class TestReconnect:
+    def test_a_prompt_left_by_a_failed_connection_is_not_run_later(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """繋がる前に落ちた会話の指示を、次に繋いだときに実行しない
+
+        画面は落ちた時点でその指示を捨てている 残っていると、次の指示より先に
+        黙って実行され、その編集が次の指示の取り消しの段へ入る
+        """
+        queried: list[str] = []
+        attempts: list[int] = []
+
+        async def main(self: AgentSession) -> None:
+            attempts.append(1)
+            if len(attempts) == 1:
+                # ログインがまだ、などで接続に失敗した 指示は取られないまま
+                raise RuntimeError("接続に失敗しました")
+            prompt = self._prompts.get()
+            if prompt is not None:
+                queried.append(prompt)
+
+        monkeypatch.setattr(AgentSession, "_main", main)
+        session = AgentSession(cast(EditorBridge, _QuietBridge()))
+        session.send("前の指示")
+        assert session._thread is not None
+        session._thread.join(timeout=5.0)
+        kinds = [event.kind for event in session.poll()]
+        assert kinds[-1] is EventKind.CLOSED
+
+        session.send("次の指示")
+        session._thread.join(timeout=5.0)
+        assert queried == ["次の指示"]
+
+
 class TestPreferences:
     def test_the_choices_survive_a_restart(self, tmp_path: Path) -> None:
+        # 壊れると、選んだモデルや送り方が次に起動したとき既定へ戻る
         store = PreferenceStore(tmp_path / "preferences.json")
         chosen = Preferences(ai_model="claude-fable-5-1", ai_effort="max", chat_enter_sends=False)
         store.save(chosen)
@@ -213,6 +271,7 @@ class TestPreferences:
         assert (loaded.ai_model, loaded.ai_effort, loaded.chat_enter_sends) == ("", "", True)
 
     def test_the_settings_dialog_keeps_them(self, qt_application: object) -> None:
+        # 壊れると、設定を開いて OK を押しただけで、欄の上で選んだモデルが既定へ戻る
         del qt_application
         from sashimono.ui.preferences_dialog import PreferencesDialog
 
