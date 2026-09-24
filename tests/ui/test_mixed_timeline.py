@@ -719,6 +719,8 @@ class TestTheWindowFollowsThePreference:
     def test_the_first_project_follows_a_separated_preference(
         self, qt_application: QApplication
     ) -> None:
+        # 好みを見ずに混合で作ると、分ける方式を選んだ人も起動するたびに混合の空の
+        # プロジェクトから始まり、素材を置くと 1 本のレイヤーにまとまってしまう
         from sashimono.ui.main_window import MainWindow
 
         del qt_application
