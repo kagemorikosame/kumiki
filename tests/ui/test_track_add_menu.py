@@ -438,6 +438,58 @@ class TestEffectsOnAClip:
         assert {c.clip_id for c in commands if isinstance(c, AddEffect)} == {first.id, second.id}
 
 
+class TestEffectsOnALayerClip:
+    """レイヤー（混合）の 1 本のクリップは、描く・鳴らすに合わせてエフェクトを選ぶ"""
+
+    def _layered(
+        self, view: TimelineView, video_media: MediaItem, audio_media: MediaItem
+    ) -> tuple[Clip, Clip]:
+        movie = Clip(0, 60, media_id=video_media.id, audio_stream=1)
+        bgm = Clip(0, 60, media_id=audio_media.id, audio_stream=0, show_picture=False)
+        base = Project.create(media=(video_media, audio_media))
+        tracks = (
+            Track(TrackKind.MIXED, "レイヤー 1", (movie,)),
+            Track(TrackKind.MIXED, "レイヤー 2", (bgm,)),
+        )
+        view.set_project(base.with_timeline(replace(base.timeline, tracks=tracks)))
+        return movie, bgm
+
+    def _offered(self, view: TimelineView, track: str) -> set[str]:
+        # 画面の並べ方がまだレイヤーを出さない（P4b）ので、クリップの右クリックの中身を
+        # 作る所を直に呼ぶ
+        layer = next(t for t in view.project.timeline.tracks if t.name == track)
+        menu = QMenu()
+        view._add_menus.add_clip_items(menu, layer, layer.clips[0])
+        effects = _menu(menu, "エフェクトを追加")
+        return {a.text() for sub in _submenus(effects) for a in sub.actions()}
+
+    def test_the_offer_follows_what_the_clip_plays(
+        self, view: TimelineView, video_media: MediaItem, audio_media: MediaItem
+    ) -> None:
+        # 種類だけで見ると、レイヤーの BGM に音のエフェクトが出ず、効かない絵のエフェクトが並ぶ
+        self._layered(view, video_media, audio_media)
+        audio = {d.label for d in registry.all() if d.audio_process is not None}
+        video = {d.label for d in registry.all() if d.audio_process is None}
+        movie = self._offered(view, "レイヤー 1")
+        bgm = self._offered(view, "レイヤー 2")
+        assert movie & audio and movie & video
+        assert bgm & audio
+        assert not bgm & (video - audio)
+
+    def test_a_sound_effect_reaches_layer_clips(
+        self, view: TimelineView, video_media: MediaItem, audio_media: MediaItem
+    ) -> None:
+        # 音声トラックのクリップにしか掛けないと、レイヤーでは音のエフェクトが何も起きない
+        movie, bgm = self._layered(view, video_media, audio_media)
+        received: list[list[Command]] = []
+        view.commands_requested.connect(lambda commands, _label: received.append(commands))
+        view.set_selection((movie.id, bgm.id))
+        sound = next(d for d in registry.all() if d.audio_process is not None)
+        view._add_menus.add_effect(sound.kind)
+        (commands,) = received
+        assert {c.clip_id for c in commands if isinstance(c, AddEffect)} == {movie.id, bgm.id}
+
+
 class TestAliases:
     def test_a_saved_text_comes_back_from_the_add_menu(self, view: TimelineView) -> None:
         # 保存したのに一覧に出ないと、同じテロップを毎回作り直すことになる

@@ -62,7 +62,9 @@ __all__ = [
     "TRACK_CHOICES",
     "AddSources",
     "TimelineAddMenus",
+    "clip_roles",
     "effects_for",
+    "effects_for_clip",
 ]
 
 #: 「＋ トラック追加」の選択肢（表示、種類、エフェクトトラックか）
@@ -140,11 +142,35 @@ def effects_for(kind: TrackKind) -> tuple[EffectDefinition, ...]:
     逆に掛けると、積めても何も起きない
     """
     audio = kind is TrackKind.AUDIO
+    return _effects(picture=not audio, sound=audio)
+
+
+def _effects(*, picture: bool, sound: bool) -> tuple[EffectDefinition, ...]:
     return tuple(
         definition
         for definition in registry.all()
-        if (definition.audio_process is not None) == audio and definition.category != _CUSTOM_OBJECT
+        if (sound if definition.audio_process is not None else picture)
+        and definition.category != _CUSTOM_OBJECT
     )
+
+
+def clip_roles(project: Project, track: Track, clip: Clip) -> tuple[bool, bool]:
+    """クリップへ掛けて効くのは（絵のエフェクト, 音のエフェクト）か
+
+    映像・音声のトラックは種類で決まる（今までどおり） レイヤー（混合）は 1 本のクリップが
+    絵も音も持てるので、描く・鳴らすかで決める 種類だけで見ると、レイヤーの音付き動画や
+    BGM に音のエフェクトを掛けられず、BGM には効かない絵のエフェクトが並ぶ
+    """
+    if track.kind is TrackKind.MIXED:
+        return project.draws_picture(track, clip), project.plays_sound(track, clip)
+    audio = track.kind is TrackKind.AUDIO
+    return not audio, audio
+
+
+def effects_for_clip(project: Project, track: Track, clip: Clip) -> tuple[EffectDefinition, ...]:
+    """``clip`` へ掛けられるエフェクト（:func:`clip_roles`）"""
+    picture, sound = clip_roles(project, track, clip)
+    return _effects(picture=picture, sound=sound)
 
 
 class TimelineAddMenus:
@@ -204,7 +230,7 @@ class TimelineAddMenus:
     def add_clip_items(self, menu: QMenu, track: Track, clip: Clip) -> None:
         """クリップの上の右クリック エフェクトを掛けるのと、エイリアスとして保存"""
         effects = menu.addMenu("エフェクトを追加")
-        self._fill_effects(effects, track.kind)
+        self._fill_effects(effects, effects_for_clip(self._project, track, clip))
         save = _action(menu, "エイリアスとして保存…", functools.partial(self.save_alias, clip.id))
         reason = alias_refusal(clip)
         save.setEnabled(reason is None)
@@ -225,8 +251,7 @@ class TimelineAddMenus:
         # クリップごと消すと、見えていない所のクリップまで黙って消える 空のときだけにする
         remove.setEnabled(not track.clips)
 
-    def _fill_effects(self, menu: QMenu, kind: TrackKind) -> None:
-        definitions = effects_for(kind)
+    def _fill_effects(self, menu: QMenu, definitions: tuple[EffectDefinition, ...]) -> None:
         if not definitions:
             _placeholder(menu, "（掛けられるエフェクトがありません）")
             return
@@ -365,19 +390,22 @@ class TimelineAddMenus:
     def add_effect(self, kind: str) -> None:
         """選んでいるクリップへエフェクトを掛ける 何本選んでいても取り消しは 1 回
 
-        右クリックしたクリップと同じ種類（映像か音声か）のクリップにだけ掛ける
-        映像と音声を一緒に選んでいるときに、音声のクリップへ映像のエフェクトを積んでも
-        何も起きず、設定パネルに効かない項目が増えるだけになる
+        そのエフェクトが効くクリップ（:func:`clip_roles`）にだけ掛ける 映像と音声を
+        一緒に選んでいるときに、音声のクリップへ映像のエフェクトを積んでも何も起きず、
+        設定パネルに効かない項目が増えるだけになる
         """
         definition = registry.get(kind)
         if definition is None:
             return
         audio = definition.audio_process is not None
-        timeline = self._project.timeline
+        project = self._project
         targets: list[ClipId] = []
         for clip_id in self._view.selected_clips:
-            located = timeline.locate_clip(clip_id)
-            if located is not None and (located[0].kind is TrackKind.AUDIO) == audio:
+            located = project.timeline.locate_clip(clip_id)
+            if located is None:
+                continue
+            picture, sound = clip_roles(project, *located)
+            if sound if audio else picture:
                 targets.append(clip_id)
         commands: list[Command] = [AddEffect(c, definition.create()) for c in targets]
         label = f"{definition.label}を追加"
