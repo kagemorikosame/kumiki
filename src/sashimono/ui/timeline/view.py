@@ -395,6 +395,11 @@ class TimelineView(QWidget):
         self._playhead = frame
         if follow and self._follow_playhead:
             self._layout = self._layout.ensure_visible(frame, self.width())
+        else:
+            # 追わないとき（目盛りを掴んで動かしているときなど）も、末尾の先へ出た
+            # 再生ヘッドのぶん横の長さが変わる 合わせないと、バーの端まで寄せても
+            # 再生ヘッドまで届かない
+            self._sync_scroll_bars()
         self.update()
 
     @property
@@ -526,9 +531,13 @@ class TimelineView(QWidget):
         )
         found = set(chosen)
         if links:
+            # ロックしたトラックの相手には付けない 移動もトリムもその相手を動かさない
+            # （:meth:`_linked_partners` と同じ決まり） 枠を付けると一緒に動くように見える
+            # 選んだクリップそのものは、ロックしていても選んだ印として残す
             found.update(
                 clip.id
                 for track in timeline.tracks
+                if not track.locked
                 for clip in track.clips
                 if clip.link_group in links
             )

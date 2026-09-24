@@ -144,6 +144,21 @@ class TestHorizontalBar:
         x = view.view_layout.frame_to_x(6000)
         assert Metrics.TRACK_HEADER_WIDTH <= x < view.width()
 
+    def test_scrubbing_past_the_end_lengthens_the_bar(self, area: TimelineArea) -> None:
+        # 目盛りを掴んで末尾の先へ動かすと、再生ヘッドは追わない（follow=False）ので、
+        # バーの長さを合わせ直す所を通らず、端まで寄せても再生ヘッドに届かなかった
+        # （PR #145 の指摘）
+        view = area.view
+        bar = view.horizontal_scroll_bar
+        bar.setValue(bar.maximum())
+        before = bar.maximum()
+        QTest.mouseClick(view, _LEFT, pos=QPoint(view.width() - 2, 10))
+        assert view.playhead > 3000
+        assert bar.maximum() > before
+        # 端まで寄せれば再生ヘッドが画面に入る
+        bar.setValue(bar.maximum())
+        assert view.view_layout.frame_to_x(view.playhead) < view.width()
+
     def test_the_bar_starts_after_the_header(self, area: TimelineArea) -> None:
         # バーが動かすのは時間の軸 ヘッダの下まで伸ばすと、何を動かすのか分かりにくい
         bar = area.view.horizontal_scroll_bar
@@ -288,6 +303,21 @@ class TestLinkedSelection:
         _, video, _ = _linked_view(view, video_media)
         view.select(video.id)
         assert view.selected_clips == (video.id,)
+
+    def test_a_locked_partner_is_not_outlined(
+        self, view: TimelineView, video_media: MediaItem
+    ) -> None:
+        # ロックしたトラックの相手は、動かしても削っても付いてこない そこに枠を付けると
+        # 一緒に動くように見え、離したときに片方だけが動いて驚く（PR #145 の指摘）
+        base, video, audio = _linked_view(view, video_media)
+        track = next(t for t in base.timeline.tracks if t.kind is TrackKind.AUDIO)
+        locked = base.with_timeline(base.timeline.replace_track(replace(track, locked=True)))
+        view.set_project(locked)
+        view.select(video.id)
+        image = view.grab().toImage()
+        left = int(view.view_layout.frame_to_x(audio.timeline_start))
+        assert _white_in_column(image, left, _band(view, TrackKind.AUDIO)) == 0
+        assert _white_in_column(image, left, _band(view, TrackKind.VIDEO)) > 10
 
     def test_dragging_shows_where_the_sound_lands(
         self, view: TimelineView, video_media: MediaItem
