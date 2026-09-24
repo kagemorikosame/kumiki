@@ -31,6 +31,7 @@ from sashimono.engine.encode import (
 )
 from sashimono.engine.render.background import MEASURED_PREFETCH_STALL_MS
 from sashimono.engine.render.prefetch import BYTES_PER_FRAME_PIXEL
+from sashimono.ui.media_match import MATCH_CHOICES
 from sashimono.ui.media_pool import VIEW_ICONS, VIEW_LIST
 from sashimono.ui.workspace import DOCK_TABS_BOTTOM, DOCK_TABS_TOP, Preferences
 
@@ -215,6 +216,17 @@ class PreferencesDialog(QDialog):
         self._media_view.setToolTip("素材一覧の上の「一覧」「アイコン」のボタンと同じ")
         form.addRow("素材一覧の表示", self._media_view)
 
+        self._match_video = QComboBox(self)
+        for value, text in MATCH_CHOICES:
+            self._match_video.addItem(text, value)
+        self._match_video.setCurrentIndex(
+            max(0, self._match_video.findData(preferences.match_video))
+        )
+        self._match_video.setToolTip(
+            "空のプロジェクトへ最初の動画を置いたとき、プロジェクトの解像度とフレームレートが"
+            "動画と違えばどうするか フレームレートを変えられるのはタイムラインが空のときだけ"
+        )
+        form.addRow("最初の動画に合わせる", self._match_video)
         self._dock_tabs = QComboBox(self)
         self._dock_tabs.addItem("上（既定）", DOCK_TABS_TOP)
         self._dock_tabs.addItem("下", DOCK_TABS_BOTTOM)
@@ -321,5 +333,6 @@ class PreferencesDialog(QDialog):
             pool_progress=self._pool_progress.isChecked(),
             all_aviutl_plugins=self._all_plugins.isChecked(),
             media_view=str(self._media_view.currentData()),
+            match_video=str(self._match_video.currentData()),
             dock_tabs=str(self._dock_tabs.currentData()),
         )

@@ -19,6 +19,7 @@ from PySide6.QtWidgets import QMainWindow, QTabWidget
 from sashimono.core import userdirs
 from sashimono.engine.encode import DEFAULT_PIPELINE_DEPTH, MAX_PIPELINE_DEPTH
 from sashimono.engine.render import DEFAULT_DECODE_THREADS, MAX_DECODE_THREADS
+from sashimono.ui.media_match import MATCH_ASK, MATCH_MODES
 from sashimono.ui.media_pool import VIEW_LIST, VIEW_MODES
 
 __all__ = [
@@ -220,6 +221,11 @@ class Preferences:
     #: 既定は一覧 名前と長さと大きさが 1 行で読めて、素材が何本あっても見渡せる
     #: 絵で選びたい人は一覧の上のボタンで切り替え、次に開いたときもそのままにする
     media_view: str = VIEW_LIST
+    #: 空のプロジェクトへ最初の動画を置いたとき、プロジェクトの解像度とフレームレートを
+    #: 動画に合わせるか 尋ねる（``ask``）・常に合わせる（``always``）・合わせない（``never``）
+    #: 既定は尋ねる 黙って合わせると決まった形で作る人が困り、黙って合わせないと
+    #: 60fps の動画が 30fps で書き出されたことに、書き出すまで気付けない
+    match_video: str = MATCH_ASK
     #: 重ねたパネル（オブジェクト設定と AI アシスタント、メディアと字幕など）の
     #: タブを上（``top``）に出すか下（``bottom``）に出すか
     #: 既定は上 Qt の既定の下だと、パネルの名前を探して窓の一番下まで目を動かすことになり、
@@ -285,6 +291,7 @@ class PreferenceStore:
             pool_progress=_flag(data.get("pool_progress"), plain.pool_progress),
             all_aviutl_plugins=_flag(data.get("all_aviutl_plugins"), plain.all_aviutl_plugins),
             media_view=_choice(data.get("media_view"), VIEW_MODES, plain.media_view),
+            match_video=_choice(data.get("match_video"), MATCH_MODES, plain.match_video),
             dock_tabs=_choice(data.get("dock_tabs"), DOCK_TAB_POSITIONS, plain.dock_tabs),
         )
 

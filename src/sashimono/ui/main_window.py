@@ -68,6 +68,7 @@ from sashimono.core.commands import (
     new_scene,
     place_media,
 )
+from sashimono.core.commands.project_format import retime_frame
 from sashimono.core.io import (
     LEGACY_SUFFIXES,
     SUFFIX,
@@ -96,6 +97,7 @@ from sashimono.core.model import (
     TrackId,
     TrackKind,
 )
+from sashimono.core.timebase import FrameRate
 from sashimono.effects.sources import SHAPE, TEXT, TRANSITION
 from sashimono.engine.audio.waveform import Waveform
 from sashimono.engine.cache import MediaAnalyzer
@@ -104,6 +106,7 @@ from sashimono.engine.decode import ProbeError, probe_media
 from sashimono.engine.decode.batch import ProbeBatch
 from sashimono.engine.render import FrameRenderer, RenderQuality
 from sashimono.links import MANUAL_URL, REPORT_URL
+from sashimono.ui import media_match
 from sashimono.ui.chat import ChatPanel
 from sashimono.ui.export_dialog import ExportDialog
 from sashimono.ui.graph_editor import GraphEditor
@@ -212,6 +215,10 @@ class _DropTarget:
     spot: DropSpot
     #: ``None`` ならメインのタイムライン
     scene: SceneId | None
+    #: 落としたときのフレームレート ``spot`` のフレームはこれで数えてある 調べ終えるまでに
+    #: 最初の動画へ合わせてレートが変わると（:meth:`MainWindow._match_project_to`）、
+    #: 数のまま使うと落とした時刻からずれる（30fps の 1 秒が 60fps の 0.5 秒になる）
+    rate: FrameRate
 
 
 @dataclass(frozen=True, slots=True)
@@ -252,6 +259,8 @@ class MainWindow(QMainWindow):
         self.resize(1440, 900)
 
         self._document = Document(project if project is not None else Project.create())
+        #: 再生ヘッドのフレームを数えているレート 変わったら数え直す（:meth:`_retime_playhead`）
+        self._playhead_rate = self._document.project.rate
         self._path: Path | None = path
         #: 最後に保存した（または開いた）時点のプロジェクト 同じオブジェクトなら
         #: 変更なし モデルは frozen なので、取り消して保存した状態へ戻れば
@@ -1025,12 +1034,29 @@ class MainWindow(QMainWindow):
         self._playback.set_project(project)
         self._transport.set_rate(project.rate)
         self._transport.set_duration(project.duration)
+        self._retime_playhead(project.rate)
         # 素材が増えたら画質を見直す 4K を 1 本置いた時点で重くなるので、
         # 置いたあとに自分で下げてもらうのでは遅い
         self._apply_auto_quality()
         self._update_history_actions()
         self._update_title()
         self.project_changed.emit(project)
+
+    def _retime_playhead(self, rate: FrameRate) -> None:
+        """フレームレートが変わったら、再生ヘッドを同じ時刻（秒）のまま数え直す
+
+        最初の動画に合わせたとき（とその取り消し）に起きる 数のまま残すと、30fps の
+        1 秒（フレーム 30）にあった再生ヘッドが 60fps では 0.5 秒を指し、表示の時刻も
+        再生を始める位置も変わる 長さで丸めない（:meth:`_seek` と違う） 合わせるのは
+        空のプロジェクトなので、丸めると置く前に先頭へ飛ぶ
+        """
+        before, self._playhead_rate = self._playhead_rate, rate
+        if before == rate:
+            return
+        frame = retime_frame(self._timeline.playhead, before, rate)
+        self._timeline.set_playhead(frame)
+        self._show_frame(frame)
+        self._playback.set_frame(frame)
 
     def _update_history_actions(self) -> None:
         self._undo_action.setEnabled(self._document.can_undo)
@@ -1078,7 +1104,11 @@ class MainWindow(QMainWindow):
         """
         if not paths:
             return
-        target = _DropTarget(at, self._active_scene) if at is not None else None
+        target = (
+            _DropTarget(at, self._active_scene, self._document.project.rate)
+            if at is not None
+            else None
+        )
         if self._import is not None:
             self._import_queue.append((list(paths), target))
             self._show_import_progress()
@@ -1211,6 +1241,12 @@ class MainWindow(QMainWindow):
         target = self._import_spots.pop(batch, None)
         spot = target.spot if target is not None else None
         scene = target.scene if target is not None else self._active_scene
+        outcomes = batch.results()
+        if self._scene_project(scene) is not None:
+            self._match_project_to([item for item in outcomes if isinstance(item, MediaItem)])
+        if spot is not None and target is not None:
+            now = self._document.project.rate
+            spot = replace(spot, frame=retime_frame(spot.frame, target.rate, now))
         found = self._scene_project(scene)
         lost = found is None
         if found is None:
@@ -1218,7 +1254,7 @@ class MainWindow(QMainWindow):
         else:
             project = found
 
-        for outcome in batch.results():
+        for outcome in outcomes:
             if isinstance(outcome, ProbeError):
                 failures.append(str(outcome))
                 continue
@@ -1355,10 +1391,14 @@ class MainWindow(QMainWindow):
         ]
         if not media:
             return
+        # 落とした位置は合わせる前のレートで数えてある 同じ時刻へ置くよう数え直す
+        before = project.rate
+        self._match_project_to(media)
+        project = self.view_project
         commands = place_media(
             project,
             media,
-            at_frame=frame,
+            at_frame=retime_frame(frame, before, project.rate),
             track_id=TrackId(track_id) if track_id else None,
         )
         label = f"配置: {media[0].name}" if len(media) == 1 else f"配置: {len(media)} 件"
@@ -1434,7 +1474,32 @@ class MainWindow(QMainWindow):
         media = project.find_media(MediaId(media_id))
         if media is None:
             return
-        self.execute_all(insert_media(project, media), f"配置: {media.name}")
+        self._match_project_to([media])
+        self.execute_all(insert_media(self.view_project, media), f"配置: {media.name}")
+
+    def _match_project_to(self, media: list[MediaItem]) -> None:
+        """空のプロジェクトへ最初の動画を置く前に、プロジェクトを動画の形へ合わせる
+
+        合わせるかは設定（:attr:`Preferences.match_video`）で決まる（:mod:`sashimono.ui.media_match`）
+        置くのとは別の取り消しの段にする 置いた後に戻したくなるのは、たいてい置き方の方で、
+        合わせた形まで一緒に戻ると、次に置いたときにまた尋ねられる
+
+        開いているシーンで包まずにプロジェクト全体へ当てる フレームレートはメインと
+        全部のシーンで同じでなければならず、シーンの中だけを変えることはできない
+        置く位置のフレームは、合わせた後のプロジェクトで数え直す（呼び出し側）
+        """
+        commands = media_match.commands_to_match(
+            self, self._preferences.match_video, self._document.project, media
+        )
+        if not commands:
+            return
+        try:
+            with self._document.checkpoint("プロジェクトを動画に合わせる"):
+                for command in commands:
+                    self._document.execute(command)
+        except (ValueError, KeyError) as exc:
+            self.statusBar().showMessage(str(exc), 4000)
+        self._on_project_changed()
 
     def _on_analysis_ready(self, media_id: MediaId) -> None:
         # ワーカースレッドから呼ばれる ここでウィジェットに触ると Qt が落ちるので、

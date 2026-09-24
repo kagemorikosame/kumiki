@@ -166,9 +166,12 @@ class TestHorizontalBar:
 
 
 class TestVerticalBar:
-    def test_hidden_while_every_track_fits(self, area: TimelineArea) -> None:
-        # 使えないバーは幅を取るだけ
-        assert not area.view.vertical_scroll_bar.isVisible()
+    def test_shown_even_while_every_track_fits(self, area: TimelineArea) -> None:
+        # つまみの端でトラックの高さを変える（Issue #27） 隠すと、収まっている状態から
+        # 高くする・低くするができない 送る先は無いので、つまみが全体を占める
+        bar = area.view.vertical_scroll_bar
+        assert bar.isVisible()
+        assert bar.maximum() == 0
 
     def test_the_add_track_button_can_be_reached(
         self, qt_application: QApplication, analyzer: MediaAnalyzer
@@ -195,18 +198,18 @@ class TestVerticalBar:
 
     def test_wheeling_down_stays_on_the_tracks(self, area: TimelineArea) -> None:
         # 今の位置をバーの範囲に含めていたので、全部のトラックが見えていても下へ
-        # 回すとバーが現れ、トラックを画面の外へ追い出せた（PR #145 の指摘）
+        # 回すとバーの範囲が伸び、トラックを画面の外へ追い出せた（PR #145 の指摘）
         view = area.view
         for _ in range(10):
             _wheel(view, y=-120, modifiers=Qt.KeyboardModifier.NoModifier)
         assert view.view_layout.scroll_y == 0
-        assert not view.vertical_scroll_bar.isVisible()
+        assert view.vertical_scroll_bar.maximum() == 0
 
     def test_removing_tracks_brings_the_view_back(
         self, qt_application: QApplication, analyzer: MediaAnalyzer
     ) -> None:
         # 下まで送ってからトラックを減らすと、前の位置が残って空白を見たまま戻らず、
-        # バーも消えなかった（PR #145 の指摘）
+        # バーの範囲も縮まなかった（PR #145 の指摘）
         del qt_application
         area = TimelineArea(TimelineView(_long_project(tracks=8), analyzer))
         area.resize(900, 300)
@@ -220,7 +223,7 @@ class TestVerticalBar:
             view.set_project(_long_project(tracks=2))
             assert view.view_layout.scroll_y == 0
             assert bar.value() == 0
-            assert not bar.isVisible()
+            assert bar.maximum() == 0
         finally:
             area.close()
             shiboken6.delete(area)
