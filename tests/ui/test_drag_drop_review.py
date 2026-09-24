@@ -156,6 +156,8 @@ class TestThumbnailShapes:
         assert (center.red(), center.green(), center.blue(), center.alpha()) == (180, 180, 180, 255)
 
     def test_a_flat_grey_picture_is_taken(self) -> None:
+        # 色の軸が無い（高さ, 幅）の配列は、素材一覧の側で弾くと印のまま絵が出ず、
+        # そのまま幅×4 バイトの行として渡すと、行の外まで読んで絵が崩れるか落ちる
         tile = np.full((72, 128), 90, dtype=np.uint8)
         image = thumbnail_icon(tile).pixmap(GRID_ICON_SIZE).toImage()
         assert image.pixelColor(64, 36).red() == 90
