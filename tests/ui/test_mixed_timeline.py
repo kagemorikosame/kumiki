@@ -204,11 +204,15 @@ class TestLayerOrder:
     ) -> None:
         # 前はヘッダが狭く、「レイヤー 1」が「レイ… 1」に切れて読めなかった
         # 空の family は画面に使う既定のフォント
-        from PySide6.QtGui import QFont, QFontMetrics
+        from PySide6.QtGui import QFont, QFontDatabase, QFontMetrics
 
         from sashimono.ui.timeline.painter import shown_track_name
 
         del qt_application
+        # 無いフォントは黙って別のフォントに替わる 替わった物を測っても、Windows の
+        # 既定のフォントで切れないことは確かめられないので飛ばす
+        if family and family not in QFontDatabase.families():
+            pytest.skip(f"{family} が入っていない機械")
         font = QFont(family) if family else QApplication.font()
         font.setPointSizeF(points)
         metrics = QFontMetrics(font)
@@ -353,6 +357,8 @@ class TestClipContent:
     def test_a_picture_only_clip_has_no_wave(
         self, qt_application: QApplication, video_media: MediaItem
     ) -> None:
+        # 音を鳴らさないクリップに波形を出すと、鳴っているように見え、無音の理由を探して
+        # 音量を触ることになる
         del qt_application
         clip = replace(_with_sound(video_media, start=0), audio_stream=None)
         image = _painted(_layer(1), clip, video_media)
@@ -636,6 +642,8 @@ class TestNewProjectLayers:
         assert store.load().new_project_layers == LayerMode.SEPARATED
 
     def test_an_unknown_value_falls_back_to_mixed(self, tmp_path: Path) -> None:
+        # 知らない値のまま持つと、起動した直後の空のプロジェクトを作る所で ProjectSettings が
+        # ValueError を出し、窓が開かない（新しい版で足した値を古い版で読んだときなど）
         path = tmp_path / "preferences.json"
         path.write_text('{"new_project_layers": "layered"}', encoding="utf-8")
         assert PreferenceStore(path).load().new_project_layers == LayerMode.MIXED
@@ -645,6 +653,7 @@ class TestNewProjectLayers:
         assert ProjectSettings().layer_mode == LayerMode.SEPARATED
 
     def test_the_preferences_dialog_carries_it(self, qt_application: QApplication) -> None:
+        # 画面が値を返さないと、設定を開いて OK を押しただけで分ける方式の好みが混合へ戻る
         from sashimono.ui.preferences_dialog import PreferencesDialog
 
         del qt_application
