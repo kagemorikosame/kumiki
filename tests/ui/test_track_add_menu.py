@@ -11,8 +11,8 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import QPoint, Qt
-from PySide6.QtGui import QAction
+from PySide6.QtCore import QMimeData, QPoint, Qt
+from PySide6.QtGui import QAction, QDragMoveEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMenu
 
@@ -34,8 +34,10 @@ from sashimono.effects import registry
 from sashimono.effects.sources import TEXT
 from sashimono.engine.cache import MediaAnalyzer
 from sashimono.ui.main_window import MainWindow
+from sashimono.ui.media_pool import MEDIA_MIME
 from sashimono.ui.timeline import TimelineView
 from sashimono.ui.timeline.add_menu import AddSources
+from tests.conftest import make_clip
 
 #: 置き場を持たない出どころ 試験から本人の AviUtl2 やテンプレートの置き場を読まない
 _NOTHING: tuple[ScriptEntry, ...] = ()
@@ -192,6 +194,45 @@ class TestTrackAddButton:
         }
         # 枠と文字と下地で 3 色以上 何も描かなければタイムラインの下地 1 色になる
         assert len(inside) >= 3
+
+
+class TestWhileDragging:
+    def test_the_button_moves_below_the_new_track_rows(
+        self, qt_application: QApplication, video_media: MediaItem, audio_media: MediaItem
+    ) -> None:
+        # 素材を引いている間は、新しく作るトラックの仮の行が末尾（音声の下）に並ぶ
+        # 本物の並びでボタンを置くと、その仮の行の上に重なって「新しく作る」が読めない
+        del qt_application
+        base = Project.create(media=(video_media, audio_media))
+        tracks = (
+            Track(TrackKind.VIDEO, "V1", (make_clip(0, 300, video_media),)),
+            Track(TrackKind.AUDIO, "A1", (make_clip(0, 300, audio_media),)),
+        )
+        analyzer = MediaAnalyzer(sample_rate=48000, channels=2)
+        view = TimelineView(base.with_timeline(replace(base.timeline, tracks=tracks)), analyzer)
+        try:
+            view.resize(900, 400)
+            band = view._layout.bands(view.project.timeline)[0]
+            mime = QMimeData()
+            mime.setData(MEDIA_MIME, str(video_media.id).encode("utf-8"))
+            view.dragMoveEvent(
+                QDragMoveEvent(
+                    QPoint(int(view._layout.frame_to_x(30)), band.top + band.height // 2),
+                    Qt.DropAction.CopyAction,
+                    mime,
+                    Qt.MouseButton.LeftButton,
+                    Qt.KeyboardModifier.NoModifier,
+                )
+            )
+            preview = view.drop_preview
+            assert preview is not None and preview.new_tracks
+            shown = view._layout.bands(preview.timeline)
+            assert shown[-1].track.id in preview.new_tracks
+            rect = view.track_add_button()
+            assert rect is not None
+            assert rect.top() >= shown[-1].bottom
+        finally:
+            analyzer.close()
 
 
 class TestTrackMenu:
