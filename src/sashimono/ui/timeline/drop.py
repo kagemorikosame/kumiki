@@ -16,13 +16,22 @@ from PySide6.QtCore import QMimeData, QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPen
 
 from sashimono.core.commands import AddClip, AddTrack, Command, place_media
-from sashimono.core.model import MediaId, MediaItem, Project, Timeline, TrackId
+from sashimono.core.model import MediaId, Project, Timeline, TrackId
 from sashimono.core.timebase import format_timecode
 from sashimono.ui.media_pool import media_ids_in
 from sashimono.ui.theme import Colors, Metrics
-from sashimono.ui.timeline.layout import TimelineLayout, TrackBand
+from sashimono.ui.timeline.layout import TimelineLayout
 
-__all__ = ["DropGuide", "DropSpot", "accepts", "local_paths", "paint_drop_guide", "spot_at"]
+__all__ = [
+    "DropGuide",
+    "DropPreview",
+    "DropSpot",
+    "accepts",
+    "local_paths",
+    "paint_drop_guide",
+    "preview_drop",
+    "spot_at",
+]
 
 #: 新しく作るトラックの仮の行 本物のトラックと見分けが付くよう、地より少しだけ明るくする
 _GHOST_ROW = QColor(255, 255, 255, 14)
@@ -66,34 +75,80 @@ def accepts(mime: QMimeData) -> bool:
     return bool(media_ids_in(mime)) or bool(local_paths(mime))
 
 
-def spot_at(layout: TimelineLayout, timeline: Timeline, position: QPointF) -> DropSpot:
+@dataclass(frozen=True, slots=True)
+class DropPreview:
+    """ドラッグ中に見せる、落としたときの姿
+
+    素材一覧から引いてきた素材は、窓が置くのと同じ決め方（:func:`place_media`）で
+    置く先を求める 新しくトラックを作ることになるなら、そのトラックを実際に足される
+    位置（映像なら上、音声なら下）へ空のまま並べた :attr:`timeline` を描く
+    並べた最後の下に仮の行を出す形だと、落とした後に出てくる位置と違って迷う
+    """
+
+    guide: DropGuide
+    #: 足すトラックを空のまま並べたタイムライン 足さないなら元のまま
+    timeline: Timeline
+    #: 置くときのコマンド ファイルを引いてきたときは空（調べるまで長さが分からない）
+    commands: tuple[Command, ...] = ()
+
+    @property
+    def new_tracks(self) -> frozenset[TrackId]:
+        return frozenset(c.track.id for c in self.commands if isinstance(c, AddTrack))
+
+
+def preview_drop(project: Project, guide: DropGuide) -> DropPreview:
+    media = [
+        item for media_id in guide.media_ids if (item := project.find_media(media_id)) is not None
+    ]
+    if not media:
+        return DropPreview(guide, project.timeline)
+    commands = place_media(project, media, at_frame=guide.spot.frame, track_id=guide.spot.track_id)
+    # 足すトラックだけを当てる クリップまで当てると、枠の点線ではなく本物のクリップに見える
+    shown = project
+    for command in commands:
+        if isinstance(command, AddTrack):
+            shown = command.apply(shown)
+    return DropPreview(guide, shown.timeline, tuple(commands))
+
+
+def spot_at(
+    layout: TimelineLayout,
+    timeline: Timeline,
+    position: QPointF,
+    *,
+    real: Timeline | None = None,
+) -> DropSpot:
     """画面の位置を、落とす先のフレームとトラックへ直す
 
     トラックの名前の欄（左端）へ落としたら、その時点で見えている左端のフレームに置く
     名前の欄はフレームを持たないが、そこへ落とした人は「このトラックへ」と思っている
+
+    ``timeline`` は画面に出しているもの（仮のトラックを並べたもの）で、``real`` は
+    本物 仮のトラックの行はまだ無いトラックなので、トラックの無い所と同じに扱う
     """
     x = max(float(Metrics.TRACK_HEADER_WIDTH), position.x())
-    return DropSpot(
-        frame=layout.frame_at(x),
-        track_id=layout.track_at(timeline, int(position.y())),
-    )
+    track_id = layout.track_at(timeline, int(position.y()))
+    if track_id is not None and real is not None and real.find_track(track_id) is None:
+        track_id = None
+    return DropSpot(frame=layout.frame_at(x), track_id=track_id)
 
 
 def paint_drop_guide(
     painter: QPainter,
     layout: TimelineLayout,
     project: Project,
-    guide: DropGuide,
+    preview: DropPreview,
     size: tuple[int, int],
 ) -> None:
     """落ちる所の目安を描く 落とすトラックを薄く塗り、落ちるフレームに縦線を引く
 
-    素材一覧から引いてきた素材は、窓が置くのと同じ決め方（:func:`place_media`）で
-    置く先を求め、クリップの枠を点線で出す 落としたトラックが埋まっていて別の
-    トラックへ回る、を離す前に分かるようにする
+    素材一覧から引いてきた素材は、置かれるクリップの枠を点線で出す 落としたトラックが
+    埋まっていて別のトラックへ回る、を離す前に分かるようにする
+    ``project`` は本物 トラックの並びは ``preview`` の方を使う
     """
+    guide = preview.guide
     width, height = size
-    bands = {band.track.id: band for band in layout.bands(project.timeline)}
+    bands = {band.track.id: band for band in layout.bands(preview.timeline)}
     painter.save()
     target = bands.get(guide.spot.track_id) if guide.spot.track_id is not None else None
     if target is not None:
@@ -109,11 +164,29 @@ def paint_drop_guide(
             fill,
         )
 
-    media = [
-        item for media_id in guide.media_ids if (item := project.find_media(media_id)) is not None
-    ]
-    if media:
-        _paint_clip_outlines(painter, layout, project, media, guide.spot, bands, width)
+    new_tracks = preview.new_tracks
+    for track_id in new_tracks:
+        band = bands.get(track_id)
+        if band is None:
+            continue
+        # まだ無いトラックだと分かるように地を明るくし、名前の欄の下に添える
+        row = QRectF(0, band.top, width, band.height)
+        painter.fillRect(row.adjusted(0, 1, 0, -1), _GHOST_ROW)
+        painter.setPen(Colors.TEXT_MUTED)
+        painter.drawText(
+            QRectF(8, band.top, Metrics.TRACK_HEADER_WIDTH - 8, band.height - 4),
+            Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignLeft,
+            "新しく作る",
+        )
+
+    painter.setPen(QPen(Colors.ACCENT, 2, Qt.PenStyle.DashLine))
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    for command in preview.commands:
+        if not isinstance(command, AddClip) or (band := bands.get(command.track_id)) is None:
+            continue
+        left = layout.frame_to_x(command.clip.timeline_start)
+        right = layout.frame_to_x(command.clip.timeline_end)
+        painter.drawRect(QRectF(left, band.top + 1, max(2.0, right - left), band.height - 3))
 
     x = layout.frame_to_x(guide.spot.frame)
     painter.setPen(QPen(Colors.ACCENT, 2))
@@ -129,48 +202,3 @@ def paint_drop_guide(
     painter.setPen(Colors.WINDOW)
     painter.drawText(box, Qt.AlignmentFlag.AlignCenter, label)
     painter.restore()
-
-
-def _paint_clip_outlines(
-    painter: QPainter,
-    layout: TimelineLayout,
-    project: Project,
-    media: Sequence[MediaItem],
-    spot: DropSpot,
-    bands: dict[TrackId, TrackBand],
-    width: int,
-) -> None:
-    commands = place_media(project, media, at_frame=spot.frame, track_id=spot.track_id)
-    # 新しく作るトラックはまだ画面に無い 並べた最後のトラックの下に仮の行を出して、
-    # そこへ枠を描く 出さないと、埋まっていて新しいトラックへ回るときに何も描かれず、
-    # 落としても置かれないように見える
-    ghosts: dict[TrackId, QRectF] = {}
-    bottom = max((band.bottom for band in bands.values()), default=Metrics.RULER_HEIGHT)
-    for command in commands:
-        if isinstance(command, AddTrack):
-            top = bottom + len(ghosts) * Metrics.DEFAULT_TRACK_HEIGHT
-            row = QRectF(0, top, width, Metrics.DEFAULT_TRACK_HEIGHT)
-            ghosts[command.track.id] = row
-            painter.fillRect(row.adjusted(0, 1, 0, -1), _GHOST_ROW)
-            painter.setPen(Colors.TEXT_MUTED)
-            painter.drawText(
-                QRectF(8, top, Metrics.TRACK_HEADER_WIDTH - 8, row.height()),
-                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-                f"{command.track.name}（新しく作る）",
-            )
-
-    painter.setPen(QPen(Colors.ACCENT, 2, Qt.PenStyle.DashLine))
-    painter.setBrush(Qt.BrushStyle.NoBrush)
-    for command in commands:
-        if not isinstance(command, AddClip):
-            continue
-        band = bands.get(command.track_id)
-        if band is not None:
-            row = QRectF(0, band.top, width, band.height)
-        elif command.track_id in ghosts:
-            row = ghosts[command.track_id]
-        else:
-            continue
-        left = layout.frame_to_x(command.clip.timeline_start)
-        right = layout.frame_to_x(command.clip.timeline_end)
-        painter.drawRect(QRectF(left, row.top() + 1, max(2.0, right - left), row.height() - 3))

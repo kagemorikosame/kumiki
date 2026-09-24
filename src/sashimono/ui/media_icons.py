@@ -34,9 +34,10 @@ def thumbnail_icon(tile: np.ndarray) -> QIcon:
     両方の大きさで作ると、切り替えるたびに作り直すか 2 枚抱えることになる
     """
     height, width = int(tile.shape[0]), int(tile.shape[1])
-    # 行の詰まった連続した配列にしてから渡す QImage は元の配列を指すだけなので、
-    # 飛び飛びの切り出し（シートの 1 列）のままだと隣の絵まで読む
-    data = np.ascontiguousarray(tile[:, :, :4], dtype=np.uint8)
+    # 行の詰まった連続した 4 色の配列にしてから渡す QImage は 1 行を幅×4 バイトと
+    # 読むので、3 色や灰色 1 色のまま渡すと行の外まで読んで絵が崩れる（落ちることもある）
+    # 飛び飛びの切り出し（シートの 1 列）のままだと、隣の絵まで読む
+    data = np.ascontiguousarray(_rgba(tile), dtype=np.uint8)
     image = QImage(data.data, width, height, width * 4, QImage.Format.Format_RGBA8888).copy()
     canvas = _canvas(GRID_ICON_SIZE)
     painter = QPainter(canvas)
@@ -86,6 +87,17 @@ def pending_icon() -> QIcon:
     painter.fillPath(triangle, Colors.CLIP_LABEL)
     painter.end()
     return QIcon(canvas)
+
+
+def _rgba(tile: np.ndarray) -> np.ndarray:
+    """``(高さ, 幅, 色の数)`` を 4 色（RGBA）へそろえる 色の数が 1・3・4 以上のどれでもよい"""
+    channels = int(tile.shape[2]) if tile.ndim == 3 else 1
+    pixels = tile if tile.ndim == 3 else tile[:, :, None]
+    if channels >= 4:
+        return pixels[:, :, :4]
+    color = np.repeat(pixels[:, :, :1], 3, axis=2) if channels < 3 else pixels[:, :, :3]
+    opaque = np.full((*pixels.shape[:2], 1), 255, dtype=np.uint8)
+    return np.concatenate([color.astype(np.uint8), opaque], axis=2)
 
 
 def _canvas(size: QSize) -> QPixmap:

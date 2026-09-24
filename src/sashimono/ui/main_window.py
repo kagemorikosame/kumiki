@@ -194,6 +194,19 @@ def _probe_or_none(path: Path) -> MediaItem | None:
 
 
 @dataclass(frozen=True, slots=True)
+class _DropTarget:
+    """タイムラインへ落とされた読み込みの置き先 位置と、落としたときに開いていたシーン
+
+    シーンも覚えるのは、調べ終えるまでの間にシーンを切り替えられることがあるため
+    その時点で開いているシーンへ置くと、落としていないシーンに素材が入る
+    """
+
+    spot: DropSpot
+    #: ``None`` ならメインのタイムライン
+    scene: SceneId | None
+
+
+@dataclass(frozen=True, slots=True)
 class _ExoMedia:
     """``.exo`` が参照している素材を読んだ結果 登録はまだしていない
 
@@ -282,11 +295,11 @@ class MainWindow(QMainWindow):
         #: 頼んだ順と食い違う
         self._import: ProbeBatch | None = None
         #: 待っている読み込み パスと、タイムラインへ落とされた位置（落とされていなければ ``None``）
-        self._import_queue: list[tuple[list[Path], DropSpot | None]] = []
+        self._import_queue: list[tuple[list[Path], _DropTarget | None]] = []
         #: タイムラインへ落とされた読み込みの、置く位置 走っている分の結果と一緒に引く
         #: 読み込みに引っ掛けて持つのは、取り消しやプロジェクトの切り替えで読み込みを
         #: 捨てたときに、位置だけが残って次の読み込みに当たらないようにするため
-        self._import_spots: weakref.WeakKeyDictionary[ProbeBatch, DropSpot] = (
+        self._import_spots: weakref.WeakKeyDictionary[ProbeBatch, _DropTarget] = (
             weakref.WeakKeyDictionary()
         )
         #: 控えと解析の進み具合を出していたか 終わったことを 1 度だけ知らせるため
@@ -1029,15 +1042,17 @@ class MainWindow(QMainWindow):
         置くのは全部を調べ終えてから 1 回の操作で行う（:meth:`_apply_import`）
         読み込みの最中にもう一度頼まれたら、前の分が終わってから順に調べる
         ダイアログ・一覧のボタン・一覧やタイムラインへの落とし込みは、どれもここへ来る
-        ``at`` はタイムラインへ落とされた位置 無ければ末尾へ並べる
+        ``at`` はタイムラインへ落とされた位置 無ければ末尾へ並べる 落とされた位置は、
+        そのとき開いているシーンの位置として覚える（:meth:`_apply_import`）
         """
         if not paths:
             return
+        target = _DropTarget(at, self._active_scene) if at is not None else None
         if self._import is not None:
-            self._import_queue.append((list(paths), at))
+            self._import_queue.append((list(paths), target))
             self._show_import_progress()
             return
-        self._start_import(list(paths), at)
+        self._start_import(list(paths), target)
 
     @property
     def importing(self) -> bool:
@@ -1107,7 +1122,7 @@ class MainWindow(QMainWindow):
             time.sleep(0.005)
         return True
 
-    def _start_import(self, paths: list[Path], at: DropSpot | None = None) -> None:
+    def _start_import(self, paths: list[Path], at: _DropTarget | None = None) -> None:
         # probe_media はこのモジュールの名前から引く 試験がここを差し替えて、
         # 開けない素材や断られる読み込みを作る
         self._import = ProbeBatch(paths, probe_media)
@@ -1155,18 +1170,28 @@ class MainWindow(QMainWindow):
         置く位置は調べ終えた時点のタイムラインから決める 調べている間に
         編集していても、その後ろへ並ぶ タイムラインへ落とされた読み込みは、
         落とされた位置から順に並べる（:meth:`_place_dropped`）
+        落とされた読み込みは、落としたときに開いていたシーンへ置く 調べている間に
+        別のシーンへ切り替えても、切り替えた先へは入れない そのシーンが消えていたら
+        素材を一覧へ入れるだけにする
         """
         commands: list[Command] = []
         failures: list[str] = []
         loaded: list[MediaItem] = []
-        project = self.view_project
-        spot = self._import_spots.pop(batch, None)
+        target = self._import_spots.pop(batch, None)
+        spot = target.spot if target is not None else None
+        scene = target.scene if target is not None else self._active_scene
+        found = self._scene_project(scene)
+        lost = found is None
+        if found is None:
+            project, spot, scene = self._document.project, None, None
+        else:
+            project = found
 
         for outcome in batch.results():
             if isinstance(outcome, ProbeError):
                 failures.append(str(outcome))
                 continue
-            placed = self._place_dropped(project, outcome, spot)
+            placed = [AddMedia(outcome)] if lost else self._place_dropped(project, outcome, spot)
             if spot is not None:
                 spot = spot.after(placed)
             for command in placed:
@@ -1174,7 +1199,9 @@ class MainWindow(QMainWindow):
             commands.extend(placed)
             loaded.append(outcome)
 
-        if commands and not self.execute_all(commands, f"素材を読み込み: {batch.total} 件"):
+        if commands and not self._execute_in_scene(
+            commands, f"素材を読み込み: {batch.total} 件", scene
+        ):
             # 断られるとまとめて戻る 一覧に無い素材の解析と控えを頼まないために、
             # 頼むのは通ってからにする 理由は execute_all が出しているので上書きしない
             return
@@ -1184,6 +1211,10 @@ class MainWindow(QMainWindow):
             self._request_proxy(media)
         if failures:
             self.statusBar().showMessage(failures[0], 5000)
+        elif lost and commands:
+            self.statusBar().showMessage(
+                "落とした先のシーンが無くなったので、素材を一覧へ入れるだけにした", 5000
+            )
         elif commands:
             self.statusBar().showMessage(f"{batch.total} 件を読み込んだ", 3000)
 
@@ -1288,6 +1319,47 @@ class MainWindow(QMainWindow):
         )
         label = f"配置: {media[0].name}" if len(media) == 1 else f"配置: {len(media)} 件"
         self.execute_all(commands, label)
+
+    def _scene_project(self, scene: SceneId | None) -> Project | None:
+        """そのシーン（``None`` ならメイン）のタイムラインを差し込んだプロジェクト
+
+        :attr:`view_project` と違い、いま開いているシーンではなく指定のシーンを見る
+        シーンが消えていれば ``None``
+        """
+        root = self._document.project
+        if scene is None:
+            return root
+        found = root.find_scene(scene)
+        return None if found is None else replace(root, timeline=found.timeline)
+
+    def _execute_in_scene(self, commands: list[Command], label: str, scene: SceneId | None) -> bool:
+        """:meth:`execute_all` と同じだが、開いているシーンではなく ``scene`` の中で実行する
+
+        裏で調べ終えてから置く読み込みのためのもの 調べている間にシーンを切り替えられると、
+        開いているシーンで包む :meth:`execute_all` では切り替えた先へ入ってしまう
+
+        包めるときは :meth:`execute_all` を通す 入口を 1 つに保つため（シーンで包んだ
+        コマンドは :meth:`_in_active_scene` が包み直さない） 自前で実行するのは、
+        シーンを開いている間にメインへ置くときだけ（メインへ出る包みが無い）
+        """
+        if scene == self._active_scene:
+            return self.execute_all(commands, label)
+        if scene is not None:
+            return self.execute_all(
+                [c if isinstance(c, InScene) else InScene(scene, c) for c in commands], label
+            )
+        if not commands:
+            return True
+        try:
+            with self._document.checkpoint(label):
+                for command in commands:
+                    self._document.execute(command)
+        except (ValueError, KeyError) as exc:
+            self.statusBar().showMessage(str(exc), 4000)
+            self._on_project_changed()
+            return False
+        self._on_project_changed()
+        return True
 
     @staticmethod
     def _place_dropped(project: Project, media: MediaItem, spot: DropSpot | None) -> list[Command]:

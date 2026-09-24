@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 
 import numpy as np
@@ -67,7 +67,12 @@ def media_ids_in(mime: QMimeData) -> list[MediaId]:
     """一覧から引いてきた素材の ID 一覧から来たのでなければ空"""
     if not mime.hasFormat(MEDIA_MIME):
         return []
-    raw = bytes(mime.data(MEDIA_MIME).data()).decode("utf-8")
+    try:
+        raw = bytes(mime.data(MEDIA_MIME).data()).decode("utf-8")
+    except UnicodeDecodeError:
+        # 同じ形式の名前で、ほかのアプリが壊れた中身を引いてくることがある ここで
+        # 投げると、ドラッグの知らせの途中で例外になり、落とせない印も出せない
+        return []
     return [MediaId(line) for line in raw.splitlines() if line]
 
 
@@ -120,7 +125,8 @@ class MediaPoolWidget(QWidget):
         self._view_mode = VIEW_LIST
         self._thumbnails: ThumbnailSource | None = None
         #: できたサムネイルの絵 一覧を作り直すたびに縮め直さないよう、素材ごとに持つ
-        self._icons: dict[MediaId, QIcon] = {}
+        #: 作ったときのファイルも覚える 同じ ID のまま別のファイルへ差し替わったら作り直す
+        self._icons: dict[MediaId, tuple[Path, QIcon]] = {}
         self._audio_icon = audio_icon()
         self._pending_icon = pending_icon()
 
@@ -190,11 +196,8 @@ class MediaPoolWidget(QWidget):
             return
         self._view_mode = mode
         self._apply_view_mode()
-        for row in range(self._list.count()):
-            item = self._list.item(row)
-            media = self._project.find_media(MediaId(str(item.data(Qt.ItemDataRole.UserRole))))
-            if media is not None:
-                self._show_note(item, media)
+        for item, media in self._rows():
+            self._show_note(item, media)
 
     def set_thumbnail_source(self, source: ThumbnailSource | None) -> None:
         """行の頭に出す絵の出どころ 窓が解析係（MediaAnalyzer）を渡す
@@ -211,11 +214,22 @@ class MediaPoolWidget(QWidget):
         まだ絵の無い行だけを見る 載せ終えた行まで毎回縮め直すと、
         素材を 100 本並べたときに 250ms ごとに 100 枚を縮めることになる
         """
+        for item, media in self._rows():
+            if media.id not in self._icons:
+                item.setIcon(self._icon_for(media))
+
+    def _rows(self) -> Iterator[tuple[QListWidgetItem, MediaItem]]:
+        """一覧の行と、その行の素材 消えた素材の行は飛ばす
+
+        素材は ID の表から引く 行ごとに :meth:`Project.find_media`（先頭から順に探す）で
+        引くと、素材が N 本で N×N 回になり、解析の知らせのたびに画面が引っ掛かる
+        """
+        by_id = {media.id: media for media in self._project.media}
         for row in range(self._list.count()):
             item = self._list.item(row)
-            media = self._project.find_media(MediaId(str(item.data(Qt.ItemDataRole.UserRole))))
-            if media is not None and media.id not in self._icons:
-                item.setIcon(self._icon_for(media))
+            media = by_id.get(MediaId(str(item.data(Qt.ItemDataRole.UserRole))))
+            if media is not None:
+                yield item, media
 
     def _choose_view(self, mode: str) -> None:
         if mode == self._view_mode:
@@ -244,15 +258,15 @@ class MediaPoolWidget(QWidget):
 
     def _icon_for(self, media: MediaItem) -> QIcon:
         cached = self._icons.get(media.id)
-        if cached is not None:
-            return cached
+        if cached is not None and cached[0] == media.path:
+            return cached[1]
         if not (media.has_video or media.is_still):
             return self._audio_icon
         tile = self._thumbnails(media) if self._thumbnails is not None else None
-        if tile is None or tile.ndim != 3 or tile.shape[0] == 0 or tile.shape[1] == 0:
+        if tile is None or tile.ndim not in (2, 3) or 0 in tile.shape:
             return self._pending_icon
         icon = thumbnail_icon(tile)
-        self._icons[media.id] = icon
+        self._icons[media.id] = (media.path, icon)
         return icon
 
     def set_project(self, project: Project) -> None:
@@ -263,9 +277,12 @@ class MediaPoolWidget(QWidget):
         """
         selected = self.selected_media_id()
         self._project = project
-        # 外した素材の絵は捨てる 残すと、外した素材を何本も抱え続ける
-        present = {media.id for media in project.media}
-        self._icons = {key: icon for key, icon in self._icons.items() if key in present}
+        # 外した素材と、中身のファイルが差し替わった素材の絵は捨てる 外した素材の分を
+        # 残すと抱え続け、差し替わった分を残すと前のファイルの絵が出続ける
+        present = {media.id: media.path for media in project.media}
+        self._icons = {
+            key: cached for key, cached in self._icons.items() if present.get(key) == cached[0]
+        }
 
         self._list.clear()
         for media in project.media:
@@ -288,11 +305,8 @@ class MediaPoolWidget(QWidget):
         if dict(notes) == self._notes:
             return
         self._notes = dict(notes)
-        for row in range(self._list.count()):
-            item = self._list.item(row)
-            media = self._project.find_media(MediaId(str(item.data(Qt.ItemDataRole.UserRole))))
-            if media is not None:
-                self._show_note(item, media)
+        for item, media in self._rows():
+            self._show_note(item, media)
 
     def row_text(self, media_id: MediaId) -> str | None:
         """その素材の行に今出ている文言 無ければ ``None``"""
