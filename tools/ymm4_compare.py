@@ -536,7 +536,13 @@ def read_ceilings(path: Path) -> dict[str, float]:
     ]
     if odd:
         raise ValueError(f"{path} の上限が数でない: {', '.join(odd)}")
-    ceilings = {str(name): float(value) for name, value in raw.items()}
+    ceilings: dict[str, float] = {}
+    for name, value in raw.items():
+        try:
+            ceilings[str(name)] = float(value)
+        except OverflowError:
+            # float に収まらない桁の整数 OverflowError は ValueError の仲間でない
+            raise ValueError(f"{path} の上限が大きすぎる: {name}") from None
     # NaN や Infinity は float が受け取ってしまう どちらも「超えた」にならないので、
     # 入っていると差がいくら大きくても通る
     broken = [name for name, value in ceilings.items() if not math.isfinite(value)]

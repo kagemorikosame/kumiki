@@ -1486,7 +1486,15 @@ def test_a_ceiling_that_is_not_a_number_stops_before_comparing(
 
 @pytest.mark.parametrize(
     "broken",
-    ['{"後光": null}', '{"後光": [1]}', '{"後光": {"a": 1}}', '{"後光": "71"}', "[71]", "{"],
+    [
+        '{"後光": null}',
+        '{"後光": [1]}',
+        '{"後光": {"a": 1}}',
+        '{"後光": "71"}',
+        '{"後光": 1' + "0" * 310 + "}",
+        "[71]",
+        "{",
+    ],
 )
 def test_a_ceilings_file_of_the_wrong_shape_stops_with_guidance(
     tool: ModuleType,
