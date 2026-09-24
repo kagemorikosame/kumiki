@@ -430,13 +430,14 @@ class TestAxes:
         # 図形で切り抜く の Y がそうなっていた（#173）
         import sashimono.effects  # noqa: F401 - 全部のエフェクトを登録させる
 
+        # 等しいかで比べる 含まれるかだけだと、例外の 2 つから書き添えが消えても気付けない
         labelled = {
-            definition.kind
+            (definition.kind, spec.name)
             for definition in registry.all()
             for spec in definition.parameters
             if "下が正" in spec.label
         }
-        assert labelled <= {"brush_fill", "particles"}
+        assert labelled == {("brush_fill", "center_y"), ("particles", "emitter_y")}
 
     def test_the_mask_centre_moves_up_with_a_positive_y(
         self, gl_context: OffscreenGLContext, processor: EffectProcessor
