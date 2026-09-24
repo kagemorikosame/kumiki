@@ -252,7 +252,9 @@ SHAPE = SourceDefinition(
             "音声波形を読む終わり（ミリ秒 負で最後まで）",
             -1,
             minimum=-1,
-            maximum=10**10,
+            # 上限は設定画面の整数の欄が持てる所まで それでも 24 日を超える 10**10 に
+            # していた頃は、設定画面へ出すたびに int のあふれの警告が出ていた（#148）
+            maximum=2**31 - 1,
         ),
         TrackSpec("pos_x", "X", -4000, 4000, 0, step=1, unit="px"),
         TrackSpec("pos_y", "Y", -4000, 4000, 0, step=1, unit="px"),

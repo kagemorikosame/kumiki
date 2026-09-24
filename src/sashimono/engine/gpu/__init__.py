@@ -14,6 +14,7 @@ from sashimono.engine.gpu.context import (
     GLScope,
     OffscreenGLContext,
     ensure_qt_application,
+    opengl_usable,
     preferred_surface_format,
 )
 from sashimono.engine.gpu.effects import EffectProcessor, srgb_to_linear
@@ -49,6 +50,7 @@ __all__ = [
     "Transform",
     "ensure_qt_application",
     "fit_placement",
+    "opengl_usable",
     "preferred_surface_format",
     "srgb_to_linear",
 ]

@@ -256,6 +256,10 @@ class TextSpec:
         return value if isinstance(value, str) else self.default
 
 
+#: :class:`ValueSpec` の範囲が持てる端 設定画面の整数の欄（C++ の 4 バイトの int）に合わせる
+_INT32_MIN = -(2**31)
+_INT32_MAX = 2**31 - 1
+
 #: エフェクトが画像として読む拡張子 素材の静止画
 #: （``sashimono.engine.decode.probe.STILL_SUFFIXES``）と同じにしてある（試験で見ている）
 #: ここだけ広げると、選べるのに読めない画像が出る
@@ -329,6 +333,17 @@ class ValueSpec:
     maximum: int = 2**31 - 1
 
     kind = ParameterKind.VALUE
+
+    def __post_init__(self) -> None:
+        # 範囲は 4 バイトの int に収める 設定画面の整数の欄はそれより広い値を持てず、
+        # 広いまま残すと、仕様では入れられる値が画面では入れられず、画面に出る値も
+        # 仕様の値と食い違う 拒まずに縮めるのは、AviUtl のスクリプトから作る仕様で
+        # 読み込みそのものを止めないため
+        low = min(max(self.minimum, _INT32_MIN), _INT32_MAX)
+        high = min(max(self.maximum, low), _INT32_MAX)
+        object.__setattr__(self, "minimum", low)
+        object.__setattr__(self, "maximum", high)
+        object.__setattr__(self, "default", min(max(self.default, low), high))
 
     def default_value(self) -> int:
         return self.default

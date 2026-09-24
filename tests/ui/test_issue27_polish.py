@@ -74,6 +74,7 @@ from sashimono.ui.workspace import (
     Preferences,
     PreferenceStore,
 )
+from tests.fake_clipboard import FakeClipboard
 
 
 @pytest.fixture(autouse=True)
@@ -596,20 +597,16 @@ class TestSnapshotImage:
         loaded = QImage(str(target))
         assert (loaded.width(), loaded.height()) == (64, 48)
 
-    def test_the_clipboard_gets_the_full_size_picture(
-        self, qt_application: QApplication, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # 本物のクリップボードは使わない ほかのアプリが掴んでいると読み戻しが空になり、
-        # 試験の結果が機械の様子で変わる 本人がコピーしていた物も上書きしてしまう
-        del qt_application
-        copied: list[QImage] = []
-        monkeypatch.setattr(snapshot_module, "copy_to_clipboard", copied.append)
+    def test_the_clipboard_gets_the_full_size_picture(self, fake_clipboard: FakeClipboard) -> None:
+        # 本物のクリップボードは使わない（偽物は conftest が差し込む） ほかのアプリが
+        # 掴んでいると読み戻しが空になり、試験の結果が機械の様子で変わる
+        # 本人がコピーしていた物も上書きしてしまう
         window = MainWindow(_colored_project(), confirm_unsaved=False)
         try:
             window.copy_snapshot()
         finally:
             window.close()
-        (image,) = copied
+        image = fake_clipboard.image()
         assert (image.width(), image.height()) == (64, 48)
 
 
