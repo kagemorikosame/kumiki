@@ -1501,3 +1501,159 @@ def test_the_real_templates_stay_within_their_ceilings(tool: ModuleType, tmp_pat
     problems, _ = tool.unmeasured_templates(rows, missing, ceilings)
     assert problems == [], "上限を持つテンプレートのフレームが書き出しに無い"
     assert tool.over_ceilings(tool.worst_by_template(rows), ceilings) == []
+
+
+def _on_screen(tool: ModuleType, width: int, height: int) -> np.ndarray:
+    """素材を画面の真ん中に素材の画素のまま置いた絵 はみ出す分は切る"""
+    screen = np.zeros((tool.HEIGHT, tool.WIDTH, 3), dtype=np.uint8)
+    pattern = tool.zoom_pattern(width, height)
+    left, top = (tool.WIDTH - width) // 2, (tool.HEIGHT - height) // 2
+    shown = pattern[max(0, -top) :, max(0, -left) :][: tool.HEIGHT, : tool.WIDTH]
+    y, x = max(0, top), max(0, left)
+    screen[y : y + shown.shape[0], x : x + shown.shape[1]] = shown
+    return screen
+
+
+def test_the_mark_is_measured_in_screen_pixels(tool: ModuleType) -> None:
+    """印の矩形を画面の画素で読む 縮めて読むと 4 画素ずつしか区別できない"""
+    assert tool.mark_box(_on_screen(tool, 640, 360)) == (800, 450, 320, 180)
+    assert tool.mark_box(_on_screen(tool, 3840, 2160)) == (0, 0, 1920, 1080)
+    assert tool.mark_box(np.zeros((tool.HEIGHT, tool.WIDTH, 3), dtype=np.uint8)) is None
+
+
+def test_a_few_stray_mark_pixels_do_not_widen_the_mark(tool: ModuleType) -> None:
+    # 圧縮で印の色に寄った点が 1 つ混じっても、矩形を画面の端まで広げない
+    picture = _on_screen(tool, 640, 360)
+    picture[5, 5] = tool.ZOOM_MARK
+    assert tool.mark_box(picture) == (800, 450, 320, 180)
+
+
+def test_the_expectations_are_cut_by_the_screen(tool: ModuleType) -> None:
+    """画面より大きい素材は、画素のままだと印が画面いっぱいで切れる 縦長は高さで収まる
+
+    画面で切る所を誤ると、3840x2160 を画素のまま置いた実測（1920x1080）がどちらの予想にも
+    合わず「どちらとも合わない」と出て、置き方を読み分けられない
+    """
+    large = tool.zoom_expectations(3840, 2160, 100.0)
+    assert large == {tool.ZOOM_NATIVE: (1920.0, 1080.0), tool.ZOOM_FIT: (960.0, 540.0)}
+    tall = tool.zoom_expectations(360, 640, 100.0)
+    assert tall[tool.ZOOM_NATIVE] == (180.0, 320.0)
+    assert tall[tool.ZOOM_FIT] == pytest.approx((303.75, 540.0))
+    # 拡大率は置いた大きさに掛かる 画素のままの 640x360 を 200 にすると印は 640x360
+    assert tool.zoom_expectations(640, 360, 200.0)[tool.ZOOM_NATIVE] == (640.0, 360.0)
+
+
+def test_the_zoom_reading_names_the_nearer_placement(tool: ModuleType) -> None:
+    """測った印の大きさを、近い方の置き方の名前で読む
+
+    読み違えると、素材の画素で置く YMM4 を「画面に収める」と表に出し、#159 の結論を
+    取り違えて native_size を誤って直す
+    """
+    expect = tool.zoom_expectations(640, 360, 100.0)
+    assert tool.zoom_reading((800, 450, 321, 179), expect) == tool.ZOOM_NATIVE
+    assert tool.zoom_reading((480, 270, 960, 540), expect) == tool.ZOOM_FIT
+    assert tool.zoom_reading((0, 0, 500, 500), expect) == "どちらとも合わない"
+    assert tool.zoom_reading(None, expect) == "印が無い"
+    # 画面と同じ大きさの素材は、どちらの置き方でも同じ絵になる
+    same = tool.zoom_expectations(1920, 1080, 100.0)
+    assert tool.zoom_reading((480, 270, 960, 540), same) == "見分けない"
+
+
+def test_the_zoom_probe_is_read_the_way_real_items_are(tool: ModuleType, tmp_path: Path) -> None:
+    """探りの画像と動画のアイテムが、素材の画素で置く読み込みを通る
+
+    通らなければ、測っているのは YMM4 の置き方ではなく探りの書き方になる
+    """
+    from sashimono.compat.aviutl.report import CompatibilityReport
+    from sashimono.compat.ymm4.template import map_template
+
+    slots = tool.build_zoom_slots()
+    assert {slot.kind for slot in slots} == {"image", "video"}
+    for slot in slots:
+        item = tool.zoom_item(slot, tmp_path / slot.media_name)
+        mapped = map_template([item], report=CompatibilityReport())[0]
+        assert mapped.clip.native_size
+        assert mapped.media_path.endswith(slot.media_name)
+
+
+def test_the_zoom_build_without_ffmpeg_explains_itself(
+    tool: ModuleType,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """動画の枠が作れない機械で落ちると、道具が壊れたのか環境なのか分からない"""
+    _no_ffmpeg(tool, monkeypatch)
+    (tmp_path / "zoom-report.json").write_text("{}", encoding="utf-8")
+    assert tool.command_zoom_build(SimpleNamespace(work=tmp_path)) == 0
+    assert "ffmpeg" in capsys.readouterr().out
+    assert not (tmp_path / "zoom-probe.ymmp").exists()
+    assert not (tmp_path / "zoom-report.json").exists()
+
+
+def test_the_zoom_probe_project_has_the_bom_and_absolute_paths(
+    tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BOM が無いと YMM4 は開けない 相対のパスだと素材が見つからず全部の枠が黒になる"""
+    monkeypatch.setattr(
+        tool, "make_still_video", lambda _image, target: (target.write_bytes(b""), "")[1]
+    )
+    monkeypatch.chdir(tmp_path)
+    assert tool.command_zoom_build(SimpleNamespace(work=Path("work"))) == 0
+    raw = (tmp_path / "work" / "zoom-probe.ymmp").read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf")
+    items = json.loads(raw.decode("utf-8-sig"))["Timelines"][0]["Items"]
+    assert len(items) == len(tool.ZOOM_CONDITIONS)
+    assert all(Path(item["FilePath"]).is_absolute() for item in items)
+    assert all(Path(item["FilePath"]).is_file() for item in items)
+
+
+def test_the_effect_item_probe_is_read_the_way_real_effect_items_are(
+    tool: ModuleType, tmp_path: Path
+) -> None:
+    """探りのエフェクトアイテムが、実物と同じ読み込み（黒を敷く読み）を通る
+
+    2 通りの読みは、写した後にクリップの中身の種類だけを差し替えて描き比べる
+    差し替えが効かないと、同じ絵どうしを比べて「見分けない」と出る
+    """
+    from sashimono.compat.aviutl.report import CompatibilityReport
+    from sashimono.compat.ymm4.template import map_template
+    from sashimono.core.model import FILTER_KIND
+
+    slots = tool.build_effect_item_slots()
+    worked = [slot for slot in slots if slot.effects]
+    assert worked and any(not slot.effects for slot in slots)
+    for slot in worked:
+        items = tool.effect_items(slot, tmp_path / "絵.png")
+        assert [item["Layer"] for item in items] == [0, 1]
+        mapped = map_template(items, report=CompatibilityReport())
+        kinds = [m.clip.source.kind for m in mapped if m.clip.source is not None]
+        assert "framebuffer" in kinds
+        filtered = tool.read_effect_items_as(FILTER_KIND, mapped)
+        swapped = [m.clip.source.kind for m in filtered if m.clip.source is not None]
+        assert FILTER_KIND in swapped
+        assert "framebuffer" not in swapped
+        back = tool.read_effect_items_as("framebuffer", filtered)
+        assert [m.clip.source for m in back] == [m.clip.source for m in mapped]
+
+
+def test_the_effect_item_reading_says_when_both_are_the_same(tool: ModuleType) -> None:
+    near = {tool.EFFECT_FRAMEBUFFER: 0.1, tool.EFFECT_FILTER: 226.8}
+    assert tool.effect_item_reading(near) == tool.EFFECT_FRAMEBUFFER
+    far = {tool.EFFECT_FRAMEBUFFER: 40.0, tool.EFFECT_FILTER: 2.0}
+    assert tool.effect_item_reading(far) == tool.EFFECT_FILTER
+    # 基準の枠のように 2 つの読みが同じ絵なら、どちらかに決めない 決めると、見分けられない
+    # 枠まで片方の読みの裏付けとして表に数えてしまう
+    same = {tool.EFFECT_FRAMEBUFFER: 1.2, tool.EFFECT_FILTER: 1.2}
+    assert tool.effect_item_reading(same) == "見分けない"
+
+
+def test_measuring_the_new_probes_before_building_explains_itself(
+    tool: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # 案内の無い traceback で終わると、何を先に走らせればよいか分からない
+    assert tool.command_zoom_measure(SimpleNamespace(work=tmp_path)) == 0
+    assert tool.command_effect_item_measure(SimpleNamespace(work=tmp_path)) == 0
+    out = capsys.readouterr().out
+    assert "zoom-build" in out
+    assert "effectitem-build" in out

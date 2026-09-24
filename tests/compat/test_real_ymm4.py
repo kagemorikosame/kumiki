@@ -157,6 +157,36 @@ def test_no_video_effect_or_item_is_left_unmapped(catalog: TemplateCatalog) -> N
     assert leftovers == []
 
 
+def test_every_effect_item_works_on_the_screen_below_with_black_under_it() -> None:
+    """実物のエフェクトアイテムは、すべて黒を敷いて上に描く読み（フレームバッファ）を通る
+
+    YMM4 は下の絵の透明な所も黒として掛けた（``test_ymm4_measured.py``） フィルタの
+    クリップで読むものが混ざると、そのテンプレートだけ周りが黒のまま残る
+    トーン調整Te と時間帯調整Te の 30 個（画面全体の範囲・色のエフェクトだけ）で確かめた
+    """
+    from sashimono.compat.ymm4.template import load_template
+    from sashimono.compat.ymm4.values import type_name
+
+    kinds: list[str] = []
+    for path in FILES:
+        for template in load_template(path):
+            for item in template.items:
+                if type_name(item) != "EffectItem":
+                    continue
+                source = _mapped_alone(item).clip.source
+                kinds.append("" if source is None else source.kind)
+    if not kinds:
+        pytest.skip("エフェクトアイテムを持つ配布物（YMM4Teテンプレート一式）が置かれていない")
+    assert kinds == ["framebuffer"] * len(kinds)
+
+
+def _mapped_alone(item: dict[str, object]) -> MappedObject:
+    from sashimono.compat.ymm4.template import map_template
+
+    (mapped,) = map_template([item], report=CompatibilityReport())
+    return mapped
+
+
 def test_every_template_renders(loaded: Loaded) -> None:
     """全テンプレートを置いて、途中のフレームを描いてみる
 
