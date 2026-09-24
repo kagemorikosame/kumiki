@@ -294,3 +294,83 @@ class TestAPreviewAtLowerQualityIsTheExportShrunk:
     ) -> None:
         clip = _placed(_source("text", text="字", size=64), pos_x=-64, pos_y=32, scale=150)
         assert _mismatch(_project(clip), gl_context, divisor) < TOLERANCE
+
+
+@pytest.mark.parametrize("divisor", DIVISORS)
+class TestFineDetailAtLowerQuality:
+    """1 画素の粒や 1 画素より細い縁は、合成の画素へそのまま当てると太く・粗く見える（#173）
+
+    等倍の絵を縮めると、1 画素の粒は周りと平均されて薄まり、細い縁は外の画素と混ざって
+    淡い線になる 画質を落とした合成で 1 合成画素ずつ塗ると、粒は 2 倍・4 倍の大きさで
+    濃いまま、縁は 1 合成画素（画面の 2〜4 画素）の太さで濃く出る
+    """
+
+    def test_noise_grains_match_the_export_shrunk(
+        self, gl_context: OffscreenGLContext, divisor: int
+    ) -> None:
+        # 粒が合成の 1 画素のままだと、縮めた等倍の絵より粒が大きく濃く見える
+        # 画面いっぱいの図形に掛けて、背景で差が薄まらないようにする 暗い色は 0 で止まる
+        # 粒が多く、止め方の違いも差に出る 直す前は差の平均が 30 ほど、直した後は 0.3 ほど
+        noise = _effect("noise", strength=100, monochrome=False, animate=False)
+        clip = _source(
+            "shape", noise, shape="rect", width=320, height=176, color=(0.2, 0.2, 0.2, 1.0)
+        )
+        assert _mismatch(_project(clip), gl_context, divisor) < TOLERANCE / 5
+
+    @pytest.mark.parametrize("width", [1, 3])
+    def test_a_border_with_a_fraction_of_a_canvas_pixel(
+        self, gl_context: OffscreenGLContext, divisor: int, width: int
+    ) -> None:
+        # 太さ 1 の縁は 1/2・1/4 で合成の 1 画素に満たない 3 の縁は 1/2 で 1.5 画素
+        # 端数を切り捨てると縁が消えるか細り、切り上げると太く濃く出る
+        # 直す前は差の平均が 20〜40 ほど、直した後はどれも 1.5 より小さい
+        clip = _source(
+            "shape",
+            _effect("border", width=width, color=(1.0, 0.0, 0.0, 1.0)),
+            shape="rect",
+            width=96,
+            height=64,
+            color=(0.0, 0.0, 1.0, 1.0),
+        )
+        assert _rim_mismatch(_project(clip), gl_context, divisor) < TOLERANCE / 2
+
+    def test_a_bevel_thinner_than_a_canvas_pixel(
+        self, gl_context: OffscreenGLContext, divisor: int
+    ) -> None:
+        # 縁の反射の太さも同じ 1 画素に切り上げると、光る帯が 2 倍・4 倍の太さになる
+        # 直す前は 1/2 で 4.8・1/4 で 11.8、直した後はどちらも 0.3 より小さい
+        bevel = _effect("bevel_light", thickness=1, constant=100)
+        clip = _source(
+            "shape", bevel, shape="rect", width=96, height=64, color=(0.2, 0.2, 0.2, 1.0)
+        )
+        assert _rim_mismatch(_project(clip), gl_context, divisor) < TOLERANCE / 5
+
+
+def _rim_mismatch(project: Project, context: OffscreenGLContext, divisor: int) -> float:
+    """縁の周りだけで見た差の平均（0..255）
+
+    細い縁は絵の中で占める画素が少なく、絵全体で平均すると差が埋もれる 等倍と
+    画質を落とした絵のどちらかで色が変わっている画素（縁と、その外の 1 画素）だけを見る
+    """
+    full = _shrunk(_render(project, context), divisor)
+    light = _render(project, context, divisor)
+    assert light.shape == full.shape
+    plain = _shrunk(_render(_without_effects(project), context), divisor)
+    rim = (np.abs(full - plain).max(axis=-1) > 4) | (np.abs(light - plain).max(axis=-1) > 4)
+    assert rim.any()
+    return float(np.abs(light - full)[rim].mean())
+
+
+def _without_effects(project: Project) -> Project:
+    """足したエフェクトを外した同じプロジェクト 固定の欄（配置）は残す"""
+    tracks = tuple(
+        replace(
+            track,
+            clips=tuple(
+                replace(clip, effects=tuple(e for e in clip.effects if e.fixed))
+                for clip in track.clips
+            ),
+        )
+        for track in project.timeline.tracks
+    )
+    return replace(project, timeline=replace(project.timeline, tracks=tracks))

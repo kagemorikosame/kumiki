@@ -115,3 +115,47 @@ class TestSaveSubtitles:
         # BOM 付きだと、古い再生機で 1 枚目の番号が読めず字幕全体が出ないことがある
         raw = save_subtitles(placed, tmp_path / "a.srt").read_bytes()
         assert not raw.startswith(b"\xef\xbb\xbf")
+
+
+class TestFrameRange:
+    """書き出し範囲（#140）で動画を出したときに、字幕を同じ所へ合わせる（#141）
+
+    動画は範囲の頭が 0 秒になる 字幕がタイムラインの時刻のままだと、範囲の頭の分だけ
+    字幕が遅れて出る 範囲の外の字幕も、映っていない所の文として付いてくる
+    """
+
+    def test_the_head_of_the_range_becomes_zero(self, placed: Project, tmp_path: Path) -> None:
+        # 範囲 [90, 300) は 3 秒から 範囲の頭を 0 にずらさないと、4 秒の字幕が 4 秒に出て
+        # 範囲だけの動画では 3 秒遅れる
+        srt = save_subtitles(placed, tmp_path / "a.srt", frame_range=(90, 300)).read_text(
+            encoding="utf-8"
+        )
+        assert srt.startswith("1\n00:00:01,000 --> 00:00:03,000\n編集ソフトを\n")
+
+    def test_subtitles_outside_the_range_are_left_out(
+        self, placed: Project, tmp_path: Path
+    ) -> None:
+        # 範囲の外の字幕まで書くと、映っていない所の文が 0 秒より前や動画の後ろに付く
+        text = save_subtitles(placed, tmp_path / "a.txt", frame_range=(100, 200)).read_text(
+            encoding="utf-8"
+        )
+        assert text == "編集ソフトを\n"
+
+    def test_a_subtitle_crossing_an_edge_is_cut_at_the_edge(
+        self, placed: Project, tmp_path: Path
+    ) -> None:
+        # 「今日は」は 30〜90、「作ります」は 210〜270 範囲 [45, 225) の端で切らないと、
+        # 1 枚目が負の時刻から始まり、最後の 1 枚が動画の終わりより後ろまで出る
+        srt = save_subtitles(placed, tmp_path / "a.srt", frame_range=(45, 225)).read_text(
+            encoding="utf-8"
+        )
+        assert srt.startswith("1\n00:00:00,000 --> 00:00:01,500\n今日は\n")
+        assert "3\n00:00:05,500 --> 00:00:06,000\n作ります\n" in srt
+
+    def test_no_range_writes_the_whole_timeline(self, placed: Project, tmp_path: Path) -> None:
+        # 範囲を渡さない呼び出し（これまでどおりの書き出し）は時刻を動かさない
+        srt = save_subtitles(placed, tmp_path / "a.srt", frame_range=None).read_text(
+            encoding="utf-8"
+        )
+        assert srt.startswith("1\n00:00:01,000 --> 00:00:03,000\n今日は\n")
+        assert srt.count("-->") == 3

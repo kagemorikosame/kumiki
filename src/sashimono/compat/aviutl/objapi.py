@@ -93,7 +93,6 @@ EFFECT_NAMES: dict[str, str] = {
     "ノイズ": "noise",
     "モザイク": "mosaic",
     "マスク": "mask",
-    "リサイズ": "transform",
     "領域拡張": "crop",
     "クリッピング": "crop",
 }
@@ -622,6 +621,9 @@ class ObjApi:
         if original == OFFSCREEN_EFFECT:
             self._offscreen()
             return
+        if original == RESIZE_EFFECT:
+            self._resize(args[1:])
+            return
         kind = EFFECT_NAMES.get(original)
         if kind is None:
             self._report.note_missing(f"obj.effect({original})")
@@ -642,6 +644,51 @@ class ObjApi:
         """
         if self.state.effects:
             self._report.note_missing("obj.effect(オフスクリーン描画)（先に積んだ効果の焼き込み）")
+
+    def _resize(self, args: tuple[Any, ...]) -> None:
+        """``obj.effect("リサイズ", "X", 120, "Y", 40, "ドット数でサイズ指定", 1)``
+
+        描画のときではなく、ここで絵の大きさを変える 後に続く ``obj.w`` や
+        ``obj.copybuffer`` が変えた後の大きさを見るため sigma の 単純図形σ は
+        1 画素の四角を読んでリサイズで幅と高さにする 描くときまで待つと、その間の
+        処理が 1 画素の絵を相手にする（以前は X と Y を位置のずれとして GPU へ渡していて、
+        1 画素のまま横へずれた）
+
+        ``ドット数でサイズ指定`` が真なら X と Y は画素 偽なら 拡大率 と X・Y の百分率を
+        掛ける ``補間なし`` が真なら最も近い画素を取る
+        """
+        values: dict[str, float] = {}
+        for index in range(0, len(args) - 1, 2):
+            values[str(args[index])] = _as_float(args[index + 1])
+        state = self.state
+        if values.get("ドット数でサイズ指定", 0.0):
+            width = values.get("X", float(state.width))
+            height = values.get("Y", float(state.height))
+        else:
+            zoom = values.get("拡大率", 100.0) / 100.0
+            width = state.width * zoom * values.get("X", 100.0) / 100.0
+            height = state.height * zoom * values.get("Y", 100.0) / 100.0
+        if not (math.isfinite(width) and math.isfinite(height)):
+            self._report.note_missing("obj.effect(リサイズ) の大きさ（数ではない）")
+            return
+        if max(round(width), round(height)) > MAX_FIGURE_SIZE:
+            # 大きさはスクリプトが決める そのまま作ると 1 回で数 GB になるので切るが、
+            # 黙って切ると要求より小さく描かれた理由が互換性レポートに出ない
+            self._report.note_missing(
+                f"obj.effect(リサイズ) の大きさ {round(width)}x{round(height)}"
+                f"（上限 {MAX_FIGURE_SIZE} で切った）"
+            )
+        if state.effects:
+            # 先に積んだ効果は描くときに掛かる（GPU） ここで焼き込めないので、
+            # リサイズの後の絵へ掛かって順が入れ替わる 黙るとぼかしの幅などが違う理由が
+            # 分からないので記録に残す（オフスクリーン描画 と同じ扱い）
+            self._report.note_missing("obj.effect(リサイズ)（先に積んだ効果の焼き込み）")
+        size = (
+            max(1, min(round(width), MAX_FIGURE_SIZE)),
+            max(1, min(round(height), MAX_FIGURE_SIZE)),
+        )
+        state.image = raster.resize(state.image, *size, smooth=not values.get("補間なし", 0.0))
+        state.image_shared = False
 
     def lua_filter(self, *args: Any) -> None:
         del args
@@ -688,6 +735,10 @@ class ObjApi:
                     f'obj.load("figure") の大きさ {int(size)}（上限で切った）'
                 )
             width = height = max(1, min(int(size), MAX_FIGURE_SIZE))
+        if line >= min(FILLED_LINE, max(width, height)):
+            # 図形より太い線は塗りつぶし sigma の 楕円 は 8000 を渡して塗りつぶしを頼む
+            # 輪郭として内側へ引くと、太さが図形を越えて何も残らず、円が透明になる
+            line = 0.0
         canvas = self._render_source(
             "shape",
             {
@@ -700,8 +751,8 @@ class ObjApi:
                 # 図形オブジェクトと同じ描き方をする API なので、輪郭も内側（#87）
                 "line_align": "inside",
             },
-            max(width, state.screen_w),
-            max(height, state.screen_h),
+            _same_parity(max(width, state.screen_w), width),
+            _same_parity(max(height, state.screen_h), height),
         )
         # 図形の大きさちょうどの絵にする 描く側は画面の大きさの真ん中に描いて返す
         # 画面の大きさのまま持つと ``obj.w`` が画面の幅になり、図形を 0〜1 で
@@ -1047,6 +1098,13 @@ MAX_BUFFERS = 16
 #: それまでに積んだ効果を絵へ焼き込むフィルタの名前
 OFFSCREEN_EFFECT = "オフスクリーン描画"
 
+#: 絵の大きさをその場で変えるフィルタの名前（:meth:`ObjApi._resize`）
+RESIZE_EFFECT = "リサイズ"
+
+#: ``obj.load("figure")`` の線の太さがこれ以上なら塗りつぶし 図形オブジェクトの読み込み
+#: （:mod:`sashimono.compat.aviutl.mapping`）と同じ決まり AviUtl2 の既定値がこの値
+FILLED_LINE = 4000.0
+
 
 def _is_table(value: Any) -> bool:
     """Lua の表か Lua から来た値は、表なら ``items`` を持つ"""
@@ -1095,6 +1153,15 @@ def _buffer_name(name: str) -> str:
 def _inside(image: np.ndarray, position: tuple[int, int]) -> bool:
     row, column = position
     return bool(0 <= row < image.shape[0] and 0 <= column < image.shape[1])
+
+
+def _same_parity(canvas: int, figure: int) -> int:
+    """図形を真ん中に描く絵の大きさ 図形と偶奇をそろえる
+
+    偶奇が違うと図形の端が画素の真ん中に来て、縁が半透明ににじむ 1 画素の四角
+    （sigma の 矩形 がリサイズで広げる元）は 4 画素に 1/4 ずつ散って、どこも不透明にならない
+    """
+    return canvas + (canvas - figure) % 2
 
 
 def _as_float(value: Any) -> float:
