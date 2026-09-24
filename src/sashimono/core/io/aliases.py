@@ -138,8 +138,13 @@ class Alias:
 
 
 def _fresh(effects: tuple[Effect, ...]) -> tuple[Effect, ...]:
+    # 固定の印は残す エイリアスはクリップを丸ごと写す物で、置いたクリップは元の
+    # クリップと同じ欄を持つ（貼り付けと同じ） プリセットはよそのクリップへ足す物
+    # なので外すが、こちらは足し先が無い
     return tuple(
-        Effect(kind=effect.kind, params=dict(effect.params), enabled=effect.enabled)
+        Effect(
+            kind=effect.kind, params=dict(effect.params), enabled=effect.enabled, fixed=effect.fixed
+        )
         for effect in effects
     )
 
