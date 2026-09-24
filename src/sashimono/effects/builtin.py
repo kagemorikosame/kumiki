@@ -474,19 +474,28 @@ vec4 edge_color() {
 
 void main() {
     vec4 base = texture(u_texture, v_uv);
-    if (width < 0.5) {
+    if (width <= 0.0) {
         frag_color = base;
         return;
     }
 
     // 周囲を見て、近くに不透明な画素があれば縁として塗る
+    // 太さの端数（1 画素に満たない太さも）は、1 つ外の輪を端数の割合だけ薄く塗る
+    // 画質を落とした合成では、太さ 1 の縁が 0.25 画素、3 の縁が 1.5 画素になる 書き出しを
+    // 縮めると、端数の分は外の画素と平均されて淡い線になる 端数を切り捨てると縁が細るか
+    // 消え、切り上げると 2 倍・4 倍の太さに見える 整数の太さは今までと同じ絵になる
+    float reach = min(width, 32.0);
+    float whole = floor(reach);
+    float part = reach - whole;
     float coverage = 0.0;
-    int steps = int(min(width, 32.0));
+    int steps = int(whole) + 1;
     for (int y = -steps; y <= steps; ++y) {
         for (int x = -steps; x <= steps; ++x) {
             vec2 offset = vec2(float(x), float(y));
-            if (length(offset) > width) continue;
-            coverage = max(coverage, texture(u_texture, v_uv + offset / u_size).a);
+            float d = length(offset);
+            float weight = d <= reach ? 1.0 : (d <= whole + 1.0 ? part : 0.0);
+            if (weight <= 0.0) continue;
+            coverage = max(coverage, texture(u_texture, v_uv + offset / u_size).a * weight);
         }
     }
 
@@ -628,19 +637,46 @@ uniform bool monochrome;
 uniform int seed;
 uniform bool animate;
 
+vec3 grain(vec2 p) {
+    p += float(seed) * 17.0;
+    if (animate) p += u_frame * 13.0;
+    if (monochrome) return vec3(hash(p) - 0.5);
+    return vec3(hash(p), hash(p + 41.7), hash(p + 93.1)) - 0.5;
+}
+
+// 1 を超える明るさも止めずに通す sRGB の式 等倍では行って戻るだけなので、明るい絵が変わらない
+vec3 encode(vec3 c) {
+    return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+vec3 decode(vec3 c) {
+    return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
+}
+
 void main() {
     vec4 color = texture(u_texture, v_uv);
-    vec2 p = v_uv * u_size + float(seed) * 17.0;
-    if (animate) p += u_frame * 13.0;
-
-    vec3 noise;
-    if (monochrome) {
-        noise = vec3(hash(p) - 0.5);
-    } else {
-        noise = vec3(hash(p), hash(p + 41.7), hash(p + 93.1)) - 0.5;
+    // 粒は画面の 1 画素 画質を落とした合成の 1 画素は画面の数画素ぶんなので、座標を
+    // pixel_scale で割って画面の画素へ戻し、覆う画面の画素の粒を平均する
+    // 合成の画素ごとに 1 粒を置くと、粒が 2 倍・4 倍の大きさで濃いまま出て、書き出しを
+    // 縮めた絵（粒が周りと平均されて薄まる）と別物に見える
+    // 座標は絵の範囲の角から数える 入れ物の余白は画質で縮まり方が変わり、入れ物の
+    // 角から数えると、縮めた絵の升目と画面の画素の升目がずれて別の粒を拾う
+    float scale = max(u_pixel_scale, 0.125);
+    vec2 here = v_uv * u_size - u_object.xy;
+    // 覆う画面の画素の中心は、合成の画素の左下の辺から右上の辺までの間にある物
+    vec2 first = ceil((here - 0.5) / scale - 0.5);
+    vec2 last = ceil((here + 0.5) / scale - 0.5) - 1.0;
+    vec2 count = clamp(last - first + 1.0, vec2(1.0), vec2(8.0));
+    // 平均は粒を足して 0 で止めた後の色で、書き出しの絵と同じ sRGB の値で取る
+    // 粒だけを平均してから足すと、暗い絵で 0 に止まる粒が数に入らず、リニアの値で
+    // 平均すると明るい粒が勝つ どちらも縮めた書き出しより明るく出る
+    vec3 sum = vec3(0.0);
+    for (int y = 0; y < int(count.y); ++y) {
+        for (int x = 0; x < int(count.x); ++x) {
+            vec3 noise = grain(first + vec2(float(x), float(y)) + 0.5);
+            sum += encode(max(color.rgb + noise * (strength / 100.0), 0.0));
+        }
     }
-
-    frag_color = vec4(max(color.rgb + noise * (strength / 100.0), 0.0), color.a);
+    frag_color = vec4(decode(sum / (count.x * count.y)), color.a);
 }
 """)
 
