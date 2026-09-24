@@ -197,3 +197,101 @@ class TestRevealLayout:
         _, exact = draw(body, reveal=AnimatedValue(100.0 * 2 / 6))
         _, two_lines = draw("HH\n<@ＭＳ ゴシック> <@>")
         assert exact[3] - exact[1] == pytest.approx(two_lines[3] - two_lines[1], abs=0.01)
+
+
+def glyph_boxes(image: np.ndarray) -> list[tuple[int, int, int, int]]:
+    """左から順に、字ごとの外形 ``(左, 上, 右, 下)`` 字の間の空いた列で区切る"""
+    ink = image[..., 3] > 128
+    columns = ink.any(axis=0)
+    boxes: list[tuple[int, int, int, int]] = []
+    start = None
+    for x, filled in enumerate([*columns.tolist(), False]):
+        if filled and start is None:
+            start = x
+        elif not filled and start is not None:
+            rows = np.nonzero(ink[:, start:x].any(axis=1))[0]
+            boxes.append((start, int(rows.min()), x, int(rows.max()) + 1))
+            start = None
+    return boxes
+
+
+def row_tops(image: np.ndarray) -> list[int]:
+    """上から順に、行ごとの字の上端 字の無い行で区切る"""
+    rows = (image[..., 3] > 128).any(axis=1)
+    return [y for y in range(1, len(rows)) if rows[y] and not rows[y - 1]]
+
+
+def widths(image: np.ndarray) -> list[int]:
+    return [right - left for left, _top, right, _bottom in glyph_boxes(image)]
+
+
+class TestRemainingTags:
+    """#134 の残りの制御文字 数は 2026-09-25 の見本 ``tag24``〜``tag51`` の書き出し"""
+
+    def test_size_reset_goes_back_to_the_font_tag(self) -> None:
+        # 見本 tag24 4 文字目の H の上端はメイリオの 497 設定欄の Arial へ戻すと 499
+        image, _ = draw("H<@メイリオ>H<s50>H<s>H")
+        assert glyph_boxes(image)[3][1] == pytest.approx(497, abs=1)
+
+    def test_letter_gap_replaces_the_object_letter_spacing(self) -> None:
+        # 見本 tag47 字間 20 の上で <gw40> 足すと 3 文字目と 4 文字目が 20 ずつ右へずれる
+        image, _ = draw("HH<gw40>HH<gw>HH", letter_spacing=AnimatedValue(20.0))
+        lefts = [box[0] for box in glyph_boxes(image)]
+        assert lefts == pytest.approx([681, 773, 885, 998, 1090, 1182], abs=1.5)
+
+    def test_line_gap_goes_after_the_line_that_ends_with_it(self) -> None:
+        # 見本 tag48 行間 20 の上で <gh40> 2 行目と 3 行目の間だけ 40 空いた
+        image, _ = draw("H\n<gh40>H\nH<gh>\nH", line_spacing=AnimatedValue(20.0))
+        assert row_tops(image) == pytest.approx([289, 424, 579, 714], abs=1.5)
+
+    def test_tall_scale_keeps_the_middle_of_the_line(self) -> None:
+        # 見本 tag49 <th0.5> の H は 521..557 字の形の真ん中で縮めると 2 画素上がる
+        image, _ = draw("H<th0.5>H<th>H")
+        _left, top, _right, bottom = glyph_boxes(image)[1]
+        assert (top, bottom) == pytest.approx((521, 557), abs=1)
+
+    def test_turn_is_clockwise_around_the_letter_cell(self) -> None:
+        # 見本 tag50 字間 60 の <tr45> の L は 922..979 x 498..580 反時計回りなら左へ寄る
+        image, _ = draw("L<tr45>L<tr>L", letter_spacing=AnimatedValue(60.0))
+        assert glyph_boxes(image)[1] == pytest.approx((922, 498, 979, 580), abs=1.5)
+
+    def test_bold_and_italic_tags(self) -> None:
+        # 見本 tag28 幅 56・58・57・71・56 斜体の H は傾いた分だけ広い
+        image, _ = draw("H<@+B>H<@-B>H<@+I>H<@>H")
+        plain, thick, back, slanted, reset = widths(image)
+        assert thick > plain
+        assert back == pytest.approx(plain, abs=1)
+        assert slanted >= plain + 12
+        assert reset == pytest.approx(plain, abs=1)
+
+    def test_decoration_numbers_with_a_font_name(self) -> None:
+        # 見本 tag43 縁取り文字の上で <@Arial,0> の H だけ縁が消え、<@> で戻った
+        image, _ = draw(
+            "H<@Arial,0>H<@>H",
+            letter_spacing=AnimatedValue(40.0),
+            border_width=AnimatedValue(5.0),
+            border_color=(1.0, 0.0, 0.0, 1.0),
+        )
+        edged, bare, again = widths(image)
+        assert edged >= bare + 8
+        assert again == edged
+        # 設定欄が標準文字でも <@Arial,3> で 影・縁色 の縁が付く（見本 tag21 tag42）
+        image, _ = draw(
+            "H<@Arial,3>H<@>H",
+            letter_spacing=AnimatedValue(40.0),
+            border_color=(1.0, 0.0, 0.0, 1.0),
+        )
+        bare, edged, again = widths(image)
+        assert edged >= bare + 8
+        assert again == bare
+
+    def test_outline_width_from_the_size_tag(self) -> None:
+        # 見本 tag44 太さ 0・4・8・20 で H は 57・61・65・76（片側に半分ずつ付く）
+        image, _ = draw(
+            "H<s,,,0>H<s,,,4>H<s,,,8>H<s,,,20>H<s>H",
+            letter_spacing=AnimatedValue(60.0),
+            border_width=AnimatedValue(5.0),
+            border_color=(1.0, 0.0, 0.0, 1.0),
+        )
+        measured = widths(image)[1:5]
+        assert measured == pytest.approx([57, 61, 65, 76], abs=1.5)

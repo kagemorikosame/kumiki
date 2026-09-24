@@ -528,16 +528,14 @@ def read_ceilings(path: Path) -> dict[str, float]:
     # JSON の読み違い（json.JSONDecodeError）も ValueError の仲間
     raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
-        raise ValueError(f"{path} はテンプレートの名前と上限の組（JSON のオブジェクト）でない")
-    odd = [
-        str(name)
-        for name, value in raw.items()
-        if isinstance(value, bool) or not isinstance(value, int | float)
-    ]
-    if odd:
-        raise ValueError(f"{path} の上限が数でない: {', '.join(odd)}")
+        raise ValueError(f"{path} が名前と上限の組になっていない")
     ceilings: dict[str, float] = {}
     for name, value in raw.items():
+        # null や並びは float が TypeError を投げる ValueError にそろえないと、呼ぶ側が
+        # 終了コード 1 で知らせずに落ちる 真偽値は float が 0 と 1 にしてしまうので断る
+        # 文字列は "71" なら float が読めてしまうが、上限を文字で書くのは書き間違いなので断る
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            raise ValueError(f"{path} の上限が数でない: {name}")
         try:
             ceilings[str(name)] = float(value)
         except OverflowError:
