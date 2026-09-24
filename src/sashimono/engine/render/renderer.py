@@ -54,6 +54,7 @@ from sashimono.engine.gpu import (
 from sashimono.engine.gpu.projection import project
 from sashimono.engine.motion_shapes import TrailPaths
 from sashimono.engine.render.invalidate import image_paths
+from sashimono.engine.render.outline import is_generated, media_pixel_size
 from sashimono.engine.render.scripts import (
     ScriptStage,
     requested_effects,
@@ -251,18 +252,9 @@ _DecodeKey = tuple[MediaId, int]
 _CLOCK_SHAPES = frozenset({"concentration", "starfield", "motion_trail", "waveform"})
 
 
-def _is_generated(clip: Clip) -> bool:
-    """絵をこちらで作るクリップか
-
-    音声波形は素材（音声ファイル）を持つが、絵は素材から取り出すのではなく描く
-    素材を持つからと映像を取り出しに行くと、音声だけの素材なので何も出ない
-    """
-    if clip.media_id is None:
-        return True
-    source = clip.source
-    return (
-        source is not None and source.kind == "shape" and source.params.get("shape") == "waveform"
-    )
+#: 絵をこちらで作るクリップか 外枠の計算（:mod:`sashimono.engine.render.outline`）と
+#: 同じ物を使う 別々に持つと、枠の置き方と描く置き方が食い違う
+_is_generated = is_generated
 
 
 def _source_time(clip: Clip, media: MediaItem, frame: int, rate: FrameRate) -> Fraction:
@@ -991,21 +983,37 @@ class FrameRenderer:
         )
 
     def _native_size(self, clip: Clip) -> tuple[int, int] | None:
-        """素材の映像の、回転を当てた後の画素の大きさ 分からなければ ``None``"""
-        if clip.media_id is None or _is_generated(clip):
+        """素材の映像の、回転を当てた後の画素の大きさ 分からなければ ``None``
+
+        外枠の計算（:func:`media_pixel_size`）と同じ物 別々に持つと枠と絵の大きさが食い違う
+        """
+        return media_pixel_size(self._project, clip)
+
+    def object_extent(
+        self, clip: Clip, frame: int
+    ) -> tuple[tuple[float, float, float, float], tuple[int, int]] | None:
+        """生成オブジェクトの入れ物（画素 左・上・右・下）と絵の大きさ 外枠を出すため
+
+        描く道と同じ入れ物を返す 画面に収まる絵は :meth:`_object_box_of`（文字の枠も含む）、
+        画面より大きい絵は色の付いた範囲だけ（:meth:`_draw_oversized`）
+
+        **GL を使わない** 絵は CPU で作り、同じ設定なら描いたときに覚えた物を使う 別のスレッドの
+        先読みが出した絵には、画面の側のレンダラはまだ何も作っていない 選んだクリップの
+        1 本ぶんだけここで作る（テキスト 1 枚で数ミリ秒 動かない字幕なら次からは覚えた物）
+        """
+        if not is_generated(clip):
             return None
-        media = self._project.find_media(clip.media_id)
-        if media is None or not media.video_streams:
+        image = self._generate(clip, frame, self._project.rate)
+        if image is None:
             return None
-        # デコーダと同じ選び方（番号が合う物、無ければ最初の映像）
-        stream = next(
-            (s for s in media.video_streams if s.index == clip.stream_index),
-            media.video_streams[0],
-        )
-        # 縦に撮った素材はデコーダが回して渡す 回す前の幅と高さで置くと縦横が入れ替わる
-        if stream.rotation in (90, 270):
-            return stream.height, stream.width
-        return stream.width, stream.height
+        height, width = int(image.shape[0]), int(image.shape[1])
+        if width > self._compositor.width or height > self._compositor.height:
+            box = _merged_box(self._content_box_of(clip, image), None)
+        else:
+            box = self._object_box_of(clip, image)
+        if box is None:
+            return None
+        return box, (width, height)
 
     def _layer(self, role: str, depth: int) -> Compositor:
         """クリップ 1 本ぶんを描く透明な合成先 役目と入れ子の深さごとに使い回す"""

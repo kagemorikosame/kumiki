@@ -21,6 +21,7 @@ from sashimono.engine.encode import DEFAULT_PIPELINE_DEPTH, MAX_PIPELINE_DEPTH
 from sashimono.engine.render import DEFAULT_DECODE_THREADS, MAX_DECODE_THREADS
 from sashimono.ui.media_match import MATCH_ASK, MATCH_MODES
 from sashimono.ui.media_pool import VIEW_LIST, VIEW_MODES
+from sashimono.ui.preview_handles import KEYFRAME_DRAG_AT_PLAYHEAD, KEYFRAME_DRAG_MODES
 
 __all__ = [
     "AUTO_QUALITY_HEIGHT",
@@ -231,6 +232,13 @@ class Preferences:
     #: 既定は上 Qt の既定の下だと、パネルの名前を探して窓の一番下まで目を動かすことになり、
     #: タブがあること自体に気付かない人がいた（Issue #27） 下の方が見慣れた人は戻せる
     dock_tabs: str = DOCK_TABS_TOP
+    #: 選んだクリップの外枠をプレビューに出し、掴んで位置・拡大率・回転を変える
+    #: 既定は入 数を打つより早く、枠が無いと絵がどこまであるのか分からない 枠が絵の
+    #: 確認の邪魔になる人は切れるようにする
+    preview_handles: bool = True
+    #: キーフレームのある値をプレビューで動かしたとき 再生ヘッドの所へ点を打つ（既定
+    #: 利用者の決定 その時刻の絵だけが変わる）か、全部の点を同じだけずらすか
+    keyframe_drag: str = KEYFRAME_DRAG_AT_PLAYHEAD
 
     def prefetch_bytes(self) -> int:
         """先読みに使えるバイト数 切ってあれば 0
@@ -293,6 +301,10 @@ class PreferenceStore:
             media_view=_choice(data.get("media_view"), VIEW_MODES, plain.media_view),
             match_video=_choice(data.get("match_video"), MATCH_MODES, plain.match_video),
             dock_tabs=_choice(data.get("dock_tabs"), DOCK_TAB_POSITIONS, plain.dock_tabs),
+            preview_handles=_flag(data.get("preview_handles"), plain.preview_handles),
+            keyframe_drag=_choice(
+                data.get("keyframe_drag"), KEYFRAME_DRAG_MODES, plain.keyframe_drag
+            ),
         )
 
     def save(self, preferences: Preferences) -> None:

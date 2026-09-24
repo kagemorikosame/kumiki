@@ -9,14 +9,16 @@ from __future__ import annotations
 
 import time
 from collections.abc import Collection
+from dataclasses import dataclass, field
 
-from PySide6.QtCore import QTimer, Signal
-from PySide6.QtGui import QOpenGLContext
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QKeyEvent, QMouseEvent, QOpenGLContext, QPainter, QPen
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
-from sashimono.core.model import MediaId, Project
+from sashimono.core.commands import Command
+from sashimono.core.model import Clip, ClipId, MediaId, Project, Track
 from sashimono.engine.cache.proxy import ProxyStore
-from sashimono.engine.gpu import CurrentGLContext
+from sashimono.engine.gpu import CurrentGLContext, fit_placement
 from sashimono.engine.render import (
     DEFAULT_DECODE_THREADS,
     FULL_QUALITY,
@@ -28,8 +30,60 @@ from sashimono.engine.render import (
     image_spans,
 )
 from sashimono.engine.render.background import BackgroundPrefetch
+from sashimono.engine.render.outline import Outline, Point, clip_outline, is_generated
+from sashimono.ui.preview_handles import (
+    KEYFRAME_DRAG_AT_PLAYHEAD,
+    Grip,
+    Hit,
+    hit_test,
+    moved_values,
+    pick_clip,
+    rotated_values,
+    rotation_knob,
+    scaled_values,
+    start_values,
+    transform_commands,
+    turn_between,
+)
 
-__all__ = ["SLOW_FRAME_MS", "PreviewWidget"]
+__all__ = ["GRIP_SIZE", "KNOB_LENGTH", "ROTATE_REACH", "SLOW_FRAME_MS", "PreviewWidget"]
+
+#: 角の掴み所の大きさ（画面の画素） 掴める半径もこれ 合成の画素で数えると、
+#: プレビューを小さくしたときに掴めなくなる
+GRIP_SIZE = 8.0
+#: 角の外側で回せる範囲（画面の画素） 広すぎると、隣の絵を掴むつもりで回してしまう
+ROTATE_REACH = 24.0
+#: 回転の掴み所を上の辺からどれだけ離すか（画面の画素）
+KNOB_LENGTH = 22.0
+
+#: 1 回のドラッグを取り消しの一覧に出すときの名前
+_LABELS = {
+    Grip.MOVE: "プレビューで位置を変更",
+    Grip.SCALE: "プレビューで拡大率を変更",
+    Grip.ROTATE: "プレビューで回転を変更",
+}
+
+
+@dataclass(slots=True)
+class _Drag:
+    """掴んでいる途中の状態 命令は掴んだ時点のプロジェクトから毎回作り直す
+
+    途中の絵は窓がプレビューへ渡すだけで、画面のプロジェクトはその途中の物に替わる
+    そこから作ると、動かした分をもう 1 度足していく
+    """
+
+    hit: Hit
+    clip_id: ClipId
+    project: Project
+    press: Point
+    last: Point
+    start: dict[str, float]
+    corners: tuple[Point, Point, Point, Point]
+    pivot: Point
+    #: 回した角度の合計（度） 1 回ごとの差を足す 押した所との差では半周で跳ぶ
+    turned: float = 0.0
+    commands: list[Command] = field(default_factory=list)
+
 
 #: 先読みの 1 コマにこれ以上掛かるなら、先読みそのものをやめる（ミリ秒）
 #: **画面のスレッドで貯めるときだけ** 別のスレッドで貯めるときは画面が止まらないので、
@@ -58,6 +112,12 @@ class PreviewWidget(QOpenGLWidget):
     ready = Signal()
     #: 先読みをやめた 引数は理由 画面へ出して、黙って効かない状態を避ける
     prefetch_stopped = Signal(str)
+    #: プレビューを押してクリップを選んだ 引数はクリップの ID タイムラインの選択を合わせる
+    clip_picked = Signal(str)
+    #: 掴んで動かし終えた 命令の一覧と取り消しの名前 1 段にまとめて流してもらう
+    commands_requested = Signal(list, str)
+    #: 掴んでいる途中 命令の一覧を履歴に積まずに見せてもらう 空なら元へ戻す
+    preview_requested = Signal(list)
 
     def __init__(
         self,
@@ -110,6 +170,17 @@ class PreviewWidget(QOpenGLWidget):
         self._background_broken = False
         #: 再生を始めたコマを描き終えたら、貯めた所の端を裏で読ませる（:meth:`_prime_edge`）
         self._prime_after_paint = False
+        #: 外枠を出すクリップ（タイムラインで選んだ主の 1 本）
+        self._selection: ClipId | None = None
+        #: 外枠を出して直接動かすか（設定）
+        self._handles_enabled = True
+        #: キーフレームのある値を動かしたときの決まり（設定）
+        self._keyframe_drag = KEYFRAME_DRAG_AT_PLAYHEAD
+        self._drag: _Drag | None = None
+        # 押していない間も矢印の形を変えるため 掴める所が見えるように
+        self.setMouseTracking(True)
+        # Esc で掴むのをやめられるように
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self.setMinimumSize(240, 135)
 
     @property
@@ -392,6 +463,14 @@ class PreviewWidget(QOpenGLWidget):
 
         # Qt はここでコンテキストを current にしている 持ち越した設定を当てる
         self._apply_pending()
+        self._paint_picture(width, height)
+        # 3 つの道（走り係の絵・貯めた絵・その場で描いた絵）のどれを通っても枠を重ねる
+        # 道ごとに描くと、先読みが当たったコマだけ枠が消える
+        self._paint_overlay()
+
+    def _paint_picture(self, width: int, height: int) -> None:
+        """絵を出す **コンテキストが current な所（paintGL）で呼ぶこと**"""
+        assert self._renderer is not None
         target = self.defaultFramebufferObject()
         if self._background is not None:
             # 走り係の絵を出すだけ 外れたらこちらで描くが、取ってはおかない
@@ -412,10 +491,297 @@ class PreviewWidget(QOpenGLWidget):
                 self._prime_edge()
             return
         if self._cache is not None and self._cache.enabled:
-            self._cache.draw(self._frame, self.defaultFramebufferObject(), (0, 0, width, height))
+            self._cache.draw(self._frame, target, (0, 0, width, height))
             return
         self._renderer.compose(self._frame)
-        self._renderer.compositor.present(self.defaultFramebufferObject(), (0, 0, width, height))
+        self._renderer.compositor.present(target, (0, 0, width, height))
+
+    # --- 外枠と直接の操作 ---
+
+    def set_selection(self, clip_id: ClipId | None) -> None:
+        """外枠を出すクリップ タイムラインで選んだ主の 1 本"""
+        if clip_id == self._selection:
+            return
+        self._selection = clip_id
+        self._cancel_drag()
+        self.update()
+
+    @property
+    def selection(self) -> ClipId | None:
+        return self._selection
+
+    def set_handles_enabled(self, enabled: bool) -> None:
+        """外枠を出して直接動かすか（設定） 切ったら枠も掴む所も出さない"""
+        if enabled == self._handles_enabled:
+            return
+        self._handles_enabled = enabled
+        self._cancel_drag()
+        self.unsetCursor()
+        self.update()
+
+    @property
+    def handles_enabled(self) -> bool:
+        return self._handles_enabled
+
+    def set_keyframe_drag(self, mode: str) -> None:
+        """キーフレームのある値を動かしたときの決まり（設定）"""
+        self._keyframe_drag = mode
+
+    def canvas_size(self) -> tuple[int, int]:
+        """合成の大きさ 画質を落としていれば小さい 枠はこの画素で数える"""
+        return self._quality.apply(*self._project.settings.resolution)
+
+    def canvas_rect(self) -> tuple[float, float, float, float]:
+        """絵が出ている所（ウィジェットの座標 左・上・幅・高さ）
+
+        :meth:`Compositor.present` の置き方（縦横比を保って収め、画素へ切り捨てる）と
+        同じに数える GL の原点は左下なので、上からの位置へ直す
+        """
+        ratio = self.devicePixelRatioF()
+        width = max(1, int(self.width() * ratio))
+        height = max(1, int(self.height() * ratio))
+        canvas_width, canvas_height = self.canvas_size()
+        placed = fit_placement(canvas_width, canvas_height, width, height)
+        shown_width = max(1, int(placed.width))
+        shown_height = max(1, int(placed.height))
+        top = height - int(placed.top) - shown_height
+        return (
+            int(placed.left) / ratio,
+            top / ratio,
+            shown_width / ratio,
+            shown_height / ratio,
+        )
+
+    def to_canvas(self, point: QPointF) -> Point:
+        """ウィジェットの座標 → 合成の画素（Y は下が正）"""
+        left, top, width, height = self.canvas_rect()
+        canvas_width, canvas_height = self.canvas_size()
+        return (
+            (point.x() - left) * canvas_width / width,
+            (point.y() - top) * canvas_height / height,
+        )
+
+    def to_widget(self, point: Point) -> QPointF:
+        """合成の画素 → ウィジェットの座標"""
+        left, top, width, height = self.canvas_rect()
+        canvas_width, canvas_height = self.canvas_size()
+        return QPointF(
+            left + point[0] * width / canvas_width, top + point[1] * height / canvas_height
+        )
+
+    def outline_of(self, clip: Clip) -> Outline | None:
+        """いまのコマの ``clip`` の外枠（合成の画素）
+
+        生成オブジェクトの入れ物は画面の側のレンダラに作らせる（GL は使わない）
+        別のスレッドの先読みが出したコマでは、画面の側はまだ何も作っていない
+        """
+        if not clip.timeline_start <= self._frame < clip.timeline_end:
+            return None
+        extent = None
+        if is_generated(clip):
+            if self._renderer is None:
+                return None
+            extent = self._renderer.object_extent(clip, self._frame)
+        return clip_outline(
+            self._project, clip, self._frame, canvas=self.canvas_size(), extent=extent
+        )
+
+    def _selected(self) -> tuple[Track, Clip, Outline] | None:
+        """外枠を出す相手 いまのコマに絵を描いていなければ ``None``"""
+        if self._selection is None or not self._handles_enabled or self._playing:
+            return None
+        located = self._project.timeline.locate_clip(self._selection)
+        if located is None:
+            return None
+        track, clip = located
+        if not clip.enabled or not self._project.draws_picture(track, clip):
+            return None
+        outline = self.outline_of(clip)
+        return None if outline is None else (track, clip, outline)
+
+    def _widget_corners(self, outline: Outline) -> list[Point]:
+        corners = []
+        for corner in outline.corners:
+            shown = self.to_widget(corner)
+            corners.append((shown.x(), shown.y()))
+        return corners
+
+    def _paint_overlay(self) -> None:
+        """選んだクリップの外枠と掴む所を重ねる
+
+        **再生中は描かない** テキストの入れ物を画面のスレッドで作ることがあり、再生の
+        1 コマごとに文字を組み直すと再生が遅れる 止めたコマで描けば足りる
+        """
+        found = self._selected()
+        if found is None:
+            return
+        track, _, outline = found
+        corners = [QPointF(x, y) for x, y in self._widget_corners(outline)]
+        painter = QPainter(self)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            color = QColor(160, 160, 160) if track.locked else QColor(80, 200, 255)
+            # 下に黒い線を敷く 白っぽい絵の上でも枠が見えるように 近い値の枠は下の線も
+            # 点線にする 下を実線のままにすると、点線の隙間が埋まって実線に見える
+            under = QPen(QColor(0, 0, 0, 160), 3)
+            line = QPen(color, 1.5)
+            if outline.approximate:
+                for pen in (under, line):
+                    pen.setStyle(Qt.PenStyle.CustomDashLine)
+                    pen.setDashPattern([4.0 * 1.5 / pen.widthF(), 4.0 * 1.5 / pen.widthF()])
+            painter.setPen(under)
+            painter.drawPolygon(corners)
+            painter.setPen(line)
+            painter.drawPolygon(corners)
+            if track.locked:
+                # ロック中は掴めない 掴む所を出すと動かせるように見える
+                return
+            knob = rotation_knob(self._widget_corners(outline), KNOB_LENGTH)
+            if knob is not None:
+                painter.setPen(QPen(color, 1))
+                painter.drawLine(QPointF(*knob[0]), QPointF(*knob[1]))
+                painter.setBrush(QColor(255, 255, 255))
+                painter.drawEllipse(QPointF(*knob[1]), GRIP_SIZE / 2.0, GRIP_SIZE / 2.0)
+            painter.setBrush(QColor(255, 255, 255))
+            painter.setPen(QPen(QColor(0, 0, 0), 1))
+            half = GRIP_SIZE / 2.0
+            for corner in corners:
+                painter.drawRect(QRectF(corner.x() - half, corner.y() - half, GRIP_SIZE, GRIP_SIZE))
+            # 拡大と回転の中心 どこを軸に回るかが見えないと、支点をずらした絵で戸惑う
+            pivot = self.to_widget(outline.pivot)
+            painter.setPen(QPen(color, 1))
+            painter.drawLine(pivot + QPointF(-4, 0), pivot + QPointF(4, 0))
+            painter.drawLine(pivot + QPointF(0, -4), pivot + QPointF(0, 4))
+        finally:
+            painter.end()
+
+    def _hit(self, position: QPointF) -> tuple[Hit, Track, Clip, Outline] | None:
+        found = self._selected()
+        if found is None:
+            return None
+        track, clip, outline = found
+        hit = hit_test(
+            self._widget_corners(outline),
+            (position.x(), position.y()),
+            grip=GRIP_SIZE,
+            reach=ROTATE_REACH,
+            knob=KNOB_LENGTH,
+        )
+        return None if hit is None else (hit, track, clip, outline)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt の命名規約
+        if (
+            not self._handles_enabled
+            or self._playing
+            or event.button() != Qt.MouseButton.LeftButton
+        ):
+            super().mousePressEvent(event)
+            return
+        position = event.position()
+        found = self._hit(position)
+        if found is None:
+            # 選んだクリップの枠の外 そこに描かれている一番手前のクリップを選び直す
+            # 何も無い所では選択を変えない 絵の無い所を押しただけで選択が外れると、
+            # 設定パネルが空になって戸惑う
+            picked = pick_clip(
+                self._project, self._frame, self.to_canvas(position), self.outline_of
+            )
+            if picked is None or picked == self._selection:
+                return
+            self._selection = picked
+            self.clip_picked.emit(str(picked))
+            self.update()
+            found = self._hit(position)
+            if found is None or found[0].grip is not Grip.MOVE:
+                return
+        hit, track, clip, outline = found
+        if track.locked:
+            return
+        self._drag = _Drag(
+            hit=hit,
+            clip_id=clip.id,
+            project=self._project,
+            press=self.to_canvas(position),
+            last=self.to_canvas(position),
+            start=start_values(clip, self._frame - clip.timeline_start),
+            corners=outline.corners,
+            pivot=outline.pivot,
+        )
+        event.accept()
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt の命名規約
+        drag = self._drag
+        if drag is None:
+            self._hover(event.position())
+            super().mouseMoveEvent(event)
+            return
+        current = self.to_canvas(event.position())
+        modifiers = event.modifiers()
+        shift = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
+        if drag.hit.grip is Grip.MOVE:
+            changes = moved_values(drag.start, drag.press, current, one_axis=shift)
+        elif drag.hit.grip is Grip.SCALE:
+            changes = scaled_values(
+                drag.start,
+                drag.corners,
+                drag.pivot,
+                drag.press,
+                current,
+                separate=bool(modifiers & Qt.KeyboardModifier.AltModifier),
+            )
+        else:
+            drag.turned += turn_between(drag.pivot, drag.last, current)
+            changes = rotated_values(drag.start, drag.turned, snap=shift)
+        drag.last = current
+        drag.commands = transform_commands(
+            drag.project, drag.clip_id, changes, self._frame, keyframes=self._keyframe_drag
+        )
+        # 履歴に積まずに見せる 1 回のドラッグで何十段も積まない 離したときに 1 段
+        self.preview_requested.emit(list(drag.commands))
+        event.accept()
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt の命名規約
+        drag, self._drag = self._drag, None
+        if drag is None or event.button() != Qt.MouseButton.LeftButton:
+            super().mouseReleaseEvent(event)
+            return
+        if drag.commands:
+            self.commands_requested.emit(list(drag.commands), _LABELS[drag.hit.grip])
+        else:
+            # 動かしてから元の所へ戻した 見せていた途中の絵を元のプロジェクトへ戻す
+            self.preview_requested.emit([])
+        event.accept()
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802 - Qt の命名規約
+        if self._drag is not None and event.key() == Qt.Key.Key_Escape:
+            # 掴んでいる途中でやめる 見せていた途中の絵を元へ戻す
+            self._cancel_drag()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def _cancel_drag(self) -> None:
+        drag, self._drag = self._drag, None
+        if drag is not None and drag.commands:
+            self.preview_requested.emit([])
+
+    def _hover(self, position: QPointF) -> None:
+        """掴める所の上で矢印の形を変える 何が起きるかを押す前に分かるように"""
+        found = self._hit(position) if self._handles_enabled else None
+        if found is None or found[1].locked:
+            self.unsetCursor()
+            return
+        grip = found[0].grip
+        if grip is Grip.MOVE:
+            self.setCursor(Qt.CursorShape.SizeAllCursor)
+        elif grip is Grip.SCALE:
+            self.setCursor(
+                Qt.CursorShape.SizeFDiagCursor
+                if found[0].corner in (0, 2)
+                else Qt.CursorShape.SizeBDiagCursor
+            )
+        else:
+            self.setCursor(Qt.CursorShape.CrossCursor)
 
     def _apply_pending(self) -> None:
         """持ち越していた設定を置き場へ渡す **コンテキストが current な所で呼ぶこと**"""

@@ -33,6 +33,7 @@ from sashimono.engine.render.background import MEASURED_PREFETCH_STALL_MS
 from sashimono.engine.render.prefetch import BYTES_PER_FRAME_PIXEL
 from sashimono.ui.media_match import MATCH_CHOICES
 from sashimono.ui.media_pool import VIEW_ICONS, VIEW_LIST
+from sashimono.ui.preview_handles import KEYFRAME_DRAG_CHOICES
 from sashimono.ui.workspace import DOCK_TABS_BOTTOM, DOCK_TABS_TOP, Preferences
 
 __all__ = [
@@ -236,6 +237,22 @@ class PreferencesDialog(QDialog):
             "重ねたパネルを切り替えるタブをどちらの辺に出すか"
         )
         form.addRow("重ねたパネルのタブ", self._dock_tabs)
+        self._preview_handles = QCheckBox("プレビューで外枠を出して直接動かす", self)
+        self._preview_handles.setChecked(preferences.preview_handles)
+        self._preview_handles.setToolTip(
+            "選んだクリップの外枠をプレビューに出す 中をドラッグで位置、角で拡大率"
+            "（Alt で縦横別々）、角の外で回転 Shift で縦か横の一方だけ・15 度刻み"
+        )
+        form.addRow(self._preview_handles)
+        self._keyframe_drag = QComboBox(self)
+        for value, text in KEYFRAME_DRAG_CHOICES:
+            self._keyframe_drag.addItem(text, value)
+        self._keyframe_drag.setCurrentIndex(
+            max(0, self._keyframe_drag.findData(preferences.keyframe_drag))
+        )
+        form.addRow("キーフレームのある値を動かしたとき", self._keyframe_drag)
+        self._preview_handles.toggled.connect(self._keyframe_drag.setEnabled)
+        self._keyframe_drag.setEnabled(preferences.preview_handles)
 
         self._all_plugins = QCheckBox("AviUtl2 の汎用プラグインを全部読んで探す", self)
         self._all_plugins.setChecked(preferences.all_aviutl_plugins)
@@ -335,4 +352,6 @@ class PreferencesDialog(QDialog):
             media_view=str(self._media_view.currentData()),
             match_video=str(self._match_video.currentData()),
             dock_tabs=str(self._dock_tabs.currentData()),
+            preview_handles=self._preview_handles.isChecked(),
+            keyframe_drag=str(self._keyframe_drag.currentData()),
         )

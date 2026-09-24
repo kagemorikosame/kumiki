@@ -377,6 +377,8 @@ class MainWindow(QMainWindow):
             decode_threads=self._preferences.decode_threads,
             prefetch_thread=self._preferences.prefetch_thread,
         )
+        self._preview.set_handles_enabled(self._preferences.preview_handles)
+        self._preview.set_keyframe_drag(self._preferences.keyframe_drag)
         self._transport = TransportBar(project.rate, self)
         self._timeline = TimelineView(project, self._analyzer, self)
         self._media_pool = MediaPoolWidget(project, self)
@@ -752,6 +754,8 @@ class MainWindow(QMainWindow):
         self._preview.set_prefetch_bytes(preferences.prefetch_bytes())
         self._preview.set_prefetch_thread(preferences.prefetch_thread)
         self._preview.set_decode_threads(preferences.decode_threads)
+        self._preview.set_handles_enabled(preferences.preview_handles)
+        self._preview.set_keyframe_drag(preferences.keyframe_drag)
         if native.enabled() != preferences.native_modules:
             native.set_enabled(preferences.native_modules)
             # 汎用プラグインも同じ設定で入り切りする 切ったときに覚えている
@@ -852,6 +856,10 @@ class MainWindow(QMainWindow):
             lambda message: self.statusBar().showMessage(message, 5000)
         )
         self._playback.failed.connect(lambda message: self.statusBar().showMessage(message, 5000))
+        # プレビューで直接動かす 選択はタイムラインと 1 つにそろえる
+        self._preview.clip_picked.connect(lambda clip_id: self._timeline.select(ClipId(clip_id)))
+        self._preview.commands_requested.connect(self.execute_all)
+        self._preview.preview_requested.connect(self._preview_commands)
 
     # --- コマンドの実行 ---
 
@@ -1613,6 +1621,7 @@ class MainWindow(QMainWindow):
         chosen = self._timeline.selected_clips
         ordered = (selected, *(c for c in chosen if c != selected)) if selected else ()
         self._inspector.set_selection(tuple(c for c in ordered if c is not None))
+        self._preview.set_selection(selected)
         if selected is None:
             self._graph.set_path(None)
 
@@ -1627,8 +1636,18 @@ class MainWindow(QMainWindow):
         スライダーのドラッグ中に呼ばれる 1 回のドラッグで数十の取り消し段を
         作らないための逃げ道で、指を離した時点で本来のコマンドが飛んでくる
         """
+        self._preview_commands([command])
+
+    def _preview_commands(self, commands: list[Command]) -> None:
+        """いくつかの命令を順に当てた絵を、履歴に残さずプレビューへ出す 空なら元へ戻す
+
+        プレビューで掴んでいる途中に呼ばれる 配置を持たない古いクリップでは、配置を
+        足す命令と値を入れる命令が組で届く
+        """
+        preview = self.view_project
         try:
-            preview = command.apply(self.view_project)
+            for command in commands:
+                preview = command.apply(preview)
         except (ValueError, KeyError):
             return
         self._preview.set_project(preview)
