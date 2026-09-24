@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap, QPolygonF
 from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QPushButton, QWidget
 
 from sashimono.core.timebase import FrameRate, format_timecode
 from sashimono.engine.render import RenderQuality
 from sashimono.ui.theme import Colors
 
-__all__ = ["TransportBar"]
+__all__ = ["TransportBar", "transport_icon"]
 
 #: 再生品質の選択肢 分母が大きいほど軽くなる
 QUALITY_CHOICES: tuple[tuple[str, int], ...] = (
@@ -34,11 +34,14 @@ class TransportBar(QWidget):
         self._frame = 0
         self._duration = 0
 
-        self._to_start = _tool_button("|◀", "先頭へ (Home)")
-        self._back = _tool_button("◀|", "1 フレーム戻る (←)")
-        self._play = _tool_button("▶", "再生 / 停止 (Space)")
-        self._forward = _tool_button("|▶", "1 フレーム進む (→)")
-        self._to_end = _tool_button("▶|", "末尾へ (End)")
+        self._to_start = _tool_button("to_start", "先頭へ (Home)", "先頭へ")
+        self._back = _tool_button("back", "1 フレーム戻る (←)", "1 フレーム戻る")
+        self._play = _tool_button("play", "再生 / 停止 (Space)", "再生")
+        self._forward = _tool_button("forward", "1 フレーム進む (→)", "1 フレーム進む")
+        self._to_end = _tool_button("to_end", "末尾へ (End)", "末尾へ")
+        self._play_icon = transport_icon("play")
+        self._pause_icon = transport_icon("pause")
+        self._playing = False
 
         self._to_start.clicked.connect(lambda: self.jump_requested.emit(0))
         self._back.clicked.connect(lambda: self.step_requested.emit(-1))
@@ -89,8 +92,14 @@ class TransportBar(QWidget):
         self._duration = max(0, frames)
         self._refresh()
 
+    @property
+    def playing(self) -> bool:
+        return self._playing
+
     def set_playing(self, playing: bool) -> None:
-        self._play.setText("⏸" if playing else "▶")
+        self._playing = playing
+        self._play.setIcon(self._pause_icon if playing else self._play_icon)
+        self._play.setAccessibleName("一時停止" if playing else "再生")
 
     def set_quality(self, divisor: int) -> None:
         """画質の選びを外から合わせる 一覧に無い分母なら何もしない
@@ -113,9 +122,54 @@ class TransportBar(QWidget):
         self._duration_label.setText(format_timecode(self._duration, self._rate))
 
 
-def _tool_button(text: str, tooltip: str) -> QPushButton:
-    button = QPushButton(text)
+#: ボタンの印の形 16 × 16 の枠の中の、縦棒 ``(左, 上, 幅, 高さ)`` と三角（3 点）
+#:
+#: 文字（``▶`` ``⏸``）で出すと、Windows では ``⏸`` が絵文字の書体で描かれ、青い四角の
+#: 絵になってほかのボタンと揃わなかった（Issue #27） 書体に頼らず、全部を同じ
+#: 線の太さと色で自前で描く
+_GLYPHS: dict[str, tuple[tuple[tuple[int, int, int, int], ...], tuple[tuple[int, int], ...]]] = {
+    "to_start": (((2, 3, 2, 10),), ((13, 3), (13, 13), (5, 8))),
+    "back": (((12, 3, 2, 10),), ((11, 3), (11, 13), (3, 8))),
+    "play": ((), ((4, 2), (4, 14), (13, 8))),
+    "pause": (((4, 3, 3, 10), (9, 3, 3, 10)), ()),
+    "forward": (((2, 3, 2, 10),), ((5, 3), (5, 13), (13, 8))),
+    "to_end": (((12, 3, 2, 10),), ((3, 3), (3, 13), (11, 8))),
+}
+
+_GLYPH_SIZE = 16
+
+#: 描く細かさ 画面の拡大率（125% や 150%）で引き伸ばしても角がぼけないよう、
+#: 大きめに描いて縮めて見せる
+_GLYPH_SCALE = 4
+
+
+def transport_icon(name: str, color: QColor | None = None) -> QIcon:
+    """再生ボタンの印 ``name`` は :data:`_GLYPHS` の鍵"""
+    bars, triangle = _GLYPHS[name]
+    pixmap = QPixmap(_GLYPH_SIZE * _GLYPH_SCALE, _GLYPH_SIZE * _GLYPH_SCALE)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.scale(_GLYPH_SCALE, _GLYPH_SCALE)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(color if color is not None else Colors.TEXT)
+    for left, top, width, height in bars:
+        painter.drawRect(QRectF(left, top, width, height))
+    if triangle:
+        painter.drawPolygon(QPolygonF([QPointF(x, y) for x, y in triangle]))
+    painter.end()
+    icon = QIcon()
+    icon.addPixmap(pixmap)
+    return icon
+
+
+def _tool_button(glyph: str, tooltip: str, name: str) -> QPushButton:
+    button = QPushButton()
+    button.setIcon(transport_icon(glyph))
+    button.setIconSize(QSize(_GLYPH_SIZE, _GLYPH_SIZE))
     button.setToolTip(tooltip)
+    # 印は絵なので、読み上げソフトには名前を別に渡す
+    button.setAccessibleName(name)
     button.setFixedWidth(38)
     # ボタンにフォーカスが入ると、Space が再生ではなくボタンの押下になる
     # 再生ソフトで一番使うキーなので、そこは奪わせない

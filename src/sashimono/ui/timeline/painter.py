@@ -27,6 +27,7 @@ from sashimono.ui.timeline.layout import TimelineLayout, TrackBand
 
 __all__ = [
     "ADD_TRACK_BUTTON_HEIGHT",
+    "ADD_TRACK_BUTTON_SPACE",
     "ADD_TRACK_BUTTON_TEXT",
     "DETAIL_MIN_WIDTH",
     "TRACK_BUTTONS",
@@ -208,6 +209,11 @@ def draw_track_header(painter: QPainter, band: TrackBand, *, active: bool = True
 #: 「＋ トラック追加」の高さと、最後のトラックとの間（画素）
 ADD_TRACK_BUTTON_HEIGHT = 22
 _ADD_TRACK_BUTTON_GAP = 6
+
+#: ボタンがトラックの帯の下に取る高さ 上の間とボタンと、下にも同じ間を空ける
+#: 縦スクロールの範囲に足す（:meth:`TimelineView._scrollable_height`） 足さないと、
+#: トラックが溢れたときにいちばん下まで送ってもボタンが画面の外に残る
+ADD_TRACK_BUTTON_SPACE = _ADD_TRACK_BUTTON_GAP + ADD_TRACK_BUTTON_HEIGHT + _ADD_TRACK_BUTTON_GAP
 
 #: ボタンに出す文字 上に乗せたときの説明にも使う
 ADD_TRACK_BUTTON_TEXT = "＋ トラック追加"

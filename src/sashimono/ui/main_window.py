@@ -122,7 +122,7 @@ from sashimono.ui.progress_display import (
 from sashimono.ui.scene_bar import SceneBar
 from sashimono.ui.subtitle import SubtitlePanel
 from sashimono.ui.theme import Colors
-from sashimono.ui.timeline import TimelineView
+from sashimono.ui.timeline import TimelineArea, TimelineView
 from sashimono.ui.timeline.drop import DropSpot
 from sashimono.ui.timeline.view import HEIGHT_STEP
 from sashimono.ui.transport import TransportBar
@@ -438,7 +438,7 @@ class MainWindow(QMainWindow):
         timeline_layout.setContentsMargins(0, 0, 0, 0)
         timeline_layout.setSpacing(0)
         timeline_layout.addWidget(self._scene_bar)
-        timeline_layout.addWidget(self._timeline, 1)
+        timeline_layout.addWidget(TimelineArea(self._timeline), 1)
         timeline_dock.setWidget(timeline_panel)
         timeline_dock.setAllowedAreas(Qt.DockWidgetArea.BottomDockWidgetArea)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, timeline_dock)

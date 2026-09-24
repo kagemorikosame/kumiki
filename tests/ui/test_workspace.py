@@ -77,12 +77,32 @@ class TestTrackButtons:
         self.click_button(view, "V1", "muted")
         assert view.playhead == 40
 
-    def test_the_rest_of_the_header_still_scrubs(self, view: TimelineView) -> None:
-        # ボタンの判定が広がりすぎると、ヘッダを押しても再生ヘッドが先頭へ戻らなくなる
-        # ヘッダの x はタイムラインの左端より左なので、フレーム 0 へ行くのが正しい
+    def test_the_rest_of_the_header_leaves_the_playhead(self, view: TimelineView) -> None:
+        # ヘッダは時間の軸の外 ここを押して再生ヘッドを動かすと、負のフレームが 0 に
+        # 丸められ、名前やボタンの脇を押しただけで先頭へ飛んで見えなくなる（Issue #27）
         view.set_playhead(40)
-        QTest.mouseClick(view, Qt.MouseButton.LeftButton, pos=QPoint(10, 280))
-        assert view.playhead == 0
+        band = view._layout.bands(view.project.timeline)[0]
+        for point in (QPoint(10, band.top + 10), QPoint(10, 280)):
+            QTest.mouseClick(view, Qt.MouseButton.LeftButton, pos=point)
+            assert view.playhead == 40
+
+    def test_a_near_miss_on_a_button_leaves_the_playhead(self, view: TimelineView) -> None:
+        # ボタンの押し損ね（ボタンのすぐ下）でも動かない 押し損ねるたびに見ていた所を
+        # 失うと、ボタンを押すのが怖くなる
+        view.set_playhead(40)
+        band = view._layout.bands(view.project.timeline)[0]
+        rect = next(r for name, _, r in track_button_rects(band) if name == "muted")
+        QTest.mouseClick(
+            view, Qt.MouseButton.LeftButton, pos=QPoint(rect.center().x(), rect.bottom() + 4)
+        )
+        assert view.playhead == 40
+
+    def test_the_ruler_still_scrubs(self, view: TimelineView) -> None:
+        # ヘッダを止めたせいで目盛りまで効かなくなると、再生ヘッドをマウスで動かせない
+        view.set_playhead(40)
+        x = int(view._layout.frame_to_x(100))
+        QTest.mouseClick(view, Qt.MouseButton.LeftButton, pos=QPoint(x, 10))
+        assert view.playhead == 100
 
     def test_the_keyboard_can_toggle_the_selected_track(self, view: TimelineView) -> None:
         # ボタンは描いた矩形なのでフォーカスが来ない マウスを使えない人が

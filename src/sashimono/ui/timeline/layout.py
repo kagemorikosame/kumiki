@@ -140,7 +140,11 @@ class TimelineLayout:
         return tuple(bands)
 
     def content_height(self, timeline: Timeline) -> int:
-        """全トラックを並べたときの高さ 縦スクロールの範囲を決めるのに使う"""
+        """全トラックを並べたときの高さ（目盛りを含む） 帯の下に描き足す部品は含まない
+
+        縦スクロールの範囲は :meth:`TimelineView._scrollable_height` がこれから決める
+        帯の下に部品を足すときは、そちらに高さを足す
+        """
         total = sum(
             min(max(track.height, Metrics.MIN_TRACK_HEIGHT), Metrics.MAX_TRACK_HEIGHT)
             for track in timeline.tracks
