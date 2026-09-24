@@ -10,7 +10,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
@@ -565,6 +566,53 @@ class InspectorPanel(QWidget):
         return effect.params.get(name) if effect is not None else None
 
 
+#: 鍵の印を見せる大きさ（論理画素） 見出しの ▲ ▼ ✕ の文字と同じくらい
+LOCK_SIZE = 14
+
+#: 描く細かさ :func:`sashimono.ui.transport.transport_icon` と同じく、大きめに描いて
+#: 縮めて見せる 画面の拡大率で引き伸ばしても角がぼけない
+_LOCK_SCALE = 4
+
+
+def lock_pixmap(device_pixel_ratio: float = 1.0) -> QPixmap:
+    """固定の項目の鍵の印
+
+    文字（絵文字の鍵）で出すと、Windows ではカラーの絵文字の書体で描かれ、ほかの
+    ボタンと揃わない（再生ボタンの ``⏸`` が青い四角になったのと同じ Issue #27）
+    書体に頼らず、見出しのボタンの文字と同じ色で自前で描く 16 × 16 の枠で描く
+    """
+    pixmap = QPixmap(16 * _LOCK_SCALE, 16 * _LOCK_SCALE)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.scale(_LOCK_SCALE, _LOCK_SCALE)
+
+    # つる 本体に隠れる所まで伸ばし、付け根に隙間が見えないようにする
+    shackle = QPainterPath()
+    shackle.moveTo(5, 9)
+    shackle.lineTo(5, 6)
+    shackle.arcTo(QRectF(5, 2.5, 6, 7), 180, -180)
+    shackle.lineTo(11, 9)
+    pen = QPen(Colors.TEXT, 1.8)
+    pen.setCapStyle(Qt.PenCapStyle.FlatCap)
+    painter.setPen(pen)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.drawPath(shackle)
+
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(Colors.TEXT)
+    painter.drawRoundedRect(QRectF(3, 7.5, 10, 7), 1.2, 1.2)
+    # 鍵穴は抜いて見せる 塗りつぶしの四角だけだと、鍵ではなく箱に見える
+    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
+    painter.drawEllipse(QPointF(8, 10.5), 1.2, 1.2)
+    painter.drawRect(QRectF(7.5, 10.5, 1, 2.2))
+    painter.end()
+
+    icon = QIcon()
+    icon.addPixmap(pixmap)
+    return icon.pixmap(QSize(LOCK_SIZE, LOCK_SIZE), device_pixel_ratio)
+
+
 class _Section(QFrame):
     """1 つの見出しと、その下のパラメータ行"""
 
@@ -669,13 +717,15 @@ class _Section(QFrame):
         return button
 
     def _lock(self) -> QLabel:
-        lock = QLabel("🔒")
+        lock = QLabel()
         lock.setObjectName("fixed_lock")
+        lock.setPixmap(lock_pixmap(lock.devicePixelRatioF()))
+        lock.setAccessibleName("固定の項目")
         lock.setToolTip(
             "クリップが最初から持つ項目です 外すことと並べ替えはできません"
             " 無効にはできます 重ねて掛けたいときは同じエフェクトを追加してください"
         )
-        lock.setStyleSheet(f"color: {Colors.TEXT_MUTED.name()}; border: none;")
+        lock.setStyleSheet("border: none;")
         return lock
 
     def _remove(self, effect: Effect, clip_id: ClipId) -> QToolButton:

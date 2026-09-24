@@ -15,7 +15,8 @@ from PySide6.QtWidgets import QApplication, QLabel, QToolButton
 from sashimono.core.commands import AddEffect, insert_media
 from sashimono.core.model import Clip, MediaItem, Project, TrackKind
 from sashimono.effects import registry
-from sashimono.ui.inspector.panel import InspectorPanel, _Section
+from sashimono.ui.inspector.panel import InspectorPanel, _Section, lock_pixmap
+from sashimono.ui.theme import Colors
 
 
 def _placed(media: MediaItem) -> Project:
@@ -64,8 +65,34 @@ def test_the_fixed_effect_shows_a_lock_instead_of_remove_and_move(
     # 無効にはできる 切り替えまで消すと、効かせたくないときの逃げ道が無い
     assert _buttons(fixed)["有効"].isEnabled()
 
+    # 鍵は文字ではなく自前で描いた絵 絵文字の書体で出すと、Windows ではカラーの
+    # オレンジの鍵になり、ほかのボタンと揃わない（再生ボタンの ⏸ と同じ）
+    lock = fixed.findChild(QLabel, "fixed_lock")
+    assert lock is not None
+    assert lock.text() == ""
+    assert not lock.pixmap().isNull()
+    assert lock.toolTip()
+
     # ふつうのエフェクトは外せるが、固定の物をまたいで上へは動かせない
     loose_buttons = _buttons(loose)
     assert loose.findChild(QLabel, "fixed_lock") is None
     assert loose_buttons["✕"].isEnabled()
     assert not loose_buttons["▲"].isEnabled()
+
+
+def test_the_lock_is_drawn_in_the_button_colour(qt_application: QApplication) -> None:
+    # ほかのボタンの文字と同じ色だけで描く 色の付いた画素が混ざると、絵文字と同じく
+    # 見出しの中で浮いて見える
+    del qt_application
+    image = lock_pixmap().toImage()
+    colours = {
+        (
+            image.pixelColor(x, y).red(),
+            image.pixelColor(x, y).green(),
+            image.pixelColor(x, y).blue(),
+        )
+        for x in range(image.width())
+        for y in range(image.height())
+        if image.pixelColor(x, y).alpha() == 255
+    }
+    assert colours == {(Colors.TEXT.red(), Colors.TEXT.green(), Colors.TEXT.blue())}
