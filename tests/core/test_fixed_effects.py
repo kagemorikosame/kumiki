@@ -104,6 +104,7 @@ class TestTheMark:
 
 class TestCommands:
     def test_a_fixed_effect_cannot_be_removed(self, audio_media: MediaItem) -> None:
+        # 外せると、置いた音声のクリップから音量の欄が消え、YMM4 と同じ並びのパネルが崩れる
         project = _placed(audio_media)
         clip = _sound(project)
         with pytest.raises(ValueError, match="外せない"):
@@ -125,6 +126,8 @@ class TestCommands:
         assert not effect.enabled and effect.fixed
 
     def test_a_fixed_effect_cannot_be_moved(self, audio_media: MediaItem) -> None:
+        # 動かせると、固定の欄の位置がクリップごとに変わり、どこまでが最初からある欄か
+        # 分からなくなる
         project = _with_effects(_placed(audio_media), _blur())
         clip = _sound(project)
         with pytest.raises(ValueError, match="並べ替えられない"):
@@ -172,6 +175,8 @@ class TestCommands:
 
 class TestFile:
     def test_the_mark_survives_a_round_trip(self) -> None:
+        # 保存で印が落ちると、開き直しただけで固定の欄が外せる物に戻る 逆に印の無い物に
+        # 印が付くと、本人が足したエフェクトが外せなくなる
         effect = _volume(80, fixed=True)
         assert effect_from_json(effect_to_json(effect)).fixed
         assert not effect_from_json(effect_to_json(_volume(80))).fixed
