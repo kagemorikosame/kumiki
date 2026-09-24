@@ -70,7 +70,11 @@ class Colors:
 class Metrics:
     """寸法"""
 
-    TRACK_HEADER_WIDTH = 132
+    #: トラックの名前と M S L のボタンを 1 行に並べる幅 名前に使えるのは 84 画素
+    #: 「レイヤー 100」が 10pt の Yu Gothic UI・メイリオで 77 画素 132 のときは 56 画素しか無く、
+    #: 「レイヤー 1」が「レイ… 1」に切れて何のトラックか読めなかった（#27 P4b）
+    #: 名前とボタンを 2 行に分けないのは、最小の高さ（28）でボタンが帯からはみ出すため
+    TRACK_HEADER_WIDTH = 160
     RULER_HEIGHT = 22
     DEFAULT_TRACK_HEIGHT = DEFAULT_TRACK_HEIGHT
     #: トラックの高さの範囲は、変えるコマンドと同じ値を使う 別々に持つと、
