@@ -294,6 +294,33 @@ class TestYmm4:
 
         assert [len(track.clips) for track in layers(project)] == [0, 1]
 
+    def test_a_video_with_sound_needs_a_chosen_layer_that_is_heard(
+        self, files: dict[str, Path]
+    ) -> None:
+        """絵と音を持つ動画は、選んだレイヤーが映るだけでなく鳴ることも見る
+
+        音声トラックをソロにしている間はレイヤーの音は鳴らない 絵だけ見て置くと、
+        置いた動画の音が聞こえない（PR #165 のレビュー）
+        """
+        chosen = Track(kind=TrackKind.MIXED, name="レイヤー 1")
+        soloed = Track(kind=TrackKind.AUDIO, name="A1", solo=True)
+        project = apply(project_of(LayerMode.MIXED), [AddTrack(chosen), AddTrack(soloed)])
+        items = [video_item(files["movie"], Layer=1)]
+        project = put(mapped(items), project, track_id=chosen.id)
+
+        first, second = layers(project)
+        assert first.clips == ()
+        assert only_clip(second).audio_stream is not None
+
+    def test_a_silent_picture_ignores_what_is_heard(self, files: dict[str, Path]) -> None:
+        # 音を鳴らさない文字は映れば足りる 鳴るかまで見ると、音のソロの間は選んだ所へ置けない
+        chosen = Track(kind=TrackKind.MIXED, name="レイヤー 1")
+        soloed = Track(kind=TrackKind.AUDIO, name="A1", solo=True)
+        project = apply(project_of(LayerMode.MIXED), [AddTrack(chosen), AddTrack(soloed)])
+        project = put(mapped([text_item(Layer=1)]), project, track_id=chosen.id)
+
+        assert len(layers(project)[0].clips) == 1
+
     def test_a_sound_is_not_put_on_a_muted_chosen_layer(self, files: dict[str, Path]) -> None:
         # 音だけの物も同じ 鳴らないレイヤーへ置くと、置いたのに聞こえない
         chosen = Track(kind=TrackKind.MIXED, name="レイヤー 1", muted=True)

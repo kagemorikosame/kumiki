@@ -660,7 +660,11 @@ def _put_on_layers(
         if target is None:
             return False
         if target.kind is TrackKind.MIXED:
-            return target.id in (shown if clip.show_picture else heard)
+            # 絵と音を両方持つ動画は両方を見る 絵だけ見ると、音声トラックのソロで
+            # 鳴らなくなったレイヤーへ置き、置いた動画の音が聞こえない
+            return (not clip.show_picture or target.id in shown) and (
+                (clip.audio_stream is None and clip.show_picture) or target.id in heard
+            )
         return target.kind is TrackKind.VIDEO and clip.show_picture and clip.audio_stream is None
 
     rest = [(item, clip) for item, clip in layered if not fits(clip)]
