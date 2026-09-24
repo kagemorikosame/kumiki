@@ -121,8 +121,25 @@ class TestPrompt:
         # 分ける方式の説明のまま混合の作品を触らせると、無い組の片方を探し回る
         separated = system_prompt(LayerMode.SEPARATED)
         mixed = system_prompt(LayerMode.MIXED)
-        assert "リンクしています" in separated
-        assert "リンクしています" not in mixed
-        assert "1 本のクリップ" in mixed
+        assert "分ける方式です" in separated
+        assert "混合の方式です" in mixed
         assert "{linked_clips}" not in mixed
         assert system_prompt() == SYSTEM_PROMPT == separated
+
+    def test_placed_clips_are_checked_one_by_one(self) -> None:
+        # 方式が決めるのはこれから置く物だけ 方式で置いてある物の形まで言い切ると、
+        # 方式を途中で変えた作品で、AI が組の片方やレイヤーの 1 本を見落とす
+        for mode in LayerMode.ALL:
+            prompt = system_prompt(mode)
+            assert "link_group" in prompt
+            assert "track_kind が mixed" in prompt
+
+    def test_list_clips_shows_the_link(self, video_media: MediaItem) -> None:
+        # 組が見えないと、プロンプトの言う確かめ方ができない
+        host = FakeHost(
+            Project.create(ProjectSettings(frame_rate=FrameRate(30)), media=(video_media,))
+        )
+        run(host, "place_media", media_id=str(video_media.id))
+        video, audio = run(host, "list_clips")
+        assert video["link_group"] is not None
+        assert video["link_group"] == audio["link_group"]

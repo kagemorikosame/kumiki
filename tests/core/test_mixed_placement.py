@@ -247,6 +247,21 @@ class TestPictures:
         ]
         assert placed.timeline.tracks[2].clips[0].source == TEXT
 
+    def test_a_video_track_in_front_counts_as_a_picture(self, video_media: MediaItem) -> None:
+        # 方式を切り替えた作品では、映像トラックがレイヤーより手前にあることがある
+        # 映像トラックを数えないと、テキストが空いたレイヤー 1 へ入り、動画の後ろに隠れる
+        clip = Clip(0, 300, media_id=video_media.id)
+        project = _mixed(
+            Track(TrackKind.MIXED, "レイヤー 1"),
+            Track(TrackKind.VIDEO, "V1", (clip,)),
+            media=(video_media,),
+        )
+        placed = _apply(project, insert_generated(project, TEXT, at_frame=30))
+        assert not placed.timeline.tracks[0].clips
+        front = placed.timeline.tracks[-1]
+        assert front.kind is TrackKind.MIXED
+        assert front.clips[0].source is not None
+
     def test_text_uses_a_free_layer_above_the_picture(self, video_media: MediaItem) -> None:
         # 手前に空いたレイヤーがあるのに足すと、置くたびにレイヤーが増える
         clip = Clip(0, 300, media_id=video_media.id, audio_stream=1)

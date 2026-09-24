@@ -332,6 +332,10 @@ def _list_clips(host: EditorHost, arguments: dict[str, Any]) -> object:
                     "source": clip.source.kind if clip.source is not None else None,
                     "scene_id": str(clip.scene_id) if clip.scene_id is not None else None,
                     "group_id": str(clip.group_id) if clip.group_id is not None else None,
+                    # 映像と音声の組（リンク） 方式を途中で変えた作品では、組の 2 本と
+                    # レイヤーの 1 本が並ぶ 見えないと、AI は組の片方を見落とすか、
+                    # 組の両方に同じ操作をして 2 回目で断られる
+                    "link_group": (str(clip.link_group) if clip.link_group is not None else None),
                     # fixed はクリップが最初から持つ項目 外すことも並べ替えることもできない
                     # 渡しておかないと、AI が外そうとして断られるまで分からない
                     "effects": [

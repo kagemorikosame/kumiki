@@ -155,11 +155,14 @@ def free_layer(
 
     top = -1
     if picture:
+        # 置く先はレイヤーに限るが、隠す側は映像トラックも数える 方式を切り替えた作品では
+        # 映像トラックがレイヤーより手前にあることがあり、数えないと置いた物がその奥に入る
+        drawn = {t.id for t in timeline.active_picture_tracks()}
         top = max(
             (
                 index
                 for index, track in enumerate(timeline.tracks)
-                if track.id in active
+                if track.id in drawn
                 and any(
                     clip.overlaps(start, end) and project.draws_picture(track, clip)
                     for clip in track.clips
