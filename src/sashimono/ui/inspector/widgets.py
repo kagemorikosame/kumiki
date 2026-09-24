@@ -160,12 +160,16 @@ class TrackEditor(ParameterEditor):
             self._number.setValue(number)
         finally:
             self._updating = False
+        # 数値欄が表示の桁へ丸めた値を使う 広い範囲ではスライダー 1 目盛りが表示の桁より
+        # 細かく、元の値を流すと、画面の数字とプレビュー・保存の値が食い違う
+        number = self._number.value()
         # ドラッグ中は履歴に残さない 1 回のドラッグで数十の取り消し段ができると
         # 元の値まで戻すのに数十回押すことになる
         self._preview(AnimatedValue(static=number))
 
     def _on_release(self) -> None:
-        self._emit(AnimatedValue(static=self._from_slider(self._slider.value())))
+        # 確定もプレビューと同じ、数値欄に出ている値にそろえる
+        self._emit(AnimatedValue(static=self._number.value()))
 
     def _to_slider(self, number: float) -> int:
         """仕様の値をスライダーの位置へ 範囲の外は端へ寄せる"""

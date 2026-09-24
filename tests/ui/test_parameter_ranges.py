@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import pytest
-from PySide6.QtWidgets import QApplication, QSlider, QSpinBox
+from PySide6.QtWidgets import QApplication, QDoubleSpinBox, QSlider, QSpinBox
 
 from sashimono.core.model import AnimatedValue
 from sashimono.effects import ParameterSpec, TrackSpec, ValueSpec, registry
@@ -44,6 +44,38 @@ def test_a_huge_value_range_is_clamped_to_what_qt_can_hold(qt_application: QAppl
     assert (box.minimum(), box.maximum()) == (-(2**31), INT_MAX)
     editor.set_value(10**11)
     assert box.value() == INT_MAX
+
+
+def test_a_value_spec_keeps_its_range_inside_what_qt_can_hold() -> None:
+    # 範囲が int を超えたまま残ると、仕様では入れられる値が数値欄では入れられず、
+    # 数値欄に出る値も仕様の値と食い違う
+    spec = ValueSpec("far", "遠い", -(10**12), minimum=-(10**12), maximum=10**12)
+    assert (spec.minimum, spec.maximum) == (-(2**31), INT_MAX)
+    assert spec.default == -(2**31)
+    assert spec.coerce(10**11) == INT_MAX
+    beyond = ValueSpec("beyond", "上だけ", 10**11, minimum=10**10, maximum=10**11)
+    assert beyond.minimum <= beyond.default <= beyond.maximum == INT_MAX
+
+
+@pytest.mark.filterwarnings("error")
+def test_a_fine_slider_step_sends_the_number_the_box_shows(qt_application: QApplication) -> None:
+    # 広い範囲ではスライダー 1 目盛りが数値欄の桁より細かい 元の値を流すと、画面は
+    # 0.00 なのにプレビューと保存には 0.004657 が入る
+    del qt_application
+    editor = create_editor(TrackSpec("far", "遠い", 0.0, 10.0**7, 0.0))
+    slider = editor.findChild(QSlider)
+    box = editor.findChild(QDoubleSpinBox)
+    assert slider is not None
+    assert box is not None
+    previewed: list[float] = []
+    changed: list[float] = []
+    editor.value_previewed.connect(lambda value: previewed.append(value.static))
+    editor.value_changed.connect(lambda value: changed.append(value.static))
+    for position in (1, 12345, slider.maximum() // 3):
+        slider.setValue(position)
+        slider.sliderReleased.emit()
+        assert previewed[-1] == box.value()
+        assert changed[-1] == box.value()
 
 
 @pytest.mark.filterwarnings("error")
