@@ -42,6 +42,11 @@ class Colors:
     VIDEO_CLIP_BORDER = QColor("#5b7bb0")
     AUDIO_CLIP = QColor("#26443a")
     AUDIO_CLIP_BORDER = QColor("#4c8a68")
+    #: フィルタのクリップ（下のトラックの絵全体に掛かる） 映像のクリップと同じ色だと、
+    #: 絵を持つクリップと取り違えて「消しても何も減らない」「動かしたら下の色が変わった」になる
+    #: 映像（青）とも音声（緑）とも再生ヘッド（赤）とも離れた紫にする
+    FILTER_CLIP = QColor("#4a3560")
+    FILTER_CLIP_BORDER = QColor("#9a72c8")
     WAVEFORM = QColor("#7fd6ab")
     CLIP_LABEL = QColor("#e8eefc")
     SELECTION = QColor("#ffffff")

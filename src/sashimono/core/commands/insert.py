@@ -15,6 +15,7 @@ from fractions import Fraction
 from sashimono.core.commands.base import Command
 from sashimono.core.commands.edit import AddClip, AddMedia, AddTrack
 from sashimono.core.model import (
+    FILTER_KIND,
     AnimatedValue,
     Clip,
     Effect,
@@ -32,6 +33,7 @@ __all__ = [
     "DEFAULT_STILL_FRAMES",
     "VOLUME_EFFECT_KIND",
     "default_volume_effect",
+    "insert_filter",
     "insert_generated",
     "insert_media",
 ]
@@ -170,6 +172,67 @@ def insert_generated(
         AddClip(
             track.id,
             Clip(timeline_start=start, duration=duration, source=source),
+        )
+    )
+    return commands
+
+
+def insert_filter(
+    project: Project,
+    *,
+    at_frame: int | None = None,
+    duration: int = DEFAULT_GENERATED_FRAMES,
+    effects: tuple[Effect, ...] = (),
+) -> list[Command]:
+    """フィルタのクリップ（:data:`~sashimono.core.model.FILTER_KIND`）を置く
+
+    フィルタはそれより**下**のトラックにしか効かない テキストや図形と同じく下から
+    空きを探すと、範囲にある絵より下へ入り、置いたのに何も変わらないことがある
+    範囲に絵のある一番上のトラックより上で空いているトラックを使い、無ければ一番上に作る
+
+    見るのは描かれるトラック（:meth:`~sashimono.core.model.Timeline.active_tracks`）だけ
+    ミュートしたトラックやソロの外のトラックへ置くと、置いたのにプレビューにも書き出しにも
+    効かない 絵の有無も、描かれないトラックの物は数えない（見えない絵より上に置く理由が無い）
+    ソロで絞っている間に新しく作るトラックは、ソロを付けて作る 付けないと作った所で外れる
+    """
+    commands: list[Command] = []
+    start = project.duration if at_frame is None else max(0, at_frame)
+    end = start + duration
+    timeline = project.timeline
+    video = list(timeline.video_tracks())
+    drawn = {track.id for track in timeline.active_tracks(TrackKind.VIDEO)}
+    top = max(
+        (
+            index
+            for index, track in enumerate(video)
+            if track.id in drawn and any(clip.overlaps(start, end) for clip in track.clips)
+        ),
+        default=-1,
+    )
+    track = next(
+        (
+            candidate
+            for candidate in video[top + 1 :]
+            if candidate.id in drawn
+            and not candidate.locked
+            and not any(clip.overlaps(start, end) for clip in candidate.clips)
+        ),
+        None,
+    )
+    if track is None:
+        soloed = any(t.solo and not t.muted for t in video)
+        track = Track(kind=TrackKind.VIDEO, name=f"V{len(video) + 1}", solo=soloed)
+        # 末尾へ足す 映像トラックの重ね順は並びの順なので、末尾が一番上になる
+        commands.append(AddTrack(track))
+    commands.append(
+        AddClip(
+            track.id,
+            Clip(
+                timeline_start=start,
+                duration=duration,
+                source=GeneratedSource(kind=FILTER_KIND),
+                effects=effects,
+            ),
         )
     )
     return commands
