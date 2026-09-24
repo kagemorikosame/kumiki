@@ -421,6 +421,37 @@ class TestZoomScrollBar:
         after = [t.height for t in view.project.timeline.tracks]
         assert all(new > old for new, old in zip(after, before, strict=True))
 
+    def test_tracks_that_fit_can_be_made_taller(
+        self, make_area: list[TimelineArea], analyzer: MediaAnalyzer
+    ) -> None:
+        # 収まっているとバーを隠していたので、ふだんの状態から端で高くできなかった
+        view, harness = _open(make_area, analyzer, _long(tracks=2))
+        bar = view.vertical_scroll_bar
+        assert bar.isVisible()
+        before = [t.height for t in view.project.timeline.tracks]
+        handle = bar.handle_rect()
+        edge = QPoint(handle.center().x(), handle.bottom() - 1)
+        _drag_bar(bar, edge, edge - QPoint(0, handle.height() // 2))
+        ((command,),) = harness.received
+        assert isinstance(command, SetTrackHeights)
+        after = [t.height for t in view.project.timeline.tracks]
+        assert all(new > old for new, old in zip(after, before, strict=True))
+
+    def test_tracks_that_fit_can_be_made_lower(
+        self, make_area: list[TimelineArea], analyzer: MediaAnalyzer
+    ) -> None:
+        # つまみが全体を占めているので、バーの外まで引けないと低くする手が無い
+        view, harness = _open(make_area, analyzer, _long(tracks=2))
+        bar = view.vertical_scroll_bar
+        before = [t.height for t in view.project.timeline.tracks]
+        handle = bar.handle_rect()
+        edge = QPoint(handle.center().x(), handle.bottom() - 1)
+        _drag_bar(bar, edge, edge + QPoint(0, handle.height()))
+        ((command,),) = harness.received
+        assert isinstance(command, SetTrackHeights)
+        after = [t.height for t in view.project.timeline.tracks]
+        assert all(new < old for new, old in zip(after, before, strict=True))
+
 
 # --- 端での自動スクロール ---
 

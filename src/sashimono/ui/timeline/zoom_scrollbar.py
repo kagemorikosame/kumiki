@@ -45,8 +45,21 @@ class ZoomScrollBar(QScrollBar):
     #: 端を放した
     span_finished = Signal()
 
-    def __init__(self, orientation: Qt.Orientation, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        orientation: Qt.Orientation,
+        parent: QWidget | None = None,
+        *,
+        overscan: bool = False,
+    ) -> None:
+        """``overscan`` が真なら、端をバーの外まで引ける（全体より広い範囲を出せる）
+
+        縦（トラックの高さ）で使う 全部のトラックが収まっていると、つまみはもうバーの
+        全体を占めている 外へ引けないと、そこから低くする手が無い 横は全体より広く
+        見せても空白が増えるだけなので、全体で止める
+        """
         super().__init__(orientation, parent)
+        self._overscan = overscan
         self.setMouseTracking(True)
         self._edge: SpanEdge | None = None
         self._press = 0
@@ -127,10 +140,11 @@ class ZoomScrollBar(QScrollBar):
         moved = (self._along(point) - self._press) * self._units_per_pixel
         least = MIN_SPAN_PIXELS * self._units_per_pixel
         start, end = self._span
+        low, high = (float("-inf"), float("inf")) if self._overscan else (0.0, self._total)
         if self._edge is SpanEdge.START:
-            start = min(max(0.0, start + moved), end - least)
+            start = min(max(low, start + moved), end - least)
         else:
-            end = max(min(self._total, end + moved), start + least)
+            end = max(min(high, end + moved), start + least)
         self.span_dragged.emit(start, end, self._edge is SpanEdge.START)
         event.accept()
 

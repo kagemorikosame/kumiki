@@ -226,7 +226,7 @@ class TimelineView(QWidget):
         #: Python だけが持つ窓になり、ビューと別々の順でごみ集めに壊されて落ちることがある
         #: つまみの端を掴むと、横は拡大率、縦はトラックの高さが変わる（:meth:`_on_span_dragged`）
         self._hbar = ZoomScrollBar(Qt.Orientation.Horizontal, self)
-        self._vbar = ZoomScrollBar(Qt.Orientation.Vertical, self)
+        self._vbar = ZoomScrollBar(Qt.Orientation.Vertical, self, overscan=True)
         self._hbar.hide()
         self._vbar.hide()
         self._hbar.setAccessibleName("タイムラインの横スクロール")
@@ -377,9 +377,12 @@ class TimelineView(QWidget):
             self._vbar.setValue(layout.scroll_y)
         finally:
             self._syncing_bars = False
-        # トラックが全部見えているときは縦のバーを隠す 使えないバーが幅を取るだけ
+        # 縦のバーは、トラックが全部見えているときも出す（つまみが全体を占める）
+        # #145 では「収まれば隠す」にしていた そのころのバーは送るだけで、収まっていれば
+        # 使い道が無かった 今はつまみの端でトラックの高さを変えられるので（Issue #27）、
+        # 隠すと、いちばん使う「収まっている状態から高くする・低くする」ができない
         # 並べる前（まだビューの子のとき）は出さない 出すとビューの絵の上に重なる
-        self._vbar.setVisible(vertical_max > 0 and self._vbar.parentWidget() is not self)
+        self._vbar.setVisible(self._vbar.parentWidget() is not self)
 
     def _on_hbar(self, value: int) -> None:
         if self._syncing_bars:
