@@ -25,7 +25,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sashimono.runtime import FeaturePack, PackStatus, install_command, install_runtime
+from sashimono.runtime import (
+    FeaturePack,
+    PackStatus,
+    install_command,
+    install_runtime,
+    refresh_runtime,
+    restart_note,
+    snapshot_runtime_modules,
+)
 from sashimono.ui.theme import Colors
 
 __all__ = ["SetupSection"]
@@ -47,7 +55,15 @@ class SetupSection(QWidget):
         self._pack = pack
         self._log_queue: queue.Queue[str] = queue.Queue()
         self._done: threading.Event | None = None
+        #: 導入の中断の頼み 終わった知らせ（_done）とは分けて持つ
+        self._cancel = threading.Event()
         self._code = 0
+        #: 最後の導入のあとに出した案内 使える状態になると導入欄ごと隠す画面
+        #: （アシスタント）があるので、そちらが自分の見える所へ写せるように持つ
+        self.note = ""
+        #: この導入を始める前に、専用フォルダから読み込み済みだった物
+        #: 導入ごとに持つ 字幕起こしの導入と重なっても、控えが混ざらない
+        self._before: dict[str, int] = {}
 
         self._status = QLabel(self)
         self._status.setWordWrap(True)
@@ -123,14 +139,16 @@ class SetupSection(QWidget):
 
     def command_text(self) -> str:
         """これから実行するコマンド 画面に見せるため"""
-        return " ".join(install_command(self._pack, extra=self.extra))
+        return " ".join(self._command())
 
     # --- 導入 ---
 
     def start(self) -> None:
         if self.busy:
             return
-        argv = install_command(self._pack, extra=self.extra)
+        argv = self._command()
+        # pip が上書きする前の読み込み済みの物を、この導入の分として控える
+        self._before = snapshot_runtime_modules()
         self._log.setVisible(True)
         self._log.clear()
         self._progress.setVisible(True)
@@ -138,12 +156,18 @@ class SetupSection(QWidget):
         self._extra.setEnabled(False)
         self._status.setText("導入しています 数分かかることがあります")
 
+        # 中断の頼みと、終わった知らせを分ける 同じ旗にすると、中断した瞬間に
+        # 「終わった」と読まれ、pip が走っている最中に成功の案内が出る
         done = threading.Event()
+        cancel = threading.Event()
         self._done = done
+        self._cancel = cancel
+        # 終わるまでは成功ではない 前の導入の 0 が残っていると成功に見える
+        self._code = -1
 
         def run() -> None:
             code = install_runtime(
-                command=argv, on_output=self._log_queue.put, should_cancel=done.is_set
+                command=argv, on_output=self._log_queue.put, should_cancel=cancel.is_set
             )
             self._code = code
             self._log_queue.put(
@@ -157,8 +181,9 @@ class SetupSection(QWidget):
         self._timer.start()
 
     def cancel(self) -> None:
+        """導入を止めるよう頼む 終わったかどうかはワーカーが知らせる"""
         if self._done is not None:
-            self._done.set()
+            self._cancel.set()
 
     def _poll(self) -> None:
         while True:
@@ -174,8 +199,26 @@ class SetupSection(QWidget):
         self._timer.stop()
         self._progress.setVisible(False)
         self._button.setEnabled(True)
+        succeeded = self._code == 0
+        # 状態を見直す前に import の道を作り直す 先に見直すと、配布版では
+        # 入れたばかりのものが見えず「未導入」のまま止まる
+        loaded = refresh_runtime(self._before) if succeeded else ()
         self.refresh()
-        self.finished.emit(self._code == 0)
+        self.note = ""
+        if succeeded:
+            status = self.status
+            if status.ready:
+                self.note = restart_note(loaded)
+            elif not status.installed:
+                self.note = restart_note(loaded, visible=False)
+            # 入ったが外部コマンドが足りないときは「使えます」と言わない
+            # 足りない物は refresh が出した summary に書いてある
+            if self.note:
+                self._status.setText(f"{self._status.text()}\n{self.note}")
+        self.finished.emit(succeeded)
+
+    def _command(self) -> list[str]:
+        return install_command(self._pack, extra=self.extra, upgrade=self.status.needs_upgrade)
 
 
 def _readable(megabytes: int) -> str:

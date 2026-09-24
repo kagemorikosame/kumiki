@@ -13,6 +13,9 @@ dependencies = [
     "numpy>=2.0",
     "PyOpenGL>=3.1.10",
     "sounddevice>=0.5",
+    # 追加機能の導入状況で、入っている版が条件を満たすかを比べる（runtime.py）
+    # 起動のたびに読むので、追加機能の側ではなくここに置く
+    "packaging>=24",
     # AviUtl スクリプトを動かす Lua 既定で入れる（互換機能の土台なので、
     # 追加導入にすると「スクリプトが動かない」が既定の状態になる）
     "lupa>=2.5",
@@ -27,9 +30,9 @@ asr = [
     "nvidia-cudnn-cu12>=9.1",
 ]
 ai = [
-    # AI 連携 既定では入れない 実行には Claude Code 本体
-    # （npm install -g @anthropic-ai/claude-code）も要る
-    "claude-agent-sdk>=0.2",
+    # AI 連携 既定では入れない Claude Code 本体は SDK に同梱されている
+    # （0.2.152 で確かめた） 動かすには Claude へのログインか API キーが要る
+    "claude-agent-sdk>=0.2.152",
 ]
 dev = [
     "pytest>=8.0",

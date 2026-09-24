@@ -139,12 +139,17 @@ UI からできて AI からできない、その逆、が生まれない作り�
 
 ### こちらも初期状態では未導入です
 
-Claude Agent SDK（約 40 MB）と、実行に必要な **Claude Code 本体**が要ります 字幕起こしと
-同じく、AI パネルの「環境を導入」から入れられます Claude Code 本体は npm から入れてください
+Claude Agent SDK が要ります 実行に使う **Claude Code 本体は SDK に同梱**されていて
+（合わせて約 250 MB）、字幕起こしと同じく AI パネルの「環境を導入」だけで揃います
+導入のあと、再起動しなくてもそのまま使えます
 
-```bash
-npm install -g @anthropic-ai/claude-code
-```
+使うには Claude へのログインが要ります AI パネルの「ログイン…」で Claude Code が
+別の窓で開くので、案内に従ってログインしてください API キーを使う場合は、環境変数
+`ANTHROPIC_API_KEY` を設定してからソフトを起動します
+
+パネルの上でモデル（Claude Opus 5.5 / Sonnet 5 / Haiku 4.5 / Fable 5.1）と考える深さを
+選べます 既定は Claude Code に任せます 指示は Enter で送り、Shift+Enter で改行します
+（`表示 → 設定…` で Ctrl+Enter で送る形にも戻せます）
 
 自分で入れる場合は次のとおりです
 

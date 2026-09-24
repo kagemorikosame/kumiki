@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -93,6 +94,35 @@ class TestInstallRuntime:
 
     def test_failure_is_reported_as_a_non_zero_code(self) -> None:
         assert install_runtime(command=[sys.executable, "-c", "raise SystemExit(3)"]) == 3
+
+    def test_a_silent_install_can_be_cancelled(self) -> None:
+        """pip が何も出さずに落としている間でも、中断が効く
+
+        出力の 1 行ごとにしか中断を見ないと、黙って数分落としている間は止まらず、
+        導入欄は導入中のまま、ダイアログも閉じられない
+        """
+        lines: list[str] = []
+        codes: list[int] = []
+        asked = threading.Event()
+
+        def run() -> None:
+            codes.append(
+                install_runtime(
+                    command=[sys.executable, "-c", "import time; time.sleep(60)"],
+                    on_output=lines.append,
+                    should_cancel=asked.is_set,
+                )
+            )
+
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        threading.Event().wait(0.5)  # 子が黙って動いている所で頼む
+        asked.set()
+        worker.join(timeout=15.0)
+
+        assert not worker.is_alive(), "中断を頼んでも導入が終わらない"
+        assert codes and codes[0] != 0
+        assert lines[-1] == "中断した"
 
     def test_a_missing_executable_does_not_raise(self) -> None:
         lines: list[str] = []

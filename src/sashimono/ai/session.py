@@ -19,7 +19,8 @@ from pathlib import Path
 from typing import Any
 
 from sashimono.ai.bridge import EditorBridge
-from sashimono.ai.environment import find_claude_cli
+from sashimono.ai.environment import bundled_claude_cli, find_claude_cli
+from sashimono.ai.models import effort_for
 from sashimono.ai.server import SERVER_NAME, build_server
 
 __all__ = ["SYSTEM_PROMPT", "AgentEvent", "AgentSession", "EventKind"]
@@ -84,11 +85,13 @@ class AgentSession:
         bridge: EditorBridge,
         *,
         model: str | None = None,
+        effort: str | None = None,
         cwd: Path | None = None,
         system_prompt: str = SYSTEM_PROMPT,
     ) -> None:
         self._bridge = bridge
-        self._model = model
+        self._model = model or None
+        self._effort = effort_for(model or "", effort or "")
         self._cwd = cwd
         self._system_prompt = system_prompt
 
@@ -99,12 +102,27 @@ class AgentSession:
         self._client: Any = None
         self._busy = threading.Event()
         self._closed = threading.Event()
+        #: 画面が前の指示の区切り（取り消しの段）を付け終えたか
+        #: 付け終える前に次の指示を始めると、次の指示の編集が前の段へ混ざり、
+        #: 1 回の取り消しで 2 つの指示の編集がまとめて戻る
+        self._boundary = threading.Event()
+        self._boundary.set()
 
     # --- UI スレッドから ---
 
     @property
     def running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
+
+    @property
+    def model(self) -> str | None:
+        """使うモデル ``None`` は Claude Code の既定"""
+        return self._model
+
+    @property
+    def effort(self) -> str | None:
+        """実際に渡すエフォート 受け付けないモデルでは ``None``"""
+        return self._effort
 
     @property
     def busy(self) -> bool:
@@ -115,6 +133,11 @@ class AgentSession:
         if self.running:
             return
         self._closed.clear()
+        # 前の接続が繋がる前に落ちると（Claude Code が見つからない・ログインが
+        # まだ、など）、取られなかった指示が残る 残したまま繋ぎ直すと、画面が
+        # 捨てた指示を黙って先に実行し、その編集が次の指示の取り消しの段へ入る
+        self._prompts = queue.Queue()
+        self._boundary.set()
         self._thread = threading.Thread(target=self._run, name="sashimono-agent", daemon=True)
         self._thread.start()
 
@@ -123,6 +146,14 @@ class AgentSession:
         self.start()
         self._bridge.resume()
         self._prompts.put(prompt)
+
+    def acknowledge_turn(self) -> None:
+        """TURN_DONE を受けて区切りを付け終えた 次の指示を始めてよい
+
+        画面が TURN_DONE を拾うのはタイマーの次の回なので、それまで会話の
+        スレッドを待たせる
+        """
+        self._boundary.set()
 
     def poll(self) -> list[AgentEvent]:
         """溜まった出来事を取り出す ブロックしない"""
@@ -140,15 +171,20 @@ class AgentSession:
         if loop is not None and client is not None:
             asyncio.run_coroutine_threadsafe(_safe_interrupt(client), loop)
 
-    def close(self) -> None:
-        """会話を畳む 終了時に呼ぶ"""
+    def close(self, *, wait: bool = True) -> None:
+        """会話を畳む 終了時に呼ぶ
+
+        ``wait`` を切ると、畳み終わるのを待たずに戻る モデルを選び直したときの
+        ように、アプリは続く場面で使う 待つと Claude Code が終わるまで画面が固まる
+        """
         if not self.running:
             return
         self._closed.set()
+        self._boundary.set()  # 区切り待ちのまま畳まれずに残らないように
         self._bridge.cancel()
         self._prompts.put(None)
         thread = self._thread
-        if thread is not None:
+        if wait and thread is not None:
             thread.join(timeout=5.0)
 
     # --- エージェントスレッド ---
@@ -168,34 +204,55 @@ class AgentSession:
         from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 
         self._loop = asyncio.get_running_loop()
-        # PATH に無い場所へ入っていることがあるので、見つけた場所を明示的に渡す
-        cli = find_claude_cli()
         options = ClaudeAgentOptions(
-            system_prompt=self._system_prompt,
+            **self.option_values(),
             mcp_servers={SERVER_NAME: build_server(self._bridge)},
-            # 組み込みのツール（ファイル読み書き・シェル・検索）は全部止める
-            # 編集の話をしているつもりで、ディスクの中身を読まれては困る
-            tools=[],
-            # allowed_tools は使わない 並べると SDK がそちらで先に通してしまい、
-            # 下の門番が呼ばれなくなる 許可の判断を 1 か所に寄せる
             can_use_tool=self._can_use_tool,
-            # ソフトの中の会話なので、リポジトリの設定やスキルは読み込まない
-            # ここを開けると、編集と関係ない指示が混ざる
-            setting_sources=[],
-            permission_mode="default",
-            model=self._model,
-            cwd=str(self._cwd) if self._cwd is not None else None,
-            cli_path=str(cli) if cli is not None else None,
         )
 
         async with ClaudeSDKClient(options) as client:
             self._client = client
             self._emit(AgentEvent(EventKind.READY))
             while not self._closed.is_set():
+                await asyncio.to_thread(self._boundary.wait)
                 prompt = await asyncio.to_thread(self._prompts.get)
                 if prompt is None:
                     break
+                # TURN_DONE を出す前に下ろす 出した後だと、画面が先に区切りを
+                # 付け終えて立てた旗を、ここで消してしまうことがある
+                self._boundary.clear()
                 await self._turn(client, prompt)
+
+    def option_values(self) -> dict[str, Any]:
+        """SDK へ渡す設定のうち、SDK を読まずに決まるもの
+
+        分けてあるのは、SDK の無い試験でも「何を渡すか」を確かめるため
+        """
+        values: dict[str, Any] = {
+            "system_prompt": self._system_prompt,
+            # 組み込みのツール（ファイル読み書き・シェル・検索）は全部止める
+            # 編集の話をしているつもりで、ディスクの中身を読まれては困る
+            "tools": [],
+            # allowed_tools は使わない 並べると SDK がそちらで先に通してしまい、
+            # 門番（can_use_tool）が呼ばれなくなる 許可の判断を 1 か所に寄せる
+            # ソフトの中の会話なので、リポジトリの設定やスキルは読み込まない
+            # ここを開けると、編集と関係ない指示が混ざる
+            "setting_sources": [],
+            "permission_mode": "default",
+            "model": self._model,
+            "cwd": str(self._cwd) if self._cwd is not None else None,
+        }
+        if self._effort is not None:
+            # 指定しないときは渡さない 渡すと Claude Code の既定を上書きしてしまう
+            values["effort"] = self._effort
+        if bundled_claude_cli() is None:
+            # 同梱の Claude Code があれば SDK が自分で見つける ここで別の場所を
+            # 渡すと、npm の claude.cmd（SDK が起動を断る）を掴むことがある
+            # 同梱の無い古い SDK のときだけ、PATH に無い場所まで探した物を渡す
+            cli = find_claude_cli()
+            if cli is not None:
+                values["cli_path"] = str(cli)
+        return values
 
     async def _turn(self, client: Any, prompt: str) -> None:
         self._busy.set()
@@ -259,7 +316,11 @@ class AgentSession:
                         )
                     )
         elif isinstance(message, ResultMessage) and message.is_error:
-            self._emit(AgentEvent(EventKind.ERROR, text=str(message.result or "失敗しました")))
+            self._emit(
+                AgentEvent(
+                    EventKind.ERROR, text=with_login_hint(str(message.result or "失敗しました"))
+                )
+            )
 
     def _emit(self, event: AgentEvent) -> None:
         self._events.put(event)
@@ -306,5 +367,28 @@ def _explain(exc: BaseException) -> str:
             "入れてから、もう一度お試しください"
         )
     if name == "ProcessError":
-        return f"Claude Code の起動に失敗しました: {exc}"
-    return f"{name}: {exc}"
+        return with_login_hint(f"Claude Code の起動に失敗しました: {exc}")
+    return with_login_hint(f"{name}: {exc}")
+
+
+#: ログインが済んでいないときに Claude Code が返す文面の手掛かり（小文字で比べる）
+_LOGIN_MARKERS = ("/login", "api key", "not logged in", "authentication", "oauth", "401")
+
+#: ログインが要るときに添える案内
+LOGIN_HINT = (
+    "Claude へのログインが要ります アシスタント欄の「ログイン…」で Claude Code を開き、"
+    "案内に従ってログインしてから送り直してください"
+    "（API キーを使う場合は環境変数 ANTHROPIC_API_KEY を設定し、ソフトを再起動します）"
+)
+
+
+def with_login_hint(text: str) -> str:
+    """ログインが済んでいないための失敗なら、次にすることを書き足す
+
+    Claude Code の文面は英語で「/login を実行して」と言うだけで、ソフトの中から
+    どこでそれをすればよいのかが分からない
+    """
+    lowered = text.lower()
+    if any(marker in lowered for marker in _LOGIN_MARKERS):
+        return f"{text}\n{LOGIN_HINT}"
+    return text
