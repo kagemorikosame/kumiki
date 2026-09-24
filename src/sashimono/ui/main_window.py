@@ -379,6 +379,7 @@ class MainWindow(QMainWindow):
         )
         self._transport = TransportBar(project.rate, self)
         self._timeline = TimelineView(project, self._analyzer, self)
+        self._timeline.set_value_lines(self._preferences.value_lines)
         self._media_pool = MediaPoolWidget(project, self)
         self._inspector = InspectorPanel(self)
         # 設定パネルは選んだクリップを引くためにプロジェクトを持つ 起動直後にも渡す
@@ -748,6 +749,7 @@ class MainWindow(QMainWindow):
             self._media_pool.set_progress({})
         self._media_pool.set_view_mode(preferences.media_view)
         self._chat.apply_preferences(preferences)
+        self._timeline.set_value_lines(preferences.value_lines)
         apply_dock_tabs(self, preferences.dock_tabs)
         self._preview.set_proxies(self._proxies.store if preferences.use_proxy else None)
         self._preview.set_prefetch_bytes(preferences.prefetch_bytes())
@@ -801,6 +803,7 @@ class MainWindow(QMainWindow):
         )
         self._timeline.playhead_moved.connect(self._on_playhead_moved)
         self._timeline.template_requested.connect(self.place_template_entry)
+        self._timeline.preview_requested.connect(self._preview_command)
 
         self._media_pool.import_requested.connect(self.import_media)
         self._media_pool.insert_requested.connect(self._insert_media_by_id)

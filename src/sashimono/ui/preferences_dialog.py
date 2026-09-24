@@ -239,6 +239,15 @@ class PreferencesDialog(QDialog):
         )
         form.addRow("重ねたパネルのタブ", self._dock_tabs)
 
+        self._value_lines = QCheckBox("タイムラインのクリップに不透明度・音量の線を出す", self)
+        self._value_lines.setChecked(preferences.value_lines)
+        self._value_lines.setToolTip(
+            "絵のクリップには不透明度、音のクリップには音量の線を引く 線を上下にドラッグで値、"
+            "Ctrl+クリックでキーフレーム、点をドラッグで移動、点の右クリックで削除 "
+            "音付きの動画は右クリックでどちらの線を出すか切り替える"
+        )
+        form.addRow(self._value_lines)
+
         self._all_plugins = QCheckBox("AviUtl2 の汎用プラグインを全部読んで探す", self)
         self._all_plugins.setChecked(preferences.all_aviutl_plugins)
         self._all_plugins.setToolTip(
@@ -368,4 +377,5 @@ class PreferencesDialog(QDialog):
             chat_enter_sends=self._chat_enter_sends.isChecked(),
             match_video=str(self._match_video.currentData()),
             dock_tabs=str(self._dock_tabs.currentData()),
+            value_lines=self._value_lines.isChecked(),
         )
