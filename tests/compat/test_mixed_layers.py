@@ -23,7 +23,7 @@ from sashimono.compat.aviutl.report import CompatibilityReport
 from sashimono.compat.catalog import gather_media, place
 from sashimono.compat.mapped import MappedObject
 from sashimono.compat.ymm4.template import map_template
-from sashimono.core.commands import AddMedia, Command
+from sashimono.core.commands import AddMedia, AddTrack, Command
 from sashimono.core.model import (
     AnimatedValue,
     AudioStreamInfo,
@@ -278,6 +278,31 @@ class TestYmm4:
         project = put(mapped(items), project, track_id=chosen.id)
 
         assert [len(track.clips) for track in layers(project)] == [0, 0, 1]
+
+    @pytest.mark.parametrize("hidden", ["muted", "outside_solo"])
+    def test_a_right_clicked_layer_that_is_silent_is_passed_over(
+        self, files: dict[str, Path], hidden: str
+    ) -> None:
+        """ミュートやソロの外のレイヤーを選んでも、そこへは置かず元のレイヤー番号へ回す
+
+        置くと、置いた直後からプレビューにも書き出しにも出ない（PR #165 のレビュー）
+        """
+        chosen = Track(kind=TrackKind.MIXED, name="レイヤー 1", muted=hidden == "muted")
+        other = Track(kind=TrackKind.MIXED, name="レイヤー 2", solo=hidden == "outside_solo")
+        project = apply(project_of(LayerMode.MIXED), [AddTrack(chosen), AddTrack(other)])
+        project = put(mapped([text_item(Layer=1)]), project, track_id=chosen.id)
+
+        assert [len(track.clips) for track in layers(project)] == [0, 1]
+
+    def test_a_sound_is_not_put_on_a_muted_chosen_layer(self, files: dict[str, Path]) -> None:
+        # 音だけの物も同じ 鳴らないレイヤーへ置くと、置いたのに聞こえない
+        chosen = Track(kind=TrackKind.MIXED, name="レイヤー 1", muted=True)
+        project = apply(project_of(LayerMode.MIXED), [AddTrack(chosen)])
+        project = put(mapped([audio_item(files["effect"], Layer=1)]), project, track_id=chosen.id)
+
+        first, second = layers(project)
+        assert first.clips == ()
+        assert not only_clip(second).show_picture
 
 
 class TestSeparatedStaysTheSame:

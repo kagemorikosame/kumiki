@@ -51,7 +51,7 @@ from sashimono.core.commands.fixed import (
     with_fixed_items,
 )
 from sashimono.core.commands.insert import DEFAULT_GENERATED_FRAMES
-from sashimono.core.commands.layers import media_placements, places_mixed
+from sashimono.core.commands.layers import active_layers, media_placements, places_mixed
 from sashimono.core.model import (
     AnimatedValue,
     Clip,
@@ -645,18 +645,23 @@ def _put_on_layers(
 ) -> None:
     """混合の方式のクリップを、元のレイヤー番号どおりのレイヤーへ置くコマンドを積む
 
-    ``track_id`` のトラックへは、そこで同じ絵と音になる物だけを置く レイヤーなら全部、
-    映像トラック（方式を切り替えた作品に残る物）なら音を鳴らさず絵を描く物だけ
-    ほかは元のレイヤーへ回す 映像トラックへ音のある物を置くと、置く時点で断られる
+    ``track_id`` のトラックへは、そこで同じ絵と音になる物だけを置く レイヤーなら映る
+    （音だけの物は鳴る）間は全部、映像トラック（方式を切り替えた作品に残る物）なら
+    音を鳴らさず絵を描く物だけ ほかは元のレイヤーへ回す 映像トラックへ音のある物を
+    置くと、置く時点で断られる
     """
     target = project.timeline.find_track(track_id) if track_id is not None else None
+    # 選ばれたレイヤーでも、ミュートやソロの外で映らない・鳴らない所へは置かない 置くと、
+    # 置いた直後からプレビューにも書き出しにも出ない（素材を置くときの free_layer と同じ決まり）
+    shown = {t.id for t in active_layers(project, picture=True)}
+    heard = {t.id for t in active_layers(project, picture=False)}
 
     def fits(clip: Clip) -> bool:
         if target is None:
             return False
-        return target.kind is TrackKind.MIXED or (
-            target.kind is TrackKind.VIDEO and clip.show_picture and clip.audio_stream is None
-        )
+        if target.kind is TrackKind.MIXED:
+            return target.id in (shown if clip.show_picture else heard)
+        return target.kind is TrackKind.VIDEO and clip.show_picture and clip.audio_stream is None
 
     rest = [(item, clip) for item, clip in layered if not fits(clip)]
     layers = {item.layer for item, _ in rest}

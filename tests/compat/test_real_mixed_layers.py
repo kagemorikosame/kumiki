@@ -180,15 +180,19 @@ def test_both_ways_draw_and_sound_the_same(
             assert separated.duration == mixed.duration, label
             if separated.duration == 0:
                 continue
-            frame = separated.duration // 2
+            # 頭・3 分の 1・中ほど・終わりの手前の 4 枚 1 枚だけだと、始まりや終わりにだけ
+            # 出る物や、途中で重なりが入れ替わる所の違いを見落とす
+            span = separated.duration
+            frames = sorted({f for f in (1, span // 3, span // 2, span - 2) if 0 <= f < span})
             images = []
             for project in (separated, mixed):
                 renderer = FrameRenderer(project, context=context)
                 try:
-                    images.append(renderer.render(frame))
+                    images.append([renderer.render(frame) for frame in frames])
                 finally:
                     renderer.close()
-            assert np.array_equal(images[0], images[1]), label
+            for frame, one, other in zip(frames, images[0], images[1], strict=True):
+                assert np.array_equal(one, other), f"{label} {frame}"
             sounds = []
             for project in (separated, mixed):
                 mixer = AudioMixer(project)
