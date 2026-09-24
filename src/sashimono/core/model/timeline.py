@@ -23,9 +23,21 @@ from sashimono.core.model.ids import (
     new_clip_id,
     new_track_id,
 )
+from sashimono.core.model.media import MediaItem
 from sashimono.core.timebase import FrameRate
 
-__all__ = ["FILTER_KIND", "Clip", "GeneratedSource", "Marker", "Timeline", "Track", "TrackKind"]
+__all__ = [
+    "FILTER_KIND",
+    "Clip",
+    "GeneratedSource",
+    "Marker",
+    "Timeline",
+    "Track",
+    "TrackKind",
+    "default_track_name",
+    "draws_picture",
+    "plays_sound",
+]
 
 #: 下のトラックを重ね終えた絵にエフェクトを掛ける生成オブジェクトの種類（AviUtl の
 #: フィルタオブジェクト Issue #27） 掛けるエフェクトはクリップの :attr:`Clip.effects`
@@ -65,8 +77,35 @@ class GeneratedSource:
 
 
 class TrackKind(Enum):
+    """トラックの種類
+
+    ``MIXED`` は映像・音声・テキストを何でも置ける 1 本のレイヤー（YMM4・AviUtl の
+    レイヤー Issue #27） 音付きの動画は絵と音を 1 本のクリップで持ち、どちらを
+    出すかはクリップの :attr:`Clip.show_picture` と :attr:`Clip.audio_stream` が決める
+    映像と音声を分ける今の方式（``VIDEO`` と ``AUDIO``）はそのまま残る
+
+    トラックが絵を描くか・音を鳴らすかは、種類を直に見て決めない
+    :meth:`Timeline.picture_tracks` などと :func:`draws_picture` :func:`plays_sound` を通す
+    種類の分岐を描画・音の合成・書き出し・先読みの捨て方へ散らすと、どれか 1 か所で
+    混合を忘れたときに「プレビューには出るのに書き出すと消える」が起きる
+    """
+
     VIDEO = "video"
     AUDIO = "audio"
+    MIXED = "mixed"
+
+
+#: 種類ごとのトラック名の頭 混合は利用者の決定で「レイヤー 1」（番号の前に空白）
+_NAME_PREFIX = {TrackKind.VIDEO: "V", TrackKind.AUDIO: "A", TrackKind.MIXED: "レイヤー "}
+
+
+def default_track_name(kind: TrackKind, number: int) -> str:
+    """``number`` 本目の ``kind`` のトラックに付ける名前（``V1`` ``A1`` ``レイヤー 1``）
+
+    トラックを作る所が同じ名前を付けるため 映像か音声かの 2 択で頭の文字を
+    書き分けると、混合トラックだけ「A3」のような名前が付く
+    """
+    return f"{_NAME_PREFIX[kind]}{number}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +147,17 @@ class Clip:
     #: 終わりを越えた所は無音で、再生速度 0 の音は鳴らない（音量 0 で写している）
     hold_at: Fraction | None = None
     effects: tuple[Effect, ...] = ()
+    #: 混合トラックで鳴らす音声ストリームの番号（:attr:`AudioStreamInfo.index`）
+    #: ``None`` なら鳴らさない 映像・音声のトラックでは読まない（音声トラックは
+    #: :attr:`stream_index` を鳴らす）
+    #:
+    #: 絵の :attr:`stream_index` とは別に持つ 混合トラックのクリップは 1 本で絵と音の
+    #: 両方を出すので、1 つの番号では映像と音声のストリームを同時に指せない
+    #: 真偽ではなく番号にしたのは、多言語音声の素材でどの音を鳴らすかを選ぶため
+    audio_stream: int | None = None
+    #: 混合トラックで絵を描くか 偽なら重ねから外す（:attr:`clip_to_below` の相手にもならない）
+    #: 映像・音声のトラックでは読まない 音だけ使いたい動画を、クリップを分けずに置くため
+    show_picture: bool = True
     #: 場面切り替え（生成オブジェクト ``transition``）で、後の場面に掛けるエフェクト
     #: 前の場面には :attr:`effects` が掛かる ほかのクリップでは使わない
     after_effects: tuple[Effect, ...] = ()
@@ -138,6 +188,8 @@ class Clip:
             raise ValueError(f"再生速度は正でなければならない: {self.speed}")
         if self.hold_at is not None and self.hold_at < 0:
             raise ValueError(f"絵を止める時刻が負: {self.hold_at}")
+        if self.audio_stream is not None and self.audio_stream < 0:
+            raise ValueError(f"音声ストリームの番号が負: {self.audio_stream}")
         if self.scene_id is not None and (self.media_id is not None or self.source is not None):
             # 両方を持つと、どちらを描くのかが決まらない
             raise ValueError("シーンを置いたクリップは素材や生成オブジェクトを持てない")
@@ -214,9 +266,9 @@ class Track:
     solo: bool = False
     #: UI 上の表示高さ（ピクセル）
     height: int = 60
-    #: 音声トラックの音量（dB） 映像トラックでは無視される
+    #: 音声トラックと混合トラックの音量（dB） 映像トラックでは無視される
     volume_db: float = 0.0
-    #: 音声トラックの定位 -1 が左、+1 が右
+    #: 音声トラックと混合トラックの定位 -1 が左、+1 が右
     pan: float = 0.0
     id: TrackId = field(default_factory=new_track_id)
 
@@ -257,7 +309,23 @@ class Track:
 
 @dataclass(frozen=True, slots=True)
 class Timeline:
-    """トラックの集合"""
+    """トラックの集合
+
+    **重なり順** :attr:`tracks` の並びがそのまま描く順で、先頭が一番奥 後ろのトラックほど
+    手前に重なる 映像トラックと混合トラックは同じ並びの中で重なる（種類ごとに別の
+    重なりを持たない） 混ざっていても、並びで前にある方が奥
+
+    混合トラックの「レイヤー n」は、混合トラックの中で並びの n 番目 YMM4・AviUtl と
+    同じく、レイヤー 1 が一番奥で、番号が大きいレイヤーほど手前に描く
+    モデルの並びの意味は分ける方式と同じなので、描く側は種類を問わず並びの順に重ねる
+    違うのは画面の並べ方だけで、映像トラックは V1 を一番下に置き番号が大きいほど上へ
+    （手前が上）、混合トラックはレイヤー 1 を一番上に置き番号が大きいほど下へ（手前が下）
+    並べる（:meth:`~sashimono.ui.timeline.layout.TimelineLayout.bands`）
+    並びを種類ごとに逆さに持つと、変換（映像トラック ⇔ 混合トラック）のたびに重なりが
+    裏返り、描く側も種類で順を分けることになる
+
+    音声トラックは並びの中のどこにあっても重なりに加わらない（絵を描かない）
+    """
 
     rate: FrameRate
     tracks: tuple[Track, ...] = ()
@@ -285,20 +353,40 @@ class Timeline:
     def audio_tracks(self) -> Iterator[Track]:
         return (t for t in self.tracks if t.kind is TrackKind.AUDIO)
 
-    def active_tracks(self, kind: TrackKind) -> tuple[Track, ...]:
-        """実際に映る／聞こえるトラック 並びは :attr:`tracks` のまま
+    def mixed_tracks(self) -> Iterator[Track]:
+        return (t for t in self.tracks if t.kind is TrackKind.MIXED)
 
-        ミュートを除き、同じ種類にソロが 1 本でもあればソロのものだけを残す
-        ミュートとソロが両方付いていればミュートが勝ち、そのソロはほかを止めない
-        止めると、ソロを外し忘れたトラックをミュートしただけで全部が無音になる
+    def picture_tracks(self) -> tuple[Track, ...]:
+        """絵を描きうるトラック（映像と混合） 並びは :attr:`tracks` のまま（奥から手前）"""
+        return tuple(t for t in self.tracks if t.kind is not TrackKind.AUDIO)
 
-        プレビュー・ミキサ・書き出しの 3 か所が必ずここを通る 判断が分かれると
-        「プレビューでは消えているのに書き出すと出る」が起きる 実際に書き出しだけ
-        ソロを見ていなかった
+    def sound_tracks(self) -> tuple[Track, ...]:
+        """クリップの音を鳴らしうるトラック（音声と混合） 並びは :attr:`tracks` のまま
+
+        映像トラックは入れない 映像トラックが鳴らすのは置いたシーンの音だけで、
+        トラックの音量・定位も掛けない（ミキサの決まり）
         """
-        tracks = [t for t in self.tracks if t.kind is kind]
-        soloed = any(t.solo and not t.muted for t in tracks)
-        return tuple(t for t in tracks if not t.muted and (t.solo or not soloed))
+        return tuple(t for t in self.tracks if t.kind is not TrackKind.VIDEO)
+
+    def active_picture_tracks(self) -> tuple[Track, ...]:
+        """実際に映るトラック（映像と混合） 並びは :attr:`tracks` のまま"""
+        return _audible_or_visible(self.picture_tracks())
+
+    def active_sound_tracks(self) -> tuple[Track, ...]:
+        """実際に聞こえるトラック（音声と混合） 並びは :attr:`tracks` のまま"""
+        return _audible_or_visible(self.sound_tracks())
+
+    def active_tracks(self, kind: TrackKind) -> tuple[Track, ...]:
+        """``kind`` のトラックのうち実際に映る／聞こえるもの 並びは :attr:`tracks` のまま
+
+        映像は :meth:`active_picture_tracks`、音声は :meth:`active_sound_tracks` から
+        その種類だけを抜く ソロの決まりをここで別に持たないため 混合トラックは
+        絵の側（映るもの）を返す 混合トラックは絵と音でソロの効き方が違うことがあるので、
+        役割の分かっている呼び手は種類ではなく役割のメソッドを使う
+        """
+        if kind is TrackKind.AUDIO:
+            return tuple(t for t in self.active_sound_tracks() if t.kind is kind)
+        return tuple(t for t in self.active_picture_tracks() if t.kind is kind)
 
     def find_track(self, track_id: TrackId) -> Track | None:
         for track in self.tracks:
@@ -344,3 +432,79 @@ class Timeline:
             for clip in track.clips
             if clip.scene_id is not None
         }
+
+
+def _audible_or_visible(tracks: tuple[Track, ...]) -> tuple[Track, ...]:
+    """``tracks`` のうちミュートとソロで残るもの
+
+    ミュートを除き、``tracks`` にソロが 1 本でもあればソロのものだけを残す
+    ミュートとソロが両方付いていればミュートが勝ち、そのソロはほかを止めない
+    止めると、ソロを外し忘れたトラックをミュートしただけで全部が無音になる
+
+    **ソロは役割（絵か音か）の中で決まる** 絵の側は映像と混合、音の側は音声と混合の中で
+    見る 混合トラックは両方に入るので、混合トラックをソロにすると、ほかの映像トラックは
+    映らず、ほかの音声トラックも鳴らない（そのレイヤーだけが見えて聞こえる）
+    音声トラックをソロにしても映像トラックと混合トラックの絵は消えず、混合トラックの
+    音だけが止まる 分ける方式で音声トラックのソロが絵を消さないのと揃えた
+    種類ごと（映像の中・音声の中・混合の中）に決めると、混合トラックをソロにしても
+    映像トラックが映り続け、音付きの動画を 1 本だけ確かめる、というソロの使い道が無くなる
+    混合と分ける方式のトラックが並ぶのは移り変わりの間だけで、そこでも同じ役割の中で
+    比べておけば、変換の前後でソロの意味が変わらない
+
+    プレビュー・ミキサ・書き出しの 3 か所が必ずここを通る 判断が分かれると
+    「プレビューでは消えているのに書き出すと出る」が起きる 実際に書き出しだけ
+    ソロを見ていなかった
+    """
+    soloed = any(t.solo and not t.muted for t in tracks)
+    return tuple(t for t in tracks if not t.muted and (t.solo or not soloed))
+
+
+def draws_picture(track: Track, clip: Clip, media: MediaItem | None) -> bool:
+    """``track`` に置いた ``clip`` が絵を描くか ``media`` はクリップの素材（無ければ ``None``）
+
+    重ねに入るかどうかをここで決める 偽のクリップは重ねから外すので、上のクリップの
+    :attr:`Clip.clip_to_below` の相手にもならない 無効（:attr:`Clip.enabled`）かどうかは
+    見ない 編集で切り替える状態で、種類の決まりとは別に呼び手が見る
+
+    - 映像トラック 常に描く（音だけの素材は置く時点で断っている）
+    - 音声トラック 描かない
+    - 混合トラック :attr:`Clip.show_picture` が真で、素材に絵がある（映像か静止画）か
+      素材を持たないクリップ（テキスト・図形・シーン・フィルタ・場面切り替え）なら描く
+      音だけの素材は描かない 描く物の無いクリップを重ねに残すと、上のクリップが
+      それで切り抜いて何も映らなくなる
+
+    素材を探せなかった（消えた）ときは描く側に数える 今の映像トラックと同じく、
+    描けずに空いた所になる 描かない側に数えると、素材を戻しただけで切り抜きの相手が
+    入れ替わる
+    """
+    if track.kind is TrackKind.AUDIO:
+        return False
+    if track.kind is TrackKind.VIDEO:
+        return True
+    if not clip.show_picture:
+        return False
+    if clip.media_id is None or media is None:
+        return True
+    return media.has_video or media.is_still
+
+
+def plays_sound(track: Track, clip: Clip, media: MediaItem | None) -> bool:
+    """``track`` に置いた ``clip`` の音を鳴らすか ``media`` はクリップの素材（無ければ ``None``）
+
+    - 音声トラック 素材を持つクリップと、置いたシーン
+    - 映像トラック 置いたシーンだけ（シーンの中の BGM やナレーションを消さないため）
+    - 混合トラック 置いたシーンと、:attr:`Clip.audio_stream` を持ち音のある素材の
+      クリップ 番号が ``None`` なら鳴らさない
+
+    素材を探せなかったときは鳴らす側に数える（ミキサが開けずに無音になる）
+    無効かどうかは :func:`draws_picture` と同じく見ない
+    """
+    if clip.scene_id is not None:
+        return True
+    if clip.media_id is None or track.kind is TrackKind.VIDEO:
+        return False
+    if track.kind is TrackKind.AUDIO:
+        return True
+    if clip.audio_stream is None:
+        return False
+    return media is None or media.has_audio

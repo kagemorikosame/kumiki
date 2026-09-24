@@ -22,6 +22,7 @@ from sashimono.core.model import (
     Track,
     TrackId,
     TrackKind,
+    default_track_name,
     new_clip_id,
     new_group_id,
 )
@@ -159,7 +160,6 @@ def _landing_track(
         if not busy:
             return track
 
-    prefix = "V" if copied.kind is TrackKind.VIDEO else "A"
-    track = Track(kind=copied.kind, name=f"{prefix}{len(same_kind) + 1}")
+    track = Track(kind=copied.kind, name=default_track_name(copied.kind, len(same_kind) + 1))
     commands.append(AddTrack(track))
     return track

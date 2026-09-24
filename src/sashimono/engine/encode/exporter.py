@@ -289,7 +289,14 @@ def _encode(
 ) -> None:
     rate = project.rate
     width, height = project.settings.resolution
-    has_audio = any(track.clips for track in project.timeline.active_tracks(TrackKind.AUDIO))
+    # 混合トラックは音を鳴らすクリップがあるときだけ数える 絵だけの混合トラックで音の
+    # 道を作ると、今まで無音の道を持たなかった書き出しに黙った音声が付く
+    has_audio = any(
+        bool(track.clips)
+        if track.kind is TrackKind.AUDIO
+        else any(project.plays_sound(track, clip) for clip in track.clips)
+        for track in project.timeline.active_sound_tracks()
+    )
 
     try:
         container = av.open(str(settings.path), mode="w")

@@ -15,6 +15,7 @@ from sashimono.core.model import (
     Clip,
     ClipId,
     GroupId,
+    LayerMode,
     MediaId,
     MediaItem,
     Project,
@@ -40,6 +41,7 @@ __all__ = [
     "RenameProject",
     "RippleCut",
     "SetBlending",
+    "SetLayerMode",
     "SetResolution",
     "SetTrackHeights",
     "SetTrackState",
@@ -653,6 +655,30 @@ class SetBlending(Command):
 
 
 @dataclass(frozen=True, slots=True)
+class SetLayerMode(Command):
+    """素材を置くトラックの方式（:class:`~sashimono.core.model.LayerMode`）を変える
+
+    変えるのは設定だけで、置いてあるトラックは動かさない どちらの方式のトラックも
+    同じように描いて鳴らせるので、設定を変えただけで絵や音は変わらない
+    置いてあるトラックまで変えるのは別の命令（変換）にする 1 つにまとめると、
+    設定だけ戻したいときにも変換まで戻ってしまう
+    """
+
+    layer_mode: str
+
+    @property
+    def label(self) -> str:
+        name = "混合" if self.layer_mode == LayerMode.MIXED else "映像と音声に分ける"
+        return f"トラックの方式を変更: {name}"
+
+    def apply(self, project: Project) -> Project:
+        if self.layer_mode not in LayerMode.ALL:
+            raise ValueError(f"トラックの方式が不正: {self.layer_mode!r}")
+        settings = replace(project.settings, layer_mode=self.layer_mode)
+        return replace(project, settings=settings)
+
+
+@dataclass(frozen=True, slots=True)
 class RenameProject(Command):
     """プロジェクト名を変える"""
 
@@ -698,7 +724,16 @@ def _validate_clip_media(project: Project, track: Track, clip: Clip) -> None:
 
     映像トラックに音声しか持たない素材を置くと、再生時に何も出ない無音の穴になる
     置いた時点で気付ける方がよい
+
+    混合トラックは素材の種類を問わない（何でも置けるのが混合の意味）
+    鳴らす音声ストリーム（:attr:`Clip.audio_stream`）を持つクリップは映像トラックへ
+    置けない 映像トラックはクリップの音を鳴らさないので、混合トラックから移しただけで
+    音が黙って消える
     """
+    if track.kind is TrackKind.MIXED:
+        return
+    if track.kind is TrackKind.VIDEO and clip.audio_stream is not None:
+        raise ValueError("音を鳴らすクリップは映像トラックへ置けない（音が鳴らなくなる）")
     if clip.media_id is None:
         return
     item = project.require_media(clip.media_id)
