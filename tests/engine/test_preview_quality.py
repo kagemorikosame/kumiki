@@ -338,12 +338,27 @@ class TestFineDetailAtLowerQuality:
         self, gl_context: OffscreenGLContext, divisor: int
     ) -> None:
         # 縁の反射の太さも同じ 1 画素に切り上げると、光る帯が 2 倍・4 倍の太さになる
-        # 直す前は 1/2 で 4.8・1/4 で 11.8、直した後はどちらも 0.3 より小さい
+        # 直す前は 1/2 で 4.8・1/4 で 11.8、直した後はどちらも 0.4 より小さい
         bevel = _effect("bevel_light", thickness=1, constant=100)
         clip = _source(
             "shape", bevel, shape="rect", width=96, height=64, color=(0.2, 0.2, 0.2, 1.0)
         )
         assert _rim_mismatch(_project(clip), gl_context, divisor) < TOLERANCE / 5
+
+    @pytest.mark.parametrize("thickness", [3, 5, 6, 10])
+    def test_a_bevel_with_a_fraction_of_a_canvas_pixel(
+        self, gl_context: OffscreenGLContext, divisor: int, thickness: int
+    ) -> None:
+        # 太さ 6 の縁の反射は 1/4 で 1.5 画素 3 は 1/2 で 1.5 画素、5 は 1/4 で 1.25 画素（#182）
+        # 輪を太さの端数で刻むと、急な面が緩く帯の外まで広がる 書き出しの段は 1 画素ずつで
+        # いちばん外の段の傾きが半分なので、合成の 1 画素に急な段・半分の段・平らな面が
+        # 端数に応じて入り交じる 光は傾きに比例しないので、段ごとに光を当てて色で平均する
+        # 直す前は 1.35〜9.6（太さ 5 の 1/4 がいちばん大きい）、直した後はどれも 1 より小さい
+        bevel = _effect("bevel_light", thickness=thickness, constant=100)
+        clip = _source(
+            "shape", bevel, shape="rect", width=96, height=64, color=(0.2, 0.2, 0.2, 1.0)
+        )
+        assert _rim_mismatch(_project(clip), gl_context, divisor) < TOLERANCE / 4
 
 
 def _rim_mismatch(project: Project, context: OffscreenGLContext, divisor: int) -> float:
