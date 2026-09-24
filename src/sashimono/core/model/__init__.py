@@ -32,7 +32,7 @@ from sashimono.core.model.ids import (
     new_track_id,
 )
 from sashimono.core.model.media import AudioStreamInfo, MediaItem, VideoStreamInfo
-from sashimono.core.model.project import Blending, Project, ProjectSettings, Scene
+from sashimono.core.model.project import Blending, LayerMode, Project, ProjectSettings, Scene
 from sashimono.core.model.timeline import (
     FILTER_KIND,
     Clip,
@@ -41,6 +41,9 @@ from sashimono.core.model.timeline import (
     Timeline,
     Track,
     TrackKind,
+    default_track_name,
+    draws_picture,
+    plays_sound,
 )
 from sashimono.core.model.transcript import Transcript, TranscriptSegment, Word
 
@@ -57,6 +60,7 @@ __all__ = [
     "GroupId",
     "Interpolation",
     "Keyframe",
+    "LayerMode",
     "Marker",
     "MediaId",
     "MediaItem",
@@ -74,6 +78,8 @@ __all__ = [
     "TranscriptSegment",
     "VideoStreamInfo",
     "Word",
+    "default_track_name",
+    "draws_picture",
     "new_clip_id",
     "new_effect_id",
     "new_group_id",
@@ -81,4 +87,5 @@ __all__ = [
     "new_scene_id",
     "new_segment_id",
     "new_track_id",
+    "plays_sound",
 ]

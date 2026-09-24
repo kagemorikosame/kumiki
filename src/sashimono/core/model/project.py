@@ -7,10 +7,17 @@ from fractions import Fraction
 
 from sashimono.core.model.ids import MediaId, SceneId, new_scene_id
 from sashimono.core.model.media import MediaItem
-from sashimono.core.model.timeline import Timeline
+from sashimono.core.model.timeline import (
+    Clip,
+    Timeline,
+    Track,
+    TrackKind,
+    draws_picture,
+    plays_sound,
+)
 from sashimono.core.timebase import FrameRate
 
-__all__ = ["Blending", "Project", "ProjectSettings", "Scene"]
+__all__ = ["Blending", "LayerMode", "Project", "ProjectSettings", "Scene"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +48,23 @@ class Blending:
     ALL = (SRGB, LINEAR)
 
 
+class LayerMode:
+    """素材を置くトラックの方式（Issue #27）
+
+    値はプロジェクトファイルにそのまま出る 名前を変えると、保存した作品の方式が変わる
+    ここで決まるのは**これから置く所**だけ 置いてあるトラックはどちらの方式でも
+    そのまま描き・鳴らす（変換は別の命令）
+    """
+
+    #: 1 本のレイヤー（:attr:`~sashimono.core.model.TrackKind.MIXED`）に何でも置く
+    #: YMM4・AviUtl と同じ 音付きの動画は絵と音を 1 本のクリップで持つ
+    MIXED = "mixed"
+    #: 映像トラックと音声トラックに分けて置く 絵と音を 2 本のクリップにしてリンクで結ぶ
+    #: この項目ができる前のプロジェクトは、すべてこちら
+    SEPARATED = "separated"
+    ALL = (MIXED, SEPARATED)
+
+
 @dataclass(frozen=True, slots=True)
 class ProjectSettings:
     """出力の基準となる設定
@@ -60,6 +84,10 @@ class ProjectSettings:
     #: 合わせて sRGB で混ぜる この項目の無い古いファイルは、読むときにリニアとして開く
     #: （:mod:`sashimono.core.io.serialize`） 既定で開くと、保存したときと見た目が変わる
     blending: str = Blending.SRGB
+    #: 素材を置くトラックの方式（:class:`LayerMode`） モデルの既定は分ける方式
+    #: 古いファイルと、既定のプロジェクトで組み立てる今の試験の動きを変えないため
+    #: 新規作成で混合にするかは本人の好みで決める（画面の側）
+    layer_mode: str = LayerMode.SEPARATED
 
     def __post_init__(self) -> None:
         if self.width <= 0 or self.height <= 0:
@@ -71,6 +99,9 @@ class ProjectSettings:
         if self.blending not in Blending.ALL:
             # 知らない値のまま描くと、どちらの混ぜ方になるかがレンダラの作り次第になる
             raise ValueError(f"重ね合わせの方法が不正: {self.blending!r}")
+        if self.layer_mode not in LayerMode.ALL:
+            # 知らない値のまま持つと、置き方がどちらになるかが置く側の作り次第になる
+            raise ValueError(f"トラックの方式が不正: {self.layer_mode!r}")
 
     @property
     def resolution(self) -> tuple[int, int]:
@@ -158,6 +189,22 @@ class Project:
             if item.id == media_id:
                 return item
         return None
+
+    def draws_picture(self, track: Track, clip: Clip) -> bool:
+        """``track`` の ``clip`` が絵を描くか（:func:`~sashimono.core.model.draws_picture`）
+
+        素材を引くのは混合トラックだけ ほかの種類は素材を見ずに決まるので、
+        毎フレーム通る描画の道で素材の一覧をなめない
+        """
+        if track.kind is not TrackKind.MIXED or clip.media_id is None:
+            return draws_picture(track, clip, None)
+        return draws_picture(track, clip, self.find_media(clip.media_id))
+
+    def plays_sound(self, track: Track, clip: Clip) -> bool:
+        """``track`` の ``clip`` の音を鳴らすか（:func:`~sashimono.core.model.plays_sound`）"""
+        if track.kind is not TrackKind.MIXED or clip.media_id is None:
+            return plays_sound(track, clip, None)
+        return plays_sound(track, clip, self.find_media(clip.media_id))
 
     def require_media(self, media_id: MediaId) -> MediaItem:
         """素材を引く 無ければ :class:`KeyError`"""

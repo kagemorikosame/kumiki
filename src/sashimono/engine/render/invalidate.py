@@ -21,7 +21,6 @@ from sashimono.core.model import (
     SceneId,
     Timeline,
     Track,
-    TrackKind,
 )
 from sashimono.effects import FileSpec, registry
 
@@ -99,8 +98,8 @@ def _timeline_spans(
     before: Timeline, after: Timeline, scenes: set[SceneId], media: set[MediaId]
 ) -> Invalidation:
     """メインのタイムラインで、絵が変わる範囲"""
-    old_tracks = before.active_tracks(TrackKind.VIDEO)
-    new_tracks = after.active_tracks(TrackKind.VIDEO)
+    old_tracks = before.active_picture_tracks()
+    new_tracks = after.active_picture_tracks()
     if [t.id for t in old_tracks] != [t.id for t in new_tracks]:
         # 重ね順が変わる・見えるトラックが増減する どちらも、そのトラックに
         # クリップが無いフレームの絵まで変わりうる（下の絵が透ける）
@@ -152,15 +151,16 @@ def _visual_track(track: Track) -> Track:
 
 
 def _visual(clip: Clip) -> Clip:
-    """束ねとリンクを外したクリップ 絵が同じかどうかを比べるため
+    """束ねとリンクと鳴らす音を外したクリップ 絵が同じかどうかを比べるため
 
-    どちらもレンダラが読まない 束ね直すたびに貯めた絵を捨てると、
-    並べ終えた後の整理でプレビューが作り直しになる
+    どれもレンダラが読まない 束ね直すたびに貯めた絵を捨てると、
+    並べ終えた後の整理でプレビューが作り直しになる 混合トラックで鳴らす
+    音声ストリーム（``audio_stream``）を切り替えただけで絵を捨てるのも同じ無駄
 
-    **外すのはこの 2 つだけ** 新しく足した項目は比べる側に入る（絵に出ないと
+    **外すのはこの 3 つだけ** 新しく足した項目は比べる側に入る（絵に出ないと
     分かってから外す）捨てそこなうより、捨てすぎる方がまだ直しやすい
     """
-    return replace(clip, link_group=None, group_id=None)
+    return replace(clip, link_group=None, group_id=None, audio_stream=None)
 
 
 def _span(clip: Clip) -> tuple[int, int]:
@@ -181,7 +181,7 @@ def _media_used(timeline: Timeline) -> set[MediaId]:
     """
     return {
         clip.media_id
-        for track in timeline.active_tracks(TrackKind.VIDEO)
+        for track in timeline.active_picture_tracks()
         for clip in track.clips
         if clip.media_id is not None
     }
@@ -197,7 +197,7 @@ def _picture_of_timeline(timeline: Timeline) -> tuple[object, ...]:
     """
     return tuple(
         (track.id, _visual_track(track), tuple(_visual(clip) for clip in track.clips))
-        for track in timeline.active_tracks(TrackKind.VIDEO)
+        for track in timeline.active_picture_tracks()
     )
 
 
@@ -289,7 +289,7 @@ def image_spans(project: Project, paths: Collection[str]) -> Invalidation:
     )
     return Invalidation.over(
         _span(clip)
-        for track in project.timeline.active_tracks(TrackKind.VIDEO)
+        for track in project.timeline.active_picture_tracks()
         for clip in track.clips
         if _reads_image(clip, wanted) or (clip.scene_id is not None and clip.scene_id in scenes)
     )
@@ -298,7 +298,7 @@ def image_spans(project: Project, paths: Collection[str]) -> Invalidation:
 def _timeline_reads(timeline: Timeline, paths: frozenset[str]) -> bool:
     return any(
         _reads_image(clip, paths)
-        for track in timeline.active_tracks(TrackKind.VIDEO)
+        for track in timeline.active_picture_tracks()
         for clip in track.clips
     )
 

@@ -15,6 +15,7 @@ from sashimono.core.model import (
     Clip,
     ClipId,
     GroupId,
+    LayerMode,
     MediaId,
     MediaItem,
     Project,
@@ -40,6 +41,7 @@ __all__ = [
     "RenameProject",
     "RippleCut",
     "SetBlending",
+    "SetLayerMode",
     "SetResolution",
     "SetTrackHeights",
     "SetTrackState",
@@ -250,7 +252,8 @@ class MoveClip(Command):
         )
         if source_track.locked or target_track.locked:
             raise ValueError("ロックされたトラックのクリップは動かせない")
-        _validate_clip_media(project, target_track, clip)
+        carried = _carried_across(project, source_track, target_track, clip)
+        _validate_clip_media(project, target_track, carried)
 
         delta = self.timeline_start - clip.timeline_start
         timeline = project.timeline
@@ -262,7 +265,7 @@ class MoveClip(Command):
         destination = timeline.find_track(target_track.id)
         if destination is None:
             raise KeyError(f"トラックが見つからない: {target_track.id}")
-        moved = clip.moved_to(self.timeline_start)
+        moved = carried.moved_to(self.timeline_start)
         timeline = timeline.replace_track(destination.with_clips((*destination.clips, moved)))
 
         for track_id, partner in _linked_group(project, clip):
@@ -653,6 +656,30 @@ class SetBlending(Command):
 
 
 @dataclass(frozen=True, slots=True)
+class SetLayerMode(Command):
+    """素材を置くトラックの方式（:class:`~sashimono.core.model.LayerMode`）を変える
+
+    変えるのは設定だけで、置いてあるトラックは動かさない どちらの方式のトラックも
+    同じように描いて鳴らせるので、設定を変えただけで絵や音は変わらない
+    置いてあるトラックまで変えるのは別の命令（変換）にする 1 つにまとめると、
+    設定だけ戻したいときにも変換まで戻ってしまう
+    """
+
+    layer_mode: str
+
+    @property
+    def label(self) -> str:
+        name = "混合" if self.layer_mode == LayerMode.MIXED else "映像と音声に分ける"
+        return f"トラックの方式を変更: {name}"
+
+    def apply(self, project: Project) -> Project:
+        if self.layer_mode not in LayerMode.ALL:
+            raise ValueError(f"トラックの方式が不正: {self.layer_mode!r}")
+        settings = replace(project.settings, layer_mode=self.layer_mode)
+        return replace(project, settings=settings)
+
+
+@dataclass(frozen=True, slots=True)
 class RenameProject(Command):
     """プロジェクト名を変える"""
 
@@ -693,12 +720,78 @@ def _require_track(project: Project, track_id: TrackId) -> Track:
     return track
 
 
+def _carried_across(project: Project, source: Track, target: Track, clip: Clip) -> Clip:
+    """音声トラックと混合トラックの間で動かすクリップの、鳴らす音声ストリームを移し替える
+
+    音声トラックは :attr:`Clip.stream_index` を、混合トラックは :attr:`Clip.audio_stream` を
+    鳴らす 移し替えないと、音声クリップをレイヤーへ移しただけで音が消え、逆向きでは
+    選んだ音ではなく絵のストリームの番号で音を開く
+
+    混合トラックから音声トラックへ移せないのは 2 つ 絵を描くクリップ（絵が黙って消える
+    映像トラックへ音を鳴らすクリップを移せないのと同じ）と、音を鳴らさないクリップ
+    （音声トラックでは鳴り出してしまう） 映像トラックへ移すときの決まり（音を鳴らす
+    クリップと絵を隠したクリップを断る）は :func:`_validate_clip_media` が持つ
+    """
+    if source.kind is target.kind:
+        return clip
+    # 素材を持たないシーンやテキストもレイヤーでは絵を描く 素材の有無より先に見る
+    if (
+        source.kind is TrackKind.MIXED
+        and target.kind is TrackKind.AUDIO
+        and project.draws_picture(source, clip)
+    ):
+        raise ValueError("絵を描くクリップは音声トラックへ置けない（絵が消える）")
+    if clip.media_id is None:
+        if source.kind is TrackKind.AUDIO and target.kind is TrackKind.MIXED:
+            # 音声トラックのシーンは音だけを出している レイヤーでも音だけのまま置く
+            return replace(clip, show_picture=False)
+        return clip
+    if source.kind is TrackKind.AUDIO and target.kind is TrackKind.MIXED:
+        media = project.require_media(clip.media_id)
+        # 絵の番号は素材の映像ストリームへ向け直す 音の番号のまま残すと、後で絵を
+        # 出したときに映像ではない番号でデコーダを開く
+        picture = media.video_streams[0].index if media.has_video else clip.stream_index
+        # 絵は出さないまま移す 音声トラックでは描いていなかった 描き始めると、リンクした
+        # 映像クリップの絵がもう 1 枚重なり、手前なら映像トラックの位置やエフェクトを隠す
+        return replace(
+            clip, audio_stream=clip.stream_index, stream_index=picture, show_picture=False
+        )
+    if source.kind is TrackKind.MIXED and target.kind is TrackKind.AUDIO:
+        if clip.audio_stream is None:
+            raise ValueError("音を鳴らさないクリップは音声トラックへ置けない（鳴り出してしまう）")
+        return replace(clip, stream_index=clip.audio_stream, audio_stream=None)
+    return clip
+
+
 def _validate_clip_media(project: Project, track: Track, clip: Clip) -> None:
     """クリップの素材がトラックの種類に合っているかを確かめる
 
     映像トラックに音声しか持たない素材を置くと、再生時に何も出ない無音の穴になる
     置いた時点で気付ける方がよい
+
+    混合トラックは素材の種類を問わない（何でも置けるのが混合の意味）
+    鳴らす音声ストリーム（:attr:`Clip.audio_stream`）を持つクリップは映像トラックへ
+    置けない 映像トラックはクリップの音を鳴らさないので、混合トラックから移しただけで
+    音が黙って消える
     """
+    if track.kind is TrackKind.MIXED:
+        if clip.media_id is None:
+            return
+        # 音を鳴らさないクリップでも素材があるかは確かめる 飛ばすと、プロジェクトに無い
+        # 素材を指すクリップが置けてしまう（モデルは参照を確かめない）
+        media = project.require_media(clip.media_id)
+        if clip.audio_stream is None:
+            return
+        if all(stream.index != clip.audio_stream for stream in media.audio_streams):
+            # デコーダは無い番号を頼まれると先頭の音へ逃げる 選んでいない言語が鳴る
+            raise ValueError(f"素材 {media.name!r} に音声ストリーム {clip.audio_stream} は無い")
+        return
+    if track.kind is TrackKind.VIDEO and clip.audio_stream is not None:
+        raise ValueError("音を鳴らすクリップは映像トラックへ置けない（音が鳴らなくなる）")
+    if track.kind is TrackKind.VIDEO and not clip.show_picture:
+        # 映像トラックは show_picture を読まずに必ず描く 素材を持たないテキストも同じで、
+        # 混合トラックで隠していた絵が黙って映り出す
+        raise ValueError("絵を隠したクリップは映像トラックへ置けない（絵が出てしまう）")
     if clip.media_id is None:
         return
     item = project.require_media(clip.media_id)

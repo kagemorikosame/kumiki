@@ -65,6 +65,7 @@ from sashimono.core.model import (
     Track,
     TrackId,
     TrackKind,
+    default_track_name,
 )
 from sashimono.core.projection import project_timeline
 from sashimono.core.timebase import format_timecode
@@ -305,8 +306,16 @@ def _list_clips(host: EditorHost, arguments: dict[str, Any]) -> object:
             continue
         for clip in track.clips:
             media = project.find_media(clip.media_id) if clip.media_id is not None else None
+            # 混合トラックのクリップは絵と音を 1 本で出すので、どちらを出すかも見せる
+            # ほかの種類では読まない項目なので、出すと AI が効かない値を触りに行く
+            mixed: dict[str, object] = (
+                {"audio_stream": clip.audio_stream, "show_picture": clip.show_picture}
+                if track.kind is TrackKind.MIXED
+                else {}
+            )
             clips.append(
                 {
+                    **mixed,
                     "clip_id": str(clip.id),
                     "track_id": str(track.id),
                     "track_kind": track.kind.value,
@@ -473,12 +482,15 @@ def _import_media(host: EditorHost, arguments: dict[str, Any]) -> object:
 
 def _add_track(host: EditorHost, arguments: dict[str, Any]) -> object:
     kind = str(arguments.get("kind", "video")).lower()
-    if kind not in ("video", "audio"):
-        raise ToolError("kind は video か audio です")
-    track_kind = TrackKind.VIDEO if kind == "video" else TrackKind.AUDIO
-    prefix = "V" if track_kind is TrackKind.VIDEO else "A"
-    index = sum(1 for t in _project(host).timeline.tracks if t.kind is track_kind) + 1
-    track = Track(kind=track_kind, name=str(arguments.get("name") or f"{prefix}{index}"))
+    try:
+        track_kind = TrackKind(kind)
+    except ValueError:
+        raise ToolError("kind は video・audio・mixed のどれかです") from None
+    tracks = _project(host).timeline.tracks
+    index = sum(1 for t in tracks if t.kind is track_kind) + 1
+    taken = {t.name for t in tracks}
+    name = str(arguments.get("name") or default_track_name(track_kind, index, taken))
+    track = Track(kind=track_kind, name=name)
     host.apply_commands([AddTrack(track)], f"トラックを追加: {track.name}")
     return {"track_id": str(track.id), "name": track.name}
 
@@ -1195,7 +1207,15 @@ OPERATIONS: tuple[Operation, ...] = (
     Operation(
         name="add_track",
         description="トラックを足す",
-        schema=_schema({"kind": _string("video か audio"), "name": _string("表示名")}),
+        schema=_schema(
+            {
+                "kind": _string(
+                    "video・audio・mixed のどれか mixed は映像・音声・テキストを何でも置ける"
+                    "レイヤー（YMM4 と同じ 番号が大きいレイヤーほど手前に描く）"
+                ),
+                "name": _string("表示名"),
+            }
+        ),
         handler=_add_track,
         writes=True,
     ),
