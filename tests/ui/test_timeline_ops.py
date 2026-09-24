@@ -210,7 +210,25 @@ class TestSplit:
         view.set_playhead(100)
         view.split_at_playhead()
         assert harness.received == []
-        assert messages
+        assert messages and "位置" in messages[-1]
+
+    def test_a_locked_selection_is_told_as_locked(
+        self, make_area: list[TimelineArea], analyzer: MediaAnalyzer
+    ) -> None:
+        # 理由がロックなのに「位置にない」と出すと、再生ヘッドを動かし直すだけで終わる
+        # （PR #155 の指摘）
+        project = _project(
+            Track(TrackKind.VIDEO, "V1", (_text(0, 100),), locked=True),
+            Track(TrackKind.VIDEO, "V2", (_text(0, 100),)),
+        )
+        view, harness = _open(make_area, analyzer, project)
+        messages: list[str] = []
+        view.status_message.connect(messages.append)
+        view.select(project.timeline.tracks[0].clips[0].id)
+        view.set_playhead(50)
+        view.split_at_playhead()
+        assert harness.received == []
+        assert messages and "ロック" in messages[-1]
 
     def test_the_context_menu_follows_the_same_rule(
         self, make_area: list[TimelineArea], analyzer: MediaAnalyzer

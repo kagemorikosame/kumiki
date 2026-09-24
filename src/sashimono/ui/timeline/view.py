@@ -1327,13 +1327,16 @@ class TimelineView(QWidget):
         chosen = set(self._selection)
         targets: list[Clip] = []
         seen: set[GroupId] = set()
+        #: 再生ヘッドの下にあったのに、ロックで切らなかったものがあるか 通知の理由を分ける
+        locked_hit = False
         for track in self._project.timeline.tracks:
-            if track.locked:
-                continue
             for clip in track.clips:
                 if chosen and clip.id not in chosen:
                     continue
                 if not (clip.timeline_start < frame < clip.timeline_end):
+                    continue
+                if track.locked:
+                    locked_hit = True
                     continue
                 if clip.link_group is not None:
                     if clip.link_group in seen:
@@ -1343,7 +1346,12 @@ class TimelineView(QWidget):
 
         if chosen and not targets:
             # 黙って何もしないと、キーが効いていないのか選び方が違うのか分からない
-            self.status_message.emit("選んだクリップは再生ヘッドの位置にありません")
+            # ロックが理由なのに「位置にない」と出すと、再生ヘッドを動かし直すだけで終わる
+            self.status_message.emit(
+                "選んだクリップのトラックはロックされています"
+                if locked_hit
+                else "選んだクリップは再生ヘッドの位置にありません"
+            )
             return
         self._request([SplitClip(clip.id, frame) for clip in targets], "再生ヘッドで分割")
 

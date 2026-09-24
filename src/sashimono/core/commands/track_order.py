@@ -58,14 +58,15 @@ class MoveTrack(Command):
         group = [t for t in reorder_group(timeline, track) if t.id != track.id]
         if not 0 <= self.index <= len(group):
             raise ValueError(f"動かす先の番号が範囲の外: {self.index}（0〜{len(group)}）")
-        others = [t for t in timeline.tracks if t.id != track.id]
-        if self.index < len(group):
-            # 仲間の index 番目の直前へ入れる 仲間でないトラックはその場に残る
-            at = others.index(group[self.index])
-        else:
-            at = others.index(group[-1]) + 1 if group else len(others)
-        others.insert(at, track)
-        moved = tuple(others)
+        # 仲間が占めていた席だけを、新しい並びで埋め直す 抜いて差し込むと、仲間でない
+        # トラックの番号が 1 つずれ、保存したファイルの並びまで変わる
+        members = {t.id for t in reorder_group(timeline, track)}
+        seats = [i for i, t in enumerate(timeline.tracks) if t.id in members]
+        group.insert(self.index, track)
+        ordered = list(timeline.tracks)
+        for seat, replacement in zip(seats, group, strict=True):
+            ordered[seat] = replacement
+        moved = tuple(ordered)
         if moved == timeline.tracks:
             return project
         return project.with_timeline(replace(timeline, tracks=moved))

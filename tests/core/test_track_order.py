@@ -39,13 +39,15 @@ class TestMoveTrack:
             Track(TrackKind.VIDEO, "V2"),
             Track(TrackKind.AUDIO, "A2"),
         )
+        # 番号（ファイルに保存する並び）もそのまま 映像が占めていた席だけが入れ替わる
+        # （PR #155 の指摘 抜いて差し込むと A1 が 1 つ後ろへずれていた）
         moved = MoveTrack(v2.id, 0).apply(_project(v1, a1, v2, a2))
-        assert [t.name for t in moved.timeline.tracks if t.kind is TrackKind.VIDEO] == [
+        assert _names(moved) == ["V2", "A1", "V1", "A2"]
+        # 後ろへ動かしても同じ
+        assert _names(MoveTrack(v1.id, 1).apply(_project(v1, a1, v2, a2))) == [
             "V2",
-            "V1",
-        ]
-        assert [t.name for t in moved.timeline.tracks if t.kind is TrackKind.AUDIO] == [
             "A1",
+            "V1",
             "A2",
         ]
 
