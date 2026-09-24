@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QDockWidget,
     QFileDialog,
     QInputDialog,
+    QLabel,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -61,12 +62,14 @@ from sashimono.core.commands import (
     RenameScene,
     SetBlending,
     SetResolution,
+    convert_layers,
     insert_filter,
     insert_generated,
     insert_media,
     insert_scene,
     new_scene,
     place_media,
+    switch_layer_mode,
 )
 from sashimono.core.commands.project_format import retime_frame
 from sashimono.core.io import (
@@ -89,6 +92,7 @@ from sashimono.core.io import (
 from sashimono.core.model import (
     ClipId,
     GeneratedSource,
+    LayerMode,
     MediaId,
     MediaItem,
     Project,
@@ -98,12 +102,14 @@ from sashimono.core.model import (
     TrackKind,
 )
 from sashimono.core.timebase import FrameRate
+from sashimono.effects import registry as effect_registry
 from sashimono.effects.sources import SHAPE, TEXT, TRANSITION
 from sashimono.engine.audio.waveform import Waveform
 from sashimono.engine.cache import MediaAnalyzer
 from sashimono.engine.cache.proxy import ProxyBuilder, ProxyStore
 from sashimono.engine.decode import ProbeError, probe_media
 from sashimono.engine.decode.batch import ProbeBatch
+from sashimono.engine.gpu import opengl_usable
 from sashimono.engine.render import FrameRenderer, RenderQuality
 from sashimono.links import MANUAL_URL, REPORT_URL
 from sashimono.ui import media_match
@@ -396,7 +402,25 @@ class MainWindow(QMainWindow):
         viewer_layout = QVBoxLayout(viewer)
         viewer_layout.setContentsMargins(0, 0, 0, 0)
         viewer_layout.setSpacing(0)
-        viewer_layout.addWidget(self._preview, 1)
+        if opengl_usable():
+            viewer_layout.addWidget(self._preview, 1)
+        else:
+            # GL を使えない機械では、プレビューを窓に入れない 入れると窓ごと GL で
+            # 描くようになり、閉じた後の片付け（ごみ集めか Python の終わり）でプロセス
+            # ごと落ちる（#149） 片付けの順を変えても直らなかった 隠すだけでは足りない
+            # Qt は GL の部品が子にいるだけで、隠れていても窓を GL で描く 部品そのものは
+            # 窓の外に作っておく 窓のほかの所がプレビューへ話しかけるのを、全部で分けずに済む
+            self._preview.setParent(None)
+            self._preview.hide()
+            notice = QLabel(
+                "OpenGL 4.3 を使えないため、プレビューを出せません\n"
+                "GPU のドライバを確かめてください 編集と保存はできます",
+                viewer,
+            )
+            notice.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            notice.setWordWrap(True)
+            notice.setStyleSheet(f"color: {Colors.TEXT_MUTED.name()};")
+            viewer_layout.addWidget(notice, 1)
         viewer_layout.addWidget(self._transport)
         viewer.setStyleSheet(f"background-color: {Colors.VIEWER_BACKGROUND.name()};")
         self.setCentralWidget(viewer)
@@ -494,6 +518,7 @@ class MainWindow(QMainWindow):
         )
         file_menu.addSeparator()
         self._add(file_menu, "プロジェクト設定…", QKeySequence("Ctrl+Shift+P"), self.edit_settings)
+        self._add(file_menu, "置き方の方式を切り替える…", QKeySequence(), self.switch_layer_mode)
         file_menu.addSeparator()
         self._add(file_menu, "素材を読み込む…", QKeySequence("Ctrl+I"), self._import_dialog)
         self._add(file_menu, "書き出し…", QKeySequence("Ctrl+E"), self.export)
@@ -1856,6 +1881,45 @@ class MainWindow(QMainWindow):
         # 解像度だけ戻った、見たことのない組み合わせを通る
         self.execute_all(commands, "プロジェクト設定を変更")
 
+    def switch_layer_mode(self) -> bool:
+        """置き方の方式を、今と逆の方式へ切り替える 置いてあるトラックも変換するかを毎回尋ねる
+
+        変換はメインとすべてのシーンに掛かるので、開いているシーンの中へ包まずに実行する
+        （:meth:`execute_all` は包む） 包むと、開いているシーンだけが変わり、メインは
+        前の方式のまま残る 方式と変換は 1 回の取り消しで戻す
+
+        変えたら真 やめたとき・断られたときは偽
+        """
+        from sashimono.ui.layer_mode_dialog import LayerModeDialog
+
+        project = self._document.project
+        target = (
+            LayerMode.SEPARATED
+            if project.settings.layer_mode == LayerMode.MIXED
+            else LayerMode.MIXED
+        )
+        sound_kinds = effect_registry.sound_kinds()
+        conversion = convert_layers(project, target, sound_kinds)
+        dialog = LayerModeDialog(
+            target, conversion.notices, self, convertible=conversion.project is not project
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.convert is None:
+            return False
+        commands = switch_layer_mode(
+            project, target, convert=dialog.convert, sound_kinds=sound_kinds
+        )
+        label = "置き方の方式を切り替えて変換" if dialog.convert else "置き方の方式を切り替え"
+        try:
+            with self._document.checkpoint(label):
+                for command in commands:
+                    self._document.execute(command)
+        except (ValueError, KeyError) as exc:
+            self.statusBar().showMessage(str(exc), 4000)
+            self._on_project_changed()
+            return False
+        self._on_project_changed()
+        return True
+
     # --- 退避と復元 ---
 
     def autosave(self) -> None:
@@ -1969,12 +2033,7 @@ class MainWindow(QMainWindow):
             return
 
         found = self._resolve_exo_media(exo, source)
-        commands = map_exo(
-            exo,
-            self.view_project,
-            media=found.ids,
-            items={media.id: media for media in found.items},
-        )
+        commands = map_exo(exo, self.view_project, media=found.ids, items=found.items)
         if not commands:
             self.statusBar().showMessage("読み込めるオブジェクトがありませんでした", 5000)
             return
@@ -2099,7 +2158,10 @@ class MainWindow(QMainWindow):
             clip = pictures[0].clip
             end = frame + (clip.duration if pictures[0].has_span else DEFAULT_GENERATED_FRAMES)
             free = track is not None and not any(c.overlaps(frame, end) for c in track.clips)
-            if free and track is not None and track.kind is TrackKind.VIDEO and not track.locked:
+            # レイヤー（混合トラック）も受ける 映像トラックに限ると、混合の方式では
+            # 右クリックしたレイヤーを無視して元のレイヤー番号の所へ入る
+            placeable = (TrackKind.VIDEO, TrackKind.MIXED)
+            if free and track is not None and track.kind in placeable and not track.locked:
                 target = track_id
         commands = place(objects, project, at_frame=frame, track_id=target, media=plan.media)
         if not commands:

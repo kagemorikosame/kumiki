@@ -275,6 +275,26 @@ class TestGeometryEffects:
         assert cropped[HEIGHT // 2, WIDTH // 2, 0] > 200
         assert cropped[10, WIDTH // 2, 0] < 20
 
+    def test_crop_measures_from_the_edges_of_the_picture(
+        self, draw: Callable[..., np.ndarray]
+    ) -> None:
+        """切る量は絵の端から数える 画面の端から数えると、画面より小さい絵は切れない
+
+        SFっぽい吹き出しは 604 の高さの図形の上を 280 切る 画面の上から数えると
+        図形の上端（238）より手前で終わり、1 画素も切れずに板が上へはみ出していた
+        """
+        square = white_square(100)
+        cropped = draw(
+            square,
+            (registry.require("crop").create(top=30, bottom=10, left=20, right=40),),
+        )
+        lit = cropped[:, :, 0] > 100
+        rows = lit.any(axis=1).nonzero()[0]
+        columns = lit.any(axis=0).nonzero()[0]
+        # 100 の四角は 50〜149 に置かれる
+        assert (int(rows.min()), int(rows.max())) == (80, 139)
+        assert (int(columns.min()), int(columns.max())) == (70, 109)
+
     def test_mask_hides_the_outside(self, draw: Callable[..., np.ndarray]) -> None:
         square = white_square(180)
         masked = draw(

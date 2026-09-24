@@ -675,17 +675,22 @@ class TestLockAndSetting:
         _drag(widget, (160, 90), (200, 90))
         assert seen.committed == [] and seen.previewed == []
 
-    def test_a_lighter_preview_moves_by_the_canvas_pixels(self, make_widget: MakeWidget) -> None:
-        # 画質を落とすと合成は半分の大きさ 画面の 20 は合成の 10
+    @pytest.mark.parametrize("divisor", [2, 4])
+    def test_a_lighter_preview_moves_with_the_mouse(
+        self, make_widget: MakeWidget, divisor: int
+    ) -> None:
+        # 画質を落とすと合成は小さいが、X・Y は画面（プロジェクトの解像度）の画素で持ち、
+        # 描く側も合成の画素へ縮めて当てる（Issue #151） 窓はプロジェクトと同じ大きさなので、
+        # 窓の 20 は X の 20 合成の画素のまま足すと 10（1/4 なら 5）になり、絵がマウスに付いて来ない
         media = _media()
         clip = _clip(media)
         project, _ = _project(clip)
         widget = make_widget(project, clip.id)
-        widget._quality = RenderQuality(2)
+        widget._quality = RenderQuality(divisor)
         seen = _Recorder(widget)
         _drag(widget, (160, 90), (180, 90))
         assert _value(_apply(project, seen.committed[0][0]), clip.id, "pos_x") == pytest.approx(
-            10.0
+            20.0
         )
 
 

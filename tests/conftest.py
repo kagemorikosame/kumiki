@@ -5,12 +5,12 @@ from __future__ import annotations
 import functools
 import shutil
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from fractions import Fraction
 from pathlib import Path
 
 import pytest
-from PySide6.QtGui import QSurfaceFormat
+from PySide6.QtGui import QClipboard, QSurfaceFormat
 from PySide6.QtWidgets import QApplication
 
 from sashimono.compat.aviutl import plugin
@@ -30,6 +30,8 @@ from sashimono.core.model import (
 from sashimono.core.timebase import FrameRate
 from sashimono.effects import registry
 from sashimono.engine.gpu import GLContextError, OffscreenGLContext, preferred_surface_format
+from sashimono.ui import system_clipboard
+from tests.fake_clipboard import FakeClipboard
 from tests.media_fixtures import SampleMedia, ffmpeg_available, make_sample
 
 RATE_30 = FrameRate(30)
@@ -102,6 +104,45 @@ def decline_matching_video(monkeypatch: pytest.MonkeyPatch) -> None:
     from sashimono.ui import media_match
 
     monkeypatch.setattr(media_match, "ask_to_match", lambda *_args: False)
+
+
+#: 本物のクリップボードへ書く口 どれも見張りで塞ぐ
+_CLIPBOARD_WRITERS = ("setText", "setImage", "setPixmap", "setMimeData", "clear")
+
+
+@pytest.fixture(autouse=True)
+def fake_clipboard(
+    qt_application: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[FakeClipboard]:
+    """アプリのクリップボードを偽物へ差し替え、本物へ書いたら試験を落とす（#154）
+
+    本物へ書くと、試験を走らせるたびに本人がコピーしていた物が消え、同時に走る
+    ほかの作業と取り合うと読み戻しが空になって落ちる 試験の中身は、返す偽物から読む
+
+    見張りは 2 重にする ``QClipboard`` の書く口を塞ぐだけでは、ボタンの信号から
+    呼ばれた所で投げた例外を Qt が握り、試験が通ってしまう 書こうとした記録を残し、
+    後片付けでも落とす Qt の中（C++）から書かれた分は Python の口を通らないので、
+    試験の前後でこのプロセスがクリップボードの持ち主になったかも見る
+    """
+    fake = FakeClipboard()
+    monkeypatch.setattr(system_clipboard, "_replacement", fake)
+
+    def forbid(name: str) -> Callable[..., None]:
+        def refuse(*_arguments: object, **_options: object) -> None:
+            fake.refused.append(name)
+            pytest.fail(f"試験が本物のクリップボードへ書こうとした: QClipboard.{name}")
+
+        return refuse
+
+    for name in _CLIPBOARD_WRITERS:
+        monkeypatch.setattr(QClipboard, name, forbid(name))
+    real = qt_application.clipboard()
+    owned_before = real.ownsClipboard()
+    yield fake
+    if fake.refused:
+        pytest.fail(f"試験が本物のクリップボードへ書こうとした: {', '.join(fake.refused)}")
+    if not owned_before and real.ownsClipboard():
+        pytest.fail("試験の間に本物のクリップボードが書き換わった（Qt の中から書かれた）")
 
 
 @pytest.fixture(scope="session")

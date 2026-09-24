@@ -109,11 +109,19 @@ def render_source_framed(
     audio: np.ndarray | None = None,
     audio_rate: int = 44100,
     trail_paths: TrailPaths | None = None,
+    scale: tuple[float, float] = (1.0, 1.0),
 ) -> tuple[np.ndarray | None, Frame | None]:
     """:func:`render_source` と同じ絵と、オブジェクトの枠
 
     枠は、字の形ではなく**文字の枠**を入れ物にする物（AviUtl2 の組み方のテキスト）
     だけが返す それ以外は ``None`` で、入れ物は色の付いた範囲から求める
+
+    ``scale`` は絵の画素 1 つが画面の画素いくつ分かの逆数（横, 縦） 画質を落とした
+    プレビューは 1 より小さい 設定の値（文字の大きさ・縁取りの太さ・影の距離・図形の幅と
+    位置）はどれも画面の画素なので、画面の大きさのつもりで描いて、絵へは縮めて写す
+    値を 1 つずつ縮めるのではなく描く座標ごと縮めるのは、文字の中の制御文字
+    （``<s大きさ>``）のように設定の欄に無い画素の値まで漏れなく縮めるため
+    枠も絵の画素で返す
     """
     definition = source_registry.get(source.kind)
     if definition is None:
@@ -138,16 +146,43 @@ def render_source_framed(
     painter = QPainter(image)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
     painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+    # 画面の画素で数えた大きさ 絵の中心と画面の中心を重ねて縮める（大きく作った絵でも同じ）
+    screen_width, screen_height, transform = _screen_space(width, height, scale)
+    painter.setTransform(transform)
     framed: Frame | None = None
     try:
         if source.kind == "text":
-            framed = _draw_text(painter, values, width, height)
+            framed = _draw_text(painter, values, screen_width, screen_height)
         elif source.kind == "shape":
-            _draw_shape(painter, values, width, height)
+            _draw_shape(painter, values, screen_width, screen_height)
     finally:
         painter.end()
 
+    if framed is not None and not transform.isIdentity():
+        mapped = transform.mapRect(
+            QRectF(QPointF(framed[0], framed[1]), QPointF(framed[2], framed[3]))
+        )
+        framed = (mapped.left(), mapped.top(), mapped.right(), mapped.bottom())
     return _to_array(image), framed
+
+
+def _screen_space(
+    width: int, height: int, scale: tuple[float, float]
+) -> tuple[int, int, QTransform]:
+    """``width`` × ``height`` の絵に、画面の画素で描くときの大きさと写し方
+
+    縮めないとき（書き出し）は恒等の写し方になり、今までと 1 画素も変わらない
+    """
+    scale_x, scale_y = scale
+    if scale_x == 1.0 and scale_y == 1.0:
+        return width, height, QTransform()
+    screen_width = max(1, round(width / scale_x))
+    screen_height = max(1, round(height / scale_y))
+    transform = QTransform()
+    transform.translate(width / 2.0, height / 2.0)
+    transform.scale(scale_x, scale_y)
+    transform.translate(-screen_width / 2.0, -screen_height / 2.0)
+    return screen_width, screen_height, transform
 
 
 #: 画面より大きい絵を作るときの一辺の上限（画素） GPU のテクスチャの上限より十分小さく
@@ -155,13 +190,20 @@ MAX_CANVAS = 8192
 
 
 def source_canvas(
-    source: GeneratedSource, width: int, height: int, *, frame: int = 0
+    source: GeneratedSource,
+    width: int,
+    height: int,
+    *,
+    frame: int = 0,
+    scale: tuple[float, float] = (1.0, 1.0),
 ) -> tuple[int, int]:
     """生成オブジェクトを描く絵の大きさ 画面より大きい図形なら、はみ出す分まで広げる
 
     中心は画面の中心のまま広げる（描く位置の計算は変えない） 画面の大きさで
     切ってしまうと、画面より大きい図形を回したり動かしたりしたときに、切れた端が
     見えてしまう（YMM4 の斜めの帯のトランジションは高さ 2160 の図形を 45 度回す）
+
+    ``width`` と ``height`` は合成の大きさ ``scale`` は :func:`render_source_framed` と同じ
     """
     if source.kind != "shape":
         return width, height
@@ -189,8 +231,10 @@ def source_canvas(
         line = 0.0
     # 回しても収まるよう、対角線の長さで見積もる
     reach = (shape_width**2 + shape_height**2) ** 0.5 / 2.0 + line
-    needed_width = 2.0 * (abs(float(values.get("pos_x", 0.0))) + reach)  # type: ignore[arg-type]
-    needed_height = 2.0 * (abs(float(values.get("pos_y", 0.0))) + reach)  # type: ignore[arg-type]
+    # 設定は画面の画素 画質を落とした合成（``scale`` が 1 より小さい）では、その分だけ小さい
+    # 絵で足りる 縮めずに見積もると、画面より大きいと見なして毎フレーム余分に広い絵を作る
+    needed_width = 2.0 * (abs(_number(values, "pos_x", 0.0)) + reach) * scale[0]
+    needed_height = 2.0 * (abs(_number(values, "pos_y", 0.0)) + reach) * scale[1]
     grown_width = min(MAX_CANVAS, max(width, int(np.ceil(needed_width))))
     grown_height = min(MAX_CANVAS, max(height, int(np.ceil(needed_height))))
     # 画面と偶奇をそろえる 差が奇数だと、中心が半画素ずれて輪郭がにじむ
@@ -780,9 +824,14 @@ def _paint_layers(
     後の色の縁が前の色の塗りに被さり、色を変えただけで前の字が欠ける
     """
     for path, look in layers:
-        shadow = _shadow_layer(path, look, width, height)
+        shadow = _shadow_layer(path, look, painter)
         if shadow is not None:
+            # 影の面は絵の画素で作ってある 描く座標の縮め方を外してから重ねる
+            # 外さないと、画質を落としたプレビューで影の面がもう 1 度縮む
+            painter.save()
+            painter.resetTransform()
             painter.drawImage(0, 0, shadow)
+            painter.restore()
     for path, look in layers:
         border_width = float(look.get("border_width", 0.0))  # type: ignore[arg-type]
         if border_width > 0:
@@ -824,12 +873,16 @@ def _stroke(path: QPainterPath, width: float) -> QPainterPath:
 
 
 def _shadow_layer(
-    path: QPainterPath, values: dict[str, object], width: int, height: int
+    path: QPainterPath, values: dict[str, object], painter: QPainter
 ) -> QImage | None:
     """文字の影を別の面に描いて返す 影が無ければ ``None``
 
     ぼかしのために 1 枚離す 影は単色なので、ぼかすのは不透明度だけでよく、
     色の 3 成分はそのままにできる RGB ごとぼかすと、縁で色がにじむ
+
+    面は ``painter`` の描く先と同じ大きさ（絵の画素）で作り、同じ縮め方で描く
+    ぼかしの幅も絵の画素へ直す 画面の画素のままぼかすと、画質を落としたプレビューで
+    影だけ 2 倍・4 倍にぼける
     """
     offset_x = float(values.get("shadow_x", 0.0))  # type: ignore[arg-type]
     offset_y = float(values.get("shadow_y", 0.0))  # type: ignore[arg-type]
@@ -838,13 +891,18 @@ def _shadow_layer(
     if (offset_x, offset_y, blur) == (0.0, 0.0, 0.0) or colour.alpha() == 0:
         return None
 
-    layer = QImage(width, height, QImage.Format.Format_RGBA8888)
+    device = painter.device()
+    assert device is not None
+    transform = painter.transform()
+    layer = QImage(device.width(), device.height(), QImage.Format.Format_RGBA8888)
     layer.fill(Qt.GlobalColor.transparent)
     shifted = QPainterPath(path)
     # 画面の Y は下向き 設定の Y は上向きなので符号を反転する
     shifted.translate(offset_x, -offset_y)
+    blur *= math.sqrt(abs(transform.determinant()))
 
     shadow_painter = QPainter(layer)
+    shadow_painter.setTransform(transform)
     shadow_painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
     border_width = float(values.get("border_width", 0.0))  # type: ignore[arg-type]
     if border_width > 0:

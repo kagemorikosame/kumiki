@@ -322,7 +322,7 @@ def _import_exo(name: str, item: MediaItem, report: CompatibilityReport | None =
         exo,
         project,
         media={MEDIA_PATH: item.id},
-        items={item.id: item},
+        items=(item,),
         report=report if report is not None else CompatibilityReport(),
     )
     for command in commands:

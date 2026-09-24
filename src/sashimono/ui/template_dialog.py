@@ -20,7 +20,6 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
-    QApplication,
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
@@ -43,6 +42,7 @@ from sashimono.compat.catalog import (
 )
 from sashimono.compat.mapped import MappedObject
 from sashimono.ui.report_masking import marked_root_labels, mask_report, root_lines
+from sashimono.ui.system_clipboard import clipboard
 from sashimono.ui.theme import Colors
 
 __all__ = ["TemplateDialog", "notes_text"]
@@ -306,9 +306,7 @@ class TemplateDialog(QDialog):
         entry = self._selected_entry()
         if entry is None:
             return
-        QApplication.clipboard().setText(
-            notes_text(entry, self._contents, self._note_lines, self._scanned)
-        )
+        clipboard().setText(notes_text(entry, self._contents, self._note_lines, self._scanned))
 
     def _show_preview(self) -> None:
         """先頭のオブジェクトの中身だけを描く

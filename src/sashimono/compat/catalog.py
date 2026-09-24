@@ -26,6 +26,7 @@ from pathlib import Path, PureWindowsPath
 from sashimono.compat.aviutl.exo import ExoParseError, load_exo
 from sashimono.compat.aviutl.mapping import SILENT_SOUND, map_object
 from sashimono.compat.aviutl.report import CompatibilityReport, global_report
+from sashimono.compat.layers import heard_stream, layer_tracks
 from sashimono.compat.mapped import MappedObject, fitted_effect, fitted_value
 from sashimono.compat.ymm4.template import Ymm4ParseError, load_template, map_template
 from sashimono.core import userdirs
@@ -50,6 +51,7 @@ from sashimono.core.commands.fixed import (
     with_fixed_items,
 )
 from sashimono.core.commands.insert import DEFAULT_GENERATED_FRAMES
+from sashimono.core.commands.layers import active_layers, media_placements, places_mixed
 from sashimono.core.model import (
     AnimatedValue,
     Clip,
@@ -414,6 +416,13 @@ def place(
     素材の読み込み（:func:`~sashimono.core.commands.insert_media`）と同じく映像の
     クリップと音のクリップへ分け、リンクで結ぶ 映像トラックへ 1 本置くだけでは
     音が鳴らない（Issue #89）
+
+    **混合の方式のプロジェクト**（:func:`~sashimono.core.commands.layers.places_mixed`）では、
+    どれも元のレイヤー番号どおりの混合トラック（レイヤー）へ 1 本ずつ置く
+    （:func:`_put_on_layers`） 動画アイテムは分けずに、1 本のクリップで絵と音
+    （:attr:`~sashimono.core.model.Clip.audio_stream`）を持つ 音だけの物も同じレイヤーへ、
+    絵を隠して（``show_picture`` を偽）置く YMM4・AviUtl の並びをそのまま写すため
+    ``track_id`` を渡したときは、そこへ置ける物をまとめて置く（レイヤーなら全部）
     """
     # 中身を持たないもの（エフェクトだけのテンプレート）は置けない
     # 空のクリップを置いても何も映らないので、:func:`restyle` で着せて使う
@@ -442,6 +451,9 @@ def place(
     # 置くクリップを先に全部作る 音声トラックの割り当ては、分けて作った音も
     # 含めて重なりを見ないと、同じトラックへ重ねて置いて ``AddClip`` に断られる
     prepared: list[tuple[MappedObject, Clip | None, Clip | None]] = []
+    # 混合の方式で置く物（レイヤーの番号とクリップ） 分けないので 1 つに 1 本
+    mixed = places_mixed(project)
+    layered: list[tuple[MappedObject, Clip]] = []
     for item in objects:
         placed = timed(item)
         linked = _media_of(item, known)
@@ -456,6 +468,13 @@ def place(
                 # シーンの中の時刻は秒で持つ（素材のクリップと同じ決まり）
                 source_in=item.scene_offset * project.rate.frame_duration,
             )
+        if mixed:
+            layered.append((item, _layer_clip(project, item, placed, linked, known, log)))
+            continue
+        if item.audio_track:
+            # 分ける方式の音のクリップは、素材の 1 本目の音を読む（:func:`_split_sound`）
+            # 選び直すと、今までと違う音が鳴り出す 混合の方式でだけ選んだ音を鳴らす
+            log.note_missing("YMM4 の音声トラックの選択（AudioTrackIndex）")
         if _is_sound(item, known):
             if linked is not None and not linked.audio_streams:
                 # 音の無い素材を指す音声ファイルは、元のソフトでも何も鳴らず何も描かない
@@ -471,6 +490,10 @@ def place(
             prepared.append((item, None, _with_audio_effects(heard, item)))
             continue
         prepared.append((item, *_split_sound(placed, item, linked)))
+
+    if mixed:
+        _put_on_layers(project, layered, commands, track_id)
+        return commands
 
     tracks = (
         {}
@@ -544,7 +567,7 @@ def _with_audio_effects(clip: Clip, item: MappedObject) -> Clip:
 
 
 def _split_sound(
-    clip: Clip, item: MappedObject, linked: MediaItem | None
+    clip: Clip, item: MappedObject, linked: MediaItem | None, *, heard: int | None = None
 ) -> tuple[Clip, Clip | None]:
     """映像と音を両方持つ素材を、映像のクリップと音のクリップへ分ける
 
@@ -553,6 +576,9 @@ def _split_sound(
 
     音のクリップは映像のエフェクト（変形や色）を持たない 音に効かないものを
     持ち回ると、クリップの設定画面に効かないエフェクトが並ぶ
+
+    ``heard`` は鳴らす音の素材の中の番号（:func:`~sashimono.compat.layers.heard_stream`）
+    省くと 1 本目の音 分ける方式は今までどおり 1 本目を読む
     """
     if not item.with_sound or linked is None or not (linked.has_video and linked.has_audio):
         return clip, None
@@ -560,7 +586,7 @@ def _split_sound(
     picture = replace(clip, stream_index=linked.video_streams[0].index, link_group=group)
     sound = replace(
         clip,
-        stream_index=linked.audio_streams[0].index,
+        stream_index=linked.audio_streams[0].index if heard is None else heard,
         link_group=group,
         effects=item.audio_effects,
         after_effects=(),
@@ -574,6 +600,92 @@ def _split_sound(
         id=new_clip_id(),
     )
     return picture, sound
+
+
+def _layer_clip(
+    project: Project,
+    item: MappedObject,
+    placed: Clip,
+    linked: MediaItem | None,
+    known: Mapping[str, MediaItem],
+    log: CompatibilityReport,
+) -> Clip:
+    """混合の方式でレイヤーへ置く 1 本のクリップ
+
+    分ける方式と同じ絵のクリップと音のクリップをいったん作り、素材の読み込みと同じ
+    まとめ方（:func:`~sashimono.core.commands.layers.media_placements`）で 1 本にする
+    別に組み立てると、固定の項目の並びや大きさの決め方が、素材を置いたときのクリップと
+    食い違う 同じ物から作るので、分ける方式と同じ絵・同じ音になる
+
+    鳴らす音は :attr:`MappedObject.audio_track` 本目（YMM4 の ``AudioTrackIndex``）
+    AviUtl の動画ファイルは音を持たせない（:attr:`MappedObject.with_sound` が偽）
+    AviUtl は同じ動画の音を別の 音声ファイル として書くので、持たせると二重に鳴る
+
+    音声ファイル（AviUtl の 音声ファイル・YMM4 の音声アイテム）は、素材が映像も持つ
+    動画でも音だけにする AviUtl が動画の音を書くのはこの形で、絵を描かせると同じ動画が
+    2 枚重なり、上の 動画ファイル の切り抜きの相手まで変わる
+    """
+    if _is_sound(item, known) or (item.kind == "音声ファイル" and item.clip.source is None):
+        # 分ける方式の音声トラックのクリップと同じ物 止めるのは絵だけなので hold_at は持たない
+        heard = replace(placed, hold_at=None, native_size=False)
+        stream = heard_stream(linked, item.audio_track, log)
+        sound = with_fixed_items(_with_audio_effects(heard, item), sound=True)
+        if stream is not None:
+            sound = replace(sound, stream_index=stream)
+        ((_, merged),) = media_placements(project, None, sound)
+        # 素材が見つからない・音を持たない物は鳴らす番号を持たせない 番号だけ残すと、
+        # あとで別の素材へ差し替えたときに、選んでいない番号の音を探しに行く
+        return replace(merged, audio_stream=stream)
+    stream = heard_stream(linked, item.audio_track, log) if item.with_sound else None
+    picture, sound_part = _split_sound(placed, item, linked, heard=stream)
+    if takes_picture_items(picture):
+        picture = with_fixed_items(picture, picture=True)
+    if sound_part is not None:
+        sound_part = with_fixed_items(sound_part, sound=True)
+    ((_, merged),) = media_placements(project, picture, sound_part)
+    return merged
+
+
+def _put_on_layers(
+    project: Project,
+    layered: list[tuple[MappedObject, Clip]],
+    commands: list[Command],
+    track_id: TrackId | None,
+) -> None:
+    """混合の方式のクリップを、元のレイヤー番号どおりのレイヤーへ置くコマンドを積む
+
+    ``track_id`` のトラックへは、そこで同じ絵と音になる物だけを置く レイヤーなら映る
+    （音だけの物は鳴る）間は全部、映像トラック（方式を切り替えた作品に残る物）なら
+    音を鳴らさず絵を描く物だけ ほかは元のレイヤーへ回す 映像トラックへ音のある物を
+    置くと、置く時点で断られる
+    """
+    target = project.timeline.find_track(track_id) if track_id is not None else None
+    # 選ばれたレイヤーでも、ミュートやソロの外で映らない・鳴らない所へは置かない 置くと、
+    # 置いた直後からプレビューにも書き出しにも出ない（素材を置くときの free_layer と同じ決まり）
+    shown = {t.id for t in active_layers(project, picture=True)}
+    heard = {t.id for t in active_layers(project, picture=False)}
+
+    def fits(clip: Clip) -> bool:
+        if target is None:
+            return False
+        if target.kind is TrackKind.MIXED:
+            # 絵と音を両方持つ物は両方を見る 絵だけ見ると、音声トラックのソロで
+            # 鳴らなくなったレイヤーへ置き、置いた動画やシーンの音が聞こえない
+            # 鳴るかは audio_stream から推さずに plays_sound で決める シーンは番号を
+            # 持たずに鳴る 音だけの物は素材が見つからなくても鳴らす側に数える
+            sounds = project.plays_sound(target, clip) or not clip.show_picture
+            return (not clip.show_picture or target.id in shown) and (
+                not sounds or target.id in heard
+            )
+        return target.kind is TrackKind.VIDEO and clip.show_picture and clip.audio_stream is None
+
+    rest = [(item, clip) for item, clip in layered if not fits(clip)]
+    layers = {item.layer for item, _ in rest}
+    drawn = {item.layer for item, clip in rest if clip.show_picture}
+    tracks = layer_tracks(project, layers, commands, heard_only=layers - drawn)
+    for item, clip in layered:
+        where = target.id if target is not None and fits(clip) else tracks[item.layer].id
+        commands.append(AddClip(where, clip))
 
 
 def _media_of(item: MappedObject, known: Mapping[str, MediaItem]) -> MediaItem | None:
