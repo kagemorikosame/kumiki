@@ -69,6 +69,7 @@ from sashimono.core.commands.subtitle import (
     SplitSegment,
     burn_subtitles,
 )
+from sashimono.core.commands.work_area import SetWorkArea, export_range
 
 __all__ = [
     "DEFAULT_GENERATED_FRAMES",
@@ -116,12 +117,14 @@ __all__ = [
     "SetTrackHeights",
     "SetTrackState",
     "SetTranscript",
+    "SetWorkArea",
     "SplitClip",
     "SplitSegment",
     "TrimClip",
     "TrimClips",
     "UngroupClips",
     "burn_subtitles",
+    "export_range",
     "insert_generated",
     "insert_media",
     "insert_scene",

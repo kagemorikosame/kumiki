@@ -59,6 +59,7 @@ from sashimono.ui.timeline.painter import (
     track_button_rects,
 )
 from sashimono.ui.timeline.painter import draw_clip as paint_clip
+from sashimono.ui.timeline.work_area import WorkAreaEditor
 
 __all__ = ["TimelineView"]
 
@@ -173,6 +174,8 @@ class TimelineView(QWidget):
         #: 高さのドラッグ中だけ持つ、掴む前のプロジェクト 途中の高さは描画のため
         #: だけに当て、離したときにこれへ戻してからコマンドを出す
         self._resize_base: Project | None = None
+        #: 書き出し範囲の Shift+ドラッグと、その帯 ほかのドラッグとは別に持つ
+        self._work_area = WorkAreaEditor(self._request)
 
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -290,6 +293,9 @@ class TimelineView(QWidget):
             draw_dense_clips(painter, band, dense, self._layout, width, selected)
 
         self._draw_drag_preview(painter)
+        self._work_area.paint_tracks(
+            painter, self._layout, width, self.height(), timeline.work_area
+        )
 
         active = {
             track.id
@@ -302,6 +308,7 @@ class TimelineView(QWidget):
             draw_track_header(painter, band, active=band.track.id in active)
 
         draw_ruler(painter, self._layout, width, self._project.rate)
+        self._work_area.paint_ruler(painter, self._layout, width, timeline.work_area)
         draw_playhead(painter, self._layout, self._playhead, self.height())
 
     def _paint_detailed(
@@ -490,6 +497,8 @@ class TimelineView(QWidget):
         if event.button() != Qt.MouseButton.LeftButton:
             return
         position = event.position().toPoint()
+        if self._work_area.press(self._layout, position, event.modifiers()):
+            return
 
         resizing = self._resize_band_at(position)
         if resizing is not None:
@@ -564,6 +573,10 @@ class TimelineView(QWidget):
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt の命名規約
         position = event.position().toPoint()
+        if self._work_area.dragging:
+            self._work_area.move(self._layout, position.x())
+            self.update()
+            return
 
         if self._drag.kind is DragKind.NONE:
             self._update_cursor(position)
@@ -608,6 +621,10 @@ class TimelineView(QWidget):
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt の命名規約
         del event
+        if self._work_area.dragging:
+            self._work_area.release(self._project.timeline.work_area)
+            self.update()
+            return
         drag, self._drag = self._drag, DragState()
         if drag.kind is DragKind.RESIZE_TRACK:
             self._finish_resize(drag)
@@ -765,6 +782,9 @@ class TimelineView(QWidget):
                 toggle.setCheckable(True)
                 toggle.setChecked(bool(getattr(track, attribute)))
             _action(menu, f"{name} の高さを戻す", functools.partial(self._reset_height, track.id))
+        self._work_area.add_menu_actions(
+            menu, self._layout, position, self._project.timeline.work_area
+        )
         return menu
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt の命名規約
@@ -960,6 +980,13 @@ class TimelineView(QWidget):
         if track is not None:
             command = SetTrackState(track_id, **{attribute: not getattr(track, attribute)})
             self._request([command], command.label)
+
+    def clear_work_area(self) -> bool:
+        """書き出し範囲を解除する 編集メニューから 範囲が無ければ知らせて偽を返す"""
+        if self._work_area.clear(self._project.timeline.work_area):
+            return True
+        self.status_message.emit("書き出し範囲は指定されていません")
+        return False
 
     def _request(self, commands: list[Command], label: str) -> None:
         if commands:
