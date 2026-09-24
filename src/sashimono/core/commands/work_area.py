@@ -44,9 +44,14 @@ def export_range(timeline: Timeline) -> tuple[int, int] | None:
 
     範囲が無い・範囲がすべてタイムラインの終わりより後ろなら ``None``
     終わりより後ろまでそのまま書き出すと、何も映らない黒と無音が後ろに付く
+
+    始まりも 0 で切る :class:`SetWorkArea` は負の始まりを断るが、ファイルから読んだ範囲は
+    コマンドを通らない（手で書き換えた作品や、ほかの道具が書いた作品） 切らないと、
+    負のフレームから描き始めて、タイムラインより前の黒と無音が頭に付く
     """
     if timeline.work_area is None:
         return None
     start, end = timeline.work_area
+    start = max(0, start)
     end = min(end, timeline.duration)
     return (start, end) if end > start else None

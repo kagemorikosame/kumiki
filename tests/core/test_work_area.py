@@ -43,6 +43,7 @@ class TestSetWorkArea:
         assert document.project.timeline.work_area is None
 
     def test_none_clears_the_range(self) -> None:
+        # 解除が効かないと、帯を消したつもりでも書き出しが範囲だけのまま残る
         project = SetWorkArea((10, 40)).apply(_project())
         assert SetWorkArea(None).apply(project).timeline.work_area is None
 
@@ -78,11 +79,24 @@ class TestSetWorkArea:
 
 class TestExportRange:
     def test_no_range_means_the_whole(self) -> None:
+        # 範囲が無いのに何か返すと、帯を引いていない人の書き出しが途中で切れる
         assert export_range(_project().timeline) is None
 
     def test_a_range_inside_is_kept(self) -> None:
+        # 中に収まる範囲まで削ると、帯で見えていた所と書き出した所が食い違う
         timeline = replace(_project().timeline, work_area=(10, 40))
         assert export_range(timeline) == (10, 40)
+
+    def test_a_negative_start_read_from_a_file_is_cut_to_zero(self, tmp_path: Path) -> None:
+        """ファイルから読んだ負の始まりは 0 で切る
+
+        コマンドは負の始まりを断るが、読み込みは通す 切らないと、タイムラインより前の
+        黒と無音が書き出しの頭に付く
+        """
+        path = tmp_path / "negative.sme"
+        project = _project(90)
+        save_project(project.with_timeline(replace(project.timeline, work_area=(-30, 45))), path)
+        assert export_range(load_project(path).timeline) == (0, 45)
 
     def test_the_part_after_the_end_is_cut(self) -> None:
         """終わりより後ろは切る 切らないと、黒と無音が後ろに付いた動画になる"""

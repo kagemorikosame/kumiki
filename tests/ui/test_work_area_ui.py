@@ -19,6 +19,7 @@ from sashimono.core.commands import AddClip, AddTrack, Command, SetWorkArea
 from sashimono.core.model import Clip, Project, Track, TrackKind
 from sashimono.effects.sources import TEXT
 from sashimono.engine.cache import MediaAnalyzer
+from sashimono.ui import export_dialog
 from sashimono.ui.export_dialog import RANGE_ALL, RANGE_WORK_AREA, ExportDialog
 from sashimono.ui.main_window import MainWindow
 from sashimono.ui.theme import Colors, Metrics
@@ -154,6 +155,7 @@ class TestLook:
 
 class TestMenus:
     def test_the_ruler_offers_to_clear_the_range(self, view: TimelineView) -> None:
+        # 目盛りの右クリックに無いと、帯を見ている所から範囲を消す手が無くなる
         _with_area(view, (30, 90))
         received = _received(view)
         menu = view.build_context_menu(QPoint(_x(view, 150), _RULER_Y))
@@ -162,6 +164,7 @@ class TestMenus:
         assert received == [[SetWorkArea(None)]]
 
     def test_inside_the_range_on_a_track_the_clear_is_offered(self, view: TimelineView) -> None:
+        # 薄い色の上で右クリックしても出ないと、色の付いた所が何なのかを消して確かめられない
         _with_area(view, (30, 90))
         assert CLEAR_TEXT in _labels(view, QPoint(_x(view, 60), view.height() - 10))
 
@@ -196,6 +199,7 @@ class TestWindow:
     def test_the_edit_menu_clears_the_range_and_undo_brings_it_back(
         self, window: MainWindow
     ) -> None:
+        # 取り消しで戻らないと、誤って解除した範囲を引き直すことになる
         window.execute(SetWorkArea((30, 90)))
         action, _ = window._actions["編集/書き出し範囲を解除"]
         action.trigger()
@@ -229,14 +233,23 @@ class TestWindow:
 
         monkeypatch.setattr(ExportDialog, "exec", capture)
         window.export()
-        settings = seen[0]._settings()
-        assert settings is not None
-        assert settings.frame_range == (0, 60)
+        # _settings() はコーデックが 1 つも開けない機械で None になる 範囲とは関係が無いので、
+        # 画面が選んだ範囲を直に見る
+        assert seen[0]._frame_range() == (0, 60)
         notes = [label.text() for label in seen[0].findChildren(QLabel)]
         assert any("OP" in note and "メイン" in note for note in notes)
 
 
 class TestExportDialog:
+    @pytest.fixture(autouse=True)
+    def one_codec(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """開けるコーデックが 1 つある機械にそろえる
+
+        1 つも開けない機械では ``_settings()`` が ``None`` を返し、範囲と関係の無い理由で
+        落ちる 範囲が設定まで届くかを見たいので、コーデックの有無はここで決めてしまう
+        """
+        monkeypatch.setattr(export_dialog, "available_video_codecs", lambda: ["libx264"])
+
     def test_with_a_range_the_range_is_the_default(self) -> None:
         """範囲があれば既定は範囲 帯を引いた人は、その所を出したくて引いている"""
         dialog = ExportDialog(SetWorkArea((30, 90)).apply(_project()))
@@ -260,6 +273,7 @@ class TestExportDialog:
             dialog.deleteLater()
 
     def test_without_a_range_the_whole_is_exported(self) -> None:
+        # 範囲が無いのに範囲の選びが出ると、選んでも何も書き出せない項目が並ぶ
         dialog = ExportDialog(_project())
         try:
             assert dialog._range.count() == 1

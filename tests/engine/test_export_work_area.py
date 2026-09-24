@@ -58,7 +58,9 @@ def test_only_the_range_is_exported_with_its_audio(placed_late: Project, tmp_pat
         settings = dialog._settings()
     finally:
         dialog.deleteLater()
-    assert settings is not None
+    if settings is None:
+        # 開けるコーデックが 1 つも無い機械では画面が設定を作らない 書き出しそのものができない
+        pytest.skip("書き出しに使えるコーデックが無い")
     output = tmp_path / "range.mp4"
     # 出力先とコーデックだけ差し替える 範囲は画面が作ったものをそのまま使う
     export_project(placed_late, replace(settings, path=output, video_codec="libx264"))

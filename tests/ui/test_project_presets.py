@@ -8,11 +8,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from PySide6.QtWidgets import QApplication
+import pytest
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from sashimono.core.model import Blending, ProjectSettings
 from sashimono.core.timebase import FrameRate
-from sashimono.ui.project_presets import ProjectPreset, ProjectPresetStore
+from sashimono.ui.project_presets import PresetStoreError, ProjectPreset, ProjectPresetStore
 from sashimono.ui.project_settings_dialog import (
     FRAME_RATE_PRESETS,
     RESOLUTION_PRESETS,
@@ -71,7 +72,108 @@ class TestStore:
         assert ProjectPresetStore(path).load() == []
 
 
+class TestStoreWrites:
+    """書き換えるときに、今ある一覧を失わない（PR #140 のレビュー）"""
+
+    def test_a_broken_file_is_copied_aside_before_it_is_rewritten(self, tmp_path: Path) -> None:
+        """壊れた一覧は写しを残してから作り直す
+
+        写さずに作り直すと、手で直しかけた一覧が新しい 1 件だけになって消える
+        """
+        path = tmp_path / "p.json"
+        path.write_text('{"version": 1, "presets": [ 書きかけ', encoding="utf-8")
+        store = ProjectPresetStore(path)
+        store.put(ProjectPreset("新しい", 1280, 720, FrameRate(30), Blending.SRGB))
+        assert store.last_backup is not None
+        assert store.last_backup.read_text(encoding="utf-8").endswith("書きかけ")
+        assert [p.name for p in store.load()] == ["新しい"]
+
+    def test_a_file_from_a_newer_version_is_not_shown_or_overwritten(self, tmp_path: Path) -> None:
+        """新しい版の形は読まず、書き換えもしない
+
+        読めた所だけ並べると違う意味の値でプロジェクトを作り、書き換えると新しい版で
+        保存した一覧が消える
+        """
+        path = tmp_path / "p.json"
+        body = '{"version": 2, "presets": []}'
+        path.write_text(body, encoding="utf-8")
+        store = ProjectPresetStore(path)
+        assert store.load() == []
+        with pytest.raises(PresetStoreError, match="新しい版"):
+            store.put(ProjectPreset("足す", 1280, 720, FrameRate(30), Blending.SRGB))
+        assert path.read_text(encoding="utf-8") == body
+
+    def test_a_file_that_cannot_be_read_now_is_left_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """一時的に読めない（ほかの道具が開いている）ときは書き換えずに断る
+
+        空の一覧として扱って書くと、読めなかっただけの一覧が消える
+        """
+        path = tmp_path / "p.json"
+        store = ProjectPresetStore(path)
+        store.put(ProjectPreset("残す", 1280, 720, FrameRate(30), Blending.SRGB))
+        real = Path.read_text
+
+        def busy(self: Path, *args: object, **kwargs: object) -> str:
+            if self == path:
+                raise PermissionError(13, "ほかの道具が開いている")
+            return real(self, *args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(Path, "read_text", busy)
+        with pytest.raises(PresetStoreError, match="上書きせず"):
+            store.put(ProjectPreset("足す", 1920, 1080, FrameRate(30), Blending.SRGB))
+        monkeypatch.undo()
+        assert [p.name for p in store.load()] == ["残す"]
+
+    def test_a_write_failure_is_a_store_error_and_leaves_no_scraps(self, tmp_path: Path) -> None:
+        # OSError のまま上げると画面が拾えず、押したボタンが黙って落ちる
+        blocker = tmp_path / "ファイル"
+        blocker.write_text("", encoding="utf-8")
+        store = ProjectPresetStore(blocker / "p.json")
+        with pytest.raises(PresetStoreError, match="保存できなかった"):
+            store.save([])
+
+    def test_no_half_written_file_is_left_after_saving(self, tmp_path: Path) -> None:
+        # 書きかけが残ると、置き場に意味の分からないファイルが増えていく
+        store = ProjectPresetStore(tmp_path / "p.json")
+        store.put(ProjectPreset("一つ", 1280, 720, FrameRate(30), Blending.SRGB))
+        assert [p.name for p in tmp_path.iterdir()] == ["p.json"]
+
+
 class TestDialog:
+    def test_a_rate_outside_the_list_is_offered_and_applied(
+        self, qt_application: QApplication, tmp_path: Path
+    ) -> None:
+        """表に無いレート（15fps の作品で保存した物など）の組み合わせも、そのレートで作る
+
+        選びに無いと、選んでも前のレートのまま残り、黙って別のレートの作品になる
+        """
+        del qt_application
+        store = ProjectPresetStore(tmp_path / "p.json")
+        store.put(ProjectPreset("取り込み", 1280, 720, FrameRate(15), Blending.SRGB))
+        dialog = _new_dialog(store)
+        dialog._preset.setCurrentIndex(dialog._preset.findText(_saved_text(dialog, "取り込み")))
+        assert dialog.settings().frame_rate == FrameRate(15)
+        assert "取り込み" in dialog._preset.currentText()
+        assert dialog._warning.text() == ""
+
+    def test_a_failed_save_is_told_instead_of_raising(
+        self, qt_application: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """保存できなければ理由を出す 例外のまま上げると、ボタンが黙って効かない"""
+        del qt_application
+        told: list[str] = []
+        monkeypatch.setattr(
+            QMessageBox, "warning", lambda _parent, _title, text, *_: told.append(text)
+        )
+        blocker = tmp_path / "ファイル"
+        blocker.write_text("", encoding="utf-8")
+        dialog = _new_dialog(ProjectPresetStore(blocker / "p.json"))
+        assert dialog.save_preset("いつもの") is None
+        assert told and "保存できなかった" in told[0]
+        assert not any(text.startswith(SAVED_PREFIX) for text in _texts(dialog))
+
     def test_a_saved_preset_is_listed_after_the_builtins_and_marked(
         self, qt_application: QApplication, tmp_path: Path
     ) -> None:

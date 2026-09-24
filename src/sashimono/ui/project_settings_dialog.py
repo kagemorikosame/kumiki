@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 from sashimono.core.commands.edit import MAX_RESOLUTION, MIN_RESOLUTION
 from sashimono.core.model import Blending, ProjectSettings
 from sashimono.core.timebase import FrameRate
-from sashimono.ui.project_presets import ProjectPreset, ProjectPresetStore
+from sashimono.ui.project_presets import PresetStoreError, ProjectPreset, ProjectPresetStore
 
 __all__ = [
     "BLENDING_CHOICES",
@@ -138,11 +138,15 @@ class ProjectSettingsDialog(QDialog):
         rate: QWidget
         if new:
             self._rate = QComboBox(self)
-            for label, _ in FRAME_RATE_PRESETS:
-                self._rate.addItem(label)
-            rates = [preset for _, preset in FRAME_RATE_PRESETS]
-            if settings.frame_rate in rates:
-                self._rate.setCurrentIndex(rates.index(settings.frame_rate))
+            for label, preset_rate in FRAME_RATE_PRESETS:
+                self._rate.addItem(label, preset_rate)
+            # 保存したテンプレートの中の、表に無いレート（読み込んだ作品の 15fps で保存した物・
+            # 手で書いた 48fps など）も選べるようにする 選べないと、そのテンプレートを選んでも
+            # フレームレートだけ前のまま残り、黙って別のレートで作ることになる
+            for extra in (settings.frame_rate, *(p.frame_rate for p in self._saved)):
+                if self._rate_index(extra) < 0:
+                    self._rate.addItem(f"{extra} fps（保存したテンプレート）", extra)
+            self._rate.setCurrentIndex(max(0, self._rate_index(settings.frame_rate)))
             rate = self._rate
         else:
             rate = QLabel(f"{settings.frame_rate} fps（作成後は変えられません）", self)
@@ -222,7 +226,14 @@ class ProjectSettingsDialog(QDialog):
             frame_rate=self._frame_rate(),
             blending=str(self._blending.currentData()),
         )
-        self._saved = self._store.put(preset)
+        try:
+            self._saved = self._store.put(preset)
+        except PresetStoreError as exc:
+            # 書き込めない置き場・容量不足など 例外のまま上げると、押したボタンが
+            # 何も言わずに効かなかったように見える
+            QMessageBox.warning(self, "組み合わせを保存", str(exc))
+            return None
+        self._tell_backup()
         self._fill_presets(select=_SAVED_KEY + name)
         self._sync()
         return preset
@@ -231,13 +242,31 @@ class ProjectSettingsDialog(QDialog):
         """保存した組み合わせを消す 決まった組み合わせは消せない"""
         if all(preset.name != name for preset in self._saved):
             return False
-        self._saved = self._store.remove(name)
+        try:
+            self._saved = self._store.remove(name)
+        except PresetStoreError as exc:
+            QMessageBox.warning(self, "組み合わせを削除", str(exc))
+            return False
+        self._tell_backup()
         # 消した物を選んでいた欄は、数字はそのままで、合う物か「指定する」へ移る
         self._fill_presets()
         self._sync()
         return True
 
     # --- 画面の部品 ---
+
+    def _tell_backup(self) -> None:
+        """壊れていた一覧を写してから作り直したなら、その写しの場所を知らせる
+
+        黙って作り直すと、前に保存した物が一覧から消えた理由が分からない
+        """
+        backup = self._store.last_backup
+        if backup is not None:
+            QMessageBox.information(
+                self,
+                "テンプレートの一覧",
+                f"一覧のファイルが壊れていたので作り直した 前の中身はここに残してある\n{backup}",
+            )
 
     def _fill_presets(self, *, select: str | None = None) -> None:
         """選びの項目を並べ直す 決まった物、区切り、保存した物、「指定する」の順"""
@@ -259,7 +288,17 @@ class ProjectSettingsDialog(QDialog):
     def _frame_rate(self) -> FrameRate:
         if self._rate is None:
             return self._base.frame_rate
-        return FRAME_RATE_PRESETS[self._rate.currentIndex()][1]
+        chosen = self._rate.currentData()
+        return chosen if isinstance(chosen, FrameRate) else self._base.frame_rate
+
+    def _rate_index(self, rate: FrameRate) -> int:
+        """フレームレートの選びの中で ``rate`` の項目 無ければ -1"""
+        if self._rate is None:
+            return -1
+        return next(
+            (i for i in range(self._rate.count()) if self._rate.itemData(i) == rate),
+            -1,
+        )
 
     def _spin(self, value: int) -> QSpinBox:
         spin = QSpinBox(self)
@@ -283,9 +322,9 @@ class ProjectSettingsDialog(QDialog):
                 self._width.setValue(saved.width)
                 self._height.setValue(saved.height)
                 self._blending.setCurrentIndex(self._blending.findData(saved.blending))
-                rates = [rate for _, rate in FRAME_RATE_PRESETS]
-                if self._rate is not None and saved.frame_rate in rates:
-                    self._rate.setCurrentIndex(rates.index(saved.frame_rate))
+                # 保存した物のレートは組み立てのときに選びへ足してあるので、必ず見つかる
+                if self._rate is not None and self._rate_index(saved.frame_rate) >= 0:
+                    self._rate.setCurrentIndex(self._rate_index(saved.frame_rate))
             elif isinstance(key, str) and key.startswith(_BUILTIN_KEY):
                 _, width, height = RESOLUTION_PRESETS[int(key.removeprefix(_BUILTIN_KEY))]
                 self._width.setValue(width)
