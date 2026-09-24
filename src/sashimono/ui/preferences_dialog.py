@@ -31,6 +31,7 @@ from sashimono.engine.encode import (
 )
 from sashimono.engine.render.background import MEASURED_PREFETCH_STALL_MS
 from sashimono.engine.render.prefetch import BYTES_PER_FRAME_PIXEL
+from sashimono.ui.media_pool import VIEW_ICONS, VIEW_LIST
 from sashimono.ui.workspace import Preferences
 
 __all__ = [
@@ -205,6 +206,15 @@ class PreferencesDialog(QDialog):
         )
         form.addRow(self._pool_progress)
 
+        # 一覧の上のボタンでも切り替えられる ここにも置くのは、設定を開いて OK を
+        # 押したときに、ボタンで選んだ表示を黙って既定へ戻さないため
+        self._media_view = QComboBox(self)
+        self._media_view.addItem("一覧（名前・長さ・大きさを 1 行ずつ）", VIEW_LIST)
+        self._media_view.addItem("アイコン（サムネイルを並べる）", VIEW_ICONS)
+        self._media_view.setCurrentIndex(max(0, self._media_view.findData(preferences.media_view)))
+        self._media_view.setToolTip("素材一覧の上の「一覧」「アイコン」のボタンと同じ")
+        form.addRow("素材一覧の表示", self._media_view)
+
         self._all_plugins = QCheckBox("AviUtl2 の汎用プラグインを全部読んで探す", self)
         self._all_plugins.setChecked(preferences.all_aviutl_plugins)
         self._all_plugins.setToolTip(
@@ -300,4 +310,5 @@ class PreferencesDialog(QDialog):
             native_modules=self._native_modules.isChecked(),
             pool_progress=self._pool_progress.isChecked(),
             all_aviutl_plugins=self._all_plugins.isChecked(),
+            media_view=str(self._media_view.currentData()),
         )

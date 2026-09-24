@@ -12,10 +12,13 @@ import functools
 import platform
 import threading
 import time
+import weakref
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from fractions import Fraction
 from pathlib import Path
 
+import numpy as np
 from PySide6.QtCore import QBuffer, QIODevice, Qt, QTimer, QUrl, Signal, qVersion
 from PySide6.QtGui import (
     QAction,
@@ -61,6 +64,7 @@ from sashimono.core.commands import (
     insert_media,
     insert_scene,
     new_scene,
+    place_media,
 )
 from sashimono.core.io import (
     LEGACY_SUFFIXES,
@@ -87,6 +91,7 @@ from sashimono.core.model import (
     Project,
     ProjectSettings,
     SceneId,
+    TrackId,
 )
 from sashimono.effects.sources import SHAPE, TEXT, TRANSITION
 from sashimono.engine.audio.waveform import Waveform
@@ -115,6 +120,7 @@ from sashimono.ui.scene_bar import SceneBar
 from sashimono.ui.subtitle import SubtitlePanel
 from sashimono.ui.theme import Colors
 from sashimono.ui.timeline import TimelineView
+from sashimono.ui.timeline.drop import DropSpot
 from sashimono.ui.timeline.view import HEIGHT_STEP
 from sashimono.ui.transport import TransportBar
 from sashimono.ui.workspace import (
@@ -144,6 +150,11 @@ IMPORT_POLL_MS = 30
 AUTOSAVE_MS = 30_000
 
 _PORTABLE = QKeySequence.SequenceFormat.PortableText
+
+#: 素材一覧のサムネイルに使う時刻（秒） 頭の 1 コマではなく少し先を使う
+#: 頭は黒からのフェードや、カメラを向ける前の揺れで、中身の分からない絵が多い
+#: 短い素材では最後の 1 枚に止まる（:meth:`Filmstrip.at`）
+POOL_THUMBNAIL_SECONDS = Fraction(1)
 
 #: AviUtl のオブジェクトファイル
 EXO_FILTER = "AviUtl オブジェクト (*.exo *.exa *.exo2 *.exa2);;すべてのファイル (*)"
@@ -181,6 +192,19 @@ def _probe_or_none(path: Path) -> MediaItem | None:
         return probe_media(path)
     except ProbeError:
         return None
+
+
+@dataclass(frozen=True, slots=True)
+class _DropTarget:
+    """タイムラインへ落とされた読み込みの置き先 位置と、落としたときに開いていたシーン
+
+    シーンも覚えるのは、調べ終えるまでの間にシーンを切り替えられることがあるため
+    その時点で開いているシーンへ置くと、落としていないシーンに素材が入る
+    """
+
+    spot: DropSpot
+    #: ``None`` ならメインのタイムライン
+    scene: SceneId | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,13 +295,21 @@ class MainWindow(QMainWindow):
         #: 並べて走らせると、後から頼んだ方が先に置かれることがあり、置く順が
         #: 頼んだ順と食い違う
         self._import: ProbeBatch | None = None
-        self._import_queue: list[list[Path]] = []
+        #: 待っている読み込み パスと、タイムラインへ落とされた位置（落とされていなければ ``None``）
+        self._import_queue: list[tuple[list[Path], _DropTarget | None]] = []
+        #: タイムラインへ落とされた読み込みの、置く位置 走っている分の結果と一緒に引く
+        #: 読み込みに引っ掛けて持つのは、取り消しやプロジェクトの切り替えで読み込みを
+        #: 捨てたときに、位置だけが残って次の読み込みに当たらないようにするため
+        self._import_spots: weakref.WeakKeyDictionary[ProbeBatch, _DropTarget] = (
+            weakref.WeakKeyDictionary()
+        )
         #: 控えと解析の進み具合を出していたか 終わったことを 1 度だけ知らせるため
         self._background_shown = False
 
         self._build_widgets()
         self._build_menus()
         self._connect()
+        self._connect_drops()
 
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setInterval(ANALYSIS_REFRESH_MS)
@@ -682,6 +714,7 @@ class MainWindow(QMainWindow):
         if not preferences.pool_progress:
             # 次の間隔を待たずに外す 切ったのに行の後ろに古い割合が残って見える
             self._media_pool.set_progress({})
+        self._media_pool.set_view_mode(preferences.media_view)
         self._preview.set_proxies(self._proxies.store if preferences.use_proxy else None)
         self._preview.set_prefetch_bytes(preferences.prefetch_bytes())
         self._preview.set_prefetch_thread(preferences.prefetch_thread)
@@ -1006,22 +1039,25 @@ class MainWindow(QMainWindow):
         if names:
             self.import_media([Path(name) for name in names])
 
-    def import_media(self, paths: list[Path]) -> None:
+    def import_media(self, paths: list[Path], *, at: DropSpot | None = None) -> None:
         """素材を読み込んでタイムラインへ置く 調べるのは裏のスレッドで、待たずに返る
 
         複数選ばれた場合もまとめて 1 回の Undo で戻せるようにする
         10 本読み込んで 10 回取り消す、という操作は誰も望まない
         置くのは全部を調べ終えてから 1 回の操作で行う（:meth:`_apply_import`）
         読み込みの最中にもう一度頼まれたら、前の分が終わってから順に調べる
-        ダイアログ・一覧のボタン・一覧への落とし込みは、どれもここへ来る
+        ダイアログ・一覧のボタン・一覧やタイムラインへの落とし込みは、どれもここへ来る
+        ``at`` はタイムラインへ落とされた位置 無ければ末尾へ並べる 落とされた位置は、
+        そのとき開いているシーンの位置として覚える（:meth:`_apply_import`）
         """
         if not paths:
             return
+        target = _DropTarget(at, self._active_scene) if at is not None else None
         if self._import is not None:
-            self._import_queue.append(list(paths))
+            self._import_queue.append((list(paths), target))
             self._show_import_progress()
             return
-        self._start_import(list(paths))
+        self._start_import(list(paths), target)
 
     @property
     def importing(self) -> bool:
@@ -1091,10 +1127,12 @@ class MainWindow(QMainWindow):
             time.sleep(0.005)
         return True
 
-    def _start_import(self, paths: list[Path]) -> None:
+    def _start_import(self, paths: list[Path], at: _DropTarget | None = None) -> None:
         # probe_media はこのモジュールの名前から引く 試験がここを差し替えて、
         # 開けない素材や断られる読み込みを作る
         self._import = ProbeBatch(paths, probe_media)
+        if at is not None:
+            self._import_spots[self._import] = at
         self._show_import_progress()
         self._import_timer.start()
 
@@ -1126,7 +1164,7 @@ class MainWindow(QMainWindow):
             self._apply_import(batch)
         finally:
             if self._import_queue:
-                self._start_import(self._import_queue.pop(0))
+                self._start_import(*self._import_queue.pop(0))
             else:
                 self._import_timer.stop()
                 self._import_indicator.hide()
@@ -1135,24 +1173,40 @@ class MainWindow(QMainWindow):
         """調べ終えた素材を 1 回の操作で置く
 
         置く位置は調べ終えた時点のタイムラインから決める 調べている間に
-        編集していても、その後ろへ並ぶ
+        編集していても、その後ろへ並ぶ タイムラインへ落とされた読み込みは、
+        落とされた位置から順に並べる（:meth:`_place_dropped`）
+        落とされた読み込みは、落としたときに開いていたシーンへ置く 調べている間に
+        別のシーンへ切り替えても、切り替えた先へは入れない そのシーンが消えていたら
+        素材を一覧へ入れるだけにする
         """
         commands: list[Command] = []
         failures: list[str] = []
         loaded: list[MediaItem] = []
-        project = self.view_project
+        target = self._import_spots.pop(batch, None)
+        spot = target.spot if target is not None else None
+        scene = target.scene if target is not None else self._active_scene
+        found = self._scene_project(scene)
+        lost = found is None
+        if found is None:
+            project, spot, scene = self._document.project, None, None
+        else:
+            project = found
 
         for outcome in batch.results():
             if isinstance(outcome, ProbeError):
                 failures.append(str(outcome))
                 continue
-            placed = insert_media(project, outcome, at_frame=None)
+            placed = [AddMedia(outcome)] if lost else self._place_dropped(project, outcome, spot)
+            if spot is not None:
+                spot = spot.after(placed)
             for command in placed:
                 project = command.apply(project)
             commands.extend(placed)
             loaded.append(outcome)
 
-        if commands and not self.execute_all(commands, f"素材を読み込み: {batch.total} 件"):
+        if commands and not self._execute_in_scene(
+            commands, f"素材を読み込み: {batch.total} 件", scene
+        ):
             # 断られるとまとめて戻る 一覧に無い素材の解析と控えを頼まないために、
             # 頼むのは通ってからにする 理由は execute_all が出しているので上書きしない
             return
@@ -1162,6 +1216,10 @@ class MainWindow(QMainWindow):
             self._request_proxy(media)
         if failures:
             self.statusBar().showMessage(failures[0], 5000)
+        elif lost and commands:
+            self.statusBar().showMessage(
+                "落とした先のシーンが無くなったので、素材を一覧へ入れるだけにした", 5000
+            )
         elif commands:
             self.statusBar().showMessage(f"{batch.total} 件を読み込んだ", 3000)
 
@@ -1245,6 +1303,106 @@ class MainWindow(QMainWindow):
             self._analyzer.forget(target)
             self._proxies.forget(target)
 
+    # --- タイムラインへの落とし込みと、素材一覧の表示 ---
+
+    def _connect_drops(self) -> None:
+        self._timeline.files_dropped.connect(self._on_files_dropped)
+        self._timeline.media_dropped.connect(self._on_media_dropped)
+        self._media_pool.set_thumbnail_source(self._pool_thumbnail)
+        self._media_pool.set_view_mode(self._preferences.media_view)
+        self._media_pool.view_mode_changed.connect(self._on_pool_view_changed)
+
+    def _on_files_dropped(self, paths: list[Path], frame: int, track_id: str) -> None:
+        """エクスプローラーからタイムラインへ落とされた 一覧への落とし込みと同じく裏で調べる
+
+        プロジェクトを新しく作らなくても落とせる 起動した時点で空のプロジェクトが
+        開いていて（:class:`Project` の既定）、トラックが無ければ置くときに作る
+        """
+        spot = DropSpot(frame, TrackId(track_id) if track_id else None)
+        self.import_media(list(paths), at=spot)
+
+    def _on_media_dropped(self, media_ids: list[str], frame: int, track_id: str) -> None:
+        """素材一覧からタイムラインへ落とされた 落とした所へ置き、1 回の取り消しで戻す"""
+        project = self.view_project
+        media = [
+            item for key in media_ids if (item := project.find_media(MediaId(key))) is not None
+        ]
+        if not media:
+            return
+        commands = place_media(
+            project,
+            media,
+            at_frame=frame,
+            track_id=TrackId(track_id) if track_id else None,
+        )
+        label = f"配置: {media[0].name}" if len(media) == 1 else f"配置: {len(media)} 件"
+        self.execute_all(commands, label)
+
+    def _scene_project(self, scene: SceneId | None) -> Project | None:
+        """そのシーン（``None`` ならメイン）のタイムラインを差し込んだプロジェクト
+
+        :attr:`view_project` と違い、いま開いているシーンではなく指定のシーンを見る
+        シーンが消えていれば ``None``
+        """
+        root = self._document.project
+        if scene is None:
+            return root
+        found = root.find_scene(scene)
+        return None if found is None else replace(root, timeline=found.timeline)
+
+    def _execute_in_scene(self, commands: list[Command], label: str, scene: SceneId | None) -> bool:
+        """:meth:`execute_all` と同じだが、開いているシーンではなく ``scene`` の中で実行する
+
+        裏で調べ終えてから置く読み込みのためのもの 調べている間にシーンを切り替えられると、
+        開いているシーンで包む :meth:`execute_all` では切り替えた先へ入ってしまう
+
+        包めるときは :meth:`execute_all` を通す 入口を 1 つに保つため（シーンで包んだ
+        コマンドは :meth:`_in_active_scene` が包み直さない） 自前で実行するのは、
+        シーンを開いている間にメインへ置くときだけ（メインへ出る包みが無い）
+        """
+        if scene == self._active_scene:
+            return self.execute_all(commands, label)
+        if scene is not None:
+            return self.execute_all(
+                [c if isinstance(c, InScene) else InScene(scene, c) for c in commands], label
+            )
+        if not commands:
+            return True
+        try:
+            with self._document.checkpoint(label):
+                for command in commands:
+                    self._document.execute(command)
+        except (ValueError, KeyError) as exc:
+            self.statusBar().showMessage(str(exc), 4000)
+            self._on_project_changed()
+            return False
+        self._on_project_changed()
+        return True
+
+    @staticmethod
+    def _place_dropped(project: Project, media: MediaItem, spot: DropSpot | None) -> list[Command]:
+        """読み込んだ素材 1 本を置くコマンド 落とされた位置が無ければ末尾へ並べる"""
+        if spot is None:
+            return insert_media(project, media, at_frame=None)
+        return place_media(project, [media], at_frame=spot.frame, track_id=spot.track_id)
+
+    def _pool_thumbnail(self, media: MediaItem) -> np.ndarray | None:
+        """素材一覧の行の頭に出す 1 コマ タイムラインの絵の並びから借りる
+
+        素材一覧のために別に素材を開かない 絵の並びは読み込んだときに裏で作っていて、
+        同じ素材をもう一度デコードすると、読み込み直後の裏の仕事が倍になる
+        """
+        strip = self._analyzer.filmstrip(media)
+        return strip.at(POOL_THUMBNAIL_SECONDS) if strip is not None else None
+
+    def _on_pool_view_changed(self, mode: str) -> None:
+        """一覧の上のボタンで表示を切り替えた 好みの設定に書いて、次に開いたときも同じにする"""
+        self._preferences = replace(self._preferences, media_view=mode)
+        try:
+            PreferenceStore().save(self._preferences)
+        except OSError as exc:
+            self.statusBar().showMessage(f"設定を保存できなかった: {exc}", 5000)
+
     def _insert_media_by_id(self, media_id: str) -> None:
         project = self.view_project
         media = project.find_media(MediaId(media_id))
@@ -1308,6 +1466,7 @@ class MainWindow(QMainWindow):
         if not self._analysis_dirty:
             return
         self._analysis_dirty = False
+        self._media_pool.refresh_thumbnails()
         self._timeline.update()
 
     def _show_background_progress(self) -> None:

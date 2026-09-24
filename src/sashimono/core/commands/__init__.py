@@ -51,6 +51,7 @@ from sashimono.core.commands.insert import (
     insert_filter,
     insert_generated,
     insert_media,
+    place_media,
 )
 from sashimono.core.commands.scene import (
     DEFAULT_SCENE_FRAMES,
@@ -131,5 +132,6 @@ __all__ = [
     "insert_media",
     "insert_scene",
     "new_scene",
+    "place_media",
     "resolve_param",
 ]

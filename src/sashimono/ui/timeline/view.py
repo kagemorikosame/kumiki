@@ -13,11 +13,15 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum, auto
 
-from PySide6.QtCore import QPoint, QRect, Qt, Signal
+from PySide6.QtCore import QPoint, QPointF, QRect, Qt, Signal
 from PySide6.QtGui import (
     QAction,
     QColor,
     QContextMenuEvent,
+    QDragEnterEvent,
+    QDragLeaveEvent,
+    QDragMoveEvent,
+    QDropEvent,
     QKeyEvent,
     QMouseEvent,
     QPainter,
@@ -43,9 +47,20 @@ from sashimono.core.commands import (
     UngroupClips,
 )
 from sashimono.core.commands.edit import DEFAULT_TRACK_HEIGHT, MAX_TRACK_HEIGHT, MIN_TRACK_HEIGHT
-from sashimono.core.model import Clip, ClipId, GroupId, Project, TrackId, TrackKind
+from sashimono.core.model import Clip, ClipId, GroupId, Project, Timeline, TrackId, TrackKind
 from sashimono.engine.cache import MediaAnalyzer
+from sashimono.ui.media_pool import media_ids_in
 from sashimono.ui.theme import Colors, Metrics
+from sashimono.ui.timeline.drop import (
+    DropGuide,
+    DropPreview,
+    DropSpot,
+    accepts,
+    local_paths,
+    paint_drop_guide,
+    preview_drop,
+    spot_at,
+)
 from sashimono.ui.timeline.layout import TimelineLayout, TrackBand
 from sashimono.ui.timeline.painter import (
     DETAIL_MIN_WIDTH,
@@ -151,6 +166,11 @@ class TimelineView(QWidget):
     #: ビューは窓を知らない（テストで単体で作れるように） 知らせは信号で外へ出し、
     #: ステータスバーに出すのは窓の仕事にする
     status_message = Signal(str)
+    #: エクスプローラーからファイルを落とした 引数はパスの一覧・フレーム・トラックの ID
+    #: （トラックの無い所なら空文字列） 調べて置くのは窓の読み込みの流れ
+    files_dropped = Signal(list, int, str)
+    #: 素材一覧から素材を落とした 引数は素材 ID（文字列）の一覧・フレーム・トラックの ID
+    media_dropped = Signal(list, int, str)
 
     def __init__(
         self, project: Project, analyzer: MediaAnalyzer, parent: QWidget | None = None
@@ -176,7 +196,10 @@ class TimelineView(QWidget):
         self._resize_base: Project | None = None
         #: 書き出し範囲の Shift+ドラッグと、その帯 ほかのドラッグとは別に持つ
         self._work_area = WorkAreaEditor(self._request)
+        #: ファイルや素材を引いてきている間の、落ちる所の目安 引いていなければ ``None``
+        self._drop_preview: DropPreview | None = None
 
+        self.setAcceptDrops(True)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMinimumHeight(160)
@@ -266,7 +289,7 @@ class TimelineView(QWidget):
         painter = QPainter(self)
         painter.fillRect(self.rect(), Colors.TIMELINE_BACKGROUND)
 
-        timeline = self._project.timeline
+        timeline = self._painted_timeline()
         width = self.width()
 
         for band in self._layout.bands(timeline):
@@ -310,6 +333,7 @@ class TimelineView(QWidget):
         draw_ruler(painter, self._layout, width, self._project.rate)
         self._work_area.paint_ruler(painter, self._layout, width, timeline.work_area)
         draw_playhead(painter, self._layout, self._playhead, self.height())
+        self._paint_drop_guide(painter)
 
     def _paint_detailed(
         self, painter: QPainter, band: TrackBand, clip: Clip, rect: QRect, selected: bool
@@ -1182,6 +1206,96 @@ class TimelineView(QWidget):
             if edge in (DragKind.TRIM_HEAD, DragKind.TRIM_TAIL)
             else Qt.CursorShape.OpenHandCursor
         )
+
+    # --- 落とし込み（エクスプローラーのファイル・素材一覧の素材） ---
+
+    def drop_spot_at(self, position: QPointF) -> DropSpot:
+        """その位置へ落としたときに置く先（フレームとトラック）
+
+        ドラッグ中は画面に出している並び（新しく作るトラックを並べたもの）で見る
+        本物の並びで見ると、仮の行の分だけずれた所のトラックへ落ちる
+        """
+        return spot_at(
+            self._layout, self._painted_timeline(), position, real=self._project.timeline
+        )
+
+    @property
+    def drop_guide(self) -> DropGuide | None:
+        """ドラッグ中に出している目安 引いていなければ ``None``"""
+        return self._drop_preview.guide if self._drop_preview is not None else None
+
+    @property
+    def drop_preview(self) -> DropPreview | None:
+        """ドラッグ中に見せている、落としたときの姿 引いていなければ ``None``"""
+        return self._drop_preview
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802 - Qt の命名規約
+        self._track_drag(event)
+
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:  # noqa: N802 - Qt の命名規約
+        self._track_drag(event)
+
+    def dragLeaveEvent(self, event: QDragLeaveEvent) -> None:  # noqa: N802 - Qt の命名規約
+        del event
+        self._set_drop_guide(None)
+
+    def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802 - Qt の命名規約
+        mime = event.mimeData()
+        # 目安を消す前に位置を求める 消してから求めると、見えていた並び（仮の行の入った
+        # もの）と違う並びで読み、見ていたのと違うトラックへ落ちる
+        spot = self.drop_spot_at(event.position())
+        self._set_drop_guide(None)
+        track = str(spot.track_id) if spot.track_id is not None else ""
+        # 素材一覧から来た物を先に見る 一覧の行にファイルの URL が付いていても、
+        # 読み込み直さずに、もう入っている素材として置く
+        media_ids = media_ids_in(mime)
+        paths = local_paths(mime)
+        if not media_ids and not paths:
+            event.ignore()
+            return
+        # 写す（Copy）として受け取る 動かす（Move）で受け取ると、引いてきた側
+        # （素材一覧やエクスプローラー）が元を消しに行く
+        event.setDropAction(Qt.DropAction.CopyAction)
+        event.accept()
+        if media_ids:
+            self.media_dropped.emit([str(media_id) for media_id in media_ids], spot.frame, track)
+        else:
+            self.files_dropped.emit(paths, spot.frame, track)
+
+    def _track_drag(self, event: QDragMoveEvent) -> None:
+        mime = event.mimeData()
+        if not accepts(mime):
+            event.ignore()
+            self._set_drop_guide(None)
+            return
+        event.setDropAction(Qt.DropAction.CopyAction)
+        event.accept()
+        spot = self.drop_spot_at(event.position())
+        self._set_drop_guide(DropGuide(spot, tuple(media_ids_in(mime))))
+
+    def _set_drop_guide(self, guide: DropGuide | None) -> None:
+        current = self.drop_guide
+        if guide == current:
+            return
+        # 置く先を求めるのは目安が変わったときだけ 描くたびに求めると、素材を何本も
+        # 引いているときにマウスを動かすだけで重くなる
+        self._drop_preview = preview_drop(self._project, guide) if guide is not None else None
+        self.update()
+
+    def _painted_timeline(self) -> Timeline:
+        """画面に出すトラックの並び ドラッグ中は、新しく作るトラックを空のまま並べる"""
+        preview = self._drop_preview
+        return preview.timeline if preview is not None else self._project.timeline
+
+    def _paint_drop_guide(self, painter: QPainter) -> None:
+        if self._drop_preview is not None:
+            paint_drop_guide(
+                painter,
+                self._layout,
+                self._project,
+                self._drop_preview,
+                (self.width(), self.height()),
+            )
 
 
 def _action(menu: QMenu, text: str, slot: Callable[[], object]) -> QAction:
