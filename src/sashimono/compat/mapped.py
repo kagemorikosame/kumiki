@@ -55,6 +55,11 @@ class MappedObject:
     #: ときに、クリップが素材の終わりを越えて読むなら :attr:`Clip.hold_at` を最後の絵の
     #: 時刻にする 立てないと、越えた所は何も映らない（こちらの素のクリップの決まり）
     hold_last_frame: bool = False
+    #: 素材の何本目の音を鳴らすか（YMM4 の ``AudioTrackIndex`` 0 始まり）
+    #:
+    #: 音の道だけを数えた順番で持つ 素材の中の番号（映像も含めて数える）は素材を読む
+    #: まで分からないので、置く側が素材と結んだときに直す
+    audio_track: int = 0
 
     @property
     def has_picture(self) -> bool:
