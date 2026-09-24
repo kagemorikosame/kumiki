@@ -318,6 +318,19 @@ def test_scenes_are_converted_too(video_media: MediaItem) -> None:
     assert {t.kind for t in converted.scenes[0].timeline.tracks} == {TrackKind.MIXED}
 
 
+def test_a_scene_too_loud_to_copy_is_listed(video_media: MediaItem) -> None:
+    # 映像トラックのシーンはトラックの音量を使わないので、レイヤーの音量をクリップへ写す
+    # 上限（400%）で縮めたのに一覧が空だと、変わらないと言われたのにシーンの音が小さくなる
+    inner = _separated(video_media).timeline
+    scene = Scene(name="OP", timeline=inner)
+    placed = Clip(timeline_start=0, duration=30, scene_id=scene.id)
+    layer = Track(kind=TrackKind.MIXED, name="レイヤー 1", clips=(placed,), volume_db=10.0, pan=1.0)
+    base = _separated(video_media)
+    project = replace(base, scenes=(scene,)).with_timeline(replace(base.timeline, tracks=(layer,)))
+    result = convert_layers(project, LayerMode.SEPARATED, SOUND_KINDS)
+    assert any("上限" in notice for notice in result.notices), result.notices
+
+
 # --- 命令と取り消し ---
 
 
@@ -351,6 +364,8 @@ def test_converting_nothing_changes_nothing(video_media: MediaItem) -> None:
 
 
 def test_an_unknown_mode_is_refused(video_media: MediaItem) -> None:
+    # 知らない方式を受けると「混合でない側」として扱われ、打ち間違えただけでレイヤーが
+    # 黙って映像と音声に分かれる
     with pytest.raises(ValueError, match="方式"):
         _to(_separated(video_media), "layered")
 

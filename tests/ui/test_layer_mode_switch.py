@@ -78,6 +78,7 @@ def test_keeping_the_tracks_changes_only_the_mode(
 
 
 def test_cancel_changes_nothing(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+    # やめたのに方式が変わると、次に置く物の置き方が黙って変わり、取り消しの段も 1 つ増える
     _answer(monkeypatch, lambda dialog: dialog.reject())
     before = window.document.project
     assert not window.switch_layer_mode()

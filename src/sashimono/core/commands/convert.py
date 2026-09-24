@@ -434,6 +434,12 @@ def _to_separated(
                     gain = _gain_effect(track.volume_db, track.pan, stereo=stereo)
                     moved = _picture_part(clip, None)
                     if gain is not None:
+                        if gain[1]:
+                            # 知らせないと、一覧が空なのにシーンの音が小さくなる
+                            notices.append(
+                                f"{where}{track.name} の音量 {track.volume_db:+.1f} dB は、"
+                                f"クリップの音量調整の上限（{_VOLUME_LIMIT:.0f}%）までしか写せない"
+                            )
                         effects = list(moved.effects)
                         _insert_gain(effects, gain[0], sound_kinds)
                         moved = replace(moved, effects=tuple(effects))
