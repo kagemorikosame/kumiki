@@ -57,6 +57,13 @@ class Colors:
     TRACK_SOLO = QColor("#d8b23a")
     TRACK_LOCK = QColor("#6c7a91")
 
+    #: 書き出し範囲 目盛りの上の帯と、トラックに重ねる薄い色
+    #: 再生ヘッド（赤）・クリップ（青と緑）・フィルタ（紫）・選択（白）のどれとも
+    #: 取り違えない黄緑にする
+    WORK_AREA = QColor(150, 200, 90, 150)
+    WORK_AREA_TINT = QColor(150, 200, 90, 28)
+    WORK_AREA_EDGE = QColor("#a6d65a")
+
 
 class Metrics:
     """寸法"""
