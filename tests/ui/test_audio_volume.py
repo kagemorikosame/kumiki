@@ -38,18 +38,20 @@ class TestPlacedSound:
     def test_the_sound_of_a_movie_has_a_volume(self, video_media: MediaItem) -> None:
         # 付いていないと、置いた動画の音量を下げたいだけでもエフェクトの一覧から探して
         # 足すことになる 映像つきの素材でも、音声の側に付く
+        # 後ろのフェードも音声の欄（#27 P2）
         (audio,) = _clips(_placed(video_media), TrackKind.AUDIO)
-        assert [effect.kind for effect in audio.effects] == [VOLUME_EFFECT_KIND]
+        assert [effect.kind for effect in audio.effects] == [VOLUME_EFFECT_KIND, "audio_fade"]
 
     def test_a_sound_file_has_a_volume(self, audio_media: MediaItem) -> None:
         # BGM のような音声だけの素材も同じ 付かないと、置いてすぐ音量を変えられない
         (audio,) = _clips(_placed(audio_media), TrackKind.AUDIO)
-        assert [effect.kind for effect in audio.effects] == [VOLUME_EFFECT_KIND]
+        assert [effect.kind for effect in audio.effects] == [VOLUME_EFFECT_KIND, "audio_fade"]
 
-    def test_the_picture_gets_nothing(self, video_media: MediaItem) -> None:
+    def test_the_picture_gets_no_volume(self, video_media: MediaItem) -> None:
         # 映像のクリップに音量を付けても鳴らない 設定パネルに効かない項目が並ぶだけ
+        # 付くのは描画の欄（反転・配置）だけ
         (video,) = _clips(_placed(video_media), TrackKind.VIDEO)
-        assert video.effects == ()
+        assert [effect.kind for effect in video.effects] == ["flip", "transform"]
 
     def test_each_clip_gets_its_own_effect(self) -> None:
         # 同じ ID のエフェクトを 2 本のクリップが持つと、片方の音量を変えたつもりで
@@ -80,13 +82,14 @@ class TestPlacedSound:
         out = definition.audio_process(samples, values, AudioContext(0, 48000, 256))
         np.testing.assert_array_equal(out, samples)
 
-    def test_generated_objects_stay_bare(self) -> None:
+    def test_generated_objects_get_no_volume(self) -> None:
         # 音声のトラックへ置くもの以外（テキストなど）には付けない 一覧に出る
         # 「音量」は鳴るものにだけ意味がある
         project = Project.create()
         commands = insert_generated(project, TEXT.create())
         added = [c.clip for c in commands if isinstance(c, AddClip)]
-        assert added and all(clip.effects == () for clip in added)
+        assert added
+        assert all(e.kind != VOLUME_EFFECT_KIND for clip in added for e in clip.effects)
 
 
 class TestInspector:

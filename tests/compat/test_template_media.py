@@ -427,14 +427,18 @@ def test_the_sound_of_a_video_carries_the_volume(tmp_path: Path) -> None:
     """音量は音のクリップに付く 映像のクリップに付けても音は変わらない"""
     movie_file = tmp_path / "映像.mp4"
     movie_file.write_bytes(b"")
-    volume = Effect(kind="audio_volume", params={"volume": AnimatedValue(50.0)})
+    # 読み込み（YMM4 の _audio_effects）は音量を音声の欄として印を付けて渡す
+    volume = Effect(kind="audio_volume", params={"volume": AnimatedValue(50.0)}, fixed=True)
     objects = [media_object(movie_file, "動画ファイル", with_sound=True, audio_effects=(volume,))]
     project = put(objects, Project.create(), FakeProbe())
 
     (picture,) = clips_of(project, TrackKind.VIDEO)
     (sound,) = clips_of(project, TrackKind.AUDIO)
-    assert [effect.kind for effect in sound.effects] == ["audio_volume"]
-    assert picture.effects == ()
+    # 写した音量がそのまま音声の欄になる 別に既定の欄を足すと、音量の欄が 2 つ並ぶ
+    assert [effect.kind for effect in sound.effects] == ["audio_volume", "audio_fade"]
+    assert sound.effects[0].params["volume"] == AnimatedValue(50.0)
+    # 映像のクリップは描画の欄だけを持つ
+    assert [effect.kind for effect in picture.effects] == ["flip", "transform"]
 
 
 def test_a_video_with_sound_inside_a_group_is_split_too(tmp_path: Path) -> None:

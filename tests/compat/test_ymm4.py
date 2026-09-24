@@ -1043,7 +1043,10 @@ class TestCompositeGroups:
         assert len(placed) == 1
         assert placed[0].scene_id == scene.id
         assert placed[0].timeline_start == 100
-        assert [e.kind for e in placed[0].effects] == ["flip"]
+        # 反転は写した物が描画の欄になり、配置は既定のままの欄が足される
+        assert [e.kind for e in placed[0].effects] == ["flip", "transform"]
+        assert all(e.fixed for e in placed[0].effects)
+        assert placed[0].effects[0].params["horizontal"] is True
         inside = sorted(
             (clip.timeline_start, clip.source.kind if clip.source else "")
             for track in scene.timeline.tracks

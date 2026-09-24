@@ -940,15 +940,15 @@ class FrameRenderer:
             self._draw_oversized(texture, image, clip, gpu_effects, local_frame, rate, opacity)
             return
 
+        placement = self._media_placement(clip, texture)
         if not self._effects.has_work(gpu_effects):
             # エフェクトが無ければ中間バッファを通さない 全画面のパスが 1 回
             # 増えるだけで、エフェクト無しのクリップでも再生の余裕が削られる
-            self._compositor.draw(texture, opacity=opacity, blend=clip.blend_mode)
+            self._compositor.draw(
+                texture, placement=placement, opacity=opacity, blend=clip.blend_mode
+            )
             return
 
-        placement = fit_placement(
-            texture.width, texture.height, self._compositor.width, self._compositor.height
-        )
         result = self._effects.apply(
             texture,
             gpu_effects,
@@ -966,6 +966,46 @@ class FrameRenderer:
             flip=False,
             blend=clip.blend_mode,
         )
+
+    def _media_placement(self, clip: Clip, texture: Texture) -> Placement:
+        """絵を置く矩形（合成先の画素）
+
+        ``native_size`` のクリップは素材の画素の大きさで画面の中央に置く（YMM4・AviUtl の
+        拡大率 100%） 大きさは届いた絵ではなく**素材の解像度**から出す 控え（プロキシ）は
+        縮めて作るので、届いた絵の大きさで置くと控えの有無で大きさが変わる プレビューの
+        解像度を落としているときは、プロジェクトの解像度に対する割合で縮める
+        それ以外（前の版のクリップ・生成オブジェクト）は縦横比を保って画面に収める
+        """
+        width, height = self._compositor.width, self._compositor.height
+        size = self._native_size(clip) if clip.native_size else None
+        if size is None:
+            return fit_placement(texture.width, texture.height, width, height)
+        project_width, project_height = self._project.settings.resolution
+        placed_width = size[0] * width / max(project_width, 1)
+        placed_height = size[1] * height / max(project_height, 1)
+        return Placement(
+            (width - placed_width) / 2.0,
+            (height - placed_height) / 2.0,
+            placed_width,
+            placed_height,
+        )
+
+    def _native_size(self, clip: Clip) -> tuple[int, int] | None:
+        """素材の映像の、回転を当てた後の画素の大きさ 分からなければ ``None``"""
+        if clip.media_id is None or _is_generated(clip):
+            return None
+        media = self._project.find_media(clip.media_id)
+        if media is None or not media.video_streams:
+            return None
+        # デコーダと同じ選び方（番号が合う物、無ければ最初の映像）
+        stream = next(
+            (s for s in media.video_streams if s.index == clip.stream_index),
+            media.video_streams[0],
+        )
+        # 縦に撮った素材はデコーダが回して渡す 回す前の幅と高さで置くと縦横が入れ替わる
+        if stream.rotation in (90, 270):
+            return stream.height, stream.width
+        return stream.width, stream.height
 
     def _layer(self, role: str, depth: int) -> Compositor:
         """クリップ 1 本ぶんを描く透明な合成先 役目と入れ子の深さごとに使い回す"""
