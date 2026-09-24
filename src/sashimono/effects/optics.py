@@ -52,13 +52,17 @@ uniform float thickness;
 uniform float blur;
 uniform bool inverted;
 
-float height_at(vec2 uv) {
-    float t = clamp(texture(u_texture, uv).a, 0.0, 1.0);
+float profile_height(float t) {
+    t = clamp(t, 0.0, 1.0);
     float h = t;
     if (profile == 1) h = sqrt(max(1.0 - (1.0 - t) * (1.0 - t), 0.0));
     if (profile == 2) h = 1.0 - sqrt(max(1.0 - t * t, 0.0));
     if (profile == 3) h = step(0.5, t);
     return inverted ? -h : h;
+}
+
+float height_at(vec2 uv) {
+    return profile_height(texture(u_texture, uv).a);
 }
 
 float shade(vec3 normal, vec3 light, float k) {
@@ -75,12 +79,80 @@ vec3 lit_color(vec3 under, float amount) {
     return blend_colors(blend, under, clamp(color.rgb * amount * color.a, 0.0, 1.0));
 }
 
+// 画質を落とした合成で、書き出しの画素を 1 つずつ思い描いて光を平均するか
+// 書き出しの帯は画面の 1 画素ずつ刻んだ段で、いちばん外の段は傾きが半分になる 合成の
+// 1 画素には、急な段・半分の段・平らな面が太さの端数に応じて入り交じる 合成の画素で
+// 刻み直すと、端数（6 の縁を 1/4 で 1.5 画素など）で段の数と傾きが書き出しと合わず、
+// 縮めた書き出しと光り方がずれる（#182） 光は傾きに比例しないので、傾きを平均してから
+// 光を当てても合わない 覆う書き出しの画素ごとに光を当てて色で平均する
+// ぼかしは段を均すので、書き出しの画素を思い描けない その時は合成の画素で刻む
+// 太さの上限 46 は、輪を 1 画素ずつ刻める 48 から帯の外の 2 画素を引いた数
+// 書き出しの画素で 1 に満たない太さ（キーフレームの 0 や負の値も）は、書き出しが 1 へ
+// 切り上げて別の式で描くので思い描けない 通すと輪の数が 0 になり 0 で割る
+// 画質の分母が 8 を超えると、覆う書き出しの画素を 8 × 8 までしか数えられず平均が偏る
+bool fine_rings() {
+    return u_pixel_scale < 0.999 && u_pixel_scale >= 0.125 && blur <= 0.0
+        && thickness <= 46.0 && thickness >= u_pixel_scale;
+}
+
+// 縁の距離を刻む輪の幅
+// 書き出しの画素を思い描く時は、縁から帯の外の平らな所まで（太さ + 2 画素）の距離が要る
+// 1 画素ずつ刻むので、書き出しの輪と同じく合成の画素の升目に揃う
+float ring_width() {
+    if (fine_rings()) return ceil(thickness) + 2.0;
+    return clamp(thickness, 1.0, 128.0);
+}
+
+// 書き出しの pass 0 が、縁から distance 画素（画素の中心）の所へ置く高さ
+// 輪は太さ（上限 128）を 48 までの数で刻み、縁の外に掛かった最初の輪の半径を太さで割る
+float export_height(float distance, float width) {
+    if (distance <= 0.0) return profile_height(0.0);
+    float rings = ceil(min(width, 48.0));
+    float ring = floor(distance * rings / width) + 1.0;
+    return profile_height(min(ring / rings, 1.0));
+}
+
+// 合成の 1 画素が覆う書き出しの画素に光を当てて、色で平均する
+// 縁からの距離と向きは合成の輪から取る 直線の縁ならどの画素も書き出しと同じ段に入る
+vec3 fine_lit(vec3 under, vec3 light, float k, float width) {
+    vec2 step_ = 1.0 / u_size;
+    float here = texture(u_texture, v_uv).a * width - 0.5;
+    vec2 slope = vec2(
+        texture(u_texture, v_uv + vec2(step_.x, 0.0)).a
+            - texture(u_texture, v_uv - vec2(step_.x, 0.0)).a,
+        texture(u_texture, v_uv + vec2(0.0, step_.y)).a
+            - texture(u_texture, v_uv - vec2(0.0, step_.y)).a
+    );
+    vec2 inward = length(slope) > 1e-6 ? normalize(slope) : vec2(0.0);
+    float scale = 1.0 / u_pixel_scale;
+    int count = int(clamp(floor(scale + 0.5), 1.0, 8.0));
+    float full = min(thickness * scale, 128.0);
+    float strength = surface_scale * scale;
+    vec3 sum = vec3(0.0);
+    float taken = 0.0;
+    for (int y = 0; y < count; ++y) {
+        for (int x = 0; x < count; ++x) {
+            vec2 offset = (vec2(float(x), float(y)) + 0.5) / float(count) - 0.5;
+            float distance = (here + dot(offset, inward)) * scale;
+            // 縁の外に掛かる書き出しの画素は、書き出しでも光らない（形の外）
+            if (distance <= 0.0) continue;
+            float g = (export_height(distance + 1.0, full) - export_height(distance - 1.0, full))
+                * 0.5;
+            vec3 normal = normalize(vec3(-inward * g * strength, 1.0));
+            sum += lit_color(under, shade(normal, light, k));
+            taken += 1.0;
+        }
+    }
+    if (taken <= 0.0) return lit_color(under, shade(vec3(0.0, 0.0, 1.0), light, k));
+    return sum / taken;
+}
+
 void main() {
     if (u_pass == 0) {
         // 縁からの距離を太さで割った値（0 が縁、1 が太さ以上の内側）を作る
         float inside = texture(u_texture, v_uv).a;
         if (inside < 0.5) { frag_color = vec4(1.0, 1.0, 1.0, 0.0); return; }
-        float width = clamp(thickness, 1.0, 128.0);
+        float width = ring_width();
         float nearest = width;
         int rings = int(ceil(min(width, 48.0)));
         for (int ring = 1; ring <= rings; ++ring) {
@@ -103,21 +175,27 @@ void main() {
     }
     vec4 base = texture(u_source, v_uv);
     if (base.a <= 0.0001) { frag_color = base; return; }
-    vec2 step_ = 1.0 / u_size;
-    float gx = (height_at(v_uv + vec2(step_.x, 0.0)) - height_at(v_uv - vec2(step_.x, 0.0))) * 0.5;
-    float gy = (height_at(v_uv + vec2(0.0, step_.y)) - height_at(v_uv - vec2(0.0, step_.y))) * 0.5;
-    // 1 画素に満たない太さ（画質を落とした合成で細い縁を縮めた時）は、1 画素の帯として
-    // 描いてから、帯の画素に占める縁の割合だけ平らな面の光と混ぜる 書き出しを縮めると、
-    // 細い縁の急な面と内側の平らな面が 1 画素の中で平均される 1 画素に切り上げたままだと、
-    // 面が緩く帯が太い別の光り方になる 傾きは太さで割って、書き出しの急な面に合わせる
-    float share = clamp(thickness, 0.0001, 1.0);
-    vec3 normal = normalize(vec3(-gx * surface_scale, -gy * surface_scale, share));
     // 方位は画面で右が 0、時計回り（YMM4 に描かせた絵で、-85 は上から当たった）
     float a = radians(azimuth);
     float e = radians(elevation);
     vec3 light = normalize(vec3(cos(e) * cos(a), -cos(e) * sin(a), sin(e)));
     float k = max(constant, 0.0) * 0.01;
     vec3 under = to_srgb(base.rgb);
+    float width = ring_width();
+    if (fine_rings()) {
+        frag_color = vec4(to_linear(fine_lit(under, light, k, width)), base.a);
+        return;
+    }
+    vec2 step_ = 1.0 / u_size;
+    float gx = (height_at(v_uv + vec2(step_.x, 0.0)) - height_at(v_uv - vec2(step_.x, 0.0))) * 0.5;
+    float gy = (height_at(v_uv + vec2(0.0, step_.y)) - height_at(v_uv - vec2(0.0, step_.y))) * 0.5;
+    // 1 画素に満たない太さ（ぼかした縁を画質を落とした合成で描く時）は、1 画素の帯として
+    // 描いてから、帯の画素に占める縁の割合だけ平らな面の光と混ぜる 書き出しを縮めると、
+    // 細い縁の急な面と内側の平らな面が 1 画素の中で平均される 1 画素に切り上げたままだと、
+    // 面が緩く帯が太い別の光り方になる 傾きは太さで割って、書き出しの急な面に合わせる
+    // ぼかしが段を均すので、端数の太さは太さのまま刻んでも縮めた書き出しと大きくは違わない
+    float share = clamp(thickness, 0.0001, 1.0);
+    vec3 normal = normalize(vec3(-gx * surface_scale, -gy * surface_scale, share));
     vec3 lit = lit_color(under, shade(normal, light, k));
     // 混ぜるのは色にしてから 光の量で混ぜると、強く当てて白く飽和する所が縁の割合より濃く出る
     if (share < 1.0) {
