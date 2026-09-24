@@ -10,6 +10,7 @@ import threading
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QThread, Signal
+from PySide6.QtGui import QStandardItemModel
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -27,7 +28,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sashimono.core.commands import export_range
 from sashimono.core.model import Project
+from sashimono.core.timebase import format_timecode
 from sashimono.engine.encode import (
     DEFAULT_PIPELINE_DEPTH,
     ExportError,
@@ -37,7 +40,7 @@ from sashimono.engine.encode import (
 from sashimono.engine.encode import export_project as run_export
 from sashimono.engine.render import DEFAULT_DECODE_THREADS
 
-__all__ = ["ExportDialog"]
+__all__ = ["RANGE_ALL", "RANGE_WORK_AREA", "ExportDialog"]
 
 #: コーデック名と、画面に出す説明
 CODEC_LABELS = {
@@ -52,6 +55,10 @@ CODEC_LABELS = {
 #: 「自動」の項目に持たせる値 ``None`` は「コーデックが 1 つも無く書き出せない」項目が
 #: 使っているので分ける 同じにすると、自動を選んで書き出しを押しても何も起きない
 AUTO_CODEC = ""
+
+#: 「書き出す範囲」の選びに持たせる値
+RANGE_ALL = "all"
+RANGE_WORK_AREA = "work_area"
 
 
 class _ExportWorker(QObject):
@@ -96,7 +103,9 @@ class ExportDialog(QDialog):
         *,
         pipeline_depth: int = DEFAULT_PIPELINE_DEPTH,
         decode_threads: int = DEFAULT_DECODE_THREADS,
+        scene_name: str | None = None,
     ) -> None:
+        """``scene_name`` はシーンを開いているときのその名前 書き出すのはメインだと断るため"""
         super().__init__(parent)
         self.setWindowTitle("書き出し")
         self.setModal(True)
@@ -146,6 +155,18 @@ class ExportDialog(QDialog):
         form.addRow("コーデック", self._codec)
         form.addRow("ビットレート", self._bitrate)
         form.addRow("内容", QLabel(summary, self))
+        self._range = self._range_choice(project)
+        form.addRow("書き出す範囲", self._range)
+        if scene_name is not None:
+            # タイムラインに見えているのはシーンの範囲 書き出しはいつもメインなので、
+            # 見えている帯と違う所が出ても驚かないように、ここで言う
+            note = QLabel(
+                f"シーン「{scene_name}」を編集中 書き出すのはメインのタイムラインで、"
+                "範囲もメインで指定したもの",
+                self,
+            )
+            note.setWordWrap(True)
+            form.addRow("", note)
 
         self._progress = QProgressBar(self)
         self._progress.setRange(0, 1000)
@@ -174,6 +195,44 @@ class ExportDialog(QDialog):
             self._buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(False)
             form.addRow("", QLabel("タイムラインが空なので書き出せない", self))
 
+    def _range_choice(self, project: Project) -> QComboBox:
+        """全体か、タイムラインで指定した範囲か
+
+        範囲があれば既定は範囲の側 目盛りに帯を引いた人は、その所を出したくて引いている
+        全体を既定にすると、範囲を決めてから書き出しを開いた人が毎回選び直すことになり、
+        選び忘れると長い全体を書き出して待たされる 決めたまま忘れていた人のために、
+        範囲の位置と長さを選びの中に書いて、全体へ戻せるようにしておく
+        """
+        rate = project.settings.frame_rate
+        choice = QComboBox(self)
+        choice.addItem(f"全体（{project.duration} フレーム）", RANGE_ALL)
+        area = export_range(project.timeline)
+        if area is not None:
+            start, end = area
+            choice.addItem(
+                f"指定した範囲（{format_timecode(start, rate)} 〜 {format_timecode(end, rate)}、"
+                f"{end - start} フレーム）",
+                RANGE_WORK_AREA,
+            )
+            choice.setCurrentIndex(1)
+        elif project.timeline.work_area is not None:
+            # 範囲が丸ごとタイムラインの終わりより後ろにある 選べる形で出すと、
+            # 何も映らない所を書き出すことになるので、理由だけ見せて選ばせない
+            choice.addItem("指定した範囲（タイムラインの終わりより後ろなので使えない）", None)
+            model = choice.model()
+            item = model.item(1) if isinstance(model, QStandardItemModel) else None
+            if item is not None:
+                item.setEnabled(False)
+        else:
+            choice.setToolTip("タイムラインの目盛りを Shift+ドラッグすると範囲を指定できる")
+        return choice
+
+    def _frame_range(self) -> tuple[int, int] | None:
+        """選んだ範囲 全体なら ``None``（書き出し側がタイムラインの長さを使う）"""
+        if self._range.currentData() == RANGE_WORK_AREA:
+            return export_range(self._project.timeline)
+        return None
+
     def _choose_path(self) -> None:
         name, _ = QFileDialog.getSaveFileName(
             self, "書き出し先", self._path.text(), "MP4 (*.mp4);;すべてのファイル (*)"
@@ -190,6 +249,7 @@ class ExportDialog(QDialog):
             path=Path(self._path.text()),
             video_codec=str(codec) or None,
             video_bitrate=self._bitrate.value() * 1_000_000,
+            frame_range=self._frame_range(),
             pipeline_depth=self._pipeline_depth,
             decode_threads=self._decode_threads,
         )
