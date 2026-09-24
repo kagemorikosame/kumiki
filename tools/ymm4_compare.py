@@ -524,7 +524,15 @@ def read_ceilings(path: Path) -> dict[str, float]:
     if not path.exists():
         return {}
     raw = json.loads(path.read_text(encoding="utf-8"))
-    ceilings = {str(name): float(value) for name, value in raw.items()}
+    if not isinstance(raw, dict):
+        raise ValueError(f"{path} が名前と上限の組になっていない")
+    ceilings: dict[str, float] = {}
+    for name, value in raw.items():
+        # null や並びは float が TypeError を投げる ValueError にそろえないと、呼ぶ側が
+        # 終了コード 1 で知らせずに落ちる 真偽値は float が 0 と 1 にしてしまうので断る
+        if isinstance(value, bool) or not isinstance(value, int | float | str):
+            raise ValueError(f"{path} の上限が数でない: {name}")
+        ceilings[str(name)] = float(value)
     # NaN や Infinity は float が受け取ってしまう どちらも「超えた」にならないので、
     # 入っていると差がいくら大きくても通る
     broken = [name for name, value in ceilings.items() if not math.isfinite(value)]

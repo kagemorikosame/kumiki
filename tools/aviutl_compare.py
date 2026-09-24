@@ -49,6 +49,7 @@ import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -61,6 +62,9 @@ from sashimono.compat.aviutl.mapping import map_object  # noqa: E402
 from sashimono.compat.aviutl.report import CompatibilityReport, global_report  # noqa: E402
 from sashimono.compat.catalog import place  # noqa: E402
 from sashimono.compat.mapped import MappedObject  # noqa: E402
+
+if TYPE_CHECKING:
+    from sashimono.core.model import MediaItem, Project, ProjectSettings
 
 WIDTH, HEIGHT, FPS = 1920, 1080, 60
 #: 並べたプロジェクトの音のレート 描く側（compare）も同じ値にそろえる
@@ -493,7 +497,7 @@ def _fit_utf16(text: str, limit: int) -> str:
 
 def command_preview(arguments: argparse.Namespace) -> int:
     """AviUtl2 の書き出しを待たずに、Sashimono 側の絵だけを描く"""
-    from sashimono.core.model import Project, ProjectSettings
+    from sashimono.core.model import ProjectSettings
     from sashimono.core.timebase import FrameRate
     from sashimono.engine.render import FrameRenderer
 
@@ -519,9 +523,11 @@ def command_preview(arguments: argparse.Namespace) -> int:
                 for obj in load_exo(Path(case.source)).objects
                 if (item := map_object(obj, settings.frame_rate, report=report)) is not None
             ]
-            project = Project.create(settings)
-            for command in place(objects, project, at_frame=case.start):
-                project = command.apply(project)
+            project, missing = placed_project(objects, settings, case.start)
+            if missing:
+                # 素材の無い絵を見本として残すと、描けたものと取り違える
+                skipped.append(lacking_note(case.name, missing))
+                continue
             if renderer is None:
                 renderer = FrameRenderer(project)
             else:
@@ -548,6 +554,39 @@ def command_preview(arguments: argparse.Namespace) -> int:
         print(f"  記録: {line}")
     # 絵が書けなかったのに 0 で終えると、描けたものとして次の手順へ進んでしまう
     return 1 if failed else 0
+
+
+def _probe_or_none(path: Path) -> MediaItem | None:
+    from sashimono.engine.decode import ProbeError, probe_media
+
+    try:
+        return probe_media(path)
+    except ProbeError:
+        return None
+
+
+def placed_project(
+    objects: list[MappedObject], settings: ProjectSettings, start: int
+) -> tuple[Project, tuple[str, ...]]:
+    """写した結果を素材の登録から置くまで済ませたプロジェクトと、見つからなかった素材の道
+
+    素材を登録せずに置くと、画像や動画のクリップが素材を持たず何も映らない
+    （画像の拡大率の見本が真っ黒のまま差だけ大きく出た #167） 見つからなかった素材が
+    あれば、その見本は素材の無い絵になるので、呼ぶ側は比べた結果に入れない
+    """
+    from sashimono.compat.catalog import gather_media
+    from sashimono.core.model import Project
+
+    project = Project.create(settings)
+    plan = gather_media(objects, project, _probe_or_none)
+    for command in [*plan.commands, *place(objects, project, at_frame=start, media=plan.media)]:
+        project = command.apply(project)
+    return project, plan.missing
+
+
+def lacking_note(name: str, missing: tuple[str, ...]) -> str:
+    """素材が見つからずに比べなかった見本の知らせ"""
+    return f"{name}（素材が見つからないので比べない: {', '.join(missing)}）"
 
 
 def _use_app_data(path: Path | None) -> None:
@@ -644,7 +683,7 @@ def reference_frames(work: Path, wanted: set[int]) -> dict[int, np.ndarray] | No
 
 
 def command_compare(arguments: argparse.Namespace) -> int:
-    from sashimono.core.model import Project, ProjectSettings
+    from sashimono.core.model import ProjectSettings
     from sashimono.core.timebase import FrameRate
     from sashimono.engine.render import FrameRenderer
 
@@ -679,6 +718,7 @@ def command_compare(arguments: argparse.Namespace) -> int:
     images = work / "images"
     images.mkdir(exist_ok=True)
     rows: list[tuple[float, str, str, int, str, str]] = []
+    lacking: list[str] = []
     report = CompatibilityReport()
     renderer: FrameRenderer | None = None
     try:
@@ -695,9 +735,13 @@ def command_compare(arguments: argparse.Namespace) -> int:
                 for obj in load_exo(source).objects
                 if (item := map_object(obj, settings.frame_rate, report=report)) is not None
             ]
-            project = Project.create(settings)
-            for command in place(objects, project, at_frame=case.start):
-                project = command.apply(project)
+            project, missing = placed_project(objects, settings, case.start)
+            if missing:
+                # 素材の無い絵を比べると、差が素材の欠けを測っただけの数になり、平均を汚す
+                # 配布物は作者の機械の道を持つので珍しくない 止めずに外して一覧に載せる
+                lacking.append(lacking_note(case.name, missing))
+                print(lacking[-1])
+                continue
             random_based = _is_random(objects)
             if renderer is None:
                 renderer = FrameRenderer(project)
@@ -733,7 +777,8 @@ def command_compare(arguments: argparse.Namespace) -> int:
     steady = [row for row in rows if RANDOM_NOTE not in row[5]]
     # 写すときの記録と、描くときの記録を両方載せる スクリプトが描画の途中で
     # 諦めた（``obj.getpixeldata`` など）のは後者にしか出ない
-    _write_report(work / "report.html", rows, manifest.get("skipped", []), report, global_report)
+    skipped = [*manifest.get("skipped", []), *lacking]
+    _write_report(work / "report.html", rows, skipped, report, global_report)
     (work / "report.json").write_text(
         json.dumps(
             [
