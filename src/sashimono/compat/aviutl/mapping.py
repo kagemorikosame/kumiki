@@ -60,7 +60,14 @@ from sashimono.effects.spec import (
     ValueSpec,
 )
 
-__all__ = ["MappedObject", "map_exo", "map_object", "media_paths"]
+__all__ = [
+    "MappedObject",
+    "map_exo",
+    "map_object",
+    "media_paths",
+    "script_filter_effect",
+    "script_filter_kind",
+]
 
 #: AviUtl1 の図形の種類（``type`` の番号）
 _FIGURES = ("ellipse", "rect", "triangle", "pentagon", "hexagon", "star", "background")
@@ -338,16 +345,21 @@ _PARAMS: dict[str, dict[str, _Param]] = {
         "X": _Param("center_x"),
         "Y": _Param("center_y", _flip),
     },
-    "レンズブラー": {"範囲": _Param("radius"), "光の強さ": _Param("brightness")},
+    # 光の強さ は写さない（0 でなければ記録に残る） 写し先の brightness は 100% が
+    # 元のままの倍率で、光の強さ（0 が既定）をそのまま入れると真っ黒になる
+    # 単純図形σ の 磨りガラス矩形 は 32 を渡し、暗い板になっていた（#170）
+    "レンズブラー": {"範囲": _Param("radius")},
     "色ずれ": {"ずれ幅": _Param("shift"), "角度": _Param("angle"), "強さ": _Param("strength")},
     "カラーキー": {"色差範囲": _Param("tolerance"), "境界補正": _Param("feather")},
     "ルミナンスキー": {"基準輝度": _Param("threshold"), "輝度範囲": _Param("smoothness")},
+    # 斜めクリッピング は線の片側を切り落とす（:data:`_FILTERS` の crop_slant）
+    # 幅 は写さない（0 でなければ記録に残る） 意味を実物で確かめていない
+    # 以前は帯だけを残す crop_angle へ写していて、幅 0 では線 1 本しか残らなかった
     "斜めクリッピング": {
         "中心X": _Param("center_x"),
         "中心Y": _Param("center_y", _flip),
         "角度": _Param("angle"),
         "ぼかし": _Param("blur"),
-        "幅": _Param("width"),
     },
     "波紋": {
         "中心X": _Param("center_x"),
@@ -399,7 +411,7 @@ _PARAMS: dict[str, dict[str, _Param]] = {
         "数": _Param("count"),
     },
     "画像ループ": {"横回数": _Param("count_x"), "縦回数": _Param("count_y")},
-    "単色化": {"強さ": _Param("amount")},
+    "単色化": {"強さ": _Param("amount"), "輝度を保持する": _Param("keep_luma")},
     # 反転は軸ごとの旗 輝度・色相・透明度の反転は当たるものが無いので記録に回る
     "反転": {"上下反転": _Param("vertical"), "左右反転": _Param("horizontal")},
     # 振り子は元の角度を挟んで往復する回転 速さは 1 往復の長さ
@@ -498,7 +510,7 @@ _FILTERS: dict[str, str] = {
     "反転": "flip",
     "カラーキー": "color_key",
     "ルミナンスキー": "luminance_key",
-    "斜めクリッピング": "crop_angle",
+    "斜めクリッピング": "crop_slant",
     "波紋": "ripple",
     "ラスター": "wave",
     "極座標変換": "polar",
@@ -1758,8 +1770,17 @@ def _put_raw(
     return True
 
 
-def _filter(entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport) -> Effect | None:
-    """フィルタをエフェクトへ"""
+def _filter(
+    entry: ExoEntry,
+    points: tuple[int, ...],
+    log: CompatibilityReport,
+    *,
+    names: dict[str, _Param] | None = None,
+) -> Effect | None:
+    """フィルタをエフェクトへ
+
+    ``names`` は項目の対応を差し替えるとき（:func:`script_filter_effect`）
+    """
     if entry.name == "アニメーション効果":
         return _animation(entry, points, log)
     if "@" in entry.name:
@@ -1784,7 +1805,8 @@ def _filter(entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport) 
     if entry.name == "振り子":
         # 元の角度を挟んで振れる（片側だけに振れるのではない）
         params["centering"] = True
-    names = _PARAMS.get(entry.name, {})
+    if names is None:
+        names = _PARAMS.get(entry.name, {})
     colours = _COLOR_PARAMS.get(entry.name, {})
     choices = _SELECT_PARAMS.get(entry.name, {})
     handled: set[str] = set(_IGNORED.get(entry.name, ()))
@@ -1830,6 +1852,68 @@ def _filter(entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport) 
     _check_images(entry, definition, params, handled, log)
     _note_dropped(entry, handled, log)
     return Effect(kind=kind, params=params)
+
+
+#: ``obj.effect`` からだけ使う項目の読み方
+#:
+#: スクリプトの ``obj.effect`` は AviUtl1 の決まりで数を渡す 色調補正は 100 が元のまま
+#: で、輝度 は明るさの倍率、明るさ は足す量 sigma の 単純図形σ（アクリル矩形）が
+#: 輝度の幅 ``s`` と中心 ``c`` から ``輝度 = 100*s`` ``明るさ = 100*(1 + c - s/2)`` を作り、
+#: 明るさ が 0..200 に収まらないぶんを繰り返し掛けて足しているのがその裏付け
+#: エイリアスの 色調補正 は AviUtl2 の書き方でまだ確かめていないので、こちらは使わない
+_SCRIPT_PARAMS: dict[str, dict[str, _Param]] = {
+    "色調補正": {
+        "明るさ": _Param("offset", lambda value: value - 100.0),
+        "輝度": _Param("gain"),
+        "コントラスト": _Param("contrast", lambda value: value - 100.0),
+        "彩度": _Param("saturation", lambda value: value - 100.0),
+        "色相": _Param("hue"),
+    },
+}
+
+#: ``obj.effect`` で色を渡すときの項目名 ダイアログの名前（``色``）ではなくこれで渡す
+_SCRIPT_COLOR = "color"
+
+
+def script_filter_kind(name: str) -> str | None:
+    """``obj.effect`` の名前を写す先のエフェクト種別 写せなければ ``None``"""
+    return _FILTERS.get(name)
+
+
+def script_filter_effect(
+    name: str, values: dict[str, float | str], *, report: CompatibilityReport | None = None
+) -> Effect | None:
+    """``obj.effect(名前, 項目, 値, …)`` をエフェクトにする
+
+    エイリアスの読み込み（:func:`_filter`）と同じ対応表を引く 項目名はどちらも設定の
+    ダイアログの名前で、表を 2 つ持つと片方だけ直して食い違う 色だけは ``color`` と
+    いう名前の数（0xRRGGBB）で来るので、そのフィルタの色の項目へ移す
+    """
+    if name not in _FILTERS:
+        return None
+    colours = _COLOR_PARAMS.get(name, {})
+    params: dict[str, str] = {}
+    for key, value in values.items():
+        if key == _SCRIPT_COLOR and colours:
+            params[next(iter(colours))] = (
+                f"{int(value) & 0xFFFFFF:06x}" if isinstance(value, int | float) else str(value)
+            )
+            continue
+        params[key] = _number_text(value)
+    entry = ExoEntry(name=name, params=params)
+    log = report if report is not None else global_report
+    return _filter(entry, (), log, names=_SCRIPT_PARAMS.get(name))
+
+
+def _number_text(value: float | str) -> str:
+    """数をエイリアスの書き方の文字へ 整数は小数点を付けない
+
+    ``1.0`` のまま渡すと、チェックの項目が真と読まれない（``1`` だけを真とする）
+    """
+    if isinstance(value, str):
+        return value
+    number = float(value)
+    return str(int(number)) if number.is_integer() else repr(number)
 
 
 def _check_images(

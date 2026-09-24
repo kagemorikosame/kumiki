@@ -19,8 +19,10 @@ import numpy as np
 from sashimono.compat.aviutl import PREFIX
 from sashimono.compat.aviutl.catalog import ScriptCatalog, script_catalog
 from sashimono.compat.aviutl.control import lua_value
+from sashimono.compat.aviutl.mapping import script_filter_effect
 from sashimono.compat.aviutl.objapi import DrawCall, EffectRequest, ObjectState
 from sashimono.compat.aviutl.runtime import LuaScriptRuntime, blank_image
+from sashimono.core.commands.fixed import TRANSFORM_EFFECT_KIND
 from sashimono.core.model import AnimatedValue, Clip, Effect, GeneratedSource, ParamValue
 from sashimono.effects.definition import registry
 from sashimono.engine.sources import render_source
@@ -90,11 +92,15 @@ class ScriptStage:
         frame: int,
         fps: float,
         layer: int = 0,
+        framebuffer: Callable[[], np.ndarray | None] | None = None,
     ) -> tuple[DrawCall, ...]:
         """スクリプトを順に走らせ、描画の一覧を返す
 
         1 つの状態を渡していくのは AviUtl と同じ 前のスクリプトが動かした位置に、
         次のスクリプトがさらに手を入れる形になる
+
+        ``framebuffer`` はそれまでに下へ重ねた画面を読む関数（``obj.copybuffer`` の ``frm``）
+        画面の画素の大きさで、ストレートアルファの絵を返す
         """
         state = ObjectState(
             image=image,
@@ -104,8 +110,10 @@ class ScriptStage:
             totalframe=max(1, clip.duration),
             framerate=fps,
             layer=layer,
+            framebuffer=framebuffer,
         )
         self._timing = (frame, fps, max(1, clip.duration))
+        state.base_x, state.base_y = _placed_at(clip, frame)
 
         for effect in effects:
             entry = self._catalog.get(effect.kind)
@@ -226,6 +234,27 @@ def _number_color(value: object) -> int:
     return 0xFFFFFF
 
 
+def _placed_at(clip: Clip, frame: int) -> tuple[float, float]:
+    """クリップの配置の欄の位置 ``obj.x`` ``obj.y`` の値（AviUtl に合わせて Y は下が正）
+
+    見るのは固定の欄（標準描画に当たる物）だけ 後から足した変形は、AviUtl でも
+    ``座標`` などのフィルタで、表示基準座標には入らない
+    """
+    placing = next(
+        (e for e in clip.effects if e.fixed and e.enabled and e.kind == TRANSFORM_EFFECT_KIND),
+        None,
+    )
+    if placing is None:
+        return 0.0, 0.0
+
+    def number(name: str) -> float:
+        raw = placing.params.get(name, 0.0)
+        value = raw.at(frame) if isinstance(raw, AnimatedValue) else raw
+        return float(value) if isinstance(value, int | float) else 0.0
+
+    return number("pos_x"), -number("pos_y")
+
+
 def _apply_params(state: ObjectState, effect: Effect, frame: int) -> None:
     """設定欄の値を ``obj`` から見える形へ移す
 
@@ -276,34 +305,12 @@ def requested_effects(call: DrawCall) -> tuple[Effect, ...]:
 
 
 def _to_effect(request: EffectRequest) -> Effect:
-    definition = registry.get(request.kind)
-    if definition is None:  # pragma: no cover - 対応表にある種別しか来ない
+    """項目名と値はエイリアスの読み込みと同じ対応表で写す
+
+    以前はここに別の小さな表を持っていて、``輝度`` と ``明るさ`` が同じ項目へ入り、
+    Y の向きも直していなかった
+    """
+    effect = script_filter_effect(request.original, request.params)
+    if effect is None:  # pragma: no cover - 対応表にある名前しか頼まれない
         return Effect(kind=request.kind, params={})
-
-    params = definition.default_params()
-    for name, value in request.params.items():
-        spec = definition.spec(_translate(name))
-        if spec is not None:
-            params[spec.name] = spec.coerce(value)
-    return Effect(kind=request.kind, params=params)
-
-
-#: AviUtl のパラメータ名と、こちらの名前の対応
-_PARAM_NAMES: dict[str, str] = {
-    "範囲": "radius",
-    "強さ": "strength",
-    "しきい値": "threshold",
-    "サイズ": "size",
-    "幅": "width",
-    "明るさ": "brightness",
-    "コントラスト": "contrast",
-    "色相": "hue",
-    "彩度": "saturation",
-    "輝度": "brightness",
-    "X": "offset_x",
-    "Y": "offset_y",
-}
-
-
-def _translate(name: str) -> str:
-    return _PARAM_NAMES.get(name, name)
+    return effect

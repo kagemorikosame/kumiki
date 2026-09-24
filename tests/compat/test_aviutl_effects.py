@@ -273,6 +273,38 @@ class TestTheLeftoverSettings:
         assert _value(effect, "amount") == 40.0
         assert effect.params["color"] == (1.0, 0.0, 0.0, 1.0)
 
+    def test_a_single_colour_fill_can_keep_the_brightness(self) -> None:
+        """単色化 の 輝度を保持する を写す（#170）
+
+        落とすと、明るさを残して色だけを付けるつもりの絵が一色の板になる
+        """
+        effect = _one("単色化\n強さ=40\n色=ff0000\n輝度を保持する=1")
+        assert effect.params["keep_luma"] is True
+
+    def test_the_slant_clip_cuts_off_one_side(self) -> None:
+        """斜めクリッピング は線の片側を落とす crop_slant へ写す（#170）
+
+        以前は帯だけを残す crop_angle へ写していて、幅 0 では線 1 本しか残らず絵が消えた
+        中心Y は AviUtl の下が正からこちらの上が正へ直す
+        """
+        effect = _one("斜めクリッピング\n中心X=5\n中心Y=10\n角度=30\nぼかし=2\n幅=0")
+        assert effect.kind == "crop_slant"
+        assert _value(effect, "center_x") == 5.0
+        assert _value(effect, "center_y") == -10.0
+        assert _value(effect, "angle") == 30.0
+        assert _value(effect, "blur") == 2.0
+
+    def test_the_lens_blur_light_is_not_a_brightness(self) -> None:
+        """レンズブラー の 光の強さ を明るさの倍率へ入れない（#170）
+
+        写し先は 100% が元のままの倍率で、光の強さ 0（既定）を入れると真っ黒になる
+        写せない値は記録に残す
+        """
+        effect, report = _effects("レンズブラー\n範囲=16\n光の強さ=32\nサイズ固定=0")
+        assert effect[0].kind == "lens_blur"
+        assert _value(effect[0], "brightness") == 100.0
+        assert any("レンズブラーの項目: 光の強さ" in line for line in report.lines())
+
     def test_the_flip_filter_reads_both_axes(self) -> None:
         # 旗を取り違えると、上下だけ反転させたつもりが左右にひっくり返る
         effect = _one("反転\n上下反転=1\n左右反転=0\n輝度反転=0\n色相反転=0\n透明度反転=0")

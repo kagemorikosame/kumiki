@@ -104,6 +104,13 @@ def split_scripts(
     区切りが無ければファイル全体で 1 つ その場合の名前は空にしておき、
     呼び出し側がファイル名を使う
 
+    区切りがあるときは、最初の ``@名前`` より前を捨てる AviUtl は ``@名前`` の行から
+    次の ``@名前`` までを 1 本とするので、そこはどのスクリプトにも属さない
+    配布物（sigma の 6 本・PSDToolKit の ``@PSDToolKit.obj``）はそこへ使用許諾の注釈だけを
+    置いていて、コードは無い 1 本として数えると、ファイル名の付いた何も描かない項目が
+    一覧に並ぶ（#170） 共通の前置きとして各節の前に足すこともしない 注釈しか無い所を
+    足しても何も変わらず、AviUtl もそうしていない
+
     ``on_error`` を渡すと、設定欄を作れない節（範囲の崩れた値など）はそこへ知らせて
     飛ばし、ほかの節は返す 渡さなければ例外のまま 1 本のファイルに十数本を入れる
     配布物（``@効果集σ.anm`` は 13 本）で、1 節の崩れのために残りまで失うのを避ける
@@ -111,13 +118,16 @@ def split_scripts(
     sections: list[tuple[str, list[str]]] = []
     current: list[str] = []
     name = ""
+    # 最初の区切りより前は、区切りが 1 つでも見つかった時点で捨てる
+    marked = False
 
     for line in text.splitlines():
         matched = _SECTION.match(line)
         # ``@`` で始まっていても、Lua のコードとして意味のある行ではないこと
         if matched is not None and not line.strip().startswith("@@"):
-            if current or sections:
+            if sections or marked:
                 sections.append((name, current))
+            marked = True
             name = matched.group("name")
             current = []
             continue

@@ -51,6 +51,7 @@ NEW_KINDS = (
     "noise_displacement",
     "morphology",
     "crop_angle",
+    "crop_slant",
     "round_corner",
     "edge_trim",
     "exposure",
@@ -179,6 +180,68 @@ class TestPixels:
         # 反転しないと、ネガのような演出の配布テンプレートが元の色のまま出る
         dark = _run(gl_context, processor, _make("invert"), image=_square(value=0))
         assert dark[32, 32, 0] == pytest.approx(1.0, abs=0.01)
+
+    def test_the_slant_clip_drops_the_lower_side_at_zero(
+        self, gl_context: OffscreenGLContext, processor: EffectProcessor
+    ) -> None:
+        """斜めクリッピング は角度 0 で中心より下を落とす（#170）
+
+        向きは sigma の 単純図形σ の 菱形 が 4 回の切り落としで角を落とす並びから読んだ
+        取り違えると、角ではなく真ん中を落として菱形が消える（結果は GL の向きで、行 0 が下）
+        """
+        result = _run(gl_context, processor, _make("crop_slant", angle=0, blur=0))
+        assert result[40, 32, 3] > 0.9
+        assert result[24, 32, 3] < 0.1
+
+    def test_the_slant_clip_turns_clockwise(
+        self, gl_context: OffscreenGLContext, processor: EffectProcessor
+    ) -> None:
+        # 90 度で落とす側が下から左へ回る 反時計回りだと右が落ちる
+        result = _run(gl_context, processor, _make("crop_slant", angle=90, blur=0))
+        assert result[32, 24, 3] < 0.1
+        assert result[32, 40, 3] > 0.9
+
+    def test_the_slant_clip_moves_with_its_centre(
+        self, gl_context: OffscreenGLContext, processor: EffectProcessor
+    ) -> None:
+        # 中心 Y は上が正 上へ 8 ずらすと、真ん中の行も残る側に入る
+        result = _run(gl_context, processor, _make("crop_slant", center_y=-8, blur=0))
+        assert result[28, 32, 3] > 0.9
+        assert result[20, 32, 3] < 0.1
+
+    def test_a_fill_can_keep_the_brightness(
+        self, gl_context: OffscreenGLContext, processor: EffectProcessor
+    ) -> None:
+        """単色化 の 輝度を保持する 色は付くが、明るさは元の絵のまま（#170）
+
+        保たないと、下の絵を透かすアクリル矩形が塗った色一色の板になる
+        """
+        grey = _run(gl_context, processor, _make("fill", amount=0))
+        kept = _run(
+            gl_context,
+            processor,
+            _make("fill", color=(1.0, 0.0, 0.0, 1.0), amount=100, keep_luma=True),
+        )
+        luma = (0.2126, 0.7152, 0.0722)
+
+        def brightness(pixel: np.ndarray) -> float:
+            return float(sum(weight * value for weight, value in zip(luma, pixel[:3], strict=True)))
+
+        assert brightness(kept[32, 32]) == pytest.approx(brightness(grey[32, 32]), abs=0.02)
+        assert kept[32, 32, 0] > kept[32, 32, 1]
+
+    def test_the_colour_offset_adds_to_the_encoded_value(
+        self, gl_context: OffscreenGLContext, processor: EffectProcessor
+    ) -> None:
+        """色調補正 の 明るさを足す は sRGB の値へ足す（AviUtl の 明るさ の写し先 #170）
+
+        輝度 30% と 明るさ +35 で、灰色 200 は 200/255 x 0.3 + 0.35 = 0.585 になる
+        倍率で代わりにすると 0.35 前後まで暗く沈む
+        """
+        result = _run(gl_context, processor, _make("color", gain=30, offset=35))
+        encoded = 0.585
+        linear = ((encoded + 0.055) / 1.055) ** 2.4
+        assert result[32, 32, 0] == pytest.approx(linear, abs=0.02)
 
     def test_round_corner_cuts_the_corners(
         self, gl_context: OffscreenGLContext, processor: EffectProcessor

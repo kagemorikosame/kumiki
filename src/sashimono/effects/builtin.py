@@ -205,6 +205,7 @@ uniform float contrast;
 uniform float saturation;
 uniform float hue;
 uniform float gain;
+uniform float offset;
 
 vec3 encode_srgb(vec3 c) {
     c = clamp(c, 0.0, 1.0);
@@ -219,11 +220,13 @@ void main() {
     vec4 color = texture(u_texture, v_uv);
     vec3 rgb = color.rgb;
 
-    if (abs(gain - 100.0) > 0.001) {
+    if (abs(gain - 100.0) > 0.001 || abs(offset) > 0.001) {
         // 符号化した値（sRGB）に掛けて、白で頭打ちにする YMM4 の色調補正の「輝度」は
         // この形だった リニアのまま掛けると 150% でも明るさが半分ほどしか上がらず、
         // ペイントトランジションの真ん中が YMM4 より 30 ほど暗く出た
-        rgb = decode_srgb(encode_srgb(rgb) * max(gain, 0.0) / 100.0);
+        // offset は同じ値へ足す量 AviUtl の 明るさ（足し算）の写し先で、倍率の
+        // brightness で代わりにすると、輝度を絞って暗くした所がほとんど持ち上がらない
+        rgb = decode_srgb(encode_srgb(rgb) * max(gain, 0.0) / 100.0 + offset / 100.0);
     }
 
     rgb *= 1.0 + brightness / 100.0;
@@ -809,12 +812,19 @@ void main() {
 _FILL = _shader("""
 uniform vec4 color;
 uniform float amount;
+uniform bool keep_luma;
 
 void main() {
     // 形はそのままに、色だけを塗る 不透明度に触ると輪郭の外まで色が出る
     vec4 base = texture(u_texture, v_uv);
+    vec3 paint = color.rgb;
+    if (keep_luma) {
+        // 塗る色の明るさを元の絵の明るさへそろえる（AviUtl の 単色化 の 輝度を保持する）
+        // そろえないと、下の絵を透かして色を付けるアクリル矩形が一色の板になる
+        paint = max(paint + vec3(dot(base.rgb, LUMA) - dot(paint, LUMA)), 0.0);
+    }
     float mixing = clamp(amount * 0.01, 0.0, 1.0) * color.a;
-    frag_color = vec4(mix(base.rgb, color.rgb, mixing), base.a);
+    frag_color = vec4(mix(base.rgb, paint, mixing), base.a);
 }
 """)
 
@@ -877,6 +887,7 @@ def register_builtin_effects() -> None:
                 TrackSpec("saturation", "彩度", -100, 300, 0, unit="%"),
                 TrackSpec("hue", "色相", -180, 180, 0, unit="度"),
                 TrackSpec("gain", "輝度（sRGB の値に掛ける）", 0, 400, 100, unit="%"),
+                TrackSpec("offset", "明るさを足す（sRGB の値に足す）", -100, 100, 0, unit="%"),
             ),
             fragment_shader=_COLOR,
         )
@@ -1059,6 +1070,7 @@ def register_builtin_effects() -> None:
             parameters=(
                 ColorSpec("color", "色", (1.0, 1.0, 1.0, 1.0)),
                 TrackSpec("amount", "強さ", 0, 100, 100, unit="%"),
+                CheckSpec("keep_luma", "明るさを保つ", False),
             ),
             fragment_shader=_FILL,
         )
