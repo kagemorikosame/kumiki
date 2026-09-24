@@ -14,9 +14,10 @@ import html
 import re
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtGui import QInputMethodEvent, QKeyEvent
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -28,9 +29,12 @@ from PySide6.QtWidgets import (
 )
 
 from sashimono.ai import AI_PACK, Approval, EditorBridge, EditorHost
+from sashimono.ai.environment import claude_cli, credentials_found, open_login_window
+from sashimono.ai.models import EFFORTS, MODELS, effort_for, find_model
 from sashimono.ai.session import AgentEvent, AgentSession, EventKind
 from sashimono.ui.setup import SetupSection
 from sashimono.ui.theme import Colors
+from sashimono.ui.workspace import Preferences
 
 __all__ = ["ChatPanel"]
 
@@ -45,15 +49,45 @@ POLL_MS = 80
 
 
 class _Input(QPlainTextEdit):
-    """Ctrl+Enter で送る入力欄"""
+    """指示の入力欄 既定は Enter で送り、Shift+Enter で改行する
+
+    Ctrl+Enter はどちらの設定でも送る 前の版で覚えた人の手を裏切らないため
+    """
 
     submitted = Signal()
 
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        #: Enter だけで送るか 切ると Enter は改行になる
+        self.enter_sends = True
+        #: 日本語の変換の途中か 変換を確定する Enter で送らないために持つ
+        self._composing = False
+
+    def inputMethodEvent(self, event: QInputMethodEvent) -> None:  # noqa: N802 - Qt の命名規約
+        # 変換中の文字（まだ確定していない読み）があるかどうかで判断する
+        # 確定した瞬間は preedit が空になって届くので、そこで変換の終わりと見る
+        self._composing = bool(event.preeditString())
+        super().inputMethodEvent(event)
+
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802 - Qt の命名規約
-        modifiers = event.modifiers()
         is_enter = event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
-        if is_enter and modifiers & Qt.KeyboardModifier.ControlModifier:
+        if not is_enter or self._composing:
+            # 変換中の Enter は変換の確定 ここで送ると、確定したつもりの文が
+            # 書きかけのまま飛んでいく（IME によっては keyPress も届く）
+            super().keyPressEvent(event)
+            return
+        modifiers = event.modifiers() & ~Qt.KeyboardModifier.KeypadModifier
+        if modifiers & Qt.KeyboardModifier.ControlModifier:
             self.submitted.emit()
+            return
+        if self.enter_sends and modifiers == Qt.KeyboardModifier.NoModifier:
+            self.submitted.emit()
+            return
+        if self.enter_sends and modifiers & Qt.KeyboardModifier.ShiftModifier:
+            # Shift+Enter をそのまま渡すと、QPlainTextEdit は段落ではなく行の
+            # 区切り（U+2028）を入れる 見た目は同じでも、Enter で書いた改行と
+            # 違う文字になるので、ふつうの改行に揃える
+            self.insertPlainText("\n")
             return
         super().keyPressEvent(event)
 
@@ -63,6 +97,9 @@ class ChatPanel(QWidget):
 
     #: ステータスバーへ出す文言
     status_message = Signal(str)
+    #: 欄の上でモデルか考える深さを選び直した 引数はモデル ID とエフォート
+    #: 本人の好みとして覚えるのは受け取る側（設定の置き場を 1 か所にするため）
+    choices_changed = Signal(str, str)
 
     def __init__(self, host: EditorHost, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -86,7 +123,45 @@ class ChatPanel(QWidget):
     def _build(self) -> None:
         self._setup = SetupSection(AI_PACK, self)
         self._setup.finished.connect(lambda _ok: self._refresh_availability())
-        self._setup.changed.connect(lambda _ready: None)
+
+        # 今どのモデルで話しているかが、いつも見えるように欄の一番上へ置く
+        self._model = QComboBox(self)
+        for model in MODELS:
+            self._model.addItem(model.label, model.id)
+        self._model.setToolTip("「既定」は Claude Code がアカウントに合わせて選ぶモデル")
+        self._effort = QComboBox(self)
+        for effort in EFFORTS:
+            self._effort.addItem(effort.label, effort.value)
+        self._effort.setToolTip(
+            "考える深さ 高くするほどよく考えてから答える代わりに、遅く、使う量も増える"
+        )
+        self._model.currentIndexChanged.connect(self._on_choice_changed)
+        self._effort.currentIndexChanged.connect(self._on_choice_changed)
+
+        choices = QHBoxLayout()
+        choices.setContentsMargins(0, 0, 0, 0)
+        choices.addWidget(QLabel("モデル", self))
+        choices.addWidget(self._model, 1)
+        choices.addWidget(QLabel("考える深さ", self))
+        choices.addWidget(self._effort)
+
+        # ログインは Claude Code 自身の画面で済ませてもらう 鍵やパスワードを
+        # このソフトの入力欄で受け取らない
+        self._login_box = QFrame(self)
+        self._login_text = QLabel(
+            "Claude へのログインがまだのようです 「ログイン…」で Claude Code を開き、"
+            "案内に従ってログインしてください 済んだらそのまま指示を送れます"
+            "（API キーを使う場合は環境変数 ANTHROPIC_API_KEY を設定し、ソフトを再起動します）",
+            self._login_box,
+        )
+        self._login_text.setWordWrap(True)
+        self._login_text.setStyleSheet(f"color: {Colors.TEXT_MUTED.name()};")
+        self._login_button = QPushButton("ログイン…", self._login_box)
+        self._login_button.clicked.connect(self.open_login)
+        login_layout = QHBoxLayout(self._login_box)
+        login_layout.setContentsMargins(0, 0, 0, 0)
+        login_layout.addWidget(self._login_text, 1)
+        login_layout.addWidget(self._login_button)
 
         self._view = QTextBrowser(self)
         self._view.setOpenExternalLinks(False)
@@ -120,7 +195,7 @@ class ChatPanel(QWidget):
         approval_layout.addLayout(approval_buttons)
 
         self._input = _Input(self)
-        self._input.setPlaceholderText("編集の指示を書いて Ctrl+Enter（例: 冒頭 10 秒を切って）")
+        self._describe_send_key()
         self._input.setMaximumHeight(96)
         self._input.submitted.connect(self.send)
 
@@ -142,7 +217,9 @@ class ChatPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(6)
+        layout.addLayout(choices)
         layout.addWidget(self._setup)
+        layout.addWidget(self._login_box)
         layout.addWidget(self._view, 1)
         layout.addWidget(self._approval_box)
         layout.addWidget(self._input)
@@ -156,8 +233,83 @@ class ChatPanel(QWidget):
         self._setup.setVisible(not ready)
         self._input.setEnabled(ready)
         self._send_button.setEnabled(ready)
+        # 入っていない間はログインの話をしない 導入の案内と重なって読みにくい
+        self._login_box.setVisible(ready and not credentials_found())
         if not ready:
             self._say("案内", status.summary())
+
+    def open_login(self) -> None:
+        """Claude Code を別の窓で開き、そこでログインしてもらう"""
+        cli = claude_cli()
+        if cli is None:
+            self.status_message.emit("Claude Code が見つかりません 先に環境を導入してください")
+            return
+        try:
+            open_login_window(cli)
+        except OSError as exc:
+            self._say("エラー", f"Claude Code を開けませんでした: {exc}")
+            return
+        self._note("Claude Code を別の窓で開きました 案内に従ってログインしてください")
+
+    # --- モデルと考える深さ ---
+
+    @property
+    def model(self) -> str:
+        return str(self._model.currentData())
+
+    @property
+    def effort(self) -> str:
+        return str(self._effort.currentData())
+
+    def apply_preferences(self, preferences: Preferences) -> None:
+        """本人の好み（設定画面か、前に欄の上で選んだもの）を当てる"""
+        self._input.enter_sends = preferences.chat_enter_sends
+        self._describe_send_key()
+        self._select_choices(preferences.ai_model, preferences.ai_effort)
+
+    def _select_choices(self, model: str, effort: str) -> None:
+        # 当てるだけで「選び直した」と知らせない 知らせると、設定を読んだだけで
+        # 保存と会話の張り直しが走る
+        for box, value in ((self._model, model), (self._effort, effort)):
+            box.blockSignals(True)
+            box.setCurrentIndex(max(0, box.findData(value)))
+            box.blockSignals(False)
+        self._on_choice_changed(notify=False)
+
+    def _on_choice_changed(self, _index: int = -1, *, notify: bool = True) -> None:
+        choice = find_model(self.model)
+        # 受け付けないモデルでは選べなくする 選べたままだと、選んだのに効いていない
+        self._effort.setEnabled(choice is None or choice.effort)
+        session = self._session
+        # SDK は会話の途中でエフォートを変えられないので、次の指示から
+        # 繋ぎ直す 応答の途中なら、その応答が終わってから（_handle で）
+        if (
+            session is not None
+            and not session.busy
+            and (session.model, session.effort) != self._wanted()
+        ):
+            self._restart_session()
+        if notify:
+            self.choices_changed.emit(self.model, self.effort)
+
+    def _wanted(self) -> tuple[str | None, str | None]:
+        """いま選んでいる組を、会話が持つ形（空は None）で"""
+        return self.model or None, effort_for(self.model, self.effort)
+
+    def _restart_session(self) -> None:
+        session = self._session
+        if session is None:
+            return
+        self._session = None
+        session.close(wait=False)
+        label = self._model.currentText()
+        self._note(
+            f"次の指示から {label} で新しい会話を始めます（それまでのやり取りは引き継ぎません）"
+        )
+
+    def _describe_send_key(self) -> None:
+        key = "Enter で送信 Shift+Enter で改行" if self._input.enter_sends else "Ctrl+Enter で送信"
+        self._input.setPlaceholderText(f"編集の指示を書いて {key}（例: 冒頭 10 秒を切って）")
 
     def _set_auto_approve(self, enabled: bool) -> None:
         self._bridge.auto_approve = enabled
@@ -175,12 +327,15 @@ class ChatPanel(QWidget):
             self.status_message.emit("AI 連携の環境が入っていません")
             return
 
+        # 「ログイン…」から済ませたかもしれない 済んでいれば案内を下げる
+        self._login_box.setVisible(not credentials_found())
         self._input.clear()
         self._say("あなた", prompt)
         self._open_checkpoint(prompt)
 
         if self._session is None:
-            self._session = AgentSession(self._bridge)
+            model, effort = self._wanted()
+            self._session = AgentSession(self._bridge, model=model, effort=effort)
         self._session.send(prompt)
         self._stop_button.setEnabled(True)
 
@@ -243,6 +398,14 @@ class ChatPanel(QWidget):
             self._turns_done += 1
             self._stop_button.setEnabled(False)
             self._close_checkpoint()
+            session = self._session
+            if (
+                event.kind is EventKind.TURN_DONE
+                and session is not None
+                and (session.model, session.effort) != self._wanted()
+            ):
+                # 応答の途中で選び直した分を、ここで当てる
+                self._restart_session()
 
     def _check_approval(self) -> None:
         showing = self._approval

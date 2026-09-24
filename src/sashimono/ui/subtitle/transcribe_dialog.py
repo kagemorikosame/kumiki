@@ -42,6 +42,7 @@ from sashimono.asr import (
 )
 from sashimono.asr.service import Job
 from sashimono.core.model import MediaItem, Transcript
+from sashimono.runtime import refresh_runtime, restart_note
 from sashimono.ui.theme import Colors
 
 __all__ = ["TranscribeDialog"]
@@ -263,10 +264,13 @@ class TranscribeDialog(QDialog):
         self._install_done = None
         self._timer.stop()
         self._progress.setRange(0, 1000)
+        # ボタンの有効・無効を決め直す前に import の道を作り直す 先に決めると、
+        # 配布版では入れたばかりの faster-whisper が見えず「起こす」が押せないまま残る
+        loaded = refresh_runtime() if self._install_code == 0 else ()
         self._set_busy(False)
         self._refresh_availability()
         if self._install_code == 0:
-            self._status.setText("導入が終わりました そのまま起こせます")
+            self._status.setText(restart_note(loaded, visible=runtime_status().installed))
 
     def _drain_job(self) -> None:
         job = self._job

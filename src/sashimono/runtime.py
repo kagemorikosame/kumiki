@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import importlib
 import os
 import shutil
 import subprocess
@@ -35,6 +36,8 @@ __all__ = [
     "install_runtime",
     "is_frozen",
     "pip_arguments",
+    "refresh_runtime",
+    "restart_note",
     "run_pip",
     "runtime_target_dir",
 ]
@@ -202,7 +205,8 @@ def runtime_target_dir() -> Path | None:
 def activate_runtime() -> Path | None:
     """専用フォルダへ入れたものを import できるようにする
 
-    起動時に 1 度呼ぶ 通常の実行では何もしない
+    起動時に 1 度呼ぶ 通常の実行では何もしない 導入の直後は
+    :func:`refresh_runtime` を呼ぶ（こちらも中で呼ばれる）
     """
     target = runtime_target_dir()
     if target is None or not target.exists():
@@ -213,6 +217,88 @@ def activate_runtime() -> Path | None:
         # 使わせるため
         sys.path.insert(0, path)
     return target
+
+
+def refresh_runtime() -> tuple[str, ...]:
+    """導入を終えた直後に呼び、入れたものを再起動なしで使えるようにする
+
+    戻り値は「入れ直したのに、古い方がもう読み込まれていて入れ替えられなかった」
+    モジュールの名前 空でなければ、再起動を勧める
+
+    これが無いと配布版では導入が済んだことに気付けなかった 初めて導入する人は
+    起動時に専用フォルダがまだ無いので :func:`activate_runtime` が何もせず、
+    導入のあとも import の道に載らないまま、状態を見直しても「未導入」と出て
+    ボタンが押せなかった（Issue #27）
+
+    通常の実行でも import の控えは捨てる 導入先（site-packages）の中身を
+    覚えている探し手が、入れたばかりのパッケージを見落とすことがあるため
+    """
+    target = activate_runtime()
+    # パッケージの探し手と、配布メタデータ（導入状況の判定に使う）の探し手の
+    # 両方の控えがここで捨てられる
+    importlib.invalidate_caches()
+    if target is None:
+        return ()
+    return _already_loaded_elsewhere(target)
+
+
+def restart_note(loaded: Sequence[str], *, visible: bool = True) -> str:
+    """導入のあとに出す 1 行 再起動が要るかどうかがそのまま分かるようにする
+
+    ``visible`` が偽なら、pip は通ったのに入れたものが見つからなかった
+    黙って押せないボタンを残すより、次にできることを書く
+    """
+    if not visible:
+        return (
+            "導入は終わりましたが、入れたものを読み込めませんでした"
+            " ソフトを再起動してからもう一度開いてください"
+        )
+    if not loaded:
+        return "導入が終わりました 再起動しなくてもそのまま使えます"
+    names = "、".join(loaded[:5]) + (" ほか" if len(loaded) > 5 else "")
+    return (
+        "導入が終わりました そのまま使えますが、同梱の部品（"
+        f"{names}）を入れ直したので、うまく動かないときはソフトを再起動してください"
+    )
+
+
+def _already_loaded_elsewhere(target: Path) -> tuple[str, ...]:
+    """専用フォルダに入ったのに、別の場所から読み込み済みのモジュール
+
+    配布版に同梱したもの（numpy など）を、導入した機能の依存としてもう 1 つ
+    入れることがある 起動し直すと専用フォルダの方が先に見つかるが、今の実行では
+    同梱の方が ``sys.modules`` に残っていて入れ替わらない
+    """
+    loaded: list[str] = []
+    try:
+        entries = sorted(target.iterdir())
+    except OSError:
+        return ()
+    for entry in entries:
+        name = _module_name(entry)
+        if name is None:
+            continue
+        module = sys.modules.get(name)
+        location = getattr(module, "__file__", None) if module is not None else None
+        if location is None:
+            continue
+        if not Path(location).resolve().is_relative_to(target.resolve()):
+            loaded.append(name)
+    return tuple(loaded)
+
+
+def _module_name(entry: Path) -> str | None:
+    """専用フォルダの 1 項目が、何という名前で import されるか"""
+    if entry.is_dir():
+        if entry.suffix in {".dist-info", ".egg-info", ".data"} or entry.name in {
+            "bin",
+            "__pycache__",
+        }:
+            return None
+        return entry.name
+    if entry.suffix in {".py", ".pyd"}:
+        return entry.name.split(".", 1)[0]
+    return None
 
 
 def run_pip(arguments: Sequence[str]) -> int:

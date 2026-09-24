@@ -25,7 +25,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sashimono.runtime import FeaturePack, PackStatus, install_command, install_runtime
+from sashimono.runtime import (
+    FeaturePack,
+    PackStatus,
+    install_command,
+    install_runtime,
+    refresh_runtime,
+    restart_note,
+)
 from sashimono.ui.theme import Colors
 
 __all__ = ["SetupSection"]
@@ -174,8 +181,15 @@ class SetupSection(QWidget):
         self._timer.stop()
         self._progress.setVisible(False)
         self._button.setEnabled(True)
+        succeeded = self._code == 0
+        # 状態を見直す前に import の道を作り直す 先に見直すと、配布版では
+        # 入れたばかりのものが見えず「未導入」のまま止まる
+        loaded = refresh_runtime() if succeeded else ()
         self.refresh()
-        self.finished.emit(self._code == 0)
+        if succeeded:
+            note = restart_note(loaded, visible=self.status.installed)
+            self._status.setText(f"{self._status.text()}\n{note}")
+        self.finished.emit(succeeded)
 
 
 def _readable(megabytes: int) -> str:
