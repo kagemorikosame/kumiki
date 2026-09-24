@@ -57,6 +57,8 @@ __all__ = [
     "FORMAT_VERSION",
     "LEGACY_SUFFIXES",
     "ProjectFileError",
+    "clip_from_json",
+    "clip_to_json",
     "effect_from_json",
     "effect_to_json",
     "json_text",
@@ -507,7 +509,7 @@ def _media_from_json(raw: object, version: int) -> MediaItem:
 # --- タイムライン ---------------------------------------------------------
 
 
-def _clip_to_json(clip: Clip) -> dict[str, Any]:
+def clip_to_json(clip: Clip) -> dict[str, Any]:
     return {
         "id": clip.id,
         "timeline_start": clip.timeline_start,
@@ -530,7 +532,7 @@ def _clip_to_json(clip: Clip) -> dict[str, Any]:
     }
 
 
-def _clip_from_json(raw: object) -> Clip:
+def clip_from_json(raw: object) -> Clip:
     data = _require(raw, "clip")
     media_id = data.get("media_id")
     if media_id is not None and not isinstance(media_id, str):
@@ -586,7 +588,7 @@ def _track_to_json(track: Track) -> dict[str, Any]:
         "volume_db": track.volume_db,
         "pan": track.pan,
         "effects": [effect_to_json(e) for e in track.effects],
-        "clips": [_clip_to_json(c) for c in track.clips],
+        "clips": [clip_to_json(c) for c in track.clips],
     }
 
 
@@ -601,7 +603,7 @@ def _track_from_json(raw: object) -> Track:
     return Track(
         kind=kind,
         name=_get_str(data, "name"),
-        clips=tuple(_clip_from_json(c) for c in _get_list(data, "clips")),
+        clips=tuple(clip_from_json(c) for c in _get_list(data, "clips")),
         effects=tuple(effect_from_json(e) for e in _get_list(data, "effects")),
         locked=_get_bool(data, "locked", False),
         muted=_get_bool(data, "muted", False),

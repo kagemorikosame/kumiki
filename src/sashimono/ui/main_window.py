@@ -17,6 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from fractions import Fraction
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 from PySide6.QtCore import QBuffer, QIODevice, Qt, QTimer, QUrl, Signal, qVersion
@@ -47,6 +48,7 @@ from sashimono.compat.aviutl import native, plugin
 from sashimono.compat.aviutl.exo import ExoFile
 from sashimono.core import userdirs
 from sashimono.core.commands import (
+    DEFAULT_GENERATED_FRAMES,
     AddClip,
     AddMedia,
     AddScene,
@@ -92,6 +94,7 @@ from sashimono.core.model import (
     ProjectSettings,
     SceneId,
     TrackId,
+    TrackKind,
 )
 from sashimono.effects.sources import SHAPE, TEXT, TRANSITION
 from sashimono.engine.audio.waveform import Waveform
@@ -130,6 +133,9 @@ from sashimono.ui.workspace import (
     ShortcutStore,
     Workspace,
 )
+
+if TYPE_CHECKING:
+    from sashimono.compat.mapped import MappedObject
 
 __all__ = ["MainWindow", "about_text"]
 
@@ -766,6 +772,7 @@ class MainWindow(QMainWindow):
             lambda commands, label: self.execute_all(commands, label, merge=True)
         )
         self._timeline.playhead_moved.connect(self._on_playhead_moved)
+        self._timeline.template_requested.connect(self.place_template_entry)
 
         self._media_pool.import_requested.connect(self.import_media)
         self._media_pool.insert_requested.connect(self._insert_media_by_id)
@@ -990,6 +997,7 @@ class MainWindow(QMainWindow):
             self._active_scene = None
         project = self.view_project
         self._scene_bar.set_project(root, self._active_scene)
+        self._timeline.set_open_scene(self._active_scene)
         self._timeline.set_project(project)
         self._media_pool.set_project(root)
         self._inspector.set_project(project)
@@ -1902,7 +1910,7 @@ class MainWindow(QMainWindow):
 
         「置く」と「着せる」で行き先が違うだけで、どちらも 1 回の Undo で戻る
         """
-        from sashimono.compat.catalog import gather_media, place, restyle
+        from sashimono.compat.catalog import restyle
         from sashimono.ui.template_dialog import TemplateDialog
 
         dialog = TemplateDialog(parent=self)
@@ -1928,19 +1936,63 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("テンプレートを適用した（文字と長さはそのまま）", 5000)
             return
 
+        self._place_template(objects, dialog.origin, self._timeline.playhead)
+
+    def place_template_entry(self, entry: object, frame: int, track_id: str = "") -> bool:
+        """棚のテンプレートを ``frame`` へ置く タイムラインの右クリックの〔追加〕から
+
+        ``track_id`` は右クリックしたトラック 置く物が 1 つでそこが空いていればそこへ、
+        そうでなければ棚のダイアログから置くときと同じく元のレイヤーの並びで置く
+        何個もの物を 1 本のトラックへ置くと、重なった所で断られる
+        """
+        from sashimono.compat.catalog import TemplateEntry, TemplateError
+
+        if not isinstance(entry, TemplateEntry):
+            return False
+        try:
+            objects = entry.load()
+        except (*TemplateError, OSError) as exc:
+            self.statusBar().showMessage(f"{entry.label} を読み込めません: {exc}", 6000)
+            return False
+        return self._place_template(
+            objects, entry.path.parent, frame, TrackId(track_id) if track_id else None
+        )
+
+    def _place_template(
+        self,
+        objects: list[MappedObject],
+        near: Path | None,
+        frame: int,
+        track_id: TrackId | None = None,
+    ) -> bool:
+        from sashimono.compat.catalog import gather_media, place
+
         # 画像・音声のアイテムは素材として登録してからクリップに結ぶ 結ばないと、
         # 置いたクリップは描かれず鳴らない（素材の無いクリップになる）
-        plan = gather_media(objects, self.view_project, _probe_or_none, near=dialog.origin)
-        commands = place(
-            objects, self.view_project, at_frame=self._timeline.playhead, media=plan.media
-        )
+        project = self.view_project
+        plan = gather_media(objects, project, _probe_or_none, near=near)
+        pictures = [item for item in objects if item.has_picture]
+        target = None
+        if track_id is not None and len(pictures) == 1 and not pictures[0].children:
+            track = project.timeline.find_track(track_id)
+            clip = pictures[0].clip
+            end = frame + (clip.duration if pictures[0].has_span else DEFAULT_GENERATED_FRAMES)
+            free = track is not None and not any(c.overlaps(frame, end) for c in track.clips)
+            if free and track is not None and track.kind is TrackKind.VIDEO and not track.locked:
+                target = track_id
+        commands = place(objects, project, at_frame=frame, track_id=target, media=plan.media)
         if not commands:
             self.statusBar().showMessage("置けるオブジェクトがありませんでした", 5000)
-            return
+            return False
         # 素材の登録と配置を 1 回の Undo にまとめる 分けると、戻したときに
         # 使われていない素材だけが一覧に残る
         if not self.execute_all([*plan.commands, *commands], "テンプレートを配置"):
-            return
+            return False
+        # 置いた物を選ぶ 右クリックのほかの〔追加〕と同じく、設定パネルがすぐ開く
+        added = [c.clip.id for c in commands if isinstance(c, AddClip)]
+        landed = [c for c in added if self.view_project.timeline.locate_clip(c) is not None]
+        if landed:
+            self._timeline.set_selection(landed)
         for media in plan.added:
             self._analyzer.request(media, on_ready=self._on_analysis_ready)
             self._request_proxy(media)
@@ -1952,6 +2004,7 @@ class MainWindow(QMainWindow):
             # 見つからないものと、見つかっても開けなかったものの両方を数えている
             note += f"（素材 {len(plan.missing)} 件が見つからないか開けません）"
         self.statusBar().showMessage(note, 6000)
+        return True
 
     def rescan_scripts(self) -> None:
         """スクリプトのフォルダを読み直す"""
