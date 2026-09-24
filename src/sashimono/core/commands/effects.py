@@ -290,6 +290,12 @@ class AddEffect(Command):
 
 @dataclass(frozen=True, slots=True)
 class RemoveEffect(Command):
+    """エフェクトを外す 固定の項目（:attr:`Effect.fixed`）は断る
+
+    固定の項目はクリップが最初から持つ欄で、外せると YMM4 と同じ並びのパネルが
+    クリップごとに崩れる 効かせたくないときは無効にする
+    """
+
     clip_id: ClipId
     effect_id: EffectId
     after: bool = False
@@ -301,9 +307,14 @@ class RemoveEffect(Command):
     def apply(self, project: Project) -> Project:
         def update(clip: Clip) -> Clip:
             stack = stack_of(clip, self.after)
-            remaining = tuple(e for e in stack if e.id != self.effect_id)
-            if len(remaining) == len(stack):
+            target = next((e for e in stack if e.id == self.effect_id), None)
+            if target is None:
                 raise KeyError(f"エフェクトが見つからない: {self.effect_id}")
+            if target.fixed:
+                raise ValueError(
+                    f"{target.kind} はクリップが最初から持つ項目なので外せない 無効にはできる"
+                )
+            remaining = tuple(e for e in stack if e.id != self.effect_id)
             return with_stack(clip, self.after, remaining)
 
         return _update_clip(project, self.clip_id, update)
@@ -315,6 +326,10 @@ class MoveEffect(Command):
 
     順番は結果に効く ぼかしてから色を変えるのと、色を変えてからぼかすのは
     別の絵になる
+
+    固定の項目（:attr:`Effect.fixed`）は動かせず、ふつうのエフェクトが固定の項目を
+    またぐ動きも断る 固定の項目どうしの並びは YMM4 の欄の並び（描画→動画→音声）で、
+    間へ別のエフェクトを割り込ませると、どこまでが最初からある欄か見分けが付かなくなる
     """
 
     clip_id: ClipId
@@ -331,8 +346,17 @@ class MoveEffect(Command):
             effects = list(stack_of(clip, self.after))
             for position, effect in enumerate(effects):
                 if effect.id == self.effect_id:
+                    if effect.fixed:
+                        raise ValueError(
+                            f"{effect.kind} はクリップが最初から持つ項目なので並べ替えられない"
+                        )
                     effects.pop(position)
-                    effects.insert(max(0, min(self.index, len(effects))), effect)
+                    destination = max(0, min(self.index, len(effects)))
+                    # 抜いた後の列で、元の位置と行き先の間にある物が「またぐ」相手
+                    low, high = sorted((position, destination))
+                    if any(e.fixed for e in effects[low:high]):
+                        raise ValueError("最初から持つ項目をまたいで並べ替えられない")
+                    effects.insert(destination, effect)
                     return with_stack(clip, self.after, tuple(effects))
             raise KeyError(f"エフェクトが見つからない: {self.effect_id}")
 

@@ -172,10 +172,14 @@ def default_volume_effect() -> Effect:
 
     置いた直後から設定パネルで音量を動かせるようにする 付いていないと、
     音量を下げたいだけでもエフェクトの一覧から探して足す手間が要った（Issue #27）
+
+    固定の項目として付ける YMM4 の音声アイテムの音量と同じく、外せず、
+    重ねて掛けたいときはふつうの音量調整を別に足す
     """
     return Effect(
         kind=VOLUME_EFFECT_KIND,
         params={name: AnimatedValue(static=value) for name, value in _VOLUME_DEFAULTS},
+        fixed=True,
     )
 
 

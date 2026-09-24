@@ -334,12 +334,14 @@ class InspectorPanel(QWidget):
         if after:
             label = f"{label}（後の場面）"
         stack = clip.after_effects if after else clip.effects
+        # 隣が固定の項目なら、その向きへは動かせない（命令がまたぐ動きを断る）
         section = _Section(
             label,
             effect=effect,
             clip_id=clip.id,
             index=index,
-            count=len(stack),
+            up_movable=index > 0 and not stack[index - 1].fixed,
+            down_movable=index < len(stack) - 1 and not stack[index + 1].fixed,
             after=after,
         )
         section.action_requested.connect(self._emit)
@@ -575,7 +577,8 @@ class _Section(QFrame):
         effect: Effect | None = None,
         clip_id: ClipId | None = None,
         index: int = 0,
-        count: int = 0,
+        up_movable: bool = False,
+        down_movable: bool = False,
         after: bool = False,
     ) -> None:
         super().__init__()
@@ -602,9 +605,14 @@ class _Section(QFrame):
         self._after = after
         if effect is not None and clip_id is not None:
             header.addWidget(self._toggle(effect, clip_id))
-            header.addWidget(self._move(effect, clip_id, index - 1, "▲", index > 0))
-            header.addWidget(self._move(effect, clip_id, index + 1, "▼", index < count - 1))
-            header.addWidget(self._remove(effect, clip_id))
+            if effect.fixed:
+                # 外すことも並べ替えることもできない 押せないボタンを並べるより、
+                # 鍵の印で「最初からある欄」だと示す方が、押せない理由まで伝わる
+                header.addWidget(self._lock())
+            else:
+                header.addWidget(self._move(effect, clip_id, index - 1, "▲", up_movable))
+                header.addWidget(self._move(effect, clip_id, index + 1, "▼", down_movable))
+                header.addWidget(self._remove(effect, clip_id))
 
         container = QWidget(self)
         container.setStyleSheet("border: none;")
@@ -659,6 +667,16 @@ class _Section(QFrame):
             )
         )
         return button
+
+    def _lock(self) -> QLabel:
+        lock = QLabel("🔒")
+        lock.setObjectName("fixed_lock")
+        lock.setToolTip(
+            "クリップが最初から持つ項目です 外すことと並べ替えはできません"
+            " 無効にはできます 重ねて掛けたいときは同じエフェクトを追加してください"
+        )
+        lock.setStyleSheet(f"color: {Colors.TEXT_MUTED.name()}; border: none;")
+        return lock
 
     def _remove(self, effect: Effect, clip_id: ClipId) -> QToolButton:
         button = QToolButton()

@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 
 from sashimono.core.model.easing import CURVES, ease
@@ -228,18 +228,22 @@ class Effect:
     ``kind`` はエフェクトの種類を示す文字列 ID（例: ``"blur"``、
     ``"aviutl.script:震え@ふるえ"``） レンダラはこれを見て実装を引く
     AviUtl スクリプトも独自エフェクトも同じ器に載せるため、型ではなく ID にしている
+
+    ``fixed`` はクリップが最初から持つ項目（YMM4 の描画・音声の欄にあたる）の印
+    外すことと並べ替えることを命令の側で断る 無効にはできる 同じ種類を重ねて
+    掛けたいときは、印の無いふつうのエフェクトとして足す
     """
 
     kind: str
     params: dict[str, ParamValue] = field(default_factory=dict)
     enabled: bool = True
     id: EffectId = field(default_factory=new_effect_id)
+    fixed: bool = False
 
     def with_param(self, name: str, value: ParamValue) -> Effect:
-        """パラメータを 1 つ差し替えた新しい :class:`Effect` を返す"""
-        return Effect(
-            kind=self.kind,
-            params={**self.params, name: value},
-            enabled=self.enabled,
-            id=self.id,
-        )
+        """パラメータを 1 つ差し替えた新しい :class:`Effect` を返す
+
+        ``replace`` で作る 欄を並べて作り直すと、あとで足した欄（``fixed`` など）を
+        書き忘れたときに、値を 1 つ触っただけで印が落ちる
+        """
+        return replace(self, params={**self.params, name: value})
