@@ -183,8 +183,9 @@ class PreviewWidget(QOpenGLWidget):
         self._showing_drag = False
         # 押していない間も矢印の形を変えるため 掴める所が見えるように
         self.setMouseTracking(True)
-        # Esc で掴むのをやめられるように
-        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        # 押してもフォーカスを取らない 取ると、プレビューで選んだ後のコマ送りや削除の
+        # キーがタイムラインへ届かなくなる Esc は掴んでいる間だけキーボードを借りて受ける
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setMinimumSize(240, 135)
 
     @property
@@ -196,7 +197,7 @@ class PreviewWidget(QOpenGLWidget):
             # 掴んでいる途中に別の道（取り消しやほかのパネル）で中身が変わった 掴んだ時点の
             # プロジェクトから作った値を離したときに当てると、その変更を上書きしてしまう
             # 途中の絵はこの新しい中身で描き直されるので、元へ戻す頼みは要らない
-            self._drag = None
+            self._end_drag()
         previous = self._project
         self._project = project
         if self._renderer is not None:
@@ -713,18 +714,32 @@ class PreviewWidget(QOpenGLWidget):
         hit, track, clip, outline = found
         if track.locked:
             return
-        self._drag = _Drag(
-            hit=hit,
-            clip_id=clip.id,
-            project=self._project,
-            press=self.to_canvas(position),
-            last=self.to_canvas(position),
-            start=start_values(clip, self._frame - clip.timeline_start),
-            corners=outline.corners,
-            pivot=outline.pivot,
-            frame=self._frame,
+        self._begin_drag(
+            _Drag(
+                hit=hit,
+                clip_id=clip.id,
+                project=self._project,
+                press=self.to_canvas(position),
+                last=self.to_canvas(position),
+                start=start_values(clip, self._frame - clip.timeline_start),
+                corners=outline.corners,
+                pivot=outline.pivot,
+                frame=self._frame,
+            )
         )
         event.accept()
+
+    def _begin_drag(self, drag: _Drag) -> None:
+        """掴み始める 掴んでいる間だけキーボードを借りて Esc を受ける"""
+        self._drag = drag
+        self.grabKeyboard()
+
+    def _end_drag(self) -> _Drag | None:
+        """掴むのをやめて、掴んでいた物を返す 借りたキーボードはタイムラインへ返す"""
+        drag, self._drag = self._drag, None
+        if drag is not None:
+            self.releaseKeyboard()
+        return drag
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt の命名規約
         drag = self._drag
@@ -767,7 +782,8 @@ class PreviewWidget(QOpenGLWidget):
         if self._drag is None or event.button() != Qt.MouseButton.LeftButton:
             super().mouseReleaseEvent(event)
             return
-        drag, self._drag = self._drag, None
+        drag = self._end_drag()
+        assert drag is not None
         if drag.commands:
             self.commands_requested.emit(list(drag.commands), _LABELS[drag.hit.grip])
         else:
@@ -784,7 +800,7 @@ class PreviewWidget(QOpenGLWidget):
         super().keyPressEvent(event)
 
     def _cancel_drag(self) -> None:
-        drag, self._drag = self._drag, None
+        drag = self._end_drag()
         if drag is not None and drag.commands:
             self.preview_requested.emit([])
 

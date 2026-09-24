@@ -17,8 +17,8 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QEvent, QPointF, Qt
-from PySide6.QtGui import QMouseEvent
-from PySide6.QtWidgets import QApplication
+from PySide6.QtGui import QKeyEvent, QMouseEvent
+from PySide6.QtWidgets import QApplication, QWidget
 
 from sashimono.core.commands import (
     AddClip,
@@ -536,6 +536,33 @@ class TestDragEndings:
         assert seen.committed == []
         # 見せていた途中の絵を元へ戻す頼みが出ている
         assert seen.previewed[-1] == []
+
+    def test_a_click_leaves_the_keys_with_the_timeline(self, make_widget: MakeWidget) -> None:
+        # プレビューがフォーカスを取ると、選んだ後の矢印（コマ送り）や Delete が
+        # タイムラインへ届かなくなる 掴み終えたら借りたキーボードも返す
+        media = _media()
+        clip = _clip(media)
+        project, _ = _project(clip)
+        widget = make_widget(project, clip.id)
+        assert widget.focusPolicy() == Qt.FocusPolicy.NoFocus
+        _drag(widget, (160, 90), (180, 90))
+        assert QWidget.keyboardGrabber() is not widget
+
+    def test_escape_still_cancels_while_dragging(self, make_widget: MakeWidget) -> None:
+        # フォーカスを取らなくても、掴んでいる間の Esc は受けて途中の絵を元へ戻す
+        media = _media()
+        clip = _clip(media)
+        project, _ = _project(clip)
+        widget = make_widget(project, clip.id)
+        seen = _Recorder(widget)
+        _send(widget, QEvent.Type.MouseButtonPress, (160, 90))
+        _send(widget, QEvent.Type.MouseMove, (180, 90))
+        escape = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier)
+        QApplication.sendEvent(widget, escape)
+        _send(widget, QEvent.Type.MouseButtonRelease, (180, 90))
+        assert seen.committed == []
+        assert seen.previewed[-1] == []
+        assert QWidget.keyboardGrabber() is not widget
 
     def test_a_muted_track_has_no_outline(self, make_widget: MakeWidget) -> None:
         # ミュートしたトラックの絵は描かれない 枠が残ると見えない絵を動かすことになる
