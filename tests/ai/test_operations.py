@@ -180,6 +180,12 @@ class TestEditing:
             run(host, "set_clip_property", clip_id=clip, name="hold_at", value=value)
         assert host.document.project.timeline.tracks[0].clips[0].hold_at is None
 
+    def test_a_bad_start_position_names_itself(self, host: FakeHost) -> None:
+        # 文面に hold_at と出すと、AI は source_in ではなく hold_at を直しに行く
+        clip = str(_clip_id(host.document.project))
+        with pytest.raises(ToolError, match="source_in は 0 以上"):
+            run(host, "set_clip_property", clip_id=clip, name="source_in", value=-1)
+
     def test_only_allowed_properties_can_change(self, host: FakeHost) -> None:
         clip = str(_clip_id(host.document.project))
         with pytest.raises(ToolError, match="変えられるのは"):

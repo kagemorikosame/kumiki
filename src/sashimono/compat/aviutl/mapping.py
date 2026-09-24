@@ -31,6 +31,7 @@ from sashimono.compat.aviutl.report import CompatibilityReport, global_report
 from sashimono.compat.decoration import decoration_params, find_decoration
 from sashimono.compat.mapped import MappedObject
 from sashimono.core.commands import AddClip, AddTrack, Command
+from sashimono.core.commands.fixed import fixed_rank, takes_picture_items, with_fixed_items
 from sashimono.core.model import (
     AnimatedValue,
     Clip,
@@ -524,6 +525,10 @@ _SPLIT = "オブジェクト分割"
 #: 一覧には載るのにクリップが空のまま、ということが起きる
 _MEDIA_NAMES = frozenset({"動画ファイル", "画像ファイル", "音声ファイル"})
 
+#: 音声オブジェクトの置き方（映像の 標準描画 に当たる） オブジェクトが最初から持つ音量の欄
+#: なので、写した音量調整に固定の印を付ける 音量調整 のフィルタは本人が足した物なので付けない
+_SOUND_PLACEMENT = frozenset({"音声再生", "標準再生"})
+
 #: 素材一覧へ載せる中身 音声波形表示は自分では素材にならないが、``ファイル`` の音を描く
 #: 読み込ませないと、別の機械へ持っていったときに探し直せない
 _LISTED_NAMES = _MEDIA_NAMES | {"音声波形表示"}
@@ -594,7 +599,14 @@ def map_exo(
             effects=item.clip.effects,
             opacity=item.clip.opacity,
             blend_mode=item.clip.blend_mode,
+            native_size=item.clip.native_size,
         )
+        # 素材を置いたときと同じ欄を持たせる 標準描画 と 音声再生 から写した物は印が
+        # 付いているので、既定のままで写さなかった欄だけが足される
+        # 中身の無いエイリアス（効果だけ）は置いても何も映らないので、欄も持たせない
+        sound = item.kind == "音声ファイル"
+        picture = not sound and item.kind != "effects" and takes_picture_items(placed)
+        placed = with_fixed_items(placed, picture=picture, sound=sound)
         commands.append(AddClip(track.id, placed))
     return commands
 
@@ -644,6 +656,8 @@ def map_object(
             continue
 
         effect = _filter(entry, points, log)
+        if effect is not None and entry.name in _SOUND_PLACEMENT:
+            effect = replace(effect, fixed=True)
         if effect is not None and effect.kind == "split_pieces":
             effect = replace(effect, params={**effect.params, **grid})
             merged = _merge_pieces(effects[-1], effect, log) if effects else None
@@ -674,7 +688,15 @@ def map_object(
     ):
         transform = registry.get("transform")
         if transform is not None:
-            effects.insert(0, transform.create(**placement))
+            # 標準描画 はオブジェクトが最初から持つ欄 置くときに同じ種類を足さないよう
+            # 印を付ける（:func:`sashimono.core.commands.fixed.with_fixed_items`）
+            effects.append(replace(transform.create(**placement), fixed=True))
+    # 固定の欄（配置・音量）は列の末尾へ集める AviUtl も フィルタを掛けた絵を最後に
+    # 標準描画 で置き、音声再生 で鳴らす 先頭や途中に残すと、読み込んだフィルタが
+    # 欄の後ろに閉じ込められ、あとで足したエフェクトと並べ替えられない
+    effects = [e for e in effects if not e.fixed] + sorted(
+        (e for e in effects if e.fixed), key=lambda e: fixed_rank(e.kind)
+    )
 
     source_in, speed = _playback(content, rate, log)
     clip = Clip(
@@ -686,6 +708,8 @@ def map_object(
         effects=tuple(effects),
         opacity=opacity,
         blend_mode=blend,
+        # AviUtl は画像・動画を拡大率 100 で素材の画素の大きさに置く
+        native_size=bool(media_path) and source is None and kind != "音声ファイル",
     )
     return MappedObject(
         clip=clip,

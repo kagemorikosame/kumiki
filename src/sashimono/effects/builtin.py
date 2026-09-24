@@ -916,6 +916,18 @@ def register_builtin_effects() -> None:
                 CheckSpec("move_to_pivot", "中心を絵の中央の位置へ寄せる", False),
             ),
             fragment_shader=_TRANSFORM,
+            # 動かさず・拡げず・回さず・寄せなければ、支点（中心と基準）をどこへ置いても
+            # 元の位置へ戻る（シェーダは支点を引いてから足し戻す）
+            idle_when=(
+                ("pos_x", 0.0),
+                ("pos_y", 0.0),
+                ("scale", 100.0),
+                ("scale_y", 100.0),
+                ("rotation", 0.0),
+                ("rotation_x", 0.0),
+                ("rotation_y", 0.0),
+                ("move_to_pivot", False),
+            ),
         )
     )
 
