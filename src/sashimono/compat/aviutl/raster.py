@@ -16,7 +16,46 @@ from __future__ import annotations
 
 import numpy as np
 
-__all__ = ["draw_image", "draw_triangle"]
+__all__ = ["draw_image", "draw_triangle", "resize"]
+
+
+def resize(image: np.ndarray, width: int, height: int, *, smooth: bool = True) -> np.ndarray:
+    """絵を ``width`` x ``height`` へ引き伸ばす（``obj.effect("リサイズ")``）
+
+    ``smooth`` が偽なら最も近い画素を取る（リサイズの 補間なし） 真なら双線形で、
+    色は不透明度を掛けてから混ぜる ストレートのまま混ぜると、透明な所の色（黒）が
+    縁へにじんで暗い輪が出る
+    """
+    h, w = image.shape[:2]
+    width, height = max(1, width), max(1, height)
+    if w == 0 or h == 0:
+        return np.zeros((height, width, 4), np.uint8)
+    if (w, h) == (width, height):
+        return image.copy()
+    if not smooth:
+        rows = np.arange(height) * h // height
+        cols = np.arange(width) * w // width
+        picked: np.ndarray = np.ascontiguousarray(image[rows][:, cols])
+        return picked
+
+    source = image.astype(np.float32) / 255.0
+    source[..., :3] *= source[..., 3:4]
+    ys = np.clip((np.arange(height) + 0.5) * h / height - 0.5, 0, h - 1)
+    xs = np.clip((np.arange(width) + 0.5) * w / width - 0.5, 0, w - 1)
+    y0 = np.floor(ys).astype(np.intp)
+    x0 = np.floor(xs).astype(np.intp)
+    y1 = np.minimum(y0 + 1, h - 1)
+    x1 = np.minimum(x0 + 1, w - 1)
+    fy = (ys - y0)[:, None, None]
+    fx = (xs - x0)[None, :, None]
+    top = source[y0][:, x0] * (1 - fx) + source[y0][:, x1] * fx
+    bottom = source[y1][:, x0] * (1 - fx) + source[y1][:, x1] * fx
+    mixed = top * (1 - fy) + bottom * fy
+    alpha = mixed[..., 3:4]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        mixed[..., :3] = np.where(alpha > 0, mixed[..., :3] / alpha, 0.0)
+    resized: np.ndarray = np.clip(np.rint(mixed * 255.0), 0, 255).astype(np.uint8)
+    return resized
 
 
 def _over(target: np.ndarray, color: np.ndarray, alpha: np.ndarray) -> np.ndarray:

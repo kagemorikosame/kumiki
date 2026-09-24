@@ -364,6 +364,33 @@ class TestAddingFromTheEmptySpace:
         assert [e.kind for e in clip.effects] == [entry.identifier, "flip", "transform"]
         assert clip.source is not None and clip.source.params.get("text") == ""
 
+    def test_a_custom_object_is_called_by_its_script(
+        self, view: TimelineView, tmp_path: Path
+    ) -> None:
+        """置いたカスタムオブジェクトは、タイムラインでも設定パネルでもスクリプトの名前で出る（#147）
+
+        土台が空のテキストなので、種類の名前のまま出すと「テキスト」になり、何を置いたのか
+        分からない エイリアスとして保存するときの名前の既定も同じ
+        """
+        from sashimono.ui.inspector.header import identify_clip
+        from sashimono.ui.timeline.add_menu import _suggested_name
+        from sashimono.ui.timeline.painter import _clip_name
+
+        _wire(view)
+        catalog = ScriptCatalog(roots=())
+        entry = catalog.add_text(
+            "aviutl:試験.obj:円", "@円\n--track0:大きさ,0,100,50\n", kind="obj"
+        )
+        view.add_sources = _sources(tmp_path, custom_objects=lambda: (entry,))
+        _find(
+            view.build_context_menu(_point(view, "V2", 120)), "追加", "カスタムオブジェクト", "円"
+        ).trigger()
+        (clip,) = _track(view, "V2").clips
+        assert _clip_name(clip, None) == "カスタムオブジェクト: 円"
+        identity = identify_clip(view.project, clip.id)
+        assert identity is not None and identity.title == "カスタムオブジェクト（円）"
+        assert _suggested_name(clip) == "カスタムオブジェクト 円"
+
     def test_the_script_catalog_is_not_read_until_the_submenu_opens(
         self, view: TimelineView, tmp_path: Path
     ) -> None:

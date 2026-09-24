@@ -17,6 +17,11 @@ import numpy as np
 from PySide6.QtCore import QPointF, QRect, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QImage, QPainter, QPen
 
+from sashimono.compat.aviutl.custom_object import (
+    CUSTOM_OBJECT_LABEL,
+    custom_object_script,
+    script_label,
+)
 from sashimono.core.model import Clip, ClipId, MediaItem, Timeline, Track, TrackKind
 from sashimono.core.timebase import FrameRate, format_timecode
 from sashimono.effects.sources import source_registry
@@ -421,6 +426,10 @@ def _clip_name(clip: Clip, media: MediaItem | None) -> str:
         return media.name
     if clip.source is None:
         return "（空）"
+    script = custom_object_script(clip)
+    if script is not None:
+        # 土台は空のテキスト 種類のまま出すと「テキスト」になり、何を置いたのか分からない
+        return f"{CUSTOM_OBJECT_LABEL}: {script_label(script.kind)}"
 
     definition = source_registry.get(clip.source.kind)
     label = definition.label if definition is not None else clip.source.kind
