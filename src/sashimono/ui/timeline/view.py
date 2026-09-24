@@ -22,9 +22,10 @@ from PySide6.QtGui import (
     QMouseEvent,
     QPainter,
     QPen,
+    QResizeEvent,
     QWheelEvent,
 )
-from PySide6.QtWidgets import QMenu, QWidget
+from PySide6.QtWidgets import QGridLayout, QMenu, QScrollBar, QWidget
 
 from sashimono.core.clipboard import ClipboardContent, copy_clips, cut_commands, paste_commands
 from sashimono.core.commands import (
@@ -43,7 +44,7 @@ from sashimono.core.commands import (
     UngroupClips,
 )
 from sashimono.core.commands.edit import DEFAULT_TRACK_HEIGHT, MAX_TRACK_HEIGHT, MIN_TRACK_HEIGHT
-from sashimono.core.model import Clip, ClipId, GroupId, Project, TrackId, TrackKind
+from sashimono.core.model import Clip, ClipId, GroupId, Project, Track, TrackId, TrackKind
 from sashimono.engine.cache import MediaAnalyzer
 from sashimono.ui.theme import Colors, Metrics
 from sashimono.ui.timeline.layout import TimelineLayout, TrackBand
@@ -60,7 +61,7 @@ from sashimono.ui.timeline.painter import (
 )
 from sashimono.ui.timeline.painter import draw_clip as paint_clip
 
-__all__ = ["TimelineView"]
+__all__ = ["TimelineArea", "TimelineView"]
 
 #: ホイール 1 段で拡大する倍率
 ZOOM_STEP = 1.25
@@ -157,7 +158,6 @@ class TimelineView(QWidget):
         super().__init__(parent)
         self._project = project
         self._analyzer = analyzer
-        self._layout = TimelineLayout()
         self._playhead = 0
         #: 選んでいるクリップ 最後の 1 本が「主」で、設定パネルと AI の既定の
         #: 対象になる 何本選んでも、設定パネルに出せるのは 1 本だけのため
@@ -173,6 +173,19 @@ class TimelineView(QWidget):
         #: 高さのドラッグ中だけ持つ、掴む前のプロジェクト 途中の高さは描画のため
         #: だけに当て、離したときにこれへ戻してからコマンドを出す
         self._resize_base: Project | None = None
+        #: 枠を描くクリップの控え ``(プロジェクト, 選択, 結果)`` :meth:`_highlighted` を見る
+        self._highlight_cache: tuple[Project, tuple[ClipId, ...], frozenset[ClipId]] | None = None
+
+        #: スクロールバーはビューの外（下と右）に並べるので、親を持たせずに作る
+        #: 置くのは :class:`TimelineArea` ビューの子にすると、描いた絵の上に重なる
+        self._hbar = QScrollBar(Qt.Orientation.Horizontal)
+        self._vbar = QScrollBar(Qt.Orientation.Vertical)
+        self._hbar.setAccessibleName("タイムラインの横スクロール")
+        self._vbar.setAccessibleName("タイムラインの縦スクロール")
+        self._hbar.valueChanged.connect(self._on_hbar)
+        self._vbar.valueChanged.connect(self._on_vbar)
+        self._syncing_bars = False
+        self._view_layout = TimelineLayout()
 
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -196,7 +209,97 @@ class TimelineView(QWidget):
         remaining = tuple(c for c in self._selection if project.timeline.locate_clip(c))
         if remaining != self._selection:
             self.set_selection(remaining)
+        # 長さやトラックの数が変わると、スクロールできる幅と高さも変わる
+        self._sync_scroll_bars()
         self.update()
+
+    # --- スクロール ---
+
+    @property
+    def _layout(self) -> TimelineLayout:
+        return self._view_layout
+
+    @_layout.setter
+    def _layout(self, layout: TimelineLayout) -> None:
+        # 拡大・スクロール・再生ヘッドの追従と、変える所があちこちにあるので、
+        # 変わったらここで必ずスクロールバーを合わせる 呼び忘れると、バーの位置と
+        # 見えている所がずれる
+        self._view_layout = layout
+        self._sync_scroll_bars()
+
+    @property
+    def horizontal_scroll_bar(self) -> QScrollBar:
+        return self._hbar
+
+    @property
+    def vertical_scroll_bar(self) -> QScrollBar:
+        return self._vbar
+
+    @property
+    def view_layout(self) -> TimelineLayout:
+        """いまの拡大率とスクロール位置"""
+        return self._view_layout
+
+    def _scrollable_frames(self) -> float:
+        """横にスクロールできる長さ（フレーム） プロジェクトの長さに余白を足す
+
+        余白が無いと、最後のクリップの後ろへ置く場所を右端でしか見られない
+        画面の半分を足して、末尾の後ろにも置き場が見えるようにする
+        """
+        span = self._view_layout.frames_in(self.width())
+        return self._project.duration + span * 0.5
+
+    def _sync_scroll_bars(self) -> None:
+        """スクロールバーの範囲と位置を、いまの表示に合わせる
+
+        横は画素で数える 1 フレームが 1 画素に満たない拡大率でも、つまみを
+        滑らかに動かせるように 縦の範囲はトラックを並べた高さから
+        """
+        layout = self._view_layout
+        scale = layout.pixels_per_frame
+        visible = max(1, self.width() - Metrics.TRACK_HEADER_WIDTH)
+        value = round(layout.scroll_frame * scale)
+        content = round(self._scrollable_frames() * scale)
+        # 今の位置より短くはしない Shift+ホイールや再生ヘッドの追従は末尾より先へ
+        # 行ける そこでバーを縮めると、つまみが引き戻されて見ていた所が飛ぶ
+        maximum = max(content - visible, value, 0)
+
+        rows = max(1, self.height() - Metrics.RULER_HEIGHT)
+        tracks = layout.content_height(self._project.timeline) - Metrics.RULER_HEIGHT
+        vertical_max = max(tracks - rows, layout.scroll_y, 0)
+
+        self._syncing_bars = True
+        try:
+            self._hbar.setRange(0, maximum)
+            self._hbar.setPageStep(visible)
+            self._hbar.setSingleStep(max(1, visible // 20))
+            self._hbar.setValue(value)
+            self._vbar.setRange(0, vertical_max)
+            self._vbar.setPageStep(rows)
+            self._vbar.setSingleStep(Metrics.MIN_TRACK_HEIGHT)
+            self._vbar.setValue(layout.scroll_y)
+        finally:
+            self._syncing_bars = False
+        # トラックが全部見えているときは縦のバーを隠す 使えないバーが幅を取るだけ
+        self._vbar.setVisible(vertical_max > 0 and self._vbar.parent() is not None)
+
+    def _on_hbar(self, value: int) -> None:
+        if self._syncing_bars:
+            return
+        layout = self._view_layout
+        self._view_layout = layout.scrolled_to(value / layout.pixels_per_frame)
+        self.update()
+
+    def _on_vbar(self, value: int) -> None:
+        if self._syncing_bars:
+            return
+        self._view_layout = self._view_layout.scrolled_vertically(value)
+        self.update()
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802 - Qt の命名規約
+        super().resizeEvent(event)
+        # 幅が変わると 1 画面に入るフレーム数（バーのつまみの大きさ）が変わる
+        self._sync_scroll_bars()
 
     @property
     def playhead(self) -> int:
@@ -273,7 +376,7 @@ class TimelineView(QWidget):
 
         start_frame, end_frame = self._layout.visible_range(width)
         scale = self._layout.pixels_per_frame
-        selected = frozenset(self._selection)
+        selected = self._highlighted()
         for band in self._layout.bands(timeline):
             if band.bottom <= Metrics.RULER_HEIGHT or band.top >= self.height():
                 continue
@@ -303,6 +406,53 @@ class TimelineView(QWidget):
 
         draw_ruler(painter, self._layout, width, self._project.rate)
         draw_playhead(painter, self._layout, self._playhead, self.height())
+
+    def _highlighted(self) -> frozenset[ClipId]:
+        """選んだ枠を描くクリップ 選んだものと、リンクした相手（映像と音声の組）
+
+        リンクした相手は選択には入れない 相手は動かすのも消すのも分割するのも
+        コマンドの側が一緒に扱うので、選択に入れると同じ組へ 2 度当てることになる
+        ただ枠を映像の側にしか描かないと、音声も一緒に動くことが見えない（Issue #27）
+        ので、描くときだけ相手にも同じ枠を付ける
+
+        全クリップを 1 度だけ舐める 選んだ 1 本ごとに相手を探すと、全部を選んだとき
+        （1 万本）に描くたびに 1 万 × 1 万回回る 選択とプロジェクトが同じ間は覚えておく
+        """
+        cached = self._highlight_cache
+        if cached is not None and cached[0] is self._project and cached[1] == self._selection:
+            return cached[2]
+        timeline = self._project.timeline
+        links = {
+            located[1].link_group
+            for clip_id in self._selection
+            if (located := timeline.locate_clip(clip_id)) is not None
+            and located[1].link_group is not None
+        }
+        found = set(self._selection)
+        if links:
+            found.update(
+                clip.id
+                for track in timeline.tracks
+                for clip in track.clips
+                if clip.link_group in links
+            )
+        result = frozenset(found)
+        self._highlight_cache = (self._project, self._selection, result)
+        return result
+
+    def _linked_partners(self, clip: Clip) -> list[tuple[Track, Clip]]:
+        """リンクした相手（自分を除く） 相手のトラックがロックしていれば外す
+
+        :class:`MoveClip` と :class:`TrimClip` は、ロックしたトラックの相手を動かさない
+        動かない相手に落下先の枠を出すと、離したときの結果と食い違う
+        """
+        if clip.link_group is None:
+            return []
+        return [
+            (track, member)
+            for track, member in self._project.timeline.linked_clips(clip.link_group)
+            if member.id != clip.id and not track.locked
+        ]
 
     def _paint_detailed(
         self, painter: QPainter, band: TrackBand, clip: Clip, rect: QRect, selected: bool
@@ -366,10 +516,22 @@ class TimelineView(QWidget):
             return
         if self._drag.kind is DragKind.MOVE_CLIP:
             start, end = self._drag.preview_start, self._drag.preview_start + clip.duration
+            head = tail = self._drag.preview_start - clip.timeline_start
         else:
-            start = clip.timeline_start + self._drag.preview_head_delta
-            end = clip.timeline_end + self._drag.preview_tail_delta
+            head, tail = self._drag.preview_head_delta, self._drag.preview_tail_delta
+            start, end = clip.timeline_start + head, clip.timeline_end + tail
         self._dash_rect(painter, band, start, end)
+        # リンクした相手（映像と音声の組）にも同じ枠を出す 相手は自分のトラックに
+        # 残ったまま、同じだけ動く・削れる（:class:`MoveClip` :class:`TrimClip` の決まり）
+        for partner_track, partner in self._linked_partners(clip):
+            partner_band = bands.get(partner_track.id)
+            if partner_band is not None:
+                self._dash_rect(
+                    painter,
+                    partner_band,
+                    partner.timeline_start + head,
+                    partner.timeline_end + tail,
+                )
 
     def _dash_rect(self, painter: QPainter, band: TrackBand, start: int, end: int) -> None:
         left = self._layout.frame_to_x(start)
@@ -460,10 +622,25 @@ class TimelineView(QWidget):
 
     def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802 - Qt の命名規約
         delta = event.angleDelta().y()
+        sideways = event.angleDelta().x()
+        modifiers = event.modifiers()
+        zooming = modifiers & (
+            Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier
+        )
+        if sideways and not zooming:
+            # タッチパッドの 2 本指や、横に倒すホイールは横の量で来る 斜めに
+            # なぞると縦と横が同じ 1 回に乗るので、横を当ててから縦も続けて見る
+            # 量は目盛り 1 段（120）で Shift+ホイールの 1 段と同じだけ動かす
+            # タッチパッドは細かい量で何度も来るので、比例させないと飛び飛びになる
+            frames = self._layout.frames_in(self.width()) * 0.15 * sideways / 120.0
+            self._layout = self._layout.scrolled_to(self._layout.scroll_frame - frames)
+            if delta == 0 or modifiers & Qt.KeyboardModifier.ShiftModifier:
+                self.update()
+                event.accept()
+                return
         if delta == 0:
             return
 
-        modifiers = event.modifiers()
         over_header = event.position().x() < Metrics.TRACK_HEADER_WIDTH
         if modifiers & Qt.KeyboardModifier.ControlModifier and over_header:
             # ヘッダの上では全トラックの高さを変える タイムラインの上の Ctrl+ホイールは
@@ -505,7 +682,14 @@ class TimelineView(QWidget):
         if self._toggle_track_button(position):
             return
 
-        if position.y() < Metrics.RULER_HEIGHT or position.x() < Metrics.TRACK_HEADER_WIDTH:
+        if position.x() < Metrics.TRACK_HEADER_WIDTH:
+            # ヘッダ（トラック名とボタンの列）は時間の軸の外 ここを再生ヘッドの
+            # ドラッグにすると、ボタンを押し損ねたり名前を押したりしただけで、
+            # 左端より前（負のフレーム）が 0 に丸められて再生ヘッドが先頭へ飛んでいた
+            # （Issue #27） 目盛りの左の角も同じ ヘッダの上に時間は無い
+            return
+
+        if position.y() < Metrics.RULER_HEIGHT:
             self._drag = DragState(kind=DragKind.PLAYHEAD)
             self._scrub(position)
             return
@@ -1155,6 +1339,32 @@ class TimelineView(QWidget):
             if edge in (DragKind.TRIM_HEAD, DragKind.TRIM_TAIL)
             else Qt.CursorShape.OpenHandCursor
         )
+
+
+class TimelineArea(QWidget):
+    """タイムラインのビューと、その下と右のスクロールバーを並べる
+
+    横のバーはヘッダの幅だけ右から始める バーが動かすのは時間の軸で、
+    ヘッダは動かないので、同じ幅に並べると何を動かすバーなのかが分かりにくい
+    """
+
+    def __init__(self, view: TimelineView, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._view = view
+        grid = QGridLayout(self)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(0)
+        grid.addWidget(view, 0, 0, 1, 2)
+        grid.addWidget(view.vertical_scroll_bar, 0, 2)
+        grid.setColumnMinimumWidth(0, Metrics.TRACK_HEADER_WIDTH)
+        grid.addWidget(view.horizontal_scroll_bar, 1, 1)
+        grid.setColumnStretch(1, 1)
+        grid.setRowStretch(0, 1)
+        view.set_project(view.project)
+
+    @property
+    def view(self) -> TimelineView:
+        return self._view
 
 
 def _action(menu: QMenu, text: str, slot: Callable[[], object]) -> QAction:

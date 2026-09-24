@@ -15,7 +15,9 @@ from fractions import Fraction
 from sashimono.core.commands.base import Command
 from sashimono.core.commands.edit import AddClip, AddMedia, AddTrack
 from sashimono.core.model import (
+    AnimatedValue,
     Clip,
+    Effect,
     GeneratedSource,
     MediaItem,
     Project,
@@ -25,7 +27,14 @@ from sashimono.core.model import (
 )
 from sashimono.core.timebase import Rounding, seconds_to_frame
 
-__all__ = ["DEFAULT_GENERATED_FRAMES", "DEFAULT_STILL_FRAMES", "insert_generated", "insert_media"]
+__all__ = [
+    "DEFAULT_GENERATED_FRAMES",
+    "DEFAULT_STILL_FRAMES",
+    "VOLUME_EFFECT_KIND",
+    "default_volume_effect",
+    "insert_generated",
+    "insert_media",
+]
 
 #: 静止画をタイムラインへ置くときの既定の長さ（フレーム）
 #: 30fps で 5 秒 Premiere の既定と同じくらい
@@ -82,11 +91,32 @@ def insert_media(
                     media_id=media.id,
                     stream_index=media.audio_streams[0].index,
                     link_group=group,
+                    effects=(default_volume_effect(),),
                 ),
             )
         )
 
     return commands
+
+
+#: 音声のクリップに最初から付ける音量調整の種類と項目 値は
+#: :mod:`sashimono.effects.audio` の ``audio_volume`` の既定（音量 100% 左右 0 で
+#: 音は変わらない） コア層はエフェクトの定義を読めないので同じ値をここに書き、
+#: 食い違わないことは試験で見る
+VOLUME_EFFECT_KIND = "audio_volume"
+_VOLUME_DEFAULTS = (("volume", 100.0), ("pan", 0.0))
+
+
+def default_volume_effect() -> Effect:
+    """素材を置いた音声のクリップに付ける、音を変えない音量調整
+
+    置いた直後から設定パネルで音量を動かせるようにする 付いていないと、
+    音量を下げたいだけでもエフェクトの一覧から探して足す手間が要った（Issue #27）
+    """
+    return Effect(
+        kind=VOLUME_EFFECT_KIND,
+        params={name: AnimatedValue(static=value) for name, value in _VOLUME_DEFAULTS},
+    )
 
 
 def _timeline_duration(project: Project, media: MediaItem) -> int:

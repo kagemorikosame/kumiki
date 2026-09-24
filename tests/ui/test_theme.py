@@ -1,0 +1,245 @@
+"""見た目の決まり（スタイルシート）で、読めない・押せないが起きていないか
+
+スタイルシートは書き方 1 つで、元の見た目（Windows 11 など）との組み合わせが崩れる
+崩れても例外にはならず、画面を見て初めて気付く 描いた絵と、押したときの結果で確かめる
+
+スタイルシートはアプリ全体ではなく、試す窓にだけ当てる アプリ全体に当てると、
+ほかの試験の窓まで見た目が変わる
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterator
+
+import pytest
+from PySide6.QtCore import QPoint, Qt
+from PySide6.QtGui import QColor, QImage
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import (
+    QApplication,
+    QDockWidget,
+    QDoubleSpinBox,
+    QLabel,
+    QSpinBox,
+    QStyle,
+    QStyleFactory,
+    QStyleOptionSpinBox,
+    QTabBar,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
+
+from sashimono.core.model import ProjectSettings
+from sashimono.ui.main_window import MainWindow
+from sashimono.ui.project_settings_dialog import ProjectSettingsDialog
+from sashimono.ui.theme import STYLE_SHEET, Colors
+
+#: 確かめる元の見た目 Windows 11 は利用者の手元の既定で、崩れたのはこれ
+#: 入っていない環境（Linux の CI）では、あるものだけを見る
+_AVAILABLE = QStyleFactory.keys()
+_STYLES = [name for name in ("windows11", "windowsvista", "Fusion") if name in _AVAILABLE]
+
+
+def _contrast(first: QColor, second: QColor) -> float:
+    """2 色の明るさの比（WCAG の式） 4.5 以上あれば小さい字でも読める"""
+
+    def luminance(color: QColor) -> float:
+        def channel(value: float) -> float:
+            return value / 12.92 if value <= 0.03928 else ((value + 0.055) / 1.055) ** 2.4
+
+        return (
+            0.2126 * channel(color.redF())
+            + 0.7152 * channel(color.greenF())
+            + 0.0722 * channel(color.blueF())
+        )
+
+    high, low = sorted((luminance(first), luminance(second)), reverse=True)
+    return (high + 0.05) / (low + 0.05)
+
+
+def _count(
+    image: QImage, rect_left: int, rect_top: int, width: int, height: int, color: QColor
+) -> int:
+    """矩形の中で ``color`` とほぼ同じ色の画素の数"""
+    found = 0
+    for y in range(rect_top, rect_top + height):
+        for x in range(rect_left, rect_left + width):
+            pixel = image.pixelColor(x, y)
+            if (
+                abs(pixel.red() - color.red()) <= 8
+                and abs(pixel.green() - color.green()) <= 8
+                and abs(pixel.blue() - color.blue()) <= 8
+            ):
+                found += 1
+    return found
+
+
+class TestTabs:
+    @pytest.fixture
+    def tabs(self, qt_application: QApplication) -> Iterator[QTabWidget]:
+        del qt_application
+        host = QWidget()
+        host.setStyleSheet(STYLE_SHEET)
+        widget = QTabWidget(host)
+        widget.addTab(QLabel("中身"), "メディア")
+        widget.addTab(QLabel("中身"), "字幕")
+        widget.resize(300, 120)
+        host.resize(300, 120)
+        host.show()
+        QApplication.processEvents()
+        yield widget
+        host.close()
+
+    def test_the_chosen_tab_is_readable(self) -> None:
+        # 選んだタブの地が明るい灰色だと、白に近い文字が読めなかった（Issue #27）
+        assert _contrast(Colors.TAB_SELECTED, Colors.CLIP_LABEL) >= 4.5
+        assert _contrast(Colors.WINDOW, Colors.TEXT_MUTED) >= 4.5
+
+    def test_the_chosen_tab_stands_out(self, tabs: QTabWidget) -> None:
+        # 選んだタブと選んでいないタブが同じ見た目だと、どれを見ているのか分からない
+        # 地の色が変わり、アクセント色の線が選んだタブにだけ付く
+        image = tabs.grab().toImage()
+        bar = tabs.tabBar()
+        offset = bar.mapTo(tabs, QPoint(0, 0))
+        chosen, other = bar.tabRect(0), bar.tabRect(1)
+
+        def accents(index: int) -> int:
+            rect = bar.tabRect(index).translated(offset)
+            return _count(
+                image, rect.left(), rect.top(), rect.width(), rect.height(), Colors.ACCENT
+            )
+
+        assert accents(0) >= chosen.width()
+        assert accents(1) == 0
+        middle = QPoint(chosen.left() + 4, chosen.center().y()) + offset
+        assert image.pixelColor(middle).name() == Colors.TAB_SELECTED.name()
+        middle = QPoint(other.left() + 4, other.center().y()) + offset
+        assert image.pixelColor(middle).name() == Colors.WINDOW.name()
+
+    def test_choosing_moves_the_mark(self, tabs: QTabWidget) -> None:
+        # 選び直したときに線が付いてこないと、最初のタブを見ているように見える
+        tabs.setCurrentIndex(1)
+        QApplication.processEvents()
+        image = tabs.grab().toImage()
+        bar = tabs.tabBar()
+        rect = bar.tabRect(1).translated(bar.mapTo(tabs, QPoint(0, 0)))
+        assert _count(image, rect.left(), rect.top(), rect.width(), rect.height(), Colors.ACCENT)
+
+    def test_docked_tabs_follow_the_same_rule(self, qt_application: QApplication) -> None:
+        # 重ねたドック（メディアと字幕）のタブは窓が自分で作る 設定の窓のタブにだけ
+        # 当てても、利用者が最初に見るこちらが読めないまま残る
+        del qt_application
+        window = MainWindow(confirm_unsaved=False)
+        window.setStyleSheet(STYLE_SHEET)
+        window.resize(1280, 800)
+        window.show()
+        QApplication.processEvents()
+        try:
+            bars = [bar for bar in window.findChildren(QTabBar) if bar.count() > 1]
+            assert bars
+            for bar in bars:
+                image = bar.grab().toImage()
+                chosen = bar.tabRect(bar.currentIndex())
+                assert _count(
+                    image,
+                    chosen.left(),
+                    chosen.top(),
+                    chosen.width(),
+                    chosen.height(),
+                    Colors.ACCENT,
+                ), [bar.tabText(i) for i in range(bar.count())]
+            assert window.findChildren(QDockWidget)
+        finally:
+            window.close()
+
+
+def _button_rects(spin: QSpinBox | QDoubleSpinBox) -> tuple[QPoint, QPoint]:
+    """上と下のボタンの真ん中 描く所と同じ計算（見た目の部品の位置）から出す"""
+    option = QStyleOptionSpinBox()
+    spin.initStyleOption(option)
+    style = spin.style()
+    up = style.subControlRect(
+        QStyle.ComplexControl.CC_SpinBox, option, QStyle.SubControl.SC_SpinBoxUp, spin
+    )
+    down = style.subControlRect(
+        QStyle.ComplexControl.CC_SpinBox, option, QStyle.SubControl.SC_SpinBoxDown, spin
+    )
+    return up.center(), down.center()
+
+
+def _click_like_a_mouse(spin: QWidget, point: QPoint) -> None:
+    """本物のマウスと同じく、その点の一番手前の部品へ押下を届ける
+
+    ``QTest.mouseClick(spin, ...)`` は数値欄そのものへ直に送るので、上に数字の欄
+    （QLineEdit）が重なっていても押せてしまい、壊れていても通る
+    """
+    target = spin.childAt(point)
+    if target is None:
+        QTest.mouseClick(spin, Qt.MouseButton.LeftButton, pos=point)
+    else:
+        QTest.mouseClick(target, Qt.MouseButton.LeftButton, pos=target.mapFrom(spin, point))
+
+
+@pytest.mark.parametrize("style_name", _STYLES)
+class TestSpinButtons:
+    @pytest.fixture
+    def style(self, style_name: str, qt_application: QApplication) -> Iterator[None]:
+        # 元の見た目はアプリ全体で切り替える 部品ごとに変えると、数値欄の中の数字の欄が
+        # 元の見た目のまま残り、利用者の手元と同じ組み合わせにならない
+        previous = qt_application.style().name()
+        qt_application.setStyle(style_name)
+        yield
+        qt_application.setStyle(previous)
+
+    def test_the_up_button_of_the_resolution_steps_up(self, style: None) -> None:
+        # Windows 11 の見た目では上下のボタンが横に並ぶのに、数字の欄がボタン 1 つぶん
+        # しか空けずに広がり、上のボタンが数字の欄の下に隠れていた 押しても数字の欄が
+        # 受け取るので、上だけ数が変わらなかった（Issue #27）
+        del style
+        dialog = ProjectSettingsDialog(ProjectSettings(), new=True)
+        dialog.setStyleSheet(STYLE_SHEET)
+        dialog.show()
+        QApplication.processEvents()
+        try:
+            spin = dialog._width
+            start = spin.value()
+            up, down = _button_rects(spin)
+            _click_like_a_mouse(spin, up)
+            assert spin.value() == start + spin.singleStep()
+            _click_like_a_mouse(spin, down)
+            _click_like_a_mouse(spin, down)
+            assert spin.value() == start - spin.singleStep()
+        finally:
+            dialog.close()
+
+    def test_the_edit_field_leaves_the_buttons_free(self, style: None) -> None:
+        # 数字の欄がボタンに掛かると、掛かった所を押しても増えも減りもしない
+        # 小数の数値欄（設定パネルの音量など）も同じ決まりで並ぶ
+        del style
+        host = QWidget()
+        host.setStyleSheet(STYLE_SHEET)
+        layout = QVBoxLayout(host)
+        spins: list[QSpinBox | QDoubleSpinBox] = [QSpinBox(host), QDoubleSpinBox(host)]
+        for spin in spins:
+            spin.setRange(0, 400)
+            spin.setValue(100)
+            layout.addWidget(spin)
+        spins[1].setSuffix(" %")
+        spins[1].setFixedWidth(96)
+        host.show()
+        QApplication.processEvents()
+        try:
+            for spin in spins:
+                option = QStyleOptionSpinBox()
+                spin.initStyleOption(option)
+                for control in (QStyle.SubControl.SC_SpinBoxUp, QStyle.SubControl.SC_SpinBoxDown):
+                    button = spin.style().subControlRect(
+                        QStyle.ComplexControl.CC_SpinBox, option, control, spin
+                    )
+                    assert not spin.lineEdit().geometry().intersects(button), type(spin).__name__
+                up, _ = _button_rects(spin)
+                _click_like_a_mouse(spin, up)
+                assert spin.value() == 101, type(spin).__name__
+        finally:
+            host.close()

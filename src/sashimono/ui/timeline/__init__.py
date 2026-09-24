@@ -1,6 +1,6 @@
 """タイムライン表示"""
 
 from sashimono.ui.timeline.layout import TimelineLayout, TrackBand
-from sashimono.ui.timeline.view import TimelineView
+from sashimono.ui.timeline.view import TimelineArea, TimelineView
 
-__all__ = ["TimelineLayout", "TimelineView", "TrackBand"]
+__all__ = ["TimelineArea", "TimelineLayout", "TimelineView", "TrackBand"]
