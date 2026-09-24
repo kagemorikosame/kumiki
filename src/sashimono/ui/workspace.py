@@ -239,6 +239,11 @@ class Preferences:
     #: キーフレームのある値をプレビューで動かしたとき 再生ヘッドの所へ点を打つ（既定
     #: 利用者の決定 その時刻の絵だけが変わる）か、全部の点を同じだけずらすか
     keyframe_drag: str = KEYFRAME_DRAG_AT_PLAYHEAD
+    #: タイムラインのクリップの上に、不透明度（絵）と音量（音）の線を出して直接動かせるようにする
+    #: 既定は出す 設定パネルを開かずにフェードや音量を決められることを、知らない人ほど線を
+    #: 見て気付く サムネイルや波形に線が重なるのが目障りな人、クリップの真ん中を掴んで動かす
+    #: つもりで線を掴んでしまう人は切れるようにする
+    value_lines: bool = True
 
     def prefetch_bytes(self) -> int:
         """先読みに使えるバイト数 切ってあれば 0
@@ -305,6 +310,7 @@ class PreferenceStore:
             keyframe_drag=_choice(
                 data.get("keyframe_drag"), KEYFRAME_DRAG_MODES, plain.keyframe_drag
             ),
+            value_lines=_flag(data.get("value_lines"), plain.value_lines),
         )
 
     def save(self, preferences: Preferences) -> None:

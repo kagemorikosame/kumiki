@@ -126,6 +126,36 @@ class AnimatedValue:
         eased = _ease(progress, left.interpolation, left.control_points, left.curve)
         return left.value + (right.value - left.value) * eased
 
+    def with_keyframe_at(self, frame: int) -> AnimatedValue:
+        """``frame`` に点を足し、どのフレームの値も足す前と変えない値
+
+        タイムラインの線の Ctrl+クリックで使う 線の上に点を打っただけで形が変わると、
+        フェードの途中へ点を足して後半だけ直す、ということができない
+        新しい点の値は足す前のその位置の値 区間の途中へ足すときは、左の点の出方で分ける
+        - 直線 そのまま 2 本の直線になる
+        - 瞬間移動 新しい点も瞬間移動にする（左の値のまま次の点まで止まる）
+        - イージング 3 種とベジェ 曲線を新しい点で 2 つに切り（de Casteljau）、左右の点に
+          切った後の制御点を持たせる
+        - 名前付きの曲線（``back`` など） 切れる形ではないので、左の点の出方を引き継ぐ
+          この区間だけは形が変わる
+        すでに点のあるフレームなら何も変えない
+        """
+        level = self.at(frame)
+        if any(k.frame == frame for k in self.keyframes):
+            return self
+        added = Keyframe(frame=frame, value=level)
+        keyframes = list(self.keyframes)
+        # 最初の点より前と最後の点より後は値が端で止まっている 同じ値の点を足しても形は変わらない
+        if self.keyframes and self.keyframes[0].frame < frame < self.keyframes[-1].frame:
+            left, right = self._surrounding(frame)
+            index = keyframes.index(left)
+            progress = (frame - left.frame) / (right.frame - left.frame)
+            keyframes[index], added = _split_segment(left, added, progress)
+        keyframes.append(added)
+        return AnimatedValue(
+            static=self.static, keyframes=tuple(sorted(keyframes, key=lambda k: k.frame))
+        )
+
     def _surrounding(self, frame: float) -> tuple[Keyframe, Keyframe]:
         """``frame`` を挟む 2 つのキーフレームを返す"""
         # キーフレーム数は多くても数十なので線形探索で十分 ここが重くなったら
@@ -209,6 +239,47 @@ def _solve_bezier_t(x: float, x1: float, x2: float) -> float:
             high = t
         t = (low + high) / 2.0
     return t
+
+
+def _split_segment(left: Keyframe, added: Keyframe, progress: float) -> tuple[Keyframe, Keyframe]:
+    """左の点から次の点までの区間を ``progress`` の所で切り、``(左の点, 足す点)`` を返す
+
+    足す点の値は切る前のその位置の値（:meth:`AnimatedValue.at`）で渡される
+    """
+    if left.interpolation is Interpolation.LINEAR:
+        return left, added
+    if left.interpolation is Interpolation.HOLD:
+        return left, replace(added, interpolation=Interpolation.HOLD)
+    if left.curve:
+        return left, replace(added, interpolation=left.interpolation, curve=left.curve)
+    points = (
+        left.control_points
+        if left.interpolation is Interpolation.BEZIER and left.control_points is not None
+        else _EASING_CONTROL_POINTS[left.interpolation]
+    )
+    x1, y1, x2, y2 = points
+    t = _solve_bezier_t(progress, x1, x2)
+    # de Casteljau で (0,0) (x1,y1) (x2,y2) (1,1) を t で 2 つに切る
+    ax, ay = x1 * t, y1 * t
+    bx, by = x1 + (x2 - x1) * t, y1 + (y2 - y1) * t
+    cx, cy = x2 + (1.0 - x2) * t, y2 + (1.0 - y2) * t
+    dx, dy = ax + (bx - ax) * t, ay + (by - ay) * t
+    ex, ey = bx + (cx - bx) * t, by + (cy - by) * t
+    mx, my = dx + (ex - dx) * t, dy + (ey - dy) * t
+    if not (1e-6 < mx < 1 - 1e-6 and abs(my) > 1e-6 and abs(1.0 - my) > 1e-6):
+        # 切った所で値が端と同じだと、縦を 0〜1 に引き伸ばせない 左の出方を引き継ぐ
+        return left, replace(added, interpolation=left.interpolation, control_points=points)
+    first = (ax / mx, ay / my, dx / mx, dy / my)
+    second = (
+        (ex - mx) / (1.0 - mx),
+        (ey - my) / (1.0 - my),
+        (cx - mx) / (1.0 - mx),
+        (cy - my) / (1.0 - my),
+    )
+    return (
+        replace(left, interpolation=Interpolation.BEZIER, control_points=first, curve=""),
+        replace(added, interpolation=Interpolation.BEZIER, control_points=second),
+    )
 
 
 def _bezier_axis_derivative(t: float, p1: float, p2: float) -> float:
