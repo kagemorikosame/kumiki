@@ -13,7 +13,7 @@ from fractions import Fraction
 
 import pytest
 import shiboken6
-from PySide6.QtWidgets import QApplication, QComboBox, QLabel
+from PySide6.QtWidgets import QApplication, QComboBox, QLabel, QToolButton
 
 from sashimono.core.commands import (
     AddEffect,
@@ -274,7 +274,6 @@ class TestClipFields:
         self, panel: InspectorPanel, video_media: MediaItem
     ) -> None:
         # 主のクリップだけ切り替わると、一緒に値を変えたほかのクリップと欄の効き方が食い違う
-        from PySide6.QtWidgets import QToolButton
 
         from sashimono.core.commands import SetEffectEnabled
 
@@ -290,9 +289,55 @@ class TestClipFields:
         assert toggle is not None
         toggle.setChecked(False)
         ((commands, _),) = sent
-        switched = {(c.clip_id, c.effect_id) for c in commands if isinstance(c, SetEffectEnabled)}
-        expected = {(clip.id, e.id) for clip in (first, second) for e in clip.effects if e.fixed}
+        # 切った値まで見る 全部へ「有効」を送る作りでも、相手の顔ぶれだけなら合ってしまう
+        switched = {
+            (c.clip_id, c.effect_id, c.enabled) for c in commands if isinstance(c, SetEffectEnabled)
+        }
+        expected = {
+            (clip.id, e.id, False) for clip in (first, second) for e in clip.effects if e.fixed
+        }
         assert switched == expected
+
+    def test_a_missing_item_on_the_primary_still_reaches_the_others(
+        self, panel: InspectorPanel, video_media: MediaItem
+    ) -> None:
+        # 主のクリップが前の版のファイルで欄を持たないと、仮の欄の ID は相手に見つからず、
+        # 相手が実在の欄を持っていても値が当たらなかった 相手に無い欄は作らない
+        from sashimono.core.commands import SetEffectEnabled
+
+        project = _placed_again(_placed(video_media), video_media)
+        first, second = [
+            c for t in project.timeline.tracks if t.kind is TrackKind.VIDEO for c in t.clips
+        ]
+        project = TestOldFiles()._old(project, first)
+        panel.set_project(project)
+        panel.set_selection((first.id, second.id))
+        sent = _requests(panel)
+
+        x = _group(panel, "描画").findChildren(TrackEditor)[0]
+        x.value_changed.emit(AnimatedValue(80.0))
+        ((commands, _),) = sent
+        placed = next(e for e in second.effects if e.fixed and e.kind == "transform")
+        assert any(
+            isinstance(c, SetParam)
+            and c.path.clip_id == second.id
+            and c.path.effect_id == placed.id
+            for c in commands
+        )
+        # 足すのは主のクリップの欄だけ
+        assert [c.clip_id for c in commands if isinstance(c, AddEffect)] == [first.id]
+
+        sent.clear()
+        toggle = _group(panel, "描画").findChild(QToolButton, "fixed_toggle")
+        assert toggle is not None
+        toggle.setChecked(False)
+        ((commands, _),) = sent
+        others = {
+            (c.effect_id, c.enabled)
+            for c in commands
+            if isinstance(c, SetEffectEnabled) and c.clip_id == second.id
+        }
+        assert others == {(e.id, False) for e in second.effects if e.fixed}
 
     def test_the_native_size_can_be_switched(
         self, panel: InspectorPanel, video_media: MediaItem

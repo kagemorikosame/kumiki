@@ -846,6 +846,13 @@ class InspectorPanel(QWidget):
         primary = self._clip()
         if primary is None:
             return []
+        target = _effect_of(command)
+        pending = self._virtual.get(target) if target is not None else None
+        if pending is not None:
+            # 主のクリップの欄がまだ無い（前の版のファイル）ときは、仮の欄を持たせた形で
+            # 相手を探す 探さないと、相手が実在の欄を持っていても値が当たらない
+            # 相手に欄が無ければ作らない（ほかのエフェクトと同じく飛ばす）
+            primary = replace(primary, effects=(*primary.effects, pending[1]))
         extra: list[Command] = []
         for clip_id in others:
             located = self._project.timeline.locate_clip(clip_id)
