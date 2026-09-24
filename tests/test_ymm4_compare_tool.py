@@ -1459,6 +1459,31 @@ def test_frames_missing_from_the_export_fail_instead_of_passing_half_measured(
     assert tool.read_ceilings(tmp_path / "ceilings.json") == {"後光": 71.0}
 
 
+@pytest.mark.parametrize("broken", ["NaN", "Infinity", "-Infinity"])
+def test_a_ceiling_that_is_not_a_number_stops_before_comparing(
+    tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, broken: str
+) -> None:
+    """上限に NaN や Infinity があれば、比べる前に終了コード 1
+
+    どちらも float が受け取り、差と比べても「超えた」にならない 入っていると
+    そのテンプレートは差がいくら大きくても通る
+    """
+    compared: list[bool] = []
+
+    def compare(*args: object, **kwargs: object) -> list[object]:
+        compared.append(True)
+        return [(500.0, "後光", "a.ymmt", 1, "x", "")]
+
+    monkeypatch.setattr(tool, "compare_work", compare)
+    path = tmp_path / "ceilings.json"
+    path.write_text(f'{{"後光": {broken}, "雨": 27.0}}', encoding="utf-8")
+    assert tool.command_compare(_compare_arguments(tmp_path, ceilings=path)) == 1
+    assert (
+        tool.command_compare(_compare_arguments(tmp_path, ceilings=path, write_ceilings=True)) == 1
+    )
+    assert compared == []
+
+
 def test_templates_the_export_never_reached_are_told_apart_by_their_ceiling(
     tool: ModuleType,
 ) -> None:

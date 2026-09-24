@@ -524,7 +524,13 @@ def read_ceilings(path: Path) -> dict[str, float]:
     if not path.exists():
         return {}
     raw = json.loads(path.read_text(encoding="utf-8"))
-    return {str(name): float(value) for name, value in raw.items()}
+    ceilings = {str(name): float(value) for name, value in raw.items()}
+    # NaN や Infinity は float が受け取ってしまう どちらも「超えた」にならないので、
+    # 入っていると差がいくら大きくても通る
+    broken = [name for name, value in ceilings.items() if not math.isfinite(value)]
+    if broken:
+        raise ValueError(f"{path} の上限が数でない: {', '.join(broken)}")
+    return ceilings
 
 
 def write_ceilings(path: Path, worst: dict[str, float]) -> None:
@@ -547,6 +553,12 @@ def command_compare(arguments: argparse.Namespace) -> int:
     if not arguments.write_ceilings and not arguments.ceilings.exists():
         print(f"{arguments.ceilings} がありません 作るなら --write-ceilings を付けてください")
         return 1
+    # 比べるのに 1 分ほど掛かる 壊れた上限は比べる前に知らせる
+    try:
+        ceilings = read_ceilings(arguments.ceilings)
+    except ValueError as error:
+        print(f"上限を読めない: {error}")
+        return 1
     words = [word for word in arguments.only.split(",") if word]
     missing: list[tuple[str, int]] = []
     rows = compare_work(
@@ -566,7 +578,6 @@ def command_compare(arguments: argparse.Namespace) -> int:
     for difference, name, _, frame, _, _ in rows[: arguments.top]:
         print(f"{difference:6.1f}  {name}  フレーム {frame}")
 
-    ceilings = read_ceilings(arguments.ceilings)
     problems, unmeasured = unmeasured_templates(
         rows, missing, ceilings, writing=arguments.write_ceilings
     )
