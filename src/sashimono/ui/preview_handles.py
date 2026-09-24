@@ -146,15 +146,23 @@ def start_values(clip: Clip, local_frame: int) -> dict[str, float]:
 
 
 def moved_values(
-    start: dict[str, float], press: Point, current: Point, *, one_axis: bool
+    start: dict[str, float],
+    press: Point,
+    current: Point,
+    *,
+    one_axis: bool,
+    scale: float = 1.0,
 ) -> dict[str, float]:
     """枠の中を掴んで動かしたときの X と Y
 
-    合成の画素 1 つが X・Y の 1 そのまま（配置は拡大と回転の後で位置を足す）
+    X・Y は画面（プロジェクトの解像度）の画素 配置は拡大と回転の後で位置を足すので、
+    画面の画素 1 つが X・Y の 1 そのまま ``scale`` は合成の画素 1 つが画面の画素いくつ分かの
+    逆数（:func:`~sashimono.engine.render.outline.canvas_scale`） 画質を落としたプレビューの
+    合成の画素のまま足すと、マウスの半分・4 分の 1 しか絵が動かない
     ``one_axis`` なら動きの大きい方だけ（Shift） 画面の Y は下が正、設定の Y は上が正
     """
-    dx = current[0] - press[0]
-    dy = press[1] - current[1]
+    dx = (current[0] - press[0]) / scale
+    dy = (press[1] - current[1]) / scale
     if one_axis:
         if abs(dx) >= abs(dy):
             dy = 0.0

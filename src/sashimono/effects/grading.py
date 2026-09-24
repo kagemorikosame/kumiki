@@ -176,12 +176,19 @@ void main() {
     vec3 rgb = to_srgb(base.rgb);
     float position = clamp(dot(rgb, LUMA601), 0.0, 1.0);
     vec3 mapped = mix(to_srgb(dark_color.rgb), to_srgb(light_color.rgb), position);
-    if (pattern_size.x >= 1.0 && pattern_size.y >= 1.0) {
+    // 読めたかどうかは 0 かどうかで見る pattern_size は画質に合わせて縮めてあり、
+    // 1 未満で比べると、256x1 のような細い帯の画像が 1/2 画質で「画像なし」に化ける
+    if (pattern_size.x > 0.0 && pattern_size.y > 0.0) {
         // 模様の画像があれば、帯の代わりに画像の**縦の真ん中の行**を左から右へ使う
         // 暗部色と明部色は使わない AviUtl2 に横で色相、縦で明るさの変わる画像を
         // 渡すと、暗い所が左端の色、明るい所が右端の色になり、明るさはどこも
         // 真ん中の行の値（0.625）だった 端の画素の中心より外は読まない
-        float column = (position * (pattern_size.x - 1.0) + 0.5) / pattern_size.x;
+        //
+        // 画素の数は画像そのものから取る pattern_size は画面の画素へ置いたときの
+        // 大きさで、画質を落とすと縮む それで割ると端の画素の中心がずれて、
+        // 1/4 画質の細い帯ではどの明るさでも真ん中の色になる
+        float texels = float(textureSize(pattern, 0).x);
+        float column = (position * (texels - 1.0) + 0.5) / texels;
         mapped = to_srgb(texture(pattern, vec2(column, 0.5)).rgb);
     }
     float amount = clamp(strength * 0.01, 0.0, 1.0);
@@ -252,8 +259,11 @@ uniform bool fixed_size;
 // AviUtl2 に 強さ 30・60・100 を描かせて測ると、届く先は 315・352・367px と
 // ほとんど変わらず、明るさだけが強さに比例して増えた
 // サイズ固定 を付けると届く先が 141px まで縮む
+//
+// 画面の画素で測った長さなので、合成の画素へ縮める 縮めないと、画質を落とした
+// プレビューで光が 2 倍・4 倍に広がって見える
 float reach() {
-    return fixed_size ? 48.0 : 128.0;
+    return (fixed_size ? 48.0 : 128.0) * u_pixel_scale;
 }
 
 void main() {

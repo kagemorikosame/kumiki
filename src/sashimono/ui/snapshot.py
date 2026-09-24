@@ -14,11 +14,11 @@ from pathlib import Path
 import numpy as np
 from PySide6.QtCore import QIODevice, QSaveFile
 from PySide6.QtGui import QImage, QImageWriter
-from PySide6.QtWidgets import QApplication
 
 from sashimono.core.model import Project
 from sashimono.core.timebase import format_timecode
 from sashimono.engine.render import FrameRenderer
+from sashimono.ui.system_clipboard import clipboard
 
 __all__ = [
     "SNAPSHOT_FILTER",
@@ -105,5 +105,4 @@ def write_png(image: QImage, path: Path) -> bool:
 
 def copy_to_clipboard(image: QImage) -> None:
     """クリップボードへ画像として置く 貼り付け先（ペイント・チャットなど）がそのまま受け取る"""
-    clipboard = QApplication.clipboard()
-    clipboard.setImage(image)
+    clipboard().setImage(image)

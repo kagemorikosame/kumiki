@@ -24,13 +24,14 @@ from sashimono.compat.aviutl.report import CompatibilityReport
 from sashimono.compat.catalog import TemplateCatalog, TemplateEntry
 from sashimono.core import userdirs
 from sashimono.links import MANUAL_URL, REPORT_URL
-from sashimono.ui import report_masking
+from sashimono.ui import report_masking, system_clipboard
 from sashimono.ui.compat_dialog import CompatibilityDialog, report_text
 from sashimono.ui.main_window import MainWindow, about_text
 from sashimono.ui.report_masking import HOME_PLACEHOLDER, mask_user_folders, user_folders
 from sashimono.ui.template_dialog import TemplateDialog, notes_text
 from tests.compat.test_ymm4 import template as ymm4_template
 from tests.compat.test_ymm4 import text_item, write_ymmt
+from tests.fake_clipboard import FakeClipboard
 
 
 @pytest.fixture
@@ -331,7 +332,9 @@ class TestCompatibilityCopy:
         assert "探索先:\n  %APPDATA%\\Sashimono\\scripts" in text
         assert "<探索先" not in text
 
-    def test_the_dialog_tells_which_marker_is_which(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_the_dialog_tells_which_marker_is_which(
+        self, monkeypatch: pytest.MonkeyPatch, fake_clipboard: FakeClipboard
+    ) -> None:
         # 貼った文の印が何を指すかは、聞かれたときに本人が画面で答えられるようにする
         _clear_folder_variables(monkeypatch)
         outside = Path(r"D:\kagemori\aviutl\Script")
@@ -342,7 +345,7 @@ class TestCompatibilityCopy:
         try:
             assert f"  <探索先1> {outside}" in dialog._scripts.text().splitlines()
             dialog.copy_to_clipboard()
-            assert "kagemori" not in QApplication.clipboard().text().casefold()
+            assert "kagemori" not in fake_clipboard.text().casefold()
         finally:
             dialog.close()
 
@@ -365,14 +368,14 @@ class TestCompatibilityCopy:
         finally:
             dialog.close()
 
-    def test_the_button_puts_the_text_on_the_clipboard(self, qt_application: QApplication) -> None:
+    def test_the_button_puts_the_text_on_the_clipboard(self, fake_clipboard: FakeClipboard) -> None:
         # 壊れると、一覧を 1 行ずつしか選べず、報告に貼れない
         report = CompatibilityReport()
         report.note_missing("obj.putpixeldata")
         dialog = CompatibilityDialog(report)
         try:
             dialog.copy_to_clipboard()
-            assert "obj.putpixeldata — 1 回" in qt_application.clipboard().text()
+            assert "obj.putpixeldata — 1 回" in fake_clipboard.text()
         finally:
             dialog.close()
 
@@ -453,7 +456,7 @@ def _copied(dialog: TemplateDialog, name: str) -> str:
             if item is not None and item.text(0) == name:
                 tree.setCurrentItem(item)
                 dialog._copy_button.click()
-                return QApplication.clipboard().text()
+                return system_clipboard.clipboard().text()
     raise AssertionError(f"棚に無い: {name}")
 
 

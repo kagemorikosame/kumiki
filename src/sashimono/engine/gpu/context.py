@@ -10,6 +10,7 @@ Qt のコンテキストと二重管理になり、共有もできなくなる
 
 from __future__ import annotations
 
+import functools
 from types import TracebackType
 from typing import Protocol
 
@@ -28,6 +29,7 @@ __all__ = [
     "GLScope",
     "OffscreenGLContext",
     "ensure_qt_application",
+    "opengl_usable",
     "preferred_surface_format",
 ]
 
@@ -116,24 +118,44 @@ class OffscreenGLContext:
         ensure_qt_application()
         fmt = preferred_surface_format()
 
-        self._surface = QOffscreenSurface()
-        self._surface.setFormat(fmt)
-        self._surface.create()
-        if not self._surface.isValid():
-            raise GLContextError("オフスクリーンサーフェスを作れない")
-
-        self._context = QOpenGLContext()
-        self._context.setFormat(fmt)
-        if share is not None:
-            self._context.setShareContext(share)
-        if not self._context.create():
-            raise GLContextError(
-                f"OpenGL {REQUIRED_GL_VERSION[0]}.{REQUIRED_GL_VERSION[1]} "
-                "のコンテキストを作れない GPU ドライバを確認すること"
-            )
-
         self._depth = 0
-        self._require_usable_gl()
+        self._surface = QOffscreenSurface()
+        self._context = QOpenGLContext()
+        try:
+            self._surface.setFormat(fmt)
+            self._surface.create()
+            if not self._surface.isValid():
+                raise GLContextError("オフスクリーンサーフェスを作れない")
+
+            self._context.setFormat(fmt)
+            if share is not None:
+                self._context.setShareContext(share)
+            if not self._context.create():
+                raise GLContextError(
+                    f"OpenGL {REQUIRED_GL_VERSION[0]}.{REQUIRED_GL_VERSION[1]} "
+                    "のコンテキストを作れない GPU ドライバを確認すること"
+                )
+            self._require_usable_gl()
+        except BaseException:
+            self._discard()
+            raise
+
+    def _discard(self) -> None:
+        """作りかけのコンテキストとサーフェスを、その場で壊す（#149）
+
+        GPU の無い機械では、起動のたびに :func:`opengl_usable` がここを通る 投げた
+        例外は作りかけの物を掴んだまま残り、いつ壊れるかがごみ集めの気分次第になる
+        共有元（プレビューのコンテキスト）が生きているうちに、ここで壊しておく
+        """
+        # 使う所で読む 頭で読むと、Qt の欠けた配布版で自己診断がこのモジュールを
+        # 読んだ所でプロセスごと止まり、Qt が欠けていると報告できない
+        import shiboken6
+
+        if QOpenGLContext.currentContext() is self._context:
+            self._context.doneCurrent()
+        self._surface.destroy()
+        shiboken6.delete(self._context)
+        shiboken6.delete(self._surface)
 
     def _require_usable_gl(self) -> None:
         """要求した版の関数が本当に呼べるかを確かめる
@@ -251,3 +273,20 @@ class CurrentGLContext:
 
     def release(self) -> None:
         """所有していないので何もしない"""
+
+
+@functools.cache
+def opengl_usable() -> bool:
+    """この機械で OpenGL 4.3 を使えるか 1 つのプロセスで 1 度だけ確かめる
+
+    使えない機械（GPU の無い仮想機械や CI）で GL のプレビューを窓に出すと、
+    窓ごと GL で描くようになり、閉じた後の片付け（ごみ集めか Python の終わり）で
+    プロセスごと落ちる（#149） 片付けの順を変えても直らなかったので、使えない
+    機械ではプレビューを 1 度も出さない その判断に使う
+    """
+    try:
+        context = OffscreenGLContext()
+    except GLContextError:
+        return False
+    context.release()
+    return True
