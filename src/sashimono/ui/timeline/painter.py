@@ -202,9 +202,7 @@ def draw_track_header(painter: QPainter, band: TrackBand, *, active: bool = True
     name_width = buttons[0][2].left() - 8 - 4
     # 収まらない名前は真ん中を詰める 末尾を詰めると「レイヤー 1」から「レイヤー 4」までが
     # どれも「レイヤ…」になり、何番のレイヤーなのかが読めない（番号は名前の末尾にある）
-    elided = QFontMetrics(painter.font()).elidedText(
-        name, Qt.TextElideMode.ElideMiddle, name_width
-    )
+    elided = QFontMetrics(painter.font()).elidedText(name, Qt.TextElideMode.ElideMiddle, name_width)
     painter.drawText(
         QRect(8, band.top + 5, name_width, _BUTTON_HEIGHT), Qt.AlignmentFlag.AlignVCenter, elided
     )

@@ -49,6 +49,7 @@ from sashimono.engine.cache import Filmstrip, MediaAnalyzer
 from sashimono.ui.media_pool import MEDIA_MIME
 from sashimono.ui.theme import Colors
 from sashimono.ui.timeline import TimelineArea, TimelineView
+from sashimono.ui.timeline import painter as painter_module
 from sashimono.ui.timeline import view as view_module
 from sashimono.ui.timeline.layout import TimelineLayout, TrackBand
 from sashimono.ui.timeline.painter import draw_clip
@@ -335,7 +336,7 @@ class TestClipContent:
         # 種類ごとに「出ているか」を集めると、レイヤーはどちらにも入らず、ミュートもソロも
         # していないのに名前が薄く出る
         seen: dict[str, bool] = {}
-        original = view_module.draw_track_header
+        original = painter_module.draw_track_header
 
         def record(painter: QPainter, band: TrackBand, *, active: bool = True) -> None:
             seen[band.track.name] = active
