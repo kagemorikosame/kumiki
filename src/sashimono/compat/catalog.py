@@ -700,7 +700,9 @@ def restyle(objects: list[MappedObject], clip: Clip) -> list[Command]:
     }
 
     commands: list[Command] = [SetSource(clip.id, GeneratedSource(kind="text", params=params))]
-    commands.extend(RemoveEffect(clip.id, effect.id) for effect in clip.effects)
+    # 固定の項目（クリップが最初から持つ欄）は外せないので残す 外そうとすると
+    # 命令が断られ、着せる操作ごと取り消しになる
+    commands.extend(RemoveEffect(clip.id, effect.id) for effect in clip.effects if not effect.fixed)
     commands.extend(
         AddEffect(clip.id, fitted_effect(effect, span, clip.duration - 1))
         for effect in template.clip.effects

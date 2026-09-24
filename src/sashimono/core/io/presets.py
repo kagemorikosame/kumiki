@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from sashimono.core import userdirs
@@ -63,6 +63,15 @@ class Preset:
     #: 分類 UI のフォルダ分けに使う
     category: str = "ユーザー"
 
+    def __post_init__(self) -> None:
+        # 固定の印（クリップが最初から持つ項目）は持たない プリセットは他のクリップへ
+        # 足す物なので、印のまま当てると、当てるたびに外せないエフェクトが増えていく
+        # 保存する側で外し忘れても、ここを通れば外れる
+        if any(effect.fixed for effect in self.effects):
+            object.__setattr__(
+                self, "effects", tuple(replace(effect, fixed=False) for effect in self.effects)
+            )
+
     def to_dict(self) -> dict[str, object]:
         return {
             "format": FORMAT_NAME,
@@ -99,7 +108,7 @@ class Preset:
         """このプリセットを適用するためのエフェクト列を返す
 
         ID を振り直す 同じプリセットを 2 回適用したときに ID が衝突すると、
-        片方を消したつもりで両方消える
+        片方を消したつもりで両方消える 固定の印も付けない（:meth:`__post_init__` と同じ理由）
         """
         return tuple(
             Effect(kind=effect.kind, params=dict(effect.params), enabled=effect.enabled)

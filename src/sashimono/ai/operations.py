@@ -319,8 +319,15 @@ def _list_clips(host: EditorHost, arguments: dict[str, Any]) -> object:
                     "source": clip.source.kind if clip.source is not None else None,
                     "scene_id": str(clip.scene_id) if clip.scene_id is not None else None,
                     "group_id": str(clip.group_id) if clip.group_id is not None else None,
+                    # fixed はクリップが最初から持つ項目 外すことも並べ替えることもできない
+                    # 渡しておかないと、AI が外そうとして断られるまで分からない
                     "effects": [
-                        {"effect_id": str(e.id), "kind": e.kind, "enabled": e.enabled}
+                        {
+                            "effect_id": str(e.id),
+                            "kind": e.kind,
+                            "enabled": e.enabled,
+                            "fixed": e.fixed,
+                        }
                         for e in clip.effects
                     ],
                 }
