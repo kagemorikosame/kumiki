@@ -1141,7 +1141,14 @@ _EFFECT_ITEM_IGNORED = frozenset({"ZoomEffect", "DrawPositionEffect"})
 
 
 def _without_ignored_moves(item: dict[str, Any]) -> dict[str, Any]:
-    """エフェクトアイテムから、YMM4 が絵に当てなかったエフェクトを除いた写し"""
+    """エフェクトアイテムから、YMM4 が絵に当てなかったエフェクトを除いた写し
+
+    除くのは測った条件（範囲が画面全体の背景）だけ ほかの範囲では変形が範囲を動かす
+    かもしれず、測っていない 除くと利用者は変形が消えたことを知る手立てが無いので、
+    そのまま写す（範囲そのものは :func:`_content` が未対応として記録する）
+    """
+    if not _range_plugin(item).startswith("Background"):
+        return item
     raw = item.get("VideoEffects")
     if not isinstance(raw, list):
         return item
@@ -1151,6 +1158,11 @@ def _without_ignored_moves(item: dict[str, Any]) -> dict[str, Any]:
         if not (isinstance(entry, dict) and type_name(entry) in _EFFECT_ITEM_IGNORED)
     ]
     return item if len(kept) == len(raw) else {**item, "VideoEffects": kept}
+
+
+def _range_plugin(item: dict[str, Any]) -> str:
+    """エフェクトアイテムの範囲の種類（``BackgroundShapePlugin`` など）"""
+    return str(item.get("ShapeType2") or "").partition(",")[0].rpartition(".")[2]
 
 
 def _preview_only(item: dict[str, Any]) -> bool:
@@ -1192,7 +1204,7 @@ def _content(
         # YMM4 は下の絵の透明な所も黒として掛けた（2026-09-24 YMM4 4.56.1.1 ``effectitem-build``
         # 周りが透明な図形に反転を掛けると周りが白くなり、前景の塗りつぶしは周りまで塗った
         # フィルタで読むと周りが黒のままで、差が 0.1 → 226.8）
-        plugin = str(item.get("ShapeType2") or "").partition(",")[0].rpartition(".")[2]
+        plugin = _range_plugin(item)
         if plugin and not plugin.startswith("Background"):
             log.note_missing(f"YMM4 のエフェクトアイテムの範囲: {plugin}")
         if number(item.get("Blur"), 0.0) > 0 or item.get("InvertMask") is True:

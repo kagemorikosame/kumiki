@@ -1886,6 +1886,26 @@ class TestItemSound:
         mapped = map_template([item], report=CompatibilityReport())[0]
         assert [effect.kind for effect in mapped.clip.effects] == ["invert"]
 
+    def test_an_effect_item_with_another_range_keeps_its_moves(self) -> None:
+        """画面全体でない範囲では拡大と位置を外さず、範囲を写せないことを記録に残す
+
+        測ったのは画面全体の範囲だけ ほかの範囲で黙って外すと、変形が消えたことに
+        利用者が気付けない
+        """
+        item = {
+            "$type": "YukkuriMovieMaker.Project.Items.EffectItem, YukkuriMovieMaker",
+            "ShapeType2": "YukkuriMovieMaker.Shape.QuadrilateralShapePlugin, YukkuriMovieMaker",
+            "VideoEffects": [
+                {"$type": "N.ZoomEffect, A", "Zoom": still(50.0), "IsEnabled": True},
+                {"$type": "N.InvertEffect, A", "IsEnabled": True},
+            ],
+            "Length": 30,
+        }
+        report = CompatibilityReport()
+        mapped = map_template([item], report=report)[0]
+        assert [effect.kind for effect in mapped.clip.effects] == ["transform", "invert"]
+        assert any("エフェクトアイテムの範囲" in line for line in report.lines())
+
     def test_the_zoom_is_applied_once_to_the_height(self) -> None:
         """拡大率は変形の ``scale`` だけに入れ、縦の比（``scale_y``）は 100 のまま
 
