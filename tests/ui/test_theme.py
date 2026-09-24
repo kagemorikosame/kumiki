@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QDockWidget,
     QDoubleSpinBox,
     QLabel,
+    QMainWindow,
     QSpinBox,
     QStyle,
     QStyleOptionSpinBox,
@@ -31,7 +32,6 @@ from PySide6.QtWidgets import (
 )
 
 from sashimono.core.model import ProjectSettings
-from sashimono.ui.main_window import MainWindow
 from sashimono.ui.project_settings_dialog import ProjectSettingsDialog
 from sashimono.ui.theme import STYLE_SHEET, Colors
 
@@ -124,10 +124,21 @@ class TestTabs:
     def test_docked_tabs_follow_the_same_rule(self, qt_application: QApplication) -> None:
         # 重ねたドック（メディアと字幕）のタブは窓が自分で作る 設定の窓のタブにだけ
         # 当てても、利用者が最初に見るこちらが読めないまま残る
+        # アプリの窓（MainWindow）ではなく、ドックを重ねただけの窓で見る アプリの窓に
+        # スタイルシートを当てて閉じただけで残すと、CI（GPU の無い Windows）ではあとの
+        # ごみ集めで壊すときにプロセスごと落ちた 重ねたドックのタブを作るのは
+        # QMainWindow なので、ここで確かめたい決まりは同じ
         del qt_application
-        window = MainWindow(confirm_unsaved=False)
+        window = QMainWindow()
         window.setStyleSheet(STYLE_SHEET)
-        window.resize(1280, 800)
+        window.setCentralWidget(QLabel("中央"))
+        docks = [QDockWidget(title, window) for title in ("メディア", "字幕")]
+        for dock in docks:
+            dock.setWidget(QLabel(dock.windowTitle()))
+            window.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
+        window.tabifyDockWidget(docks[0], docks[1])
+        docks[0].raise_()
+        window.resize(640, 400)
         window.show()
         QApplication.processEvents()
         try:
@@ -144,9 +155,8 @@ class TestTabs:
                     chosen.height(),
                     Colors.ACCENT,
                 ), [bar.tabText(i) for i in range(bar.count())]
-            assert window.findChildren(QDockWidget)
         finally:
-            window.close()
+            _dispose(window)
 
 
 def _button_rects(spin: QSpinBox | QDoubleSpinBox) -> tuple[QPoint, QPoint]:

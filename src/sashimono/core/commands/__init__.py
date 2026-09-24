@@ -48,6 +48,7 @@ from sashimono.core.commands.history import Document, HistoryEntry
 from sashimono.core.commands.insert import (
     DEFAULT_GENERATED_FRAMES,
     DEFAULT_STILL_FRAMES,
+    insert_clip,
     insert_filter,
     insert_generated,
     insert_media,
@@ -127,6 +128,7 @@ __all__ = [
     "UngroupClips",
     "burn_subtitles",
     "export_range",
+    "insert_clip",
     "insert_filter",
     "insert_generated",
     "insert_media",

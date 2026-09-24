@@ -24,6 +24,7 @@ from sashimono.engine.cache import MediaAnalyzer
 from sashimono.ui.theme import Colors, Metrics
 from sashimono.ui.timeline import TimelineArea, TimelineView
 from sashimono.ui.timeline.layout import TrackBand
+from sashimono.ui.timeline.painter import ADD_TRACK_BUTTON_SPACE
 
 _LEFT = Qt.MouseButton.LeftButton
 
@@ -153,6 +154,29 @@ class TestVerticalBar:
     def test_hidden_while_every_track_fits(self, area: TimelineArea) -> None:
         # 使えないバーは幅を取るだけ
         assert not area.view.vertical_scroll_bar.isVisible()
+
+    def test_the_add_track_button_can_be_reached(
+        self, qt_application: QApplication, analyzer: MediaAnalyzer
+    ) -> None:
+        # 範囲をトラックの帯だけで決めると、いちばん下まで送っても最後のトラックの下の
+        # 「＋ トラック追加」が画面の外に残り、トラックが多いときに押せない
+        del qt_application
+        area = TimelineArea(TimelineView(_long_project(tracks=8), analyzer))
+        area.resize(900, 300)
+        area.show()
+        QApplication.processEvents()
+        try:
+            view = area.view
+            bar = view.vertical_scroll_bar
+            bar.setValue(bar.maximum())
+            button = view.track_add_button()
+            assert button is not None
+            assert button.bottom() < view.height()
+            # 行き過ぎもしない 余白の分だけで止まる
+            assert view.height() - button.bottom() <= ADD_TRACK_BUTTON_SPACE
+        finally:
+            area.close()
+            shiboken6.delete(area)
 
     def test_wheeling_down_stays_on_the_tracks(self, area: TimelineArea) -> None:
         # 今の位置をバーの範囲に含めていたので、全部のトラックが見えていても下へ
