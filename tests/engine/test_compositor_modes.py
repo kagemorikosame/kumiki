@@ -105,6 +105,28 @@ class TestShaderBlends:
         assert abs(_mix(gl_context, 200, 100, BlendMode.SCREEN) - round(screen)) <= 2
         assert abs(_mix(gl_context, 200, 100, BlendMode.ADD) - 255) <= 1
 
+    @pytest.mark.parametrize("encoded", [False, True], ids=["linear", "srgb"])
+    def test_replacing_keeps_the_picture_colour(
+        self, gl_context: OffscreenGLContext, encoded: bool
+    ) -> None:
+        """置き換えは、上の絵の色をそのまま置く sRGB で重ねるキャンバスでも暗くならない
+
+        sRGB のキャンバスへリニアの値のまま混ぜると、灰色 128 が 55 ほどまで沈む
+        （#191 のレビュー 事前乗算で読むように変えたときに符号化が抜けた）
+        """
+        with gl_context:
+            compositor = Compositor(8, 8, encoded=encoded)
+            base = Texture.from_array(_solid(8, 8, 30))
+            top = Texture.from_array(_solid(8, 8, 128))
+            compositor.begin()
+            compositor.draw(base)
+            compositor.draw(top, blend=BlendMode.REPLACE)
+            result = compositor.read()
+            compositor.release()
+            base.release()
+            top.release()
+        assert abs(int(result[4, 4, 0]) - 128) <= 1
+
     def test_overlay_follows_the_backdrop(self, gl_context: OffscreenGLContext) -> None:
         # 暗い下地では乗算、明るい下地ではスクリーンになる 反対にすると
         # コントラストを強めるはずが弱める

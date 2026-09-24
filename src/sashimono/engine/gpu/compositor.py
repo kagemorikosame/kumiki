@@ -215,7 +215,9 @@ void main() {
         // キャンバスに従う（プロジェクトの重ね合わせの設定） 事前乗算のまま混ぜないと、
         // 透明な所と混ぜたときに色だけが残って縁が明るく浮く
         float amount = clamp(u_opacity, 0.0, 1.0);
-        vec4 upper = sampled;
+        // 事前乗算で届いた絵はキャンバスの写しで、キャンバスと同じ色の空間にある 素材（リニア）は
+        // sRGB のキャンバスなら上で符号化した色を使う sampled のままだとリニアの値が混ざり暗く沈む
+        vec4 upper = u_premultiplied ? sampled : vec4(source.rgb * source.a, source.a);
         frag_color = mix(backdrop, upper, amount);
         return;
     }
