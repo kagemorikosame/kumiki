@@ -994,7 +994,9 @@ def register_stylize_effects() -> None:
                 TrackSpec("corner", "角の丸み", 0, 10000, 0, step=1, unit="px"),
                 TrackSpec("span", "扇の角度", 0, 360, 360, unit="度"),
                 TrackSpec("center_x", "X", -20000, 20000, 0, step=1, unit="px"),
-                TrackSpec("center_y", "Y（下が正）", -20000, 20000, 0, step=1, unit="px"),
+                # Y は上が正（シェーダが符号を合わせる） YMM4 と AviUtl の下が正の値は
+                # 読み込みが裏返して入れる 表示に「下が正」と書くと、入れた値が上下逆に出る
+                TrackSpec("center_y", "Y", -20000, 20000, 0, step=1, unit="px"),
                 TrackSpec("rotation", "回転", -3600, 3600, 0, unit="度"),
                 TrackSpec("blur", "ぼかし", 0, 1000, 0, unit="px"),
                 CheckSpec("invert", "反転", False),
