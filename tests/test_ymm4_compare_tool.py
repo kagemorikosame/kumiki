@@ -1384,6 +1384,57 @@ def test_writing_ceilings_keeps_the_templates_that_were_not_measured(
     assert tool.read_ceilings(path) == {"雨": 8.0, "後光": 71.0}
 
 
+def _compare_arguments(tmp_path: Path, **overrides: object) -> SimpleNamespace:
+    (tmp_path / "ymm4.mp4").write_bytes(b"")
+    values: dict[str, object] = {
+        "work": tmp_path,
+        "output": None,
+        "only": "",
+        "every": False,
+        "blending": "srgb",
+        "top": 5,
+        "ceilings": tmp_path / "ceilings.json",
+        "write_ceilings": False,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def test_comparing_nothing_fails_instead_of_passing_the_ceilings(
+    tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """比べた絵が 0 枚なら終了コード 1 上限の判定にも書き換えにも進まない
+
+    ``--only`` がどの名前にも当たらないときや、書き出しにそのフレームが無いときに
+    0 枚になる 0 枚のまま上限を見ると、何も見ていないのに「超えなかった」で通る
+    """
+    monkeypatch.setattr(tool, "compare_work", lambda *args, **kwargs: [])
+    (tmp_path / "ceilings.json").write_text(json.dumps({"後光": 71.0}), encoding="utf-8")
+    assert tool.command_compare(_compare_arguments(tmp_path, only="無い名前")) == 1
+    written = _compare_arguments(tmp_path, write_ceilings=True)
+    assert tool.command_compare(written) == 1
+    assert tool.read_ceilings(tmp_path / "ceilings.json") == {"後光": 71.0}
+
+
+def test_a_missing_ceilings_file_fails_but_can_be_written(
+    tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """上限のファイルが無ければ比べるだけでは通さない 書き換えなら新しく作る
+
+    無いファイルを空の上限と読むと、``--ceilings`` の打ち間違いでどのテンプレートも
+    見張られず、どれだけ離れても終了コード 0 になる
+    """
+    row = (80.0, "後光", "a.ymmt", 1, "x", "")
+    monkeypatch.setattr(tool, "compare_work", lambda *args, **kwargs: [row])
+    missing = tmp_path / "打ち間違い.json"
+    assert tool.command_compare(_compare_arguments(tmp_path, ceilings=missing)) == 1
+    assert not missing.exists()
+    written = _compare_arguments(tmp_path, ceilings=missing, write_ceilings=True)
+    assert tool.command_compare(written) == 0
+    assert tool.read_ceilings(missing) == {"後光": 83.0}
+    assert tool.command_compare(_compare_arguments(tmp_path, ceilings=missing)) == 0
+
+
 REAL_WORK = ROOT / ".work" / "ymm4-compare"
 
 

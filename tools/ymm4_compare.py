@@ -490,10 +490,21 @@ def command_compare(arguments: argparse.Namespace) -> int:
     if not (work / "ymm4.mp4").exists():
         print(f"{work / 'ymm4.mp4'} がありません YMM4 で書き出してから走らせてください")
         return 1
+    # 上限のファイルが無いまま比べて通すと、打ち間違いでどのテンプレートも見張られない
+    # 書き換えるときだけは、新しく作れるように無くてもよい
+    if not arguments.write_ceilings and not arguments.ceilings.exists():
+        print(f"{arguments.ceilings} がありません 作るなら --write-ceilings を付けてください")
+        return 1
     words = [word for word in arguments.only.split(",") if word]
     rows = compare_work(
         work, output, only=words, every=arguments.every, blending=arguments.blending
     )
+    if not rows:
+        # 0 枚のまま上限を見ると、何も比べていないのに「超えなかった」で通る
+        print(
+            "比べた絵が 1 枚もない --only の語か、書き出しと manifest.json の食い違いを見てください"
+        )
+        return 1
     for difference, name, _, frame, _, _ in rows[: arguments.top]:
         print(f"{difference:6.1f}  {name}  フレーム {frame}")
 
