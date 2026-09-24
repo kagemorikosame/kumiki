@@ -202,7 +202,9 @@ class TranscribeDialog(QDialog):
     # --- 導入 ---
 
     def _start_install(self) -> None:
-        command = install_command(cuda=self._gpu.isChecked())
+        command = install_command(
+            cuda=self._gpu.isChecked(), upgrade=runtime_status().needs_upgrade
+        )
         self._log.setVisible(True)
         self._log.clear()
         self._set_busy(True, message="導入しています 数分かかります")

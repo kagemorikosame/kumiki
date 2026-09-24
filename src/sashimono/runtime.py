@@ -52,10 +52,24 @@ class PackageStatus:
 
     name: str
     version: str | None
+    #: ``>=`` で求めた最低の版 無ければ入っているだけでよい
+    minimum: str | None = None
 
     @property
     def installed(self) -> bool:
-        return self.version is not None
+        """使える版が入っているか 古い版は入っていないのと同じに扱う
+
+        名前だけを見ると、前の条件で入れた古い版でも「導入済み」になる
+        新しい版にしか無い引数を渡した所で、会話を始めた瞬間に落ちる
+        """
+        return self.version is not None and not self.outdated
+
+    @property
+    def outdated(self) -> bool:
+        """入ってはいるが、求める版より古い"""
+        if self.version is None or self.minimum is None:
+            return False
+        return _version_key(self.version) < _version_key(self.minimum)
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,8 +101,8 @@ class FeaturePack:
     def status(self) -> PackStatus:
         return PackStatus(
             pack=self,
-            packages=tuple(PackageStatus(n, _version(_name_of(n))) for n in self.required),
-            extras=tuple(PackageStatus(n, _version(_name_of(n))) for n in self.extra),
+            packages=tuple(_package_status(n) for n in self.required),
+            extras=tuple(_package_status(n) for n in self.extra),
             missing_commands=tuple(c for c in self.commands if self.locate(c) is None),
         )
 
@@ -120,6 +134,15 @@ class PackStatus:
         """実際に動かせるか 外部コマンドも含めて見る"""
         return self.installed and not self.missing_commands
 
+    @property
+    def needs_upgrade(self) -> bool:
+        """古い版を入れ替える必要があるか
+
+        pip は ``--target`` に同じ名前が在ると、``--upgrade`` 無しでは入れ替えない
+        （配布版の導入先） 付けないと、入れ直しても古い版のまま残る
+        """
+        return any(p.outdated for p in self.packages + self.extras)
+
     def missing(self, *, extra: bool) -> tuple[str, ...]:
         """まだ入っていないものの pip 指定"""
         pending = [p.name for p in self.packages if not p.installed]
@@ -135,6 +158,9 @@ class PackStatus:
 
     def summary(self) -> str:
         """画面に 1 行で出す説明"""
+        if any(p.outdated for p in self.packages):
+            old = "、".join(f"{_name_of(p.name)} {p.version}" for p in self.packages if p.outdated)
+            return f"古い版が入っています（{old}） ここから入れ直せます"
         if not self.installed:
             return "未導入 ここから環境を用意できます"
         if self.missing_commands:
@@ -153,6 +179,37 @@ def _name_of(requirement: str) -> str:
         if index > 0:
             return requirement[:index].strip()
     return requirement.strip()
+
+
+def _package_status(requirement: str) -> PackageStatus:
+    minimum = None
+    if ">=" in requirement:
+        minimum = requirement.split(">=", 1)[1].split(",", 1)[0].strip() or None
+    return PackageStatus(requirement, _version(_name_of(requirement)), minimum)
+
+
+def _version_key(version: str) -> tuple[int, ...]:
+    """版を比べられる形へ 数字の並びだけを見る
+
+    ``packaging`` は配布版に積んでいない ここで比べるのは自分で書いた
+    ``>=`` の条件だけで、``1.2.0rc1`` のような印は数字の後ろを捨てて読めば足りる
+    """
+    parts: list[int] = []
+    for piece in version.split("."):
+        digits = ""
+        for char in piece:
+            if not char.isdigit():
+                break
+            digits += char
+        if not digits:
+            break
+        parts.append(int(digits))
+        if len(digits) != len(piece):
+            break
+    while parts and parts[-1] == 0:
+        # 1.2 と 1.2.0 を同じ版として扱う
+        parts.pop()
+    return tuple(parts)
 
 
 def _version(name: str) -> str | None:
@@ -274,16 +331,24 @@ def _already_loaded_elsewhere(target: Path) -> tuple[str, ...]:
         entries = sorted(target.iterdir())
     except OSError:
         return ()
+    root = target.resolve()
     for entry in entries:
         name = _module_name(entry)
         if name is None:
             continue
-        module = sys.modules.get(name)
-        location = getattr(module, "__file__", None) if module is not None else None
-        if location is None:
-            continue
-        if not Path(location).resolve().is_relative_to(target.resolve()):
-            loaded.append(name)
+        # 下のモジュールまで見る 名前空間パッケージ（``nvidia`` など）は親に
+        # ``__file__`` が無く、親だけを見ると、同梱の方から読み込み済みの
+        # 子を見落として「再起動しなくても使えます」と言ってしまう
+        prefix = f"{name}."
+        for module_name, module in list(sys.modules.items()):
+            if module_name != name and not module_name.startswith(prefix):
+                continue
+            location = getattr(module, "__file__", None)
+            if location is None:
+                continue
+            if not Path(location).resolve().is_relative_to(root):
+                loaded.append(name)
+                break
     return tuple(loaded)
 
 

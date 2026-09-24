@@ -146,6 +146,32 @@ class TestRestartNote:
         assert module in note
         assert "再起動" in note
 
+    def test_submodules_of_a_namespace_package_are_looked_at(
+        self, frozen: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """名前空間パッケージ（``nvidia`` など）は親に ``__file__`` が無い
+
+        親だけを見ると、同梱の方から読み込み済みの子を見落とし、入れ替わって
+        いないのに「再起動しなくても使えます」と言ってしまう
+        """
+        _, namespace = _unique()
+        parent = ModuleType(namespace)  # 名前空間パッケージには __file__ が無い
+        child = ModuleType(f"{namespace}.cublas")
+        child.__file__ = str(tmp_path / "bundle" / namespace / "cublas" / "__init__.py")
+        monkeypatch.setitem(sys.modules, namespace, parent)
+        monkeypatch.setitem(sys.modules, f"{namespace}.cublas", child)
+        (frozen / namespace / "cublas").mkdir(parents=True)
+
+        assert refresh_runtime() == (namespace,)
+
+    def test_modules_loaded_from_the_runtime_folder_are_not_reported(self, frozen: Path) -> None:
+        # 入れたばかりの物を読んだだけで再起動を勧めると、毎回の導入で再起動させてしまう
+        dist, module = _unique()
+        write_distribution(frozen, dist, module)
+        refresh_runtime()
+        importlib.import_module(module)
+        assert refresh_runtime() == ()
+
     def test_nothing_to_restart_says_so(self) -> None:
         assert "再起動しなくても" in restart_note(())
 
@@ -210,6 +236,41 @@ class TestSetupSection:
         assert ready[-1] is True
         assert section.status.installed is True
         assert "再起動しなくても" in section._status.text()
+        section.deleteLater()
+
+    def test_a_missing_command_is_not_called_usable(
+        self, frozen: Path, monkeypatch: pytest.MonkeyPatch, qt_application: QApplication
+    ) -> None:
+        """pip で入る物は揃ったが、別に要るコマンドが無いとき
+
+        「そのまま使えます」と出すと、使えない機能を使えると案内することになる
+        """
+        from sashimono.ui import setup
+
+        dist, module = _unique()
+        pack = FeaturePack(
+            key="fake",
+            label="偽物",
+            required=(dist,),
+            commands=("sashimono-fake-command",),
+            locate=lambda _name: None,
+        )
+        monkeypatch.setattr(
+            setup,
+            "install_runtime",
+            _fake_installer(lambda: write_distribution(frozen, dist, module)),
+        )
+        section = setup.SetupSection(pack)
+        results: list[bool] = []
+        section.finished.connect(results.append)
+
+        section.start()
+        _wait_for(lambda: bool(results), qt_application)
+
+        assert section.status.installed is True
+        assert section.note == ""
+        assert "使えます" not in section._status.text()
+        assert "sashimono-fake-command" in section._status.text()
         section.deleteLater()
 
     def test_a_failed_install_does_not_claim_success(

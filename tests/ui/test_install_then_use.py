@@ -9,10 +9,12 @@ from __future__ import annotations
 import shutil
 import sys
 from pathlib import Path
+from typing import cast
 
 import pytest
 from PySide6.QtWidgets import QApplication
 
+from sashimono.asr import TranscriptionService
 from sashimono.core.model import MediaItem, Project, Transcript
 from tests.ai.conftest import FakeHost, make_loaded
 from tests.test_runtime_after_install import (
@@ -51,7 +53,10 @@ class TestTranscribeAfterInstall:
                 lambda: write_distribution(frozen, "faster-whisper", "faster_whisper", "1.2.0")
             ),
         )
-        dialog = transcribe_dialog.TranscribeDialog(video_media, _IdleService())  # type: ignore[arg-type]
+        # 起こしの受け付けは導入が済むまで 1 度も呼ばれない 本物を作ると
+        # faster-whisper を読みに行くので、何もしない代わりを型だけ合わせて渡す
+        service = cast(TranscriptionService, _IdleService())
+        dialog = transcribe_dialog.TranscribeDialog(video_media, service)
         assert dialog._run_button.isEnabled() is False
 
         dialog._start_install()
@@ -125,5 +130,7 @@ class TestAssistantAfterInstall:
         assert panel._setup.isHidden() is True
         # ログインがまだなので、その案内が出る
         assert panel._login_box.isHidden() is False
+        # 導入欄は隠れるので、再起動の要る・要らないの案内は会話の欄に残す
+        assert "再起動しなくても" in panel._view.toPlainText()
         panel.close_session()
         panel.deleteLater()

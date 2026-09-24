@@ -110,6 +110,8 @@ class ChatPanel(QWidget):
         self._checkpoint_open = False
         #: 応答が 1 往復終わった回数 無人での確認に使う
         self._turns_done = 0
+        #: 送ってまだ応答が終わっていない指示の数 会話を繋ぎ直してよいかの判断に使う
+        self._pending_turns = 0
 
         self._build()
         self._timer = QTimer(self)
@@ -122,7 +124,7 @@ class ChatPanel(QWidget):
 
     def _build(self) -> None:
         self._setup = SetupSection(AI_PACK, self)
-        self._setup.finished.connect(lambda _ok: self._refresh_availability())
+        self._setup.finished.connect(self._on_setup_finished)
 
         # 今どのモデルで話しているかが、いつも見えるように欄の一番上へ置く
         self._model = QComboBox(self)
@@ -238,6 +240,13 @@ class ChatPanel(QWidget):
         if not ready:
             self._say("案内", status.summary())
 
+    def _on_setup_finished(self, succeeded: bool) -> None:
+        self._refresh_availability()
+        if succeeded and self._setup.note:
+            # 使える状態になると導入欄ごと隠れるので、再起動の要る・要らないの
+            # 案内は会話の欄へ写す 写さないと、読めないまま消える
+            self._say("案内", self._setup.note)
+
     def open_login(self) -> None:
         """Claude Code を別の窓で開き、そこでログインしてもらう"""
         cli = claude_cli()
@@ -280,17 +289,26 @@ class ChatPanel(QWidget):
         choice = find_model(self.model)
         # 受け付けないモデルでは選べなくする 選べたままだと、選んだのに効いていない
         self._effort.setEnabled(choice is None or choice.effort)
+        self._restart_when_idle()
+        if notify:
+            self.choices_changed.emit(self.model, self.effort)
+
+    def _restart_when_idle(self) -> None:
+        """選び直した組を、送った指示がすべて終わっていれば当てる
+
+        SDK は会話の途中でエフォートを変えられないので、繋ぎ直す 指示が残って
+        いる間は待ち、最後の応答が終わった所（_handle）でもう一度呼ばれる
+        ``session.busy`` だけでは見ない 送った直後（Claude Code の起動と接続の
+        数秒）は busy が立っておらず、その間に畳むと送った指示が消える
+        """
         session = self._session
-        # SDK は会話の途中でエフォートを変えられないので、次の指示から
-        # 繋ぎ直す 応答の途中なら、その応答が終わってから（_handle で）
         if (
             session is not None
+            and self._pending_turns == 0
             and not session.busy
             and (session.model, session.effort) != self._wanted()
         ):
             self._restart_session()
-        if notify:
-            self.choices_changed.emit(self.model, self.effort)
 
     def _wanted(self) -> tuple[str | None, str | None]:
         """いま選んでいる組を、会話が持つ形（空は None）で"""
@@ -301,6 +319,7 @@ class ChatPanel(QWidget):
         if session is None:
             return
         self._session = None
+        self._pending_turns = 0
         session.close(wait=False)
         label = self._model.currentText()
         self._note(
@@ -337,6 +356,7 @@ class ChatPanel(QWidget):
             model, effort = self._wanted()
             self._session = AgentSession(self._bridge, model=model, effort=effort)
         self._session.send(prompt)
+        self._pending_turns += 1
         self._stop_button.setEnabled(True)
 
     def interrupt(self) -> None:
@@ -396,16 +416,17 @@ class ChatPanel(QWidget):
             self._say("エラー", event.text)
         elif event.kind is EventKind.TURN_DONE or event.kind is EventKind.CLOSED:
             self._turns_done += 1
-            self._stop_button.setEnabled(False)
+            if event.kind is EventKind.TURN_DONE:
+                self._pending_turns = max(0, self._pending_turns - 1)
+            else:
+                # 会話が終わった 残っていた指示はもう返ってこない
+                self._pending_turns = 0
+            if self._pending_turns == 0:
+                # 続けて送った指示がまだ残っているなら、中断ボタンは生かしておく
+                self._stop_button.setEnabled(False)
             self._close_checkpoint()
-            session = self._session
-            if (
-                event.kind is EventKind.TURN_DONE
-                and session is not None
-                and (session.model, session.effort) != self._wanted()
-            ):
-                # 応答の途中で選び直した分を、ここで当てる
-                self._restart_session()
+            # 応答の途中で選び直した分を、送った指示が全部終わった所で当てる
+            self._restart_when_idle()
 
     def _check_approval(self) -> None:
         showing = self._approval

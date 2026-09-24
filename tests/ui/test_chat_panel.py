@@ -260,6 +260,8 @@ class TestSendKey:
         assert "\n" not in widget._input.toPlainText()
 
     def test_the_keypad_enter_also_sends(self, typed: tuple[ChatPanel, list[bool]]) -> None:
+        # テンキーの Enter は修飾（Keypad）付きで届く 素の Enter と同じに扱わないと、
+        # テンキーで押す人だけ送れずに改行が入る
         widget, sent = typed
         _press(widget._input, Qt.Key.Key_Enter, Qt.KeyboardModifier.KeypadModifier)
         assert sent == [True]
@@ -302,6 +304,7 @@ class TestSendKey:
         assert sent == [True]
 
     def test_the_placeholder_tells_the_keys(self, panel: tuple[ChatPanel, FakeHost]) -> None:
+        # 書いていないと、前の版の Ctrl+Enter を覚えた人も、改行したい人も押し方が分からない
         widget, _ = panel
         assert "Enter で送信" in widget._input.placeholderText()
         assert "Shift+Enter で改行" in widget._input.placeholderText()
@@ -364,6 +367,7 @@ class TestModelChoice:
         assert (made[0].model, made[0].effort) == (None, None)
 
     def test_the_listed_models_are_the_current_ones(self) -> None:
+        # 一覧はネットに取りに行かない定数 欠けると、そのモデルを選ぶ手段が無くなる
         ids = {model.id for model in MODELS}
         assert {
             "claude-opus-5-5",
@@ -375,6 +379,7 @@ class TestModelChoice:
     def test_the_chosen_model_and_effort_are_used(
         self, recorded: tuple[ChatPanel, list[_RecordingSession]]
     ) -> None:
+        # 渡し忘れると、欄の上には選んだモデルが出ているのに既定のモデルで話す
         widget, made = recorded
         _choose(widget._model, "claude-sonnet-5")
         _choose(widget._effort, "high")
@@ -397,15 +402,41 @@ class TestModelChoice:
     def test_changing_the_model_starts_a_new_conversation(
         self, recorded: tuple[ChatPanel, list[_RecordingSession]]
     ) -> None:
+        # 繋ぎ直さないと、選んだモデルが効かないまま前のモデルで話し続ける
         widget, made = recorded
         widget._input.setPlainText("切って")
         widget.send()
+        widget._handle(AgentEvent(EventKind.TURN_DONE))
         _choose(widget._model, "claude-opus-5-5")
         assert made[0].closed is True
         widget._input.setPlainText("もう一度")
         widget.send()
         assert made[1].model == "claude-opus-5-5"
         assert "新しい会話" in _text(widget)
+
+    def test_a_change_right_after_sending_keeps_the_prompt(
+        self, recorded: tuple[ChatPanel, list[_RecordingSession]]
+    ) -> None:
+        """送った直後は Claude Code の起動中で busy が立っていない
+
+        そこで畳むと、送った指示が処理されないまま消え、履歴の段も開いたまま残る
+        """
+        widget, made = recorded
+        widget._input.setPlainText("切って")
+        widget.send()
+        _choose(widget._model, "claude-opus-5-5")
+        assert made[0].closed is False
+
+        # 応答を待つ間に続けて送った指示も、前の会話で最後まで処理させる
+        widget._input.setPlainText("続けて")
+        widget.send()
+        assert made[0].prompts == ["切って", "続けて"]
+        widget._handle(AgentEvent(EventKind.TURN_DONE))
+        assert made[0].closed is False
+        assert widget._stop_button.isEnabled() is True
+        widget._handle(AgentEvent(EventKind.TURN_DONE))
+        assert made[0].closed is True
+        assert widget._stop_button.isEnabled() is False
 
     def test_a_change_during_a_reply_waits_for_the_reply(
         self, recorded: tuple[ChatPanel, list[_RecordingSession]]

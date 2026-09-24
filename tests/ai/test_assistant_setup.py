@@ -16,8 +16,10 @@ import pytest
 
 from sashimono.ai import environment
 from sashimono.ai.bridge import EditorBridge
+from sashimono.ai.environment import AI_PACK
 from sashimono.ai.models import effort_for
 from sashimono.ai.session import AgentSession
+from sashimono.runtime import install_command
 from sashimono.ui.workspace import Preferences, PreferenceStore
 from tests.test_runtime_after_install import write_distribution
 
@@ -54,6 +56,7 @@ def _install_sdk(site: Path, *, bundled: bool = True) -> Path:
 
 class TestBundledClaudeCode:
     def test_nothing_is_found_before_installing(self, machine: Path) -> None:
+        # 入っていないのに見つかったことにすると、導入の案内が出ず、送った瞬間に失敗する
         del machine
         assert environment.bundled_claude_cli() is None
         assert environment.runtime_status().installed is False
@@ -69,6 +72,21 @@ class TestBundledClaudeCode:
         status = environment.runtime_status()
         assert status.missing_commands == ()
         assert status.ready is True
+
+    def test_an_sdk_older_than_required_asks_to_be_replaced(self, machine: Path) -> None:
+        """前の条件（0.2 以上）で入れた古い SDK を「導入済み」と見ないこと
+
+        見てしまうと入力欄が開き、考える深さを選んだ所で、古い SDK が知らない
+        引数を渡されて会話を始めた瞬間に落ちる
+        """
+        write_distribution(machine, "claude-agent-sdk", "claude_agent_sdk", "0.2.10")
+        status = environment.runtime_status()
+        assert status.ready is False
+        assert status.needs_upgrade is True
+        assert "古い版" in status.summary()
+        # 配布版の導入先（--target）では --upgrade が無いと入れ替わらない
+        command = install_command(AI_PACK, extra=False, upgrade=status.needs_upgrade)
+        assert "--upgrade" in command
 
     def test_an_old_sdk_without_the_bundle_still_asks_for_claude(self, machine: Path) -> None:
         _install_sdk(machine, bundled=False)
@@ -118,18 +136,21 @@ def _session(model: str | None = None, effort: str | None = None) -> AgentSessio
 
 class TestSessionOptions:
     def test_nothing_is_forced_by_default(self, machine: Path) -> None:
+        # 既定で何かを渡すと、そのモデルを使えないアカウントでは会話が始まらない
         del machine
         values = _session().option_values()
         assert values["model"] is None
         assert "effort" not in values
 
     def test_the_chosen_model_and_effort_are_passed(self, machine: Path) -> None:
+        # 渡し忘れると、選んだ深さが効かないまま Claude Code の既定で考える
         del machine
         values = _session("claude-opus-5-5", "xhigh").option_values()
         assert values["model"] == "claude-opus-5-5"
         assert values["effort"] == "xhigh"
 
     def test_haiku_gets_no_effort(self, machine: Path) -> None:
+        # Haiku 4.5 はエフォートを受け付けない 渡すと会話が始まる前に失敗する
         del machine
         assert "effort" not in _session("claude-haiku-4-5-20251001", "high").option_values()
         assert effort_for("claude-haiku-4-5-20251001", "high") is None

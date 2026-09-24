@@ -55,6 +55,9 @@ class SetupSection(QWidget):
         self._log_queue: queue.Queue[str] = queue.Queue()
         self._done: threading.Event | None = None
         self._code = 0
+        #: 最後の導入のあとに出した案内 使える状態になると導入欄ごと隠す画面
+        #: （アシスタント）があるので、そちらが自分の見える所へ写せるように持つ
+        self.note = ""
 
         self._status = QLabel(self)
         self._status.setWordWrap(True)
@@ -130,14 +133,14 @@ class SetupSection(QWidget):
 
     def command_text(self) -> str:
         """これから実行するコマンド 画面に見せるため"""
-        return " ".join(install_command(self._pack, extra=self.extra))
+        return " ".join(self._command())
 
     # --- 導入 ---
 
     def start(self) -> None:
         if self.busy:
             return
-        argv = install_command(self._pack, extra=self.extra)
+        argv = self._command()
         self._log.setVisible(True)
         self._log.clear()
         self._progress.setVisible(True)
@@ -186,10 +189,21 @@ class SetupSection(QWidget):
         # 入れたばかりのものが見えず「未導入」のまま止まる
         loaded = refresh_runtime() if succeeded else ()
         self.refresh()
+        self.note = ""
         if succeeded:
-            note = restart_note(loaded, visible=self.status.installed)
-            self._status.setText(f"{self._status.text()}\n{note}")
+            status = self.status
+            if status.ready:
+                self.note = restart_note(loaded)
+            elif not status.installed:
+                self.note = restart_note(loaded, visible=False)
+            # 入ったが外部コマンドが足りないときは「使えます」と言わない
+            # 足りない物は refresh が出した summary に書いてある
+            if self.note:
+                self._status.setText(f"{self._status.text()}\n{self.note}")
         self.finished.emit(succeeded)
+
+    def _command(self) -> list[str]:
+        return install_command(self._pack, extra=self.extra, upgrade=self.status.needs_upgrade)
 
 
 def _readable(megabytes: int) -> str:
