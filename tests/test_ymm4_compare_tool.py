@@ -1376,7 +1376,11 @@ def test_a_few_stray_mark_pixels_do_not_widen_the_mark(tool: ModuleType) -> None
 
 
 def test_the_expectations_are_cut_by_the_screen(tool: ModuleType) -> None:
-    """画面より大きい素材は、画素のままだと印が画面いっぱいで切れる 縦長は高さで収まる"""
+    """画面より大きい素材は、画素のままだと印が画面いっぱいで切れる 縦長は高さで収まる
+
+    画面で切る所を誤ると、3840x2160 を画素のまま置いた実測（1920x1080）がどちらの予想にも
+    合わず「どちらとも合わない」と出て、置き方を読み分けられない
+    """
     large = tool.zoom_expectations(3840, 2160, 100.0)
     assert large == {tool.ZOOM_NATIVE: (1920.0, 1080.0), tool.ZOOM_FIT: (960.0, 540.0)}
     tall = tool.zoom_expectations(360, 640, 100.0)
@@ -1485,7 +1489,8 @@ def test_the_effect_item_reading_says_when_both_are_the_same(tool: ModuleType) -
     assert tool.effect_item_reading(near) == tool.EFFECT_FRAMEBUFFER
     far = {tool.EFFECT_FRAMEBUFFER: 40.0, tool.EFFECT_FILTER: 2.0}
     assert tool.effect_item_reading(far) == tool.EFFECT_FILTER
-    # 基準の枠のように 2 つの読みが同じ絵なら、どちらかに決めない
+    # 基準の枠のように 2 つの読みが同じ絵なら、どちらかに決めない 決めると、見分けられない
+    # 枠まで片方の読みの裏付けとして表に数えてしまう
     same = {tool.EFFECT_FRAMEBUFFER: 1.2, tool.EFFECT_FILTER: 1.2}
     assert tool.effect_item_reading(same) == "見分けない"
 
