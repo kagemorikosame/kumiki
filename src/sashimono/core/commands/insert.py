@@ -165,16 +165,23 @@ def insert_filter(
     フィルタはそれより**下**のトラックにしか効かない テキストや図形と同じく下から
     空きを探すと、範囲にある絵より下へ入り、置いたのに何も変わらないことがある
     範囲に絵のある一番上のトラックより上で空いているトラックを使い、無ければ一番上に作る
+
+    見るのは描かれるトラック（:meth:`~sashimono.core.model.Timeline.active_tracks`）だけ
+    ミュートしたトラックやソロの外のトラックへ置くと、置いたのにプレビューにも書き出しにも
+    効かない 絵の有無も、描かれないトラックの物は数えない（見えない絵より上に置く理由が無い）
+    ソロで絞っている間に新しく作るトラックは、ソロを付けて作る 付けないと作った所で外れる
     """
     commands: list[Command] = []
     start = project.duration if at_frame is None else max(0, at_frame)
     end = start + duration
-    video = list(project.timeline.video_tracks())
+    timeline = project.timeline
+    video = list(timeline.video_tracks())
+    drawn = {track.id for track in timeline.active_tracks(TrackKind.VIDEO)}
     top = max(
         (
             index
             for index, track in enumerate(video)
-            if any(clip.overlaps(start, end) for clip in track.clips)
+            if track.id in drawn and any(clip.overlaps(start, end) for clip in track.clips)
         ),
         default=-1,
     )
@@ -182,13 +189,15 @@ def insert_filter(
         (
             candidate
             for candidate in video[top + 1 :]
-            if not candidate.locked
+            if candidate.id in drawn
+            and not candidate.locked
             and not any(clip.overlaps(start, end) for clip in candidate.clips)
         ),
         None,
     )
     if track is None:
-        track = Track(kind=TrackKind.VIDEO, name=f"V{len(video) + 1}")
+        soloed = any(t.solo and not t.muted for t in video)
+        track = Track(kind=TrackKind.VIDEO, name=f"V{len(video) + 1}", solo=soloed)
         # 末尾へ足す 映像トラックの重ね順は並びの順なので、末尾が一番上になる
         commands.append(AddTrack(track))
     commands.append(

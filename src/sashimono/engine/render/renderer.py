@@ -1100,7 +1100,10 @@ class FrameRenderer:
         if scripts:
             # スクリプトは CPU の画像を書き換える作り シーンの絵を 1 枚読み戻して渡す
             # （毎フレームの往復になるので、スクリプトを積んだシーンだけで行う）
-            self._draw_scripted(track, clip, nested.read(), gpu_effects, local_frame, rate, opacity)
+            # ストレートアルファで読む 事前乗算のまま渡すと、シーンの半透明の所が暗くなる
+            self._draw_scripted(
+                track, clip, nested.read(straight=True), gpu_effects, local_frame, rate, opacity
+            )
             return
         if not self._effects.has_work(gpu_effects):
             outer.draw_handle(
@@ -1222,12 +1225,14 @@ class FrameRenderer:
         if scripts:
             # スクリプトは CPU の画像を書き換える作り 写した絵を 1 枚読み戻して渡す
             # 不透明度はここでは当てない 置き換えるときに混ぜ具合として 1 度だけ当てる
+            # スクリプトの絵は素材と同じストレートアルファとして重なる 事前乗算のまま
+            # 渡すと、半透明の所で不透明度が 2 回掛かって暗くなる
             self._compositor = after
             try:
                 self._draw_scripted(
                     track,
                     replace(clip, blend_mode=BlendMode.NORMAL),
-                    before.read(),
+                    before.read(straight=True),
                     gpu_effects,
                     local_frame,
                     rate,

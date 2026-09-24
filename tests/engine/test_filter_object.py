@@ -14,7 +14,9 @@ from pathlib import Path
 import av
 import numpy as np
 import pytest
+from OpenGL import GL
 
+from sashimono.compat.aviutl.catalog import ScriptCatalog, set_script_catalog
 from sashimono.core.commands import (
     AddClip,
     AddEffect,
@@ -49,7 +51,13 @@ from sashimono.core.timebase import FrameRate
 from sashimono.effects import registry
 from sashimono.effects.sources import FILTER, source_registry
 from sashimono.engine.encode import ExportSettings, available_video_codecs, export_project
-from sashimono.engine.gpu import GLContextError, OffscreenGLContext
+from sashimono.engine.gpu import (
+    BlendMode,
+    Compositor,
+    GLContextError,
+    OffscreenGLContext,
+    Placement,
+)
 from sashimono.engine.render import FrameRenderer, changed_spans
 
 SETTINGS = ProjectSettings(width=64, height=36, frame_rate=FrameRate(30))
@@ -93,13 +101,19 @@ def _invert() -> Effect:
     return definition.create()
 
 
-def _filter(start: int = 10, duration: int = 10, **extra: object) -> Clip:
+def _filter(
+    start: int = 10,
+    duration: int = 10,
+    *,
+    opacity: float = 1.0,
+    effects: tuple[Effect, ...] | None = None,
+) -> Clip:
     return Clip(
         timeline_start=start,
         duration=duration,
         source=FILTER.create(),
-        effects=(_invert(),),
-        **extra,  # type: ignore[arg-type]
+        effects=(_invert(),) if effects is None else effects,
+        opacity=AnimatedValue(opacity),
     )
 
 
@@ -164,7 +178,7 @@ class TestRendering:
     def test_opacity_mixes_before_and_after(self, gl_context: OffscreenGLContext) -> None:
         # 不透明度は掛ける前と後の混ぜ具合 0.5 なら赤と水色の真ん中 上に重ねる作りだと、
         # 下の赤が透けて残る分だけ赤に寄る
-        half = _filter(opacity=AnimatedValue(0.5))
+        half = _filter(opacity=0.5)
         (image,) = _render(_project(filter_clip=half), gl_context, 15)
         red, green, blue = _rgb(image, LEFT)
         assert abs(red - green) <= 4
@@ -173,12 +187,13 @@ class TestRendering:
 
     def test_a_filter_without_effects_changes_nothing(self, gl_context: OffscreenGLContext) -> None:
         # 置いたばかり（エフェクトを積む前）のフィルタで絵が消えたり黒くなったりしない
-        empty = replace(_filter(), effects=())
+        empty = _filter(effects=())
         (image,) = _render(_project(filter_clip=empty), gl_context, 15)
         assert _near(_rgb(image, LEFT), (255, 0, 0))
         assert _near(_rgb(image, RIGHT), (0, 255, 0))
 
     def test_a_disabled_filter_changes_nothing(self, gl_context: OffscreenGLContext) -> None:
+        # 切ったフィルタは描かない 壊れると、無効にしたのに下の絵が反転し続ける
         off = replace(_filter(), enabled=False)
         (image,) = _render(_project(filter_clip=off), gl_context, 15)
         assert _near(_rgb(image, LEFT), (255, 0, 0))
@@ -214,6 +229,62 @@ class TestRendering:
         assert _near(_rgb(image, LEFT), (255, 0, 0))
         assert _near(_rgb(image, RIGHT), (255, 0, 255))
 
+    def test_a_script_filter_keeps_half_transparent_pictures_as_bright(
+        self, gl_context: OffscreenGLContext
+    ) -> None:
+        # スクリプトへは下の絵をストレートアルファで渡す 合成先の事前乗算のまま渡すと、
+        # 何もしないスクリプトでも半透明の所で不透明度が 2 回掛かり、赤が暗く沈む
+        catalog = ScriptCatalog(roots=())
+        catalog.add_text("aviutl:試験.anm:そのまま", "obj.ox = 0")
+        set_script_catalog(catalog)
+        definition = registry.get("aviutl:試験.anm:そのまま")
+        assert definition is not None
+        faint = Clip(
+            timeline_start=0, duration=30, source=_box(RED, -16), opacity=AnimatedValue(0.5)
+        )
+        plain = _project()
+        plain = plain.with_timeline(
+            plain.timeline.replace_track(replace(plain.timeline.tracks[0], clips=(faint,)))
+        )
+        filtered = plain.with_timeline(
+            plain.timeline.replace_track(
+                replace(
+                    plain.timeline.tracks[2],
+                    clips=(_filter(effects=(definition.create(),)),),
+                )
+            )
+        )
+        (expected,) = _render(plain, gl_context, 15)
+        (actual,) = _render(filtered, gl_context, 15)
+        assert _near(_rgb(actual, LEFT), _rgb(expected, LEFT), 4)
+        assert _near(_rgb(actual, RIGHT), _rgb(expected, RIGHT), 4)
+
+    def test_replacing_keeps_a_very_faint_picture(self, gl_context: OffscreenGLContext) -> None:
+        # 置き換えは事前乗算の値をそのまま写す 一度ストレートへ戻そうとすると、戻すのを
+        # 飛ばすごく薄い所（不透明度 0.0001 以下）で不透明度が 2 回掛かり、色が消える
+        with gl_context:
+            source = Compositor(4, 4)
+            target = Compositor(4, 4)
+            try:
+                # 事前乗算で (0.00005, 0, 0, 0.00005) ストレートなら不透明度 0.00005 の赤
+                source.begin((0.00005, 0.0, 0.0, 0.00005))
+                target.begin((0.0, 0.0, 0.0, 0.0))
+                target.draw_handle(
+                    source.canvas.color,
+                    Placement(0.0, 0.0, 4.0, 4.0),
+                    flip=False,
+                    blend=BlendMode.REPLACE,
+                    premultiplied=True,
+                )
+                GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, target.canvas.handle)
+                raw = GL.glReadPixels(0, 0, 1, 1, GL.GL_RGBA, GL.GL_FLOAT)
+            finally:
+                source.release()
+                target.release()
+        red, _, _, alpha = np.frombuffer(raw, dtype=np.float32)[:4]
+        assert alpha == pytest.approx(0.00005, rel=0.05)
+        assert red == pytest.approx(0.00005, rel=0.05)
+
     def test_export_writes_the_same_picture(
         self, gl_context: OffscreenGLContext, tmp_path: Path
     ) -> None:
@@ -246,7 +317,9 @@ class TestModel:
         assert not Clip(timeline_start=0, duration=1, source=_box(RED, 0)).is_filter
 
     def test_saving_and_loading_keeps_the_filter(self, tmp_path: Path) -> None:
-        project = _project(filter_clip=_filter(opacity=AnimatedValue(0.25)))
+        # 壊れると、開き直したときにフィルタが普通の生成オブジェクトになったりエフェクトや
+        # 不透明度が落ちたりして、保存前と違う絵になる
+        project = _project(filter_clip=_filter(opacity=0.25))
         path = tmp_path / "filter.sme"
         save_project(project, path)
         loaded = load_project(path)
@@ -266,6 +339,8 @@ class TestModel:
         assert project_to_dict(_project(filter_clip=_filter()))["version"] == FORMAT_VERSION
 
     def test_a_version_5_file_still_opens(self) -> None:
+        # 版を上げたせいで、フィルタを持たない前の版のファイルが「新しい形式」や読み違いで
+        # 開けなくならないこと
         data = project_to_dict(_project())
         data["version"] = 5
         loaded = project_from_dict(data)
@@ -293,6 +368,8 @@ class TestInsert:
         assert names == ["V1", "V2", "V3"]
 
     def test_a_new_top_track_is_made_when_there_is_no_room_above(self) -> None:
+        # 上に空きが無いのに下の空きへ入れると、フィルタより上の絵に掛からないどころか
+        # 範囲の絵の一部にしか効かない 一番上に新しいトラックを作って置く
         project = _project(Clip(timeline_start=0, duration=30, source=_box(BLUE, 0)))
         commands = insert_filter(project, at_frame=10, duration=10)
         assert isinstance(commands[0], AddTrack)
@@ -302,6 +379,8 @@ class TestInsert:
         assert video[-1].clips[0].is_filter
 
     def test_undo_takes_the_filter_away(self) -> None:
+        # 置く操作（トラックの用意とクリップ）が 1 回の取り消しで戻らないと、取り消しても
+        # 空のフィルタやトラックが残り、下の絵が変わったままに見える
         document = Document(_project())
         with document.checkpoint("フィルタを追加"):
             for command in insert_filter(document.project, at_frame=10, duration=10):
@@ -315,11 +394,35 @@ class TestInsert:
         document.undo()
         assert not any(c.is_filter for t in document.project.timeline.tracks for c in t.clips)
 
+    def test_a_muted_track_is_not_used(self) -> None:
+        # ミュートした空きトラックへ置くと、置いたのにプレビューにも書き出しにも効かない
+        project = _project()
+        muted = replace(project.timeline.tracks[2], muted=True)
+        project = project.with_timeline(project.timeline.replace_track(muted))
+        for command in insert_filter(project, at_frame=10, duration=10):
+            project = command.apply(project)
+        placed = next(t for t in project.timeline.tracks for c in t.clips if c.is_filter)
+        assert placed.name == "V4"
+        assert placed.id in {t.id for t in project.timeline.active_tracks(TrackKind.VIDEO)}
+
+    def test_a_new_track_joins_the_solo(self) -> None:
+        # ソロで絞っている間に作ったトラックがソロの外になると、置いたフィルタが描かれない
+        project = _project()
+        soloed = replace(project.timeline.tracks[0], solo=True)
+        project = project.with_timeline(project.timeline.replace_track(soloed))
+        for command in insert_filter(project, at_frame=10, duration=10):
+            project = command.apply(project)
+        placed = next(t for t in project.timeline.tracks for c in t.clips if c.is_filter)
+        assert placed.solo
+        assert placed.id in {t.id for t in project.timeline.active_tracks(TrackKind.VIDEO)}
+
 
 class TestInvalidation:
     """先読みした絵を捨てる範囲 フィルタは同じ時刻の下の絵だけを読むので、変えた所だけ捨てる"""
 
     def test_placing_a_filter_drops_its_span(self) -> None:
+        # 置いた所を捨てないと、先読みした所だけフィルタの掛からない絵が出る 範囲の外まで
+        # 捨てると、置くたびに全体を作り直して先読みが効かなくなる
         before = _project()
         after = before
         for command in insert_filter(before, at_frame=10, duration=10):
@@ -331,6 +434,7 @@ class TestInvalidation:
     def test_changing_the_filter_drops_its_span(self) -> None:
         before = _project(filter_clip=_filter())
         clip_id = _filter_id(before)
+        # フィルタ自身を切り替えたのに捨て損ねると、先読みした所だけ反転したままの絵が出る
         after = SetClipProperty(clip_id, "enabled", False).apply(before)
         found = changed_spans(before, after)
         assert found.contains(15)
