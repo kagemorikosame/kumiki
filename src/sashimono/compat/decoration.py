@@ -12,6 +12,7 @@ AviUtl2 の ``文字装飾``       YMM4 の ``Decorations``
 ``縁取り文字``                ``BorderDecoration``
 ``縁取り文字（細）``          ``BorderDecoration``（細いもの）
 ``縁取り文字（太）``          ``BorderDecoration``（太いもの）
+``縁取り文字（角）``          （当たる物なし）
 ============================  ==========================================
 
 **太さと影のずれは文字サイズに対する割合で持つ** AviUtl も YMM4 も、装飾の
@@ -72,6 +73,9 @@ DECORATIONS: dict[str, TextDecoration] = {
     "縁取り文字": TextDecoration("縁取り文字", border=0.05),
     "縁取り文字（細）": TextDecoration("縁取り文字（細）", border=0.03),
     "縁取り文字（太）": TextDecoration("縁取り文字（太）", border=0.09),
+    # 角 は角を丸めない縁 太さは AviUtl2 v2.1.6a で 細 と同じだった（Arial 100 の H が
+    # どちらも 56 から 64 へ広がった #134 見本 tag42） 角の形までは写さない
+    "縁取り文字（角）": TextDecoration("縁取り文字（角）", border=0.03),
 }
 
 

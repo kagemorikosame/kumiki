@@ -68,12 +68,22 @@ class TestTheTableIsKeyedByTheAviutlName:
         # AviUtl の Y は下が正 こちらは上が正
         assert _value(effect, "pos_y") == -50.0
 
-    def test_the_zoom_filter_scales_both_axes(self) -> None:
+    def test_the_zoom_filter_scales_both_axes_once(self) -> None:
         # 種別で引いていたころは、ここで X が位置として読まれていた
-        effect = _one("拡大率\n拡大率=200\nX=0\nY=0\nZ=0")
+        # 実物の配布物の 拡大率 は X Y Z がどれも 100 で書かれていた
+        # 変形の scale_y は scale に重ねて掛かる縦の比 200 を入れると縦だけ 400% になる
+        # （AviUtl2 v2.1.6a では 200x200 の四角が 400x400 #167）
+        effect = _one("拡大率\n拡大率=200.000\nX=100.000\nY=100.000\nZ=100.000")
         assert _value(effect, "scale") == 200.0
-        assert _value(effect, "scale_y") == 200.0
+        assert _value(effect, "scale_y") == 100.0
         assert _value(effect, "pos_x") == 0.0
+
+    def test_the_zoom_filter_x_and_y_scale_each_axis(self) -> None:
+        # X と Y は拡大率に重ねて掛かる軸ごとの拡大率 AviUtl2 で拡大率 150・X 200・Y 50 の
+        # 200x200 の四角は 600x150 だった 横 = 150 x 2 縦 = 横 x (50 / 200)
+        effect = _one("拡大率\n拡大率=150\nX=200\nY=50\nZ=100")
+        assert _value(effect, "scale") == 300.0
+        assert _value(effect, "scale_y") == 25.0
 
     def test_the_rotate_filter_turns(self) -> None:
         effect = _one("回転\nX=0\nY=0\nZ=45")

@@ -406,10 +406,10 @@ _PARAMS: dict[str, dict[str, _Param]] = {
         "ぼかし": _Param("blur"),
     },
     "座標": {"X": _Param("pos_x"), "Y": _Param("pos_y", _flip)},
-    "拡大率": {"拡大率": _Param("scale", also="scale_y")},
+    # 拡大率 と リサイズ は拡大率と縦横別の X Y を掛け合わせるので表では写さない
+    # （:func:`_zoom_filter`）
     "透明度": {"透明度": _Param("amount", _rest)},
     "回転": {"Z": _Param("rotation"), "X": _Param("rotation_x"), "Y": _Param("rotation_y")},
-    "リサイズ": {"拡大率": _Param("scale", also="scale_y")},
     # 万華鏡 長さ は鏡の三角の辺 繰り返し回数 は覆う範囲を三角何段ぶんにするか
     # AviUtl2 に長さと繰り返しを変えた見本を描かせ、模様の間隔と端の位置から読んだ
     "万華鏡": {
@@ -666,6 +666,10 @@ def map_object(
                 continue
         if effect is not None:
             effects.append(effect)
+            if entry.name == "クリッピング":
+                recentred = _clip_recentre(entry, points, log)
+                if recentred is not None:
+                    effects.append(recentred)
 
     if (
         placement is not None
@@ -860,8 +864,23 @@ def _placement(
         if motion is not None and (motion.first != 0.0 or motion.moves):
             log.note_missing(f"描画設定: {axis}")
 
-    scale = animated_value(
+    rate = animated_value(
         entry.params.get("拡大率"), points=points, log=log, label="描画設定の拡大率", default=100.0
+    )
+    aspect = animated_value(
+        entry.params.get("縦横比"), points=points, log=log, label="描画設定の縦横比"
+    )
+    if aspect.is_animated:
+        log.note_missing("描画設定の縦横比が動く（最初の値で止める）")
+    # 縦横比は正で横を、負で縦を縮める（AviUtl2 v2.1.6a で 200x200 の四角が 50 で 100x200、
+    # -50 で 200x100 拡大率 200 と 50 を重ねると 200x400 だった Issue #167）
+    ratio = min(max(aspect.static, -100.0), 100.0) / 100.0
+    scale, scale_y = _axis_scales(
+        rate,
+        AnimatedValue(100.0 * (1.0 - max(ratio, 0.0))),
+        AnimatedValue(100.0 * (1.0 - max(-ratio, 0.0))),
+        "描画設定",
+        log,
     )
     return {
         "pos_x": animated_value(
@@ -876,7 +895,7 @@ def _placement(
             convert=lambda value: -value,
         ),
         "scale": scale,
-        "scale_y": scale,
+        "scale_y": scale_y,
         "rotation": animated_value(
             entry.params.get("回転") or entry.params.get("Z軸回転"),
             points=points,
@@ -884,6 +903,113 @@ def _placement(
             label="描画設定の回転",
         ),
     }
+
+
+#: 横の拡大率が 0 のときに割る数 AviUtl2 では幅が無くなって何も映らない 変形の縦の比を
+#: 無限にせず、横をほぼ 0 にしたまま縦の大きさを保つ
+_THINNEST = 1e-4
+
+
+def _axis_scales(
+    rate: AnimatedValue,
+    wide: AnimatedValue,
+    tall: AnimatedValue,
+    label: str,
+    log: CompatibilityReport,
+) -> tuple[AnimatedValue, AnimatedValue]:
+    """拡大率と縦横別の拡大率（どれも %）を、変形の ``scale`` と ``scale_y`` へ
+
+    AviUtl2 は横を ``拡大率 × X`` 縦を ``拡大率 × Y`` で掛ける 変形の ``scale_y`` は
+    ``scale`` に**重ねて掛かる**縦の比（シェーダは縦を ``scale × scale_y`` で掛ける）なので、
+    拡大率を両方へ入れると縦にだけ 2 回掛かる（拡大率 200 の 200x200 が AviUtl2 で 400x400、
+    こちらは 400x800 だった Issue #167 YMM4 の #166 と同じ誤り）
+
+    ``scale_y`` は縦と横の比なので、横が動くと 1 本の値で表せない 横が動くときは最初の値で
+    止めて記録に残す 拡大率と縦は動いたまま写せる
+    """
+    if wide.is_animated:
+        log.note_missing(f"{label}の横の拡大率が動く（最初の値で止める）")
+    across = wide.static / 100.0
+    if across < 0.0 or tall.static < 0.0:
+        # 負の拡大率は AviUtl2 では裏返す 変形は裏返せないので、大きさだけ写して残す
+        log.note_missing(f"{label}の負の拡大率（裏返しは写さない）")
+    across = abs(across)
+    scale = _mapped(rate, lambda value: value * across)
+    divisor = max(across, _THINNEST)
+    scale_y = _mapped(tall, lambda value: abs(value) / divisor)
+    return scale, scale_y
+
+
+#: 拡大率と縦横別の X Y を持つフィルタ 2026-09-25 に AviUtl2 v2.1.6a で 200x200 の四角へ
+#: 拡大率 100・X 200・Y 50 を掛けて 400x100、拡大率 150 を足して 600x150 だった
+#: リサイズ も X 50・Y 150 で 100x300 と同じ掛かり方
+_ZOOM_FILTERS = frozenset({"拡大率", "リサイズ"})
+
+
+def _zoom_filter(
+    entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport
+) -> Effect | None:
+    """拡大率 と リサイズ を変形へ 横は拡大率 × X 縦は拡大率 × Y"""
+    definition = registry.get("transform")
+    if definition is None:  # pragma: no cover - 変形は必ずある
+        return None
+
+    def read(key: str) -> AnimatedValue:
+        return animated_value(
+            entry.params.get(key),
+            points=points,
+            log=log,
+            label=f"{entry.name}の{key}",
+            default=100.0,
+        )
+
+    scale, scale_y = _axis_scales(read("拡大率"), read("X"), read("Y"), entry.name, log)
+    handled = {"拡大率", "X", "Y"}
+    # Z は奥行きの拡大 板のままの絵には効かない 100 のままなら写せたことにする
+    # （実物の配布物の 拡大率 は X Y Z がどれも 100 で書かれていた）
+    if _hundred(entry.params.get("Z")):
+        handled.add("Z")
+    _note_dropped(entry, handled, log)
+    return definition.create(scale=scale, scale_y=scale_y)
+
+
+def _hundred(raw: str | None) -> bool:
+    """項目が無いか、動かない 100 か"""
+    if raw is None:
+        return True
+    motion = parse_motion(raw)
+    return motion is not None and not _varies(motion) and all(v == 100.0 for v in motion.values)
+
+
+def _clip_recentre(
+    entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport
+) -> Effect | None:
+    """クリッピング の 中心の位置を変更 を、切った後に残りを真ん中へ戻す平行移動へ
+
+    AviUtl2 は既定（切）では残りをその場に残し、入にすると残りの真ん中を元の中心へ置く
+    （300x300 の四角を上 10 下 40 左 20 右 80 で切ると、切では 830〜1030 × 400〜650、
+    入では 860〜1060 × 415〜665 2026-09-25 AviUtl2 v2.1.6a Issue #167） 動かす量は
+    横が ``(右 − 左) / 2`` 下向きに ``(下 − 上) / 2``
+    """
+    flag = entry.params.get("中心の位置を変更")
+    if flag is None or _is_off(flag):
+        return None
+    amounts: dict[str, float] = {}
+    for key in ("上", "下", "左", "右"):
+        value = animated_value(
+            entry.params.get(key), points=points, log=log, label=f"{entry.name}の{key}"
+        )
+        if value.is_animated:
+            log.note_missing(f"{entry.name}の中心の位置を変更で切る量が動く（最初の値で止める）")
+        amounts[key] = value.static
+    transform = registry.get("transform")
+    if transform is None:  # pragma: no cover - 変形は必ずある
+        return None
+    # こちらの Y は上が正 下へ動かすので符号を返す
+    return transform.create(
+        pos_x=(amounts["右"] - amounts["左"]) / 2.0,
+        pos_y=(amounts["上"] - amounts["下"]) / 2.0,
+    )
 
 
 def _varies(motion: Motion) -> bool:
@@ -1055,7 +1181,11 @@ def _decoration_of(entry: ExoEntry, size: float, log: CompatibilityReport) -> di
         log.note_missing(f"文字装飾: {name}")
         return {}
     colour = _color(entry.value("影・縁色", "color2", default="000000"))
-    return decoration_params(decoration, size, (colour[0], colour[1], colour[2], colour[3]))
+    params = decoration_params(decoration, size, (colour[0], colour[1], colour[2], colour[3]))
+    # 縁の無い装飾でも影・縁色は持っておく 本文の <@書体,3> で縁を付けた字は、この色で
+    # 縁取られる（見本 tag21 設定欄が標準文字でも 影・縁色 の赤で縁が付いた）
+    params.setdefault("border_color", colour)
+    return params
 
 
 def _figure(entry: ExoEntry, log: CompatibilityReport) -> GeneratedSource:
@@ -1708,6 +1838,9 @@ def _filter(entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport) 
     if entry.name in _APPEARANCE:
         return _appearance(entry, points, log)
 
+    if entry.name in _ZOOM_FILTERS:
+        return _zoom_filter(entry, points, log)
+
     kind = _FILTERS.get(entry.name)
     if kind is None:
         log.note_missing(f"フィルタ: {entry.name}")
@@ -1724,10 +1857,15 @@ def _filter(entry: ExoEntry, points: tuple[int, ...], log: CompatibilityReport) 
     if entry.name == "振り子":
         # 元の角度を挟んで振れる（片側だけに振れるのではない）
         params["centering"] = True
+    if entry.name == "クリッピング":
+        # 中心の位置を変更 は切った後に続ける変形で写す（:func:`_clip_recentre`）
+        handled_extra: tuple[str, ...] = ("中心の位置を変更",)
+    else:
+        handled_extra = ()
     names = _PARAMS.get(entry.name, {})
     colours = _COLOR_PARAMS.get(entry.name, {})
     choices = _SELECT_PARAMS.get(entry.name, {})
-    handled: set[str] = set(_IGNORED.get(entry.name, ()))
+    handled: set[str] = set(_IGNORED.get(entry.name, ())) | set(handled_extra)
     for source_name, value in entry.params.items():
         target = names.get(source_name)
         if target is not None:
