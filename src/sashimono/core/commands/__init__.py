@@ -55,6 +55,12 @@ from sashimono.core.commands.insert import (
     insert_media,
     place_media,
 )
+from sashimono.core.commands.project_format import (
+    SetFrameRate,
+    VideoFormat,
+    format_to_match,
+    match_commands,
+)
 from sashimono.core.commands.scene import (
     DEFAULT_SCENE_FRAMES,
     AddScene,
@@ -73,6 +79,7 @@ from sashimono.core.commands.subtitle import (
     SplitSegment,
     burn_subtitles,
 )
+from sashimono.core.commands.track_order import MoveTrack, reorder_group
 from sashimono.core.commands.work_area import SetWorkArea, export_range
 
 __all__ = [
@@ -96,6 +103,7 @@ __all__ = [
     "MoveClips",
     "MoveEffect",
     "MoveKeyframe",
+    "MoveTrack",
     "ParamPath",
     "ParamTarget",
     "RemoveClip",
@@ -113,6 +121,7 @@ __all__ = [
     "SetBlending",
     "SetClipProperty",
     "SetEffectEnabled",
+    "SetFrameRate",
     "SetKeyframe",
     "SetLayerMode",
     "SetParam",
@@ -128,14 +137,18 @@ __all__ = [
     "TrimClip",
     "TrimClips",
     "UngroupClips",
+    "VideoFormat",
     "burn_subtitles",
     "export_range",
+    "format_to_match",
     "insert_clip",
     "insert_filter",
     "insert_generated",
     "insert_media",
     "insert_scene",
+    "match_commands",
     "new_scene",
     "place_media",
+    "reorder_group",
     "resolve_param",
 ]

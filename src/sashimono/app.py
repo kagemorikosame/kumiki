@@ -72,6 +72,7 @@ def _start_editor(arguments: list[str]) -> int:
     from sashimono.resources import ICON_FILE, path_to
     from sashimono.ui.main_window import MainWindow
     from sashimono.ui.theme import STYLE_SHEET
+    from sashimono.ui.translation import install_qt_translation
 
     # サーフェス形式は QApplication を作る前に決めておく必要がある
     # 後から設定しても、ウィジェットのコンテキストには反映されない
@@ -81,6 +82,8 @@ def _start_editor(arguments: list[str]) -> int:
     application.setApplicationName("Sashimono")
     application.setWindowIcon(QIcon(str(path_to(ICON_FILE))))
     application.setStyleSheet(STYLE_SHEET)
+    # 窓を作る前に読む 後から読むと、先に作った部品の文言は英語のまま残る
+    install_qt_translation(application)
 
     project = None
     path = None
