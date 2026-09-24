@@ -801,7 +801,31 @@ def _map_item(item: dict[str, Any], log: CompatibilityReport) -> MappedObject | 
         # 分かるので、印だけ立てる 繰り返し（IsLooped）の物は止めずに、繰り返しを写せない
         # ことを数えて残す（:func:`_audio_effects`） 止めると繰り返すはずの所が止まった絵になる
         hold_last_frame=name == "VideoItem" and item.get("IsLooped") is not True,
+        audio_track=_audio_track(item, name, log),
     )
+
+
+def _audio_track(item: dict[str, Any], name: str, log: CompatibilityReport) -> int:
+    """素材の何本目の音を鳴らすか（``AudioTrackIndex`` 0 始まり）
+
+    素材の中の番号（ストリームの番号）ではなく、音の道だけを数えた順番として持つ
+    番号に直すのは素材を読んだ置く側（:func:`~sashimono.compat.catalog.place`）
+    YMM4 の画面の「音声トラック」は素材の音を 1 本目・2 本目と並べて選ばせるので、
+    映像を含めた番号として読むと 1 つずれた音が鳴る
+
+    読めない値や負の値は 1 本目として置き、数えて残す 黙って 1 本目にすると、
+    選んだはずの言語と違う音が鳴っても互換性レポートに出ない
+    """
+    if name not in _SOUND_ITEMS:
+        return 0
+    raw = item.get("AudioTrackIndex")
+    if raw is None or raw == "":
+        return 0
+    value = number(raw, 0.0) if _readable_number(raw) else -1.0
+    if value < 0 or value != int(value):
+        log.note_missing(f"YMM4 の音声トラックの選択（AudioTrackIndex）が読めない値: {raw!r}")
+        return 0
+    return int(value)
 
 
 def _content_offset(item: dict[str, Any], log: CompatibilityReport) -> Fraction:
@@ -885,8 +909,6 @@ def _audio_effects(
             return any(point.value != default for point in value.keyframes)
         return value.static != default
 
-    if int(number(item.get("AudioTrackIndex"), 0.0)) != 0:
-        log.note_missing("YMM4 の音声トラックの選択（AudioTrackIndex）")
     if item.get("IsLooped") is True:
         log.note_missing("YMM4 の素材の繰り返し（IsLooped）")
     if item.get("EchoIsEnabled") is True:
