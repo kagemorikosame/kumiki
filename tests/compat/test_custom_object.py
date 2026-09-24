@@ -95,6 +95,7 @@ def empty() -> Iterator[ScriptCatalog]:
 
 class TestRecognition:
     def test_the_placed_clip_is_recognised(self, circle: ScriptEntry) -> None:
+        # 見分けられないと、置いた直後のクリップがタイムラインでも見出しでも「テキスト」と出る
         clip = custom_object_clip(circle.definition().create(), duration=60)
         assert clip.source is not None and clip.source.kind == "text"
         script = custom_object_script(clip)
@@ -123,6 +124,7 @@ class TestRecognition:
         assert custom_object_script(worded) is None
 
     def test_the_label_is_the_script_name(self, circle: ScriptEntry) -> None:
+        # 名前を取れないと、タイムラインに ``aviutl:…`` の識別子がそのまま出る
         assert script_label(circle.identifier) == "円"
 
     def test_a_missing_script_still_has_a_name(self) -> None:
@@ -216,6 +218,7 @@ class TestShapesTheScriptsUse:
             state,
         )
         # 拡大率 50 に X 200 を掛けて横は 40 x 0.5 x 2、縦は 40 x 0.5
+        # 片方しか掛けないと、百分率で大きさを決めるスクリプトの図形が倍や半分の大きさで出る
         assert state.image.shape == (20, 40, 4)
 
     def test_a_resize_past_the_limit_is_recorded(self, qt_application: object) -> None:
