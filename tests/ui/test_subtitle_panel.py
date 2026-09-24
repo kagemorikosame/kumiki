@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from PySide6.QtWidgets import QApplication, QFileDialog
+from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from sashimono.core.commands import (
     AddClip,
@@ -21,12 +21,15 @@ from sashimono.core.commands import (
     RippleCut,
     SetSegmentText,
     SetTranscript,
+    SetWorkArea,
     TrimClip,
 )
 from sashimono.core.model import MediaItem, Project, Transcript
 from sashimono.engine.audio.waveform import BASE_SAMPLES_PER_PEAK, PeakLevel, Waveform
 from sashimono.engine.cache import MediaAnalyzer
+from sashimono.ui.export_dialog import RANGE_ALL, RANGE_WORK_AREA
 from sashimono.ui.subtitle import SubtitlePanel
+from sashimono.ui.subtitle import panel as panel_module
 from sashimono.ui.subtitle.dialogs import JetCutDialog
 from tests.conftest import make_clip
 
@@ -444,6 +447,103 @@ class TestBurnAndExport:
         widget.status_message.connect(messages.append)
         widget.export_file()
         assert messages == []
+
+
+class TestExportWithWorkArea:
+    """書き出し範囲（#140）を決めたプロジェクトの字幕の書き出し（#141）
+
+    範囲で出した動画は範囲の頭が 0 秒になる 字幕の書き出しが範囲を見ないと、
+    動画と字幕が範囲の頭の分だけずれる
+    """
+
+    @pytest.fixture
+    def ranged(
+        self,
+        panel: tuple[SubtitlePanel, list[tuple[list[Command], str]]],
+        placed: Project,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> tuple[SubtitlePanel, Path, list[bool]]:
+        widget, _ = panel
+        widget.set_project(SetWorkArea((90, 300)).apply(placed))
+        target = tmp_path / "出力.srt"
+        monkeypatch.setattr(
+            QFileDialog, "getSaveFileName", lambda *args, **kwargs: (str(target), "")
+        )
+        asked: list[bool] = []
+        return widget, target, asked
+
+    def test_choosing_the_range_shifts_the_head_to_zero(
+        self, ranged: tuple[SubtitlePanel, Path, list[bool]], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        widget, target, asked = ranged
+
+        def answer(*args: object) -> str:
+            asked.append(True)
+            return RANGE_WORK_AREA
+
+        monkeypatch.setattr(panel_module, "ask_subtitle_range", answer)
+        widget.export_file()
+        assert asked == [True]
+        # 範囲 [90, 300) の頭の 3 秒を引いて、4 秒の字幕が 1 秒に来る
+        assert target.read_text(encoding="utf-8").startswith(
+            "1\n00:00:01,000 --> 00:00:03,000\n編集ソフトを\n"
+        )
+
+    def test_choosing_the_whole_keeps_timeline_times(
+        self, ranged: tuple[SubtitlePanel, Path, list[bool]], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        widget, target, _ = ranged
+        monkeypatch.setattr(panel_module, "ask_subtitle_range", lambda *args: RANGE_ALL)
+        widget.export_file()
+        assert target.read_text(encoding="utf-8").startswith("1\n00:00:01,000 --> 00:00:03,000\n")
+
+    def test_cancelling_the_choice_writes_nothing(
+        self, ranged: tuple[SubtitlePanel, Path, list[bool]], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        widget, target, _ = ranged
+        monkeypatch.setattr(panel_module, "ask_subtitle_range", lambda *args: None)
+        widget.export_file()
+        assert not target.exists()
+
+    def test_no_work_area_does_not_ask(
+        self,
+        panel: tuple[SubtitlePanel, list[tuple[list[Command], str]]],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # 範囲が無いのに毎回尋ねると、範囲を使わない人の手間が 1 つ増える
+        widget, _ = panel
+        target = tmp_path / "出力.srt"
+        monkeypatch.setattr(
+            QFileDialog, "getSaveFileName", lambda *args, **kwargs: (str(target), "")
+        )
+
+        def refuse(*args: object) -> str:
+            raise AssertionError("範囲が無いのに尋ねた")
+
+        monkeypatch.setattr(panel_module, "ask_subtitle_range", refuse)
+        widget.export_file()
+        assert target.exists()
+
+    def test_the_default_answer_is_the_range(
+        self, qt_application: QApplication, placed: Project, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 書き出しダイアログと同じく、範囲を決めた人は範囲を出したくて決めている
+        # 既定が全体だと、動画は範囲・字幕は全体で出してずれに気付かない
+        del qt_application
+        seen: list[str] = []
+
+        def pick_default(box: QMessageBox) -> int:
+            default = box.defaultButton()
+            seen.append(default.text())
+            default.click()
+            return 0
+
+        monkeypatch.setattr(QMessageBox, "exec", pick_default)
+        ranged = SetWorkArea((90, 300)).apply(placed)
+        assert panel_module.ask_subtitle_range(None, ranged) == RANGE_WORK_AREA
+        assert "範囲" in seen[0]
 
 
 class TestSourceTime:
