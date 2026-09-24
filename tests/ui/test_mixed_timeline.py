@@ -433,6 +433,47 @@ class TestMovingOnLayers:
         assert landed is not None
         assert {c.id for c in landed.clips} == {first.id, second.id}
 
+    @pytest.mark.parametrize("blocked", ["edge", "locked"])
+    def test_when_one_clip_cannot_cross_all_move_in_time_only(
+        self,
+        made: list[TimelineArea],
+        analyzer: MediaAnalyzer,
+        monkeypatch: pytest.MonkeyPatch,
+        blocked: str,
+    ) -> None:
+        # 1 本でも並びの外（edge）かロックしたレイヤー（locked）へ入るなら MoveClips は全員を断る
+        # 前は入れる物の枠だけを行き先に出し、離すと何も動かず断られた
+        # 枠も命令も、レイヤーを跨がずに時間だけ動かす形にそろえる
+        first, second = _text(0, 50), _text(0, 50)
+        third = replace(_layer(3), locked=blocked == "locked")
+        layers: tuple[Track, ...] = (_layer(1, first), _layer(2, second))
+        if blocked == "locked":
+            layers = (*layers, third)
+        view, harness = _open(made, analyzer, _project(*layers))
+        view.set_selection((first.id, second.id))
+        dashed: list[str] = []
+        original = view._dash_rect
+
+        def record(painter: QPainter, band: TrackBand, start: int, end: int) -> None:
+            dashed.append(band.track.name)
+            original(painter, band, start, end)
+
+        monkeypatch.setattr(view, "_dash_rect", record)
+        start = _point(view, "レイヤー 1", 25)
+        end = _point(view, "レイヤー 2", 65)
+        QTest.mousePress(view, _LEFT, _NONE, start)
+        QTest.mouseMove(view, QPoint(start.x(), (start.y() + end.y()) // 2))
+        QTest.mouseMove(view, end)
+        view.repaint()
+        assert sorted(dashed) == ["レイヤー 1", "レイヤー 2"], "枠が元のレイヤーに出ていない"
+        QTest.mouseRelease(view, _LEFT, _NONE, end)
+        ((command,),) = harness.received
+        assert isinstance(command, MoveClips)
+        assert command.track_delta == 0
+        assert command.delta == 40
+        tracks = view.project.timeline.tracks
+        assert [[c.timeline_start for c in t.clips] for t in tracks[:2]] == [[40], [40]]
+
     def test_a_layer_header_drags_to_a_new_place(
         self, made: list[TimelineArea], analyzer: MediaAnalyzer
     ) -> None:

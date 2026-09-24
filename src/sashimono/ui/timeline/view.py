@@ -47,7 +47,12 @@ from sashimono.core.commands import (
     TrimClips,
     UngroupClips,
 )
-from sashimono.core.commands.edit import DEFAULT_TRACK_HEIGHT, MAX_TRACK_HEIGHT, MIN_TRACK_HEIGHT
+from sashimono.core.commands.edit import (
+    DEFAULT_TRACK_HEIGHT,
+    MAX_TRACK_HEIGHT,
+    MIN_TRACK_HEIGHT,
+    shifted_track,
+)
 from sashimono.core.model import (
     Clip,
     ClipId,
@@ -737,9 +742,8 @@ class TimelineView(QWidget):
             # トラックを跨いだぶんも :class:`MoveClips` と同じ決まり（同じ種類の並びで数える）で
             # ずらして出す 元のトラックに出すと、離した後に別のトラックへ移って驚く
             delta = self._drag.preview_start - clip.timeline_start
-            shift = self._track_delta(self._drag)
-            for track_id, member in self._moving_members():
-                landing = self._shifted_track(track_id, shift)
+            _, landings = self._group_landings(self._drag)
+            for landing, member in landings:
                 if landing in bands:
                     self._dash_rect(
                         painter,
@@ -1163,7 +1167,7 @@ class TimelineView(QWidget):
             # 掴んだものはその場に残り、選んだほかのクリップだけが動く
             if drag.clip_id not in movable:
                 return None
-            tracks = self._track_delta(drag)
+            tracks, _ = self._group_landings(drag)
             if not delta and not tracks:
                 return None
             return MoveClips(movable, delta, track_delta=tracks)
@@ -1203,21 +1207,34 @@ class TimelineView(QWidget):
         same = [t.id for t in timeline.tracks if t.kind is origin.kind]
         return same.index(target.id) - same.index(origin.id)
 
-    def _shifted_track(self, track_id: TrackId, shift: int) -> TrackId:
-        """``track_id`` から同じ種類の並びで ``shift`` 本ずらしたトラック 外へ出れば元のまま
+    def _group_landings(self, drag: DragState) -> tuple[int, list[tuple[TrackId, Clip]]]:
+        """まとめて動かすときに跨ぐ本数と、動く全員の行き先のトラック
 
-        :class:`MoveClips` の行き先と同じ数え方 外へ出るときは離しても断られるので、
-        元の所に枠を出しておく
+        行き先は :class:`MoveClips` と同じ :func:`shifted_track` で求める 1 本でも並びの外へ
+        出るか、ロックしたトラックへ入るなら、:class:`MoveClips` は全員を断る そのときは
+        トラックを跨がずに時間だけ動かす（跨ぐ本数を 0 にする） 枠も離したときの命令も
+        この答えを使うので、枠を出した所と実際に入る所が食い違わない 1 本だけ元の所に
+        枠を残すと、ほかの枠は動いて見えるのに、離すと全員が断られる
         """
-        if not shift:
-            return track_id
-        timeline = self._project.timeline
-        track = timeline.find_track(track_id)
-        if track is None:
-            return track_id
-        same = [t.id for t in timeline.tracks if t.kind is track.kind]
-        index = same.index(track_id) + shift
-        return same[index] if 0 <= index < len(same) else track_id
+        members = self._moving_members()
+        shift = self._track_delta(drag)
+        if shift:
+            project = self._project
+            try:
+                landings = [
+                    (shifted_track(project, track_id, shift), member)
+                    for track_id, member in members
+                ]
+            except ValueError:
+                landings = []
+            timeline = project.timeline
+            blocked = not landings or any(
+                (track := timeline.find_track(track_id)) is None or track.locked
+                for track_id, _ in landings
+            )
+            if not blocked:
+                return shift, landings
+        return 0, members
 
     def _preview_height(self, y: int) -> None:
         """ドラッグ中の高さを描画にだけ当てる 履歴には載せない"""
