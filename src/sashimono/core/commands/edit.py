@@ -738,7 +738,11 @@ def _carried_across(project: Project, source: Track, target: Track, clip: Clip) 
         # 絵の番号は素材の映像ストリームへ向け直す 音の番号のまま残すと、後で絵を
         # 出したときに映像ではない番号でデコーダを開く
         picture = media.video_streams[0].index if media.has_video else clip.stream_index
-        return replace(clip, audio_stream=clip.stream_index, stream_index=picture)
+        # 絵は出さないまま移す 音声トラックでは描いていなかった 描き始めると、リンクした
+        # 映像クリップの絵がもう 1 枚重なり、手前なら映像トラックの位置やエフェクトを隠す
+        return replace(
+            clip, audio_stream=clip.stream_index, stream_index=picture, show_picture=False
+        )
     if source.kind is TrackKind.MIXED and target.kind is TrackKind.AUDIO:
         if project.draws_picture(source, clip):
             raise ValueError("絵を描くクリップは音声トラックへ置けない（絵が消える）")
@@ -760,9 +764,13 @@ def _validate_clip_media(project: Project, track: Track, clip: Clip) -> None:
     音が黙って消える
     """
     if track.kind is TrackKind.MIXED:
-        if clip.media_id is None or clip.audio_stream is None:
+        if clip.media_id is None:
             return
+        # 音を鳴らさないクリップでも素材があるかは確かめる 飛ばすと、プロジェクトに無い
+        # 素材を指すクリップが置けてしまう（モデルは参照を確かめない）
         media = project.require_media(clip.media_id)
+        if clip.audio_stream is None:
+            return
         if all(stream.index != clip.audio_stream for stream in media.audio_streams):
             # デコーダは無い番号を頼まれると先頭の音へ逃げる 選んでいない言語が鳴る
             raise ValueError(f"素材 {media.name!r} に音声ストリーム {clip.audio_stream} は無い")

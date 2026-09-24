@@ -30,6 +30,7 @@ from sashimono.core.model import (
     Clip,
     GeneratedSource,
     LayerMode,
+    MediaId,
     MediaItem,
     Project,
     ProjectSettings,
@@ -145,6 +146,7 @@ class TestSolo:
         assert _names(line.active_sound_tracks()) == ["レイヤー 1", "A1"]
 
     def test_a_muted_layer_is_neither_seen_nor_heard(self) -> None:
+        # 片方の役割にだけ効くと、ミュートしたレイヤーの絵か音のどちらかが残る
         line = _line(Track(TrackKind.MIXED, "レイヤー 1", muted=True))
         assert line.active_picture_tracks() == ()
         assert line.active_sound_tracks() == ()
@@ -245,6 +247,13 @@ class TestCommands:
         with pytest.raises(ValueError, match="音声ストリーム 5"):
             AddClip(layer.id, clip).apply(mixed_project)
 
+    def test_a_clip_of_missing_media_is_refused(self, mixed_project: Project) -> None:
+        # 音を鳴らさないクリップで確かめを飛ばすと、無い素材を指すクリップが残る
+        layer = mixed_project.timeline.tracks[1]
+        clip = Clip(0, 30, media_id=MediaId("無い素材"))
+        with pytest.raises(KeyError, match="素材が見つからない"):
+            AddClip(layer.id, clip).apply(mixed_project)
+
     def test_an_audio_clip_keeps_its_sound_on_a_layer_and_back(
         self, mixed_project: Project, video_media: MediaItem
     ) -> None:
@@ -260,10 +269,10 @@ class TestCommands:
         (moved,) = on_layer.timeline.tracks[1].clips
         assert (moved.audio_stream, moved.stream_index) == (1, 0)
         assert on_layer.plays_sound(on_layer.timeline.tracks[1], moved)
+        # 絵を出し始めると、リンクした映像クリップの絵がもう 1 枚重なる
+        assert not on_layer.draws_picture(on_layer.timeline.tracks[1], moved)
 
-        back = MoveClip(clip.id, 0, audio.id).apply(
-            _set_clip(on_layer, replace(moved, show_picture=False))
-        )
+        back = MoveClip(clip.id, 0, audio.id).apply(on_layer)
         (returned,) = back.timeline.tracks[-1].clips
         assert (returned.stream_index, returned.audio_stream) == (1, None)
 
@@ -287,6 +296,7 @@ class TestCommands:
             MoveClip(clip.id, 0, audio.id).apply(project)
 
     def test_moving_between_layers_keeps_picture_and_sound(self, mixed_project: Project) -> None:
+        # 移し替えがレイヤー同士にまで効くと、別のレイヤーへ動かしただけで音か絵が消える
         clip = mixed_project.timeline.tracks[0].clips[0]
         layer_2 = mixed_project.timeline.tracks[1]
         moved = MoveClip(clip.id, 15, layer_2.id).apply(mixed_project)
@@ -314,6 +324,7 @@ class TestCommands:
         assert halves[1].source_in == Fraction(1)
 
     def test_trim_keeps_the_stream(self, mixed_project: Project) -> None:
+        # 作り直すときに項目を落とすと、端を削っただけで動画の音が消える
         clip = mixed_project.timeline.tracks[0].clips[0]
         trimmed = TrimClip(clip.id, head_delta=10).apply(mixed_project)
         (kept,) = trimmed.timeline.tracks[0].clips
@@ -355,6 +366,8 @@ class TestLayerMode:
 
 class TestSaving:
     def test_the_format_is_7(self) -> None:
+        # 上げ忘れると形式 6 の本体がこのファイルを開き、混合トラックで止まるか、
+        # audio_stream と show_picture を黙って落として保存し直す
         assert FORMAT_VERSION == 7
 
     def test_layers_and_their_clips_round_trip(self, mixed_project: Project) -> None:
@@ -402,6 +415,7 @@ class TestSaving:
 
 
 def test_a_layer_can_be_added(mixed_project: Project) -> None:
+    # トラックの追加が種類を映像か音声へ寄せると、足したレイヤーに動画を置いても音が鳴らない
     track = Track(TrackKind.MIXED, "レイヤー 3")
     added = AddTrack(track).apply(mixed_project)
     assert added.timeline.tracks[-1].kind is TrackKind.MIXED
