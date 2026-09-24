@@ -1467,20 +1467,36 @@ class TestItemSound:
     @pytest.mark.parametrize(
         ("values", "word"),
         [
-            ({"AudioTrackIndex": 1}, "AudioTrackIndex"),
             ({"IsLooped": True}, "IsLooped"),
             ({"AudioEffects": [{"$type": "N.VibratoEffect, A"}]}, "VibratoEffect"),
+            ({"AudioTrackIndex": -1}, "AudioTrackIndex"),
+            ({"AudioTrackIndex": "二"}, "AudioTrackIndex"),
+            ({"AudioTrackIndex": 1.5}, "AudioTrackIndex"),
         ],
     )
     def test_what_cannot_be_carried_is_counted(self, values: dict[str, Any], word: str) -> None:
         """写せない音の設定は数えて残す 握り潰すと、直す順番を決められない
 
         どれも実物に出てくる 開始位置（``ContentOffset``）・定位（``Pan``）・
-        再生速度（``PlaybackRate``）は写せるようになった
+        再生速度（``PlaybackRate``）は写せるようになった 音声トラックの選択
+        （``AudioTrackIndex``）は読めない値だけを数える（読める値は :attr:`audio_track` へ）
         """
         report = CompatibilityReport()
         map_template([self.video(**values)], report=report)
         assert any(word in line for line in report.lines())
+
+    @pytest.mark.parametrize(("raw", "track"), [(0, 0), (1, 1), (2, 2), ("1", 1), (None, 0)])
+    def test_the_chosen_audio_track_is_carried(self, raw: Any, track: int) -> None:
+        """``AudioTrackIndex`` は :attr:`MappedObject.audio_track` へ写し、数えない
+
+        数えるかどうかは置く側が方式で決める 混合の方式は選んだ音を鳴らせるので数えず、
+        分ける方式は 1 本目を鳴らすので置くときに数える（:func:`~sashimono.compat.catalog.place`）
+        写す段で数えると、混合の方式で読んでも写せない物として残り、直す順番を誤る
+        """
+        report = CompatibilityReport()
+        (mapped,) = map_template([self.video(AudioTrackIndex=raw)], report=report)
+        assert mapped.audio_track == track
+        assert not report.lines()
 
     @pytest.mark.parametrize(
         "values", [{"Pan": still(50.0)}, {"PlaybackRate": 150.0}, {"PlaybackRate": 50.0}]
