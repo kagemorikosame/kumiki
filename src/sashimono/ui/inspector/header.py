@@ -20,7 +20,15 @@ from sashimono.compat.aviutl.custom_object import (
     custom_object_script,
     script_label,
 )
-from sashimono.core.model import Clip, ClipId, GeneratedSource, Project, Track, TrackKind
+from sashimono.core.model import (
+    Clip,
+    ClipId,
+    GeneratedSource,
+    MediaItem,
+    Project,
+    Track,
+    TrackKind,
+)
 from sashimono.effects import registry
 from sashimono.effects.sources import source_registry
 from sashimono.ui.theme import Colors
@@ -60,7 +68,7 @@ def identify_clip(project: Project, clip_id: ClipId) -> ClipIdentity | None:
         return None
     track, clip = located
     kind, name = _kind_and_name(project, track, clip)
-    return ClipIdentity(kind, name, _track_name(project, track), _band_color(track, clip))
+    return ClipIdentity(kind, name, _track_name(project, track), _band_color(project, track, clip))
 
 
 def _kind_and_name(project: Project, track: Track, clip: Clip) -> tuple[str, str]:
@@ -70,6 +78,8 @@ def _kind_and_name(project: Project, track: Track, clip: Clip) -> tuple[str, str
     if clip.source is not None:
         return _generated(clip, clip.source)
     media = project.find_media(clip.media_id) if clip.media_id is not None else None
+    if track.kind is TrackKind.MIXED:
+        return _on_layer(project, track, clip, media)
     if media is None:
         return ("映像" if track.kind is TrackKind.VIDEO else "音声"), ""
     if track.kind is TrackKind.AUDIO:
@@ -81,6 +91,24 @@ def _kind_and_name(project: Project, track: Track, clip: Clip) -> tuple[str, str
         return "画像", media.name
     linked = _linked_to(project, clip, TrackKind.AUDIO)
     return "映像", f"{media.name} の絵" if linked else media.name
+
+
+def _on_layer(
+    project: Project, track: Track, clip: Clip, media: MediaItem | None
+) -> tuple[str, str]:
+    """レイヤー（混合）に置いた素材のクリップ 描く・鳴らすかで言葉を選ぶ
+
+    トラックの種類では決まらない 音だけの素材を「映像」と出すと、音量を探して描画の欄を
+    開くことになる 音付きの動画は 1 本で絵も音も持つので「音付き」と添える
+    """
+    name = media.name if media is not None else ""
+    picture = project.draws_picture(track, clip)
+    sound = project.plays_sound(track, clip)
+    if picture and media is not None and media.is_still:
+        return "画像", name
+    if picture:
+        return ("映像（音付き）" if sound else "映像"), name
+    return "音声", name
 
 
 def _generated(clip: Clip, source: GeneratedSource) -> tuple[str, str]:
@@ -123,12 +151,19 @@ def _track_name(project: Project, track: Track) -> str:
         return track.name
     same = [t for t in project.timeline.tracks if t.kind is track.kind]
     number = next((i for i, t in enumerate(same, start=1) if t is track), 0)
+    if track.kind is TrackKind.MIXED:
+        # タイムラインの並び（レイヤー 1 が上）と同じ番号で呼ぶ
+        return f"レイヤー {number}"
     return f"{'映像' if track.kind is TrackKind.VIDEO else '音声'}トラック {number}"
 
 
-def _band_color(track: Track, clip: Clip) -> QColor:
+def _band_color(project: Project, track: Track, clip: Clip) -> QColor:
+    """タイムラインのクリップの枠と同じ色 レイヤーは描く・鳴らすかで選ぶ（painter と同じ）"""
     if clip.is_filter:
         return Colors.FILTER_CLIP_BORDER
+    if track.kind is TrackKind.MIXED:
+        sound_only = not project.draws_picture(track, clip) and project.plays_sound(track, clip)
+        return Colors.AUDIO_CLIP_BORDER if sound_only else Colors.VIDEO_CLIP_BORDER
     if track.kind is TrackKind.AUDIO:
         return Colors.AUDIO_CLIP_BORDER
     return Colors.VIDEO_CLIP_BORDER
