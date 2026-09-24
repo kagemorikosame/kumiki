@@ -48,6 +48,7 @@ __all__ = [
     "SetTranscript",
     "SplitClip",
     "TrimClip",
+    "shifted_track",
 ]
 
 
@@ -339,7 +340,7 @@ class MoveClips(Command):
             leaving = {clip.id for clip in moving}
             staying = tuple(c for c in track.clips if c.id not in leaving)
             timeline = timeline.replace_track(track.with_clips(staying))
-            destination = _shifted_track(project, track_id, self.track_delta)
+            destination = shifted_track(project, track_id, self.track_delta)
             arrivals.setdefault(destination, []).extend(
                 c.moved_to(c.timeline_start + self.delta) for c in moving
             )
@@ -353,8 +354,12 @@ class MoveClips(Command):
         return project.with_timeline(timeline)
 
 
-def _shifted_track(project: Project, track_id: TrackId, delta: int) -> TrackId:
-    """同じ種類のトラックの並びで ``delta`` 本ずらした先 端を越えれば断る"""
+def shifted_track(project: Project, track_id: TrackId, delta: int) -> TrackId:
+    """同じ種類のトラックの並びで ``delta`` 本ずらした先 端を越えれば断る
+
+    :class:`MoveClips` の行き先 タイムラインの画面もドラッグ中の枠をこれで求める
+    別々に数えると、枠を出した所と離したときに入る所が食い違う
+    """
     if delta == 0:
         return track_id
     track = _require_track(project, track_id)

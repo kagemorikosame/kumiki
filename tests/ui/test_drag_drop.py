@@ -307,7 +307,9 @@ class TestFilesDroppedOnTheTimeline:
                 for track in after.timeline.tracks
             }
             frame = timeline.drop_spot_at(QPointF(400, 120)).frame
-            assert placed == {TrackKind.VIDEO: [frame], TrackKind.AUDIO: [frame]}
+            # 起動した直後のプロジェクトは好みの方式（既定は混合）なので、音付きの動画は
+            # 1 本のレイヤーに 1 本のクリップで入る
+            assert placed == {TrackKind.MIXED: [frame]}
         finally:
             started.close()
 

@@ -122,15 +122,23 @@ class TimelineLayout:
     def bands(self, timeline: Timeline) -> tuple[TrackBand, ...]:
         """各トラックの縦位置
 
-        上から V2, V1, A1, A2 の順に並べる Premiere / AviUtl と同じで、
-        映像は番号が大きいほど手前（上）、音声は番号が小さいほど上に来る
+        上から 映像（V2, V1）→ レイヤー（レイヤー 1, レイヤー 2）→ 音声（A1, A2）の順に並べる
+        映像は Premiere と同じく番号が大きいほど手前（上） レイヤーは YMM4・AviUtl と同じく
+        レイヤー 1 を一番上に置き、番号が大きい（下の）レイヤーほど手前に描く（利用者の決定）
+        音声は番号が小さいほど上
 
         全トラックを一律に逆順にすると音声が映像より上へ来てしまう
         種類で分けてから並べる必要がある
+
+        レイヤーは映像と音声の間に置く 絵も音も持つので、絵だけの欄（上）と音だけの欄（下）の
+        どちらの端に寄せても片方から離れる 3 つが並ぶのは方式を切り替える間だけで、
+        分ける方式だけのプロジェクトは今までと同じ並び、混合だけならレイヤーが番号順に並ぶ
+        重なりは種類を問わずモデルの並び（:attr:`Timeline.tracks`）のままで、ここは画面の並べ方だけ
         """
         video = [t for t in timeline.tracks if t.kind is TrackKind.VIDEO]
+        mixed = [t for t in timeline.tracks if t.kind is TrackKind.MIXED]
         audio = [t for t in timeline.tracks if t.kind is TrackKind.AUDIO]
-        ordered = [*reversed(video), *audio]
+        ordered = [*reversed(video), *mixed, *audio]
         bands: list[TrackBand] = []
         top = Metrics.RULER_HEIGHT - self.scroll_y
         for track in ordered:
