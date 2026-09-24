@@ -92,6 +92,30 @@ class TestMatchingTheFirstVideo:
         # 置く長さは合わせた後のレートで数える 5 秒は 60fps で 300 フレーム
         assert _placed_frames(window) == 300
 
+    def test_the_drop_spot_keeps_its_time(
+        self, window: MainWindow, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 落とした位置は合わせる前のレートで数えてある 数のまま使うと、30fps の 1 秒
+        # （フレーム 30）へ落とした 60fps の動画が 0.5 秒の所に置かれた（PR #155 の指摘）
+        _answer(monkeypatch, True)
+        media = _video()
+        _pool(window, media)
+        window._on_media_dropped([str(media.id)], 30, "")
+        clip = next(iter(window._document.project.timeline.video_tracks())).clips[0]
+        assert clip.timeline_start == 60
+
+    def test_a_dropped_file_keeps_its_time(
+        self, window: MainWindow, monkeypatch: pytest.MonkeyPatch, media_dir: Path
+    ) -> None:
+        # ファイルは裏で調べてから置くので、落とした時点のレートを覚えておく
+        _answer(monkeypatch, True)
+        sample = make_sample(media_dir, "match_60_drop.mp4", fps="60", duration=1.0)
+        window._on_files_dropped([sample.path], 30, "")
+        assert window.wait_for_imports()
+        clip = next(iter(window._document.project.timeline.video_tracks())).clips[0]
+        assert window._document.project.rate == FrameRate(60)
+        assert clip.timeline_start == 60
+
     def test_matching_is_its_own_undo_step(
         self, window: MainWindow, monkeypatch: pytest.MonkeyPatch
     ) -> None:

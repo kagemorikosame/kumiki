@@ -68,6 +68,7 @@ from sashimono.core.commands import (
     new_scene,
     place_media,
 )
+from sashimono.core.commands.project_format import retime_frame
 from sashimono.core.io import (
     LEGACY_SUFFIXES,
     SUFFIX,
@@ -96,6 +97,7 @@ from sashimono.core.model import (
     TrackId,
     TrackKind,
 )
+from sashimono.core.timebase import FrameRate
 from sashimono.effects.sources import SHAPE, TEXT, TRANSITION
 from sashimono.engine.audio.waveform import Waveform
 from sashimono.engine.cache import MediaAnalyzer
@@ -212,6 +214,10 @@ class _DropTarget:
     spot: DropSpot
     #: ``None`` ならメインのタイムライン
     scene: SceneId | None
+    #: 落としたときのフレームレート ``spot`` のフレームはこれで数えてある 調べ終えるまでに
+    #: 最初の動画へ合わせてレートが変わると（:meth:`MainWindow._match_project_to`）、
+    #: 数のまま使うと落とした時刻からずれる（30fps の 1 秒が 60fps の 0.5 秒になる）
+    rate: FrameRate
 
 
 @dataclass(frozen=True, slots=True)
@@ -1061,7 +1067,11 @@ class MainWindow(QMainWindow):
         """
         if not paths:
             return
-        target = _DropTarget(at, self._active_scene) if at is not None else None
+        target = (
+            _DropTarget(at, self._active_scene, self._document.project.rate)
+            if at is not None
+            else None
+        )
         if self._import is not None:
             self._import_queue.append((list(paths), target))
             self._show_import_progress()
@@ -1197,6 +1207,9 @@ class MainWindow(QMainWindow):
         outcomes = batch.results()
         if self._scene_project(scene) is not None:
             self._match_project_to([item for item in outcomes if isinstance(item, MediaItem)])
+        if spot is not None and target is not None:
+            now = self._document.project.rate
+            spot = replace(spot, frame=retime_frame(spot.frame, target.rate, now))
         found = self._scene_project(scene)
         lost = found is None
         if found is None:
@@ -1341,12 +1354,14 @@ class MainWindow(QMainWindow):
         ]
         if not media:
             return
+        # 落とした位置は合わせる前のレートで数えてある 同じ時刻へ置くよう数え直す
+        before = project.rate
         self._match_project_to(media)
         project = self.view_project
         commands = place_media(
             project,
             media,
-            at_frame=frame,
+            at_frame=retime_frame(frame, before, project.rate),
             track_id=TrackId(track_id) if track_id else None,
         )
         label = f"配置: {media[0].name}" if len(media) == 1 else f"配置: {len(media)} 件"

@@ -24,6 +24,7 @@ __all__ = [
     "is_blank",
     "match_commands",
     "rate_for_project",
+    "retime_frame",
     "video_format",
 ]
 
@@ -138,6 +139,17 @@ def match_commands(project: Project, target: VideoFormat) -> list[Command]:
     return commands
 
 
+def retime_frame(frame: int, old: FrameRate, new: FrameRate) -> int:
+    """``old`` で数えたフレームを、同じ時刻（秒）のまま ``new`` で数え直す
+
+    フレームレートを変える前に決めた位置（目印・書き出し範囲・落とした所）に使う
+    数のまま持ち越すと、30fps で 1 秒の所が 60fps では 0.5 秒になる
+    """
+    if old == new:
+        return frame
+    return seconds_to_frame(frame_to_seconds(frame, old), new, Rounding.NEAREST)
+
+
 def _retimed(timeline: Timeline, old: FrameRate, new: FrameRate) -> Timeline:
     """目印と書き出し範囲を、同じ時刻（秒）のまま新しいフレームレートで数え直す
 
@@ -146,7 +158,7 @@ def _retimed(timeline: Timeline, old: FrameRate, new: FrameRate) -> Timeline:
     """
 
     def convert(frame: int) -> int:
-        return seconds_to_frame(frame_to_seconds(frame, old), new, Rounding.NEAREST)
+        return retime_frame(frame, old, new)
 
     markers = tuple(replace(marker, frame=convert(marker.frame)) for marker in timeline.markers)
     work_area = timeline.work_area
