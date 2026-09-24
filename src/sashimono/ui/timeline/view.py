@@ -13,11 +13,15 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum, auto
 
-from PySide6.QtCore import QPoint, QRect, Qt, Signal
+from PySide6.QtCore import QPoint, QPointF, QRect, Qt, Signal
 from PySide6.QtGui import (
     QAction,
     QColor,
     QContextMenuEvent,
+    QDragEnterEvent,
+    QDragLeaveEvent,
+    QDragMoveEvent,
+    QDropEvent,
     QKeyEvent,
     QMouseEvent,
     QPainter,
@@ -45,7 +49,16 @@ from sashimono.core.commands import (
 from sashimono.core.commands.edit import DEFAULT_TRACK_HEIGHT, MAX_TRACK_HEIGHT, MIN_TRACK_HEIGHT
 from sashimono.core.model import Clip, ClipId, GroupId, Project, TrackId, TrackKind
 from sashimono.engine.cache import MediaAnalyzer
+from sashimono.ui.media_pool import media_ids_in
 from sashimono.ui.theme import Colors, Metrics
+from sashimono.ui.timeline.drop import (
+    DropGuide,
+    DropSpot,
+    accepts,
+    local_paths,
+    paint_drop_guide,
+    spot_at,
+)
 from sashimono.ui.timeline.layout import TimelineLayout, TrackBand
 from sashimono.ui.timeline.painter import (
     DETAIL_MIN_WIDTH,
@@ -150,6 +163,11 @@ class TimelineView(QWidget):
     #: ビューは窓を知らない（テストで単体で作れるように） 知らせは信号で外へ出し、
     #: ステータスバーに出すのは窓の仕事にする
     status_message = Signal(str)
+    #: エクスプローラーからファイルを落とした 引数はパスの一覧・フレーム・トラックの ID
+    #: （トラックの無い所なら空文字列） 調べて置くのは窓の読み込みの流れ
+    files_dropped = Signal(list, int, str)
+    #: 素材一覧から素材を落とした 引数は素材 ID（文字列）の一覧・フレーム・トラックの ID
+    media_dropped = Signal(list, int, str)
 
     def __init__(
         self, project: Project, analyzer: MediaAnalyzer, parent: QWidget | None = None
@@ -173,7 +191,10 @@ class TimelineView(QWidget):
         #: 高さのドラッグ中だけ持つ、掴む前のプロジェクト 途中の高さは描画のため
         #: だけに当て、離したときにこれへ戻してからコマンドを出す
         self._resize_base: Project | None = None
+        #: ファイルや素材を引いてきている間の、落ちる所の目安 引いていなければ ``None``
+        self._drop_guide: DropGuide | None = None
 
+        self.setAcceptDrops(True)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMinimumHeight(160)
@@ -303,6 +324,7 @@ class TimelineView(QWidget):
 
         draw_ruler(painter, self._layout, width, self._project.rate)
         draw_playhead(painter, self._layout, self._playhead, self.height())
+        self._paint_drop_guide(painter)
 
     def _paint_detailed(
         self, painter: QPainter, band: TrackBand, clip: Clip, rect: QRect, selected: bool
@@ -1155,6 +1177,75 @@ class TimelineView(QWidget):
             if edge in (DragKind.TRIM_HEAD, DragKind.TRIM_TAIL)
             else Qt.CursorShape.OpenHandCursor
         )
+
+    # --- 落とし込み（エクスプローラーのファイル・素材一覧の素材） ---
+
+    def drop_spot_at(self, position: QPointF) -> DropSpot:
+        """その位置へ落としたときに置く先（フレームとトラック）"""
+        return spot_at(self._layout, self._project.timeline, position)
+
+    @property
+    def drop_guide(self) -> DropGuide | None:
+        """ドラッグ中に出している目安 引いていなければ ``None``"""
+        return self._drop_guide
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802 - Qt の命名規約
+        self._track_drag(event)
+
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:  # noqa: N802 - Qt の命名規約
+        self._track_drag(event)
+
+    def dragLeaveEvent(self, event: QDragLeaveEvent) -> None:  # noqa: N802 - Qt の命名規約
+        del event
+        self._set_drop_guide(None)
+
+    def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802 - Qt の命名規約
+        self._set_drop_guide(None)
+        mime = event.mimeData()
+        spot = self.drop_spot_at(event.position())
+        track = str(spot.track_id) if spot.track_id is not None else ""
+        # 素材一覧から来た物を先に見る 一覧の行にファイルの URL が付いていても、
+        # 読み込み直さずに、もう入っている素材として置く
+        media_ids = media_ids_in(mime)
+        paths = local_paths(mime)
+        if not media_ids and not paths:
+            event.ignore()
+            return
+        # 写す（Copy）として受け取る 動かす（Move）で受け取ると、引いてきた側
+        # （素材一覧やエクスプローラー）が元を消しに行く
+        event.setDropAction(Qt.DropAction.CopyAction)
+        event.accept()
+        if media_ids:
+            self.media_dropped.emit([str(media_id) for media_id in media_ids], spot.frame, track)
+        else:
+            self.files_dropped.emit(paths, spot.frame, track)
+
+    def _track_drag(self, event: QDragMoveEvent) -> None:
+        mime = event.mimeData()
+        if not accepts(mime):
+            event.ignore()
+            self._set_drop_guide(None)
+            return
+        event.setDropAction(Qt.DropAction.CopyAction)
+        event.accept()
+        spot = self.drop_spot_at(event.position())
+        self._set_drop_guide(DropGuide(spot, tuple(media_ids_in(mime))))
+
+    def _set_drop_guide(self, guide: DropGuide | None) -> None:
+        if guide == self._drop_guide:
+            return
+        self._drop_guide = guide
+        self.update()
+
+    def _paint_drop_guide(self, painter: QPainter) -> None:
+        if self._drop_guide is not None:
+            paint_drop_guide(
+                painter,
+                self._layout,
+                self._project,
+                self._drop_guide,
+                (self.width(), self.height()),
+            )
 
 
 def _action(menu: QMenu, text: str, slot: Callable[[], object]) -> QAction:
