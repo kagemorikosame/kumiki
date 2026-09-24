@@ -66,6 +66,17 @@ class TestFont:
             (None, None),
         ]
 
+    def test_written_styles_replace_the_earlier_ones(self) -> None:
+        # スタイルを書いた書体の字は書いた物だけになる 前の <@+B> を残すと、斜体だけを
+        # 指定した字が太字にもなる 番号だけなら前のスタイルのまま（#183 のレビュー）
+        (line,) = runs("<@+B>H<@Arial,3I>H<@+B><@Arial,3>H<@+I><@Arial,3B>H")
+        assert [(style.bold, style.italic) for _part, style in line] == [
+            (True, None),
+            (False, True),
+            (True, True),
+            (True, False),
+        ]
+
     def test_a_decoration_without_a_font_name_changes_nothing(self) -> None:
         # 見本 tag26 tag27 tag29 <@,3> も <@,0> も <@,3B> も AviUtl2 では何も変えなかった
         # 装飾として読むと、AviUtl2 では素の字の所に縁や影が付く

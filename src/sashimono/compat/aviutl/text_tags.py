@@ -237,15 +237,15 @@ def _font_tag(match: re.Match[str], layers: _Layers, report: CompatibilityReport
         if index >= len(DECORATION_NAMES):
             return None
         changed = replace(changed, decoration=index)
+    if not letters:
+        # 番号だけならスタイルは今のまま
+        return changed
     styles = _styles(letters, report)
     if styles is None:
         return None
-    bold, italic = styles
-    if bold:
-        changed = replace(changed, bold=True)
-    if italic:
-        changed = replace(changed, italic=True)
-    return changed
+    # スタイルを書いたときは、書いた物がその字のスタイルの全部（aviutl2.txt の <@メイリオ,6BI>）
+    # 書かなかった方まで前の <@+B> を残すと、斜体だけを指定した字が太字にもなる（#183 のレビュー）
+    return replace(changed, bold=styles[0], italic=styles[1])
 
 
 def _style_tag(
