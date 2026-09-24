@@ -235,6 +235,7 @@ class TestMovingInside:
         assert not document.can_undo
 
     def test_shift_keeps_one_axis(self, make_widget: MakeWidget) -> None:
+        # Shift を押しても両方が動くと、横だけ揃えたいのに手ぶれで縦もずれる
         media = _media()
         clip = _clip(media)
         project, _ = _project(clip)
@@ -313,6 +314,7 @@ class TestCornersAndTurning:
         assert _value(_apply(project, commands), clip.id, "rotation") == pytest.approx(40.0)
 
     def test_shift_turns_in_fifteen_degree_steps(self, make_widget: MakeWidget) -> None:
+        # 刻みが効かないと、ちょうど 30 度や 45 度に合わせられず数を打ち直すことになる
         media = _media()
         clip = _clip(media)
         project, _ = _project(clip)
@@ -412,6 +414,7 @@ class TestKeyframes:
         assert [c.frame for c in commands if isinstance(c, SetKeyframe)] == [59]
 
     def test_the_setting_can_shift_every_point(self, make_widget: MakeWidget) -> None:
+        # 設定が効かずに再生ヘッドへ点を打つと、動き全体をずらしたい人の曲線に余計な点が増える
         media = _media()
         clip = self._animated(media)
         project, _ = _project(clip)
@@ -501,6 +504,39 @@ class TestDragEndings:
         _send(widget, QEvent.Type.MouseButtonRelease, (190, 90))
         assert seen.committed == []
 
+    def test_stepping_frames_keeps_the_pressed_frame(self, make_widget: MakeWidget) -> None:
+        # 掴んだまま矢印でコマを送ると、送った先の時刻に、掴んだ時刻の値から数えた点が入る
+        media = _media()
+        clip = TestKeyframes()._animated(media)
+        project, _ = _project(clip)
+        widget = make_widget(project, clip.id)
+        widget.set_frame(10)
+        seen = _Recorder(widget)
+        _send(widget, QEvent.Type.MouseButtonPress, (210, 90))
+        widget.set_frame(15)
+        _send(widget, QEvent.Type.MouseMove, (240, 90))
+        _send(widget, QEvent.Type.MouseButtonRelease, (240, 90))
+        commands = seen.committed[0][0]
+        keys = [c for c in commands if isinstance(c, SetKeyframe)]
+        assert [c.frame for c in keys] == [10]
+        assert keys[0].value == pytest.approx(80.0)
+
+    def test_playing_drops_the_drag(self, make_widget: MakeWidget) -> None:
+        # 再生中は枠を出さない 見えない枠を掴んだまま離すと、見ていない値が確定する
+        media = _media()
+        clip = _clip(media)
+        project, _ = _project(clip)
+        widget = make_widget(project, clip.id)
+        seen = _Recorder(widget)
+        _send(widget, QEvent.Type.MouseButtonPress, (160, 90))
+        _send(widget, QEvent.Type.MouseMove, (180, 90))
+        widget.set_playing(True)
+        _send(widget, QEvent.Type.MouseMove, (190, 90))
+        _send(widget, QEvent.Type.MouseButtonRelease, (190, 90))
+        assert seen.committed == []
+        # 見せていた途中の絵を元へ戻す頼みが出ている
+        assert seen.previewed[-1] == []
+
     def test_a_muted_track_has_no_outline(self, make_widget: MakeWidget) -> None:
         # ミュートしたトラックの絵は描かれない 枠が残ると見えない絵を動かすことになる
         media = _media()
@@ -574,6 +610,7 @@ class TestPicking:
         assert seen.picked == [str(back.id)]
 
     def test_empty_space_keeps_the_selection(self, make_widget: MakeWidget) -> None:
+        # 何も無い所を押しただけで選択が外れると、設定パネルが空になって戸惑う
         media = _media()
         clip = _clip(media)
         project, _ = _project(clip)
@@ -586,6 +623,7 @@ class TestPicking:
 
 class TestLockAndSetting:
     def test_a_locked_track_does_not_move(self, make_widget: MakeWidget) -> None:
+        # ロックは誤って動かさないための物 プレビューから動かせると、ロックが効かない所ができる
         media = _media()
         clip = _clip(media)
         project, _ = _project(clip, locked=True)
@@ -722,6 +760,7 @@ class TestPreferences:
         assert plain.keyframe_drag == "playhead"
 
     def test_they_survive_a_round_trip(self, tmp_path: Path) -> None:
+        # 保存した設定が戻らないと、切ったはずの枠が起動のたびにまた出る
         store = PreferenceStore(tmp_path / "preferences.json")
         store.save(Preferences(preview_handles=False, keyframe_drag=KEYFRAME_DRAG_SHIFT_ALL))
         loaded = store.load()
@@ -729,6 +768,7 @@ class TestPreferences:
         assert loaded.keyframe_drag == KEYFRAME_DRAG_SHIFT_ALL
 
     def test_an_unknown_mode_falls_back(self, tmp_path: Path) -> None:
+        # 知らない値のまま使うと、どちらの決まりでも無い動きになり、画面の選択肢も空になる
         path = tmp_path / "preferences.json"
         path.write_text('{"keyframe_drag": "どこか", "preview_handles": 1}', encoding="utf-8")
         loaded = PreferenceStore(path).load()
@@ -736,6 +776,7 @@ class TestPreferences:
         assert loaded.preview_handles is True
 
     def test_the_dialog_returns_them(self, qt_application: QApplication) -> None:
+        # 画面の値を返し忘れると、OK を押しただけで設定が既定へ戻る
         del qt_application
         from sashimono.ui.preferences_dialog import PreferencesDialog
 
@@ -765,16 +806,19 @@ class TestTheWindow:
     def test_the_timeline_selection_reaches_the_preview(
         self, placed: tuple[MainWindow, Clip]
     ) -> None:
+        # 届かないと、タイムラインで選んだ物と別のクリップ（か何も無い所）に枠が出る
         window, clip = placed
         window._timeline.select(clip.id)
         assert window._preview.selection == clip.id
 
     def test_a_pick_selects_on_the_timeline(self, placed: tuple[MainWindow, Clip]) -> None:
+        # 届かないと、プレビューで選んだクリップと設定パネルが別の物を指す
         window, clip = placed
         window._preview.clip_picked.emit(str(clip.id))
         assert window._timeline.selected_clip == clip.id
 
     def test_a_finished_drag_is_one_undo_step(self, placed: tuple[MainWindow, Clip]) -> None:
+        # 途中の絵まで履歴に積むと、1 回動かしただけで取り消しが何十回も要る
         window, clip = placed
         before = window.document.project
         commands = transform_commands(before, clip.id, {"pos_x": 12.0, "pos_y": 3.0}, 0)
@@ -787,6 +831,7 @@ class TestTheWindow:
         assert window.document.project == before
 
     def test_the_setting_reaches_the_preview(self, placed: tuple[MainWindow, Clip]) -> None:
+        # 窓が設定を渡さないと、切っても枠が出続ける
         window, _ = placed
         window._apply_preferences(
             Preferences(preview_handles=False, keyframe_drag=KEYFRAME_DRAG_SHIFT_ALL)

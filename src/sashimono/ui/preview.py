@@ -80,6 +80,8 @@ class _Drag:
     start: dict[str, float]
     corners: tuple[Point, Point, Point, Point]
     pivot: Point
+    #: 掴んだ時点のフレーム 途中でコマ送りしても、点を打つ時刻を元の値の時刻とそろえる
+    frame: int
     #: 回した角度の合計（度） 1 回ごとの差を足す 押した所との差では半周で跳ぶ
     turned: float = 0.0
     commands: list[Command] = field(default_factory=list)
@@ -378,6 +380,9 @@ class PreviewWidget(QOpenGLWidget):
 
     def set_playing(self, playing: bool) -> None:
         """再生中かどうか 再生中は先読みを止める"""
+        if playing:
+            # 再生中は枠を出さない 見えない枠を掴んだまま離すと、見ていない値が確定する
+            self._cancel_drag()
         self._playing = playing
         self._prime_after_paint = False
         if playing:
@@ -717,6 +722,7 @@ class PreviewWidget(QOpenGLWidget):
             start=start_values(clip, self._frame - clip.timeline_start),
             corners=outline.corners,
             pivot=outline.pivot,
+            frame=self._frame,
         )
         event.accept()
 
@@ -745,7 +751,7 @@ class PreviewWidget(QOpenGLWidget):
             changes = rotated_values(drag.start, drag.turned, snap=shift)
         drag.last = current
         drag.commands = transform_commands(
-            drag.project, drag.clip_id, changes, self._frame, keyframes=self._keyframe_drag
+            drag.project, drag.clip_id, changes, drag.frame, keyframes=self._keyframe_drag
         )
         # 履歴に積まずに見せる 1 回のドラッグで何十段も積まない 離したときに 1 段
         self._showing_drag = True

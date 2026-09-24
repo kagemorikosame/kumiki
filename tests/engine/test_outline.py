@@ -25,6 +25,7 @@ from sashimono.core.model import (
     ParamValue,
     Project,
     ProjectSettings,
+    SceneId,
     Track,
     TrackKind,
 )
@@ -34,7 +35,7 @@ from sashimono.effects.spec import SelectSpec
 from sashimono.engine.decode import probe_media
 from sashimono.engine.gpu import GLContextError, OffscreenGLContext
 from sashimono.engine.render import FrameRenderer, RenderQuality
-from sashimono.engine.render.outline import Outline, clip_outline
+from sashimono.engine.render.outline import Outline, clip_outline, has_outline
 
 SETTINGS = ProjectSettings(width=320, height=180, frame_rate=FrameRate(30))
 
@@ -276,6 +277,8 @@ class TestTheOutlineIsWhereThePictureIs:
 
 class TestApproximate:
     def test_an_exact_outline_is_solid(self, picture: MediaItem) -> None:
+        # 配置だけのふつうのクリップまで点線にすると、点線が「ずれているかもしれない」の
+        # 印として働かなくなり、本当にずれる所を見分けられない
         clip = _picture_clip(picture, rotation=10)
         outline = clip_outline(_project(clip, picture), clip, 0)
         assert outline is not None and not outline.approximate
@@ -321,6 +324,8 @@ class TestApproximate:
         assert all(math.isfinite(v) for corner in outline.corners for v in corner)
 
     def test_a_tilt_makes_it_approximate(self, picture: MediaItem) -> None:
+        # 奥行きの回転は遠近で台形に歪むが、枠は平らな矩形のまま 実線で出すと、絵の無い
+        # 角の外を掴めると思わせる
         clip = _picture_clip(picture, rotation_x=30)
         outline = clip_outline(_project(clip, picture), clip, 0)
         assert outline is not None and outline.approximate
@@ -337,8 +342,11 @@ def test_the_pivot_choices_match_the_definition() -> None:
     assert {key for key, _ in vertical.choices} == {"screen", "top", "bottom", "middle", "origin"}
 
 
-def test_scenes_and_filters_have_no_outline(picture: MediaItem) -> None:
-    del picture
+def test_scenes_and_filters_have_no_outline() -> None:
+    # 下の絵や入れ子の合成をそのまま使うクリップに枠を出すと、掴んでも枠のとおりには動かない
     project = Project.create(SETTINGS)
     filtered = Clip(timeline_start=0, duration=10, source=GeneratedSource(kind="filter", params={}))
     assert clip_outline(project, filtered, 0) is None
+    nested = Clip(timeline_start=0, duration=10, scene_id=SceneId("入れ子"))
+    assert not has_outline(nested)
+    assert clip_outline(project, nested, 0) is None
