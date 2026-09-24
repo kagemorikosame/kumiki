@@ -42,6 +42,7 @@ from sashimono.asr import (
 )
 from sashimono.asr.service import Job
 from sashimono.core.model import MediaItem, Transcript
+from sashimono.runtime import refresh_runtime, restart_note, snapshot_runtime_modules
 from sashimono.ui.theme import Colors
 
 __all__ = ["TranscribeDialog"]
@@ -80,7 +81,11 @@ class TranscribeDialog(QDialog):
         #: 導入ワーカーからのログ スレッドをまたぐのでキューで受ける
         self._install_log: queue.Queue[str] = queue.Queue()
         self._install_done: threading.Event | None = None
+        #: 導入の中断の頼み 終わった知らせ（_install_done）とは分けて持つ
+        self._install_cancel = threading.Event()
         self._install_code = 0
+        #: この導入を始める前に、専用フォルダから読み込み済みだった物
+        self._before: dict[str, int] = {}
 
         self._build()
         self._timer = QTimer(self)
@@ -201,18 +206,29 @@ class TranscribeDialog(QDialog):
     # --- 導入 ---
 
     def _start_install(self) -> None:
-        command = install_command(cuda=self._gpu.isChecked())
+        command = install_command(
+            cuda=self._gpu.isChecked(), upgrade=runtime_status().needs_upgrade
+        )
+        # pip が上書きする前の読み込み済みの物を、この導入の分として控える
+        # 導入ごとに持つので、アシスタントの導入と重なっても控えが混ざらない
+        self._before = snapshot_runtime_modules()
         self._log.setVisible(True)
         self._log.clear()
         self._set_busy(True, message="導入しています 数分かかります")
         self._progress.setRange(0, 0)  # 進み具合が分からないので流れる表示にする
 
+        # 中断の頼みと、終わった知らせを分ける 同じ旗にすると、中断した瞬間に
+        # 「終わった」と読まれ、pip が走っている最中に成功の案内が出る
         done = threading.Event()
+        cancel = threading.Event()
         self._install_done = done
+        self._install_cancel = cancel
+        # 終わるまでは成功ではない 前の導入の 0 が残っていると成功に見える
+        self._install_code = -1
 
         def run() -> None:
             code = install_runtime(
-                command=command, on_output=self._install_log.put, should_cancel=done.is_set
+                command=command, on_output=self._install_log.put, should_cancel=cancel.is_set
             )
             self._install_code = code
             self._install_log.put(
@@ -263,10 +279,13 @@ class TranscribeDialog(QDialog):
         self._install_done = None
         self._timer.stop()
         self._progress.setRange(0, 1000)
+        # ボタンの有効・無効を決め直す前に import の道を作り直す 先に決めると、
+        # 配布版では入れたばかりの faster-whisper が見えず「起こす」が押せないまま残る
+        loaded = refresh_runtime(self._before) if self._install_code == 0 else ()
         self._set_busy(False)
         self._refresh_availability()
         if self._install_code == 0:
-            self._status.setText("導入が終わりました そのまま起こせます")
+            self._status.setText(restart_note(loaded, visible=runtime_status().installed))
 
     def _drain_job(self) -> None:
         job = self._job
@@ -300,7 +319,8 @@ class TranscribeDialog(QDialog):
             self._status.setText("中断しています")
             return
         if self._install_done is not None:
-            self._install_done.set()
+            # 止めるよう頼むだけ 終わったかどうかはワーカーが知らせる
+            self._install_cancel.set()
             self._status.setText("中断しています")
             return
         self._timer.stop()

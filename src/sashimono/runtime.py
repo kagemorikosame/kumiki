@@ -14,14 +14,18 @@
 
 from __future__ import annotations
 
+import importlib
 import os
 import shutil
 import subprocess
 import sys
-from collections.abc import Callable, Sequence
+import threading
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from importlib import metadata
 from pathlib import Path
+
+from packaging.version import InvalidVersion, Version
 
 from sashimono.core import userdirs
 
@@ -35,8 +39,12 @@ __all__ = [
     "install_runtime",
     "is_frozen",
     "pip_arguments",
+    "refresh_runtime",
+    "remove_stale_metadata",
+    "restart_note",
     "run_pip",
     "runtime_target_dir",
+    "snapshot_runtime_modules",
 ]
 
 #: 導入したものを置くフォルダの名前（パッケージ版のみ）
@@ -49,10 +57,24 @@ class PackageStatus:
 
     name: str
     version: str | None
+    #: ``>=`` で求めた最低の版 無ければ入っているだけでよい
+    minimum: str | None = None
 
     @property
     def installed(self) -> bool:
-        return self.version is not None
+        """使える版が入っているか 古い版は入っていないのと同じに扱う
+
+        名前だけを見ると、前の条件で入れた古い版でも「導入済み」になる
+        新しい版にしか無い引数を渡した所で、会話を始めた瞬間に落ちる
+        """
+        return self.version is not None and not self.outdated
+
+    @property
+    def outdated(self) -> bool:
+        """入ってはいるが、求める版より古い"""
+        if self.version is None or self.minimum is None:
+            return False
+        return _is_older(self.version, self.minimum)
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,8 +106,8 @@ class FeaturePack:
     def status(self) -> PackStatus:
         return PackStatus(
             pack=self,
-            packages=tuple(PackageStatus(n, _version(_name_of(n))) for n in self.required),
-            extras=tuple(PackageStatus(n, _version(_name_of(n))) for n in self.extra),
+            packages=tuple(_package_status(n) for n in self.required),
+            extras=tuple(_package_status(n) for n in self.extra),
             missing_commands=tuple(c for c in self.commands if self.locate(c) is None),
         )
 
@@ -117,6 +139,15 @@ class PackStatus:
         """実際に動かせるか 外部コマンドも含めて見る"""
         return self.installed and not self.missing_commands
 
+    @property
+    def needs_upgrade(self) -> bool:
+        """古い版を入れ替える必要があるか
+
+        pip は ``--target`` に同じ名前が在ると、``--upgrade`` 無しでは入れ替えない
+        （配布版の導入先） 付けないと、入れ直しても古い版のまま残る
+        """
+        return any(p.outdated for p in self.packages + self.extras)
+
     def missing(self, *, extra: bool) -> tuple[str, ...]:
         """まだ入っていないものの pip 指定"""
         pending = [p.name for p in self.packages if not p.installed]
@@ -132,6 +163,9 @@ class PackStatus:
 
     def summary(self) -> str:
         """画面に 1 行で出す説明"""
+        if any(p.outdated for p in self.packages):
+            old = "、".join(f"{_name_of(p.name)} {p.version}" for p in self.packages if p.outdated)
+            return f"古い版が入っています（{old}） ここから入れ直せます"
         if not self.installed:
             return "未導入 ここから環境を用意できます"
         if self.missing_commands:
@@ -150,6 +184,27 @@ def _name_of(requirement: str) -> str:
         if index > 0:
             return requirement[:index].strip()
     return requirement.strip()
+
+
+def _package_status(requirement: str) -> PackageStatus:
+    minimum = None
+    if ">=" in requirement:
+        minimum = requirement.split(">=", 1)[1].split(",", 1)[0].strip() or None
+    return PackageStatus(requirement, _version(_name_of(requirement)), minimum)
+
+
+def _is_older(version: str, minimum: str) -> bool:
+    """``version`` が ``minimum`` より古いか 版の決まり（PEP 440）どおりに比べる
+
+    数字だけを拾って比べると ``0.2.152rc1`` を ``0.2.152`` と同じに読み、
+    まだ出ていない版の前触れを「条件を満たす」と見てしまう
+    読めない版は古いと見ない 入っている物を使えないと決めつけて止めるより、
+    使わせてみて失敗の文面を見せる方が、次にすることが分かる
+    """
+    try:
+        return Version(version) < Version(minimum)
+    except InvalidVersion:
+        return False
 
 
 def _version(name: str) -> str | None:
@@ -202,7 +257,8 @@ def runtime_target_dir() -> Path | None:
 def activate_runtime() -> Path | None:
     """専用フォルダへ入れたものを import できるようにする
 
-    起動時に 1 度呼ぶ 通常の実行では何もしない
+    起動時に 1 度呼ぶ 通常の実行では何もしない 導入の直後は
+    :func:`refresh_runtime` を呼ぶ（こちらも中で呼ばれる）
     """
     target = runtime_target_dir()
     if target is None or not target.exists():
@@ -213,6 +269,193 @@ def activate_runtime() -> Path | None:
         # 使わせるため
         sys.path.insert(0, path)
     return target
+
+
+def refresh_runtime(before: Mapping[str, int] | None = None) -> tuple[str, ...]:
+    """導入を終えた直後に呼び、入れたものを再起動なしで使えるようにする
+
+    戻り値は「入れ直したのに、古い方がもう読み込まれていて入れ替えられなかった」
+    モジュールの名前 空でなければ、再起動を勧める
+
+    ``before`` は導入を始める前の :func:`snapshot_runtime_modules` 渡すと、専用
+    フォルダから読み込み済みの物が同じ場所で上書きされたことも見分けられる
+
+    これが無いと配布版では導入が済んだことに気付けなかった 初めて導入する人は
+    起動時に専用フォルダがまだ無いので :func:`activate_runtime` が何もせず、
+    導入のあとも import の道に載らないまま、状態を見直しても「未導入」と出て
+    ボタンが押せなかった（Issue #27）
+
+    通常の実行でも import の控えは捨てる 導入先（site-packages）の中身を
+    覚えている探し手が、入れたばかりのパッケージを見落とすことがあるため
+    """
+    target = activate_runtime()
+    if target is not None:
+        remove_stale_metadata(target)
+    # パッケージの探し手と、配布メタデータ（導入状況の判定に使う）の探し手の
+    # 両方の控えがここで捨てられる
+    importlib.invalidate_caches()
+    if target is None:
+        return ()
+    loaded = list(_already_loaded_elsewhere(target))
+    for name in _replaced_in_place(before or {}):
+        if name not in loaded:
+            loaded.append(name)
+    return tuple(loaded)
+
+
+def snapshot_runtime_modules() -> dict[str, int]:
+    """専用フォルダから読み込み済みのモジュールと、そのファイルの更新時刻（ns）
+
+    導入を始める前に呼び、結果をその導入の :func:`refresh_runtime` へ渡す
+    導入ごとに持たせるのは、字幕起こしとアシスタントの導入が重なっても、
+    片方の控えがもう片方に上書きされないため
+    """
+    target = runtime_target_dir()
+    if target is None or not target.exists():
+        return {}
+    root = target.resolve()
+    found: dict[str, int] = {}
+    for name, module in list(sys.modules.items()):
+        location = getattr(module, "__file__", None)
+        if location is None:
+            continue
+        path = Path(location)
+        try:
+            if path.resolve().is_relative_to(root):
+                found[name] = path.stat().st_mtime_ns
+        except OSError:
+            continue
+    return found
+
+
+def _replaced_in_place(before: Mapping[str, int]) -> list[str]:
+    """専用フォルダから読み込み済みだったのに、導入で同じ場所のファイルが入れ替わった物
+
+    ``invalidate_caches`` は ``sys.modules`` の読み込み済みの物を入れ替えない
+    同じ場所へ新しい版を上書きすると、場所の比べ方では見分けられず、古い版の
+    まま動いているのに「再起動しなくても使えます」と言ってしまう
+    """
+    replaced: list[str] = []
+    for name, stamp in before.items():
+        module = sys.modules.get(name)
+        location = getattr(module, "__file__", None) if module is not None else None
+        if location is None:
+            continue
+        try:
+            changed = Path(location).stat().st_mtime_ns != stamp
+        except OSError:
+            changed = True  # 消えた 入れ替えで無くなった
+        top = name.split(".", 1)[0]
+        if changed and top not in replaced:
+            replaced.append(top)
+    return replaced
+
+
+def remove_stale_metadata(target: Path) -> tuple[Path, ...]:
+    """専用フォルダに残った古い版の ``*.dist-info`` を消す 戻り値は消した物
+
+    pip の ``--target --upgrade`` は、同じ名前の項目しか入れ替えない 版が違えば
+    ``*.dist-info`` のフォルダ名も違うので、古い版のメタデータが残る
+    ``importlib.metadata`` は最初に見つけた方を返すので、古い方を拾うと、
+    入れ直したのに「古い版が入っています」のまま使えない
+
+    同じ配布名の物が 2 つ以上あるときだけ、一番新しい版を残して消す
+    版を読めない物が混ざるときは、どれが新しいか決められないので触らない
+    """
+    groups: dict[str, list[tuple[Version, Path]]] = {}
+    unreadable: set[str] = set()
+    try:
+        entries = list(target.glob("*.dist-info"))
+    except OSError:
+        return ()
+    for entry in entries:
+        name, _, version = entry.name[: -len(".dist-info")].partition("-")
+        key = name.lower().replace("-", "_").replace(".", "_")
+        try:
+            groups.setdefault(key, []).append((Version(version), entry))
+        except InvalidVersion:
+            unreadable.add(key)
+    removed: list[Path] = []
+    for key, found in groups.items():
+        if len(found) < 2 or key in unreadable:
+            continue
+        found.sort(key=lambda item: item[0])
+        for _, stale in found[:-1]:
+            try:
+                shutil.rmtree(stale)
+            except OSError:
+                # 使用中などで消せなくても導入は済んでいる 次の起動で消える
+                # 機会があるので、ここでは止めない
+                continue
+            removed.append(stale)
+    return tuple(removed)
+
+
+def restart_note(loaded: Sequence[str], *, visible: bool = True) -> str:
+    """導入のあとに出す 1 行 再起動が要るかどうかがそのまま分かるようにする
+
+    ``visible`` が偽なら、pip は通ったのに入れたものが見つからなかった
+    黙って押せないボタンを残すより、次にできることを書く
+    """
+    if not visible:
+        return (
+            "導入は終わりましたが、入れたものを読み込めませんでした"
+            " ソフトを再起動してからもう一度開いてください"
+        )
+    if not loaded:
+        return "導入が終わりました 再起動しなくてもそのまま使えます"
+    names = "、".join(loaded[:5]) + (" ほか" if len(loaded) > 5 else "")
+    return (
+        "導入が終わりました そのまま使えますが、同梱の部品（"
+        f"{names}）を入れ直したので、うまく動かないときはソフトを再起動してください"
+    )
+
+
+def _already_loaded_elsewhere(target: Path) -> tuple[str, ...]:
+    """専用フォルダに入ったのに、別の場所から読み込み済みのモジュール
+
+    配布版に同梱したもの（numpy など）を、導入した機能の依存としてもう 1 つ
+    入れることがある 起動し直すと専用フォルダの方が先に見つかるが、今の実行では
+    同梱の方が ``sys.modules`` に残っていて入れ替わらない
+    """
+    loaded: list[str] = []
+    try:
+        entries = sorted(target.iterdir())
+    except OSError:
+        return ()
+    root = target.resolve()
+    for entry in entries:
+        name = _module_name(entry)
+        if name is None:
+            continue
+        # 下のモジュールまで見る 名前空間パッケージ（``nvidia`` など）は親に
+        # ``__file__`` が無く、親だけを見ると、同梱の方から読み込み済みの
+        # 子を見落として「再起動しなくても使えます」と言ってしまう
+        prefix = f"{name}."
+        for module_name, module in list(sys.modules.items()):
+            if module_name != name and not module_name.startswith(prefix):
+                continue
+            location = getattr(module, "__file__", None)
+            if location is None:
+                continue
+            if not Path(location).resolve().is_relative_to(root):
+                loaded.append(name)
+                break
+    return tuple(loaded)
+
+
+def _module_name(entry: Path) -> str | None:
+    """専用フォルダの 1 項目が、何という名前で import されるか"""
+    if entry.is_dir():
+        if entry.suffix in {".dist-info", ".egg-info", ".data"} or entry.name in {
+            "bin",
+            "__pycache__",
+        }:
+            return None
+        return entry.name
+    if entry.suffix in {".py", ".pyd"}:
+        return entry.name.split(".", 1)[0]
+    return None
 
 
 def run_pip(arguments: Sequence[str]) -> int:
@@ -306,13 +549,34 @@ def install_runtime(
         return 1
 
     assert process.stdout is not None
+    finished = threading.Event()
+    cancelled = threading.Event()
+
+    def watch(ask: Callable[[], bool]) -> None:
+        # 出力を読む所とは別に見張る 読む所は次の 1 行が来るまで止まるので、
+        # そこで中断を見ると、pip が黙って落としている間（数分ある）は止まらない
+        while not finished.wait(_CANCEL_POLL_SECONDS):
+            if ask():
+                cancelled.set()
+                try:
+                    process.terminate()
+                except OSError:
+                    return  # もう終わっていた
+                return
+
+    if should_cancel is not None:
+        threading.Thread(target=watch, args=(should_cancel,), daemon=True).start()
     with process:
+        # 止めた後も最後まで読む 途中で読むのをやめると、子の書き込みが詰まって
+        # 終わらず、終了コードも取れない
         for line in process.stdout:
             if on_output is not None:
                 on_output(line.rstrip())
-            if should_cancel is not None and should_cancel():
-                process.terminate()
-                if on_output is not None:
-                    on_output("中断した")
-                break
+    finished.set()
+    if cancelled.is_set() and on_output is not None:
+        on_output("中断した")
     return process.returncode if process.returncode is not None else 1
+
+
+#: 導入の中断の頼みを見る間隔（秒） 長いと、閉じるボタンを押してから止まるまでが延びる
+_CANCEL_POLL_SECONDS = 0.1

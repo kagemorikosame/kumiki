@@ -18,6 +18,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sashimono.ai.models import EFFORTS as AI_EFFORTS
+from sashimono.ai.models import MODELS as AI_MODELS
+from sashimono.ai.models import find_model
 from sashimono.engine.cache.proxy import (
     BUDGET_MS,
     MEASURED_ONE_LAYER_MS,
@@ -275,6 +278,38 @@ class PreferencesDialog(QDialog):
         )
         form.addRow(self._all_plugins)
 
+        # アシスタントの欄の上でも選べる ここにも置くのは、設定を開いて OK を
+        # 押したときに、欄の上で選んだモデルを黙って既定へ戻さないため
+        self._ai_model = QComboBox(self)
+        for model in AI_MODELS:
+            self._ai_model.addItem(model.label, model.id)
+        self._ai_model.setCurrentIndex(max(0, self._ai_model.findData(preferences.ai_model)))
+        self._ai_model.setToolTip("「既定」は Claude Code がアカウントに合わせて選ぶモデル")
+        form.addRow("アシスタントのモデル", self._ai_model)
+
+        self._ai_effort = QComboBox(self)
+        for effort in AI_EFFORTS:
+            self._ai_effort.addItem(effort.label, effort.value)
+        self._ai_effort.setCurrentIndex(max(0, self._ai_effort.findData(preferences.ai_effort)))
+        self._ai_effort.setToolTip(
+            "高くするほどよく考えてから答える代わりに、遅く、使う量も増える "
+            "Claude Haiku 4.5 はこの指定を受け付けないので、選んでも渡さない"
+        )
+        form.addRow("アシスタントの考える深さ", self._ai_effort)
+        # 受け付けないモデルでは選べなくする アシスタント欄の上と同じ振る舞い
+        # 選べたままだと、変えても応答に何も効かない
+        self._ai_model.currentIndexChanged.connect(self._update_effort_enabled)
+        self._update_effort_enabled()
+
+        self._chat_enter_sends = QCheckBox(
+            "アシスタントの入力欄で Enter だけで送る（改行は Shift+Enter）", self
+        )
+        self._chat_enter_sends.setChecked(preferences.chat_enter_sends)
+        self._chat_enter_sends.setToolTip(
+            "切ると Ctrl+Enter で送り、Enter は改行になる 日本語の変換を確定する Enter では送らない"
+        )
+        form.addRow(self._chat_enter_sends)
+
         # 測った値をそのまま置く 「なんとなく軽くなる」ではなく、
         # どの組が 60fps に入るのかを見て選べるようにする
         # 数は控えの側（sashimono.engine.cache.proxy）から取る ここへ直に書くと、
@@ -329,6 +364,10 @@ class PreferencesDialog(QDialog):
         self._native_modules.toggled.connect(self._all_plugins.setEnabled)
         self._all_plugins.setEnabled(preferences.native_modules)
 
+    def _update_effort_enabled(self, _index: int = -1) -> None:
+        choice = find_model(str(self._ai_model.currentData()))
+        self._ai_effort.setEnabled(choice is None or choice.effort)
+
     @staticmethod
     def _select(box: QComboBox, value: int) -> None:
         """その値の項目を選ぶ 一覧に無ければ、その値の項目を足してから選ぶ
@@ -359,6 +398,9 @@ class PreferencesDialog(QDialog):
             pool_progress=self._pool_progress.isChecked(),
             all_aviutl_plugins=self._all_plugins.isChecked(),
             media_view=str(self._media_view.currentData()),
+            ai_model=str(self._ai_model.currentData()),
+            ai_effort=str(self._ai_effort.currentData()),
+            chat_enter_sends=self._chat_enter_sends.isChecked(),
             match_video=str(self._match_video.currentData()),
             dock_tabs=str(self._dock_tabs.currentData()),
             preview_handles=self._preview_handles.isChecked(),
