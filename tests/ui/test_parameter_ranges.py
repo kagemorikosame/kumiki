@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 from PySide6.QtWidgets import QApplication, QSlider, QSpinBox
 
+from sashimono.core.model import AnimatedValue
 from sashimono.effects import ParameterSpec, TrackSpec, ValueSpec, registry
 from sashimono.effects.sources import source_registry
 from sashimono.ui.inspector.widgets import create_editor
@@ -55,3 +56,39 @@ def test_a_huge_track_range_keeps_the_slider_usable(qt_application: QApplication
     assert slider.maximum() == INT_MAX
     editor.set_value(10**7)
     assert slider.value() == INT_MAX
+
+
+@pytest.mark.filterwarnings("error")
+@pytest.mark.parametrize(
+    ("minimum", "maximum"),
+    [(0.0, 10.0**7), (-(10.0**7), 10.0**7), (-(10.0**9), -(10.0**6))],
+)
+def test_the_slider_ends_of_a_huge_range_are_the_spec_ends(
+    qt_application: QApplication, minimum: float, maximum: float
+) -> None:
+    # 端だけを int の上限で切ると、端へ動かしたときに仕様の端ではなく 2147483.647 が
+    # 数値欄と保存へ流れる 下限は仕様より下へはみ出した値にもなりうる
+    del qt_application
+    editor = create_editor(TrackSpec("far", "遠い", minimum, maximum, minimum))
+    slider = editor.findChild(QSlider)
+    assert slider is not None
+    previewed: list[float] = []
+    changed: list[float] = []
+    editor.value_previewed.connect(lambda value: previewed.append(value.static))
+    editor.value_changed.connect(lambda value: changed.append(value.static))
+    for position in (
+        slider.maximum(),
+        slider.minimum(),
+        (slider.minimum() + slider.maximum()) // 2,
+    ):
+        slider.setValue(position)
+        slider.sliderReleased.emit()
+    assert previewed[0] == maximum
+    assert previewed[1] == minimum
+    assert changed[:2] == [maximum, minimum]
+    assert all(minimum <= value <= maximum for value in previewed + changed)
+    # 数値欄から入れた値もスライダーの位置へ正しく戻る
+    editor.set_value(AnimatedValue(static=maximum))
+    assert slider.value() == slider.maximum()
+    editor.set_value(AnimatedValue(static=minimum))
+    assert slider.value() == slider.minimum()

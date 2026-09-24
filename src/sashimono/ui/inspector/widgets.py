@@ -104,10 +104,17 @@ class TrackEditor(ParameterEditor):
         super().__init__(spec, parent)
         self._spec = spec
 
+        # 1000 倍すると int に収まらない広い範囲は、スライダーの端から端を仕様の最小から
+        # 最大へ割り当て直す 端だけを int の上限で切ると、スライダーの端が仕様の端を
+        # 表さず、範囲の外の値まで数値欄と保存へ流れる
+        low = spec.minimum * _SLIDER_SCALE
+        high = spec.maximum * _SLIDER_SCALE
+        self._stretched = not (low >= _INT_MIN and high <= _INT_MAX)
         self._slider = QSlider(Qt.Orientation.Horizontal, self)
-        self._slider.setRange(
-            _qt_int(spec.minimum * _SLIDER_SCALE), _qt_int(spec.maximum * _SLIDER_SCALE)
-        )
+        if self._stretched:
+            self._slider.setRange(0, _INT_MAX)
+        else:
+            self._slider.setRange(int(low), int(high))
         self._slider.valueChanged.connect(self._on_slider)
         self._slider.sliderReleased.connect(self._on_release)
 
@@ -140,14 +147,14 @@ class TrackEditor(ParameterEditor):
         self._updating = True
         try:
             self._number.setValue(number)
-            self._slider.setValue(_qt_int(number * _SLIDER_SCALE))
+            self._slider.setValue(self._to_slider(number))
         finally:
             self._updating = False
 
     def _on_slider(self, raw: int) -> None:
         if self._updating:
             return
-        number = raw / _SLIDER_SCALE
+        number = self._from_slider(raw)
         self._updating = True
         try:
             self._number.setValue(number)
@@ -158,14 +165,31 @@ class TrackEditor(ParameterEditor):
         self._preview(AnimatedValue(static=number))
 
     def _on_release(self) -> None:
-        self._emit(AnimatedValue(static=self._slider.value() / _SLIDER_SCALE))
+        self._emit(AnimatedValue(static=self._from_slider(self._slider.value())))
+
+    def _to_slider(self, number: float) -> int:
+        """仕様の値をスライダーの位置へ 範囲の外は端へ寄せる"""
+        number = self._spec.clamp(number)
+        if not self._stretched:
+            return _qt_int(number * _SLIDER_SCALE)
+        span = self._spec.maximum - self._spec.minimum
+        if span <= 0:
+            return 0
+        return _qt_int(round((number - self._spec.minimum) / span * _INT_MAX))
+
+    def _from_slider(self, raw: int) -> float:
+        """スライダーの位置を仕様の値へ 必ず仕様の範囲に収める"""
+        if not self._stretched:
+            return self._spec.clamp(raw / _SLIDER_SCALE)
+        span = self._spec.maximum - self._spec.minimum
+        return self._spec.clamp(self._spec.minimum + raw / _INT_MAX * span)
 
     def _on_number(self, number: float) -> None:
         if self._updating:
             return
         self._updating = True
         try:
-            self._slider.setValue(_qt_int(number * _SLIDER_SCALE))
+            self._slider.setValue(self._to_slider(number))
         finally:
             self._updating = False
         self._emit(AnimatedValue(static=number))
