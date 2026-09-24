@@ -117,6 +117,29 @@ class TestHorizontalBar:
         _wheel(view, x=60, modifiers=Qt.KeyboardModifier.NoModifier)
         assert 0 < view.view_layout.scroll_frame < first
 
+    def test_wheeling_at_the_end_stops_at_the_end(self, area: TimelineArea) -> None:
+        # 今の位置をバーの範囲に含めていたので、末尾で Shift+ホイールや横ホイールを
+        # 回すたびに範囲が伸び、空白へどこまでも進めた（PR #145 の指摘）
+        view = area.view
+        bar = view.horizontal_scroll_bar
+        bar.setValue(bar.maximum())
+        limit, where = bar.maximum(), view.view_layout.scroll_frame
+        for _ in range(20):
+            _wheel(view, y=-120, modifiers=Qt.KeyboardModifier.ShiftModifier)
+            _wheel(view, x=-120, modifiers=Qt.KeyboardModifier.NoModifier)
+        assert bar.maximum() == limit
+        assert view.view_layout.scroll_frame == pytest.approx(where)
+        # 末尾はまだ画面に入っている
+        assert view.view_layout.frame_to_x(3000) < view.width()
+
+    def test_the_playhead_past_the_end_can_still_be_followed(self, area: TimelineArea) -> None:
+        # 範囲を中身だけで決めると、矢印キーで末尾の先へ進めた再生ヘッドを追えず、
+        # 画面の外へ出たまま見えなくなる
+        view = area.view
+        view.set_playhead(6000)
+        x = view.view_layout.frame_to_x(6000)
+        assert Metrics.TRACK_HEADER_WIDTH <= x < view.width()
+
     def test_the_bar_starts_after_the_header(self, area: TimelineArea) -> None:
         # バーが動かすのは時間の軸 ヘッダの下まで伸ばすと、何を動かすのか分かりにくい
         bar = area.view.horizontal_scroll_bar
@@ -127,6 +150,37 @@ class TestVerticalBar:
     def test_hidden_while_every_track_fits(self, area: TimelineArea) -> None:
         # 使えないバーは幅を取るだけ
         assert not area.view.vertical_scroll_bar.isVisible()
+
+    def test_wheeling_down_stays_on_the_tracks(self, area: TimelineArea) -> None:
+        # 今の位置をバーの範囲に含めていたので、全部のトラックが見えていても下へ
+        # 回すとバーが現れ、トラックを画面の外へ追い出せた（PR #145 の指摘）
+        view = area.view
+        for _ in range(10):
+            _wheel(view, y=-120, modifiers=Qt.KeyboardModifier.NoModifier)
+        assert view.view_layout.scroll_y == 0
+        assert not view.vertical_scroll_bar.isVisible()
+
+    def test_removing_tracks_brings_the_view_back(
+        self, qt_application: QApplication, analyzer: MediaAnalyzer
+    ) -> None:
+        # 下まで送ってからトラックを減らすと、前の位置が残って空白を見たまま戻らず、
+        # バーも消えなかった（PR #145 の指摘）
+        del qt_application
+        area = TimelineArea(TimelineView(_long_project(tracks=8), analyzer))
+        area.resize(900, 300)
+        area.show()
+        QApplication.processEvents()
+        try:
+            view = area.view
+            bar = view.vertical_scroll_bar
+            bar.setValue(bar.maximum())
+            assert view.view_layout.scroll_y > 0
+            view.set_project(_long_project(tracks=2))
+            assert view.view_layout.scroll_y == 0
+            assert bar.value() == 0
+            assert not bar.isVisible()
+        finally:
+            area.close()
 
     def test_shown_and_working_when_tracks_overflow(
         self, qt_application: QApplication, analyzer: MediaAnalyzer

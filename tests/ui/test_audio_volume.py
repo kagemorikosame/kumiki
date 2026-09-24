@@ -35,11 +35,13 @@ def _clips(project: Project, kind: TrackKind) -> list[Clip]:
 
 class TestPlacedSound:
     def test_the_sound_of_a_movie_has_a_volume(self, video_media: MediaItem) -> None:
-        # 映像つきの素材でも、音声の側に付く
+        # 付いていないと、置いた動画の音量を下げたいだけでもエフェクトの一覧から探して
+        # 足すことになる 映像つきの素材でも、音声の側に付く
         (audio,) = _clips(_placed(video_media), TrackKind.AUDIO)
         assert [effect.kind for effect in audio.effects] == [VOLUME_EFFECT_KIND]
 
     def test_a_sound_file_has_a_volume(self, audio_media: MediaItem) -> None:
+        # BGM のような音声だけの素材も同じ 付かないと、置いてすぐ音量を変えられない
         (audio,) = _clips(_placed(audio_media), TrackKind.AUDIO)
         assert [effect.kind for effect in audio.effects] == [VOLUME_EFFECT_KIND]
 
@@ -97,7 +99,8 @@ class TestInspector:
     def test_the_volume_is_ready_to_change(
         self, panel: InspectorPanel, audio_media: MediaItem
     ) -> None:
-        # 置いて選んだだけで、設定パネルに音量の欄が出る
+        # 置いて選んだだけで、設定パネルに音量の欄が出る 出ないと、音量を変えるのに
+        # エフェクトの一覧を開いて音量調整を探し、足してからになる
         project = _placed(audio_media)
         (audio,) = _clips(project, TrackKind.AUDIO)
         panel.set_project(project)

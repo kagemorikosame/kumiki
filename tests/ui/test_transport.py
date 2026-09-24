@@ -64,7 +64,8 @@ class TestTransportButtons:
         assert bar.playing is False
 
     def test_pause_is_two_bars(self) -> None:
-        # 真ん中の行を左から見て、塗り→隙間→塗り の 2 本であること
+        # 2 本の棒に見えないと、再生中の印が再生の印と見分けられず、押すと止まるのか
+        # 分からない 真ん中の行を左から見て、塗り→隙間→塗り の 2 本であること
         image = _image("pause")
         row = image.height() // 2
         runs: list[bool] = []

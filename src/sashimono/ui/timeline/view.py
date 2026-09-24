@@ -245,28 +245,44 @@ class TimelineView(QWidget):
 
         余白が無いと、最後のクリップの後ろへ置く場所を右端でしか見られない
         画面の半分を足して、末尾の後ろにも置き場が見えるようにする
+
+        再生ヘッドが末尾より先にあれば、そこまでを長さに含める 矢印キーで末尾の
+        先へ進めたとき、含めないと再生ヘッドが画面の外へ出たまま追えない
         """
         span = self._view_layout.frames_in(self.width())
-        return self._project.duration + span * 0.5
+        return max(self._project.duration, self._playhead) + span * 0.5
 
     def _sync_scroll_bars(self) -> None:
         """スクロールバーの範囲と位置を、いまの表示に合わせる
 
         横は画素で数える 1 フレームが 1 画素に満たない拡大率でも、つまみを
         滑らかに動かせるように 縦の範囲はトラックを並べた高さから
+
+        範囲は中身の大きさだけで決め、表示の位置はその範囲へ丸める 今の位置を
+        範囲に含めると、末尾で Shift+ホイールを回すたびに範囲が伸びて空白へどこまでも
+        進め、トラックを消したあとも消えたトラックの高さぶん下を見たまま戻らなかった
         """
         layout = self._view_layout
         scale = layout.pixels_per_frame
         visible = max(1, self.width() - Metrics.TRACK_HEADER_WIDTH)
-        value = round(layout.scroll_frame * scale)
         content = round(self._scrollable_frames() * scale)
-        # 今の位置より短くはしない Shift+ホイールや再生ヘッドの追従は末尾より先へ
-        # 行ける そこでバーを縮めると、つまみが引き戻されて見ていた所が飛ぶ
-        maximum = max(content - visible, value, 0)
+        maximum = max(content - visible, 0)
 
         rows = max(1, self.height() - Metrics.RULER_HEIGHT)
         tracks = layout.content_height(self._project.timeline) - Metrics.RULER_HEIGHT
-        vertical_max = max(tracks - rows, layout.scroll_y, 0)
+        vertical_max = max(tracks - rows, 0)
+
+        # 位置を範囲へ丸めてビューにも当てる バーは範囲を縮めると値を自分で丸めるが、
+        # その知らせは下で止めているので、ビューの側は自分で合わせないとずれたまま残る
+        clamped = layout
+        if layout.scroll_frame * scale > maximum:
+            clamped = clamped.scrolled_to(maximum / scale)
+        if layout.scroll_y > vertical_max:
+            clamped = clamped.scrolled_vertically(vertical_max)
+        if clamped != layout:
+            self._view_layout = layout = clamped
+            self.update()
+        value = min(round(layout.scroll_frame * scale), maximum)
 
         self._syncing_bars = True
         try:
@@ -415,20 +431,27 @@ class TimelineView(QWidget):
         ただ枠を映像の側にしか描かないと、音声も一緒に動くことが見えない（Issue #27）
         ので、描くときだけ相手にも同じ枠を付ける
 
-        全クリップを 1 度だけ舐める 選んだ 1 本ごとに相手を探すと、全部を選んだとき
+        全クリップを舐めるのは 2 度だけ 選んだ 1 本ごとに相手を探すと、全部を選んだとき
         （1 万本）に描くたびに 1 万 × 1 万回回る 選択とプロジェクトが同じ間は覚えておく
         """
         cached = self._highlight_cache
         if cached is not None and cached[0] is self._project and cached[1] == self._selection:
             return cached[2]
         timeline = self._project.timeline
-        links = {
-            located[1].link_group
-            for clip_id in self._selection
-            if (located := timeline.locate_clip(clip_id)) is not None
-            and located[1].link_group is not None
-        }
-        found = set(self._selection)
+        chosen = set(self._selection)
+        # リンクも 1 度の走査で集める 1 本ずつ locate_clip で探すと、それ自体が
+        # 全クリップを舐めるので、全部を選んだときに 1 万 × 1 万回になる
+        links = (
+            {
+                clip.link_group
+                for track in timeline.tracks
+                for clip in track.clips
+                if clip.id in chosen and clip.link_group is not None
+            }
+            if chosen
+            else set()
+        )
+        found = set(chosen)
         if links:
             found.update(
                 clip.id
