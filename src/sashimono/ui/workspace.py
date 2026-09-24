@@ -231,6 +231,11 @@ class Preferences:
     #: 既定は上 Qt の既定の下だと、パネルの名前を探して窓の一番下まで目を動かすことになり、
     #: タブがあること自体に気付かない人がいた（Issue #27） 下の方が見慣れた人は戻せる
     dock_tabs: str = DOCK_TABS_TOP
+    #: タイムラインのクリップの上に、不透明度（絵）と音量（音）の線を出して直接動かせるようにする
+    #: 既定は出す 設定パネルを開かずにフェードや音量を決められることを、知らない人ほど線を
+    #: 見て気付く サムネイルや波形に線が重なるのが目障りな人、クリップの真ん中を掴んで動かす
+    #: つもりで線を掴んでしまう人は切れるようにする
+    value_lines: bool = True
 
     def prefetch_bytes(self) -> int:
         """先読みに使えるバイト数 切ってあれば 0
@@ -293,6 +298,7 @@ class PreferenceStore:
             media_view=_choice(data.get("media_view"), VIEW_MODES, plain.media_view),
             match_video=_choice(data.get("match_video"), MATCH_MODES, plain.match_video),
             dock_tabs=_choice(data.get("dock_tabs"), DOCK_TAB_POSITIONS, plain.dock_tabs),
+            value_lines=_flag(data.get("value_lines"), plain.value_lines),
         )
 
     def save(self, preferences: Preferences) -> None:
