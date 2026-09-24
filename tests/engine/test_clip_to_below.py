@@ -134,9 +134,7 @@ def test_a_clipped_script_reads_the_screen_below(gl_context: OffscreenGLContext)
         assert definition is not None
         base = Project.create(SETTINGS)
         square = Clip(timeline_start=0, duration=10, source=_shape((0.0, 0.0, 1.0, 1.0), 20.0))
-        copied = replace(
-            custom_object_clip(definition.create(), duration=10), clip_to_below=True
-        )
+        copied = replace(custom_object_clip(definition.create(), duration=10), clip_to_below=True)
         tracks = (
             Track(TrackKind.VIDEO, "V1", (square,)),
             Track(TrackKind.VIDEO, "V2", (copied,)),
