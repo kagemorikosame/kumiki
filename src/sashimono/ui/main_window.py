@@ -313,8 +313,9 @@ class MainWindow(QMainWindow):
         #: 控えと解析の進み具合を出していたか 終わったことを 1 度だけ知らせるため
         self._background_shown = False
 
-        # タブの向きはパネルを重ねる前に決める 重ねた後で変えると、Qt が前の向きの
-        # タブの並びを残したまま新しい並びを作り、同じタブが上と下に 2 つ出る
+        # タブの向きはパネルを重ねる前に決める Qt は重ねたときに使わないタブの並びを
+        # 1 つ作って残し、それは作った時の向きのまま変わらない（ほかの部品の下に隠れて
+        # 見えはしない） 先に決めておけば、残った物まで同じ向きでそろう
         apply_dock_tabs(self, self._preferences.dock_tabs)
         self._build_widgets()
         self._build_menus()
