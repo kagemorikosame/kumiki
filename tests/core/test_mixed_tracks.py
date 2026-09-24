@@ -19,10 +19,13 @@ from sashimono.core.commands import (
     GroupClips,
     MoveClip,
     MoveClips,
+    MoveTrack,
     RippleCut,
+    SetFrameRate,
     SetLayerMode,
     SplitClip,
     TrimClip,
+    reorder_group,
 )
 from sashimono.core.io import ProjectFileError, project_from_dict, project_to_dict
 from sashimono.core.io.serialize import FORMAT_VERSION
@@ -419,6 +422,47 @@ def test_a_layer_can_be_added(mixed_project: Project) -> None:
     track = Track(TrackKind.MIXED, "レイヤー 3")
     added = AddTrack(track).apply(mixed_project)
     assert added.timeline.tracks[-1].kind is TrackKind.MIXED
+
+
+class TestTrackOrderAndFormat:
+    """並べ替え（MoveTrack）とフレームレートの変更（SetFrameRate）が混合トラックでも効くこと"""
+
+    def test_layers_reorder_among_layers(self) -> None:
+        # 映像トラックとまたがせると、画面で落とした所と違う場所に出る
+        l1, v1, l2, a1 = (
+            Track(TrackKind.MIXED, "レイヤー 1"),
+            Track(TrackKind.VIDEO, "V1"),
+            Track(TrackKind.MIXED, "レイヤー 2"),
+            Track(TrackKind.AUDIO, "A1"),
+        )
+        project = Project.create().with_timeline(Timeline(rate=RATE, tracks=(l1, v1, l2, a1)))
+        assert [t.name for t in reorder_group(project.timeline, l1)] == ["レイヤー 1", "レイヤー 2"]
+        moved = MoveTrack(l1.id, 1).apply(project)
+        # 映像トラックと音声トラックの席は動かない レイヤーの席だけが入れ替わる
+        assert _names(moved.timeline.tracks) == ["レイヤー 2", "V1", "レイヤー 1", "A1"]
+        # 並びが重なり順なので、動かしたレイヤーが手前へ出る
+        assert _names(moved.timeline.active_picture_tracks()) == ["レイヤー 2", "V1", "レイヤー 1"]
+
+    def test_in_mixed_mode_every_track_is_a_partner(self, mixed_project: Project) -> None:
+        # レイヤーだけの作品では全部を並べ替えられる 仲間が欠けると、動かせない行が出る
+        layers = tuple(t for t in mixed_project.timeline.tracks if t.kind is TrackKind.MIXED)
+        only = mixed_project.with_timeline(replace(mixed_project.timeline, tracks=layers))
+        assert reorder_group(only.timeline, layers[1]) == layers
+
+    def test_the_rate_changes_with_layers_kept(self) -> None:
+        # 空のプロジェクトでレートを変えたときに、レイヤーや方式が落ちると置き方が変わる
+        base = SetLayerMode(LayerMode.MIXED).apply(Project.create())
+        layer = Track(TrackKind.MIXED, "レイヤー 1")
+        project = AddTrack(layer).apply(base)
+        changed = SetFrameRate(FrameRate(60)).apply(project)
+        assert changed.rate == FrameRate(60)
+        assert [t.kind for t in changed.timeline.tracks] == [TrackKind.MIXED]
+        assert changed.settings.layer_mode == LayerMode.MIXED
+
+    def test_the_rate_is_locked_once_a_layer_has_a_clip(self, mixed_project: Project) -> None:
+        # 混合トラックのクリップを数え忘れると、置いた動画の長さと位置が黙って換算される
+        with pytest.raises(ValueError, match="フレームレート"):
+            SetFrameRate(FrameRate(60)).apply(mixed_project)
 
 
 def _set_clip(project: Project, clip: Clip) -> Project:
