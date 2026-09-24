@@ -18,6 +18,7 @@ from fractions import Fraction
 from typing import cast
 
 from sashimono.core.commands.base import Command
+from sashimono.core.commands.fixed import fixed_slot, loose_slot
 from sashimono.core.model import (
     AnimatedValue,
     Clip,
@@ -267,7 +268,15 @@ class ClearKeyframes(Command):
 
 @dataclass(frozen=True, slots=True)
 class AddEffect(Command):
-    """クリップにエフェクトを積む ``index`` が ``None`` なら末尾"""
+    """クリップにエフェクトを積む
+
+    ``index`` が ``None`` なら、ふつうのエフェクトは最初の固定の項目（位置・反転・音量）の
+    前へ入る（:func:`~sashimono.core.commands.fixed.loose_slot`） YMM4 と同じく、足した
+    エフェクトを掛けてから置く 末尾へ積むと、足したぼかしが置いた後の絵に掛かり、
+    YMM4 で同じ設定にした絵と違う
+    固定の項目を足すとき（前の版のファイルで欄が無かった物を、触ったときに足す）は、
+    固定の項目どうしの並び（反転 → 配置 → 音量 → フェード）の所へ入る
+    """
 
     clip_id: ClipId
     effect: Effect
@@ -282,7 +291,13 @@ class AddEffect(Command):
     def apply(self, project: Project) -> Project:
         def update(clip: Clip) -> Clip:
             effects = list(stack_of(clip, self.after))
-            effects.insert(len(effects) if self.index is None else self.index, self.effect)
+            if self.index is not None:
+                position = self.index
+            elif self.effect.fixed:
+                position = fixed_slot(effects, self.effect.kind)
+            else:
+                position = loose_slot(effects)
+            effects.insert(position, self.effect)
             return with_stack(clip, self.after, tuple(effects))
 
         return _update_clip(project, self.clip_id, update)
@@ -417,7 +432,18 @@ class SetClipProperty(Command):
     #: 検査なしで壊せてしまう
     #: ``hold_at`` はインスペクタの「解除」が ``None`` を書く 止める時刻の値そのものは
     #: 素材の中の時刻なので、検査はクリップ自身（負を断る）に任せる
-    ALLOWED = ("blend_mode", "speed", "enabled", "stream_index", "hold_at")
+    #: ``source_in``（再生開始位置）・``clip_to_below``（クリッピング）・``native_size``
+    #: （素材の画素で置く）は設定パネルの描画・動画・音声の組から変える
+    ALLOWED = (
+        "blend_mode",
+        "speed",
+        "enabled",
+        "stream_index",
+        "hold_at",
+        "source_in",
+        "clip_to_below",
+        "native_size",
+    )
 
     @property
     def label(self) -> str:
@@ -430,6 +456,14 @@ class SetClipProperty(Command):
             # 整数や小数を通すと、モデルには入るが保存の所で分数として書けずに落ちる
             # 保存できないプロジェクトを作るより、変える所で断る
             raise ValueError(f"絵を止める時刻は分数か None: {self.value!r}")
+        if self.name in ("source_in", "speed") and not isinstance(self.value, Fraction | int):
+            # 小数のまま入れると保存で分数に直せず落ちる（hold_at と同じ） 負や 0 の検査は
+            # クリップ自身が行う
+            raise ValueError(f"{self.name} は分数: {self.value!r}")
+        if self.name in ("clip_to_below", "native_size", "enabled") and not isinstance(
+            self.value, bool
+        ):
+            raise ValueError(f"{self.name} は真偽: {self.value!r}")
         return _update_clip(
             project, self.clip_id, lambda clip: _replace_named(clip, **{self.name: self.value})
         )

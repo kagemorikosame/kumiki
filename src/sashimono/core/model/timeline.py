@@ -184,6 +184,14 @@ class Clip:
     group_id: GroupId | None = None
     enabled: bool = True
     id: ClipId = field(default_factory=new_clip_id)
+    #: 素材の絵を素材の画素の大きさで置くか 偽なら縦横比を保って画面に収める
+    #:
+    #: YMM4 と AviUtl は拡大率 100% を素材の画素で置く 素材を置くときと互換の読み込みは
+    #: 真にする 既定を偽にしてあるのは、項目を持たない前の版のファイルを、そのころの
+    #: 描き方（画面に収める）のまま開くため 既定で真にすると、開いただけで小さい素材が
+    #: 縮み、大きい素材が画面からはみ出す 素材を持たないクリップ（テキスト・図形）は
+    #: 画面の大きさで作るので、どちらでも同じ
+    native_size: bool = False
 
     def __post_init__(self) -> None:
         if self.duration <= 0:

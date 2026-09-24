@@ -112,8 +112,14 @@ class EffectProcessor:
 
         無ければ中間バッファを経由せず、素材をそのまま合成できる エフェクトの
         無いクリップで全画面のパスが 1 回増えるのは、そのまま再生の余裕を削る
+        既定のままの配置と反転（:meth:`EffectDefinition.is_idle`）は数えない 置いた
+        クリップすべてに付くので、数えると全クリップが中間バッファを通る
         """
-        return any(self._compile(effect) is not None for effect in effects if effect.enabled)
+        return any(
+            self._compile(effect) is not None and not _idle(effect)
+            for effect in effects
+            if effect.enabled
+        )
 
     def apply(
         self,
@@ -171,11 +177,17 @@ class EffectProcessor:
         #: 開いている部分フィルタ 後ろのエフェクトはこの範囲の中だけに効く
         scope: tuple[_Compiled, Effect] | None = None
         for effect in effects:
-            if not effect.enabled:
+            # 何もしない値の物はパスを通さない 通すと 1 回ごとに画素を読み直すだけ遅くなる
+            if not effect.enabled or _idle(effect):
                 continue
             compiled = self._compile(effect)
             if compiled is None:
                 continue
+            if effect.fixed and scope is not None:
+                # クリップが最初から持つ欄（配置・反転）は範囲の外にある 閉じずに掛けると、
+                # 部分フィルタを足したクリップの X を動かしたとき、範囲の中の絵だけが動く
+                self._close_scope(*scope, frame=frame, fps=fps)
+                scope = None
             if compiled.definition.scopes_following:
                 # 次の部分フィルタで前の範囲を閉じる 入れ子にしないのは AviUtl の
                 # 部分フィルタと同じ 入れ子にすると、並びだけ見てどこまで効くか読めない
@@ -426,6 +438,12 @@ class EffectProcessor:
 
         self._programs[effect.kind] = compiled
         return compiled
+
+
+def _idle(effect: Effect) -> bool:
+    """絵を何も変えない値のエフェクトか（既定のままの配置と反転）"""
+    definition = registry.get(effect.kind)
+    return definition is not None and definition.is_idle(effect)
 
 
 def _number(definition: EffectDefinition, effect: Effect, name: str, frame: int) -> float:

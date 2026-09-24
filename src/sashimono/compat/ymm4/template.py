@@ -600,8 +600,10 @@ def _with_group_effects(
     """
     known = item.has_span or span <= 1
     duration = item.clip.duration if known else span
+    # 入れ物の描画の欄は、中身へ移すとふつうのエフェクトになる 中身は自分の欄を持っているので、
+    # 印を残すと同じ種類の欄が 2 つ並び、どちらがパネルの欄か決まらない
     moved = [
-        fitted_effect(effect, container.length, duration)
+        replace(fitted_effect(effect, container.length, duration), fixed=False)
         for container in containers
         for effect in container.effects
     ]
@@ -664,7 +666,7 @@ def _video_chain(
     flip = _flip(item)
     if lazy is None:
         video = map_video_effects(entries, log, length=length, keyframes=keyframes)
-        final = [*flip, *_placement(item, length, keyframes, video.pivot)]
+        final = _fixed([*flip, *_placement(item, length, keyframes, video.pivot)])
         return video.params, list(video.effects), final
 
     marker = entries[lazy]
@@ -678,9 +680,21 @@ def _video_chain(
                 early[key] = item.get(key, _RESTING[key])
                 late[key] = _RESTING[key]
     placed_early = _placement(early, length, keyframes, first.pivot)
-    final = [*flip, *_placement(late, length, keyframes, rest.pivot or first.pivot)]
+    final = _fixed([*flip, *_placement(late, length, keyframes, rest.pivot or first.pivot)])
     params = {**first.params, **rest.params}
     return params, [*first.effects, *placed_early, *rest.effects], final
+
+
+def _fixed(final: list[Effect]) -> list[Effect]:
+    """アイテムの描画の欄（反転と最後の配置）に、クリップが最初から持つ項目の印を付ける
+
+    YMM4 の描画の X・Y・拡大率・回転角・左右反転は、アイテムが最初から持つ欄 置くとき
+    （:func:`sashimono.compat.catalog.place`）に同じ種類をもう 1 つ足さないよう、ここで
+    印を付ける 既定のままで写さなかった欄は、置くときに既定の値で足される
+    描画を遅らせる印の所で先に当てる配置（``placed_early``）は欄ではなく並びの途中の
+    効果なので、印を付けない
+    """
+    return [replace(effect, fixed=True) for effect in final]
 
 
 def _flip(item: dict[str, Any]) -> list[Effect]:
@@ -767,6 +781,9 @@ def _map_item(item: dict[str, Any], log: CompatibilityReport) -> MappedObject | 
             blend_mode=_blend_of(item, log),
             # 上のオブジェクト（すぐ下に描かれる層）の形で切り抜く
             clip_to_below=item.get("IsClippingWithObjectAbove") is True,
+            # YMM4 は画像・動画を拡大率 100% で素材の画素の大きさに置く 画面に収めると、
+            # 画面と違う解像度の素材がテンプレートの拡大率のまま別の大きさになる
+            native_size=bool(media_path) and source is None,
         ),
         # YMM4 のレイヤーは 0 始まり こちらのトラックは 1 始まり
         layer=max(1, int(number(item.get("Layer"), 0.0)) + 1),
@@ -888,7 +905,12 @@ def _audio_effects(
         # 何を変えたテンプレートなのかが設定画面から読めなくなる
         return ()
     definition = registry.get("audio_volume")
-    return () if definition is None else (definition.create(volume=volume, pan=pan),)
+    # 音量とパンはアイテムの音声の欄 置くときに同じ種類を足さないよう印を付ける
+    return (
+        ()
+        if definition is None
+        else (replace(definition.create(volume=volume, pan=pan), fixed=True),)
+    )
 
 
 def _playback_rate(
