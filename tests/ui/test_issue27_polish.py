@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import gc
 import threading
 import time
 from collections.abc import Iterator
@@ -33,6 +34,7 @@ from PySide6.QtWidgets import (
     QTabBar,
     QTabWidget,
     QToolTip,
+    QWidget,
 )
 
 from sashimono import selfcheck
@@ -101,6 +103,7 @@ class TestQtTranslation:
             | QMessageBox.StandardButton.Cancel
         )
         texts = {button.text() for button in box.buttons()}
+        _dispose(box)
         assert not texts & {"Save", "Discard", "Cancel", "&Save", "&Discard"}
         assert "キャンセル" in texts
 
@@ -110,7 +113,9 @@ class TestQtTranslation:
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Close
         )
-        assert {b.text() for b in buttons.buttons()} == {"キャンセル", "閉じる"}
+        texts = {b.text() for b in buttons.buttons()}
+        _dispose(buttons)
+        assert texts == {"キャンセル", "閉じる"}
 
     def test_installing_twice_does_not_stack(self, qt_application: QApplication) -> None:
         # 2 回目で同じ翻訳を重ねると、外すときに片方だけ残る
@@ -151,6 +156,10 @@ class TestToolTip:
     ) -> None:
         # Windows の暗い配色では、補足の地も文字も暗くなって読めなかった
         # OS の配色がどうであっても、スタイルシートの色で描かれること
+        # アプリ全体へスタイルシートを当てる前に、前の試験が捨てた窓を片付けておく
+        # 捨てた MainWindow にスタイルシートが当たってから GC が壊すと、GPU の無い CI で
+        # プロセスごと落ちる（#149）
+        gc.collect()
         saved_palette, saved_sheet = qt_application.palette(), qt_application.styleSheet()
         saved_tip = QToolTip.palette()
         dark = QPalette(saved_palette)
@@ -179,7 +188,7 @@ class TestToolTip:
                     name = image.pixelColor(x, y).name()
                     colors[name] = colors.get(name, 0) + 1
             QToolTip.hideText()
-            anchor.close()
+            _dispose(anchor)
         finally:
             qt_application.setStyleSheet(saved_sheet)
             qt_application.setPalette(saved_palette)
@@ -203,6 +212,27 @@ def window(qt_application: QApplication) -> Iterator[MainWindow]:
     created.close()
 
 
+def _dispose(widget: QWidget) -> None:
+    """親の無い部品をその場で壊す
+
+    Python の片付け（GC）に任せると、後の試験の途中の好きな所で壊され、CI でだけ
+    プロセスごと落ちることがあった どこで壊れたかが分かるよう、使い終えた所で壊す
+    """
+    widget.close()
+    shiboken6.delete(widget)
+
+
+def _show_without_gl(window: MainWindow) -> None:
+    """プレビューを隠してから窓を出す タブの並びを確かめるだけなので GL は要らない
+
+    GPU の無い CI では、プレビュー（GL の部品）を 1 度でも出した窓を閉じて片付けると、
+    プロセスごと落ちた（access violation 手元の GPU のある機械では起きない #149 と同じ筋）
+    隠したままなら GL の初期化が走らない
+    """
+    window._preview.hide()
+    window.show()
+
+
 def _tab_positions(window: MainWindow) -> set[QTabBar.Shape]:
     """見えているタブの並びの向き
 
@@ -219,7 +249,7 @@ def _tab_positions(window: MainWindow) -> set[QTabBar.Shape]:
 class TestDockTabs:
     def test_stacked_panels_show_their_tabs_on_top(self, window: MainWindow) -> None:
         # Qt の既定では下に出て、パネルを切り替えられることに気付かない
-        window.show()
+        _show_without_gl(window)
         QApplication.processEvents()
         assert _tab_positions(window) == {QTabBar.Shape.RoundedNorth}
         window.hide()
@@ -227,7 +257,7 @@ class TestDockTabs:
     def test_the_preference_puts_them_back_at_the_bottom(self, window: MainWindow) -> None:
         # 下が見慣れた人が戻せないと、設定がある意味が無い
         window._apply_preferences(replace(window._preferences, dock_tabs=DOCK_TABS_BOTTOM))
-        window.show()
+        _show_without_gl(window)
         QApplication.processEvents()
         assert _tab_positions(window) == {QTabBar.Shape.RoundedSouth}
         assert window.tabPosition(window.dockWidgetArea(window._subtitle_dock)) == (
@@ -238,7 +268,7 @@ class TestDockTabs:
     def test_switching_while_open_leaves_no_second_row_of_tabs(self, window: MainWindow) -> None:
         # 重ねた後で向きを変えると、前の向きのタブが残って上下に 2 つ出ないか
         # 見える所に出ているタブの並びを、隅々まで点で当たって確かめる
-        window.show()
+        _show_without_gl(window)
         for position, shape in (
             (DOCK_TABS_BOTTOM, QTabBar.Shape.RoundedSouth),
             (DOCK_TABS_TOP, QTabBar.Shape.RoundedNorth),
@@ -275,7 +305,9 @@ class TestDockTabs:
         # 設定を開いて OK を押しただけで下に選んだ物が上へ戻ると、選び直すことになる
         del qt_application
         dialog = PreferencesDialog(Preferences(dock_tabs=DOCK_TABS_BOTTOM))
-        assert dialog.preferences().dock_tabs == DOCK_TABS_BOTTOM
+        chosen = dialog.preferences().dock_tabs
+        _dispose(dialog)
+        assert chosen == DOCK_TABS_BOTTOM
 
 
 class _FakePlayer:
@@ -332,6 +364,7 @@ class TestPlaybackEnd:
         assert controller.frame == 90
         assert frames[-1] == 90
         assert not controller.is_playing
+        controller.close()
 
     def test_a_device_that_dies_midway_stops_where_it_was(
         self, monkeypatch: pytest.MonkeyPatch
@@ -345,6 +378,7 @@ class TestPlaybackEnd:
         controller._tick()
         assert controller.frame == 30
         assert not controller.is_playing
+        controller.close()
 
 
 class _FakeStream:
