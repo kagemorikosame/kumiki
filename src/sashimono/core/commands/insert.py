@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import re
+from dataclasses import replace
 from fractions import Fraction
 
 from sashimono.core.commands.base import Command
@@ -22,6 +24,7 @@ from sashimono.core.model import (
     MediaItem,
     Project,
     Track,
+    TrackId,
     TrackKind,
     new_group_id,
 )
@@ -30,9 +33,13 @@ from sashimono.core.timebase import Rounding, seconds_to_frame
 __all__ = [
     "DEFAULT_GENERATED_FRAMES",
     "DEFAULT_STILL_FRAMES",
+    "EFFECT_TRACK_PREFIX",
+    "insert_clip",
     "insert_filter",
     "insert_generated",
     "insert_media",
+    "is_effect_track",
+    "new_track",
 ]
 
 #: 静止画をタイムラインへ置くときの既定の長さ（フレーム）
@@ -41,6 +48,11 @@ DEFAULT_STILL_FRAMES = 150
 
 #: テキストや図形を置くときの既定の長さ（フレーム） 30fps で 5 秒
 DEFAULT_GENERATED_FRAMES = 150
+
+#: エフェクトトラック（:func:`new_track`）の名前の頭
+EFFECT_TRACK_PREFIX = "FX"
+
+_EFFECT_TRACK_NAME = re.compile(rf"{EFFECT_TRACK_PREFIX}\d+")
 
 
 def insert_media(
@@ -128,29 +140,65 @@ def _find_or_create(project: Project, kind: TrackKind, commands: list[Command]) 
     return track
 
 
+def new_track(project: Project, kind: TrackKind, *, effect: bool = False) -> AddTrack:
+    """空のトラックを 1 本足すコマンド 映像は一番上、音声は一番下へ入る
+
+    トラックの並びの末尾へ足す 映像は並びの後ろほど手前（上）に重なり、音声は後ろほど
+    下に並ぶ（:meth:`~sashimono.ui.timeline.layout.TimelineLayout.bands`） 読み込みや
+    フィルタが新しく作るトラックと同じ所なので、足したトラックの位置が操作ごとに変わらない
+
+    ``effect`` はフィルタを置くための映像トラック（エフェクトトラック） 形式は変えず、
+    名前（``FX1`` など）で見分ける 映像トラックと別の種類にすると、読み込み・書き出し・
+    互換の読み込みまですべてが新しい種類を知る必要があり、古い版で開けなくなる
+    一番上に入るので、置いたフィルタがほかの映像トラックすべてに掛かる
+
+    ソロで絞っている種類なら、足すトラックにもソロを付ける 付けないと足した所で外れ、
+    置いたクリップが出ない（:func:`_filter_track` と同じ決まり）
+    """
+    if effect and kind is not TrackKind.VIDEO:
+        raise ValueError("エフェクトトラックは映像トラックとして作る")
+    same = [t for t in project.timeline.tracks if t.kind is kind]
+    names = {t.name for t in project.timeline.tracks}
+    if effect:
+        prefix = EFFECT_TRACK_PREFIX
+        number = sum(1 for t in same if is_effect_track(t)) + 1
+    else:
+        prefix = "V" if kind is TrackKind.VIDEO else "A"
+        number = len(same) + 1
+    # 消したトラックの名前が残っていると同じ名前が 2 本並ぶ 空いている番号まで進める
+    while f"{prefix}{number}" in names:
+        number += 1
+    soloed = any(t.solo and not t.muted for t in same)
+    return AddTrack(Track(kind=kind, name=f"{prefix}{number}", solo=soloed))
+
+
+def is_effect_track(track: Track) -> bool:
+    """フィルタを置くために足した映像トラックか（名前が ``FX`` と番号）"""
+    return track.kind is TrackKind.VIDEO and _EFFECT_TRACK_NAME.fullmatch(track.name) is not None
+
+
 def insert_generated(
     project: Project,
     source: GeneratedSource,
     *,
     at_frame: int | None = None,
     duration: int = DEFAULT_GENERATED_FRAMES,
+    track_id: TrackId | None = None,
 ) -> list[Command]:
     """テキストや図形をタイムラインへ置く
 
     素材を持たないので、置く先は必ず映像トラック 既存のクリップと重ならない
     よう、指定位置に空きが無ければ新しいトラックを作る テロップは元の映像に
     重ねたいのが普通で、既存クリップを避けて後ろへ並べるのは意図と違う
+
+    ``track_id`` は置きたいトラック（右クリックした所） 置けなければいつもの決まりで選ぶ
     """
-    commands: list[Command] = []
-    start = project.duration if at_frame is None else max(0, at_frame)
-    track = _free_video_track(project, start, duration, commands)
-    commands.append(
-        AddClip(
-            track.id,
-            Clip(timeline_start=start, duration=duration, source=source),
-        )
+    return insert_clip(
+        project,
+        Clip(timeline_start=0, duration=duration, source=source),
+        at_frame=at_frame,
+        track_id=track_id,
     )
-    return commands
 
 
 def insert_filter(
@@ -159,8 +207,69 @@ def insert_filter(
     at_frame: int | None = None,
     duration: int = DEFAULT_GENERATED_FRAMES,
     effects: tuple[Effect, ...] = (),
+    track_id: TrackId | None = None,
 ) -> list[Command]:
     """フィルタのクリップ（:data:`~sashimono.core.model.FILTER_KIND`）を置く
+
+    置き先の決め方は :func:`_filter_track` ``track_id`` は :func:`insert_generated` と同じ
+    """
+    return insert_clip(
+        project,
+        Clip(
+            timeline_start=0,
+            duration=duration,
+            source=GeneratedSource(kind=FILTER_KIND),
+            effects=effects,
+        ),
+        at_frame=at_frame,
+        track_id=track_id,
+    )
+
+
+def insert_clip(
+    project: Project,
+    clip: Clip,
+    *,
+    at_frame: int | None = None,
+    track_id: TrackId | None = None,
+) -> list[Command]:
+    """素材を持たないクリップ（生成オブジェクト・フィルタ・シーン）を、中身のまま置く
+
+    位置だけを ``at_frame``（省けば末尾）へ移す 長さ・エフェクト・不透明度はそのまま
+    保存したエイリアスも、テキストやフィルタと同じ決まりで置き先が決まる
+
+    ``track_id`` を渡すと、そのトラックが映像でロックされておらず、範囲が空いていれば
+    そこへ置く 右クリックした所へ置かないと、どのトラックに入ったのかを探すことになる
+    置けないとき（音声のトラック・埋まっている所）は断らず、いつもの決まりで選ぶ
+    """
+    commands: list[Command] = []
+    start = project.duration if at_frame is None else max(0, at_frame)
+    placed = replace(clip, timeline_start=start)
+    track = _wanted_track(project, track_id, start, placed.timeline_end)
+    if track is None:
+        track = (
+            _filter_track(project, start, placed.timeline_end, commands)
+            if placed.is_filter
+            else _free_video_track(project, start, placed.duration, commands)
+        )
+    commands.append(AddClip(track.id, placed))
+    return commands
+
+
+def _wanted_track(project: Project, track_id: TrackId | None, start: int, end: int) -> Track | None:
+    """頼まれたトラックへ ``[start, end)`` を置けるならそのトラック 置けなければ ``None``"""
+    if track_id is None:
+        return None
+    track = project.timeline.find_track(track_id)
+    if track is None or track.kind is not TrackKind.VIDEO or track.locked:
+        return None
+    if any(clip.overlaps(start, end) for clip in track.clips):
+        return None
+    return track
+
+
+def _filter_track(project: Project, start: int, end: int, commands: list[Command]) -> Track:
+    """フィルタを置くトラック 無ければ作るコマンドを ``commands`` へ積んで返す
 
     フィルタはそれより**下**のトラックにしか効かない テキストや図形と同じく下から
     空きを探すと、範囲にある絵より下へ入り、置いたのに何も変わらないことがある
@@ -171,9 +280,6 @@ def insert_filter(
     効かない 絵の有無も、描かれないトラックの物は数えない（見えない絵より上に置く理由が無い）
     ソロで絞っている間に新しく作るトラックは、ソロを付けて作る 付けないと作った所で外れる
     """
-    commands: list[Command] = []
-    start = project.duration if at_frame is None else max(0, at_frame)
-    end = start + duration
     timeline = project.timeline
     video = list(timeline.video_tracks())
     drawn = {track.id for track in timeline.active_tracks(TrackKind.VIDEO)}
@@ -200,18 +306,7 @@ def insert_filter(
         track = Track(kind=TrackKind.VIDEO, name=f"V{len(video) + 1}", solo=soloed)
         # 末尾へ足す 映像トラックの重ね順は並びの順なので、末尾が一番上になる
         commands.append(AddTrack(track))
-    commands.append(
-        AddClip(
-            track.id,
-            Clip(
-                timeline_start=start,
-                duration=duration,
-                source=GeneratedSource(kind=FILTER_KIND),
-                effects=effects,
-            ),
-        )
-    )
-    return commands
+    return track
 
 
 def _free_video_track(

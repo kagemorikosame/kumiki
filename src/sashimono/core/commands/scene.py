@@ -11,9 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 
 from sashimono.core.commands.base import Command
-from sashimono.core.commands.edit import AddClip
-from sashimono.core.commands.insert import _free_video_track
-from sashimono.core.model import Clip, MediaId, Project, Scene, SceneId, Timeline
+from sashimono.core.commands.insert import insert_clip
+from sashimono.core.model import Clip, MediaId, Project, Scene, SceneId, Timeline, TrackId
 
 __all__ = [
     "DEFAULT_SCENE_FRAMES",
@@ -144,19 +143,19 @@ def insert_scene(
     *,
     at_frame: int,
     duration: int | None = None,
+    track_id: TrackId | None = None,
 ) -> list[Command]:
     """シーンを 1 本のクリップとしてタイムラインへ置く
 
     長さを省くとシーンの長さ（空なら既定の長さ） 置き先は、指定位置に空きのある
-    映像トラック（無ければ新しく作る） テキストを置くときと同じ決まり
+    映像トラック（無ければ新しく作る） テキストを置くときと同じ決まりで、``track_id`` も同じ
     """
     scene = project.require_scene(scene_id)
     length = duration if duration is not None else scene.timeline.duration
     length = max(1, length or DEFAULT_SCENE_FRAMES)
-    commands: list[Command] = []
-    start = max(0, at_frame)
-    track = _free_video_track(project, start, length, commands)
-    commands.append(
-        AddClip(track.id, Clip(timeline_start=start, duration=length, scene_id=scene_id))
+    return insert_clip(
+        project,
+        Clip(timeline_start=0, duration=length, scene_id=scene_id),
+        at_frame=max(0, at_frame),
+        track_id=track_id,
     )
-    return commands

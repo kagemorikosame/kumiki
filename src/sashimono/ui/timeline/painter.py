@@ -26,6 +26,8 @@ from sashimono.ui.theme import Colors, Metrics
 from sashimono.ui.timeline.layout import TimelineLayout, TrackBand
 
 __all__ = [
+    "ADD_TRACK_BUTTON_HEIGHT",
+    "ADD_TRACK_BUTTON_TEXT",
     "DETAIL_MIN_WIDTH",
     "TRACK_BUTTONS",
     "clips_in_range",
@@ -33,9 +35,11 @@ __all__ = [
     "draw_dense_clips",
     "draw_playhead",
     "draw_ruler",
+    "draw_track_add_button",
     "draw_track_background",
     "draw_track_header",
     "to_qimage",
+    "track_add_button_rect",
     "track_button_rects",
 ]
 
@@ -198,6 +202,46 @@ def draw_track_header(painter: QPainter, band: TrackBand, *, active: bool = True
         painter.drawRect(button.adjusted(0, 0, -1, -1))
         painter.setPen(QPen(Colors.WINDOW if on else Colors.TEXT_MUTED, 1))
         painter.drawText(button, Qt.AlignmentFlag.AlignCenter, letter)
+    painter.restore()
+
+
+#: 「＋ トラック追加」の高さと、最後のトラックとの間（画素）
+ADD_TRACK_BUTTON_HEIGHT = 22
+_ADD_TRACK_BUTTON_GAP = 6
+
+#: ボタンに出す文字 上に乗せたときの説明にも使う
+ADD_TRACK_BUTTON_TEXT = "＋ トラック追加"
+
+
+def track_add_button_rect(layout: TimelineLayout, timeline: Timeline) -> QRect | None:
+    """ヘッダの欄の、最後のトラックの下に置く「＋ トラック追加」の矩形
+
+    トラックの並びの続きに置く 欄の上や別のボタンに置くと、トラックを足す操作が
+    トラックを並べた所から離れ、何本あっても同じ所を探すことになる
+    縦に送って目盛りの下へ隠れたら ``None``（目盛りの上で押せてしまうと、
+    再生ヘッドを動かすつもりでトラックが増える）
+    """
+    bands = layout.bands(timeline)
+    bottom = bands[-1].bottom if bands else Metrics.RULER_HEIGHT - layout.scroll_y
+    rect = QRect(
+        _ADD_TRACK_BUTTON_GAP,
+        bottom + _ADD_TRACK_BUTTON_GAP,
+        Metrics.TRACK_HEADER_WIDTH - 2 * _ADD_TRACK_BUTTON_GAP,
+        ADD_TRACK_BUTTON_HEIGHT,
+    )
+    if rect.top() < Metrics.RULER_HEIGHT:
+        return None
+    return rect
+
+
+def draw_track_add_button(painter: QPainter, rect: QRect, *, hovered: bool = False) -> None:
+    """「＋ トラック追加」 M・S・L のボタンと同じ枠線の描き方にそろえる"""
+    painter.save()
+    painter.fillRect(rect, Colors.TRACK_HEADER)
+    painter.setPen(QPen(Colors.SELECTION if hovered else Colors.BORDER, 1))
+    painter.drawRect(rect.adjusted(0, 0, -1, -1))
+    painter.setPen(QPen(Colors.TEXT if hovered else Colors.TEXT_MUTED, 1))
+    painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, ADD_TRACK_BUTTON_TEXT)
     painter.restore()
 
 

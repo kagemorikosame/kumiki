@@ -43,19 +43,23 @@ from sashimono.core.commands import (
     UngroupClips,
 )
 from sashimono.core.commands.edit import DEFAULT_TRACK_HEIGHT, MAX_TRACK_HEIGHT, MIN_TRACK_HEIGHT
-from sashimono.core.model import Clip, ClipId, GroupId, Project, TrackId, TrackKind
+from sashimono.core.model import Clip, ClipId, GroupId, Project, SceneId, TrackId, TrackKind
 from sashimono.engine.cache import MediaAnalyzer
 from sashimono.ui.theme import Colors, Metrics
+from sashimono.ui.timeline.add_menu import AddSources, TimelineAddMenus
 from sashimono.ui.timeline.layout import TimelineLayout, TrackBand
 from sashimono.ui.timeline.painter import (
+    ADD_TRACK_BUTTON_TEXT,
     DETAIL_MIN_WIDTH,
     clip_rect_for,
     clips_in_range,
     draw_dense_clips,
     draw_playhead,
     draw_ruler,
+    draw_track_add_button,
     draw_track_background,
     draw_track_header,
+    track_add_button_rect,
     track_button_rects,
 )
 from sashimono.ui.timeline.painter import draw_clip as paint_clip
@@ -150,6 +154,10 @@ class TimelineView(QWidget):
     #: ビューは窓を知らない（テストで単体で作れるように） 知らせは信号で外へ出し、
     #: ステータスバーに出すのは窓の仕事にする
     status_message = Signal(str)
+    #: 右クリックの〔追加〕→〔エイリアス〕でテンプレートの棚の物を選んだ 引数は
+    #: :class:`~sashimono.compat.catalog.TemplateEntry`・置くフレーム・トラック（無ければ空）
+    #: 素材の読み込みと登録が要るので、置くのは窓の仕事（:meth:`MainWindow.show_templates` と同じ）
+    template_requested = Signal(object, int, str)
 
     def __init__(
         self, project: Project, analyzer: MediaAnalyzer, parent: QWidget | None = None
@@ -173,6 +181,12 @@ class TimelineView(QWidget):
         #: 高さのドラッグ中だけ持つ、掴む前のプロジェクト 途中の高さは描画のため
         #: だけに当て、離したときにこれへ戻してからコマンドを出す
         self._resize_base: Project | None = None
+        #: 右クリックの〔追加〕に並べる物の出どころ 試験で差し替える
+        self.add_sources = AddSources()
+        self._add_menus = TimelineAddMenus(self)
+        #: 開いているシーン（メインなら ``None``） 〔追加〕→〔シーン〕から自分自身を外す
+        self._open_scene: SceneId | None = None
+        self._add_button_hovered = False
 
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -300,6 +314,7 @@ class TimelineView(QWidget):
             if band.bottom <= Metrics.RULER_HEIGHT or band.top >= self.height():
                 continue
             draw_track_header(painter, band, active=band.track.id in active)
+        self._paint_add_button(painter)
 
         draw_ruler(painter, self._layout, width, self._project.rate)
         draw_playhead(painter, self._layout, self._playhead, self.height())
@@ -504,6 +519,8 @@ class TimelineView(QWidget):
 
         if self._toggle_track_button(position):
             return
+        if self._press_add_button(position):
+            return
 
         if position.y() < Metrics.RULER_HEIGHT or position.x() < Metrics.TRACK_HEADER_WIDTH:
             self._drag = DragState(kind=DragKind.PLAYHEAD)
@@ -569,6 +586,7 @@ class TimelineView(QWidget):
             self._update_cursor(position)
             button = self._track_button_at(position)
             self.setToolTip(button[1] if button is not None else "")
+            self._hover_add_button(position)
             return
 
         if self._drag.kind is DragKind.PLAYHEAD:
@@ -730,6 +748,8 @@ class TimelineView(QWidget):
             menu.addSeparator()
             _action(menu, f"コピー{count}", self.copy_selected)
             _action(menu, f"切り取り{count}", self.cut_selected)
+        else:
+            self._add_empty_items(menu, position)
         paste = _action(menu, "貼り付け（再生ヘッドの位置）", self.paste_at_playhead)
         paste.setEnabled(self._clipboard is not None)
         if hit is not None:
@@ -748,6 +768,10 @@ class TimelineView(QWidget):
                     "シーンを開く",
                     functools.partial(self.scene_open_requested.emit, str(scene_id)),
                 )
+            menu.addSeparator()
+            located = self._project.timeline.locate_clip(hit[1].id)
+            if located is not None:
+                self._add_menus.add_clip_items(menu, located[0], hit[1])
 
         band = (
             self._layout.band_at(self._project.timeline, position.y())
@@ -765,6 +789,7 @@ class TimelineView(QWidget):
                 toggle.setCheckable(True)
                 toggle.setChecked(bool(getattr(track, attribute)))
             _action(menu, f"{name} の高さを戻す", functools.partial(self._reset_height, track.id))
+        self._add_menus.add_track_items(menu, band.track if band is not None else None)
         return menu
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt の命名規約
@@ -1155,6 +1180,75 @@ class TimelineView(QWidget):
             if edge in (DragKind.TRIM_HEAD, DragKind.TRIM_TAIL)
             else Qt.CursorShape.OpenHandCursor
         )
+
+    # --- 足す（右クリックの〔追加〕と「＋ トラック追加」 中身は add_menu.py） ---
+
+    @property
+    def open_scene(self) -> SceneId | None:
+        return self._open_scene
+
+    def set_open_scene(self, scene_id: SceneId | None) -> None:
+        """開いているシーンを知らせる 〔追加〕→〔シーン〕から自分自身を外すのに使う"""
+        self._open_scene = scene_id
+
+    def request(self, commands: list[Command], label: str) -> None:
+        """コマンドを外へ出す（:attr:`commands_requested`） 空なら何もしない"""
+        self._request(commands, label)
+
+    def place(self, commands: list[Command], label: str) -> tuple[ClipId, ...]:
+        """クリップを置くコマンドを出し、置けたクリップを選ぶ
+
+        置いたものを選ばないと設定パネルが開かず、足したのに何も起きていないように見える
+        断られたら選ばない（受け取った側が戻しているので、プロジェクトに見つからない）
+        """
+        self._request(commands, label)
+        added = [c.clip.id for c in commands if isinstance(c, AddClip)]
+        landed = tuple(c for c in added if self._project.timeline.locate_clip(c) is not None)
+        if landed:
+            self.set_selection(landed)
+        return landed
+
+    def track_add_button(self) -> QRect | None:
+        """「＋ トラック追加」の矩形 見えていなければ ``None``"""
+        return track_add_button_rect(self._layout, self._project.timeline)
+
+    def build_track_add_menu(self) -> QMenu:
+        """「＋ トラック追加」を押したときのメニュー 表示と中身を分けてあるのはテストのため"""
+        return self._add_menus.track_add_menu(self)
+
+    def _add_empty_items(self, menu: QMenu, position: QPoint) -> None:
+        """空いた所の右クリックに〔追加〕を足す ヘッダと目盛りの上では足さない"""
+        if position.x() < Metrics.TRACK_HEADER_WIDTH or position.y() < Metrics.RULER_HEIGHT:
+            return
+        band = self._layout.band_at(self._project.timeline, position.y())
+        self._add_menus.add_empty_items(
+            menu,
+            self._layout.frame_at(position.x()),
+            band.track if band is not None else None,
+        )
+        menu.addSeparator()
+
+    def _paint_add_button(self, painter: QPainter) -> None:
+        rect = self.track_add_button()
+        if rect is not None and rect.top() < self.height():
+            draw_track_add_button(painter, rect, hovered=self._add_button_hovered)
+
+    def _press_add_button(self, position: QPoint) -> bool:
+        """「＋ トラック追加」の上なら、足す種類のメニューをボタンの下に出して真を返す"""
+        rect = self.track_add_button()
+        if rect is None or not rect.contains(position):
+            return False
+        self.build_track_add_menu().exec(self.mapToGlobal(rect.bottomLeft()))
+        return True
+
+    def _hover_add_button(self, position: QPoint) -> None:
+        rect = self.track_add_button()
+        hovered = rect is not None and rect.contains(position)
+        if hovered:
+            self.setToolTip(f"{ADD_TRACK_BUTTON_TEXT}（映像・音声・エフェクト）")
+        if hovered != self._add_button_hovered:
+            self._add_button_hovered = hovered
+            self.update()
 
 
 def _action(menu: QMenu, text: str, slot: Callable[[], object]) -> QAction:
