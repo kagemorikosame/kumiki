@@ -16,6 +16,10 @@ from pathlib import Path
 from PySide6.QtCore import QByteArray, QSettings, Qt
 from PySide6.QtWidgets import QMainWindow, QTabWidget
 
+from sashimono.ai.models import DEFAULT_EFFORT as DEFAULT_AI_EFFORT
+from sashimono.ai.models import DEFAULT_MODEL as DEFAULT_AI_MODEL
+from sashimono.ai.models import EFFORTS as AI_EFFORTS
+from sashimono.ai.models import MODELS as AI_MODELS
 from sashimono.core import userdirs
 from sashimono.engine.encode import DEFAULT_PIPELINE_DEPTH, MAX_PIPELINE_DEPTH
 from sashimono.engine.render import DEFAULT_DECODE_THREADS, MAX_DECODE_THREADS
@@ -221,6 +225,16 @@ class Preferences:
     #: 既定は一覧 名前と長さと大きさが 1 行で読めて、素材が何本あっても見渡せる
     #: 絵で選びたい人は一覧の上のボタンで切り替え、次に開いたときもそのままにする
     media_view: str = VIEW_LIST
+    #: アシスタントが使うモデル 空は Claude Code の既定に任せる
+    #: 既定を空にするのは、選べるようになる前と同じ動きにするため（アカウントに
+    #: よって使えるモデルが違い、決め打ちすると使えない人が出る）
+    ai_model: str = DEFAULT_AI_MODEL
+    #: アシスタントの考える深さ 空は Claude Code の既定
+    ai_effort: str = DEFAULT_AI_EFFORT
+    #: アシスタントの入力欄で Enter だけで送る 切ると Ctrl+Enter で送り、Enter は改行
+    #: 既定は入 チャットの多くが Enter で送る形で、知らない人はまずそう押す
+    #: 長い指示を何行も書く人が、うっかり途中で送らないように切れるようにする
+    chat_enter_sends: bool = True
     #: 空のプロジェクトへ最初の動画を置いたとき、プロジェクトの解像度とフレームレートを
     #: 動画に合わせるか 尋ねる（``ask``）・常に合わせる（``always``）・合わせない（``never``）
     #: 既定は尋ねる 黙って合わせると決まった形で作る人が困り、黙って合わせないと
@@ -231,6 +245,11 @@ class Preferences:
     #: 既定は上 Qt の既定の下だと、パネルの名前を探して窓の一番下まで目を動かすことになり、
     #: タブがあること自体に気付かない人がいた（Issue #27） 下の方が見慣れた人は戻せる
     dock_tabs: str = DOCK_TABS_TOP
+    #: タイムラインのクリップの上に、不透明度（絵）と音量（音）の線を出して直接動かせるようにする
+    #: 既定は出す 設定パネルを開かずにフェードや音量を決められることを、知らない人ほど線を
+    #: 見て気付く サムネイルや波形に線が重なるのが目障りな人、クリップの真ん中を掴んで動かす
+    #: つもりで線を掴んでしまう人は切れるようにする
+    value_lines: bool = True
 
     def prefetch_bytes(self) -> int:
         """先読みに使えるバイト数 切ってあれば 0
@@ -291,8 +310,14 @@ class PreferenceStore:
             pool_progress=_flag(data.get("pool_progress"), plain.pool_progress),
             all_aviutl_plugins=_flag(data.get("all_aviutl_plugins"), plain.all_aviutl_plugins),
             media_view=_choice(data.get("media_view"), VIEW_MODES, plain.media_view),
+            ai_model=_choice(data.get("ai_model"), tuple(m.id for m in AI_MODELS), plain.ai_model),
+            ai_effort=_choice(
+                data.get("ai_effort"), tuple(e.value for e in AI_EFFORTS), plain.ai_effort
+            ),
+            chat_enter_sends=_flag(data.get("chat_enter_sends"), plain.chat_enter_sends),
             match_video=_choice(data.get("match_video"), MATCH_MODES, plain.match_video),
             dock_tabs=_choice(data.get("dock_tabs"), DOCK_TAB_POSITIONS, plain.dock_tabs),
+            value_lines=_flag(data.get("value_lines"), plain.value_lines),
         )
 
     def save(self, preferences: Preferences) -> None:

@@ -379,6 +379,7 @@ class MainWindow(QMainWindow):
         )
         self._transport = TransportBar(project.rate, self)
         self._timeline = TimelineView(project, self._analyzer, self)
+        self._timeline.set_value_lines(self._preferences.value_lines)
         self._media_pool = MediaPoolWidget(project, self)
         self._inspector = InspectorPanel(self)
         # 設定パネルは選んだクリップを引くためにプロジェクトを持つ 起動直後にも渡す
@@ -747,6 +748,8 @@ class MainWindow(QMainWindow):
             # 次の間隔を待たずに外す 切ったのに行の後ろに古い割合が残って見える
             self._media_pool.set_progress({})
         self._media_pool.set_view_mode(preferences.media_view)
+        self._chat.apply_preferences(preferences)
+        self._timeline.set_value_lines(preferences.value_lines)
         apply_dock_tabs(self, preferences.dock_tabs)
         self._preview.set_proxies(self._proxies.store if preferences.use_proxy else None)
         self._preview.set_prefetch_bytes(preferences.prefetch_bytes())
@@ -800,6 +803,7 @@ class MainWindow(QMainWindow):
         )
         self._timeline.playhead_moved.connect(self._on_playhead_moved)
         self._timeline.template_requested.connect(self.place_template_entry)
+        self._timeline.preview_requested.connect(self._preview_command)
 
         self._media_pool.import_requested.connect(self.import_media)
         self._media_pool.insert_requested.connect(self._insert_media_by_id)
@@ -834,6 +838,12 @@ class MainWindow(QMainWindow):
 
         self._chat.status_message.connect(
             lambda message: self.statusBar().showMessage(message, 5000)
+        )
+        self._chat.apply_preferences(self._preferences)
+        self._chat.choices_changed.connect(
+            lambda model, effort: self._remember_preferences(
+                replace(self._preferences, ai_model=model, ai_effort=effort)
+            )
         )
 
         self._transport.play_toggled.connect(self._playback.toggle)
@@ -1463,7 +1473,11 @@ class MainWindow(QMainWindow):
 
     def _on_pool_view_changed(self, mode: str) -> None:
         """一覧の上のボタンで表示を切り替えた 好みの設定に書いて、次に開いたときも同じにする"""
-        self._preferences = replace(self._preferences, media_view=mode)
+        self._remember_preferences(replace(self._preferences, media_view=mode))
+
+    def _remember_preferences(self, preferences: Preferences) -> None:
+        """設定画面の外で選んだ好みを覚える 次に開いたときも同じにする"""
+        self._preferences = preferences
         try:
             PreferenceStore().save(self._preferences)
         except OSError as exc:

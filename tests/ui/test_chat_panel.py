@@ -7,15 +7,28 @@ Claude そのものは呼ばない パネルの仕事は「出来事を見せる
 from __future__ import annotations
 
 from collections.abc import Iterator
+from pathlib import Path
+from typing import ClassVar, cast
 
 import pytest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QInputMethodEvent, QTextCursor
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication, QComboBox, QWidget
 
-from sashimono.ai.bridge import Approval
-from sashimono.ai.session import AgentEvent, EventKind
-from sashimono.core.commands import SplitClip
-from sashimono.core.model import MediaItem, Project, Transcript
+from sashimono.ai.bridge import Approval, EditorBridge
+from sashimono.ai.models import MODELS
+from sashimono.ai.session import (
+    SYSTEM_PROMPT,
+    AgentEvent,
+    AgentSession,
+    EventKind,
+    system_prompt,
+)
+from sashimono.core.commands import SetLayerMode, SplitClip
+from sashimono.core.model import LayerMode, MediaItem, Project, Transcript
 from sashimono.ui.chat import ChatPanel
+from sashimono.ui.workspace import Preferences
 from tests.ai.conftest import FakeHost, make_loaded
 
 
@@ -216,3 +229,380 @@ class TestFormatting:
 
         rendered = _to_html("<b>これは太字にしない</b>")
         assert "&lt;b&gt;" in rendered
+
+
+def _ready(monkeypatch: pytest.MonkeyPatch) -> None:
+    """導入が済んだことにする 本物の SDK と claude の有無に左右されないように"""
+    from sashimono.ai import AI_PACK
+    from sashimono.runtime import PackageStatus, PackStatus
+    from sashimono.ui.setup import SetupSection
+
+    status = PackStatus(pack=AI_PACK, packages=(PackageStatus("claude-agent-sdk", "0.2.152"),))
+    monkeypatch.setattr(SetupSection, "status", property(lambda _self: status))
+
+
+def _press(widget: QWidget, key: Qt.Key, modifiers: Qt.KeyboardModifier) -> None:
+    QTest.keyClick(widget, key, modifiers)
+
+
+class TestSendKey:
+    """Enter で送り、Shift+Enter で改行する 日本語の変換を確定する Enter では送らない"""
+
+    @pytest.fixture
+    def typed(self, panel: tuple[ChatPanel, FakeHost]) -> tuple[ChatPanel, list[bool]]:
+        widget, _ = panel
+        sent: list[bool] = []
+        widget._input.submitted.disconnect()
+        widget._input.submitted.connect(lambda: sent.append(True))
+        widget._input.setEnabled(True)
+        widget._input.setPlainText("冒頭を切って")
+        widget._input.moveCursor(QTextCursor.MoveOperation.End)
+        return widget, sent
+
+    def test_enter_sends(self, typed: tuple[ChatPanel, list[bool]]) -> None:
+        # 壊れると、Enter を押しても改行が入るだけで、指示が送れないように見える
+        widget, sent = typed
+        _press(widget._input, Qt.Key.Key_Return, Qt.KeyboardModifier.NoModifier)
+        assert sent == [True]
+        assert "\n" not in widget._input.toPlainText()
+
+    def test_the_keypad_enter_also_sends(self, typed: tuple[ChatPanel, list[bool]]) -> None:
+        # テンキーの Enter は修飾（Keypad）付きで届く 素の Enter と同じに扱わないと、
+        # テンキーで押す人だけ送れずに改行が入る
+        widget, sent = typed
+        _press(widget._input, Qt.Key.Key_Enter, Qt.KeyboardModifier.KeypadModifier)
+        assert sent == [True]
+
+    def test_shift_enter_breaks_the_line(self, typed: tuple[ChatPanel, list[bool]]) -> None:
+        # 壊れると、改行のつもりの Shift+Enter で書きかけの指示が送られる
+        widget, sent = typed
+        _press(widget._input, Qt.Key.Key_Return, Qt.KeyboardModifier.ShiftModifier)
+        assert sent == []
+        # 送った文の中で改行として読まれる、ふつうの改行が入る
+        assert widget._input.toPlainText() == "冒頭を切って\n"
+
+    def test_ctrl_enter_still_sends(self, typed: tuple[ChatPanel, list[bool]]) -> None:
+        # 前の版で覚えた押し方も効く 壊れると、前の版の Ctrl+Enter で送っていた人が
+        # 押しても何も起きず、送れなくなったように見える
+        widget, sent = typed
+        _press(widget._input, Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+        assert sent == [True]
+
+    def test_enter_while_converting_does_not_send(
+        self, typed: tuple[ChatPanel, list[bool]]
+    ) -> None:
+        """変換を確定する Enter で送ると、書きかけの文が飛んでいく"""
+        widget, sent = typed
+        QApplication.sendEvent(widget._input, QInputMethodEvent("へんかん", []))
+        _press(widget._input, Qt.Key.Key_Return, Qt.KeyboardModifier.NoModifier)
+        assert sent == []
+
+        committed = QInputMethodEvent("", [])
+        committed.setCommitString("変換")
+        QApplication.sendEvent(widget._input, committed)
+        _press(widget._input, Qt.Key.Key_Return, Qt.KeyboardModifier.NoModifier)
+        assert sent == [True]
+
+    def test_the_old_way_can_be_chosen(self, typed: tuple[ChatPanel, list[bool]]) -> None:
+        # 壊れると、Ctrl+Enter で送る設定にした人が、改行のつもりの Enter で
+        # 長い指示を途中まで送ってしまう
+        widget, sent = typed
+        widget.apply_preferences(Preferences(chat_enter_sends=False))
+        _press(widget._input, Qt.Key.Key_Return, Qt.KeyboardModifier.NoModifier)
+        assert sent == []
+        assert "Ctrl+Enter" in widget._input.placeholderText()
+        _press(widget._input, Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+        assert sent == [True]
+
+    def test_the_placeholder_tells_the_keys(self, panel: tuple[ChatPanel, FakeHost]) -> None:
+        # 書いていないと、前の版の Ctrl+Enter を覚えた人も、改行したい人も押し方が分からない
+        widget, _ = panel
+        assert "Enter で送信" in widget._input.placeholderText()
+        assert "Shift+Enter で改行" in widget._input.placeholderText()
+
+
+class _RecordingSession:
+    """会話の差し替え Claude へは繋がない 何で始めたかだけを覚える"""
+
+    made: ClassVar[list[_RecordingSession]] = []
+
+    def __init__(
+        self,
+        bridge: object,
+        *,
+        model: str | None,
+        effort: str | None,
+        system_prompt: str = SYSTEM_PROMPT,
+    ) -> None:
+        del bridge
+        self.model = model
+        self.effort = effort
+        self.system_prompt = system_prompt
+        self.prompts: list[str] = []
+        self.closed = False
+        self.busy = False
+        self.acknowledged = 0
+        _RecordingSession.made.append(self)
+
+    def acknowledge_turn(self) -> None:
+        self.acknowledged += 1
+
+    def send(self, prompt: str) -> None:
+        self.prompts.append(prompt)
+
+    def poll(self) -> list[AgentEvent]:
+        return []
+
+    def close(self, *, wait: bool = True) -> None:
+        del wait
+        self.closed = True
+
+    def interrupt(self) -> None:
+        return
+
+
+@pytest.fixture
+def recorded(
+    panel: tuple[ChatPanel, FakeHost], monkeypatch: pytest.MonkeyPatch
+) -> tuple[ChatPanel, list[_RecordingSession]]:
+    from sashimono.ui.chat import panel as panel_module
+
+    _ready(monkeypatch)
+    _RecordingSession.made = []
+    monkeypatch.setattr(panel_module, "AgentSession", _RecordingSession)
+    widget, _ = panel
+    widget._refresh_availability()
+    return widget, _RecordingSession.made
+
+
+def _choose(box: QComboBox, value: str) -> None:
+    box.setCurrentIndex(box.findData(value))
+
+
+class TestModelChoice:
+    def test_the_default_is_what_claude_code_picks(
+        self, recorded: tuple[ChatPanel, list[_RecordingSession]]
+    ) -> None:
+        # 選べるようになる前と同じ動き 何も渡さない
+        # 壊れると、そのモデルを使えないアカウントでは、何も選んでいないのに
+        # 会話が始まらない
+        widget, made = recorded
+        widget._input.setPlainText("切って")
+        widget.send()
+        assert (made[0].model, made[0].effort) == (None, None)
+
+    def test_a_mixed_project_gets_the_mixed_instructions(
+        self,
+        recorded: tuple[ChatPanel, list[_RecordingSession]],
+        panel: tuple[ChatPanel, FakeHost],
+    ) -> None:
+        # 分ける方式の指示のまま混合の作品を触らせると、AI が無い組の片方を探し回る
+        # モデルの選択と一緒に渡すので、どちらかを落とすとここで分かる
+        widget, made = recorded
+        _, host = panel
+        host.apply_commands([SetLayerMode(LayerMode.MIXED)], "方式")
+        _choose(widget._model, "claude-sonnet-5")
+        widget._input.setPlainText("切って")
+        widget.send()
+        assert made[0].system_prompt == system_prompt(LayerMode.MIXED)
+        assert made[0].model == "claude-sonnet-5"
+
+    def test_the_listed_models_are_the_current_ones(self) -> None:
+        # 一覧はネットに取りに行かない定数 欠けると、そのモデルを選ぶ手段が無くなる
+        ids = {model.id for model in MODELS}
+        assert {
+            "claude-opus-5-5",
+            "claude-sonnet-5",
+            "claude-haiku-4-5-20251001",
+            "claude-fable-5-1",
+        } <= ids
+
+    def test_the_chosen_model_and_effort_are_used(
+        self, recorded: tuple[ChatPanel, list[_RecordingSession]]
+    ) -> None:
+        # 渡し忘れると、欄の上には選んだモデルが出ているのに既定のモデルで話す
+        widget, made = recorded
+        _choose(widget._model, "claude-sonnet-5")
+        _choose(widget._effort, "high")
+        widget._input.setPlainText("切って")
+        widget.send()
+        assert (made[0].model, made[0].effort) == ("claude-sonnet-5", "high")
+
+    def test_haiku_does_not_get_an_effort(
+        self, recorded: tuple[ChatPanel, list[_RecordingSession]]
+    ) -> None:
+        """Haiku 4.5 はエフォートを受け付けない 渡すと会話が始まる前に失敗する"""
+        widget, made = recorded
+        _choose(widget._effort, "max")
+        _choose(widget._model, "claude-haiku-4-5-20251001")
+        assert widget._effort.isEnabled() is False
+        widget._input.setPlainText("切って")
+        widget.send()
+        assert (made[0].model, made[0].effort) == ("claude-haiku-4-5-20251001", None)
+
+    def test_changing_the_model_starts_a_new_conversation(
+        self, recorded: tuple[ChatPanel, list[_RecordingSession]]
+    ) -> None:
+        # 繋ぎ直さないと、選んだモデルが効かないまま前のモデルで話し続ける
+        widget, made = recorded
+        widget._input.setPlainText("切って")
+        widget.send()
+        widget._handle(AgentEvent(EventKind.TURN_DONE))
+        _choose(widget._model, "claude-opus-5-5")
+        assert made[0].closed is True
+        widget._input.setPlainText("もう一度")
+        widget.send()
+        assert made[1].model == "claude-opus-5-5"
+        assert "新しい会話" in _text(widget)
+
+    def test_a_change_right_after_sending_keeps_the_prompt(
+        self, recorded: tuple[ChatPanel, list[_RecordingSession]]
+    ) -> None:
+        """送った直後は Claude Code の起動中で busy が立っていない
+
+        そこで畳むと、送った指示が処理されないまま消え、履歴の段も開いたまま残る
+        """
+        widget, made = recorded
+        widget._input.setPlainText("切って")
+        widget.send()
+        _choose(widget._model, "claude-opus-5-5")
+        assert made[0].closed is False
+
+        # 応答を待つ間に続けて送った指示も、前の会話で最後まで処理させる
+        widget._input.setPlainText("続けて")
+        widget.send()
+        assert made[0].prompts == ["切って", "続けて"]
+        widget._handle(AgentEvent(EventKind.TURN_DONE))
+        assert made[0].closed is False
+        assert widget._stop_button.isEnabled() is True
+        widget._handle(AgentEvent(EventKind.TURN_DONE))
+        assert made[0].closed is True
+        assert widget._stop_button.isEnabled() is False
+
+    def test_a_change_during_a_reply_waits_for_the_reply(
+        self, recorded: tuple[ChatPanel, list[_RecordingSession]]
+    ) -> None:
+        # 応答の途中で畳むと、その応答が途中で切れる
+        widget, made = recorded
+        widget._input.setPlainText("切って")
+        widget.send()
+        made[0].busy = True
+        _choose(widget._model, "claude-opus-5-5")
+        assert made[0].closed is False
+        made[0].busy = False
+        widget._handle(AgentEvent(EventKind.TURN_DONE))
+        assert made[0].closed is True
+
+    def test_choices_are_announced_for_saving(self, panel: tuple[ChatPanel, FakeHost]) -> None:
+        # 壊れると、欄の上で選んだモデルが保存されず、次に起動したとき既定へ戻る
+        widget, _ = panel
+        announced: list[tuple[str, str]] = []
+        widget.choices_changed.connect(lambda model, effort: announced.append((model, effort)))
+        _choose(widget._model, "claude-fable-5-1")
+        assert announced[-1] == ("claude-fable-5-1", "")
+
+    def test_preferences_are_shown_without_announcing(
+        self, panel: tuple[ChatPanel, FakeHost]
+    ) -> None:
+        # 読んだだけで「選び直した」と知らせると、起動のたびに保存が走る
+        widget, _ = panel
+        announced: list[tuple[str, str]] = []
+        widget.choices_changed.connect(lambda model, effort: announced.append((model, effort)))
+        widget.apply_preferences(Preferences(ai_model="claude-sonnet-5", ai_effort="low"))
+        assert (widget.model, widget.effort) == ("claude-sonnet-5", "low")
+        assert announced == []
+
+
+class TestQueuedPrompts:
+    def test_each_queued_prompt_gets_its_own_undo_step(
+        self,
+        recorded: tuple[ChatPanel, list[_RecordingSession]],
+        loaded: Project,
+    ) -> None:
+        """応答を待つ間に続けて送った指示も、指示ごとに 1 回の取り消しで戻せる
+
+        前の指示の段を閉じる前に次の指示の編集が入ると、2 つの指示の編集が
+        1 つの段にまとまり、取り消し 1 回で両方が戻る
+        """
+        del loaded
+        widget, made = recorded
+        host = cast(FakeHost, widget._host)
+        clip = host.document.project.timeline.tracks[0].clips[0].id
+
+        widget._input.setPlainText("1 つ目")
+        widget.send()
+        widget._input.setPlainText("2 つ目")
+        widget.send()
+        host.apply_commands([SplitClip(clip, 60)], "分割")  # 1 つ目の指示の編集
+        widget._handle(AgentEvent(EventKind.TURN_DONE))
+        # 段を付け替え終えてから、次の指示を始めさせる
+        assert made[0].acknowledged == 1
+        assert host.document.in_checkpoint is True
+        host.apply_commands([SplitClip(clip, 30)], "分割")  # 2 つ目の指示の編集
+        widget._handle(AgentEvent(EventKind.TURN_DONE))
+
+        assert host.document.history_labels == ("AI: 1 つ目", "AI: 2 つ目")
+        assert host.document.in_checkpoint is False
+
+    def test_the_session_waits_for_the_boundary(self) -> None:
+        # 区切りを待たずに次の指示を始めると、次の指示の編集が前の段へ混ざる
+        session = AgentSession(cast(EditorBridge, object()))
+        session._boundary.clear()  # 1 つ目の指示を始めた所
+        assert session._boundary.is_set() is False
+        session.acknowledge_turn()
+        assert session._boundary.is_set() is True
+
+
+class TestLogin:
+    def test_the_login_guide_shows_when_no_credentials_are_found(
+        self,
+        recorded: tuple[ChatPanel, list[_RecordingSession]],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # 壊れると、ログインしていない人に案内が出ないか、ログイン済みの人に
+        # 案内が出続けて、済んだのかどうか分からない
+        from sashimono.ui.chat import panel as panel_module
+
+        widget, _ = recorded
+        monkeypatch.setattr(panel_module, "credentials_found", lambda: False)
+        widget._refresh_availability()
+        assert widget._login_box.isHidden() is False
+        assert "ANTHROPIC_API_KEY" in widget._login_text.text()
+
+        monkeypatch.setattr(panel_module, "credentials_found", lambda: True)
+        widget._refresh_availability()
+        assert widget._login_box.isHidden() is True
+
+    def test_the_login_button_opens_claude_code(
+        self,
+        recorded: tuple[ChatPanel, list[_RecordingSession]],
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        # ログインは Claude Code 自身の画面で済ませる このソフトは鍵を受け取らない
+        # 壊れると、「ログイン…」を押しても何も開かず、ソフトの中からログインする手段が無い
+        from sashimono.ui.chat import panel as panel_module
+
+        widget, _ = recorded
+        cli = tmp_path / "claude.exe"
+        opened: list[Path] = []
+        monkeypatch.setattr(panel_module, "claude_cli", lambda: cli)
+        monkeypatch.setattr(panel_module, "open_login_window", opened.append)
+        widget._login_button.click()
+        assert opened == [cli]
+
+
+class TestLoginHint:
+    def test_a_login_failure_says_where_to_log_in(self) -> None:
+        # 壊れると、英語の「/login を実行して」だけが出て、ソフトの中のどこで
+        # ログインすればよいのか分からない
+        from sashimono.ai.session import with_login_hint
+
+        text = with_login_hint("Invalid API key · Please run /login")
+        assert "ログイン…" in text
+
+    def test_other_failures_are_left_alone(self) -> None:
+        # 壊れると、ログインと関係の無い失敗にもログインの案内が付き、原因を取り違える
+        from sashimono.ai.session import with_login_hint
+
+        assert with_login_hint("接続が切れました") == "接続が切れました"
