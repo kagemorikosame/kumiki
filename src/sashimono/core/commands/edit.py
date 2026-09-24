@@ -729,7 +729,8 @@ def _carried_across(project: Project, source: Track, target: Track, clip: Clip) 
 
     混合トラックから音声トラックへ移せないのは 2 つ 絵を描くクリップ（絵が黙って消える
     映像トラックへ音を鳴らすクリップを移せないのと同じ）と、音を鳴らさないクリップ
-    （音声トラックでは鳴り出してしまう）
+    （音声トラックでは鳴り出してしまう） 映像トラックへ移すときの決まり（音を鳴らす
+    クリップと絵を隠したクリップを断る）は :func:`_validate_clip_media` が持つ
     """
     if source.kind is target.kind or clip.media_id is None:
         return clip
@@ -777,6 +778,10 @@ def _validate_clip_media(project: Project, track: Track, clip: Clip) -> None:
         return
     if track.kind is TrackKind.VIDEO and clip.audio_stream is not None:
         raise ValueError("音を鳴らすクリップは映像トラックへ置けない（音が鳴らなくなる）")
+    if track.kind is TrackKind.VIDEO and not clip.show_picture:
+        # 映像トラックは show_picture を読まずに必ず描く 素材を持たないテキストも同じで、
+        # 混合トラックで隠していた絵が黙って映り出す
+        raise ValueError("絵を隠したクリップは映像トラックへ置けない（絵が出てしまう）")
     if clip.media_id is None:
         return
     item = project.require_media(clip.media_id)

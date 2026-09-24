@@ -140,6 +140,7 @@ class TestSolo:
         assert _names(line.active_sound_tracks()) == ["A1"]
 
     def test_a_video_solo_keeps_the_sound_of_layers(self) -> None:
+        # 映像トラックのソロが音の側にまで効くと、絵を確かめる間にレイヤーの動画の音が止まる
         line = _line(
             Track(TrackKind.VIDEO, "V1", solo=True),
             Track(TrackKind.MIXED, "レイヤー 1"),
@@ -157,12 +158,14 @@ class TestSolo:
 
 class TestClipRoles:
     def test_a_video_with_sound_draws_and_plays_on_a_layer(self, video_media: MediaItem) -> None:
+        # どちらかが偽になると、レイヤーに置いた音付きの動画の絵か音が黙って消える
         track = Track(TrackKind.MIXED)
         clip = _mixed_clip(video_media)
         assert draws_picture(track, clip, video_media)
         assert plays_sound(track, clip, video_media)
 
     def test_the_picture_can_be_hidden(self, video_media: MediaItem) -> None:
+        # 隠しても描くと音だけ使いたい動画の絵が出て、隠すと音まで消えるならクリップを分けるしかない
         track = Track(TrackKind.MIXED)
         clip = _mixed_clip(video_media, show_picture=False)
         assert not draws_picture(track, clip, video_media)
@@ -182,12 +185,14 @@ class TestClipRoles:
         assert plays_sound(track, clip, audio_media)
 
     def test_generated_clips_draw_but_stay_silent(self) -> None:
+        # テキストを鳴らす側に数えると、テキストしか無いレイヤーの書き出しに黙った音声が付く
         track = Track(TrackKind.MIXED)
         clip = Clip(0, 30, source=GeneratedSource(kind="text"))
         assert draws_picture(track, clip, None)
         assert not plays_sound(track, clip, None)
 
     def test_scenes_draw_and_play_on_a_layer(self) -> None:
+        # シーンの音を鳴らさないと、レイヤーに置いたシーンの中の BGM やナレーションが消える
         clip = Clip(0, 30, scene_id=SceneId("scene"))
         assert draws_picture(Track(TrackKind.MIXED), clip, None)
         assert plays_sound(Track(TrackKind.MIXED), clip, None)
@@ -206,10 +211,12 @@ class TestClipRoles:
         assert not plays_sound(Track(TrackKind.MIXED), clip, video_media)
 
     def test_a_negative_stream_is_refused(self) -> None:
+        # 負の番号を通すと、鳴らすときにどのストリームを開くかがデコーダの作り次第になる
         with pytest.raises(ValueError, match="音声ストリーム"):
             Clip(0, 30, audio_stream=-1)
 
     def test_layers_are_named_like_ymm4(self) -> None:
+        # 頭の文字を映像か音声の 2 択で決めると、レイヤーに「A3」のような名前が付く
         assert default_track_name(TrackKind.MIXED, 1) == "レイヤー 1"
         assert default_track_name(TrackKind.VIDEO, 2) == "V2"
         assert default_track_name(TrackKind.AUDIO, 3) == "A3"
@@ -236,7 +243,20 @@ class TestCommands:
         with pytest.raises(ValueError, match="音が鳴らなくなる"):
             MoveClip(clip.id, 0, video.id).apply(mixed_project)
 
+    def test_a_hidden_picture_cannot_move_to_a_video_track(self, mixed_project: Project) -> None:
+        # 映像トラックは show_picture を読まずに描く 移せると、隠していた絵が黙って映り出す
+        clip = mixed_project.timeline.tracks[0].clips[0]
+        project = _set_clip(mixed_project, replace(clip, audio_stream=None, show_picture=False))
+        video = project.timeline.tracks[2]
+        with pytest.raises(ValueError, match="絵が出てしまう"):
+            MoveClip(clip.id, 0, video.id).apply(project)
+        text = Clip(40, 30, source=GeneratedSource(kind="text"), show_picture=False)
+        project = AddClip(project.timeline.tracks[1].id, text).apply(project)
+        with pytest.raises(ValueError, match="絵が出てしまう"):
+            MoveClip(text.id, 40, video.id).apply(project)
+
     def test_a_silent_clip_can_move_to_a_video_track(self, mixed_project: Project) -> None:
+        # 音を鳴らさないクリップまで断ると、絵だけの動画をレイヤーから映像トラックへ戻せない
         clip = mixed_project.timeline.tracks[0].clips[0]
         project = _set_clip(mixed_project, replace(clip, audio_stream=None))
         video = project.timeline.tracks[2]
@@ -335,12 +355,14 @@ class TestCommands:
         assert kept.timeline_start == 10
 
     def test_ripple_cut_closes_the_gap_on_layers(self, mixed_project: Project) -> None:
+        # 詰めがレイヤーに効かないと、ジェットカットの後にレイヤーの動画だけが元の位置に残ってずれる
         cut = RippleCut(((30, 60),)).apply(mixed_project)
         clips = cut.timeline.tracks[0].clips
         assert [(c.timeline_start, c.duration) for c in clips] == [(0, 30), (30, 30)]
         assert all(c.audio_stream == 1 for c in clips)
 
     def test_grouping_works_on_layers(self, mixed_project: Project, audio_media: MediaItem) -> None:
+        # レイヤーのクリップを束ねられないと、字幕と動画をまとめて動かす手間が混合でだけ増える
         layer_2 = mixed_project.timeline.tracks[1]
         other = Clip(0, 30, media_id=audio_media.id, audio_stream=0)
         project = AddClip(layer_2.id, other).apply(mixed_project)
@@ -356,11 +378,13 @@ class TestLayerMode:
         assert ProjectSettings().layer_mode == LayerMode.SEPARATED
 
     def test_the_command_changes_only_the_setting(self, mixed_project: Project) -> None:
+        # 設定を変えるだけでトラックまで変えると、方式を戻したいだけでも置いた物が作り直される
         changed = SetLayerMode(LayerMode.MIXED).apply(mixed_project)
         assert changed.settings.layer_mode == LayerMode.MIXED
         assert changed.timeline is mixed_project.timeline
 
     def test_an_unknown_mode_is_refused(self, mixed_project: Project) -> None:
+        # 知らない値を通すと、置き方がどちらになるかが置く側の作り次第になり、保存にもそのまま残る
         with pytest.raises(ValueError, match="方式"):
             SetLayerMode("both").apply(mixed_project)
         with pytest.raises(ValueError, match="方式"):
@@ -404,6 +428,7 @@ class TestSaving:
         assert loaded == placed
 
     def test_a_newer_file_asks_for_an_update(self, mixed_project: Project) -> None:
+        # 開けてしまうと、形式 8 の知らない項目を黙って落とし、保存し直すと中身が消える
         data = project_to_dict(mixed_project)
         data["version"] = FORMAT_VERSION + 1
         with pytest.raises(ProjectFileError, match="更新"):
