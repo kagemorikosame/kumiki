@@ -720,6 +720,8 @@ def _map_item(item: dict[str, Any], log: CompatibilityReport) -> MappedObject | 
         return None
     if name == "TransitionItem":
         return _transition(item, length, keyframes, log)
+    if name == "EffectItem":
+        item = _without_ignored_moves(item)
     source, media_path, kind = _content(item, name, log)
     if source is None and not media_path:
         return None
@@ -1131,6 +1133,26 @@ _EASING_NAMES = {
 _EASING_MODE_NAMES = {"In": "in", "Out": "out", "InOut": "inout"}
 
 
+#: エフェクトアイテムに積んでも YMM4 の絵が変わらなかったエフェクト（2026-09-24 YMM4 4.56.1.1
+#: ``tools/ymm4_compare.py`` の ``effectitem-build`` 範囲は画面全体） 画面いっぱいの絵の上で
+#: 拡大率 50 も X 300 も、書き出しは下の絵のままだった 写すと、縮めた・ずらした写しが
+#: 下の絵の上に重なる（差 16.8 と 83.7 → 1.2 前後）
+_EFFECT_ITEM_IGNORED = frozenset({"ZoomEffect", "DrawPositionEffect"})
+
+
+def _without_ignored_moves(item: dict[str, Any]) -> dict[str, Any]:
+    """エフェクトアイテムから、YMM4 が絵に当てなかったエフェクトを除いた写し"""
+    raw = item.get("VideoEffects")
+    if not isinstance(raw, list):
+        return item
+    kept = [
+        entry
+        for entry in raw
+        if not (isinstance(entry, dict) and type_name(entry) in _EFFECT_ITEM_IGNORED)
+    ]
+    return item if len(kept) == len(raw) else {**item, "VideoEffects": kept}
+
+
 def _preview_only(item: dict[str, Any]) -> bool:
     """編集中の画面にだけ映すアイテムか YMM4 は書き出した動画に出さない
 
@@ -1166,6 +1188,10 @@ def _content(
         # 下のレイヤーの絵にエフェクトを掛けるアイテム（範囲は図形で決める） 図形として
         # 読むと、範囲の図形（多くは画面全体の背景）がそのまま画面を塗りつぶす
         # 写し取った画面にエフェクトを掛けるフレームバッファと同じ形で読む
+        # フィルタのクリップ（下の絵に掛けて置き換える 透明は透明のまま）とは読まない
+        # YMM4 は下の絵の透明な所も黒として掛けた（2026-09-24 YMM4 4.56.1.1 ``effectitem-build``
+        # 周りが透明な図形に反転を掛けると周りが白くなり、前景の塗りつぶしは周りまで塗った
+        # フィルタで読むと周りが黒のままで、差が 0.1 → 226.8）
         plugin = str(item.get("ShapeType2") or "").partition(",")[0].rpartition(".")[2]
         if plugin and not plugin.startswith("Background"):
             log.note_missing(f"YMM4 のエフェクトアイテムの範囲: {plugin}")
@@ -1521,11 +1547,13 @@ def _placement(
     if not moves and not any(value.is_animated or value.static != rest for value, rest in resting):
         return []
 
+    # 縦の拡大率（``scale_y``）は拡大率に掛ける比なので既定の 100 のまま 拡大率を
+    # 両方へ入れると縦だけ 2 回掛かり、拡大率 200 の 640x360 が 1280x1440 になる
+    # （2026-09-24 YMM4 4.56.1.1 の書き出しは 1280x720 ``zoom-build`` の拡大率 200 の枠）
     placed = definition.create(
         pos_x=pos_x,
         pos_y=pos_y,
         scale=zoom,
-        scale_y=zoom,
         rotation=rotation,
         # 中心点で「位置を保つ」を切ると、選んだ点がアイテムの位置へ来る
         move_to_pivot=moves,

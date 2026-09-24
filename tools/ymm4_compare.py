@@ -33,6 +33,22 @@ YMM4 のテンプレートは、値の意味を配布物の並びから読み取
 3. ``video-rate-measure`` 書き出しの各フレームが素材の何フレーム目かを枠ごとに並べ、
                           経過フレームに対する傾き（1 で等倍・0 で止まる）を表にする
 
+拡大率 100% で素材をどの大きさに置くかも別の 2 段（Issue #159）
+
+1. ``zoom-build``   画面と違う大きさの画像と動画を並べた探り用のプロジェクト
+                    （zoom-probe.ymmp）を作る
+2. YMM4 でそれを開き、同じフォルダへ ``zoom-probe.mp4`` として書き出す（手作業か道具）
+3. ``zoom-measure`` 素材の真ん中の印が画面に出た大きさを測り、素材の画素のままか
+                    画面に収めたかを表にする
+
+エフェクトアイテムが下の絵にどう掛かるかも別の 2 段（Issue #143）
+
+1. ``effectitem-build``   周りが透明な図形と画面いっぱいの絵に、反転・縮める・ずらすを
+                          エフェクトアイテムで掛けた探り用のプロジェクト（effectitem-probe.ymmp）を作る
+2. YMM4 でそれを開き、同じフォルダへ ``effectitem-probe.mp4`` として書き出す（手作業か道具）
+3. ``effectitem-measure`` 同じ枠を「黒を敷いて上に描く」と「下の絵に掛けて置き換える」の
+                          2 通りで描き、YMM4 の書き出しに近い方を表にする
+
 絵と音の速さの探りは、どちらも後ろに ``PlaybackRate`` と ``PlaybackRate2`` を
 わざと食い違わせた枠を持つ（Issue #117） 測る側は、どちらの値の予想に近いかを並べる
 音はさらに ``PlaybackRateAudioProcessingMode`` を ``Sola`` にした枠を持つ
@@ -65,6 +81,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
+    from sashimono.compat.mapped import MappedObject
     from sashimono.core.model import MediaItem
 
 import numpy as np
@@ -1304,8 +1321,17 @@ def mesh_effect_entry(slot: MeshSlot) -> dict[str, Any]:
     }
 
 
-def mesh_image_item(slot: MeshSlot, media: Path) -> dict[str, Any]:
-    """探りの枠 1 つを、格子で歪ませた画像アイテムにする
+def image_item(
+    media: Path,
+    *,
+    frame: int,
+    length: int,
+    remark: str,
+    layer: int = 0,
+    zoom: float = 100.0,
+    effects: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """探りの画像アイテム 1 つ
 
     項目の並びは ``.work/probes/samples.json`` の実物の ``ImageItem`` から写した
     """
@@ -1316,7 +1342,7 @@ def mesh_image_item(slot: MeshSlot, media: Path) -> dict[str, Any]:
         "Y": _still(0.0),
         "Z": _still(0.0),
         "Opacity": _still(100.0),
-        "Zoom": _still(100.0),
+        "Zoom": _still(zoom),
         "Rotation": _still(0.0),
         "FadeIn": 0.0,
         "FadeOut": 0.0,
@@ -1325,19 +1351,30 @@ def mesh_image_item(slot: MeshSlot, media: Path) -> dict[str, Any]:
         "IsClippingWithObjectAbove": False,
         "IsAlwaysOnTop": False,
         "IsZOrderEnabled": False,
-        "VideoEffects": [mesh_effect_entry(slot)],
+        "VideoEffects": list(effects or []),
         "Group": 0,
-        "Frame": slot.start,
-        "Layer": 0,
+        "Frame": frame,
+        "Layer": layer,
         "KeyFrames": {"Frames": [], "Count": 0},
-        "Length": MESH_SLOT,
+        "Length": length,
         "PlaybackRate": 100.0,
         "PlaybackRate2": _still(100.0),
         "ContentOffset": "00:00:00",
-        "Remark": slot.name,
+        "Remark": remark,
         "IsLocked": False,
         "IsHidden": False,
     }
+
+
+def mesh_image_item(slot: MeshSlot, media: Path) -> dict[str, Any]:
+    """探りの枠 1 つを、格子で歪ませた画像アイテムにする"""
+    return image_item(
+        media,
+        frame=slot.start,
+        length=MESH_SLOT,
+        remark=slot.name,
+        effects=[mesh_effect_entry(slot)],
+    )
 
 
 def grid_position(index: int, columns: int, rows: int, *, by_row: bool) -> tuple[float, float]:
@@ -1495,7 +1532,20 @@ def _probe_or_none(path: Path) -> MediaItem | None:
 
 
 def _render_mesh_slots(entries: list[dict[str, Any]]) -> list[np.ndarray | None]:
-    """同じ ``.ymmp`` の枠を Sashimono で描き、縮めた絵を枠の順に返す
+    """同じ ``.ymmp`` の枠を Sashimono で描き、縮めた絵を枠の順に返す"""
+    return _render_still_slots(entries)
+
+
+def _render_still_slots(
+    entries: list[dict[str, Any]],
+    *,
+    convert: Callable[[np.ndarray], np.ndarray] = _shrink,
+    adjust: Callable[[list[MappedObject]], list[MappedObject]] | None = None,
+) -> list[np.ndarray | None]:
+    """止まった絵の枠を Sashimono で描き、真ん中の 1 枚を ``convert`` した物を枠の順に返す
+
+    枠のアイテムは ``items``（並び）か ``item``（1 つ） ``adjust`` は写した結果を描く前に
+    差し替える 同じ枠を 2 通りの読み方で描き比べるため
 
     ``compare`` と同じ道（写す・素材を登録する・置く・描く）を通す 素材の登録を
     飛ばすと、画像のクリップが ``media_id`` を持たず、全部の枠が透明になる
@@ -1511,7 +1561,10 @@ def _render_mesh_slots(entries: list[dict[str, Any]]) -> list[np.ndarray | None]
     renderer: FrameRenderer | None = None
     try:
         for entry in entries:
-            objects = map_template([copy.deepcopy(entry["item"])], report=report)
+            raw = entry["items"] if "items" in entry else [entry["item"]]
+            objects = map_template(copy.deepcopy(raw), report=report)
+            if adjust is not None:
+                objects = adjust(objects)
             project = Project.create(settings)
             plan = gather_media(objects, project, _probe_or_none)
             if plan.missing:
@@ -1525,7 +1578,7 @@ def _render_mesh_slots(entries: list[dict[str, Any]]) -> list[np.ndarray | None]
                 renderer = FrameRenderer(project)
             else:
                 renderer.set_project(project)
-            pictures.append(_shrink(renderer.render(start + int(entry["length"]) // 2)))
+            pictures.append(convert(renderer.render(start + int(entry["length"]) // 2)))
     finally:
         if renderer is not None:
             renderer.close()
@@ -1534,15 +1587,22 @@ def _render_mesh_slots(entries: list[dict[str, Any]]) -> list[np.ndarray | None]
     return pictures
 
 
-def _read_ymm4_slots(video: Path, entries: list[dict[str, Any]]) -> list[np.ndarray | None]:
-    """YMM4 の書き出しから、枠ごとの真ん中の 1 枚を縮めて返す 動画に無い枠は ``None``"""
+def _read_ymm4_slots(
+    video: Path,
+    entries: list[dict[str, Any]],
+    convert: Callable[[np.ndarray], np.ndarray] = _shrink,
+) -> list[np.ndarray | None]:
+    """YMM4 の書き出しから、枠ごとの真ん中の 1 枚を ``convert`` して返す
+
+    動画に無い枠は ``None`` 既定は縮める 大きさを画素で測る探りは縮めずに受け取る
+    """
     references = References(_ymm4_frames(video))
     pictures: list[np.ndarray | None] = [None] * len(entries)
     # 動画は戻せないので、枠を頭から順に引く 返すのは一覧の順
     for index in sorted(range(len(entries)), key=lambda at: int(entries[at]["start"])):
         entry = entries[index]
         picture = references.get(int(entry["start"]) + int(entry["length"]) // 2)
-        pictures[index] = None if picture is None else _shrink(picture)
+        pictures[index] = None if picture is None else convert(picture)
     return pictures
 
 
@@ -2326,6 +2386,630 @@ def _print_rate_mismatches(rows: list[dict[str, Any]]) -> None:
     print(f"{HEAD_TO_LAST} は、1 枠を測って合った読み（docs/development.md）")
 
 
+#: 大きさの探りの枠 1 つの長さ（フレーム） 絵は止まっているので、真ん中の 1 枚だけを見る
+ZOOM_SLOT = 30
+#: 並べる素材 ``(名前, 幅, 高さ, 種類, 拡大率)``（Issue #159）
+#: 画面と同じ大きさの素材は、素材の画素のままでも画面に収めても同じ絵になって見分けられない
+#: 小さい・大きい・縦長を並べる 拡大率 200 の枠は、拡大率がどちらの大きさに掛かるかを見る
+ZOOM_CONDITIONS: tuple[tuple[str, int, int, str, float], ...] = (
+    ("画像 1920x1080", 1920, 1080, "image", 100.0),
+    ("画像 640x360", 640, 360, "image", 100.0),
+    ("画像 3840x2160", 3840, 2160, "image", 100.0),
+    ("画像 360x640 縦長", 360, 640, "image", 100.0),
+    ("画像 640x360 拡大率 200", 640, 360, "image", 200.0),
+    ("動画 640x360", 640, 360, "video", 100.0),
+)
+#: 素材の地の色と、真ん中に置く印の色（RGB） 印は素材の縦横の半分
+#: 地の大きさだけを測ると、3840x2160 は画素のままでも収めても画面いっぱいになって
+#: 見分けられない 印なら 1920x1080 と 960x540 に分かれる
+ZOOM_GROUND = (40, 90, 230)
+ZOOM_MARK = (235, 40, 40)
+#: 印の縁とみなす行と列の画素の数 圧縮で印の色に寄った点が 1 つ 2 つ混じっても、
+#: 矩形を広げない
+ZOOM_EDGE_PIXELS = 4
+#: 予想と合ったとみなす差（px） 補間と圧縮で縁が 1〜2 画素ぶれる分より広く、
+#: 2 つの読みの差（一番近い 3840x2160 でも 960px）よりずっと狭くする
+ZOOM_TOLERANCE = 8.0
+ZOOM_NATIVE = "素材の画素"
+ZOOM_FIT = "画面に収める"
+
+
+@dataclass(frozen=True)
+class ZoomSlot:
+    """大きさの探りの枠 1 つ ``kind`` は ``image`` か ``video``"""
+
+    name: str
+    width: int
+    height: int
+    kind: str
+    zoom: float
+    start: int
+
+    @property
+    def media_name(self) -> str:
+        """素材のファイル名 同じ大きさの画像と動画は同じ絵から作る"""
+        suffix = "png" if self.kind == "image" else "mp4"
+        return f"zoom-probe-{self.width}x{self.height}.{suffix}"
+
+
+def build_zoom_slots() -> list[ZoomSlot]:
+    """確かめる素材を、時間軸に重ならないように並べる"""
+    slots: list[ZoomSlot] = []
+    cursor = 0
+    for name, width, height, kind, zoom in ZOOM_CONDITIONS:
+        slots.append(ZoomSlot(name, width, height, kind, zoom, cursor))
+        cursor += ZOOM_SLOT + GAP
+    return slots
+
+
+def zoom_pattern(width: int, height: int) -> np.ndarray:
+    """地の色の真ん中に縦横半分の印を置いた絵 ``(高さ, 幅, 3)`` の RGB"""
+    image = np.empty((height, width, 3), dtype=np.uint8)
+    image[...] = ZOOM_GROUND
+    top, left = height // 4, width // 4
+    image[top : top + height // 2, left : left + width // 2] = ZOOM_MARK
+    return image
+
+
+def zoom_expectations(width: int, height: int, zoom: float) -> dict[str, tuple[float, float]]:
+    """印が画面に出る大きさ（幅・高さ px）の予想 画面からはみ出す分は切れた後の大きさ"""
+    scale = zoom / 100.0
+    fit = min(WIDTH / width, HEIGHT / height)
+
+    def shown(factor: float) -> tuple[float, float]:
+        return min(float(WIDTH), width / 2 * factor), min(float(HEIGHT), height / 2 * factor)
+
+    return {ZOOM_NATIVE: shown(scale), ZOOM_FIT: shown(scale * fit)}
+
+
+def mark_box(picture: np.ndarray) -> tuple[int, int, int, int] | None:
+    """印の色が占める矩形（左・上・幅・高さ px） 印が無ければ ``None``
+
+    印の色・地の色・黒のうち一番近いものを色の読みとする 縁は拡大の補間で 2 色が
+    混ざるので、決まった閾値で切ると、どちらの色に寄せたかで 1 画素ずつ食い違う
+    """
+    rgb = picture[..., :3].astype(np.float32)
+    colours = np.asarray([ZOOM_MARK, ZOOM_GROUND, (0, 0, 0)], dtype=np.float32)
+    distance = np.abs(rgb[..., None, :] - colours).sum(axis=-1)
+    mark = distance.argmin(axis=-1) == 0
+    columns = np.flatnonzero(mark.sum(axis=0) >= ZOOM_EDGE_PIXELS)
+    rows = np.flatnonzero(mark.sum(axis=1) >= ZOOM_EDGE_PIXELS)
+    if columns.size == 0 or rows.size == 0:
+        return None
+    left, top = int(columns[0]), int(rows[0])
+    return left, top, int(columns[-1]) - left + 1, int(rows[-1]) - top + 1
+
+
+def zoom_reading(
+    box: tuple[int, int, int, int] | None, expectations: dict[str, tuple[float, float]]
+) -> str:
+    """測った印の大きさが、どちらの置き方の予想に合うか"""
+    if box is None:
+        return "印が無い"
+    if len(set(expectations.values())) == 1:
+        return "見分けない"
+    for name, (width, height) in expectations.items():
+        if abs(box[2] - width) <= ZOOM_TOLERANCE and abs(box[3] - height) <= ZOOM_TOLERANCE:
+            return name
+    return "どちらとも合わない"
+
+
+def zoom_video_item(slot: ZoomSlot, media: Path) -> dict[str, Any]:
+    """動画の枠 ``video-rate-build`` の動画アイテム（実物の形）の長さと拡大率だけを変える"""
+    item = rate_video_item(RateSlot(name=slot.name, rate=100.0, start=slot.start), media)
+    item["Length"] = ZOOM_SLOT
+    item["Zoom"] = _still(slot.zoom)
+    return item
+
+
+def zoom_item(slot: ZoomSlot, media: Path) -> dict[str, Any]:
+    if slot.kind == "video":
+        return zoom_video_item(slot, media)
+    return image_item(media, frame=slot.start, length=ZOOM_SLOT, remark=slot.name, zoom=slot.zoom)
+
+
+def make_still_video(image: Path, target: Path) -> str:
+    """止まった絵の動画を ffmpeg で作る 作れなければ理由を返す"""
+    if shutil.which("ffmpeg") is None:
+        return "ffmpeg が見つからないので、探りの動画を作れない"
+    command = [
+        "ffmpeg",
+        "-y",
+        "-loglevel",
+        "error",
+        "-loop",
+        "1",
+        "-i",
+        str(image),
+        "-t",
+        "2",
+        "-r",
+        str(FPS),
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-crf",
+        "12",
+        str(target),
+    ]
+    completed = subprocess.run(command, capture_output=True, check=False)
+    if completed.returncode == 0 and target.exists():
+        return ""
+    message = completed.stderr.decode("utf-8", "replace").strip().splitlines()
+    return "ffmpeg が探りの動画を作れなかった " + (message[-1] if message else "")
+
+
+def zoom_manifest(slots: list[ZoomSlot], work: Path) -> dict[str, Any]:
+    """枠の一覧 ``zoom-measure`` はこれだけを見て切り出し、Sashimono でも描く"""
+    return {
+        "width": WIDTH,
+        "height": HEIGHT,
+        "fps": FPS,
+        "slots": [
+            {
+                "index": index,
+                "name": slot.name,
+                "media": [slot.width, slot.height],
+                "kind": slot.kind,
+                "zoom": slot.zoom,
+                "start": slot.start,
+                "length": ZOOM_SLOT,
+                "expect": {
+                    name: list(size)
+                    for name, size in zoom_expectations(slot.width, slot.height, slot.zoom).items()
+                },
+                "item": zoom_item(slot, work / slot.media_name),
+            }
+            for index, slot in enumerate(slots)
+        ],
+    }
+
+
+def _clear_zoom_results(work: Path) -> None:
+    """前の測り結果を捨てる 残すと、新しい枠の一覧に対応しない表や絵を読んでしまう"""
+    (work / "zoom-report.json").unlink(missing_ok=True)
+    images = work / "images"
+    if images.is_dir():
+        for old in images.glob("zoom-*.png"):
+            old.unlink()
+
+
+def command_zoom_build(arguments: argparse.Namespace) -> int:
+    # 絶対パスにしてから書く YMM4 はこの道具の作業フォルダを知らないので、相対のまま
+    # `.ymmp` へ書くと素材を見つけられず、全部の枠が黒になる
+    work: Path = arguments.work.resolve()
+    work.mkdir(parents=True, exist_ok=True)
+    _clear_zoom_results(work)
+    slots = build_zoom_slots()
+    for slot in slots:
+        if slot.kind != "image":
+            continue
+        _save_png(zoom_pattern(slot.width, slot.height), work / slot.media_name)
+    for slot in [slot for slot in slots if slot.kind == "video"]:
+        still = work / slot.media_name.replace(".mp4", ".png")
+        if not still.exists():
+            _save_png(zoom_pattern(slot.width, slot.height), still)
+        problem = make_still_video(still, work / slot.media_name)
+        if problem:
+            # 測れない環境で「壊れた」と読まれないように、落とさずに終える
+            _drop_probe(work, "zoom-probe", "zoom-report.json")
+            print(problem)
+            return 0
+    items = [zoom_item(slot, work / slot.media_name) for slot in slots]
+    length = max(slot.start for slot in slots) + ZOOM_SLOT + GAP
+    project = work / "zoom-probe.ymmp"
+    write_document(items, length, project)
+    (work / "zoom-probe.json").write_text(
+        json.dumps(zoom_manifest(slots, work), ensure_ascii=False, indent=1), encoding="utf-8"
+    )
+    print(f"{len(slots)} 枠を並べた（{length} フレーム、{length / FPS:.1f} 秒）")
+    video = work / "zoom-probe.mp4"
+    if video.exists():
+        print(f"{video} は前の探りの書き出しです 作り直した方で書き出し直してください")
+    print(f"YMM4 で {project} を開き、{video} として書き出してください")
+    print(f"書き出しは {WIDTH}x{HEIGHT}・{FPS}fps・頭から終わりまで（範囲を絞らない）")
+    print_export_hint(project, video)
+    return 0
+
+
+def _unshrunk(image: np.ndarray) -> np.ndarray:
+    """縮めずに RGB だけを取る 印の大きさは画素で測るので、縮めると 4 画素ずつしか読めない"""
+    return np.ascontiguousarray(image[..., :3])
+
+
+def _stale_export(video: Path, manifest: Path, project: Path, build: str) -> bool:
+    """書き出しが無いか、探りを作り直す前の物なら案内して真を返す"""
+    if not manifest.exists():
+        print(f"{manifest} がありません 先に {build} を走らせてください")
+        return True
+    if not video.exists():
+        print(f"{video} がまだ書き出されていません")
+        print(f"YMM4 で {project} を開き、そこへ書き出してから走らせてください")
+        return True
+    if video.stat().st_mtime <= manifest.stat().st_mtime:
+        # 探りを作り直したのに書き出しが前のままだと、新しい枠の一覧で古い絵を
+        # 切り出して、別の条件を測った表が出る 置き場によっては時刻が 2 秒刻みなので同じ時刻も断る
+        print(f"{video} は探りを作り直す前の書き出しです")
+        print(f"YMM4 で {project} を開き直し、書き出してから走らせてください")
+        return True
+    return False
+
+
+def _read_still_export(
+    video: Path,
+    project: Path,
+    entries: list[dict[str, Any]],
+    fps: int,
+    convert: Callable[[np.ndarray], np.ndarray],
+) -> list[np.ndarray | None] | None:
+    """YMM4 の書き出しから枠ごとの 1 枚を取る 読めなければ案内して ``None``"""
+    try:
+        if not has_video_stream(video):
+            print(f"{video} に映像の道がありません 映像が入る形式で書き出してください")
+            return None
+        if _fps_differs(video, fps):
+            return None
+        return _read_ymm4_slots(video, entries, convert)
+    except unreadable_export_errors():
+        _explain_unreadable(video, project)
+        return None
+
+
+def command_zoom_measure(arguments: argparse.Namespace) -> int:
+    work: Path = arguments.work
+    manifest_path = work / "zoom-probe.json"
+    project = work / "zoom-probe.ymmp"
+    video = work / "zoom-probe.mp4"
+    _clear_zoom_results(work)
+    if _stale_export(video, manifest_path, project, "zoom-build"):
+        return 0
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    entries: list[dict[str, Any]] = manifest["slots"]
+    theirs = _read_still_export(video, project, entries, int(manifest["fps"]), _unshrunk)
+    if theirs is None:
+        return 0
+    ours = _render_still_slots(entries, convert=_unshrunk)
+    images = work / "images"
+    images.mkdir(exist_ok=True)
+    rows = [zoom_row(entry, theirs[index], ours[index]) for index, entry in enumerate(entries)]
+    for index, (a, b) in enumerate(zip(theirs, ours, strict=True)):
+        if a is not None and b is not None:
+            side = np.concatenate([_shrink(a), _shrink(b)], axis=1)
+            _save_png(np.clip(side, 0, 255).astype(np.uint8), images / f"zoom-{index:02d}.png")
+    _print_zoom_rows(rows)
+    (work / "zoom-report.json").write_text(
+        json.dumps({"rows": rows}, ensure_ascii=False, indent=1), encoding="utf-8"
+    )
+    print(
+        f"{work / 'zoom-report.json'} へ書いた 並べた絵（YMM4・Sashimono）は {images} の zoom-*.png"
+    )
+    return 0
+
+
+def zoom_row(
+    entry: dict[str, Any], theirs: np.ndarray | None, ours: np.ndarray | None
+) -> dict[str, Any]:
+    """枠 1 つぶんの表の行 YMM4 と Sashimono を同じ読み方で並べる"""
+    expect = {name: (float(size[0]), float(size[1])) for name, size in entry["expect"].items()}
+    row: dict[str, Any] = {
+        "name": entry["name"],
+        "media": entry["media"],
+        "zoom": entry["zoom"],
+        "expect": {name: list(size) for name, size in expect.items()},
+    }
+    for side, picture in (("ymm4", theirs), ("sashimono", ours)):
+        box = None if picture is None else mark_box(picture)
+        row[side] = None if box is None else list(box)
+        row[f"{side}_reading"] = "絵が無い" if picture is None else zoom_reading(box, expect)
+    return row
+
+
+def _print_zoom_rows(rows: list[dict[str, Any]]) -> None:
+    def size(box: list[int] | None) -> str:
+        return "-" if box is None else f"{box[2]}x{box[3]}"
+
+    def guess(value: list[float]) -> str:
+        return f"{value[0]:.0f}x{value[1]:.0f}"
+
+    print(
+        f"{'枠':<24}{'YMM4 の印':>12}{'Sashimono の印':>16}"
+        f"{'画素のまま':>12}{'収める':>12}{'YMM4':>12}{'Sashimono':>12}"
+    )
+    for row in rows:
+        print(
+            f"{row['name']:<24}{size(row['ymm4']):>12}{size(row['sashimono']):>16}"
+            f"{guess(row['expect'][ZOOM_NATIVE]):>12}{guess(row['expect'][ZOOM_FIT]):>12}"
+            f"{row['ymm4_reading']:>12}{row['sashimono_reading']:>12}"
+        )
+    print()
+    print("印は素材の縦横の半分 画面からはみ出す分は切れた後の大きさ")
+
+
+#: エフェクトアイテムの探りの枠 1 つの長さ（フレーム）（Issue #143）
+EFFECT_SLOT = 30
+#: 並べる条件 ``(名前, 下の絵, エフェクト, 不透明度)``
+#: 下の絵の ``shape`` は周りが透明な図形（``base_shape``）、``picture`` は画面いっぱいの絵
+#: 2 つの読み方が食い違うのは、下の絵が透明な所と、エフェクトが絵を縮める・動かすとき
+#: 基準の枠（エフェクトなし）は、どちらの読みでも同じ絵になり、道具のずれを見る
+EFFECT_CONDITIONS: tuple[tuple[str, str, tuple[str, ...], float], ...] = (
+    ("基準 図形", "shape", (), 100.0),
+    ("反転 図形の周りが透明", "shape", ("invert",), 100.0),
+    ("反転 不透明度 50", "shape", ("invert",), 50.0),
+    ("前景を塗りつぶし", "shape", ("fill",), 100.0),
+    ("基準 画面いっぱいの絵", "picture", (), 100.0),
+    ("拡大率 50", "picture", ("zoom",), 100.0),
+    ("位置 X 300", "picture", ("move",), 100.0),
+)
+EFFECT_FRAMEBUFFER = "黒を敷いて上に描く"
+EFFECT_FILTER = "下の絵に掛けて置き換える"
+#: 2 つの読みの差がこれより小さい枠は見分けない（0〜255、色の平均 480x270 に縮めて）
+EFFECT_SAME = 1.0
+
+
+@dataclass(frozen=True)
+class EffectItemSlot:
+    """エフェクトアイテムの探りの枠 1 つ ``effects`` が空なら下の絵だけ"""
+
+    name: str
+    below: str
+    effects: tuple[str, ...]
+    opacity: float
+    start: int
+
+
+def build_effect_item_slots() -> list[EffectItemSlot]:
+    slots: list[EffectItemSlot] = []
+    cursor = 0
+    for name, below, effects, opacity in EFFECT_CONDITIONS:
+        slots.append(EffectItemSlot(name, below, effects, opacity, cursor))
+        cursor += EFFECT_SLOT + GAP
+    return slots
+
+
+def _effect_entry(name: str, **values: Any) -> dict[str, Any]:
+    return {
+        "$type": f"YukkuriMovieMaker.Project.Effects.{name}, YukkuriMovieMaker",
+        **values,
+        "IsEnabled": True,
+        "Remark": "",
+    }
+
+
+def probe_effect_entry(key: str) -> dict[str, Any]:
+    """探りのエフェクト 1 つ 形は ``.work/probes/samples.json`` と配布物の実物から写した
+
+    前景の塗りつぶしは配布物（トーン調整Te）の 13 個が使う形 実物は ``Overlay`` だが、
+    黒の上の ``Overlay`` は黒のままで、黒を敷いたかどうかが絵に出ない ``Normal`` にする
+    """
+    if key == "invert":
+        return _effect_entry("InvertEffect")
+    if key == "zoom":
+        return _effect_entry(
+            "ZoomEffect",
+            Zoom=_still(50.0),
+            ZoomX=_still(100.0),
+            ZoomY=_still(100.0),
+            IsNearestNeighbor=False,
+        )
+    if key == "move":
+        return _effect_entry("DrawPositionEffect", X=_still(300.0), Y=_still(0.0), Z=_still(0.0))
+    if key == "fill":
+        return _effect_entry(
+            "FillForegroundEffect",
+            Opacity=_still(50.0),
+            BlendMode="Normal",
+            IsBrushOnly=False,
+            Brush={
+                "Type": "YukkuriMovieMaker.Plugin.Brush.SolidColorBrushPlugin, YukkuriMovieMaker",
+                "Parameter": {"$type": _BRUSH_PARAMETER, "Color": "#FF2C7AE0"},
+            },
+        )
+    raise ValueError(f"探りに無いエフェクト {key}")
+
+
+def effect_item(slot: EffectItemSlot, layer: int) -> dict[str, Any]:
+    """探りのエフェクトアイテム 項目の並びは配布物（トーン調整Te）の実物の ``EffectItem`` から写した
+
+    範囲は実物 30 個すべてと同じ画面全体（``BackgroundShapePlugin``）
+    """
+    return {
+        "$type": "YukkuriMovieMaker.Project.Items.EffectItem, YukkuriMovieMaker",
+        "ShapeType2": "YukkuriMovieMaker.Shape.BackgroundShapePlugin, YukkuriMovieMaker",
+        "ShapeParameter": {
+            "$type": "YukkuriMovieMaker.Project.Items.BackgroundShapeParameter, YukkuriMovieMaker",
+            "StrokeThickness": _still(4000.0),
+            "Brush": {
+                "Type": "YukkuriMovieMaker.Plugin.Brush.SolidColorBrushPlugin, YukkuriMovieMaker",
+                "Parameter": {"$type": _BRUSH_PARAMETER, "Color": "#FFFFFFFF"},
+            },
+        },
+        "Blur": _still(0.0),
+        "InvertMask": False,
+        "VideoEffects": [probe_effect_entry(key) for key in slot.effects],
+        "X": _still(0.0),
+        "Y": _still(0.0),
+        "Z": _still(0.0),
+        "Opacity": _still(slot.opacity),
+        "Rotation": _still(0.0),
+        "FadeIn": 0.0,
+        "FadeOut": 0.0,
+        "Blend": "Normal",
+        "IsClippingWithObjectAbove": False,
+        "IsAlwaysOnTop": False,
+        "IsZOrderEnabled": False,
+        "Group": 0,
+        "Frame": slot.start,
+        "Layer": layer,
+        "KeyFrames": {"Frames": [], "Count": 0},
+        "Length": EFFECT_SLOT,
+        "PlaybackRate": 100.0,
+        "ContentOffset": "00:00:00",
+        "Remark": slot.name,
+        "IsLocked": False,
+        "IsHidden": False,
+    }
+
+
+def effect_items(slot: EffectItemSlot, picture: Path) -> list[dict[str, Any]]:
+    """枠 1 つのアイテム 下の絵を 0 段、エフェクトアイテムを 1 段に置く"""
+    if slot.below == "shape":
+        below = base_shape(slot.start, 0, EFFECT_SLOT)
+    else:
+        below = image_item(picture, frame=slot.start, length=EFFECT_SLOT, remark=slot.name)
+    if not slot.effects:
+        return [below]
+    return [below, effect_item(slot, 1)]
+
+
+def read_effect_items_as(kind: str, objects: list[MappedObject]) -> list[MappedObject]:
+    """エフェクトアイテムを写したクリップを ``kind``（``framebuffer`` か ``filter``）で読み直す
+
+    同じ枠を 2 通りに描いて、YMM4 の書き出しに近い方を選ぶため
+    """
+    from dataclasses import replace
+
+    from sashimono.core.model import FILTER_KIND, GeneratedSource
+
+    readings = ("framebuffer", FILTER_KIND)
+    return [
+        replace(item, clip=replace(item.clip, source=GeneratedSource(kind=kind)), kind=kind)
+        if item.clip.source is not None and item.clip.source.kind in readings
+        else item
+        for item in objects
+    ]
+
+
+def effect_item_manifest(slots: list[EffectItemSlot], picture: Path) -> dict[str, Any]:
+    """枠の一覧 ``effectitem-measure`` はこれだけを見て切り出し、Sashimono でも描く"""
+    return {
+        "width": WIDTH,
+        "height": HEIGHT,
+        "fps": FPS,
+        "slots": [
+            {
+                "index": index,
+                "name": slot.name,
+                "below": slot.below,
+                "effects": list(slot.effects),
+                "opacity": slot.opacity,
+                "start": slot.start,
+                "length": EFFECT_SLOT,
+                "items": effect_items(slot, picture),
+            }
+            for index, slot in enumerate(slots)
+        ],
+    }
+
+
+def _clear_effect_item_results(work: Path) -> None:
+    """前の測り結果を捨てる 残すと、新しい枠の一覧に対応しない表や絵を読んでしまう"""
+    (work / "effectitem-report.json").unlink(missing_ok=True)
+    images = work / "images"
+    if images.is_dir():
+        for old in images.glob("effectitem-*.png"):
+            old.unlink()
+
+
+def command_effect_item_build(arguments: argparse.Namespace) -> int:
+    # 絶対パスにしてから書く 相対のまま `.ymmp` へ書くと YMM4 が絵を見つけられない
+    work: Path = arguments.work.resolve()
+    work.mkdir(parents=True, exist_ok=True)
+    _clear_effect_item_results(work)
+    # 画面いっぱいの絵は格子の探りと同じ下地 位置で色が変わるので、縮めた・ずらした
+    # 絵が元の絵の上に重なったか（黒を敷いた読み）、黒の上に出たか（置き換える読み）が見える
+    picture = work / "effectitem-probe-picture.png"
+    _save_png(mesh_pattern(), picture)
+    slots = build_effect_item_slots()
+    items = [item for slot in slots for item in effect_items(slot, picture)]
+    length = max(slot.start for slot in slots) + EFFECT_SLOT + GAP
+    project = work / "effectitem-probe.ymmp"
+    write_document(items, length, project)
+    (work / "effectitem-probe.json").write_text(
+        json.dumps(effect_item_manifest(slots, picture), ensure_ascii=False, indent=1),
+        encoding="utf-8",
+    )
+    print(f"{len(slots)} 枠を並べた（{length} フレーム、{length / FPS:.1f} 秒）")
+    video = work / "effectitem-probe.mp4"
+    if video.exists():
+        print(f"{video} は前の探りの書き出しです 作り直した方で書き出し直してください")
+    print(f"YMM4 で {project} を開き、{video} として書き出してください")
+    print(f"書き出しは {WIDTH}x{HEIGHT}・{FPS}fps・頭から終わりまで（範囲を絞らない）")
+    print_export_hint(project, video)
+    return 0
+
+
+def effect_item_reading(differences: dict[str, float]) -> str:
+    """YMM4 との差が小さい方の読み 2 つの読みが同じ絵なら見分けない"""
+    framebuffer, filtered = differences[EFFECT_FRAMEBUFFER], differences[EFFECT_FILTER]
+    if abs(framebuffer - filtered) < EFFECT_SAME:
+        return "見分けない"
+    return EFFECT_FRAMEBUFFER if framebuffer < filtered else EFFECT_FILTER
+
+
+def command_effect_item_measure(arguments: argparse.Namespace) -> int:
+    from sashimono.core.model import FILTER_KIND
+
+    work: Path = arguments.work
+    manifest_path = work / "effectitem-probe.json"
+    project = work / "effectitem-probe.ymmp"
+    video = work / "effectitem-probe.mp4"
+    _clear_effect_item_results(work)
+    if _stale_export(video, manifest_path, project, "effectitem-build"):
+        return 0
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    entries: list[dict[str, Any]] = manifest["slots"]
+    theirs = _read_still_export(video, project, entries, int(manifest["fps"]), _shrink)
+    if theirs is None:
+        return 0
+    readings = {
+        EFFECT_FRAMEBUFFER: _render_still_slots(
+            entries, adjust=partial(read_effect_items_as, "framebuffer")
+        ),
+        EFFECT_FILTER: _render_still_slots(
+            entries, adjust=partial(read_effect_items_as, FILTER_KIND)
+        ),
+    }
+    images = work / "images"
+    images.mkdir(exist_ok=True)
+    rows: list[dict[str, Any]] = []
+    for index, entry in enumerate(entries):
+        a = theirs[index]
+        drawn = {name: pictures[index] for name, pictures in readings.items()}
+        row: dict[str, Any] = {"name": entry["name"]}
+        if a is None or any(picture is None for picture in drawn.values()):
+            row["reading"] = "絵が無い"
+            rows.append(row)
+            continue
+        differences = {
+            name: float(np.abs(a - picture).mean())
+            for name, picture in drawn.items()
+            if picture is not None
+        }
+        row["difference"] = differences
+        row["reading"] = effect_item_reading(differences)
+        side = np.concatenate([a, *[p for p in drawn.values() if p is not None]], axis=1)
+        _save_png(np.clip(side, 0, 255).astype(np.uint8), images / f"effectitem-{index:02d}.png")
+        rows.append(row)
+    print(f"{'枠':<22}{'黒を敷く読みとの差':>18}{'置き換える読みとの差':>20}{'近い方':>22}")
+    for row in rows:
+        difference = row.get("difference")
+        if difference is None:
+            print(f"{row['name']:<22}{'-':>18}{'-':>20}{row['reading']:>22}")
+            continue
+        print(
+            f"{row['name']:<22}{difference[EFFECT_FRAMEBUFFER]:>18.1f}"
+            f"{difference[EFFECT_FILTER]:>20.1f}{row['reading']:>22}"
+        )
+    print()
+    print("差は 480x270 に縮めた絵の 0〜255 の平均 並べた絵は YMM4・黒を敷く・置き換えるの順")
+    (work / "effectitem-report.json").write_text(
+        json.dumps({"rows": rows}, ensure_ascii=False, indent=1), encoding="utf-8"
+    )
+    print(f"{work / 'effectitem-report.json'} へ書いた 並べた絵は {images} の effectitem-*.png")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--work", type=Path, default=DEFAULT_WORK)
@@ -2355,6 +3039,10 @@ def main() -> int:
         action="store_true",
         help="Sashimono で描いて並べるのを飛ばし、YMM4 の書き出しだけを測る",
     )
+    commands.add_parser("zoom-build")
+    commands.add_parser("zoom-measure")
+    commands.add_parser("effectitem-build")
+    commands.add_parser("effectitem-measure")
     arguments = parser.parse_args()
     runners: dict[str, Callable[[argparse.Namespace], int]] = {
         "build": command_build,
@@ -2365,6 +3053,10 @@ def main() -> int:
         "mesh-measure": command_mesh_measure,
         "video-rate-build": command_video_rate_build,
         "video-rate-measure": command_video_rate_measure,
+        "zoom-build": command_zoom_build,
+        "zoom-measure": command_zoom_measure,
+        "effectitem-build": command_effect_item_build,
+        "effectitem-measure": command_effect_item_measure,
     }
     return runners[arguments.command](arguments)
 
