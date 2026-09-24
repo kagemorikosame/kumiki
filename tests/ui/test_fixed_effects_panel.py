@@ -41,8 +41,8 @@ def panel(qt_application: QApplication) -> Iterator[InspectorPanel]:
 
 
 def _sections(panel: InspectorPanel) -> list[_Section]:
-    # 先頭はクリップ自身の欄 その後ろがエフェクトの欄
-    return panel._body.findChildren(_Section)[1:]
+    # 音声のクリップは 音声の組（固定の欄）→ 足したエフェクト の順に並ぶ
+    return panel._body.findChildren(_Section)
 
 
 def _buttons(section: _Section) -> dict[str, QToolButton]:
@@ -60,6 +60,7 @@ def test_the_fixed_effect_shows_a_lock_instead_of_remove_and_move(
     panel.set_clip(clip.id)
 
     fixed, loose = _sections(panel)
+    assert fixed.heading == "音声"
     assert fixed.findChild(QLabel, "fixed_lock") is not None
     assert not {"✕", "▲", "▼"} & set(_buttons(fixed))
     # 無効にはできる 切り替えまで消すと、効かせたくないときの逃げ道が無い
@@ -73,11 +74,11 @@ def test_the_fixed_effect_shows_a_lock_instead_of_remove_and_move(
     assert not lock.pixmap().isNull()
     assert lock.toolTip()
 
-    # ふつうのエフェクトは外せるが、固定の物をまたいで上へは動かせない
+    # ふつうのエフェクトは外せるが、固定の物をまたいで下へは動かせない
     loose_buttons = _buttons(loose)
     assert loose.findChild(QLabel, "fixed_lock") is None
     assert loose_buttons["✕"].isEnabled()
-    assert not loose_buttons["▲"].isEnabled()
+    assert not loose_buttons["▼"].isEnabled()
 
 
 def test_the_lock_is_drawn_in_the_button_colour(qt_application: QApplication) -> None:

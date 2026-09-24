@@ -37,10 +37,13 @@ from sashimono.core.commands import (
     AddTrack,
     Command,
     InScene,
+    ParamPath,
     RemoveEffect,
+    SetParam,
     SetSource,
     new_scene,
 )
+from sashimono.core.commands.fixed import takes_picture_items, with_fixed_items
 from sashimono.core.commands.insert import DEFAULT_GENERATED_FRAMES
 from sashimono.core.model import (
     AnimatedValue,
@@ -450,7 +453,7 @@ def place(
             )
         if _is_sound(item, known):
             # 音だけの素材を読む動画アイテムでも、止めるのは絵だけ 音のクリップには持たせない
-            heard = replace(placed, hold_at=None)
+            heard = replace(placed, hold_at=None, native_size=False)
             prepared.append((item, None, _with_audio_effects(heard, item)))
             continue
         prepared.append((item, *_split_sound(placed, item, linked)))
@@ -467,9 +470,15 @@ def place(
     for item, picture, sound in prepared:
         if picture is not None:
             target = track_id if track_id is not None else tracks[item.layer].id
+            # 素材を置いたときと同じく、描画の欄を持たせる 読み込みが写した配置と反転は
+            # 印が付いているので、足りない物（既定のままで写さなかった欄）だけが足される
+            if takes_picture_items(picture):
+                picture = with_fixed_items(picture, picture=True)
             commands.append(AddClip(target, picture))
         if sound is not None:
-            commands.append(AddClip(sound_tracks[id(sound)].id, sound))
+            commands.append(
+                AddClip(sound_tracks[id(sound)].id, with_fixed_items(sound, sound=True))
+            )
     return commands
 
 
@@ -547,6 +556,7 @@ def _split_sound(
         # 音は止めない（ミキサーは読まない） 持たせたままだと、音のクリップの設定画面に
         # 効かない「絵を止める」が出る
         hold_at=None,
+        native_size=False,
         id=new_clip_id(),
     )
     return picture, sound
@@ -664,8 +674,10 @@ def restyle(objects: list[MappedObject], clip: Clip) -> list[Command]:
 
     effects_only = not any(item.has_picture for item in objects)
     if effects_only:
+        # 着せる先のクリップは自分の描画の欄を持っている テンプレートの欄（配置・反転）は
+        # ふつうのエフェクトとして足す 印のまま足すと、外せない配置が着せるたびに増える
         added = [
-            fitted_effect(effect, item.clip.duration, clip.duration - 1)
+            replace(fitted_effect(effect, item.clip.duration, clip.duration - 1), fixed=False)
             for item in objects
             for effect in item.clip.effects
         ]
@@ -703,10 +715,18 @@ def restyle(objects: list[MappedObject], clip: Clip) -> list[Command]:
     # 固定の項目（クリップが最初から持つ欄）は外せないので残す 外そうとすると
     # 命令が断られ、着せる操作ごと取り消しになる
     commands.extend(RemoveEffect(clip.id, effect.id) for effect in clip.effects if not effect.fixed)
-    commands.extend(
-        AddEffect(clip.id, fitted_effect(effect, span, clip.duration - 1))
-        for effect in template.clip.effects
-    )
+    for effect in template.clip.effects:
+        fitted = fitted_effect(effect, span, clip.duration - 1)
+        own = next((e for e in clip.effects if e.fixed and e.kind == effect.kind), None)
+        if effect.fixed and own is not None:
+            # テンプレートの描画の欄（字幕の位置など）は、着せる先の同じ欄へ値を写す
+            # 足すと、クリップの欄とテンプレートの欄の 2 つの配置が重なって掛かる
+            commands.extend(
+                SetParam(ParamPath.of_effect(clip.id, own.id, name), value)
+                for name, value in fitted.params.items()
+            )
+            continue
+        commands.append(AddEffect(clip.id, replace(fitted, fixed=False)))
     return commands
 
 

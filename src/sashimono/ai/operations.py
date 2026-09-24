@@ -705,6 +705,13 @@ def _set_clip_property(host: EditorHost, arguments: dict[str, Any]) -> object:
         value = int(str(value))
     elif name == "hold_at":
         value = _hold_at(value)
+    elif name == "source_in":
+        # 読み方は絵を止める時刻と同じ（素材の頭からの秒） 解除の null は無い
+        value = _hold_at(value)
+        if value is None:
+            raise ToolError("source_in は 0 以上の秒で渡してください")
+    elif name in ("clip_to_below", "native_size"):
+        value = bool(value)
     host.apply_commands([SetClipProperty(clip.id, name, value)], f"クリップの{name}を変更")
     return {"name": name, "value": str(value)}
 
@@ -1404,8 +1411,11 @@ OPERATIONS: tuple[Operation, ...] = (
     Operation(
         name="set_clip_property",
         description=(
-            "クリップの blend_mode / speed / enabled / stream_index / hold_at を変える"
+            "クリップの blend_mode / speed / enabled / stream_index / hold_at / source_in /"
+            " clip_to_below / native_size を変える"
             " hold_at は絵を止める素材の時刻（秒） null で止めない"
+            " source_in は素材のどこから再生するか（秒） clip_to_below はすぐ下のクリップの形で"
+            "切り抜くか native_size は素材を画素の大きさで置くか（偽なら画面に収める）"
         ),
         schema=_schema(
             {

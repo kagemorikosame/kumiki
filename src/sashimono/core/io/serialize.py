@@ -546,7 +546,7 @@ def _media_from_json(raw: object, version: int) -> MediaItem:
 
 
 def clip_to_json(clip: Clip) -> dict[str, Any]:
-    return {
+    written: dict[str, Any] = {
         "id": clip.id,
         "timeline_start": clip.timeline_start,
         "duration": clip.duration,
@@ -566,6 +566,12 @@ def clip_to_json(clip: Clip) -> dict[str, Any]:
         "effects": [effect_to_json(e) for e in clip.effects],
         "after_effects": [effect_to_json(e) for e in clip.after_effects],
     }
+    if clip.native_size:
+        # 真のときだけ書く 項目が無いことを「画面に収めて描いていた前の版」の目印にする
+        # 版は上げない 前の本体は知らない項目を捨てて開き、画面に収めて描く（見た目は
+        # 変わるが開ける） 版を上げると、前の本体では開くことさえできなくなる
+        written["native_size"] = True
+    return written
 
 
 def clip_from_json(raw: object, *, on_audio_track: bool = False) -> Clip:
@@ -624,6 +630,8 @@ def clip_from_json(raw: object, *, on_audio_track: bool = False) -> Clip:
         clip_to_below=_get_bool(data, "clip_to_below", False),
         enabled=_get_bool(data, "enabled", True),
         id=ClipId(_get_str(data, "id")),
+        # 項目が無ければ画面に収める（:func:`clip_to_json`）
+        native_size=_get_bool(data, "native_size", False),
     )
 
 

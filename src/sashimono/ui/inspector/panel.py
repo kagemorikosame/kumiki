@@ -8,7 +8,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import replace
+from fractions import Fraction
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QIcon, QPainter, QPainterPath, QPen, QPixmap
@@ -41,6 +43,14 @@ from sashimono.core.commands import (
     SetKeyframe,
     SetParam,
 )
+from sashimono.core.commands.fixed import (
+    FADE_EFFECT_KIND,
+    FLIP_EFFECT_KIND,
+    TRANSFORM_EFFECT_KIND,
+    VOLUME_EFFECT_KIND,
+    fixed_effect,
+    takes_picture_items,
+)
 from sashimono.core.io import Preset, PresetStore
 from sashimono.core.model import (
     AnimatedValue,
@@ -50,8 +60,10 @@ from sashimono.core.model import (
     EffectId,
     ParamValue,
     Project,
+    Track,
+    TrackKind,
 )
-from sashimono.effects import ParameterSpec, TrackSpec, registry
+from sashimono.effects import CheckSpec, ParameterSpec, TrackSpec, registry
 from sashimono.effects.blending import BLEND_MODES
 from sashimono.effects.sources import source_registry
 from sashimono.engine.gpu import BlendMode
@@ -87,6 +99,10 @@ def _same_effect(
     found = next((e for e in mine if e.id == effect_id), None)
     if found is None:
         return None
+    if found.fixed:
+        # 描画・音声の欄どうしで当てる 何個目かで数えると、相手が同じ種類のふつうの
+        # エフェクトを欄より前に持つとき、欄ではなくそちらの値が変わる
+        return next((e for e in theirs if e.fixed and e.kind == found.kind), None)
     # 同じ種類が何個目かを数える 種類の一覧から探すと、2 個目以降でも 0 番目が出る
     index = sum(1 for e in mine[: mine.index(found)] if e.kind == found.kind)
     same = [e for e in theirs if e.kind == found.kind]
@@ -142,6 +158,10 @@ class InspectorPanel(QWidget):
         self._frame = 0
         #: パラメータごとの入力欄 プロジェクトが変わったときに値を入れ直す
         self._editors: dict[tuple[str, str], ParameterEditor] = {}
+        #: 前の版のファイルで、クリップがまだ持っていない描画・音声の欄 既定の値で見せ、
+        #: 触ったときに :class:`AddEffect` で足してから値を入れる（1 回の取り消しで戻る）
+        #: 開いただけで足すと、見ただけのクリップまで変更が入り、保存を促される
+        self._virtual: dict[EffectId, tuple[ClipId, Effect]] = {}
 
         #: 何のクリップの設定を見ているか（種類・名前・トラック）
         self._title = ClipHeader(self)
@@ -209,10 +229,13 @@ class InspectorPanel(QWidget):
     # --- 組み立て ---
 
     def _clip(self) -> Clip | None:
+        located = self._located()
+        return located[1] if located is not None else None
+
+    def _located(self) -> tuple[Track, Clip] | None:
         if self._project is None or self._clip_id is None:
             return None
-        located = self._project.timeline.locate_clip(self._clip_id)
-        return located[1] if located is not None else None
+        return self._project.timeline.locate_clip(self._clip_id)
 
     def _rebuild(self) -> None:
         """中身を作り直す
@@ -222,31 +245,47 @@ class InspectorPanel(QWidget):
         ぶんなら十分に速い
         """
         self._editors.clear()
+        self._virtual.clear()
         while self._body_layout.count():
             item = self._body_layout.takeAt(0)
             widget = item.widget() if item is not None else None
             if widget is not None:
                 widget.deleteLater()
 
-        clip = self._clip()
-        if clip is None:
+        located = self._located()
+        if located is None:
             self._title.show_identity(None)
             self._add_button.setEnabled(False)
             self._preset_button.setEnabled(False)
             self._body_layout.addStretch(1)
             return
+        track, clip = located
 
         self._add_button.setEnabled(True)
         self._preset_button.setEnabled(True)
         self._show_identity(clip)
 
-        self._body_layout.addWidget(self._build_clip_section(clip))
+        # YMM4 のアイテムの並び 描画 → 中身 → 動画・音声 → 足したエフェクト
+        # 音声トラックのクリップは絵を描かないので描画の組を出さない（出すと、動かしても
+        # 何も変わらない合成方法や不透明度が並ぶ） 映像トラックのクリップは音を鳴らさない
+        # ので音声の組を出さない（リンクした音は音声トラックのクリップの側にある）
+        sound = track.kind is TrackKind.AUDIO
+        shown: set[EffectId] = set()
+        if not sound:
+            self._body_layout.addWidget(self._build_picture_group(clip, shown))
         if clip.source is not None:
             section = self._build_source_section(clip)
             if section is not None:
                 self._body_layout.addWidget(section)
+        if sound:
+            self._body_layout.addWidget(self._build_sound_group(clip, shown))
+        elif self._is_movie(clip):
+            self._body_layout.addWidget(self._build_movie_group(clip))
 
+        self._body_layout.addWidget(_heading("音声エフェクト" if sound else "映像エフェクト"))
         for index, effect in enumerate(clip.effects):
+            if effect.id in shown:
+                continue
             self._body_layout.addWidget(self._build_effect_section(clip, effect, index))
         # 場面切り替えは、前の場面（上のエフェクト）と後の場面で別に積む
         if clip.source is not None and clip.source.kind == "transition":
@@ -290,23 +329,140 @@ class InspectorPanel(QWidget):
         )
         return blend
 
-    def _build_clip_section(self, clip: Clip) -> QWidget:
-        section = _Section("クリップ")
+    # --- 最初から持つ欄（YMM4 の描画・動画・音声の組） ---
 
-        # フィルタは下の絵を置き換えるだけで、合成方法を使わない 出しておくと、
-        # 選んでも何も変わらない欄を触らせることになる
-        if not clip.is_filter:
-            section.add_row("合成方法", self._blend_editor(section, clip))
+    def _fixed_of(self, clip: Clip, kind: str) -> Effect:
+        """クリップが持つ ``kind`` の欄 前の版のファイルで持っていなければ、既定の値の仮の物
+
+        仮の物は触ったときに初めてクリップへ足す（:meth:`_send`）
+        """
+        found = next((e for e in clip.effects if e.fixed and e.kind == kind), None)
+        if found is not None:
+            return found
+        virtual = fixed_effect(kind)
+        self._virtual[virtual.id] = (clip.id, virtual)
+        return virtual
+
+    def _effect_row(
+        self, section: _Section, clip: Clip, effect: Effect, name: str, label: str
+    ) -> None:
+        """欄のエフェクトの項目を 1 行 表示名は YMM4 の欄の名前にする"""
+        definition = registry.get(effect.kind)
+        spec = definition.spec(name) if definition is not None else None
+        if spec is None:  # pragma: no cover - 固定の項目の定義は必ずある
+            return
+        path = ParamPath.of_effect(clip.id, effect.id, name)
+        value = effect.params.get(name)
+        section.add_row(
+            label, self._make_editor(spec, path, value), self._keyframe_button(path, value)
+        )
+
+    def _fixed_header(self, section: _Section, clip: Clip, effects: Sequence[Effect]) -> None:
+        """組の見出しに、欄をまとめて切る切り替えと鍵の印を出す
+
+        欄は外せないが無効にはできる（P1 の決まり） 1 つずつの切り替えを並べると、
+        YMM4 の組の中に無い項目が増えて並びが崩れる
+        """
+        enabled = all(effect.enabled for effect in effects)
+        toggle = QToolButton()
+        toggle.setObjectName("fixed_toggle")
+        toggle.setCheckable(True)
+        toggle.setChecked(enabled)
+        toggle.setText("有効" if enabled else "無効")
+        toggle.setToolTip("この組の欄を掛けるかどうか 無効にすると既定の置き方・鳴り方に戻る")
+        toggle.setAutoRaise(True)
+        toggle.toggled.connect(
+            lambda state: self._send(
+                [SetEffectEnabled(clip.id, effect.id, bool(state)) for effect in effects],
+                "欄を有効化" if state else "欄を無効化",
+            )
+        )
+        section.add_header_widget(toggle)
+        section.add_header_widget(_lock_label())
+
+    def _build_picture_group(self, clip: Clip, shown: set[EffectId]) -> QWidget:
+        """描画の組 YMM4 の並び（X・Y・不透明度・拡大率・回転角・合成モード・左右反転・
+        クリッピング）のうち、今あるものだけを出す"""
+        section = _Section("描画")
+        placed = takes_picture_items(clip)
+        transform = flip = None
+        if placed:
+            flip = self._fixed_of(clip, FLIP_EFFECT_KIND)
+            transform = self._fixed_of(clip, TRANSFORM_EFFECT_KIND)
+            shown.update((flip.id, transform.id))
+            self._fixed_header(section, clip, (flip, transform))
+            self._effect_row(section, clip, transform, "pos_x", "X")
+            self._effect_row(section, clip, transform, "pos_y", "Y")
 
         opacity_spec = TrackSpec("opacity", "不透明度", 0, 1, 1, step=0.01)
-        editor = self._make_editor(
-            opacity_spec, ParamPath.of_clip(clip.id, "opacity"), clip.opacity
-        )
+        opacity_path = ParamPath.of_clip(clip.id, "opacity")
         section.add_row(
             "不透明度",
-            editor,
-            self._keyframe_button(ParamPath.of_clip(clip.id, "opacity"), clip.opacity),
+            self._make_editor(opacity_spec, opacity_path, clip.opacity),
+            self._keyframe_button(opacity_path, clip.opacity),
         )
+        if transform is not None:
+            self._effect_row(section, clip, transform, "scale", "拡大率")
+            self._effect_row(section, clip, transform, "rotation", "回転角")
+        # フィルタは下の絵を置き換えるだけで、合成方法も切り抜きも使わない 出しておくと、
+        # 選んでも何も変わらない欄を触らせることになる
+        if not clip.is_filter:
+            section.add_row("合成モード", self._blend_editor(section, clip))
+        if flip is not None:
+            self._effect_row(section, clip, flip, "horizontal", "左右反転")
+        if not clip.is_filter:
+            self._clip_check(section, clip, "clip_to_below", "クリッピング", clip.clip_to_below)
+        if self._native_capable(clip):
+            # 前の版で置いた物は画面に収めて描いている 見た目を変えずに開くため、勝手には
+            # 切り替えない 本人が素材の画素の大きさ（YMM4 の拡大率 100%）へ揃えたいときの道
+            # 表示名は短くする 見出しの列は 96 画素で、長いと頭が切れる
+            self._clip_check(
+                section,
+                clip,
+                "native_size",
+                "画素で置く",
+                clip.native_size,
+                tooltip="拡大率 100% を素材の画素の大きさにします 外すと画面に収めます",
+            )
+        return section
+
+    def _clip_check(
+        self,
+        section: _Section,
+        clip: Clip,
+        name: str,
+        label: str,
+        value: bool,
+        *,
+        tooltip: str = "",
+    ) -> None:
+        editor = create_editor(CheckSpec(name, label, False))
+        editor.setObjectName(f"clip_{name}")
+        editor.setToolTip(tooltip)
+        editor.set_value(value)
+        editor.value_changed.connect(
+            lambda state: self._emit(SetClipProperty(clip.id, name, bool(state)))
+        )
+        section.add_row(label, editor)
+
+    def _native_capable(self, clip: Clip) -> bool:
+        """素材の画素の大きさで置けるクリップか（素材の絵を描くもの）"""
+        if clip.media_id is None or clip.source is not None or self._project is None:
+            return False
+        media = self._project.find_media(clip.media_id)
+        return media is not None and media.has_video
+
+    def _is_movie(self, clip: Clip) -> bool:
+        """動画の組を出すクリップか 静止画には再生の速さも位置も無い"""
+        if clip.media_id is None or clip.source is not None or self._project is None:
+            return False
+        media = self._project.find_media(clip.media_id)
+        return media is not None and media.has_video and not media.is_still
+
+    def _build_movie_group(self, clip: Clip) -> QWidget:
+        """動画の組 再生速度・再生開始位置 音量とパンは音声トラックのクリップの側にある"""
+        section = _Section("動画")
+        self._playback_rows(section, clip)
         if clip.hold_at is not None:
             # 止めた絵は読み込み（YMM4 の素材より長い動画・再生速度 0）で付く 見えないままだと、
             # 絵が動かない理由がどこにも出ず、素材の不具合と取り違える 外す道も置く
@@ -316,6 +472,86 @@ class InspectorPanel(QWidget):
             release.clicked.connect(lambda: self._emit(SetClipProperty(clip.id, "hold_at", None)))
             section.add_row("絵を止める", held, release)
         return section
+
+    def _build_sound_group(self, clip: Clip, shown: set[EffectId]) -> QWidget:
+        """音声の組 YMM4 の並び（音量・パン・再生速度・再生開始位置・フェードイン・
+        フェードアウト）"""
+        section = _Section("音声")
+        volume = self._fixed_of(clip, VOLUME_EFFECT_KIND)
+        fade = self._fixed_of(clip, FADE_EFFECT_KIND)
+        shown.update((volume.id, fade.id))
+        self._fixed_header(section, clip, (volume, fade))
+        self._effect_row(section, clip, volume, "volume", "音量")
+        self._effect_row(section, clip, volume, "pan", "パン")
+        if clip.media_id is not None and clip.source is None:
+            self._playback_rows(section, clip)
+        self._effect_row(section, clip, fade, "fade_in", "フェードイン")
+        self._effect_row(section, clip, fade, "fade_out", "フェードアウト")
+        return section
+
+    def _playback_rows(self, section: _Section, clip: Clip) -> None:
+        """再生速度（%）と再生開始位置（秒） どちらもクリップ自身の値
+
+        リンクした相手（同じ素材の絵と音）にも同じ値を入れる 片方だけ変えると、絵と音が
+        ずれていく
+        """
+        speed_spec = TrackSpec("speed", "再生速度", 1, 1000, 100, step=1, unit="%")
+        speed = create_editor(speed_spec)
+        speed.setObjectName("clip_speed")
+        speed.set_value(AnimatedValue(float(clip.speed * 100)))
+        speed.value_changed.connect(
+            lambda value: self._set_linked(clip, "speed", _fraction(value, 100), "再生速度を変更")
+        )
+        section.add_row("再生速度", speed)
+
+        media = self._project.find_media(clip.media_id) if self._project and clip.media_id else None
+        # 上限は素材の長さ 分からない素材は 10 時間まで（スライダーが整数で持てる範囲）
+        length = float(media.duration) if media is not None and media.duration > 0 else 36000.0
+        start_spec = TrackSpec(
+            "source_in",
+            "再生開始位置",
+            0,
+            max(length, float(clip.source_in)),
+            0,
+            step=0.01,
+            unit="秒",
+        )
+        start = create_editor(start_spec)
+        start.setObjectName("clip_source_in")
+        start.set_value(AnimatedValue(float(clip.source_in)))
+        start.value_changed.connect(
+            lambda value: self._set_linked(
+                clip, "source_in", _fraction(value, 1), "再生開始位置を変更"
+            )
+        )
+        section.add_row("再生開始位置", start)
+
+    def _set_linked(self, clip: Clip, name: str, value: Fraction, label: str) -> None:
+        """クリップ自身の値を、選んだほかのクリップとリンクした相手にも入れる"""
+        if name == "speed" and value <= 0:
+            return
+        base = SetClipProperty(clip.id, name, value)
+        commands: list[Command] = [base, *self._also_for_others(base)]
+        touched = {c.clip_id for c in commands if isinstance(c, SetClipProperty)}
+        for partner in self._link_partners(touched):
+            commands.append(SetClipProperty(partner, name, value))
+        self._send(commands, label)
+
+    def _link_partners(self, clip_ids: set[ClipId]) -> list[ClipId]:
+        if self._project is None:
+            return []
+        groups = {
+            clip.link_group
+            for track in self._project.timeline.tracks
+            for clip in track.clips
+            if clip.id in clip_ids and clip.link_group is not None
+        }
+        return [
+            clip.id
+            for track in self._project.timeline.tracks
+            for clip in track.clips
+            if clip.link_group in groups and clip.id not in clip_ids
+        ]
 
     def _build_source_section(self, clip: Clip) -> QWidget | None:
         assert clip.source is not None
@@ -415,6 +651,13 @@ class InspectorPanel(QWidget):
         self._emit(SetParam(path, value))
 
     def _on_value_previewed(self, path: ParamPath, value: ParamValue) -> None:
+        pending = self._virtual.get(path.effect_id) if path.effect_id is not None else None
+        if pending is not None:
+            # まだ無い欄は、値を入れた欄を足した絵で見せる 値だけ変えようとすると、
+            # 欄が見つからずにドラッグ中の絵が動かない
+            clip_id, effect = pending
+            self.preview_requested.emit(AddEffect(clip_id, effect.with_param(path.name, value)))
+            return
         self.preview_requested.emit(SetParam(path, value))
 
     def _current_value(self, path: ParamPath) -> ParamValue | None:
@@ -487,7 +730,7 @@ class InspectorPanel(QWidget):
 
         menu = QMenu(self)
         save = menu.addAction("この構成を保存…")
-        save.setEnabled(bool(clip.effects))
+        save.setEnabled(bool(_loose(clip)))
         menu.addSeparator()
 
         presets = self._presets.all()
@@ -524,14 +767,33 @@ class InspectorPanel(QWidget):
         )
         if not accepted or not name.strip():
             return
-        self._presets.save(Preset(name=name.strip(), effects=clip.effects))
+        self._presets.save(Preset(name=name.strip(), effects=_loose(clip)))
 
     def _emit(self, command: Command, label: str | None = None) -> None:
         commands = [command, *self._also_for_others(command)]
         text = label or command.label
         if len(commands) > 1:
             text = f"{text}（{len(commands)} 本）"
-        self.commands_requested.emit(commands, text)
+        self._send(commands, text)
+
+    def _send(self, commands: list[Command], label: str) -> None:
+        """コマンドをまとめて出す（1 回の取り消しで戻る）
+
+        まだクリップに無い欄（:attr:`_virtual`）を指すものがあれば、その前に欄を足す
+        足すのと値を入れるのを別々に出すと、取り消しが 2 段になり、1 回戻しただけでは
+        既定の値の欄が残る
+        """
+        materialized: list[Command] = []
+        added: set[EffectId] = set()
+        for command in commands:
+            target = _effect_of(command)
+            pending = self._virtual.get(target) if target is not None else None
+            if pending is not None and target not in added:
+                clip_id, effect = pending
+                materialized.append(AddEffect(clip_id, effect))
+                added.add(effect.id)
+            materialized.append(command)
+        self.commands_requested.emit(materialized, label)
 
     def _also_for_others(self, command: Command) -> list[Command]:
         """同じ設定を、選んでいるほかのクリップにも当てるコマンド
@@ -577,6 +839,55 @@ class InspectorPanel(QWidget):
         both = (*clip.effects, *clip.after_effects)
         effect = next((e for e in both if e.id == owner), None)
         return effect.params.get(name) if effect is not None else None
+
+
+def _effect_of(command: Command) -> EffectId | None:
+    """コマンドが指すエフェクト（値を変える・点を打つ・切り替える物）"""
+    if isinstance(command, SetParam | SetKeyframe | RemoveKeyframe | ClearKeyframes):
+        return command.path.effect_id
+    if isinstance(command, SetEffectEnabled):
+        return command.effect_id
+    return None
+
+
+def _loose(clip: Clip) -> tuple[Effect, ...]:
+    """足したエフェクト（最初から持つ欄を除く）
+
+    プリセットには欄を入れない 入れると当てるたびに既定のままの配置や反転が
+    ふつうのエフェクトとして増え、足した物の一覧が読めなくなる
+    """
+    return tuple(effect for effect in clip.effects if not effect.fixed)
+
+
+def _fraction(value: ParamValue, scale: int) -> Fraction:
+    """数の入力欄の値を、クリップが持つ分数へ ``scale`` で割る（% を倍率へ）
+
+    小数のまま渡すと保存の所で分数に直せない（SetClipProperty が断る） 入力欄の
+    刻みより細かい桁は意味が無いので丸める
+    """
+    number = value.static if isinstance(value, AnimatedValue) else 0.0
+    return Fraction(number).limit_denominator(1_000_000) / scale
+
+
+def _heading(text: str) -> QLabel:
+    """足したエフェクトの一覧の見出し（YMM4 の「映像エフェクト」「音声エフェクト」）"""
+    label = QLabel(text)
+    label.setObjectName("effects_heading")
+    label.setStyleSheet(f"color: {Colors.TEXT_MUTED.name()}; font-weight: bold;")
+    return label
+
+
+def _lock_label() -> QLabel:
+    lock = QLabel()
+    lock.setObjectName("fixed_lock")
+    lock.setPixmap(lock_pixmap(lock.devicePixelRatioF()))
+    lock.setAccessibleName("固定の項目")
+    lock.setToolTip(
+        "クリップが最初から持つ項目です 外すことと並べ替えはできません"
+        " 無効にはできます 重ねて掛けたいときは同じエフェクトを追加してください"
+    )
+    lock.setStyleSheet("border: none;")
+    return lock
 
 
 #: 鍵の印を見せる大きさ（論理画素） 見出しの ▲ ▼ ✕ の文字と同じくらい
@@ -643,6 +954,8 @@ class _Section(QFrame):
         after: bool = False,
     ) -> None:
         super().__init__()
+        #: 見出しの言葉 組の並び（描画 → 中身 → 動画・音声 → エフェクト）を試験で見る
+        self.heading = title
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setStyleSheet(
             f"QFrame {{ background-color: {Colors.PANEL.name()};"
@@ -662,6 +975,7 @@ class _Section(QFrame):
         label.setStyleSheet(f"color: {Colors.TEXT.name()}; font-weight: bold; border: none;")
         header.addWidget(label)
         header.addStretch(1)
+        self._header = header
 
         self._after = after
         if effect is not None and clip_id is not None:
@@ -669,7 +983,7 @@ class _Section(QFrame):
             if effect.fixed:
                 # 外すことも並べ替えることもできない 押せないボタンを並べるより、
                 # 鍵の印で「最初からある欄」だと示す方が、押せない理由まで伝わる
-                header.addWidget(self._lock())
+                header.addWidget(_lock_label())
             else:
                 header.addWidget(self._move(effect, clip_id, index - 1, "▲", up_movable))
                 header.addWidget(self._move(effect, clip_id, index + 1, "▼", down_movable))
@@ -729,17 +1043,9 @@ class _Section(QFrame):
         )
         return button
 
-    def _lock(self) -> QLabel:
-        lock = QLabel()
-        lock.setObjectName("fixed_lock")
-        lock.setPixmap(lock_pixmap(lock.devicePixelRatioF()))
-        lock.setAccessibleName("固定の項目")
-        lock.setToolTip(
-            "クリップが最初から持つ項目です 外すことと並べ替えはできません"
-            " 無効にはできます 重ねて掛けたいときは同じエフェクトを追加してください"
-        )
-        lock.setStyleSheet("border: none;")
-        return lock
+    def add_header_widget(self, widget: QWidget) -> None:
+        """見出しの右端へ部品を足す（描画・音声の組の切り替えと鍵の印）"""
+        self._header.addWidget(widget)
 
     def _remove(self, effect: Effect, clip_id: ClipId) -> QToolButton:
         button = QToolButton()

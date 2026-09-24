@@ -15,6 +15,7 @@ from fractions import Fraction
 
 from sashimono.core.commands.base import Command
 from sashimono.core.commands.edit import AddClip, AddTrack
+from sashimono.core.commands.fixed import with_fixed_items
 from sashimono.core.model import (
     Clip,
     GeneratedSource,
@@ -233,10 +234,15 @@ def burn_subtitles(
         commands.append(
             AddClip(
                 track.id,
-                Clip(
-                    timeline_start=start,
-                    duration=end - start,
-                    source=template.with_param(text_param, text),
+                # 置いたテキストと同じく描画の欄を持たせる 焼き込んだ字幕だけ欄が無いと、
+                # 位置を直すのに変形をエフェクトの一覧から探して足すことになる
+                with_fixed_items(
+                    Clip(
+                        timeline_start=start,
+                        duration=end - start,
+                        source=template.with_param(text_param, text),
+                    ),
+                    picture=True,
                 ),
             )
         )

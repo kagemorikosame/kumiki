@@ -758,6 +758,9 @@ def register_optics_effects() -> None:
                 CheckSpec("vertical", "上下", False),
             ),
             fragment_shader=_FLIP,
+            # どちらも裏返さなければ絵は変わらない クリップが最初から持つ左右反転は
+            # この値で付く（:mod:`sashimono.core.commands.fixed`）
+            idle_when=(("horizontal", False), ("vertical", False)),
         ),
         EffectDefinition(
             kind="after_image",
