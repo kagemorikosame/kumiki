@@ -191,6 +191,10 @@ def _map_video_effects(
                 _or_skip(gradient_effect(entry, report, length=length, keyframes=keyframes))
             )
             continue
+        if name == "MosaicEffect" and str(entry.get("MosaicType") or "Rectangle") != "Rectangle":
+            # 三角（Triangle 4 本）とドロネー（Delaunay 2 本）は四角の粒しか持たないこちらでは
+            # 同じ絵にならない 粒の大きさは合わせて四角で描き、違うことを数えて残す
+            report.note_missing(f"YMM4 のモザイクの形: {entry.get('MosaicType')}")
         built = _video_effect(name, entry, length, keyframes)
         if built is None:
             built = map_effect(name, entry, report, length=length, keyframes=keyframes)
@@ -257,7 +261,16 @@ def _video_effect(name: str, entry: dict[str, Any], length: int, keyframes: Any)
         return None if definition is None else definition.create(radius=value("Blur", 8.0))
     if kind == "mosaic":
         definition = registry.get("mosaic")
-        return None if definition is None else definition.create(size=value("Size", 16.0))
+        if definition is None:  # pragma: no cover - 標準エフェクトは必ずある
+            return None
+        # 粒の大きさは形ごとの設定（MosaicParameter）の中にある 手元の実物 7 本は
+        # どれもそこにしか持たず、上の段を見ていたころは全部が既定の 16 で描かれていた
+        # （ドット絵風加工は 4 のはずが 4 倍の粗さ） 上の段は古い形のために残す
+        parameter = entry.get("MosaicParameter")
+        if isinstance(parameter, dict) and "Size" in parameter:
+            size = animated(parameter.get("Size"), 16.0, length=length, keyframes=keyframes)
+            return definition.create(size=size)
+        return definition.create(size=value("Size", 16.0))
     if kind == "noise":
         definition = registry.get("noise")
         return None if definition is None else definition.create(strength=value("Intensity", 20.0))
