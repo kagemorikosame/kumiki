@@ -24,7 +24,7 @@ from fractions import Fraction
 from pathlib import Path, PureWindowsPath
 
 from sashimono.compat.aviutl.exo import ExoParseError, load_exo
-from sashimono.compat.aviutl.mapping import map_object
+from sashimono.compat.aviutl.mapping import SILENT_SOUND, map_object
 from sashimono.compat.aviutl.report import CompatibilityReport, global_report
 from sashimono.compat.mapped import MappedObject, fitted_effect, fitted_value
 from sashimono.compat.ymm4.template import Ymm4ParseError, load_template, map_template
@@ -460,6 +460,8 @@ def place(
             if linked is not None and not linked.audio_streams:
                 # 音の無い素材を指す音声ファイルは、元のソフトでも何も鳴らず何も描かない
                 # 置くと ``AddClip`` が断り、1 回の Undo にまとめた配置が全部取り消される
+                # 黙って落とすと、読み込んだ数が合わない理由を追えないので数えて残す
+                log.note_missing(SILENT_SOUND)
                 continue
             # 音だけの素材を読む動画アイテムでも、止めるのは絵だけ 音のクリップには持たせない
             heard = replace(placed, hold_at=None, native_size=False)

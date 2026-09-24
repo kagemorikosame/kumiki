@@ -18,6 +18,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from sashimono.compat.aviutl.mapping import SILENT_SOUND
 from sashimono.compat.aviutl.report import CompatibilityReport
 from sashimono.compat.catalog import Probe, gather_media, place
 from sashimono.compat.mapped import MappedObject
@@ -799,7 +800,14 @@ def test_an_audio_object_pointing_at_a_silent_video_is_left_out(tmp_path: Path) 
     def no_sound(path: Path) -> MediaItem | None:
         return replace(movie(path), audio_streams=())
 
-    project = put([media_object(silent, "音声ファイル", layer=2)], Project.create(), no_sound)
+    objects = [media_object(silent, "音声ファイル", layer=2)] * 2
+    report = CompatibilityReport()
+    project = Project.create()
+    plan = gather_media(objects, project, no_sound)
+    placed = place(objects, project, media=plan.media, report=report)
+    project = apply(project, [*plan.commands, *placed])
 
     assert clips_of(project, TrackKind.VIDEO) == []
     assert clips_of(project, TrackKind.AUDIO) == []
+    # 黙って落とすと読み込んだ数が合わない理由を追えない 落とした数だけ数える
+    assert report.missing[SILENT_SOUND] == 2

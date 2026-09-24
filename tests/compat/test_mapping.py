@@ -13,7 +13,13 @@ import pytest
 
 from sashimono.compat.aviutl.encoding import encode_utf16_hex
 from sashimono.compat.aviutl.exo import parse_exo
-from sashimono.compat.aviutl.mapping import MappedObject, map_exo, map_object, media_paths
+from sashimono.compat.aviutl.mapping import (
+    SILENT_SOUND,
+    MappedObject,
+    map_exo,
+    map_object,
+    media_paths,
+)
 from sashimono.compat.aviutl.report import CompatibilityReport
 from sashimono.core.commands import AddClip, AddMedia
 from sashimono.core.model import (
@@ -308,7 +314,7 @@ def _media_item(*, video: bool, audio_index: int | None) -> MediaItem:
     )
 
 
-def _import_exo(name: str, item: MediaItem) -> Project:
+def _import_exo(name: str, item: MediaItem, report: CompatibilityReport | None = None) -> Project:
     """UI の読み込みと同じ順で、素材の登録と配置を 1 つずつ当てる"""
     exo = parse_exo(second_generation(name, MEDIA_PATH))
     project = AddMedia(item).apply(Project.create(ProjectSettings(frame_rate=RATE)))
@@ -317,7 +323,7 @@ def _import_exo(name: str, item: MediaItem) -> Project:
         project,
         media={MEDIA_PATH: item.id},
         items={item.id: item},
-        report=CompatibilityReport(),
+        report=report if report is not None else CompatibilityReport(),
     )
     for command in commands:
         project = command.apply(project)
@@ -352,6 +358,18 @@ class TestSoundFiles:
         assert clip.stream_index == 1
         # 音の欄だけを持つ 描画の欄があると、設定画面に効かない位置や反転が並ぶ
         assert [effect.kind for effect in clip.effects] == ["audio_volume", "audio_fade"]
+
+    def test_a_sound_file_pointing_at_a_silent_video_is_left_out_and_counted(self) -> None:
+        """音の無い素材を指す音声ファイルは置かず、互換性の記録に数える
+
+        音声トラックへ置くと ``AddClip`` が断って読み込み全体が失敗し、映像トラックへ
+        置くと動画が描かれる 黙って落とすと、読み込んだ数が合わない理由を追えない
+        """
+        report = CompatibilityReport()
+        project = _import_exo("音声ファイル", _media_item(video=True, audio_index=None), report)
+
+        assert all(not track.clips for track in project.timeline.tracks)
+        assert report.missing[SILENT_SOUND] == 1
 
     def test_a_video_file_stays_on_a_video_track(self) -> None:
         # 音声ファイルを分けた道で、動画ファイルまで音声トラックへ持っていかない

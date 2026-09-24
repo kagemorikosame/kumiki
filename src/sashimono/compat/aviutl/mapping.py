@@ -563,6 +563,11 @@ def _media_file(entry: ExoEntry) -> str:
     return entry.value("ファイル", "file").strip()
 
 
+#: 音の無い素材を指すので置かなかった音声ファイルの記録 テンプレートの配置
+#: （:func:`~sashimono.compat.catalog.place`）と同じ行に数える
+SILENT_SOUND = "音の無い素材を指す音声ファイル（置かずに飛ばした）"
+
+
 def map_exo(
     exo: ExoFile,
     project: Project,
@@ -600,8 +605,12 @@ def map_exo(
 
     def silent(item: MappedObject) -> bool:
         # 音の無い素材を指す音声ファイルは元のソフトでも何も鳴らさない 置くと断られる
+        # 黙って落とすと、読み込んだ数が合わない理由を追えないので数えて残す
         linked = content(item) if _heard(item) else None
-        return linked is not None and not linked.audio_streams
+        if linked is None or linked.audio_streams:
+            return False
+        log.note_missing(SILENT_SOUND)
+        return True
 
     mapped = [item for item in written if item is not None and not silent(item)]
     if not mapped:
