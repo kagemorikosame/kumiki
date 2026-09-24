@@ -514,6 +514,9 @@ class MainWindow(QMainWindow):
         self._add(
             edit_menu, "すべて選択", QKeySequence.StandardKey.SelectAll, self._timeline.select_all
         )
+        # 範囲を決めるのは目盛りの Shift+ドラッグ 解除は右クリックのほかにここにも置く
+        # 範囲が横へスクロールして見えていなくても、書き出す前に消せるようにするため
+        self._add(edit_menu, "書き出し範囲を解除", QKeySequence(), self._timeline.clear_work_area)
         edit_menu.addSeparator()
         # Ctrl+G はグラフエディタが先に使っている 今ある割り当ては変えない
         self._add(
@@ -1815,7 +1818,15 @@ class MainWindow(QMainWindow):
             self,
             pipeline_depth=self._preferences.export_pipeline_depth,
             decode_threads=self._preferences.decode_threads,
+            scene_name=self._active_scene_name(),
         ).exec()
+
+    def _active_scene_name(self) -> str | None:
+        """開いているシーンの名前 メインなら ``None``"""
+        if self._active_scene is None:
+            return None
+        scene = self._document.project.find_scene(self._active_scene)
+        return scene.name if scene is not None else None
 
     # --- AviUtl 互換 ---
 
