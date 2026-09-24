@@ -353,9 +353,11 @@ def _promote_placed_volume(
     無かったので、そのままだと外せるふつうのエフェクトとして開く 後で固定の音量調整が
     足されると同じ物が 2 つ並び、どちらが最初からある欄か分からなくなる
 
-    見分け方は 素材のクリップで、先頭のエフェクトが音量調整で、その書き物に印の項目が
-    無い（前の本体が書いた）こと 値は見ない 置いた後で音量を動かした物も、置いたときに
-    付いた物に変わりはない #145 より前に自分で先頭へ足した音量調整も格上げされるが、
+    見分け方は 音声トラックの素材のクリップで、先頭のエフェクトが音量調整で、その書き物に
+    印の項目が無い（前の本体が書いた）こと 映像トラックのクリップには置いたときに何も
+    付かないので、そこの音量調整は本人が足した物 格上げすると外せなくなる 値は見ない
+    置いた後で音量を動かした物も、置いたときに付いた物に変わりはない
+    #145 より前に音声のクリップの先頭へ自分で足した音量調整も格上げされるが、
     それもクリップの音量の欄として扱って困らない（無効にはできる）
     """
     if not media_clip or not effects or not raw_effects:
@@ -566,7 +568,13 @@ def clip_to_json(clip: Clip) -> dict[str, Any]:
     }
 
 
-def clip_from_json(raw: object) -> Clip:
+def clip_from_json(raw: object, *, on_audio_track: bool = False) -> Clip:
+    """:func:`clip_to_json` の逆
+
+    ``on_audio_track`` は置かれているトラックが音声トラックか 前の本体が素材を置いたときに
+    付けた音量調整を見分けるのに使う（:func:`_promote_placed_volume`） トラックの外で読む
+    エイリアスでは偽のまま
+    """
     data = _require(raw, "clip")
     media_id = data.get("media_id")
     if media_id is not None and not isinstance(media_id, str):
@@ -592,7 +600,10 @@ def clip_from_json(raw: object) -> Clip:
     effects = _promote_placed_volume(
         tuple(effect_from_json(e) for e in raw_effects),
         raw_effects,
-        media_clip=media_id is not None and source_raw is None and scene_id is None,
+        media_clip=on_audio_track
+        and media_id is not None
+        and source_raw is None
+        and scene_id is None,
     )
     return Clip(
         timeline_start=_get_int(data, "timeline_start"),
@@ -643,7 +654,10 @@ def _track_from_json(raw: object) -> Track:
     return Track(
         kind=kind,
         name=_get_str(data, "name"),
-        clips=tuple(clip_from_json(c) for c in _get_list(data, "clips")),
+        clips=tuple(
+            clip_from_json(c, on_audio_track=kind is TrackKind.AUDIO)
+            for c in _get_list(data, "clips")
+        ),
         effects=tuple(effect_from_json(e) for e in _get_list(data, "effects")),
         locked=_get_bool(data, "locked", False),
         muted=_get_bool(data, "muted", False),

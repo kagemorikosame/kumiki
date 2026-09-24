@@ -220,6 +220,24 @@ class TestFile:
         loaded = project_from_dict(project_to_dict(unfixed))
         assert not _sound(loaded).effects[0].fixed
 
+    def test_a_volume_on_a_picture_clip_of_an_old_file_stays_removable(
+        self, video_media: MediaItem
+    ) -> None:
+        # 映像トラックのクリップには置いたときに何も付かない そこの先頭の音量調整は
+        # 本人が足した物で、格上げすると外すことも並べ替えることもできなくなる
+        project = _placed(video_media)
+        picture = next(
+            c for t in project.timeline.tracks if t.kind is TrackKind.VIDEO for c in t.clips
+        )
+        project = AddEffect(picture.id, _volume(70)).apply(project)
+        project = AddEffect(picture.id, _blur()).apply(project)
+        loaded = project_from_dict(self._as_old_file(project))
+        (clip,) = [c for t in loaded.timeline.tracks if t.kind is TrackKind.VIDEO for c in t.clips]
+        assert not clip.effects[0].fixed
+        loaded = MoveEffect(clip.id, clip.effects[0].id, 1).apply(loaded)
+        (clip,) = [c for t in loaded.timeline.tracks if t.kind is TrackKind.VIDEO for c in t.clips]
+        RemoveEffect(clip.id, clip.effects[1].id).apply(loaded)
+
     def test_text_clips_of_an_old_file_are_left_alone(self) -> None:
         # 素材のクリップでなければ置いたときの音量調整ではない
         clip = Clip(
