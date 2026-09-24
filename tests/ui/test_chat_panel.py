@@ -407,6 +407,56 @@ class TestModelChoice:
         assert made[0].system_prompt == system_prompt(LayerMode.MIXED)
         assert made[0].model == "claude-sonnet-5"
 
+    def test_a_mode_change_restarts_before_the_next_instruction(
+        self,
+        recorded: tuple[ChatPanel, list[_RecordingSession]],
+        panel: tuple[ChatPanel, FakeHost],
+    ) -> None:
+        # 指示の文は会話を作るときにしか渡せない 作り直さないと、混合にした後も
+        # 分ける方式の説明のまま話し続け、AI が無い組の片方を探し回る
+        widget, made = recorded
+        _, host = panel
+        widget._input.setPlainText("切って")
+        widget.send()
+        widget._handle(AgentEvent(EventKind.TURN_DONE))
+        host.apply_commands([SetLayerMode(LayerMode.MIXED)], "方式")
+        widget._input.setPlainText("もう少し")
+        widget.send()
+        assert len(made) == 2
+        assert made[0].closed
+        assert made[1].system_prompt == system_prompt(LayerMode.MIXED)
+        assert made[1].prompts == ["もう少し"]
+
+    def test_the_same_mode_keeps_the_conversation(
+        self, recorded: tuple[ChatPanel, list[_RecordingSession]]
+    ) -> None:
+        # 方式が同じなのに作り直すと、送るたびにそれまでのやり取りが消える
+        widget, made = recorded
+        for prompt in ("切って", "もう少し"):
+            widget._input.setPlainText(prompt)
+            widget.send()
+            widget._handle(AgentEvent(EventKind.TURN_DONE))
+        assert len(made) == 1
+
+    def test_a_mode_change_waits_for_the_pending_instruction(
+        self,
+        recorded: tuple[ChatPanel, list[_RecordingSession]],
+        panel: tuple[ChatPanel, FakeHost],
+    ) -> None:
+        # 応答を待っている間に畳むと、送った指示が消える 終わった所で作り直す
+        widget, made = recorded
+        _, host = panel
+        widget._input.setPlainText("切って")
+        widget.send()
+        host.apply_commands([SetLayerMode(LayerMode.MIXED)], "方式")
+        widget._input.setPlainText("もう少し")
+        widget.send()
+        assert len(made) == 1
+        assert made[0].prompts == ["切って", "もう少し"]
+        for _ in range(2):
+            widget._handle(AgentEvent(EventKind.TURN_DONE))
+        assert made[0].closed
+
     def test_the_listed_models_are_the_current_ones(self) -> None:
         # 一覧はネットに取りに行かない定数 欠けると、そのモデルを選ぶ手段が無くなる
         ids = {model.id for model in MODELS}

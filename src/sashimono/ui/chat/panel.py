@@ -107,6 +107,8 @@ class ChatPanel(QWidget):
         self._host = host
         self._bridge = EditorBridge(host)
         self._session: AgentSession | None = None
+        #: 会話を作ったときの置き方の方式 指示の文をこの方式で書いたので、変わったら作り直す
+        self._session_mode = ""
         self._approval: Approval | None = None
         self._checkpoint_open = False
         #: 応答が 1 往復終わった回数 無人での確認に使う
@@ -304,19 +306,24 @@ class ChatPanel(QWidget):
         数秒）は busy が立っておらず、その間に畳むと送った指示が消える
         """
         session = self._session
-        if (
-            session is not None
-            and not self._queued
-            and not session.busy
-            and (session.model, session.effort) != self._wanted()
-        ):
+        if session is None or self._queued or session.busy:
+            return
+        if (session.model, session.effort) != self._wanted():
             self._restart_session()
+        elif self._session_mode != self._host.project.settings.layer_mode:
+            # 置き方の方式が会話の途中で変わった 指示の文（system_prompt）は会話を
+            # 作るときにしか渡せないので、繋ぎ直して今の方式の説明を当てる 古い説明の
+            # ままだと、混合にした作品で AI が無いはずの組の片方を探し回る
+            self._restart_session(
+                "置き方の方式が変わったので、次の指示から新しい会話を始めます"
+                "（それまでのやり取りは引き継ぎません）"
+            )
 
     def _wanted(self) -> tuple[str | None, str | None]:
         """いま選んでいる組を、会話が持つ形（空は None）で"""
         return self.model or None, effort_for(self.model, self.effort)
 
-    def _restart_session(self) -> None:
+    def _restart_session(self, note: str = "") -> None:
         session = self._session
         if session is None:
             return
@@ -325,7 +332,8 @@ class ChatPanel(QWidget):
         session.close(wait=False)
         label = self._model.currentText()
         self._note(
-            f"次の指示から {label} で新しい会話を始めます（それまでのやり取りは引き継ぎません）"
+            note
+            or f"次の指示から {label} で新しい会話を始めます（それまでのやり取りは引き継ぎません）"
         )
 
     def _describe_send_key(self) -> None:
@@ -350,6 +358,9 @@ class ChatPanel(QWidget):
 
         # 「ログイン…」から済ませたかもしれない 済んでいれば案内を下げる
         self._login_box.setVisible(not credentials_found())
+        # 方式を変えても知らせは来ない 送る前に確かめ、前の指示がすべて終わっていれば
+        # 今の方式の説明で会話を作り直す（指示が残っている間は、終わった所で当てる）
+        self._restart_when_idle()
         self._input.clear()
         self._say("あなた", prompt)
         self._queued.append(prompt)
@@ -363,6 +374,7 @@ class ChatPanel(QWidget):
             # 会話を始めた時点の方式で指示を書く 分ける方式の説明のまま混合の作品を
             # 触らせると、リンクした音声クリップを探し回る
             layer_mode = self._host.project.settings.layer_mode
+            self._session_mode = layer_mode
             self._session = AgentSession(
                 self._bridge,
                 model=model,
