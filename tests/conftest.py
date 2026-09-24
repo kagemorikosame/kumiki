@@ -91,6 +91,19 @@ def isolated_user_folders(
     monkeypatch.setenv("LOCALAPPDATA", str(base / "local"))
 
 
+@pytest.fixture(autouse=True)
+def decline_matching_video(monkeypatch: pytest.MonkeyPatch) -> None:
+    """「プロジェクトを動画に合わせますか」には合わせないと答える
+
+    尋ねる窓を出すと、答える人がいないまま試験が止まる 合わせないと答えるのは、
+    尋ねるようになる前と同じ結果にして、ほかの試験が置いた素材の長さを変えないため
+    尋ね方そのものを試すときは、その試験の中で差し替え直す
+    """
+    from sashimono.ui import media_match
+
+    monkeypatch.setattr(media_match, "ask_to_match", lambda *_args: False)
+
+
 @pytest.fixture(scope="session")
 def empty_plugin_folders(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
     """試験の間だけ使う汎用プラグインの置き場と、プラグインへ渡す設定の置き場"""

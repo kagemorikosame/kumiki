@@ -104,6 +104,7 @@ from sashimono.engine.decode import ProbeError, probe_media
 from sashimono.engine.decode.batch import ProbeBatch
 from sashimono.engine.render import FrameRenderer, RenderQuality
 from sashimono.links import MANUAL_URL, REPORT_URL
+from sashimono.ui import media_match
 from sashimono.ui.chat import ChatPanel
 from sashimono.ui.export_dialog import ExportDialog
 from sashimono.ui.graph_editor import GraphEditor
@@ -1193,6 +1194,9 @@ class MainWindow(QMainWindow):
         target = self._import_spots.pop(batch, None)
         spot = target.spot if target is not None else None
         scene = target.scene if target is not None else self._active_scene
+        outcomes = batch.results()
+        if self._scene_project(scene) is not None:
+            self._match_project_to([item for item in outcomes if isinstance(item, MediaItem)])
         found = self._scene_project(scene)
         lost = found is None
         if found is None:
@@ -1200,7 +1204,7 @@ class MainWindow(QMainWindow):
         else:
             project = found
 
-        for outcome in batch.results():
+        for outcome in outcomes:
             if isinstance(outcome, ProbeError):
                 failures.append(str(outcome))
                 continue
@@ -1337,6 +1341,8 @@ class MainWindow(QMainWindow):
         ]
         if not media:
             return
+        self._match_project_to(media)
+        project = self.view_project
         commands = place_media(
             project,
             media,
@@ -1416,7 +1422,32 @@ class MainWindow(QMainWindow):
         media = project.find_media(MediaId(media_id))
         if media is None:
             return
-        self.execute_all(insert_media(project, media), f"配置: {media.name}")
+        self._match_project_to([media])
+        self.execute_all(insert_media(self.view_project, media), f"配置: {media.name}")
+
+    def _match_project_to(self, media: list[MediaItem]) -> None:
+        """空のプロジェクトへ最初の動画を置く前に、プロジェクトを動画の形へ合わせる
+
+        合わせるかは設定（:attr:`Preferences.match_video`）で決まる（:mod:`sashimono.ui.media_match`）
+        置くのとは別の取り消しの段にする 置いた後に戻したくなるのは、たいてい置き方の方で、
+        合わせた形まで一緒に戻ると、次に置いたときにまた尋ねられる
+
+        開いているシーンで包まずにプロジェクト全体へ当てる フレームレートはメインと
+        全部のシーンで同じでなければならず、シーンの中だけを変えることはできない
+        置く位置のフレームは、合わせた後のプロジェクトで数え直す（呼び出し側）
+        """
+        commands = media_match.commands_to_match(
+            self, self._preferences.match_video, self._document.project, media
+        )
+        if not commands:
+            return
+        try:
+            with self._document.checkpoint("プロジェクトを動画に合わせる"):
+                for command in commands:
+                    self._document.execute(command)
+        except (ValueError, KeyError) as exc:
+            self.statusBar().showMessage(str(exc), 4000)
+        self._on_project_changed()
 
     def _on_analysis_ready(self, media_id: MediaId) -> None:
         # ワーカースレッドから呼ばれる ここでウィジェットに触ると Qt が落ちるので、

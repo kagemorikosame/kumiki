@@ -29,7 +29,7 @@ from PySide6.QtGui import (
     QResizeEvent,
     QWheelEvent,
 )
-from PySide6.QtWidgets import QGridLayout, QMenu, QScrollBar, QWidget
+from PySide6.QtWidgets import QGridLayout, QMenu, QWidget
 
 from sashimono.core.clipboard import ClipboardContent, copy_clips, cut_commands, paste_commands
 from sashimono.core.commands import (
@@ -63,6 +63,7 @@ from sashimono.engine.cache import MediaAnalyzer
 from sashimono.ui.media_pool import media_ids_in
 from sashimono.ui.theme import Colors, Metrics
 from sashimono.ui.timeline.add_menu import AddSources, TimelineAddMenus
+from sashimono.ui.timeline.auto_scroll import EdgeScroller
 from sashimono.ui.timeline.drop import (
     DropGuide,
     DropPreview,
@@ -73,6 +74,7 @@ from sashimono.ui.timeline.drop import (
     preview_drop,
     spot_at,
 )
+from sashimono.ui.timeline.keyframes import draw_keyframes, keyframe_at
 from sashimono.ui.timeline.layout import TimelineLayout, TrackBand
 from sashimono.ui.timeline.painter import (
     ADD_TRACK_BUTTON_SPACE,
@@ -90,7 +92,9 @@ from sashimono.ui.timeline.painter import (
     track_button_rects,
 )
 from sashimono.ui.timeline.painter import draw_clip as paint_clip
+from sashimono.ui.timeline.track_drag import TrackDragger
 from sashimono.ui.timeline.work_area import WorkAreaEditor
+from sashimono.ui.timeline.zoom_scrollbar import ZoomScrollBar
 
 __all__ = ["TimelineArea", "TimelineView"]
 
@@ -220,8 +224,9 @@ class TimelineView(QWidget):
         #: スクロールバーはビューの外（下と右）に並べる 置くのは :class:`TimelineArea` で、
         #: そこで親が付け替わる それまではビューの子として隠しておく 親を持たせずに作ると、
         #: Python だけが持つ窓になり、ビューと別々の順でごみ集めに壊されて落ちることがある
-        self._hbar = QScrollBar(Qt.Orientation.Horizontal, self)
-        self._vbar = QScrollBar(Qt.Orientation.Vertical, self)
+        #: つまみの端を掴むと、横は拡大率、縦はトラックの高さが変わる（:meth:`_on_span_dragged`）
+        self._hbar = ZoomScrollBar(Qt.Orientation.Horizontal, self)
+        self._vbar = ZoomScrollBar(Qt.Orientation.Vertical, self)
         self._hbar.hide()
         self._vbar.hide()
         self._hbar.setAccessibleName("タイムラインの横スクロール")
@@ -229,6 +234,12 @@ class TimelineView(QWidget):
         self._hbar.valueChanged.connect(self._on_hbar)
         self._vbar.valueChanged.connect(self._on_vbar)
         self._syncing_bars = False
+        #: つまみの端を掴んだときの表示 伸び縮みは掴んだ時点の目盛りで数える
+        self._span_base: TimelineLayout | None = None
+        for bar in (self._hbar, self._vbar):
+            bar.span_started.connect(functools.partial(self._on_span_started, bar))
+            bar.span_dragged.connect(functools.partial(self._on_span_dragged, bar))
+            bar.span_finished.connect(functools.partial(self._on_span_finished, bar))
         self._view_layout = TimelineLayout()
         #: 右クリックの〔追加〕に並べる物の出どころ 試験で差し替える
         self.add_sources = AddSources()
@@ -240,6 +251,10 @@ class TimelineView(QWidget):
         self._work_area = WorkAreaEditor(self._request)
         #: ファイルや素材を引いてきている間の、落ちる所の目安 引いていなければ ``None``
         self._drop_preview: DropPreview | None = None
+        #: ヘッダを掴んでトラックの順を入れ替えるドラッグ
+        self._track_mover = TrackDragger(self._request)
+        #: ドラッグ中に端へ寄ったら表示を送る
+        self._edge_scroll = EdgeScroller(self._on_edge_scroll, self)
 
         self.setAcceptDrops(True)
         self.setMouseTracking(True)
@@ -283,11 +298,11 @@ class TimelineView(QWidget):
         self._sync_scroll_bars()
 
     @property
-    def horizontal_scroll_bar(self) -> QScrollBar:
+    def horizontal_scroll_bar(self) -> ZoomScrollBar:
         return self._hbar
 
     @property
-    def vertical_scroll_bar(self) -> QScrollBar:
+    def vertical_scroll_bar(self) -> ZoomScrollBar:
         return self._vbar
 
     @property
@@ -377,6 +392,62 @@ class TimelineView(QWidget):
         if self._syncing_bars:
             return
         self._view_layout = self._view_layout.scrolled_vertically(value)
+        self.update()
+
+    # --- つまみの端で表示の大きさを変える（中身は zoom_scrollbar.py） ---
+
+    def _on_span_started(self, bar: ZoomScrollBar) -> None:
+        self._span_base = self._view_layout
+        if bar is self._vbar:
+            # 高さは離すまで描画にだけ当てる（境目のドラッグと同じ） 途中をコマンドに
+            # すると、取り消しの履歴が伸び縮みの途中で埋まる
+            self._resize_base = self._project
+
+    def _on_span_dragged(
+        self, bar: ZoomScrollBar, start: float, end: float, moving_start: bool
+    ) -> None:
+        """つまみの見えている範囲が ``start``〜``end`` になるよう、表示の大きさを変える
+
+        値は掴んだ時点の目盛り（横は画素、縦はトラックの帯の画素）で来る 動かしていない
+        側の端は、見ていた場所をそのまま保つ
+        """
+        base = self._span_base
+        if base is None or end <= start:
+            return
+        if bar is self._hbar:
+            scale = base.pixels_per_frame
+            first, last = start / scale, end / scale
+            visible = max(1, self.width() - Metrics.TRACK_HEADER_WIDTH)
+            zoomed = TimelineLayout(
+                pixels_per_frame=visible / (last - first), scroll_y=base.scroll_y
+            )
+            left = last - zoomed.frames_in(self.width()) if moving_start else first
+            self._layout = zoomed.scrolled_to(left)
+            self.update()
+            return
+        project = self._resize_base
+        if project is None:
+            return
+        rows = max(1, self.height() - Metrics.RULER_HEIGHT)
+        factor = rows / (end - start)
+        heights = tuple((t.id, round(t.height * factor)) for t in project.timeline.tracks)
+        self._project = SetTrackHeights(heights).apply(project)
+        top = end * factor - rows if moving_start else start * factor
+        self._layout = self._view_layout.scrolled_vertically(round(top))
+        self.update()
+
+    def _on_span_finished(self, bar: ZoomScrollBar) -> None:
+        self._span_base = None
+        if bar is not self._vbar:
+            return
+        base, self._resize_base = self._resize_base, None
+        if base is None:
+            return
+        preview, self._project = self._project, base
+        if preview.timeline.tracks != base.timeline.tracks:
+            command = SetTrackHeights(tuple((t.id, t.height) for t in preview.timeline.tracks))
+            self._request([command], command.label)
+        self._sync_scroll_bars()
         self.update()
 
     def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802 - Qt の命名規約
@@ -495,6 +566,7 @@ class TimelineView(QWidget):
                 continue
             draw_track_header(painter, band, active=band.track.id in active)
         self._paint_add_button(painter)
+        self._track_mover.paint(painter, self._layout, self._project.timeline, width)
 
         draw_ruler(painter, self._layout, width, self._project.rate)
         self._work_area.paint_ruler(painter, self._layout, width, timeline.work_area)
@@ -579,6 +651,7 @@ class TimelineView(QWidget):
             if scene is not None
             else ("（消えたシーン）" if clip.scene_id else None),
         )
+        draw_keyframes(painter, clip, self._layout, rect, selected=selected)
 
     def _draw_drag_preview(self, painter: QPainter) -> None:
         """ドラッグ中の落下先を枠線で示す
@@ -790,6 +863,8 @@ class TimelineView(QWidget):
             return
         if self._press_add_button(position):
             return
+        if self._track_mover.press(self._layout, self._project.timeline, position):
+            return
 
         if position.x() < Metrics.TRACK_HEADER_WIDTH:
             # ヘッダ（トラック名とボタンの列）は時間の軸の外 ここを再生ヘッドの
@@ -804,6 +879,8 @@ class TimelineView(QWidget):
             return
 
         modifiers = event.modifiers()
+        if not modifiers and self._press_keyframe(position):
+            return
         adding = bool(modifiers & Qt.KeyboardModifier.ControlModifier)
         ranged = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
         hit = self._clip_at(position)
@@ -857,30 +934,92 @@ class TimelineView(QWidget):
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt の命名規約
         position = event.position().toPoint()
+        if self._drag_to(position):
+            horizontal, vertical = self._edge_scroll_axes()
+            self._edge_scroll.follow(
+                position, self._drag_bounds(), horizontal=horizontal, vertical=vertical
+            )
+            return
+        self._update_cursor(position)
+        button = self._track_button_at(position)
+        self.setToolTip(button[1] if button is not None else "")
+        self._hover_add_button(position)
+
+    def _drag_to(self, position: QPoint) -> bool:
+        """ドラッグ中なら ``position`` まで進めて真を返す 端で表示を送った後にも呼ぶ"""
         if self._work_area.dragging:
             self._work_area.move(self._layout, position.x())
             self.update()
-            return
+            return True
+        if self._track_mover.pressed:
+            self._track_mover.move(self._layout, self._project.timeline, position)
+            self.update()
+            return True
 
         if self._drag.kind is DragKind.NONE:
-            self._update_cursor(position)
-            button = self._track_button_at(position)
-            self.setToolTip(button[1] if button is not None else "")
-            self._hover_add_button(position)
-            return
+            return False
 
         if self._drag.kind is DragKind.PLAYHEAD:
-            self._scrub(position)
-            return
+            # 表示の外へ出た分は端で止める 送るのは :class:`EdgeScroller` の仕事で、
+            # 再生ヘッドだけが先に画面の外へ飛ぶと、どこまで進んだのか見えない
+            inside = min(max(position.x(), Metrics.TRACK_HEADER_WIDTH), self.width() - 1)
+            self._scrub(QPoint(inside, position.y()))
+            return True
 
         if self._drag.kind is DragKind.RESIZE_TRACK:
             self._preview_height(position.y())
-            return
+            return True
 
         if self._drag.kind is DragKind.MARQUEE:
             self._update_marquee(position)
-            return
+            return True
 
+        self._drag_clip_to(position)
+        return True
+
+    def _edge_scroll_axes(self) -> tuple[bool, bool]:
+        """いまのドラッグで、端へ寄ったときに送る向き ``(横, 縦)``
+
+        高さの変更では送らない 境目が画面の端へ来るたびに送ると、伸ばしている帯が
+        指から逃げる トラックの並べ替えは縦だけ（時間の軸は関係ない）
+        """
+        if self._work_area.dragging:
+            return True, False
+        if self._track_mover.pressed:
+            return False, True
+        kind = self._drag.kind
+        if kind in (DragKind.MOVE_CLIP, DragKind.MARQUEE):
+            return True, True
+        if kind in (DragKind.PLAYHEAD, DragKind.TRIM_HEAD, DragKind.TRIM_TAIL):
+            return True, False
+        return False, False
+
+    def _drag_bounds(self) -> QRect:
+        """送らずに動ける範囲 ヘッダと目盛りの外側（時間の軸とトラックの帯が見えている所）"""
+        return QRect(
+            Metrics.TRACK_HEADER_WIDTH,
+            Metrics.RULER_HEIGHT,
+            max(1, self.width() - Metrics.TRACK_HEADER_WIDTH),
+            max(1, self.height() - Metrics.RULER_HEIGHT),
+        )
+
+    def _on_edge_scroll(self, dx: float, dy: float, position: QPoint) -> None:
+        """端で表示を送り、同じマウスの位置でドラッグを進め直す
+
+        送っただけではマウスの下のフレームが変わったことをドラッグが知らない 進め直さないと、
+        表示だけが先へ行き、再生ヘッドやクリップが置いていかれる
+        """
+        layout = self._view_layout
+        if dx:
+            layout = layout.scrolled_to(layout.scroll_frame + dx / layout.pixels_per_frame)
+        if dy:
+            layout = layout.scrolled_vertically(layout.scroll_y + round(dy))
+        self._layout = layout
+        self._drag_to(position)
+        self.update()
+
+    def _drag_clip_to(self, position: QPoint) -> None:
+        """クリップの移動とトリムを ``position`` まで進める 途中は枠を描くだけ"""
         self._drag.moved = True
         frame = self._layout.frame_at(position.x())
 
@@ -906,8 +1045,13 @@ class TimelineView(QWidget):
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt の命名規約
         del event
+        self._edge_scroll.stop()
         if self._work_area.dragging:
             self._work_area.release(self._project.timeline.work_area)
+            self.update()
+            return
+        if self._track_mover.pressed:
+            self._track_mover.release(self._project.timeline)
             self.update()
             return
         drag, self._drag = self._drag, DragState()
@@ -1164,22 +1308,28 @@ class TimelineView(QWidget):
         return True
 
     def split_at_playhead(self) -> None:
-        """再生ヘッドの位置で、そこにあるクリップをすべて分割する
+        """再生ヘッドの位置でクリップを分割する S キー・編集メニュー・右クリックの共通の入口
 
-        選択の有無に関わらず全トラックを切る Premiere の Ctrl+K や
-        AviUtl の分割と同じ感覚
+        選んでいるクリップがあれば、選んだものだけを切る（リンクした映像・音声の相手は
+        :class:`SplitClip` が一緒に割る） 何も選んでいなければ、再生ヘッドの下にある
+        全部を切る どちらもロックしたトラックは切らない
+        選択を見ずに全部を切っていたので、1 本だけ切るつもりで、ほかのレイヤーの
+        字幕や BGM まで切れていた（Issue #27）
 
         リンクされた映像・音声は 1 つのコマンドで一緒に割れるので、グループごとに
         1 回だけ発行する 両方に出すと、2 回目は「すでに割れている」失敗になり、
         意味のないエラーがステータスバーに出る
         """
         frame = self._playhead
+        chosen = set(self._selection)
         targets: list[Clip] = []
         seen: set[GroupId] = set()
         for track in self._project.timeline.tracks:
             if track.locked:
                 continue
             for clip in track.clips:
+                if chosen and clip.id not in chosen:
+                    continue
                 if not (clip.timeline_start < frame < clip.timeline_end):
                     continue
                 if clip.link_group is not None:
@@ -1188,6 +1338,10 @@ class TimelineView(QWidget):
                     seen.add(clip.link_group)
                 targets.append(clip)
 
+        if chosen and not targets:
+            # 黙って何もしないと、キーが効いていないのか選び方が違うのか分からない
+            self.status_message.emit("選んだクリップは再生ヘッドの位置にありません")
+            return
         self._request([SplitClip(clip.id, frame) for clip in targets], "再生ヘッドで分割")
 
     def delete_selected(self, *, ripple: bool = False) -> None:
@@ -1439,6 +1593,31 @@ class TimelineView(QWidget):
                 return band.track.id, clip
         return None
 
+    def _press_keyframe(self, position: QPoint) -> bool:
+        """キーフレームのひし形の上なら、再生ヘッドをそこへ動かして真を返す
+
+        そのクリップも選ぶ 設定パネルに出るのは選んだクリップなので、選ばないと
+        動かした先で、どのキーフレームの値なのかを見られない ひし形を描くのは
+        名前が入る幅のクリップだけなので（:meth:`paintEvent`）、押せるのもそれだけにする
+        """
+        hit = self._clip_at(position)
+        if hit is None:
+            return False
+        _, clip = hit
+        if clip.duration * self._layout.pixels_per_frame < DETAIL_MIN_WIDTH:
+            return False
+        band = self._layout.band_at(self._project.timeline, position.y())
+        rect = clip_rect_for(clip, band, self._layout, self.width()) if band else None
+        frame = keyframe_at(clip, self._layout, rect, position) if rect is not None else None
+        if frame is None:
+            return False
+        if clip.id not in self._selection:
+            self.set_selection((*self._group_of(clip.id), clip.id))
+            self._anchor = clip.id
+        self.set_playhead(frame, follow=False)
+        self.playhead_moved.emit(self._playhead)
+        return True
+
     def _edge_at(self, position: QPoint, clip: Clip) -> DragKind:
         """クリップの端を掴んでいるならトリム、そうでなければ移動"""
         left = self._layout.frame_to_x(clip.timeline_start)
@@ -1465,6 +1644,16 @@ class TimelineView(QWidget):
     def _update_cursor(self, position: QPoint) -> None:
         if self._resize_band_at(position) is not None:
             self.setCursor(Qt.CursorShape.SizeVerCursor)
+            return
+        if position.x() < Metrics.TRACK_HEADER_WIDTH and self._track_button_at(position) is None:
+            # 名前の所は掴んで並べ替えられる 形を変えないと、掴めることに気付けない
+            band = self._layout.band_at(self._project.timeline, position.y())
+            grabbable = band is not None and position.y() >= Metrics.RULER_HEIGHT
+            self.setCursor(
+                Qt.CursorShape.OpenHandCursor
+                if grabbable and band is not None and not band.track.locked
+                else Qt.CursorShape.ArrowCursor
+            )
             return
         hit = self._clip_at(position)
         if hit is None:
