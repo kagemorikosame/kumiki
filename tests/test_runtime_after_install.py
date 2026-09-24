@@ -105,6 +105,34 @@ class TestFrozenFirstInstall:
         assert importlib.import_module(module).VALUE == 42
 
 
+class TestUpgradeInPlace:
+    def test_the_old_metadata_left_by_an_upgrade_is_removed(self, frozen: Path) -> None:
+        """``pip --target --upgrade`` が残した古い版の ``*.dist-info`` を消す
+
+        残ると、メタデータを引くときに古い方を拾うことがあり、入れ直したのに
+        「古い版が入っています」のまま使えない
+        """
+        dist, module = _unique()
+        write_distribution(frozen, dist, module, "0.2.10")  # 前に入れた版
+        write_distribution(frozen, dist, module, "0.2.152")  # 入れ直した版
+        old = frozen / f"{module}-0.2.10.dist-info"
+        pack = FeaturePack(key="fake", label="偽物", required=(f"{dist}>=0.2.152",))
+
+        refresh_runtime()
+
+        assert not old.exists()
+        assert (frozen / f"{module}-0.2.152.dist-info").exists()
+        assert pack.status().installed is True
+
+    def test_different_packages_are_left_alone(self, frozen: Path) -> None:
+        # 名前の違う物まで消すと、別の機能の導入が壊れる
+        first_dist, first_module = _unique()
+        second_dist, second_module = _unique()
+        write_distribution(frozen, first_dist, first_module, "1.0")
+        write_distribution(frozen, second_dist, second_module, "2.0")
+        assert runtime.remove_stale_metadata(frozen) == ()
+
+
 class TestDevelopmentInstall:
     def test_packages_added_to_a_known_folder_are_seen(
         self, tmp_path: Path, isolated_imports: None

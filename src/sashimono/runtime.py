@@ -39,6 +39,7 @@ __all__ = [
     "is_frozen",
     "pip_arguments",
     "refresh_runtime",
+    "remove_stale_metadata",
     "restart_note",
     "run_pip",
     "runtime_target_dir",
@@ -283,12 +284,54 @@ def refresh_runtime() -> tuple[str, ...]:
     覚えている探し手が、入れたばかりのパッケージを見落とすことがあるため
     """
     target = activate_runtime()
+    if target is not None:
+        remove_stale_metadata(target)
     # パッケージの探し手と、配布メタデータ（導入状況の判定に使う）の探し手の
     # 両方の控えがここで捨てられる
     importlib.invalidate_caches()
     if target is None:
         return ()
     return _already_loaded_elsewhere(target)
+
+
+def remove_stale_metadata(target: Path) -> tuple[Path, ...]:
+    """専用フォルダに残った古い版の ``*.dist-info`` を消す 戻り値は消した物
+
+    pip の ``--target --upgrade`` は、同じ名前の項目しか入れ替えない 版が違えば
+    ``*.dist-info`` のフォルダ名も違うので、古い版のメタデータが残る
+    ``importlib.metadata`` は最初に見つけた方を返すので、古い方を拾うと、
+    入れ直したのに「古い版が入っています」のまま使えない
+
+    同じ配布名の物が 2 つ以上あるときだけ、一番新しい版を残して消す
+    版を読めない物が混ざるときは、どれが新しいか決められないので触らない
+    """
+    groups: dict[str, list[tuple[Version, Path]]] = {}
+    unreadable: set[str] = set()
+    try:
+        entries = list(target.glob("*.dist-info"))
+    except OSError:
+        return ()
+    for entry in entries:
+        name, _, version = entry.name[: -len(".dist-info")].partition("-")
+        key = name.lower().replace("-", "_").replace(".", "_")
+        try:
+            groups.setdefault(key, []).append((Version(version), entry))
+        except InvalidVersion:
+            unreadable.add(key)
+    removed: list[Path] = []
+    for key, found in groups.items():
+        if len(found) < 2 or key in unreadable:
+            continue
+        found.sort(key=lambda item: item[0])
+        for _, stale in found[:-1]:
+            try:
+                shutil.rmtree(stale)
+            except OSError:
+                # 使用中などで消せなくても導入は済んでいる 次の起動で消える
+                # 機会があるので、ここでは止めない
+                continue
+            removed.append(stale)
+    return tuple(removed)
 
 
 def restart_note(loaded: Sequence[str], *, visible: bool = True) -> str:

@@ -254,6 +254,7 @@ class TestSendKey:
         return widget, sent
 
     def test_enter_sends(self, typed: tuple[ChatPanel, list[bool]]) -> None:
+        # 壊れると、Enter を押しても改行が入るだけで、指示が送れないように見える
         widget, sent = typed
         _press(widget._input, Qt.Key.Key_Return, Qt.KeyboardModifier.NoModifier)
         assert sent == [True]
@@ -295,6 +296,8 @@ class TestSendKey:
         assert sent == [True]
 
     def test_the_old_way_can_be_chosen(self, typed: tuple[ChatPanel, list[bool]]) -> None:
+        # 壊れると、Ctrl+Enter で送る設定にした人が、改行のつもりの Enter で
+        # 長い指示を途中まで送ってしまう
         widget, sent = typed
         widget.apply_preferences(Preferences(chat_enter_sends=False))
         _press(widget._input, Qt.Key.Key_Return, Qt.KeyboardModifier.NoModifier)
@@ -365,6 +368,8 @@ class TestModelChoice:
         self, recorded: tuple[ChatPanel, list[_RecordingSession]]
     ) -> None:
         # 選べるようになる前と同じ動き 何も渡さない
+        # 壊れると、そのモデルを使えないアカウントでは、何も選んでいないのに
+        # 会話が始まらない
         widget, made = recorded
         widget._input.setPlainText("切って")
         widget.send()
@@ -457,6 +462,7 @@ class TestModelChoice:
         assert made[0].closed is True
 
     def test_choices_are_announced_for_saving(self, panel: tuple[ChatPanel, FakeHost]) -> None:
+        # 壊れると、欄の上で選んだモデルが保存されず、次に起動したとき既定へ戻る
         widget, _ = panel
         announced: list[tuple[str, str]] = []
         widget.choices_changed.connect(lambda model, effort: announced.append((model, effort)))
@@ -521,6 +527,8 @@ class TestLogin:
         recorded: tuple[ChatPanel, list[_RecordingSession]],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        # 壊れると、ログインしていない人に案内が出ないか、ログイン済みの人に
+        # 案内が出続けて、済んだのかどうか分からない
         from sashimono.ui.chat import panel as panel_module
 
         widget, _ = recorded
@@ -553,12 +561,15 @@ class TestLogin:
 
 class TestLoginHint:
     def test_a_login_failure_says_where_to_log_in(self) -> None:
+        # 壊れると、英語の「/login を実行して」だけが出て、ソフトの中のどこで
+        # ログインすればよいのか分からない
         from sashimono.ai.session import with_login_hint
 
         text = with_login_hint("Invalid API key · Please run /login")
         assert "ログイン…" in text
 
     def test_other_failures_are_left_alone(self) -> None:
+        # 壊れると、ログインと関係の無い失敗にもログインの案内が付き、原因を取り違える
         from sashimono.ai.session import with_login_hint
 
         assert with_login_hint("接続が切れました") == "接続が切れました"
