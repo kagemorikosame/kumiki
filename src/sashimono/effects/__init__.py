@@ -13,6 +13,7 @@ from sashimono.effects import grading as _grading
 from sashimono.effects import motion as _motion
 from sashimono.effects import optics as _optics
 from sashimono.effects import paint as _paint
+from sashimono.effects import region as _region
 from sashimono.effects import spawn as _spawn
 from sashimono.effects import stylize as _stylize
 from sashimono.effects import warp as _warp
@@ -41,6 +42,7 @@ _optics.register_optics_effects()
 _grading.register_grading_effects()
 _warp.register_warp_effects()
 _spawn.register_spawn_effects()
+_region.register_region_effects()
 _audio.register_audio_effects()
 
 __all__ = [
