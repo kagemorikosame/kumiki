@@ -360,6 +360,43 @@ class TestFineDetailAtLowerQuality:
         )
         assert _rim_mismatch(_project(clip), gl_context, divisor) < TOLERANCE / 4
 
+    @pytest.mark.parametrize("thickness", [3, 6, 10])
+    def test_a_bevel_on_a_curved_edge(
+        self, gl_context: OffscreenGLContext, divisor: int, thickness: int
+    ) -> None:
+        # 楕円の縁では、書き出しの段の境が画素の升目に揃わない 書き出しは 24 方向の輪で
+        # 縁を探すので、斜めの所では縁までの本当の距離より少し遠くに段が来る 合成の画素で
+        # 輪を刻むと、この癖と 1 合成画素より細かい縁の位置が消えて段がずれる（#194）
+        # 楕円の輪郭そのものも縮め方で違う（エフェクトが無くても 1/2 で 7 ほど）ので、
+        # 四角より緩い上限にする 直す前は 4.4〜5.9、直した後は 0.7〜2.8
+        bevel = _effect("bevel_light", thickness=thickness, constant=100)
+        clip = _source(
+            "shape", bevel, shape="ellipse", width=96, height=64, color=(0.2, 0.2, 0.2, 1.0)
+        )
+        assert _rim_mismatch(_project(clip), gl_context, divisor) < TOLERANCE * 0.7
+
+    @pytest.mark.parametrize(
+        ("shape", "thickness", "blur"),
+        [("rect", 3, 4), ("rect", 5, 3), ("ellipse", 3, 4), ("ellipse", 6, 4)],
+    )
+    def test_a_blurred_bevel(
+        self,
+        gl_context: OffscreenGLContext,
+        divisor: int,
+        shape: str,
+        thickness: int,
+        blur: int,
+    ) -> None:
+        # 書き出しは書き出しの画素で段を刻んでからぼかす 合成の画素で刻んでぼかすと、
+        # 太さ 3 は 1/4 で 1 画素に切り上がって段が 1 つになり、急な坂が縁の内へ広がる
+        # 覆う書き出しの画素で刻んでから縮めてぼかしても、補うと縁の近くの坂が
+        # 1 合成画素の幅へ均される（#194） 1/4 ほど崩れやすいので上限は分母に比例させる
+        # 直す前は 1/2 で 1.5〜2.3・1/4 で 4.2〜7.1、直した後は 1/2 で 1.2・1/4 で 1.9 より小さい
+        bevel = _effect("bevel_light", thickness=thickness, blur=blur, constant=100)
+        clip = _source("shape", bevel, shape=shape, width=96, height=64, color=(0.2, 0.2, 0.2, 1.0))
+        limit = TOLERANCE * divisor / 8
+        assert _rim_mismatch(_project(clip), gl_context, divisor) < limit
+
 
 def _rim_mismatch(project: Project, context: OffscreenGLContext, divisor: int) -> float:
     """縁の周りだけで見た差の平均（0..255）
