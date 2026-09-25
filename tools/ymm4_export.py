@@ -301,7 +301,15 @@ def project_length(project: Path) -> tuple[int, Fraction] | None:
         return None
     info = timeline.get("VideoInfo")
     fps = info.get("FPS") if isinstance(info, dict) else None
-    if not ends or not isinstance(fps, int | float) or fps <= 0:
+    # NaN や Infinity は JSON の読み込みが通してしまう そのまま Fraction へ渡すと
+    # ValueError の traceback で止まり、案内が出ない true も int として通るので外す
+    if (
+        not ends
+        or isinstance(fps, bool)
+        or not isinstance(fps, int | float)
+        or not math.isfinite(fps)
+        or fps <= 0
+    ):
         return None
     # YMM4 の fps は整数か 29.97 のような小数 小数のまま割ると 1 コマの丸めが揺れる
     return max(ends), Fraction(str(fps)).limit_denominator(1001)
@@ -360,6 +368,21 @@ def short_name(output: Path, mark: Callable[[], str] | None = None) -> Path:
     raise FileExistsError(f"退ける名前が既にある物と重ならずに選べない（{output.parent}）")
 
 
+#: NTSC の fps（24000/1001 など）の小数の書き方と見る違い 29.97 と 30000/1001 は 0.00003
+NTSC_SLACK = Fraction(1, 200)
+
+
+def ntsc(rate: Fraction) -> Fraction:
+    """29.97 や 23.976 のような NTSC の fps の書き方を、分母 1001 の分数へ揃える
+
+    揃えるのは NTSC の組だけ 割合で近ければ同じと見ると、30 と 30.001 のような本当に違う
+    fps まで同じと見て、時間に直さずにコマを数えてしまう
+    """
+    whole = round(rate * Fraction(1001, 1000))
+    exact = Fraction(whole * 1000, 1001)
+    return exact if abs(rate - exact) <= NTSC_SLACK else rate
+
+
 def check_length(output: Path, expected: int, fps: Fraction) -> bool:
     """書き出しがプロジェクトの終わりまで届いたか 足りなければ知らせて出力を退ける"""
     written = written_length(output)
@@ -369,7 +392,10 @@ def check_length(output: Path, expected: int, fps: Fraction) -> bool:
         count, rate = written
         # 書き出しの窓の fps がプロジェクトと違うことがある 時間で揃え、書き出しのコマで数える
         # 切り上げる 切り捨てると、終わりの 1 コマに届かない書き出しを揃っていると読む
-        needed = math.ceil(expected * rate / fps)
+        # 同じ fps の書き方の違い（29.97 と 30000/1001）は同じと見る 比で掛けると
+        # 1 コマの端数が切り上がり、揃った書き出しを 1 コマ足りないと読む
+        same = ntsc(rate) == ntsc(fps)
+        needed = expected if same else math.ceil(expected * rate / fps)
         if count >= needed:
             print(f"長さを確かめました {count} / {needed} コマ")
             return True

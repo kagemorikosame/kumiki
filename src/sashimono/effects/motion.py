@@ -309,12 +309,15 @@ uniform int direction;
     + _IN_OUT
     + """
 void main() {
-    // 画面の外から入ってくる 隠れきった状態では、絵の端が画面の端をちょうど越える
+    // 画面の外から入ってくる 縦は、隠れきった状態で絵の端が画面の端をちょうど越える
+    // 横は画面の幅だけずらす YMM4 に 640 の四角を右と左から直線で入れさせると、真ん中の
+    // コマで 992 ずれていた（1920 x 残り 0.517 #216） 絵の端から数えると 1280 しかずれない
+    // 絵の置き場によらず同じで、X 300 に置いた四角も 1920 先から入った 縦はまだ測っていない
     vec2 shift = vec2(0.0);
     if (direction == 0) shift = vec2(0.0, u_size.y - u_object.y);
     if (direction == 1) shift = vec2(0.0, -u_object.w);
-    if (direction == 2) shift = vec2(-u_object.z, 0.0);
-    if (direction == 3) shift = vec2(u_size.x - u_object.x, 0.0);
+    if (direction == 2) shift = vec2(-u_size.x, 0.0);
+    if (direction == 3) shift = vec2(u_size.x, 0.0);
     frag_color = sample_pixel(v_uv * u_size - shift * hidden_signed());
 }
 """
@@ -897,10 +900,13 @@ void main() {
     float z = (offset_z + speed_z * u_time) / max(scale_z, 1.0);
 
     vec2 n = vec2(channel(position, z, 0.0), channel(position, z, 57.0)) * 2.0 - 1.0;
-    float cut = clamp(threshold / 100.0, 0.0, 1.0);
-    n = mix(vec2(0.0), n, step(vec2(cut), abs(n)));
-    float steps = max(levels, 2.0);
-    n = floor(n * steps + 0.5) / steps;
+    // しきい値は写さない（読み込みが記録に残す） 前は小さい値を 0 に切っていて、ずれが
+    // しきい値の所で跳び、水の中風の縞が横の帯に切れた YMM4 の絵は切れず、しきい値 30 で
+    // ずれがどこも 23〜155 の下向きになった（0 にならない） 式はまだ分かっていない（#210）
+    // 段階は -1〜1 を (段階 - 1) / 2 刻みに丸める 段階 4 の YMM4 のずれは -67・0・66 の
+    // 3 つだった（移動量 200 の半分 x -2/3・0・2/3）
+    float half_steps = max(levels - 1.0, 1.0) * 0.5;
+    n = floor(n * half_steps + 0.5) / half_steps;
     vec2 shift = n * vec2(amount_x, amount_y) * 0.4 * strength / 100.0;
     frag_color = sample_pixel(pixel - shift);
 }

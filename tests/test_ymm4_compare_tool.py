@@ -2037,3 +2037,83 @@ def test_measuring_the_new_probes_before_building_explains_itself(
     out = capsys.readouterr().out
     assert "zoom-build" in out
     assert "effectitem-build" in out
+
+
+def test_a_colour_key_is_drawn_once_before_the_first_case(tool: ModuleType) -> None:
+    """方向で色を抜くエフェクトは、比べる枠の前に 1 度だけ単独で描いておく（#210 の 1）
+
+    YMM4 はその書き出しで初めて描くのがシュバッと演出素材の中だと、書き出しを黙って止めた
+    （比べる並びの後ろ 10 本で 1698 / 1821 コマ） 準備を置いた並びは最後まで書けた
+    準備が無いと、後ろのテンプレートが一度も比べられない
+    """
+    key = {
+        "$type": "N.DirectionalColorKeyEffect, YukkuriMovieMaker.Plugin.Community",
+        "IsEnabled": True,
+    }
+    blur = {"$type": "N.GaussianBlurEffect, YukkuriMovieMaker", "IsEnabled": True}
+    band = tool.base_shape(0, 0, 60)
+    band["VideoEffects"] = [blur, key]
+    plain = tool.base_shape(0, 0, 60)
+    cases = tool.place_cases(
+        [("a.ymmt", 0, "素", [plain]), ("b.ymmt", 0, "帯", [band])],
+        start=tool.WARM_UP_LENGTH + tool.GAP,
+    )
+    assert cases[0].start == tool.WARM_UP_LENGTH + tool.GAP
+    (warm,) = tool.warm_up_items(cases)
+    assert warm["Frame"] == 0
+    assert warm["Length"] == tool.WARM_UP_LENGTH
+    assert [effect["$type"] for effect in warm["VideoEffects"]] == [key["$type"]]
+    # 比べるアイテムの方は書き換えない（写してから削る）
+    assert len(cases[1].items[0]["VideoEffects"]) == 2
+    # 準備の要らない並びには何も足さない
+    assert (
+        tool.warm_up_items(tool.place_cases([("a.ymmt", 0, "素", [tool.base_shape(0, 0, 60)])]))
+        == []
+    )
+
+
+def test_a_disabled_colour_key_does_not_shift_the_cases(tool: ModuleType, tmp_path: Path) -> None:
+    """効いていない方向で色を抜くだけなら準備は要らない 枠だけずらすと、準備が無いまま全部が
+
+    12 フレーム後ろへずれ、乱数を使うテンプレートの比べる絵まで変わる（PR #221）
+    """
+    key = {"$type": "N.DirectionalColorKeyEffect, Y", "IsEnabled": False}
+    band = tool.base_shape(0, 0, 60)
+    band["VideoEffects"] = [key]
+    template = tmp_path / "a.ymmt"
+    _ymmt(template, [band])
+    cases, _ = tool.build_cases([template])
+    assert cases[0].start == 0
+    assert tool.warm_up_items(cases) == []
+
+
+def test_a_colour_key_on_a_group_is_warmed_with_a_picture_below(
+    tool: ModuleType, tmp_path: Path
+) -> None:
+    """グループにだけ付いた方向で色を抜くも準備する グループだけ置くと絵が無く、描かれない
+
+    前は図形のアイテムだけを探し、グループのときは準備を作らないまま枠だけずらしていた
+    """
+    key = {"$type": "N.DirectionalColorKeyEffect, Y", "IsEnabled": True}
+    group = {
+        "$type": "YukkuriMovieMaker.Project.Items.GroupItem, YukkuriMovieMaker",
+        "Frame": 0,
+        "Layer": 0,
+        "Length": 60,
+        "GroupRange": 3,
+        "VideoEffects": [key],
+    }
+    template = tmp_path / "a.ymmt"
+    _ymmt(template, [group, tool.base_shape(0, 1, 60)])
+    cases, _ = tool.build_cases([template])
+    assert cases[0].start == tool.WARM_UP_LENGTH + tool.GAP
+    warm = tool.warm_up_items(cases)
+    assert [tool.type_name(item) for item in warm] == ["GroupItem", "ShapeItem"]
+    assert warm[0]["GroupRange"] == 1
+    assert (warm[1]["Frame"], warm[1]["Layer"], warm[1]["Length"]) == (0, 1, tool.WARM_UP_LENGTH)
+
+
+def _ymmt(path: Path, items: list[dict[str, Any]]) -> None:
+    """テンプレート 1 本の .ymmt（``tools/ymm4_probes.py`` が書く形と同じ素の JSON）"""
+    template = {"Name": "t", "Path": ["t"], "Items": items}
+    path.write_text(json.dumps({"ItemTemplates": [template]}, ensure_ascii=False), "utf-8")
