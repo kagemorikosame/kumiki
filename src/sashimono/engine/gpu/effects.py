@@ -18,6 +18,7 @@ from OpenGL import GL
 
 from sashimono.core.model import Effect, ParamValue
 from sashimono.effects import EffectDefinition, registry
+from sashimono.effects.definition import object_pivot, turned_object
 from sashimono.effects.sampling import AREA_SAMPLING
 from sashimono.effects.spec import (
     CheckSpec,
@@ -359,6 +360,19 @@ class EffectProcessor:
         広げないと、後ろに積んだミラーや角丸が**広げる前の範囲**で動く
         AviUtl の 領域拡張 → ミラー は、広げたぶんだけ鏡像が離れる並べ方
         """
+        if definition.turns_object:
+            pivot = object_pivot(
+                _choice(definition, effect, "pivot_h"),
+                _choice(definition, effect, "pivot_v"),
+                (
+                    _number(definition, effect, "anchor_x", frame, self.pixel_scale),
+                    _number(definition, effect, "anchor_y", frame, self.pixel_scale),
+                ),
+                self._object,
+                (float(self.width), float(self.height)),
+                self._origin,
+            )
+            self._object = turned_object(self._object, pivot)
         if definition.expands_object is None:
             return
         top, bottom, left, right = (
@@ -526,6 +540,15 @@ def _number(
     value = effect.params.get(name)
     raw = spec.default_value() if value is None else value
     return float(spec.scaled_at(spec.coerce(raw), frame, scale))
+
+
+def _choice(definition: EffectDefinition, effect: Effect, name: str) -> str:
+    """選択肢の項目を 1 つ読む 項目が無ければ空（支点なら絵の中央の扱い）"""
+    spec = definition.spec(name)
+    if not isinstance(spec, SelectSpec):
+        return ""
+    value = spec.coerce(effect.params.get(name))
+    return value if isinstance(value, str) else ""
 
 
 def piece_grid(

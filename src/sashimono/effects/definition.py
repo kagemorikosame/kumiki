@@ -15,7 +15,14 @@ from typing import Any
 from sashimono.core.model import AnimatedValue, Effect, ParamValue
 from sashimono.effects.spec import ParameterGroup, ParameterSpec, ParamInput, TrackSpec
 
-__all__ = ["EffectDefinition", "EffectRegistry", "Pieces", "registry"]
+__all__ = [
+    "EffectDefinition",
+    "EffectRegistry",
+    "Pieces",
+    "object_pivot",
+    "registry",
+    "turned_object",
+]
 
 
 #: 音を加工する関数の形 引数は サンプル・解いた値・時間まわりの手がかり
@@ -87,6 +94,14 @@ class EffectDefinition:
     #: （ミラーの折り返す線・角丸・中心基準の動き）も広げた後の範囲で動くべき
     #: 印を付けないと、広げる前の範囲のまま後ろが動いて位置がずれる
     expands_object: tuple[str, str, str, str] | None = None
+    #: 絵を中心の周りに回すので、後ろのエフェクトには回しても収まる範囲（範囲の対角線を
+    #: 直径とする円を囲む正方形）を絵の範囲として渡すか
+    #:
+    #: YMM4 は渦巻き（SpiralTransform）の後ろの跳ねて登場の潰れを、その正方形の下端を
+    #: 支点にして潰した（お辞儀(120F) の 640x360 の四角で、下端が四角の下端より
+    #: 187 画素下の支点から潰れた分だけ下がった 対角線の半分 367 と合う #205）
+    #: 広げる前の範囲のままだと、潰れた四角が 3 画素上に浮く
+    turns_object: bool = False
     #: 後ろに積んだエフェクトを、このエフェクトの決めた範囲の中だけに効かせるか（部分フィルタ）
     #:
     #: 真のとき、エンジンはここへ来た時点の絵を取っておき、次の同じ印のエフェクトか
@@ -178,6 +193,47 @@ class EffectDefinition:
         定義に無いものは落とす
         """
         return {spec.name: spec.coerce(params.get(spec.name)) for spec in self.parameters}
+
+
+def turned_object(
+    box: tuple[float, float, float, float], pivot: tuple[float, float] | None = None
+) -> tuple[float, float, float, float]:
+    """回しても収まる範囲（:attr:`EffectDefinition.turns_object`） 左・下・右・上の並び
+
+    ``pivot`` の周りに回したときに四隅が通る円を囲む正方形 省くと範囲の中心で、そのときは
+    対角線を直径とする円になる 支点を端や画面の中央へ動かした渦巻きで中心の正方形を渡すと、
+    回った絵がはみ出し、後ろの跳ねや拡大が別の中心と下端を使う（#217 の指摘 YMM4 で測ったのは
+    中心を支点にした渦巻きだけ）
+    """
+    left, bottom, right, top = box
+    if pivot is None:
+        pivot = ((left + right) * 0.5, (bottom + top) * 0.5)
+    x, y = pivot
+    half = max(math.hypot(cx - x, cy - y) for cx in (left, right) for cy in (bottom, top))
+    return (x - half, y - half, x + half, y + half)
+
+
+def object_pivot(
+    horizontal: str,
+    vertical: str,
+    anchor: tuple[float, float],
+    box: tuple[float, float, float, float],
+    size: tuple[float, float],
+    origin: tuple[float, float],
+) -> tuple[float, float]:
+    """支点の選び方（``pivot_h`` ``pivot_v`` と中心 X Y）から支点を求める
+
+    シェーダの ``pivot_point``（:mod:`sashimono.effects.motion` の ``_PIVOT``）と同じ決まり
+    向きは GL と同じ（Y は上が正 ``box`` は左・下・右・上）
+    """
+    left, bottom, right, top = box
+    x = {"screen": size[0] * 0.5, "left": left, "right": right, "origin": origin[0]}.get(
+        horizontal, (left + right) * 0.5
+    )
+    y = {"screen": size[1] * 0.5, "top": top, "bottom": bottom, "origin": origin[1]}.get(
+        vertical, (bottom + top) * 0.5
+    )
+    return (x + anchor[0], y + anchor[1])
 
 
 class EffectRegistry:

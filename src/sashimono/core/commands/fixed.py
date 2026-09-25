@@ -59,6 +59,7 @@ _DEFAULTS: dict[str, tuple[tuple[str, float | bool | str], ...]] = {
         ("pos_y", 0.0),
         ("scale", 100.0),
         ("scale_y", 100.0),
+        ("scale_x", 100.0),
         ("rotation", 0.0),
         ("rotation_x", 0.0),
         ("rotation_y", 0.0),
