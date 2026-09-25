@@ -14,13 +14,12 @@ class _Summary(TypedDict):
     survived: int
     timeout: int
     error: int
-    percentage: float
 
 
 REPORT = Path("coverage/gremlins/gremlins.json")
 # 最初の導入時に確認した値 既存の弱い所は許すが、これより検出力を落とさない
-MAX_SURVIVORS = 20
-MINIMUM_PERCENTAGE = 87.0
+MAX_SURVIVORS = 19
+MINIMUM_PERCENTAGE = 87.7
 
 
 def _load_summary(path: Path) -> _Summary:
@@ -35,9 +34,13 @@ def main() -> int:
         print(f"mutation report を読めない: {exc}", file=sys.stderr)
         return 1
 
+    if summary["total"] <= 0:
+        print("mutation が 1 件も生成されていない", file=sys.stderr)
+        return 1
+    percentage = summary["zapped"] * 100.0 / summary["total"]
     print(
         "mutation score: "
-        f"{summary['percentage']:.1f}% "
+        f"{percentage:.1f}% "
         f"({summary['zapped']}/{summary['total']} zapped, {summary['survived']} survived)"
     )
     if summary["timeout"] or summary["error"]:
@@ -49,7 +52,7 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    if summary["percentage"] < MINIMUM_PERCENTAGE:
+    if percentage < MINIMUM_PERCENTAGE:
         print(
             f"mutation score が基準の {MINIMUM_PERCENTAGE:.1f}% を下回った",
             file=sys.stderr,

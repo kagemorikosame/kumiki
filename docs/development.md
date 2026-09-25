@@ -57,7 +57,7 @@ testing も走る 条件式や境界値を機械的に変えても試験が落�
 ```
 .venv\Scripts\python.exe -m pip install -e ".[dev,mutation]"
 $env:PYTHONUTF8 = "1"
-.venv\Scripts\python.exe -m pytest tests/core/test_timebase.py tests/test_locks.py --gremlins
+.venv\Scripts\python.exe -m pytest tests/core/test_timebase.py tests/test_locks.py --hypothesis-seed=0 --gremlins
 .venv\Scripts\python.exe tools/check_mutation.py
 ```
 

@@ -45,7 +45,10 @@ jobs:
         env:
           # pytest-gremlins はソースを既定 encoding で読むため、日本語を含む Windows では明示する
           PYTHONUTF8: "1"
-        run: python -m pytest tests/core/test_timebase.py tests/test_locks.py --gremlins
+        # property-based test の生成例を固定し、同じ変更で結果が揺れないようにする
+        run: >-
+          python -m pytest tests/core/test_timebase.py tests/test_locks.py
+          --hypothesis-seed=0 --gremlins
 
       - name: 検出力が下がっていないか
         run: python tools/check_mutation.py
