@@ -18,10 +18,58 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+import numpy as np
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "tools" / "ymm4_export.ps1"
+#: 見本のプロジェクトの長さ 最後のアイテムの終わり
+PROJECT_FRAMES = 6
+
+
+def _project(path: Path, spans: list[tuple[int, int]], *, length: int | None = None) -> None:
+    """アイテムの（始まり, 長さ）を並べた .ymmp を書く
+
+    タイムラインの ``Length`` は YMM4 の実物と同じく、アイテムの終わりより余分に取る
+    """
+    items = [{"Frame": frame, "Length": span, "Layer": 0} for frame, span in spans]
+    end = max((frame + span for frame, span in spans), default=0)
+    timeline = {
+        "VideoInfo": {"FPS": 30, "Hz": 48000, "Width": 32, "Height": 32},
+        "Items": items,
+        "Length": end + 6 if length is None else length,
+    }
+    document = {"SelectedTimelineIndex": 0, "Timelines": [timeline]}
+    path.write_text(json.dumps(document), encoding="utf-8-sig")
+
+
+def _video(path: Path, frames: int, fps: int = 30, *, faststart: bool = False) -> None:
+    """YMM4 の書き出しの代わりの短い mp4 数えるのはコマ数なので、絵は小さい黒で足りる
+
+    ``faststart`` は目次（moov）を頭へ置く 後ろを切っても開けて、目次のコマ数だけが残る
+    """
+    import av
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    options = {"movflags": "faststart"} if faststart else {}
+    with av.open(str(path), "w", format="mp4", options=options) as container:
+        stream = container.add_stream("mpeg4", rate=fps)
+        stream.width = 32
+        stream.height = 32
+        stream.pix_fmt = "yuv420p"
+        # 目次を頭に置くときは、後ろを切るので 1 コマずつの大きさが要る 黒だと数十バイトで、
+        # どこで切ってもほぼ全部のコマが残るか 1 つも残らない
+        rng = np.random.default_rng(0)
+        for _ in range(frames):
+            if faststart:
+                pixels = rng.integers(0, 256, (32, 32, 3), dtype=np.uint8)
+            else:
+                pixels = np.zeros((32, 32, 3), dtype=np.uint8)
+            picture = av.VideoFrame.from_ndarray(pixels, format="rgb24")
+            for packet in stream.encode(picture):
+                container.mux(packet)
+        for packet in stream.encode(None):
+            container.mux(packet)
 
 
 def _load(name: str) -> ModuleType:
@@ -45,7 +93,7 @@ def ready(tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     exe.parent.mkdir()
     exe.write_bytes(b"")
     project = tmp_path / "probe.ymmp"
-    project.write_bytes(b"")
+    _project(project, [(0, 4), (2, PROJECT_FRAMES - 2)])
     state: dict[str, Any] = {
         "exe": exe,
         "project": project,
@@ -53,6 +101,8 @@ def ready(tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
         "commands": [],
         "result": (0, False),
         "writes": True,
+        "frames": PROJECT_FRAMES,
+        "fps": 30,
     }
 
     def run_script(command: list[str], limit: int) -> tuple[int, bool]:
@@ -60,7 +110,7 @@ def ready(tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
         state["limit"] = limit
         state["existed"] = state["output"].exists()
         if state["writes"]:
-            state["output"].write_bytes(b"mp4")
+            _video(state["output"], state["frames"], state["fps"])
         result: tuple[int, bool] = state["result"]
         return result
 
@@ -197,6 +247,165 @@ def test_success_without_a_file_is_not_reported_as_success(
     ready["writes"] = False
     assert tool.main(_arguments(ready)) == 1
     assert "できていません" in capsys.readouterr().out
+
+
+def test_an_export_that_stopped_partway_is_a_failure(
+    tool: ModuleType, ready: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """YMM4 が途中で書くのを止めても、PowerShell は書き終わりを待てたと言う（Issue #210）
+
+    成功と言うと、探りの measure が途中で切れた動画を測り、後ろの枠を「YMM4 が何も描かない」
+    と読む 何コマ目で止まったかが出ないと、止めたアイテムを探せない
+    """
+    ready["frames"] = PROJECT_FRAMES - 2
+    assert tool.main(_arguments(ready)) == 1
+    out = capsys.readouterr().out
+    assert f"{PROJECT_FRAMES - 2} / {PROJECT_FRAMES} コマ" in out
+    assert "途中で止まりました" in out
+    # 出力の名前に残すと、次の measure が途中で切れた物を測る 名前を変えて見られるようにする
+    assert not ready["output"].exists()
+    [short] = ready["output"].parent.glob("probe.sashimono-*.short.mp4")
+    assert str(short) in out
+
+
+def test_an_export_as_long_as_the_project_is_a_success(
+    tool: ModuleType, ready: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """揃っているのに失敗と言うと、書き出せた物まで退けてしまう"""
+    assert tool.main(_arguments(ready)) == 0
+    assert ready["output"].is_file()
+    assert f"{PROJECT_FRAMES} / {PROJECT_FRAMES} コマ" in capsys.readouterr().out
+
+
+def test_an_export_at_another_frame_rate_is_counted_by_time(
+    tool: ModuleType, ready: dict[str, Any]
+) -> None:
+    """書き出しの窓の fps がプロジェクトと違っても、長さが揃っていれば止まってはいない
+
+    コマ数をそのまま比べると、15fps の書き出しは揃っていても足りないと出る
+    """
+    ready["fps"] = 15
+    ready["frames"] = PROJECT_FRAMES // 2
+    assert tool.main(_arguments(ready)) == 0
+    ready["frames"] = PROJECT_FRAMES // 2 - 1
+    assert tool.main(_arguments(ready)) == 1
+
+
+def test_an_export_that_cannot_be_read_is_a_failure(
+    tool: ModuleType,
+    ready: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """書き終えずに止まった mp4 は目次（moov）が無く開けない 長さを測れないのに成功と言わない"""
+
+    def run_script(command: list[str], limit: int) -> tuple[int, bool]:
+        ready["output"].parent.mkdir(parents=True, exist_ok=True)
+        ready["output"].write_bytes(b"not an mp4")
+        return 0, False
+
+    monkeypatch.setattr(tool, "run_script", run_script)
+    assert tool.main(_arguments(ready)) == 1
+    out = capsys.readouterr().out
+    assert "読めません" in out
+    # 出力の名前に残すと、次の書き出しが置き換えて、壊れ方を確かめる物が無くなる
+    assert not ready["output"].exists()
+    [aside] = ready["output"].parent.glob("probe.sashimono-*.short.mp4")
+    assert aside.read_bytes() == b"not an mp4"
+    assert str(aside) in out
+
+
+def test_an_export_whose_index_outruns_its_pictures_is_a_failure(
+    tool: ModuleType,
+    ready: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """目次（moov）のコマ数を信じると、後ろの絵が欠けた動画を揃っていると読む
+
+    目次を頭に置いた mp4 の後ろを切り落とすと、目次は 6 コマと言うが、復号できるのは
+    切った所まで 数えるのは復号できたコマ
+    """
+
+    def run_script(command: list[str], limit: int) -> tuple[int, bool]:
+        _video(ready["output"], PROJECT_FRAMES, faststart=True)
+        data = ready["output"].read_bytes()
+        # 絵の塊（mdat）の半ばで切る 目次より前で切ると、開けない方の失敗になる
+        start = data.index(b"mdat")
+        ready["output"].write_bytes(data[: start + (len(data) - start) // 2])
+        return 0, False
+
+    monkeypatch.setattr(tool, "run_script", run_script)
+    assert tool.main(_arguments(ready)) == 1
+    assert "途中で止まりました" in capsys.readouterr().out
+
+
+def test_a_last_frame_left_short_at_another_rate_is_caught(
+    tool: ModuleType, ready: dict[str, Any]
+) -> None:
+    """換算したコマ数を切り捨てると、終わりの 1 コマ足りない書き出しを揃っていると読む
+
+    30fps で 5 コマ（1/6 秒）のプロジェクトを 15fps で書くと 2.5 コマ 2 コマでは 1/30 秒足りない
+    """
+    _project(ready["project"], [(0, 5)])
+    ready["fps"] = 15
+    ready["frames"] = 2
+    assert tool.main(_arguments(ready)) == 1
+    ready["frames"] = 3
+    assert tool.main(_arguments(ready)) == 0
+
+
+@pytest.mark.parametrize("value", [None, "abc", [1]])
+def test_a_project_with_a_broken_item_is_refused_without_a_traceback(
+    tool: ModuleType, ready: dict[str, Any], capsys: pytest.CaptureFixture[str], value: Any
+) -> None:
+    """JSON として読めても値が数でなければ、案内の無い traceback で終わっていた"""
+    document = json.loads(ready["project"].read_text(encoding="utf-8-sig"))
+    document["Timelines"][0]["Items"][0]["Frame"] = value
+    ready["project"].write_text(json.dumps(document), encoding="utf-8-sig")
+    assert tool.main(_arguments(ready)) == 1
+    assert "長さ" in capsys.readouterr().out
+    assert ready["commands"] == []
+
+
+@pytest.mark.parametrize("span", [None, 0])
+def test_an_item_without_a_length_still_takes_one_frame(
+    tool: ModuleType, tmp_path: Path, span: int | None
+) -> None:
+    """``Length`` が無いか 0 のアイテムを 0 コマと数えると、終わりの 1 コマ欠けた書き出しを通す
+
+    読み込み（``compat/ymm4/template.py``）も比べる道具も、欠けた ``Length`` を 1 コマとして読む
+    """
+    project = tmp_path / "a.ymmp"
+    _project(project, [(0, 4)])
+    document = json.loads(project.read_text(encoding="utf-8-sig"))
+    last: dict[str, Any] = {"Frame": 5, "Layer": 1}
+    if span is not None:
+        last["Length"] = span
+    document["Timelines"][0]["Items"].append(last)
+    project.write_text(json.dumps(document), encoding="utf-8-sig")
+    assert tool.project_length(project) == (6, 30)
+
+
+def test_the_project_length_is_the_end_of_the_last_item(tool: ModuleType, tmp_path: Path) -> None:
+    """タイムラインの ``Length`` で数えると、揃った書き出しまで足りないと言う
+
+    YMM4 が書き出すのは最後のアイテムの終わりまで 手元に残る実物の書き出し 20 本では、
+    コマ数がアイテムの終わりと同じで、タイムラインの ``Length`` より 6〜30 少なかった
+    """
+    project = tmp_path / "a.ymmp"
+    _project(project, [(0, 300), (250, 404)], length=660)
+    assert tool.project_length(project) == (654, 30)
+
+
+def test_a_project_without_items_is_refused_before_ymm4_starts(
+    tool: ModuleType, ready: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """長さが分からないまま書き出すと、止まったかどうかを確かめられない"""
+    _project(ready["project"], [])
+    assert tool.main(_arguments(ready)) == 1
+    assert "長さ" in capsys.readouterr().out
+    assert ready["commands"] == []
 
 
 def test_a_folder_named_like_the_output_is_refused_before_ymm4_starts(

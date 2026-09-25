@@ -232,6 +232,34 @@ def test_a_failed_export_leaves_nothing_behind_but_restores_the_settings(
     assert (ready["data"] / "aviutl2.ini").read_bytes() == b"original ini"
 
 
+def test_too_few_pictures_are_a_failure_even_when_the_script_says_done(
+    tool: ModuleType,
+    ready: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """入口が PowerShell の終了コードだけを信じると、途中で切れた連番を出力として出す（Issue #210）
+
+    YMM4 の道具では、書き出しが途中で止まっても PowerShell が書き終わりを待てたと言った
+    この道具も枚数を数えるのは PowerShell の側だけだったので、入口でも数え直す
+    """
+
+    def run_script(command: list[str], limit: int) -> tuple[int, bool]:
+        folder = Path(command[command.index("-Folder") + 1])
+        for index in range(2):
+            (folder / f"frame{index}.png").write_bytes(b"png")
+        # 書き直しておかないと、戻す所を通らなくても下の確かめが通る
+        (ready["data"] / "aviutl2.ini").write_bytes(b"rewritten by aviutl2")
+        return 0, False
+
+    monkeypatch.setattr(tool, "run_script", run_script)
+    assert tool.main(_arguments(ready)) == 1
+    assert "2 / 3 枚" in capsys.readouterr().out
+    assert not ready["output"].exists()
+    assert list(ready["output"].parent.iterdir()) == []
+    assert (ready["data"] / "aviutl2.ini").read_bytes() == b"original ini"
+
+
 def test_aviutl2_still_open_afterwards_is_shouted_without_restoring(
     tool: ModuleType,
     ready: dict[str, Any],

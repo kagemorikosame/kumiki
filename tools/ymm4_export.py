@@ -20,19 +20,27 @@ YMM4 との突き合わせ（``tools/ymm4_compare.py`` の各探り）は、YMM4
 形を分けた理由 UI Automation は .NET の ``UIAutomationClient`` を PowerShell から
 そのまま呼べ、2026-09-23 に実際に 3 回書き出せたのもこの形だった Python だけで書くには
 ``comtypes`` などを ``.venv`` へ足すことになり、この道具 1 つのために依存が増える
+
+書き終えたかは PowerShell が出力の大きさで決めるので、YMM4 が途中で書くのを止めても
+成功と言う（Issue #210） 終わったあとに書き出しのコマ数を数え、プロジェクトの長さに
+足りなければ、どこで止まったかを出して失敗にする
 """
 
 from __future__ import annotations
 
 import argparse
 import io
+import json
 import locale
+import math
 import os
 import subprocess
 import sys
 import threading
+import uuid
+from fractions import Fraction
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -248,6 +256,141 @@ def run_script(command: list[str], limit: int) -> tuple[int, bool]:
     return code, expired.is_set()
 
 
+def _timeline(document: Any) -> dict[str, Any] | None:
+    """書き出されるタイムライン 選んでいるもの 複数のタイムラインを持たない古い形も読む"""
+    if not isinstance(document, dict):
+        return None
+    timelines = document.get("Timelines")
+    if isinstance(timelines, list) and timelines:
+        index = document.get("SelectedTimelineIndex", 0)
+        if not isinstance(index, int) or not 0 <= index < len(timelines):
+            index = 0
+        chosen = timelines[index]
+    else:
+        chosen = document.get("Timeline")
+    return chosen if isinstance(chosen, dict) else None
+
+
+def project_length(project: Path) -> tuple[int, Fraction] | None:
+    """書き出されるはずのコマ数とプロジェクトの fps 読めなければ ``None``
+
+    数えるのは最後のアイテムの終わり（``Frame + Length`` の最大） タイムラインの ``Length``
+    は YMM4 が余分に取った長さで、手元に残る実物の書き出し 20 本はどれも、アイテムの
+    終わりちょうどのコマ数で、``Length`` より 6〜30 少なかった ``Length`` と比べると、
+    揃った書き出しまで途中で止まったと言う
+    """
+    try:
+        document = json.loads(project.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return None
+    timeline = _timeline(document)
+    if timeline is None:
+        return None
+    items = timeline.get("Items")
+    try:
+        # 欠けた Length は 1 コマとして読む 読み込み（compat/ymm4/template.py）や比べる道具と
+        # 揃えないと、終わりの 1 コマ欠けた書き出しを揃っていると読む
+        ends = [
+            int(item.get("Frame", 0)) + max(1, int(item.get("Length", 1)))
+            for item in (items if isinstance(items, list) else [])
+            if isinstance(item, dict)
+        ]
+    except (TypeError, ValueError):
+        # JSON として読めても値が数でない（null や文字）ことがある 通すと案内の無い
+        # traceback で終わり、何が悪いのか分からない
+        return None
+    info = timeline.get("VideoInfo")
+    fps = info.get("FPS") if isinstance(info, dict) else None
+    if not ends or not isinstance(fps, int | float) or fps <= 0:
+        return None
+    # YMM4 の fps は整数か 29.97 のような小数 小数のまま割ると 1 コマの丸めが揺れる
+    return max(ends), Fraction(str(fps)).limit_denominator(1001)
+
+
+def written_length(video: Path) -> tuple[int, Fraction] | None:
+    """書き出しの復号できたコマ数と fps 開けないか映像が無ければ ``None``
+
+    YMM4 が書き終えずに止まった mp4 は目次（``moov``）が無く、PyAV が開けない
+    目次のコマ数（``stream.frames``）は数えない 目次が揃っていても後ろの絵が欠けていれば
+    揃っていると読む 包みの数も、包みとコマが 1 対 1 でない形式では食い違う 復号は
+    手元の 15767 コマの書き出しで 4 秒ほどで、書き出しそのものより十分短い
+    """
+    import av
+    import av.error
+
+    try:
+        with av.open(str(video)) as container:
+            if not container.streams.video:
+                return None
+            stream = container.streams.video[0]
+            stream.thread_type = "AUTO"
+            rate = stream.average_rate
+            count = 0
+            try:
+                for _ in container.decode(stream):
+                    count += 1
+            except av.error.FFmpegError:
+                # 途中で壊れていれば、そこまでに復号できた分が書けた長さ
+                pass
+    except (av.error.FFmpegError, OSError):
+        return None
+    if rate is None or rate <= 0:
+        return None
+    return count, Fraction(rate)
+
+
+def clock(frame: int, fps: Fraction) -> str:
+    """フレーム番号を ``分:秒.小数`` にする YMM4 の目盛りで止まった所を探すため"""
+    seconds = float(frame / fps)
+    minutes, rest = divmod(seconds, 60)
+    return f"{int(minutes)}:{rest:05.2f}"
+
+
+def short_name(output: Path, mark: Callable[[], str] | None = None) -> Path:
+    """足りない書き出しを退ける名前 ``.part.mp4`` と ``.done.mp4`` と同じ形で並べる
+
+    出力の名前のまま残すと、次の measure が途中で切れた動画を測る 消すと、どこで
+    止まったかを絵で確かめられない
+    """
+    pick = mark or (lambda: uuid.uuid4().hex[:8])
+    for _ in range(20):
+        candidate = output.with_name(f"{output.stem}.sashimono-{pick()}.short.mp4")
+        if not candidate.exists():
+            return candidate
+    raise FileExistsError(f"退ける名前が既にある物と重ならずに選べない（{output.parent}）")
+
+
+def check_length(output: Path, expected: int, fps: Fraction) -> bool:
+    """書き出しがプロジェクトの終わりまで届いたか 足りなければ知らせて出力を退ける"""
+    written = written_length(output)
+    if written is None:
+        lines = [f"{output} を読めません 書き出しが途中で止まったか壊れています"]
+    else:
+        count, rate = written
+        # 書き出しの窓の fps がプロジェクトと違うことがある 時間で揃え、書き出しのコマで数える
+        # 切り上げる 切り捨てると、終わりの 1 コマに届かない書き出しを揃っていると読む
+        needed = math.ceil(expected * rate / fps)
+        if count >= needed:
+            print(f"長さを確かめました {count} / {needed} コマ")
+            return True
+        reached = math.floor(count * fps / rate)
+        lines = [
+            f"YMM4 の書き出しが途中で止まりました {count} / {needed} コマ",
+            f"プロジェクトの {reached} フレーム目（{clock(reached, fps)}）まで、"
+            f"終わりは {expected} フレーム目（{clock(expected, fps)}）",
+            "止まった所にあるアイテムを YMM4 で確かめてください",
+        ]
+    # 読めない物も退ける 出力の名前に残すと、次の書き出しが置き換えて壊れ方を確かめられない
+    try:
+        aside = short_name(output)
+        output.rename(aside)
+        lines.append(f"途中までの動画は {aside} へ退けました")
+    except OSError as exc:
+        lines.append(f"途中までの動画を退けられませんでした（{exc}） {output} は途中までです")
+    _alarm(lines)
+    return False
+
+
 def _alarm(lines: list[str]) -> None:
     bar = "!" * 60
     print(bar)
@@ -268,6 +411,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     if project.suffix.lower() != ".ymmp":
         print(f"{project} は .ymmp ではありません")
         return 1
+    length = project_length(project)
+    if length is None:
+        # 長さが分からないと、書き出しが途中で止まっても確かめられない
+        print(f"{project} の長さ（アイテムの終わりと fps）を読めません 止めました")
+        return 1
+    expected, fps = length
     output: Path = arguments.output.resolve()
     if output.suffix.lower() != ".mp4":
         # 書き出しの窓は mp4 の窓（Mp4ConfigViewModel）を前提に手順を組んである
@@ -330,7 +479,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not output.is_file() or output.stat().st_size == 0:
         print(f"YMM4 は終わりましたが {output} ができていません")
         return 1
-    return 0
+    return 0 if check_length(output, expected, fps) else 1
 
 
 if __name__ == "__main__":
