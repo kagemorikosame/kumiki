@@ -340,6 +340,8 @@ class ObjApi:
         #: 積んだ効果をいまの絵へ掛けて返す関数 ``(絵, 効果の組) -> 絵`` 効果は GPU で
         #: 掛けるので外から渡す 無ければ焼き込めない（:meth:`_settle_effects`）
         self._apply_effects = apply_effects
+        #: この実行で焼き込んだ回数（:data:`MAX_BAKES`）
+        self._bakes = 0
         self._random = random.Random(0)
 
     # --- 値の読み書き ---
@@ -714,6 +716,17 @@ class ObjApi:
         if self._apply_effects is None:
             self._report.note_missing(f"{caller}（先に積んだ効果の焼き込み）")
             return
+        if self._bakes >= MAX_BAKES:
+            # 1 回ごとに GPU で掛けて読み戻す 効果を積んでは画素を読む繰り返しを許すと、Lua の
+            # 命令数の上限の内でも 1 コマが止まるほど重くなる 上限を越えたら焼き込まず、効果は
+            # 描くときに掛かるまま残す 黙ると順が違う理由が分からないので 1 度だけ記録する
+            if self._bakes == MAX_BAKES:
+                self._report.note_missing(
+                    f"{caller}（焼き込みが 1 回の実行で {MAX_BAKES} 回を越えた）"
+                )
+                self._bakes += 1
+            return
+        self._bakes += 1
         original = state.image
         baked = self._apply_effects(original, tuple(state.effects))
         # 掛ける物が無い（範囲 0 のぼかしなど）と同じ配列が返る そのときに共有の印を消すと、
@@ -1151,6 +1164,10 @@ MAX_FIGURE_SIZE = 4096
 
 #: 名前付きバッファの数の上限 AviUtl の配布スクリプトが使うのは tmp と数個の cache だけ
 MAX_BUFFERS = 16
+
+#: 1 回の実行で積んだ効果を焼き込む回数の上限（:meth:`ObjApi._settle_effects`）
+#: 実物の配布物は 1 つの処理で数回（sigma の 縁取り → 写す → 単色化 → 写す など）
+MAX_BAKES = 64
 
 
 #: それまでに積んだ効果を絵へ焼き込むフィルタの名前

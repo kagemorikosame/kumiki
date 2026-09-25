@@ -13,9 +13,12 @@ from __future__ import annotations
 
 import numpy as np
 
-from sashimono.compat.aviutl.objapi import EffectRequest, ObjectState
+from sashimono.compat.aviutl.catalog import ScriptCatalog
+from sashimono.compat.aviutl.objapi import MAX_BAKES, EffectRequest, ObjectState
 from sashimono.compat.aviutl.report import CompatibilityReport
 from sashimono.compat.aviutl.runtime import LuaScriptRuntime
+from sashimono.core.model import Effect
+from sashimono.engine.render.scripts import ScriptStage
 
 BLUR = 'obj.effect("ぼかし", "範囲", 4)'
 
@@ -99,6 +102,31 @@ class TestSettle:
         drawn = state.draws[0].image
         assert tuple(drawn[0, 0]) == (255, 255, 255, 255)
         assert tuple(state.image[0, 0]) == (0, 0, 0, 255)
+
+    def test_baking_stops_at_the_limit(self) -> None:
+        # 1 回ごとに GPU で掛けて読み戻す 積んでは読む繰り返しを許すと 1 コマが止まるほど重い
+        # 上限を越えたら焼き込まず、効果は描くときに掛かるまま残して記録する
+        loop = f"for i = 1, {MAX_BAKES + 5} do {BLUR} obj.getpixel(0, 0) end"
+        state, baker, report = _run(f"{loop} {BLUR}")
+        assert len(baker.calls) == MAX_BAKES
+        assert state.effects
+        assert sum("焼き込みが" in line for line in report.missing) == 1
+
+    def test_embedded_text_bakes_at_its_own_time(self) -> None:
+        # テキスト欄に埋め込んだ Lua も同じランタイムで焼き込む 時刻を置き直さないと、
+        # 前に走ったクリップの時刻で時間で変わる効果が掛かる
+        seen: list[tuple[int, float, int]] = []
+
+        def bake(
+            image: np.ndarray, effects: tuple[Effect, ...], frame: int, fps: float, duration: int
+        ) -> np.ndarray:
+            del effects
+            seen.append((frame, fps, duration))
+            return image
+
+        stage = ScriptStage(ScriptCatalog(roots=()), screen=(320, 180), apply_effects=bake)
+        stage.expand_text(f"<?{BLUR} obj.getpixel(0, 0)?>", frame=12, fps=24.0, duration=48)
+        assert seen == [(12, 24.0, 48)]
 
     def test_without_a_baker_the_order_is_recorded(self) -> None:
         # 掛ける関数を持たない所（GPU の無い道具）では焼き込めない 黙ると順が入れ替わった
