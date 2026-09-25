@@ -587,12 +587,18 @@ class TestTheScreenKeepsAnswering:
         # 待たせたコマを描き終えられたか 画面が戻らず逃げ道で抜けたら False
         released: list[bool] = []
         claim = threading.Lock()
+        # 再生ヘッドを最初に動かす先
+        start = 30
 
         def slow(cache: PreviewCache, frame: int, surface: CacheSurface) -> None:
             began, before = watching[0], ticks[0]
             if threading.get_ident() != screen_thread and armed[0]:
                 with claim:
-                    mine = target[0] is None
+                    # 画面がいま出しているコマは選ばない ``set_frame`` は同じ番号だと
+                    # 何もせず戻るので、画面が出しに来ないまま逃げ道で抜けて落ちる
+                    # 走り係は再生ヘッドを受け取った直後、画面が描き終えて次のコマへ
+                    # 送る前に、いまのコマを描き始めることがある
+                    mine = target[0] is None and frame != start
                     if mine:
                         target[0] = frame
                 if mine:
@@ -648,11 +654,11 @@ class TestTheScreenKeepsAnswering:
             timer.start()
             watching[0] = True
             # 再生ヘッドを動かすと、そこから貯め直す
-            widget.set_frame(30)
+            widget.set_frame(start)
             # 遅いコマを描き終え、画面に待たせるコマを描き終え、動かした先が貯まるまで
             # 回す 決まった長さで切ると、混んだ機械では貯まる前に切れて落ちる 上限は
             # 固まったときの逃げ道
-            ahead = set(range(30, 40))
+            ahead = set(range(start, start + 10))
             moved = False
             end = time.perf_counter() + 30
             while time.perf_counter() < end and (
