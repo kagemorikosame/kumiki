@@ -60,6 +60,12 @@ end
 #: モジュールとして読む拡張子 テキストの Lua を先に探す
 MODULE_SUFFIXES = (".lua", ".mod", ".mod2")
 
+#: AviUtl1 の ``require`` が ``package.cpath`` で探す C のモジュールの拡張子 読まずに見分けるだけ
+C_MODULE_SUFFIX = ".dll"
+
+#: PE の見出しの ``Machine`` のうち、32 ビットの x86 を表す値
+MACHINE_I386 = 0x014C
+
 #: DLL へ渡す表を写すときの深さの上限 配布物が渡すのは 2 段（頂点の表の表）まで
 NATIVE_TABLE_DEPTH = 8
 
@@ -568,7 +574,7 @@ class LuaScriptRuntime:
             missing = ("missing", self._folder, key)
             if missing not in self._modules:
                 # 1 度だけ記録する 毎コマ記録すると、1 本の不足が何百回にも数えられる
-                self._report.note_missing(f'モジュール "{key}" が見つかりません')
+                self._report.note_missing(self._unloadable(key))
                 self._modules[missing] = None
             return None
 
@@ -588,6 +594,34 @@ class LuaScriptRuntime:
             value = self._run_file(path)
         self._modules[cache] = value
         return value
+
+    def _unloadable(self, name: str) -> str:
+        """``require`` で読めなかったモジュールの記録の文
+
+        AviUtl1 の ``require`` は ``package.cpath`` の C の DLL（``名前.dll``）も読む
+        PSDToolKit の ``PSDToolKitBridge`` がそれで、配布物は 32 ビットの AviUtl1 に合わせた
+        32 ビットの DLL 64 ビットの Sashimono の中へは読み込めない 置いてあるのに
+        「見つかりません」と残すと、置き場を探し直すことになる
+        C の DLL は Lua の C の窓口を呼ぶ物なので、64 ビットでも読まない（:mod:`native` は
+        AviUtl2 の ``.mod2`` の作法しか知らない）
+        """
+        library = self._locate(name, (C_MODULE_SUFFIX,))
+        if library is None:
+            return f'モジュール "{name}" が見つかりません'
+        machine = _machine(library)
+        if machine is None:
+            # 開けないか PE の見出しが壊れている 読めない理由を C のモジュールだからと決めつけると、
+            # 壊れたファイルを置き直せば済む所で探す向きを誤らせる
+            return (
+                f'モジュール "{name}" は DLL（{library.name}）だが、形式か CPU の種類を'
+                "読み取れなかったので読まない"
+            )
+        if machine == MACHINE_I386:
+            return (
+                f'モジュール "{name}" は 32 ビットの DLL（{library.name}）で、'
+                "64 ビットの Sashimono では読めない"
+            )
+        return f'モジュール "{name}" は Lua の C モジュールの DLL（{library.name}）で、読めない'
 
     def _run_file(self, path: Path) -> Any:
         """Lua のモジュールのファイルを走らせ、返した値を受け取る 読めなければ ``nil``"""
@@ -796,7 +830,10 @@ class LuaScriptRuntime:
         if index is not None:
             return index
         index = {}
-        suffixes = {suffix.casefold() for suffix in MODULE_SUFFIXES}
+        # C の DLL も索引に入れる 引くときは呼ぶ側が頼んだ拡張子だけを見るので、require が
+        # DLL を読むことにはならない 入れないと、深い所に置いた 32 ビットの DLL が
+        # 「見つかりません」と記録される（:meth:`_unloadable`）
+        suffixes = {suffix.casefold() for suffix in (*MODULE_SUFFIXES, C_MODULE_SUFFIX)}
         for path in sorted(root.glob("*/*/**/*"), key=_shallow_first):
             if path.suffix.casefold() in suffixes and path.is_file():
                 index.setdefault((path.stem.casefold(), path.suffix.casefold()), path)
@@ -853,6 +890,26 @@ def _is_native(path: Path) -> bool:
     except OSError:
         return False
     return head[:2] == b"MZ" or head[:4] == b"" + bytes([0x1B]) + b"Lua"
+
+
+def _machine(path: Path) -> int | None:
+    """DLL の PE の見出しに書かれた CPU の種類 読めなければ ``None``
+
+    読み込まずに見出しだけを読む 32 ビットの DLL を 64 ビットの中へ読もうとすると
+    ``OSError`` で落ちるだけで、なぜ読めないのかが記録に残らない
+    """
+    try:
+        with path.open("rb") as file:
+            head = file.read(64)
+            if len(head) < 64 or head[:2] != b"MZ":
+                return None
+            file.seek(int.from_bytes(head[60:64], "little"))
+            signature = file.read(6)
+    except OSError:
+        return None
+    if len(signature) < 6 or signature[:4] != b"PE\0\0":
+        return None
+    return int.from_bytes(signature[4:6], "little")
 
 
 def _shift(value: Any, amount: Any) -> int:

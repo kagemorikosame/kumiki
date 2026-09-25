@@ -9,7 +9,7 @@
 座標そのままで描画されます」）
 
 色はストレートアルファで持つ（:mod:`sashimono.compat.aviutl.objapi` と同じ）
-重ね方は「通常」と、仮想バッファ専用の 4 つ（:data:`BLENDS`） ほかの合成モードは
+重ね方は「通常」・色差と、仮想バッファ専用の 4 つ（:data:`BLENDS`） ほかの合成モードは
 呼ぶ側が記録に残して通常で描く
 """
 
@@ -22,7 +22,9 @@ __all__ = ["BLENDS", "draw_image", "draw_triangle", "resize"]
 #: 仮想バッファへ描くときに写してある合成モード（lua.txt の ``obj.setoption("blend")``）
 #: ``none`` が通常 ``alpha_*`` は仮想バッファ専用で、sigma が角を削ったり縁だけを
 #: 残したりするのに使う
-BLENDS = frozenset({"none", "alpha_add", "alpha_max", "alpha_sub", "alpha_add2"})
+#: ``chroma``（色差）は sigma の アクリル化・磨りガラス化 が着色で輝度を保つのに使う
+#: （:func:`_chroma_over`）
+BLENDS = frozenset({"none", "alpha_add", "alpha_max", "alpha_sub", "alpha_add2", "chroma"})
 
 
 #: 双線形のリサイズで 1 度に補間する行の数 出力全体を一度に float で持つと、
@@ -94,6 +96,7 @@ def _over(
     - ``alpha_max`` 色は同じ平均、不透明度は大きい方
     - ``alpha_sub`` 色はそのまま、不透明度を引く
     - ``alpha_add2`` 色は通常の重ね方、不透明度は足す
+    - ``chroma`` 色差 下の輝度に上の色差を合わせた色を、通常の重ね方で置く
 
     ``alpha_add`` を通常の重ね方で代えると、半透明の縁どうしを重ねても不透明にならない
     sigma は透明度を反転した絵と元の絵を重ねて隙間の無い 1 枚を作るので、縁に筋が残る
@@ -114,6 +117,8 @@ def _over(
         rgb = np.where(weight[..., None] > 0, rgb, below[..., :3])
         a_out = np.minimum(1.0, weight) if blend == "alpha_add" else np.maximum(a_top, a_bottom)
     else:
+        if blend == "chroma":
+            above[..., :3] = _chroma_over(below, above)
         over = a_top + a_bottom * (1.0 - a_top)
         with np.errstate(divide="ignore", invalid="ignore"):
             rgb = (
@@ -124,6 +129,31 @@ def _over(
         a_out = np.minimum(1.0, a_top + a_bottom) if blend == "alpha_add2" else over
     out = np.concatenate([rgb, a_out[..., None]], axis=-1)
     return np.clip(np.rint(out * 255.0), 0, 255).astype(np.uint8)
+
+
+#: 色差 の重ね方で輝度を測る重み AviUtl は BT.601 の YCbCr で色を扱う（色調補正の 色相 を
+#: AviUtl2 で測ったときも BT.601 の Y を支点に Cb と Cr が回った docs/development.md）
+_LUMA = np.array([0.299, 0.587, 0.114], np.float32)
+
+
+def _chroma_over(below: np.ndarray, above: np.ndarray) -> np.ndarray:
+    """色差 の重ね方で上に置く色（0〜1 のストレートの RGB）
+
+    合成モードの 色差 は、下の絵の輝度（Y）に上の絵の色差（Cb と Cr）を合わせた色
+    BT.601 の Cb と Cr は B − Y と R − Y に比例するので、上の色の 3 つに同じ量を足して
+    Y だけを下の Y にそろえると色差は変わらない sigma の アクリル化・磨りガラス化 の
+    「着色で輝度を保持」はこれで色だけを乗せる 通常で重ねると、着色の灰色で板の明るさまで
+    塗り替わる
+
+    寄せた色が 0〜1 を出る所（暗い下に明るい上の色など）は切るので、そこだけ輝度もずれる
+    下が透明な所は上の色のまま（下に合わせる輝度が無い） 半透明なら下の不透明度で混ぜる
+    重ね方の式の組み立て（W3C の合成と同じ形）と BT.601 の係数は、AviUtl で測った物ではない
+    """
+    shifted = above[..., :3] + (below[..., :3] @ _LUMA - above[..., :3] @ _LUMA)[..., None]
+    shifted = np.clip(shifted, 0.0, 1.0)
+    weight = below[..., 3:4]
+    mixed: np.ndarray = above[..., :3] * (1.0 - weight) + shifted * weight
+    return mixed
 
 
 def draw_image(

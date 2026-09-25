@@ -488,6 +488,8 @@ class FrameRenderer:
         #: 移動軌跡の道の置き場 描くたびに頭から位置を引き直さないために覚えておく
         #: レンダラごとに持つ 共有すると、1 つを閉じたときに他のレンダラの道まで消える
         self._trail_paths = TrailPaths()
+        #: クリップごとのレイヤー番号（スクリプトの ``obj.layer``） プロジェクトごとに 1 度数える
+        self._layer_numbers: tuple[Project, dict[int, int], dict[ClipId, int]] | None = None
         self._closed = False
 
     @property
@@ -1535,6 +1537,7 @@ class FrameRenderer:
             image,
             frame=local_frame,
             fps=float(rate.fps),
+            layer=self._layer_number(clip, track),
             framebuffer=lambda: self._screen_picture(below),
         )
         self._draw_calls(
@@ -1684,6 +1687,44 @@ class FrameRenderer:
                 blend=clip.blend_mode,
                 matrix=matrix,
             )
+
+    def _layer_number(self, clip: Clip, track: Track | None = None) -> int:
+        """スクリプトへ渡す ``obj.layer`` 絵を描くトラックの奥から何本目か（1 から）
+
+        混合トラックでは AviUtl のレイヤー番号と同じ（:mod:`sashimono.compat.layers`） 0 のまま
+        渡すと、PSDToolKit のようにレイヤー番号で字幕や口パクの状態を分けるスクリプトで、
+        別のレイヤーのオブジェクトどうしが同じ状態を書き換え合う
+        どこにも無いクリップ（切り替えの途中に作る物など）は 1
+
+        ``track`` は置かれたトラック 分かる所では渡す フィルタや切り抜きは描く前にクリップを
+        作り直す（``replace``）ので、実体で引けずに識別子へ落ち、別のシーンに同じ識別子の
+        クリップがあるとそちらの番号になる トラックはタイムラインの物をそのまま渡している
+        """
+        cached = self._layer_numbers
+        if cached is None or cached[0] is not self._project:
+            # クリップの実体で引く 識別子だけで引くと、別のシーンに同じ識別子のクリップがある
+            # プロジェクト（識別子はタイムラインをまたいで重ならないと確かめていない）で、後から
+            # 数えたシーンの番号が前の番号を上書きする 実体はプロジェクトを持っている間は
+            # 生きているので ``id()`` が変わらない 描くときに作り直したクリップは識別子で引く
+            # （そのときは先に数えたメインのタイムラインの番号）
+            by_object: dict[int, int] = {}
+            by_id: dict[ClipId, int] = {}
+            timelines = (self._project.timeline, *(s.timeline for s in self._project.scenes))
+            for timeline in timelines:
+                # 絵を描くトラック（映像と混合）をまとめて奥から数える 種類ごとに数えると、
+                # 映像と混合のトラックが並ぶタイムラインで両方に同じ番号が渡り、番号で状態を
+                # 分けるスクリプトで別のトラックの状態が混ざる 混合だけなら今までと同じ番号
+                for layer, placing in enumerate(timeline.picture_tracks(), 1):
+                    by_object[id(placing)] = layer
+                    for placed in placing.clips:
+                        by_object[id(placed)] = layer
+                        by_id.setdefault(placed.id, layer)
+            cached = (self._project, by_object, by_id)
+            self._layer_numbers = cached
+        _, by_object, by_id = cached
+        if track is not None and id(track) in by_object:
+            return by_object[id(track)]
+        return by_object.get(id(clip), by_id.get(clip.id, 1))
 
     def _screen_picture(self, below: Compositor | None = None) -> np.ndarray:
         """それまでに重ねた画面を、スクリプトへ渡す絵にする（``obj.copybuffer`` の ``frm``）
@@ -1955,6 +1996,7 @@ class FrameRenderer:
                     # 渡さないと、合成フォントのエイリアスが大きさも字間も
                     # 既定値で組み、設定欄をいじっても絵が変わらない
                     font=text_font(source.params, local_frame),
+                    layer=self._layer_number(clip),
                 )
                 source = source.with_param("text", expanded)
         # 画面の左上から数えた線の点（YMM4 のペン）は、ここで画面の大きさを引いて中心からの点へ
