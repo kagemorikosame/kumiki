@@ -49,6 +49,7 @@ from sashimono.core.model import (
 )
 from sashimono.core.timebase import FrameRate
 from sashimono.effects.definition import EffectDefinition, registry
+from sashimono.effects.sources import TRANSITION
 from sashimono.effects.spec import (
     IMAGE_SUFFIXES,
     CheckSpec,
@@ -140,11 +141,20 @@ _DRAW_NAMES = frozenset({"標準描画", "拡張描画"})
 _EFFECT_ONLY = frozenset({"アニメーション効果"})
 
 #: スクリプトが中身を作る要素 ``name=矩形@単純図形σ`` のようにスクリプトを名前で指す
-_SCRIPTED_CONTENTS = frozenset({"カスタムオブジェクト", "シーンチェンジ"})
+#: シーンチェンジもスクリプトで絵を作るが、場面切り替えとして置く（:func:`_scene_change`）
+_SCRIPTED_CONTENTS = frozenset({"カスタムオブジェクト"})
 
 #: 手元にスクリプトがあれば、右クリックの〔追加〕と同じ形で置く中身
 #: （:mod:`sashimono.compat.aviutl.custom_object`）
 _CUSTOM_OBJECT = "カスタムオブジェクト"
+
+#: 場面切り替え（生成オブジェクト ``transition``）として置く中身（#196）
+_SCENE_CHANGE = "シーンチェンジ"
+
+#: 組み込みのシーンチェンジのうち、場面切り替えの切り替え方でそのまま描ける物
+#: 名前は AviUtl の一覧の表示名 実物の配布物には 1 回も出てこない（sigma の 4 本は
+#: どれもスクリプト） ワイプや押し出しの向きは確かめる物が無いので、ここへは足さない
+_BUILT_IN_SCENE_CHANGES = {"クロスフェード": "fade"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -728,6 +738,16 @@ def map_object(
         script = _script_values(found, content, obj.relative_points(), log) if found else None
         if script is not None:
             effects.append(script)
+    scene_name = content.params.get("name", "").strip()
+    if kind == _SCENE_CHANGE and scene_name and scene_name not in _BUILT_IN_SCENE_CHANGES:
+        # 切り替えを描くスクリプトは場面切り替えの効果の列に積む 描く側は種類（.scn）で
+        # 見分け、前の場面へ掛ける効果とは別に走らせる 見つからない物は :func:`_scene_change`
+        # が数えてある
+        found = _find_script(scene_name, "scn")
+        if found is not None:
+            scene = _script_values(found, _adjust_as_track0(content), obj.relative_points(), log)
+            if scene is not None:
+                effects.append(scene)
     opacity = AnimatedValue(1.0)
     blend = "normal"
     # 中間点はオブジェクトの持ち物 トラックバーの値はこの点の数だけ並ぶ
@@ -1217,8 +1237,10 @@ def _content(
         # 手元にあるスクリプトは、右クリックの〔追加〕と同じ形（空のテキスト）で置く
         # スクリプトは :func:`map_object` が最初のエフェクトとして積む
         return empty_object(), "", entry.name
+    if entry.name == _SCENE_CHANGE:
+        return _scene_change(entry, log), "", entry.name
     if entry.name in _SCRIPTED_CONTENTS:
-        # スクリプトで中身を作るもの（AviUtl1 の カスタムオブジェクト と シーンチェンジ）
+        # スクリプトで中身を作るもの（手元にスクリプトの無い AviUtl1 の カスタムオブジェクト）
         # どのスクリプトかで出来る絵がまるで違うので、名前ごとに数える
         # 種類だけで数えると、どのスクリプトから手を付ければよいかが分からない
         log.note_missing(f"{entry.name}: {entry.params.get('name', '') or '名前なし'}")
@@ -1229,6 +1251,48 @@ def _content(
     else:
         log.note_missing(f"未対応の中身: {entry.name}")
     return None, "", entry.name
+
+
+def _scene_change(entry: ExoEntry, log: CompatibilityReport) -> GeneratedSource:
+    """シーンチェンジを場面切り替えにする（#196）
+
+    下のレイヤーの絵を、区間の頭より前の場面から今の場面へ切り替える所は YMM4 の
+    場面切り替えと同じ作りに乗せる スクリプトは :func:`map_object` が効果として積み、
+    描く側が前後の場面を渡して走らせる（:meth:`FrameRenderer._draw_scene_change`）
+
+    スクリプトの物は、走らないとき（ffi が要る物など）に真ん中で入れ替えるだけにする
+    切り替えずに前の場面を流し続けるより、区間の終わりに後の場面が出ていた方が元の作品に近い
+
+    名前の無い物は組み込みを ``type`` の番号で指していると思われるが、番号と種類の対応は
+    確かめていないので番号のまま数える 前後の場面の取り方も実物の AviUtl で測っていない
+    """
+    name = entry.params.get("name", "").strip()
+    if entry.params.get("反転", "0").strip() not in ("", "0"):
+        # 前後を入れ替えるのか進み方を逆にするのかを確かめていない 配布物 4 本はどれも 0
+        log.note_missing("シーンチェンジの反転")
+    style = _BUILT_IN_SCENE_CHANGES.get(name)
+    if style is None:
+        style = "switch"
+        if not name:
+            log.note_missing(
+                f"シーンチェンジ: 組み込みの番号 {entry.params.get('type', '').strip()}"
+            )
+        elif _find_script(name, "scn") is None:
+            log.note_missing(f"シーンチェンジ: {name}")
+    return TRANSITION.create(style=style)
+
+
+def _adjust_as_track0(entry: ExoEntry) -> ExoEntry:
+    """シーンチェンジの ``調整`` を、スクリプトの 1 本目のトラックバー（``track0``）として読む
+
+    AviUtl1 はシーンチェンジのスクリプトの track0 を ``調整`` の名前で書く（配布物 4 本とも
+    ``track0`` の行が無く、``調整`` と ``track1`` だけがある） 組み込みのシーンチェンジが
+    持つ欄の名前をそのまま使っていると読んだ 4 本とも既定の 0 なので値では確かめていない
+    """
+    adjust = entry.params.get("調整")
+    if adjust is None or "track0" in entry.params:
+        return entry
+    return replace(entry, params={**entry.params, "track0": adjust})
 
 
 #: AviUtl1 の ``type``（文字装飾の番号）と、AviUtl2 での呼び名

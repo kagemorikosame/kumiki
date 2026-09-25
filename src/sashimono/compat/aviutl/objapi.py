@@ -197,6 +197,9 @@ class ObjectState:
     #: フレームバッファ（それまでに下へ重ねた画面）を読む関数 描く側が渡す
     #: 画面を読み戻すのは重いので、``obj.copybuffer(…, "frm")`` が呼ばれたときだけ読む
     framebuffer: Callable[[], np.ndarray | None] | None = None
+    #: シーンチェンジの進み具合（0〜1） ``obj.getvalue("scenechange")`` が返す
+    #: シーンチェンジとして走らせるときだけ描く側が入れる ほかのスクリプトでは ``None``
+    scenechange: float | None = None
 
     @property
     def width(self) -> int:
@@ -1109,6 +1112,17 @@ class ObjApi:
 
     def lua_setoption(self, name: str = "", *values: Any) -> None:
         key = str(name)
+        if key == "dst" and values:
+            # AviUtl1 の描く先の短い書き方 ``frm`` はフレームバッファ、``tmp`` は仮想バッファで、
+            # ``drawtarget`` の ``framebuffer`` ``tempbuffer`` と同じ物（大きさの渡し方も同じ）
+            # sigma_lib は仮想バッファへ ``dst`` で描いて形を切り抜き（pizza_cut など）、
+            # シーンチェンジのスクリプトは最後に ``frm`` へ戻して描く 読まずにいると
+            # 仮想バッファへ描くはずの絵が画面へ出て、切り抜きも効かない
+            target = _buffer_name(str(values[0]))
+            if target in (FRAMEBUFFER, "tmp"):
+                drawtarget = "framebuffer" if target == FRAMEBUFFER else "tempbuffer"
+                self.lua_setoption("drawtarget", drawtarget, *values[1:])
+                return
         self.state.options[key] = values[0] if values else True
         if key == "drawtarget" and values and str(values[0]) == "tempbuffer" and len(values) >= 3:
             # 大きさを渡されたら、その大きさの透明な物で作り直す（仕様書どおり）
@@ -1151,6 +1165,8 @@ class ObjApi:
         """
         del args
         name = str(target)
+        if name == "scenechange" and self.state.scenechange is not None:
+            return self.state.scenechange
         for candidate in (name, name.split(".", 1)[-1]):
             if candidate in self.state.values:
                 return lua_text(self.state.values[candidate], self._report)
