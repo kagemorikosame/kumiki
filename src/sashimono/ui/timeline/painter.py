@@ -14,7 +14,7 @@ from collections.abc import Callable, Collection, Sequence
 from fractions import Fraction
 
 import numpy as np
-from PySide6.QtCore import QPointF, QRect, QRectF, Qt
+from PySide6.QtCore import QLineF, QPointF, QRect, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QImage, QPainter, QPen
 
 from sashimono.compat.aviutl.custom_object import (
@@ -591,12 +591,21 @@ def _draw_waveform(
 
     centre = rect.top() + rect.height() / 2.0
     half = rect.height() / 2.0 - 1.0
+    # 切り詰めと位置はまとめて求め、線も 1 度で渡す 列ごとに numpy の値を切り詰めて
+    # drawLine を呼ぶと、実素材を 100 本並べた全体表示で 1 回の描画が 50ms 近くになった
+    # （60fps の予算は 16.7ms #201）
+    tops = centre - np.clip(maximum, -1.0, 1.0).astype(np.float64) * half
+    bottoms = np.maximum(centre - np.clip(minimum, -1.0, 1.0).astype(np.float64) * half, tops + 1.0)
+    left = rect.left()
     painter.setPen(QPen(Colors.WAVEFORM, 1))
-    for column in range(columns):
-        top = centre - float(np.clip(maximum[column], -1.0, 1.0)) * half
-        bottom = centre - float(np.clip(minimum[column], -1.0, 1.0)) * half
-        x = rect.left() + column
-        painter.drawLine(QPointF(x, top), QPointF(x, max(bottom, top + 1.0)))
+    painter.drawLines(
+        [
+            QLineF(left + column, top, left + column, bottom)
+            for column, (top, bottom) in enumerate(
+                zip(tops.tolist(), bottoms.tolist(), strict=True)
+            )
+        ]
+    )
 
 
 def draw_playhead(painter: QPainter, layout: TimelineLayout, frame: int, height: int) -> None:
