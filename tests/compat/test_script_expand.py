@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from sashimono.compat.aviutl.mapping import script_filter_effects
 from sashimono.compat.aviutl.objapi import EffectRequest, ObjectState
 from sashimono.compat.aviutl.report import CompatibilityReport
 from sashimono.compat.aviutl.runtime import LuaScriptRuntime
@@ -117,6 +118,18 @@ class TestExpandAtOnce:
         state = _run('obj.effect("領域拡張", "上", 0/0)', report=report)
         assert state.image.shape[:2] == (4, 6)
         assert any("領域拡張" in line for line in report.missing)
+
+
+class TestFillFromAliases:
+    def test_the_fill_flag_is_read(self) -> None:
+        # .exa の 領域拡張 も 塗りつぶし を持つ（#190） 未対応として捨てると、スクリプトから
+        # 広げたときは埋まり、エイリアスから広げたときは透明になる
+        report = CompatibilityReport()
+        (effect,) = script_filter_effects(
+            "領域拡張", {"上": 10.0, "塗りつぶし": 1.0}, report=report
+        )
+        assert effect.params["fill"] is True
+        assert not report.missing
 
 
 class TestSizeAfterStackedEffects:

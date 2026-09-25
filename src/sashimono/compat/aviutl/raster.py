@@ -9,14 +9,20 @@
 座標そのままで描画されます」）
 
 色はストレートアルファで持つ（:mod:`sashimono.compat.aviutl.objapi` と同じ）
-重ね方は「通常」だけ ほかの合成モードは呼ぶ側が記録に残して素通しにする
+重ね方は「通常」と、仮想バッファ専用の 4 つ（:data:`BLENDS`） ほかの合成モードは
+呼ぶ側が記録に残して通常で描く
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-__all__ = ["draw_image", "draw_triangle", "resize"]
+__all__ = ["BLENDS", "draw_image", "draw_triangle", "resize"]
+
+#: 仮想バッファへ描くときに写してある合成モード（lua.txt の ``obj.setoption("blend")``）
+#: ``none`` が通常 ``alpha_*`` は仮想バッファ専用で、sigma が角を削ったり縁だけを
+#: 残したりするのに使う
+BLENDS = frozenset({"none", "alpha_add", "alpha_max", "alpha_sub", "alpha_add2"})
 
 
 #: 双線形のリサイズで 1 度に補間する行の数 出力全体を一度に float で持つと、
@@ -76,30 +82,60 @@ def _premultiplied(pixels: np.ndarray) -> np.ndarray:
     return values
 
 
-def _over(target: np.ndarray, color: np.ndarray, alpha: np.ndarray) -> np.ndarray:
-    """``color``（ストレート）を不透明度 ``alpha`` で ``target`` の上へ重ねた結果
+def _over(
+    target: np.ndarray, color: np.ndarray, alpha: np.ndarray, blend: str = "none"
+) -> np.ndarray:
+    """``color``（ストレート）を不透明度 ``alpha`` で ``target`` へ重ねた結果
 
     ``target`` も ``color`` も ``(..., 4)`` の 0〜255 ``alpha`` は 0〜1
+    ``blend`` は :data:`BLENDS` の 1 つ 意味は lua.txt の文言どおり
+
+    - ``alpha_add`` 色は不透明度で重みを付けた平均、不透明度は足す
+    - ``alpha_max`` 色は同じ平均、不透明度は大きい方
+    - ``alpha_sub`` 色はそのまま、不透明度を引く
+    - ``alpha_add2`` 色は通常の重ね方、不透明度は足す
+
+    ``alpha_add`` を通常の重ね方で代えると、半透明の縁どうしを重ねても不透明にならない
+    sigma は透明度を反転した絵と元の絵を重ねて隙間の無い 1 枚を作るので、縁に筋が残る
     """
     below = target.astype(np.float32) / 255.0
     above = color.astype(np.float32) / 255.0
     a_top = above[..., 3] * alpha
     a_bottom = below[..., 3]
-    a_out = a_top + a_bottom * (1.0 - a_top)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        rgb = (
-            above[..., :3] * a_top[..., None]
-            + below[..., :3] * (a_bottom * (1.0 - a_top))[..., None]
-        ) / a_out[..., None]
-    rgb = np.where(a_out[..., None] > 0, rgb, 0.0)
+    if blend == "alpha_sub":
+        below[..., 3] = np.maximum(0.0, a_bottom - a_top)
+        return np.clip(np.rint(below * 255.0), 0, 255).astype(np.uint8)
+    if blend in ("alpha_add", "alpha_max"):
+        weight = a_top + a_bottom
+        with np.errstate(divide="ignore", invalid="ignore"):
+            rgb = (
+                above[..., :3] * a_top[..., None] + below[..., :3] * a_bottom[..., None]
+            ) / weight[..., None]
+        rgb = np.where(weight[..., None] > 0, rgb, below[..., :3])
+        a_out = np.minimum(1.0, weight) if blend == "alpha_add" else np.maximum(a_top, a_bottom)
+    else:
+        over = a_top + a_bottom * (1.0 - a_top)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            rgb = (
+                above[..., :3] * a_top[..., None]
+                + below[..., :3] * (a_bottom * (1.0 - a_top))[..., None]
+            ) / over[..., None]
+        rgb = np.where(over[..., None] > 0, rgb, 0.0)
+        a_out = np.minimum(1.0, a_top + a_bottom) if blend == "alpha_add2" else over
     out = np.concatenate([rgb, a_out[..., None]], axis=-1)
     return np.clip(np.rint(out * 255.0), 0, 255).astype(np.uint8)
 
 
 def draw_image(
-    buffer: np.ndarray, image: np.ndarray, x: float = 0.0, y: float = 0.0, alpha: float = 1.0
+    buffer: np.ndarray,
+    image: np.ndarray,
+    x: float = 0.0,
+    y: float = 0.0,
+    alpha: float = 1.0,
+    *,
+    blend: str = "none",
 ) -> None:
-    """絵を等倍で、真ん中が ``(x, y)`` に来るように重ねる
+    """絵を等倍で、真ん中が ``(x, y)`` に来るように重ねる 重ね方は ``blend``（:func:`_over`）
 
     位置は画素の格子へ合わせる（等倍なので引き伸ばさない） 小数の位置で
     補間すると、文字の縁がにじむ
@@ -114,7 +150,7 @@ def draw_image(
         return
     part = image[y0 - top : y1 - top, x0 - left : x1 - left]
     region = buffer[y0:y1, x0:x1]
-    buffer[y0:y1, x0:x1] = _over(region, part, np.full(part.shape[:2], alpha, np.float32))
+    buffer[y0:y1, x0:x1] = _over(region, part, np.full(part.shape[:2], alpha, np.float32), blend)
 
 
 def draw_triangle(
@@ -125,8 +161,10 @@ def draw_triangle(
     uvs: tuple[tuple[float, float], ...] | None = None,
     colors: tuple[tuple[float, float, float, float], ...] | None = None,
     alpha: float = 1.0,
+    blend: str = "none",
 ) -> None:
     """三角形を 1 つ描く 絵を貼る（``uvs``）か、頂点の色で塗る（``colors``）
+    重ね方は ``blend``（:func:`_over`）
 
     ``points`` は仮想バッファの座標（真ん中が原点、下が正）
     ``uvs`` は絵の中の位置（0〜1 仕様書どおり正規化） 端の外は端の色（clamp
@@ -196,7 +234,7 @@ def draw_triangle(
         color = texture[row, column].astype(np.float64)
         coverage = np.full(u.shape, alpha, np.float32)
     coverage = np.where(inside, coverage, 0.0).astype(np.float32)
-    blended = _over(region, np.clip(color, 0, 255).astype(np.uint8), coverage)
+    blended = _over(region, np.clip(color, 0, 255).astype(np.uint8), coverage, blend)
     buffer[y_min:y_max, x_min:x_max] = np.where(inside[..., None], blended, region)
 
 
