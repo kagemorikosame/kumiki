@@ -17,6 +17,8 @@ r"""フィルタと中身の意味を AviUtl2 に描かせて測る（#184・#18
 定数へそのまま写せる 1 本の見本が 2 つのレイヤーを使うことがあるので、プロジェクトは
 ``tools/aviutl_compare.py`` の並べ方を借りずにここで書く（レイヤー 0 と 1 を同じ区間に置く）
 AviUtl2 を起こす回数を減らすため、測るものを 1 つのプロジェクトにまとめてある
+3 回目と 4 回目の見本は ``--third`` ``--fourth`` で選ぶ 4 回目は ``--only`` で名前の頭
+（``lb,po`` ``sc`` ``tc``）ごとに分けて書き出す
 """
 
 from __future__ import annotations
@@ -347,7 +349,9 @@ def scene_one(first_number: int) -> list[str]:
         "display.frame=0",
         "display.layer=0",
         "display.zoom=10000",
-        "display.order=0",
+        # AviUtl2 が保存し直した形では 1 だった 4 回目に 1 にしても、中身はルートのシーンの
+        # 頭に置かれた（並びの番号のせいではない）
+        "display.order=1",
         "display.camera=",
         f"[{first_number}]",
         "layer=0",
@@ -477,6 +481,128 @@ def probes_third(folder: Path) -> tuple[Probe, ...]:
     return tuple(found)
 
 
+#: 4 回目のシーンの見本の頭に置く空きの長さ 節の書き方が違ってシーン 1 の中身がルートの頭に
+#: 置かれても、ほかの見本と重ならず、ここに四角が出ることで分かる
+SCENE_LEAD = SCENE_LENGTH
+
+
+def probes_fourth(folder: Path) -> tuple[Probe, ...]:
+    """4 回目（#195 #210） レンズブラーの光の強さ・直前オブジェクトの残り・シーン・時間制御
+
+    名前の頭で 3 つに分けて書き出す（``--only lb,po`` ``--only sc`` ``--only tc``）
+    時間制御は 3 回目に AviUtl2 が落ちたので、ほかと混ぜない
+    """
+    dot = (folder / "dot.png").resolve()
+    grey_dot = (folder / "grey_dot.png").resolve()
+    found: list[Probe] = []
+    # --- レンズブラーの光の強さ 黒地にひとつの点 3 回目は光の強さ 0 が別の絵と重なった ---
+    for strength in (0, 10, 25, 50, 75, 100):
+        found.append(
+            Probe(
+                f"lb03_dot_r20_light{strength}",
+                single(
+                    image(dot),
+                    filter_block("レンズブラー", 範囲="20", 光の強さ=str(strength), サイズ固定="1"),
+                    draw(),
+                ),
+            )
+        )
+    for size in (10, 40):
+        found.append(
+            Probe(
+                f"lb04_dot_r{size}_light50",
+                single(
+                    image(dot),
+                    filter_block("レンズブラー", 範囲=str(size), 光の強さ="50", サイズ固定="1"),
+                    draw(),
+                ),
+            )
+        )
+    # 明るさで効き方が変わるか 点の明るさ 128
+    for strength in (0, 50, 100):
+        found.append(
+            Probe(
+                f"lb05_grey_dot_r20_light{strength}",
+                single(
+                    image(grey_dot),
+                    filter_block("レンズブラー", 範囲="20", 光の強さ=str(strength), サイズ固定="1"),
+                    draw(),
+                ),
+            )
+        )
+
+    # --- 直前オブジェクトの残り 下の四角は左 -400、写しは右 400 ---
+    previous = [["effect.name=直前オブジェクト"], draw(x=400.0)]
+    below_add = [square(200, "646464"), draw(x=-400.0)]
+    below_add[1] = [line.replace("合成モード=通常", "合成モード=加算") for line in below_add[1]]
+    # 灰 128 の下地の上で、下の四角（100）を加算にする 写しが加算なら 228、通常なら 100
+    found.append(
+        Probe(
+            "po08_below_add_on_grey",
+            ([square(1080, "808080"), draw()], below_add, previous),
+        )
+    )
+    # 小さな青い四角（60）で下の白い四角（200）を切る 写しが切った絵なら 60、切る前なら 200
+    found.append(
+        Probe(
+            "po09_below_clipped_small",
+            (
+                [square(60, "0000ff"), draw(x=-400.0)],
+                [[HEADER, CLIP_UPPER], square(200), draw(x=-400.0)],
+                previous,
+            ),
+        )
+    )
+
+    # --- シーン 項目の名前は 3 回目に AviUtl2 が保存し直した形 ---
+    # 4 回目もシーン 1 の中身がルートに置かれ、どの見本にも何も写らなかった（節の書き方が違う）
+    found.append(Probe("sc00_lead", (), length=SCENE_LEAD))
+
+    def scene(position: str = "0.000", speed: str = "100.00", loop: str = "0") -> Blocks:
+        return [
+            [
+                "effect.name=シーン",
+                f"再生位置={position}",
+                f"再生速度={speed}",
+                "シーン=1",
+                f"ループ再生={loop}",
+            ],
+            draw(),
+        ]
+
+    found.append(Probe("sc03_plain", (scene(),), length=SCENE_LENGTH))
+    found.append(Probe("sc04_half_speed", (scene(speed="50.00"),), length=SCENE_LENGTH))
+    found.append(Probe("sc05_position_half", (scene(position="0.500"),), length=SCENE_LENGTH))
+    found.append(Probe("sc06_double_loop", (scene(speed="200.00", loop="1"),), length=SCENE_LENGTH))
+
+    # --- 時間制御(オブジェクト) 位置は AviUtl2 が保存し直した形の値だけ ---
+    # 4 回目はこの 2 本だけでも、開いて主の窓を出す前に AviUtl2 が落ちた（3 回目は 位置=0.500）
+    # 位置の値のせいではない 原因が分かるまで書き出さない
+    for label, position in (
+        ("linear_double", "0.000,2.000,直線移動,0"),
+        ("range", "0.000,1.000,再生範囲,0"),
+    ):
+        found.append(
+            Probe(
+                f"tc02_{label}",
+                (
+                    [
+                        [
+                            "effect.name=時間制御(オブジェクト)",
+                            f"位置={position}",
+                            "繰り返し=0",
+                            "コマ落ち=0",
+                            "対象レイヤー数=1",
+                        ]
+                    ],
+                    moving_square(60),
+                ),
+                length=60,
+            )
+        )
+    return tuple(found)
+
+
 def greys_png(levels: tuple[int, ...] = (0, 32, 64, 128, 192, 224, 255), size: int = 60) -> bytes:
     """一様な灰の升を横に並べた絵 レンズブラーで升の真ん中が変わらなければ一様な所は保たれる"""
     row = b"".join(bytes((value, value, value)) * size for value in levels)
@@ -522,12 +648,14 @@ def patches_png() -> bytes:
     return _png(PATCH * len(PATCH_COLOURS), PATCH, b"".join(rows))
 
 
-def dots_png(width: int = 600, height: int = 300, span: int = 60, radius: int = 6) -> bytes:
+def dots_png(
+    width: int = 600, height: int = 300, span: int = 60, radius: int = 6, value: int = 255
+) -> bytes:
     ys, xs = np.mgrid[0:height, 0:width]
     local_x = (xs % span) - span / 2
     local_y = (ys % span) - span / 2
     lit = (local_x**2 + local_y**2) <= radius**2
-    pixels = np.where(lit[..., None], 255, 0).astype(np.uint8).repeat(3, axis=2)
+    pixels = np.where(lit[..., None], value, 0).astype(np.uint8).repeat(3, axis=2)
     rows = [b"\x00" + pixels[y].tobytes() for y in range(height)]
     return _png(width, height, b"".join(rows))
 
@@ -583,7 +711,7 @@ def write_project(work: Path, chosen: tuple[Probe, ...]) -> dict[str, object]:
     return manifest
 
 
-def command_build(work: Path, only: str = "", *, third: bool = False) -> int:
+def command_build(work: Path, only: str = "", *, third: bool = False, fourth: bool = False) -> int:
     folder = work / "probes"
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "patches.png").write_bytes(patches_png())
@@ -591,7 +719,9 @@ def command_build(work: Path, only: str = "", *, third: bool = False) -> int:
     (folder / "blue.png").write_bytes(blue_png())
     (folder / "greys.png").write_bytes(greys_png())
     (folder / "dot.png").write_bytes(dots_png(200, 200, 200, 6))
-    source = probes_third(folder) if third else probes(folder)
+    (folder / "grey_dot.png").write_bytes(dots_png(200, 200, 200, 6, value=128))
+    builder = probes_fourth if fourth else probes_third if third else probes
+    source = builder(folder)
     picked = chosen(source, only)
     if not picked:
         print(f"--only {only} に当たる見本がありません")
@@ -752,12 +882,17 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="3 回目の見本（レンズブラーの光の強さ・シーン・時間制御・直前オブジェクト）を並べる",
     )
+    parser.add_argument(
+        "--fourth",
+        action="store_true",
+        help="4 回目の見本（レンズブラーの光の強さ・直前オブジェクトの残り・シーン・時間制御）",
+    )
     arguments = parser.parse_args(argv)
     # 丸ごとの道にする 相対のまま渡すと、プロジェクトに書く自分の道（``file=``）が相対になる
     work: Path = arguments.work.resolve()
     work.mkdir(parents=True, exist_ok=True)
     if arguments.command == "build":
-        return command_build(work, arguments.only, third=arguments.third)
+        return command_build(work, arguments.only, third=arguments.third, fourth=arguments.fourth)
     return command_measure(work)
 
 
