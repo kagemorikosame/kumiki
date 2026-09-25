@@ -11,6 +11,7 @@ import threading
 import time
 from collections.abc import Callable, Collection, Iterator
 from dataclasses import replace
+from typing import Any
 
 import pytest
 from PySide6.QtCore import Qt, QTimer
@@ -32,7 +33,7 @@ from sashimono.core.timebase import FrameRate
 from sashimono.engine.cache.proxy import ProxyStore
 from sashimono.engine.gpu import GLContextError
 from sashimono.engine.render import Invalidation, PreviewCache, RenderQuality
-from sashimono.engine.render.background import WAIT_FOR_WORKER_S
+from sashimono.engine.render.background import WAIT_FOR_WORKER_S, BackgroundPrefetch
 from sashimono.engine.render.prefetch import CacheSurface
 from sashimono.ui.preview import PreviewWidget
 from tests.ui.test_preview_prefetch import StubCache, StubRenderer, _project
@@ -557,11 +558,20 @@ class TestTheScreenKeepsAnswering:
         その順番になると 202ms 止まり、150ms の上限で変更と関係なく落ちた（#214）
         画面のスレッドで描くか、画面のスレッドが走り係の描き終わりを待つ形に壊すと、
         遅いコマの間タイマーは 1 度も届かない 混み具合に関係なく 0 回になる
+
+        その「待つ」所も必ず通す 走り係が描いている最中のコマへ再生ヘッドを動かし、
+        そのコマは画面のタイマーが届くまで描き終えさせない 待つ所が上限で諦めず
+        描き終わりまで待つ形に壊すと、画面は走り係を、走り係は画面を待って進まなくなる
+        待つ長さの上限そのものは tests/engine/test_background_prefetch.py が見ている
         """
         original = PreviewCache._compose_into
+        original_show = BackgroundPrefetch.show
         # 画面の側が走り係を待つ上限より十分長くする 同じ長さだと、正しく作っていても
         # 待つ間がコマの間を埋めてタイマーが 1 度も届かないことがある
         slow_s = WAIT_FOR_WORKER_S + 0.3
+        # 待たせるコマを描き終えるのに要るタイマーの回数 画面が待つ所から抜けて
+        # イベントループへ戻ったことの証しにする
+        release_ticks = 3
         screen_thread = threading.get_ident()
         ticks = [0]
         # タイマーを動かしている間に始まって終わったコマだけを見る 動かす前から描いて
@@ -569,15 +579,45 @@ class TestTheScreenKeepsAnswering:
         watching = [False]
         # (描いたスレッド, 描き始めのタイマーの回数, 描き終わりのタイマーの回数)
         slow_frames: list[tuple[int, int, int]] = []
+        # 画面に待たせるコマ 用意ができたら次に走り係が描き始めたコマを選ぶ
+        armed = [False]
+        target: list[int | None] = [None]
+        # 画面の側がそのコマを出しに来たときのタイマーの回数
+        asked: list[int] = []
+        # 待たせたコマを描き終えられたか 画面が戻らず逃げ道で抜けたら False
+        released: list[bool] = []
+        claim = threading.Lock()
 
         def slow(cache: PreviewCache, frame: int, surface: CacheSurface) -> None:
             began, before = watching[0], ticks[0]
+            if threading.get_ident() != screen_thread and armed[0]:
+                with claim:
+                    mine = target[0] is None
+                    if mine:
+                        target[0] = frame
+                if mine:
+                    # 画面が出しに来てから、タイマーが届くまで描き終えない 逃げ道の
+                    # 長さは判定に使わない 固まったまま試験が終わらないのを防ぐだけ
+                    limit = time.perf_counter() + 10
+                    while time.perf_counter() < limit and not (
+                        asked and ticks[0] >= asked[0] + release_ticks
+                    ):
+                        time.sleep(0.005)
+                    released.append(bool(asked) and ticks[0] >= asked[0] + release_ticks)
+                    original(cache, frame, surface)
+                    return
             time.sleep(slow_s)
             if began and watching[0]:
                 slow_frames.append((threading.get_ident(), before, ticks[0]))
             original(cache, frame, surface)
 
+        def show(background: BackgroundPrefetch, frame: int, *args: Any) -> bool:
+            if frame == target[0] and not asked:
+                asked.append(ticks[0])
+            return original_show(background, frame, *args)
+
         monkeypatch.setattr(PreviewCache, "_compose_into", slow)
+        monkeypatch.setattr(BackgroundPrefetch, "show", show)
         widget = PreviewWidget(_fading_project(), prefetch_bytes=64 * 64 * 4 * 6)
         # 画面へは出さない 本人の画面に窓を出したり、マウスを取り合ったりしない
         widget.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
@@ -609,14 +649,22 @@ class TestTheScreenKeepsAnswering:
             watching[0] = True
             # 再生ヘッドを動かすと、そこから貯め直す
             widget.set_frame(30)
-            # 遅いコマを 2 枚描き終え、動かした先が貯まるまで回す 決まった長さで
-            # 切ると、混んだ機械では貯まる前に切れて落ちる 上限は固まったときの逃げ道
-            ahead = set(range(30, 36))
+            # 遅いコマを描き終え、画面に待たせるコマを描き終え、動かした先が貯まるまで
+            # 回す 決まった長さで切ると、混んだ機械では貯まる前に切れて落ちる 上限は
+            # 固まったときの逃げ道
+            ahead = set(range(30, 40))
+            moved = False
             end = time.perf_counter() + 30
             while time.perf_counter() < end and (
-                len(slow_frames) < 2 or not widget.cached_frames & ahead
+                len(slow_frames) < 2 or not released or not widget.cached_frames & ahead
             ):
                 qt_application.processEvents()
+                if slow_frames and not armed[0]:
+                    armed[0] = True
+                if target[0] is not None and not moved:
+                    # 走り係が描いている最中のコマを画面が要るようにする
+                    moved = True
+                    widget.set_frame(target[0])
             watching[0] = False
             timer.stop()
             background = getattr(widget, "prefetch_in_background", False)
@@ -633,6 +681,10 @@ class TestTheScreenKeepsAnswering:
         answered = [after - before for _, before, after in slow_frames]
         assert min(answered) > 0, (
             f"描く間にタイマーが届かないコマがある（コマごとの回数 {answered}）"
+        )
+        assert asked, "走り係が描いている最中のコマを画面の側が出しに来ていない"
+        assert released == [True], (
+            "走り係が描いている最中のコマを出すときに、画面が上限で諦めず描き終わりを待った"
         )
         assert background, "別のスレッドで先読みしていない"
         assert stored, "動かした先を貯めていない（遅くした道を通っていない）"
