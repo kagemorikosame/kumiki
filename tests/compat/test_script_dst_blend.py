@@ -146,15 +146,18 @@ class TestAlphaBlends:
         assert any("blend" in line for line in report.missing)
 
     @pytest.mark.parametrize("value", ["0/0", "1/0"])
-    def test_a_blend_that_is_not_a_number_is_recorded(self, value: str) -> None:
+    def test_a_non_numeric_blend_is_recorded_without_stopping_draws(self, value: str) -> None:
         # int(NaN) や int(無限大) は例外になり、スクリプトの失敗としても扱われずに描画ごと止まる
+        # 記録だけ残って描くのを飛ばしても困るので、仮想バッファと画面の両方に描けたかも見る
         report = CompatibilityReport()
-        _run(
+        state = _run(
             f'obj.setoption("dst", "tmp", 6, 4) obj.setoption("blend", {value}) obj.draw()'
             ' obj.setoption("dst", "frm") obj.draw()',
             report=report,
         )
         assert any("blend" in line for line in report.missing)
+        assert state.buffers["tmp"][..., 3].max() == 255
+        assert len(state.draws) == 1
 
     def test_numbered_zero_is_normal(self) -> None:
         # 旧形式の数 0 は通常 記録に残すと sigma が 1 回描くたびに未対応として数えられる
