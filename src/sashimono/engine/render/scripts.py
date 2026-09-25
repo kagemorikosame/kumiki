@@ -155,8 +155,6 @@ class ScriptStage:
             framerate=fps,
             font=dict(font) if font else {},
         )
-        # 埋め込みの Lua も同じランタイムで効果を焼き込む 置かないと前に走ったクリップの時刻で掛かる
-        self._timing = (frame, fps, max(1, duration))
         return self._runtime.expand_text(text, state)
 
     def _apply_requested(

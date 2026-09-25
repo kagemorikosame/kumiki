@@ -126,21 +126,25 @@ class TestSettle:
         assert len(state.result()[-1].effects) == MAX_STACKED_EFFECTS
         assert sum("積んだ効果が" in line for line in report.missing) == 1
 
-    def test_embedded_text_bakes_at_its_own_time(self) -> None:
-        # テキスト欄に埋め込んだ Lua も同じランタイムで焼き込む 時刻を置き直さないと、
-        # 前に走ったクリップの時刻で時間で変わる効果が掛かる
-        seen: list[tuple[int, float, int]] = []
+    def test_embedded_text_does_not_bake(self) -> None:
+        # テキスト欄に埋め込んだ Lua は文字を書き出すだけで、作業用の絵は捨てる そのうえ
+        # GL を使わない範囲の計算（FrameRenderer.object_extent）からも走る ここで GPU の
+        # 焼き込みを呼ぶと、GL のコンテキストが無くて Lua ごと失敗し、文字が求まらない
+        seen: list[int] = []
 
         def bake(
             image: np.ndarray, effects: tuple[Effect, ...], frame: int, fps: float, duration: int
         ) -> np.ndarray:
-            del effects
-            seen.append((frame, fps, duration))
-            return image
+            del effects, fps, duration
+            seen.append(frame)
+            raise RuntimeError("GL のコンテキストが無い")
 
         stage = ScriptStage(ScriptCatalog(roots=()), screen=(320, 180), apply_effects=bake)
-        stage.expand_text(f"<?{BLUR} obj.getpixel(0, 0)?>", frame=12, fps=24.0, duration=48)
-        assert seen == [(12, 24.0, 48)]
+        text = stage.expand_text(
+            f"<?{BLUR} obj.getpixel(0, 0) mes('字')?>", frame=12, fps=24.0, duration=48
+        )
+        assert seen == []
+        assert text == "字"
 
     def test_without_a_baker_the_order_is_recorded(self) -> None:
         # 掛ける関数を持たない所（GPU の無い道具）では焼き込めない 黙ると順が入れ替わった

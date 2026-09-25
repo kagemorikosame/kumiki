@@ -761,6 +761,11 @@ class ObjApi:
         state = self.state
         if not state.effects:
             return
+        if self._emit is not None:
+            # テキスト欄に埋め込んだ Lua は文字を書き出すだけで、絵（1x1 の作業用）は捨てる
+            # 焼き込んでも見える物は変わらない そのうえ GL を使わない範囲の計算
+            # （FrameRenderer.object_extent）からも走るので、GPU で掛けると落ちる
+            return
         if self._apply_effects is None:
             self._report.note_missing(f"{caller}（先に積んだ効果の焼き込み）")
             return
