@@ -711,8 +711,8 @@ uniform float spin;
 
 void main() {
     // 絵を size 四方の欠片に割り、欠片ごとに飛ばして落とす
-    // 出力の画素に来る欠片を探すため、見込み位置の周り 7x7 の欠片だけを調べる
-    // それより遠くまで散った欠片は描かない（画面の外へ飛んでいく最中にあたる）
+    // 出力の画素に来る欠片を探す範囲は、欠片が見込み位置からずれうる量で決める
+    // 周り 7x7 に決め打ちすると、散る量を大きくした設定で画面の中の欠片が消えた（#199）
     //
     // 下限・重さ・飛ぶ速さ・散る速さの定数は画面の画素で決めた値なので u_pixel_scale を掛ける
     // 欠片の大きさ（size）だけ縮めてこちらを縮めないと、画質を落としたプレビューで
@@ -725,10 +725,27 @@ void main() {
     vec2 base_drop = vec2(0.0, -0.5 * gravity * elapsed * elapsed);
     vec2 guess = floor((pixel - base_drop) / cell);
 
+    // 見込み位置（遅れ無しで落ちた所）から欠片がずれうる量 飛ぶ向きと散らばりの速さの
+    // 最大に経過を掛け、遅れて出た欠片の落ち方の違いと、回した欠片の角の張り出しを足す
+    float fly_most = 300.0 * u_pixel_scale * fly / 100.0 * impact / 100.0
+                   + 200.0 * sqrt(2.0) * u_pixel_scale * impact / 100.0 * spread / 100.0;
+    float latest = max(elapsed - 0.5 * delay / 100.0, 0.0);
+    float drop_most = 0.5 * gravity * (elapsed * elapsed - latest * latest);
+    float reach = fly_most * elapsed + drop_most + cell * 0.71;
+    // 大きな絵を細かく割って遠くまで散らす設定だけは、見込み位置の周り 63x63 で栓をする
+    // 栓が無いと 1 画素で何万もの欠片を回し、GPU が止まるほど重くなる
+    int radius = min(int(ceil(reach / cell)) + 1, 31);
+    // 欠片は元の絵の範囲にしか無い 調べる範囲をそこで切れば、散った後でも元の絵の
+    // 欠片の数より多くは回らない
+    ivec2 first = ivec2(floor(u_object.xy / cell));
+    ivec2 last = ivec2(floor((u_object.zw - 0.5) / cell));
+    ivec2 low = max(ivec2(guess) - radius, first);
+    ivec2 high = min(ivec2(guess) + radius, last);
+
     vec4 result = vec4(0.0);
-    for (int dy = -3; dy <= 3; ++dy) {
-        for (int dx = -3; dx <= 3; ++dx) {
-            vec2 index = guess + vec2(float(dx), float(dy));
+    for (int iy = low.y; iy <= high.y; ++iy) {
+        for (int ix = low.x; ix <= high.x; ++ix) {
+            vec2 index = vec2(float(ix), float(iy));
             vec2 home = (index + 0.5) * cell;
             float wait = hash(index + 3.1) * 0.5 * delay / 100.0;
             float t = max(elapsed - wait, 0.0);

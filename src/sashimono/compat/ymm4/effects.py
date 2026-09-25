@@ -23,6 +23,7 @@ from sashimono.compat.ymm4.values import animated, brush_colour, colour, number
 from sashimono.core.model import AnimatedValue, Effect
 from sashimono.effects.definition import registry
 from sashimono.effects.motion import MESH_MAX_POINTS
+from sashimono.effects.optics import MAX_PARTICLES
 
 __all__ = ["CenterPoint", "center_point", "map_effect", "mapped_names"]
 
@@ -985,13 +986,27 @@ def _jump(r: _Reader) -> Effect | None:
     )
 
 
+def _peak(value: AnimatedValue) -> float:
+    return max((k.value for k in value.keyframes), default=value.static)
+
+
 def _particles(r: _Reader) -> Effect | None:
     # 奥行き（Z・遠近・仰角）と渦の流れは平面の動きに畳んだ
     r.unused("Z", "EmitElevation", "ElevationSpreadAngle", "CurlStrength")
+    rate = r.track("Rate", 50.0)
+    lifetime = r.track("Lifetime", 2.0)
+    # 同時に居る粒は 1 秒の数 x 寿命 上限を超えた古い粒は描かないので、黙って消さずに残す
+    # 動く値は一番大きい所で見る（両方の山が同じ時刻に来るとは限らないが、多めに見て足りる）
+    alive = _peak(rate) * _peak(lifetime)
+    if math.ceil(alive) > MAX_PARTICLES:
+        r.report.note_missing(
+            "YMM4 のパーティクルの同時に居る粒の数"
+            f"（上限 {MAX_PARTICLES} を超えた古い粒は描かない）"
+        )
     return _create(
         "particles",
-        rate=r.track("Rate", 50.0),
-        lifetime=r.track("Lifetime", 2.0),
+        rate=rate,
+        lifetime=lifetime,
         preroll=r.track("Preroll"),
         size=r.track("Size", 100.0),
         end_scale=r.track("EndScale", 100.0),

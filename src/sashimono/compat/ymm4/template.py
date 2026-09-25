@@ -721,9 +721,64 @@ def _flip(item: dict[str, Any]) -> list[Effect]:
     return [] if definition is None else [definition.create(horizontal=True, vertical=False)]
 
 
-#: 線の図形の塗りに模様を置くときの目印の色 描いたあと、この色の所だけを模様に替える
+#: 線の図形の塗りに模様を置くときの目印の色の候補（RGB の立方体の角）
 #: 塗りだけに模様を掛けるには、形（線と塗り）の中で塗りの場所を伝える必要がある
-FILL_KEY = (1.0, 0.0, 1.0, 1.0)
+#: 図形は塗りを 1 色でしか描けないので、塗りを目印の色で描き、あとから模様に替える
+_FILL_MARKERS = (
+    (1.0, 0.0, 1.0),
+    (0.0, 1.0, 0.0),
+    (0.0, 0.0, 0.0),
+    (1.0, 1.0, 1.0),
+    (1.0, 0.0, 0.0),
+    (0.0, 1.0, 1.0),
+    (0.0, 0.0, 1.0),
+    (1.0, 1.0, 0.0),
+)
+
+
+def fill_marker(stroke: tuple[float, ...]) -> tuple[float, float, float, float]:
+    """線の色から一番遠い目印の色
+
+    目印をマゼンタに決め打ちすると、マゼンタに近い線まで塗りの模様に替わる（#199）
+    立方体の角のうち一番遠い物を選べば、どんな線の色からも 0.87 以上離れる
+    """
+    red, green, blue = max(
+        _FILL_MARKERS, key=lambda c: sum((a - b) ** 2 for a, b in zip(c, stroke[:3], strict=True))
+    )
+    return (red, green, blue, 1.0)
+
+
+def _patterned_fill(
+    source: GeneratedSource,
+    fill: Any,
+    log: CompatibilityReport,
+    length: int,
+    keyframes: Any,
+    effects: list[Effect],
+) -> GeneratedSource:
+    """線の図形の塗りだけを模様にする 目印の色で塗った所を置き換える
+
+    線の色と目印の色を両方渡す 絵にはこの 2 色（と縁でその間の色）しか無いので、
+    画素の色が 2 色の間のどこにあるかで塗りの割合が決まる 目印からの近さだけで
+    決めると、線と塗りの境の中間色に目印が残る
+    """
+    stroke = source.params.get("color")
+    keep = stroke if isinstance(stroke, tuple) else (1.0, 1.0, 1.0, 1.0)
+    marker = fill_marker(keep)
+    filled = brush_effect(
+        fill,
+        log,
+        length=length,
+        keyframes=keyframes,
+        key_only=True,
+        key_color=marker,
+        # 不透明度は「線の色を渡した」印に使う 線の透け方は絵の α にもう入っている
+        keep_color=(keep[0], keep[1], keep[2], 1.0),
+    )
+    if filled is None:
+        return source
+    effects.append(filled)
+    return source.with_param("fill_color", marker)
 
 
 def _map_item(item: dict[str, Any], log: CompatibilityReport) -> MappedObject | None:
@@ -750,6 +805,7 @@ def _map_item(item: dict[str, Any], log: CompatibilityReport) -> MappedObject | 
         parameter = item.get("ShapeParameter")
         brush = parameter.get("Brush") if isinstance(parameter, dict) else None
         fill = parameter.get("FillBrush") if isinstance(parameter, dict) else None
+        painted = None
         if not is_solid(brush):
             painted = brush_effect(
                 brush, log, length=length, keyframes=keyframes, pattern_only=True
@@ -758,10 +814,13 @@ def _map_item(item: dict[str, Any], log: CompatibilityReport) -> MappedObject | 
                 source = source.with_param("color", (1.0, 1.0, 1.0, 1.0))
                 effects.append(painted)
         if not is_solid(fill) and source.params.get("shape") == "polyline":
-            # 線の図形の塗りだけを模様にする 目印の色で塗った所を置き換える
-            filled = brush_effect(fill, log, length=length, keyframes=keyframes, key_only=True)
-            if filled is not None:
-                effects.append(filled)
+            if painted is not None:
+                # 線の模様は形（不透明度）だけを借りて塗るので、塗りの所も線の模様になる
+                # 塗りの模様を先に置いても上から塗り潰され、後に置くと線の模様の色を
+                # 目印と見分けられない 線と塗りを別々に描く作りが要る
+                log.note_missing("YMM4 の線の図形で線と塗りの両方が模様（塗りも線の模様で描いた）")
+            else:
+                source = _patterned_fill(source, fill, log, length, keyframes, effects)
     is_text = source is not None and source.kind == "text"
     params, chain, final = _video_chain(item, log, length, keyframes, text=is_text)
     if source is not None and is_text:
@@ -1537,8 +1596,11 @@ def _line(parameter: dict[str, Any], log: CompatibilityReport) -> GeneratedSourc
     if dash is None:
         dash = str(parameter.get("DashPattern") or "")
     fill = parameter.get("FillBrush")
+    stroke = brush_colour(parameter.get("Brush"), (1.0, 1.0, 1.0, 1.0))
     # 単色以外の塗りは、目印の色で塗っておいて、アイテムを読む所で模様に置き換える
-    fill_colour = brush_colour(fill, (1.0, 1.0, 1.0, 0.0)) if is_solid(fill) else FILL_KEY
+    fill_colour = (
+        brush_colour(fill, (1.0, 1.0, 1.0, 0.0)) if is_solid(fill) else fill_marker(stroke)
+    )
     return GeneratedSource(
         kind="shape",
         params={
@@ -1550,7 +1612,7 @@ def _line(parameter: dict[str, Any], log: CompatibilityReport) -> GeneratedSourc
             else "straight",
             "closed": parameter.get("IsClosed") is True,
             "fill_color": fill_colour,
-            "color": brush_colour(parameter.get("Brush"), (1.0, 1.0, 1.0, 1.0)),
+            "color": stroke,
             "line_width": AnimatedValue(
                 number(animated(parameter.get("Thickness"), 1.0).static, 1.0)
             ),

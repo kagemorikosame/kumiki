@@ -277,6 +277,27 @@ class TestParticles:
         assert _value(effect.params["gravity"]) == 18000.0
         assert not report.lines()
 
+    def test_particles_past_the_limit_are_recorded(self) -> None:
+        """同時に居る粒（1 秒の数 x 寿命）が上限を超える設定は、互換性レポートに残る
+
+        上限を超えた古い粒は描かれない 記録が無いと、粒が少なく見える理由を追えない
+        """
+        _, report = _map(
+            "ParticleOutputEffect",
+            Rate=_still(100.0),
+            Lifetime={
+                "Values": [{"Value": 2.0}, {"Value": 60.0}],
+                "Span": 0.0,
+                "AnimationType": "直線移動",
+            },
+        )
+        assert any("パーティクル" in line and "上限" in line for line in report.lines())
+
+    def test_particles_within_the_limit_are_not_recorded(self) -> None:
+        """配布物の雪（1 秒に 100 粒・寿命 15 秒）は上限の中に収まり、記録は出ない"""
+        _, report = _map("ParticleOutputEffect", Rate=_still(100.0), Lifetime=_still(15.0))
+        assert not report.lines()
+
 
 class TestShapes:
     def test_the_pen_points_move_to_the_centre(self) -> None:
