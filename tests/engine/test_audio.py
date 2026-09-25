@@ -15,10 +15,59 @@ import pytest
 from sashimono.core.commands import AddClip, AddMedia, AddTrack
 from sashimono.core.model import Clip, Project, ProjectSettings, Track, TrackKind
 from sashimono.core.timebase import FrameRate
-from sashimono.engine.audio import AudioMixer, analyze_waveform
+from sashimono.engine.audio import AudioMixer, PeakLevel, Waveform, analyze_waveform
 from sashimono.engine.audio.waveform import BASE_SAMPLES_PER_PEAK
 from sashimono.engine.decode import probe_media
 from tests.media_fixtures import SampleMedia, make_silent_gap
+
+
+def _envelope_column_by_column(
+    waveform: Waveform, start_sample: int, end_sample: int, columns: int
+) -> np.ndarray:
+    """列ごとに回して束ねる、まとめる前の求め方 まとめた方と同じ値になることを見る物差し"""
+    span = end_sample - start_sample
+    level = waveform.level_for(span / columns)
+    out = np.zeros((columns, waveform.channels, 2), dtype=np.float32)
+    edges = start_sample + np.linspace(0, span, columns + 1)
+    starts = np.clip(np.floor(edges[:-1] / level.samples_per_peak).astype(np.int64), 0, level.count)
+    stops = np.ceil(edges[1:] / level.samples_per_peak).astype(np.int64)
+    stops = np.clip(np.maximum(stops, starts + 1), 0, level.count)
+    for column in range(columns):
+        begin, end = int(starts[column]), int(stops[column])
+        if begin < end:
+            out[column, :, 0] = level.peaks[begin:end, :, 0].min(axis=0)
+            out[column, :, 1] = level.peaks[begin:end, :, 1].max(axis=0)
+    return out
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "columns"),
+    [
+        (0, 48000 * 20, 1800),  # 全体を縮めて見る 1 列に何本ものピーク
+        (48000 * 3, 48000 * 3 + 9000, 1800),  # 拡大して 1 列にピークが 1 本未満
+        (48000 * 19, 48000 * 25, 700),  # 素材の終わりを越える 越えた列は 0
+        (48000 * 30, 48000 * 31, 50),  # 全部が素材の外
+        (100, 101, 3),
+    ],
+)
+def test_the_batched_envelope_matches_the_column_by_column_one(
+    start: int, end: int, columns: int
+) -> None:
+    """列ごとに Python で回すと、実素材 100 本の描画で 1 回 10ms ほど掛かった（#201）
+
+    まとめて求めても、どの倍率でも同じ値になること 範囲の外は 0 のまま
+    """
+    generator = np.random.default_rng(3)
+    levels = []
+    total = 48000 * 20
+    for samples in (256, 1024, 4096, 16384):
+        count = -(-total // samples)
+        low = generator.uniform(-1.0, 0.0, size=(count, 2)).astype(np.float32)
+        high = generator.uniform(0.0, 1.0, size=(count, 2)).astype(np.float32)
+        levels.append(PeakLevel(samples, np.stack([low, high], axis=2)))
+    waveform = Waveform(sample_rate=48000, channels=2, total_samples=total, levels=tuple(levels))
+    expected = _envelope_column_by_column(waveform, start, end, columns)
+    np.testing.assert_array_equal(waveform.envelope(start, end, columns), expected)
 
 
 @pytest.fixture(scope="session")

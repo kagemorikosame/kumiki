@@ -104,13 +104,23 @@ class Waveform:
         starts = np.clip(starts, 0, level.count)
         stops = np.clip(np.maximum(stops, starts + 1), 0, level.count)
 
-        for column in range(columns):
-            begin, end = int(starts[column]), int(stops[column])
-            if begin >= end:
-                continue
-            block = level.peaks[begin:end]
-            out[column, :, 0] = block[:, :, 0].min(axis=0)
-            out[column, :, 1] = block[:, :, 1].max(axis=0)
+        # 束ねる所もまとめて求める 列ごとに回すと、実素材を 100 本並べた全体表示で
+        # 1 回の描画に 10ms ほど掛かった（#201） 隣の列の範囲は重なることがあるので、
+        # 列の頭と終わりを交互に並べて reduceat に渡し、偶数番（頭から終わりまで）だけを使う
+        filled = starts < stops
+        if not filled.any():
+            return out
+        low = int(starts[filled].min())
+        high = int(stops[filled].max())
+        window = level.peaks[low:high]
+        # 最後の終わりは window の長さに等しく、reduceat は範囲の外の番号を受けない
+        # 末尾に 1 行足して受けられるようにする（その行から先の結果は捨てる）
+        padded = np.concatenate([window, window[-1:]], axis=0)
+        bounds = np.clip(np.stack([starts, stops], axis=1).ravel() - low, 0, high - low)
+        minima = np.minimum.reduceat(padded[:, :, 0], bounds, axis=0)[0::2]
+        maxima = np.maximum.reduceat(padded[:, :, 1], bounds, axis=0)[0::2]
+        out[filled, :, 0] = minima[filled]
+        out[filled, :, 1] = maxima[filled]
         return out
 
 

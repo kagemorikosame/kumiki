@@ -76,10 +76,10 @@ from dataclasses import dataclass, field
 from fractions import Fraction
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Iterable, Iterator
 
     from sashimono.compat.mapped import MappedObject
     from sashimono.core.model import MediaItem
@@ -96,11 +96,18 @@ from sashimono.compat.ymm4.values import number, type_name  # noqa: E402
 
 WIDTH, HEIGHT, FPS = 1920, 1080, 30
 #: 比べる絵の大きさ YMM4 の書き出しは圧縮されるので、縮めてならしてから比べる
+#: 細い縁の違いはならすと埋もれるので、縮めない絵でも別の数（:func:`measure`）を出す
 COMPARE_WIDTH, COMPARE_HEIGHT = 480, 270
 #: テンプレート 1 本あたりの最短の枠（フレーム）
 MIN_SLOT = 60
 #: 枠と枠の間に空ける黒 前のテンプレートの残りが次へ混ざらないように
 GAP = 6
+#: アイテムが終わった後も YMM4 の絵が残るエフェクト
+LINGERING_EFFECTS = frozenset({"AfterImageEffect"})
+#: 残る絵のために、アイテムの終わりから後ろへ見込むフレーム YMM4 の残像がどれだけ
+#: 残るかは測っていない こちらの残像は強さ 53.6（配布物の値）で 7 フレームほどで
+#: 見えなくなる 1 秒あれば足りると見て、空きの 6 フレームより大きく取る
+LINGER = 30
 DEFAULT_WORK = ROOT / ".work" / "ymm4-compare"
 #: 置いても比べられないアイテム 場面切り替えは前後の絵が要る
 SKIPPED_ITEMS = frozenset({"AudioItem"})
@@ -173,16 +180,22 @@ class Case:
     items: list[dict[str, Any]] = field(default_factory=list)
     note: str = ""
 
-    def sample_frames(self, *, every: bool = False) -> list[int]:
+    def sample_frames(self, *, every: bool = False, clear_from: int = 0) -> list[int]:
         """比べるフレーム 既定は入りと真ん中と終わりの手前 ``every`` なら枠のすべて
 
         3 枚だけだと、場面切り替えの切れ目のように一瞬だけずれる所を見落とす
+        ``clear_from`` より前は前のテンプレートの絵が残りうる（:func:`shadowed_until`）ので、
+        残りの区間から選ぶ 枠のすべてが隠れていれば空
         """
+        first = max(self.start, clear_from)
+        end = self.start + self.length
+        if first >= end:
+            return []
         if every:
-            return list(range(self.start, self.start + self.length))
-        last = self.length - 1
+            return list(range(first, end))
+        last = end - first - 1
         picks = {min(2, last), last // 2, max(0, last - 3)}
-        return sorted(self.start + offset for offset in picks)
+        return sorted(first + offset for offset in picks)
 
 
 def _span(items: list[dict[str, Any]]) -> tuple[int, int]:
@@ -194,10 +207,46 @@ def _span(items: list[dict[str, Any]]) -> tuple[int, int]:
     return min(starts), max(ends)
 
 
+def _lingers(value: Any) -> bool:
+    """終わった後も絵が残るエフェクトを持つか グループや入れ子の中まで見る"""
+    if isinstance(value, dict):
+        if type_name(value) in LINGERING_EFFECTS and value.get("IsEnabled", True) is not False:
+            return True
+        return any(_lingers(inner) for inner in value.values())
+    if isinstance(value, list):
+        return any(_lingers(inner) for inner in value)
+    return False
+
+
+def reach(items: list[dict[str, Any]]) -> int:
+    """アイテムの絵が届く最後の次のフレーム 残像なら終わった後に残る分（:data:`LINGER`）も足す"""
+    if not items:
+        return 0
+    _, end = _span(items)
+    return end + (LINGER if _lingers(items) else 0)
+
+
+def shadowed_until(cases: list[dict[str, Any]]) -> list[int]:
+    """枠ごとに、それより前のテンプレートの絵が残りうる最後の次のフレーム
+
+    前に作った並び（空きが 6 フレームで、残像の後ろを広げていない物や、枠より長い
+    アイテムを切り詰める前の物）で書き出した動画でも、YMM4 を起動し直さずに比べられる
+    ように、写り込みうる所を比べる所から外す こちらはテンプレートを 1 本ずつ描くので
+    前の絵は混ざらず、外さないと YMM4 の絵にだけ前のテンプレートが写って差が大きく出る
+    ``cases`` は manifest.json の並びのまま受け、同じ並びで返す
+    """
+    order = sorted(range(len(cases)), key=lambda position: int(cases[position]["start"]))
+    result = [0] * len(cases)
+    reached = 0
+    for position in order:
+        result[position] = reached
+        reached = max(reached, reach(cases[position]["items"]))
+    return result
+
+
 def build_cases(files: list[Path]) -> tuple[list[Case], list[str]]:
-    cases: list[Case] = []
     skipped: list[str] = []
-    cursor = 0
+    templates: list[tuple[str, int, str, list[dict[str, Any]]]] = []
     for path in files:
         for index, template in enumerate(load_template(path)):
             items = [copy.deepcopy(item) for item in template.items]
@@ -205,60 +254,74 @@ def build_cases(files: list[Path]) -> tuple[list[Case], list[str]]:
             if kinds & SKIPPED_ITEMS:
                 skipped.append(f"{template.name}（{', '.join(sorted(kinds & SKIPPED_ITEMS))}）")
                 continue
-            first, end = _span(items)
-            length = max(MIN_SLOT, min(end - first, 300))
-            top = min(int(number(item.get("Layer"), 0.0)) for item in items)
+            templates.append((path.name, index, template.name, items))
+    return place_cases(templates), skipped
+
+
+def place_cases(templates: Iterable[tuple[str, int, str, list[dict[str, Any]]]]) -> list[Case]:
+    """テンプレート（ファイル名・番号・名前・アイテム）を時間をずらして並べる
+
+    アイテムは並べた位置へ書き換える（呼ぶ側で写しておくこと）
+    """
+    cases: list[Case] = []
+    cursor = 0
+    for file_name, index, name, items in templates:
+        first, end = _span(items)
+        length = max(MIN_SLOT, min(end - first, 300))
+        top = min(int(number(item.get("Layer"), 0.0)) for item in items)
+        for item in items:
+            offset = int(number(item.get("Frame"), 0.0)) - first
+            item["Frame"] = offset + cursor
+            item["Layer"] = int(number(item.get("Layer"), 0.0)) - top
+            # 枠より長いアイテムは枠の終わりで切る 切らないと次のテンプレートの枠へ
+            # はみ出し、YMM4 の絵にだけ前のテンプレートが映り込む
+            item_length = max(1, int(number(item.get("Length"), 1.0)))
+            item["Length"] = max(1, min(item_length, length - offset))
+        note = ""
+        if all(type_name(item) == "TransitionItem" for item in items):
+            # 場面切り替えだけのテンプレート 下に前の場面と後の場面を敷き、切れ目を真ん中に置く
             for item in items:
-                offset = int(number(item.get("Frame"), 0.0)) - first
-                item["Frame"] = offset + cursor
-                item["Layer"] = int(number(item.get("Layer"), 0.0)) - top
-                # 枠より長いアイテムは枠の終わりで切る 切らないと次のテンプレートの枠へ
-                # はみ出し、YMM4 の絵にだけ前のテンプレートが映り込む
-                item_length = max(1, int(number(item.get("Length"), 1.0)))
-                item["Length"] = max(1, min(item_length, length - offset))
-            note = ""
-            if all(type_name(item) == "TransitionItem" for item in items):
-                # 場面切り替えだけのテンプレート 下に前の場面と後の場面を敷き、切れ目を真ん中に置く
-                for item in items:
-                    item["Layer"] = int(item["Layer"]) + 1
-                half = length // 2
-                before = base_shape(cursor, 0, half)
-                after = base_shape(cursor + half, 0, length - half)
-                after["ShapeParameter"]["Brush"]["Parameter"]["Color"] = "#FF2C7AE0"
-                after["X"] = _still(200.0)
-                before["X"] = _still(-200.0)
-                items[:0] = [before, after]
-                note = "前後の場面の図形を敷いた"
-            has_content = any(type_name(item) not in ("GroupItem",) for item in items)
-            if not has_content:
-                # エフェクトだけのテンプレート グループの範囲の中（1 つ下）に下地を置く
-                # 別のグループがいる段は避ける 同じ段に重ねると YMM4 は下地を空いた段へ
-                # ずらして描き、こちらは重ねたまま描くので、掛かるグループが食い違う
-                # （オーラはグループが 0・1・3 段にあり、1 段目に置いた下地へ YMM4 は
-                # 1 段目のグループのノイズを掛けていた）
-                group = items[0]
-                taken = {int(item.get("Layer", 0)) for item in items}
-                below = int(group.get("Layer", 0)) + 1
-                while below in taken:
-                    below += 1
-                items.append(base_shape(cursor, below, length))
-                for item in items:
-                    if type_name(item) == "GroupItem":
-                        item["Length"] = length
-                note = "下地の図形に着せた"
-            cases.append(
-                Case(
-                    name=template.name,
-                    file=path.name,
-                    index=index,
-                    start=cursor,
-                    length=length,
-                    items=items,
-                    note=note,
-                )
+                item["Layer"] = int(item["Layer"]) + 1
+            half = length // 2
+            before = base_shape(cursor, 0, half)
+            after = base_shape(cursor + half, 0, length - half)
+            after["ShapeParameter"]["Brush"]["Parameter"]["Color"] = "#FF2C7AE0"
+            after["X"] = _still(200.0)
+            before["X"] = _still(-200.0)
+            items[:0] = [before, after]
+            note = "前後の場面の図形を敷いた"
+        has_content = any(type_name(item) not in ("GroupItem",) for item in items)
+        if not has_content:
+            # エフェクトだけのテンプレート グループの範囲の中（1 つ下）に下地を置く
+            # 別のグループがいる段は避ける 同じ段に重ねると YMM4 は下地を空いた段へ
+            # ずらして描き、こちらは重ねたまま描くので、掛かるグループが食い違う
+            # （オーラはグループが 0・1・3 段にあり、1 段目に置いた下地へ YMM4 は
+            # 1 段目のグループのノイズを掛けていた）
+            group = items[0]
+            taken = {int(item.get("Layer", 0)) for item in items}
+            below = int(group.get("Layer", 0)) + 1
+            while below in taken:
+                below += 1
+            items.append(base_shape(cursor, below, length))
+            for item in items:
+                if type_name(item) == "GroupItem":
+                    item["Length"] = length
+            note = "下地の図形に着せた"
+        cases.append(
+            Case(
+                name=name,
+                file=file_name,
+                index=index,
+                start=cursor,
+                length=length,
+                items=items,
+                note=note,
             )
-            cursor += length + GAP
-    return cases, skipped
+        )
+        # 残像のように終わった後も YMM4 の絵が残るテンプレートの後ろは、残る分だけ空ける
+        # 空きが 6 フレームのままだと、次のテンプレートの頭に YMM4 の絵だけ前の文字が写る
+        cursor = max(cursor + length, reach(items)) + GAP
+    return cases
 
 
 def write_project(cases: list[Case], target: Path) -> None:
@@ -372,6 +435,61 @@ def _shrink(image: np.ndarray) -> np.ndarray:
     return cropped.reshape(COMPARE_HEIGHT, fy, COMPARE_WIDTH, fx, 3).mean(axis=(1, 3))
 
 
+#: 縁と見なす明るさの段差（隣の画素との差 0〜255） 圧縮の揺れ（数段）は拾わず、
+#: 文字の縁や細い線は拾う大きさ
+EDGE_STEP = 24.0
+#: 縁の差を平均するときの画素数の下限 縁がほとんど無い絵（黒の中の小さな光の粒など）で
+#: 数画素の食い違いを平均すると、ほぼ同じ絵でも 46 のように大きく出て、本当に縁が違う枠と
+#: 見分けられない（aomoya のキラリンエフェクトで縮めた平均 0.01 のとき 46.4 だった）
+EDGE_MIN_PIXELS = 1000
+#: 外れた画素と見なす差（3 色のうち一番大きい差 0〜255） 圧縮で縁が滲む分は下回る
+OUTLIER_STEP = 48
+_LUMA = np.array([0.299, 0.587, 0.114], dtype=np.float32)
+
+
+class Measure(NamedTuple):
+    """1 枚の比べた数
+
+    ``difference`` は 4 分の 1 に縮めた平均で、上限（:data:`CEILINGS`）はこれで見る
+    細い縁の違いは平均に埋もれるので、縮めない絵の縁の差（``edge``）と、差の大きい
+    画素の割合（``outliers`` 百分率）を別に出す どちらも上限には混ぜない（#200）
+    """
+
+    difference: float
+    edge: float
+    outliers: float
+
+
+def _gradient(image: np.ndarray) -> np.ndarray:
+    """明るさの、右と下の隣との差の大きい方 縁の強さの絵"""
+    luma = image[..., :3].astype(np.float32) @ _LUMA
+    gradient = np.zeros_like(luma)
+    gradient[:, :-1] = np.abs(np.diff(luma, axis=1))
+    np.maximum(gradient[:-1, :], np.abs(np.diff(luma, axis=0)), out=gradient[:-1, :])
+    return gradient
+
+
+def measure(reference: np.ndarray, ours: np.ndarray) -> tuple[Measure, np.ndarray, np.ndarray]:
+    """YMM4 の絵とこちらの絵を比べた数と、縮めた 2 枚（並べた絵に使う）"""
+    a, b = _shrink(reference), _shrink(ours)
+    difference = float(np.abs(a - b).mean())
+    ours_edges, reference_edges = _gradient(ours), _gradient(reference)
+    near = (reference_edges > EDGE_STEP) | (ours_edges > EDGE_STEP)
+    # 縁の両脇 1 画素まで広げる 縁が 1 画素ずれたとき、片方の縁の上だけを見ると
+    # もう片方の縁が外れ、ずれが半分しか数に出ない
+    grown = near.copy()
+    grown[1:] |= near[:-1]
+    grown[:-1] |= near[1:]
+    grown[:, 1:] |= near[:, :-1]
+    grown[:, :-1] |= near[:, 1:]
+    # 縁の無い絵（黒一色など）でも 0 で割らない 下限の画素数で割る
+    count = max(int(grown.sum()), EDGE_MIN_PIXELS)
+    edge = float(np.abs(reference_edges - ours_edges)[grown].sum() / count)
+    gap = np.abs(reference[..., :3].astype(np.int16) - ours[..., :3].astype(np.int16)).max(axis=2)
+    outliers = float((gap > OUTLIER_STEP).mean() * 100.0)
+    return Measure(difference, edge, outliers), a, b
+
+
 def _save_png(image: np.ndarray, target: Path) -> None:
     """RGB の配列を PNG へ 画像のためだけに Pillow を足さず、入っている Qt で書く"""
     from PySide6.QtGui import QImage
@@ -441,8 +559,22 @@ class References:
         return self._current[1]() if self._current[0] == wanted else None
 
 
-#: 比べた結果の 1 行 差・名前・ファイル・フレーム・並べた絵の名前・注
-Row = tuple[float, str, str, int, str, str]
+class Row(NamedTuple):
+    """比べた結果の 1 行 差・名前・ファイル・フレーム・並べた絵の名前・注・縁の差・外れた画素
+
+    並べる順と上限は ``difference``（縮めた平均）だけで決める ``edge`` と ``outliers`` は
+    一覧に並べる列（:class:`Measure`） ``--every`` では枠の中の最大
+    """
+
+    difference: float
+    name: str
+    file: str
+    frame: int
+    stem: str
+    note: str
+    edge: float = 0.0
+    outliers: float = 0.0
+
 
 #: テンプレートごとの差の上限 描き方の変更で YMM4 の絵から大きく離れたら気付けるように
 #: 置く 値は 2026-09-24 の main（#168 の直し込み）で測った差に :data:`CEILING_MARGIN` を
@@ -577,6 +709,7 @@ def command_compare(arguments: argparse.Namespace) -> int:
         return 1
     words = [word for word in arguments.only.split(",") if word]
     missing: list[tuple[str, int]] = []
+    shadowed: list[str] = []
     rows = compare_work(
         work,
         output,
@@ -584,6 +717,7 @@ def command_compare(arguments: argparse.Namespace) -> int:
         every=arguments.every,
         blending=arguments.blending,
         missing=missing,
+        shadowed=shadowed,
     )
     if not rows:
         # 0 枚のまま上限を見ると、何も比べていないのに「超えなかった」で通る
@@ -591,16 +725,34 @@ def command_compare(arguments: argparse.Namespace) -> int:
             "比べた絵が 1 枚もない --only の語か、書き出しと manifest.json の食い違いを見てください"
         )
         return 1
-    for difference, name, _, frame, _, _ in rows[: arguments.top]:
-        print(f"{difference:6.1f}  {name}  フレーム {frame}")
+    print("差（縮めた平均 上限はこれで見る）の大きい順")
+    for row in rows[: arguments.top]:
+        print(
+            f"{row.difference:6.1f}  縁 {row.edge:5.1f}  外れ {row.outliers:5.2f}%"
+            f"  {row.name}  フレーム {row.frame}"
+        )
+    # 縮めた平均の順だけでは、縁だけが違う枠が下に埋もれて目に入らない
+    print("\n縁の差の大きい順")
+    for row in sorted(rows, key=lambda row: row.edge, reverse=True)[: arguments.top]:
+        print(f"{row.edge:6.1f}  差 {row.difference:5.1f}  {row.name}  フレーム {row.frame}")
 
     problems, unmeasured = unmeasured_templates(
         rows, missing, ceilings, writing=arguments.write_ceilings
     )
     if unmeasured:
         print(f"\n書き出しが届いておらず比べなかったテンプレート（上限なし）: {len(unmeasured)} 本")
+    if shadowed:
+        print(f"\n前の枠の絵が残りうる所に隠れて比べなかったテンプレート: {len(shadowed)} 本")
+        # 上限を持つ物が隠れたまま通すと、見張っているはずのテンプレートが外れても気付けない
+        # 書き換えでは前の上限が残るので困らない
+        if not arguments.write_ceilings:
+            problems += [
+                f"{name} 上限があるのに前の枠の絵に隠れて比べられない"
+                for name in shadowed
+                if name in ceilings
+            ]
     if problems:
-        print("\n書き出しに無いフレームがあり、測りが足りない")
+        print("\n比べられないフレームがあり、測りが足りない")
         for line in problems:
             print(f"  {line}")
         return 1
@@ -627,12 +779,15 @@ def compare_work(
     every: bool = False,
     blending: str = "srgb",
     missing: list[tuple[str, int]] | None = None,
+    shadowed: list[str] | None = None,
 ) -> list[Row]:
     """``work`` の書き出しと Sashimono の絵を比べ、差の大きい順の行を返す
 
     一覧（report.html / report.json）と並べた絵は ``output`` へ書く 試験が
     手元の作業フォルダの一覧を書き換えないように、読む所と書く所を分けてある
     書き出しに無くて比べられなかったフレームは ``missing`` へ（名前・フレーム）で足す
+    前の枠の絵が残りうる所（:func:`shadowed_until`）は比べず、枠のすべてが隠れた
+    テンプレートは ``shadowed`` へ名前を足す
     """
     from sashimono.core.model import Project, ProjectSettings
     from sashimono.core.timebase import FrameRate
@@ -641,12 +796,14 @@ def compare_work(
     manifest = json.loads((work / "manifest.json").read_text(encoding="utf-8"))
     video = work / "ymm4.mp4"
 
-    cases = manifest["cases"]
+    # 隠れる所は、--only で外す前の並び全体から決める 外した後で決めると、比べない
+    # テンプレートの残りが次の枠へ写り込むのを見落とす
+    cases = list(zip(manifest["cases"], shadowed_until(manifest["cases"]), strict=True))
     if only:
         # 名前にどれかの語を含むものを比べる
-        cases = [case for case in cases if any(word in case["name"] for word in only)]
+        cases = [pair for pair in cases if any(word in pair[0]["name"] for word in only)]
     # 動画を頭から順に読むので、枠も頭から順に比べる
-    cases = sorted(cases, key=lambda raw: int(raw["start"]))
+    cases = sorted(cases, key=lambda pair: int(pair[0]["start"]))
     references = References(_ymm4_frames(video))
 
     settings = ProjectSettings(
@@ -658,8 +815,13 @@ def compare_work(
     report = CompatibilityReport()
     renderer: FrameRenderer | None = None
     try:
-        for raw in cases:
+        for raw, clear_from in cases:
             case = Case(**raw)
+            frames = case.sample_frames(every=every, clear_from=clear_from)
+            if not frames:
+                if shadowed is not None:
+                    shadowed.append(case.name)
+                continue
             objects = map_template(case.items, report=report)
             project = Project.create(settings)
             for command in place(objects, project, at_frame=case.start):
@@ -670,51 +832,81 @@ def compare_work(
                 renderer.set_project(project)
             # 全フレームを比べるときは、枠ごとに差の一番大きい 1 枚だけを残す
             # 1 枚ずつ絵を書き出すと、77 本で 1 万枚を超える
+            # 全フレームを比べるときの縁の差と外れた画素は枠の中の最大 差の一番大きい
+            # 1 枚の値だけを残すと、縁だけが違うフレームを見落とす
             worst: tuple[float, int, np.ndarray, np.ndarray] | None = None
-            for frame in case.sample_frames(every=every):
+            top_edge = top_outliers = 0.0
+            for frame in frames:
                 reference = references.get(frame)
                 if reference is None:
                     if missing is not None:
                         missing.append((case.name, frame))
                     continue
                 ours = renderer.render(frame)
-                a, b = _shrink(reference), _shrink(ours)
-                difference = float(np.abs(a - b).mean())
+                measured, a, b = measure(reference, ours)
                 if every:
-                    if worst is None or difference > worst[0]:
-                        worst = (difference, frame, a, b)
+                    top_edge = max(top_edge, measured.edge)
+                    top_outliers = max(top_outliers, measured.outliers)
+                    if worst is None or measured.difference > worst[0]:
+                        worst = (measured.difference, frame, a, b)
                     continue
-                rows.append(_saved_row(images, case, frame, difference, a, b))
+                rows.append(_saved_row(images, case, frame, measured, a, b))
             if worst is not None:
-                rows.append(_saved_row(images, case, worst[1], worst[0], worst[2], worst[3]))
+                measured = Measure(worst[0], top_edge, top_outliers)
+                rows.append(_saved_row(images, case, worst[1], measured, worst[2], worst[3]))
     finally:
         if renderer is not None:
             renderer.close()
 
     rows.sort(reverse=True)
-    _write_report(output / "report.html", rows, manifest.get("skipped", []), report)
+    write_reports(output, rows, manifest.get("skipped", []), report)
+    return rows
+
+
+def _saved_row(
+    images: Path, case: Case, frame: int, measured: Measure, a: np.ndarray, b: np.ndarray
+) -> Row:
+    """並べた絵を書き出し、一覧の 1 行を返す"""
+    stem = f"{case.start:06d}_{frame:06d}"
+    side = np.concatenate([a, b, np.abs(a - b) * 3.0], axis=1)
+    _save_png(np.clip(side, 0, 255).astype(np.uint8), images / f"{stem}.png")
+    return Row(
+        measured.difference,
+        case.name,
+        case.file,
+        frame,
+        stem,
+        case.note,
+        edge=measured.edge,
+        outliers=measured.outliers,
+    )
+
+
+def write_reports(
+    output: Path, rows: list[Row], skipped: list[str], report: CompatibilityReport
+) -> None:
+    """一覧を ``output`` の report.html（絵と並べる）と report.json（道具で読む）へ書く"""
+    _write_report(output / "report.html", rows, skipped, report)
     (output / "report.json").write_text(
         json.dumps(
             [
-                {"difference": d, "name": n, "file": f, "frame": fr, "image": s, "note": note}
-                for d, n, f, fr, s, note in rows
+                {
+                    "difference": row.difference,
+                    "edge": row.edge,
+                    "outliers": row.outliers,
+                    "name": row.name,
+                    "file": row.file,
+                    "frame": row.frame,
+                    "image": row.stem,
+                    "note": row.note,
+                }
+                for row in rows
             ],
             ensure_ascii=False,
             indent=1,
         ),
         encoding="utf-8",
     )
-    return rows
-
-
-def _saved_row(
-    images: Path, case: Case, frame: int, difference: float, a: np.ndarray, b: np.ndarray
-) -> Row:
-    """並べた絵を書き出し、一覧の 1 行を返す"""
-    stem = f"{case.start:06d}_{frame:06d}"
-    side = np.concatenate([a, b, np.abs(a - b) * 3.0], axis=1)
-    _save_png(np.clip(side, 0, 255).astype(np.uint8), images / f"{stem}.png")
-    return (difference, case.name, case.file, frame, stem, case.note)
 
 
 def _write_report(
@@ -728,14 +920,18 @@ def _write_report(
         "<style>body{font-family:sans-serif;background:#111;color:#ddd}"
         "img{max-width:100%}td{vertical-align:top;padding:4px}</style>",
         "<h1>YMM4（左）と Sashimono（中）と差（右、3 倍）</h1>",
-        f"<p>比べた絵 {len(rows)} 枚 差は 0〜255 の平均</p>",
+        f"<p>比べた絵 {len(rows)} 枚 差は {COMPARE_WIDTH}x{COMPARE_HEIGHT} に縮めた 0〜255 の"
+        "平均（上限はこれで見る） 縁は縮めない絵の縁の近くで、明るさの段差が食い違った"
+        f"大きさの平均 外れは 3 色のどれかの差が {OUTLIER_STEP} を超えた画素の割合"
+        " 全フレームを比べたときの縁と外れは枠の中の最大</p>",
         "<table>",
     ]
-    for difference, name, file, frame, stem, note in rows:
+    for row in rows:
         body.append(
-            f"<tr><td>{difference:.1f}<br>{html.escape(name)}<br>{html.escape(file)}"
-            f"<br>フレーム {frame}<br>{html.escape(note)}</td>"
-            f"<td><img src='images/{stem}.png'></td></tr>"
+            f"<tr><td>{row.difference:.1f}<br>縁 {row.edge:.1f}<br>外れ {row.outliers:.2f}%"
+            f"<br>{html.escape(row.name)}<br>{html.escape(row.file)}"
+            f"<br>フレーム {row.frame}<br>{html.escape(row.note)}</td>"
+            f"<td><img src='images/{row.stem}.png'></td></tr>"
         )
     body.append("</table><h2>飛ばしたテンプレート</h2><ul>")
     body.extend(f"<li>{html.escape(line)}</li>" for line in skipped)
