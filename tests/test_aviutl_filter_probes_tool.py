@@ -120,3 +120,28 @@ def test_the_third_and_fourth_rounds_cannot_be_asked_together(
         tool.main(["--work", str(tmp_path), "build", "--third", "--fourth"])
     assert caught.value.code == 2
     assert not (tmp_path / "compare.aup2").exists()
+
+
+def test_a_crashing_project_left_from_before_is_removed(tool: ModuleType, tmp_path: Path) -> None:
+    """--crashing で並べたあと、付けずに --only tc で並べ直すと何も選ばれない
+
+    そのとき前の落ちるプロジェクトを残すと、案内どおりに開いて AviUtl2 が落ちる（PR #225）
+    """
+    assert tool.command_build(tmp_path, "tc", fourth=True, crashing=True) == 0
+    assert tool.command_build(tmp_path, "tc", fourth=True) == 1
+    assert not (tmp_path / "compare.aup2").exists()
+    assert not (tmp_path / "manifest.json").exists()
+
+
+def test_the_told_length_covers_the_scene_lead_and_long_probes(
+    tool: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """本数 x 6 で数えると、頭の空きのある 60 フレームの sc03 を 10 フレームと案内していた
+
+    実際は 64 フレーム目から 60 フレーム並び、長さは 124 フレームになる（PR #225）
+    """
+    assert tool.command_build(tmp_path, "sc03", fourth=True) == 0
+    manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    (case,) = manifest["cases"]
+    last = case["start"] + case["length"]
+    assert f"（{last} フレーム）" in capsys.readouterr().out

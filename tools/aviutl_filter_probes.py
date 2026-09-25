@@ -722,6 +722,16 @@ def write_project(work: Path, chosen: tuple[Probe, ...]) -> dict[str, object]:
     return manifest
 
 
+def frame_count(manifest: dict[str, Any]) -> int:
+    """並べたプロジェクトの長さ（フレーム） 最後の見本の終わりまで
+
+    本数 x 6 で数えると、シーンの頭の空きや 60 フレームの見本の分が抜け、書き出す長さを
+    短く案内する
+    """
+    cases = manifest["cases"]
+    return max((int(case["start"]) + int(case["length"]) for case in cases), default=0)
+
+
 def command_build(
     work: Path,
     only: str = "",
@@ -745,13 +755,16 @@ def command_build(
     source = builder(folder)
     picked = chosen(source, only, crashing=crashing)
     if not picked:
+        # 前に書いたプロジェクトを消す 残すと、--crashing で並べた落ちるプロジェクトを
+        # 選び直しに失敗したあとでも案内どおりに開けてしまう
+        for stale in ("compare.aup2", "manifest.json"):
+            (work / stale).unlink(missing_ok=True)
         print(f"--only {only} に当たる見本がありません（時間制御は --crashing のときだけ）")
         return 1
     if any(probe.name.startswith(CRASHING_PROBES) for probe in picked):
         print("!!! AviUtl2 を落とすと分かっている見本（時間制御）を並べた 開くと落ちる")
-    write_project(work, picked)
-    last = len(picked) * (LENGTH + GAP)
-    print(f"{len(picked)} 本を並べた（{last} フレーム）")
+    manifest = write_project(work, picked)
+    print(f"{len(picked)} 本を並べた（{frame_count(manifest)} フレーム）")
     print(
         f"AviUtl2 で {work / 'compare.aup2'} を開き、{work / aviutl_compare.PNG_FOLDER} へ書き出す"
     )
