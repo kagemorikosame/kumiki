@@ -18,7 +18,7 @@ import numpy as np
 from sashimono.core.model import VideoStreamInfo
 from sashimono.core.timebase import Rounding, seconds_to_pts
 from sashimono.engine.colorspace import to_rgb_array
-from sashimono.engine.decode.probe import ProbeError, media_origin, probe_media
+from sashimono.engine.decode.probe import ProbeError, media_origin, moving_pictures, probe_media
 
 __all__ = ["VideoDecoder"]
 
@@ -40,7 +40,9 @@ class VideoDecoder:
         except (av.error.FFmpegError, OSError) as exc:
             raise ProbeError(f"素材を開けない: {self._path} ({exc})") from exc
 
-        streams = self._container.streams.video
+        # 素材の解析と同じくカバー画像は映像に数えない 数えると音楽のファイルを開けてしまい、
+        # 1 枚しか無い絵の中をシークして落ちる
+        streams = moving_pictures(self._container)
         if not streams:
             self._container.close()
             raise ProbeError(f"映像ストリームが無い: {self._path}")
