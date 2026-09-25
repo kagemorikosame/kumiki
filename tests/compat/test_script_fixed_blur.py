@@ -113,5 +113,6 @@ class TestClippingAfterStackedEffects:
     def test_without_a_baker_the_cut_still_waits(self) -> None:
         # 先に掛けられなければ、順を守るため切るのも描くときへ回す
         state, report = _run(f'{FIXED_BLUR} obj.effect("クリッピング", "上", 2)')
+        assert any("焼き込み" in line for line in report.missing)
         assert [effect.kind for effect in state.effects] == ["blur", "crop"]
         assert state.image.shape[:2] == (10, 12)

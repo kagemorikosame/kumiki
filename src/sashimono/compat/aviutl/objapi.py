@@ -1463,7 +1463,10 @@ def _is_fixed_blur(request: EffectRequest) -> bool:
 
 
 def _first_segment(requests: list[EffectRequest]) -> int:
-    """積んだ効果のうち、まとめて 1 回で掛ける頭の数 サイズ固定 のぼかしの前で切り、それ自体は 1 つ"""
+    """積んだ効果のうち、まとめて 1 回で掛ける頭の数
+
+    サイズ固定 のぼかしの前で切り、それ自体は 1 つで掛ける
+    """
     for index, request in enumerate(requests):
         if _is_fixed_blur(request):
             return index if index else 1
