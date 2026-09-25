@@ -22,6 +22,7 @@ from PySide6.QtGui import QImage
 from sashimono.compat.aviutl.embedded import has_embedded
 from sashimono.compat.aviutl.objapi import DrawCall
 from sashimono.compat.aviutl.report import global_report
+from sashimono.core.commands.fixed import PICTURE_FIXED
 from sashimono.core.model import (
     AnimatedValue,
     Blending,
@@ -38,6 +39,7 @@ from sashimono.core.model import (
 )
 from sashimono.core.timebase import FrameRate, seconds_to_frame
 from sashimono.effects.easing import ease
+from sashimono.effects.sources import PREVIOUS_OBJECT
 from sashimono.engine.audio_shapes import spectrum_window
 from sashimono.engine.cache.proxy import ProxyStore
 from sashimono.engine.decode import AudioDecoder, ProbeError, VideoDecoder
@@ -481,6 +483,13 @@ class FrameRenderer:
         self._nested: dict[int, Compositor] = {}
         #: クリップを下のクリップの形で切り抜くときに使う合成先（役目と深さごと）
         self._layers: dict[tuple[str, int], Compositor] = {}
+        #: いま重ねている段で、自分の絵を描いたクリップ（下から順） 直前オブジェクトが写す相手
+        #: 段ごと（:meth:`_compose_tracks`）に作り直す 入れ子のシーンや場面切り替えの中の
+        #: クリップを、外の直前オブジェクトの相手にしないため
+        self._drawn: list[tuple[Track, Clip]] = []
+        #: 段ごとに、最後に写し取ったフレームバッファのクリップ 写し取った絵は
+        #: ``framebuffer_seen`` の合成先にある（:meth:`_draw_previous` が下の写しに使う）
+        self._framebuffer_seen: dict[int, str] = {}
         #: 音声波形が音を読むデコーダ（道ごと） 映像のデコーダとは別に持つ
         self._audio: OrderedDict[WaveformKey, AudioDecoder] = OrderedDict()
         #: 開けなかった音 毎フレーム開き直さないために覚えておく
@@ -649,6 +658,22 @@ class FrameRenderer:
         # 描き始める前に、この段のクリップぶんのデコードを走らせておく
         # 描きながら 1 本ずつデコードすると、重ねた枚数だけ待ちが直列に並ぶ
         self._prefetch_decodes([clip for _, _, clip in visible], frame, rate)
+        outer_drawn = self._drawn
+        self._drawn = []
+        try:
+            self._compose_visible(tracks, visible, frame, rate, depth)
+        finally:
+            self._drawn = outer_drawn
+
+    def _compose_visible(
+        self,
+        tracks: list[Track],
+        visible: list[tuple[int, Track, Clip]],
+        frame: int,
+        rate: FrameRate,
+        depth: int,
+    ) -> None:
+        """:meth:`_compose_tracks` が選んだクリップを下から重ねる"""
         below: Compositor | None = None
         for position, (index, track, clip) in enumerate(visible):
             if clip.source is not None and clip.source.kind == "transition":
@@ -673,6 +698,9 @@ class FrameRenderer:
                 if above is not None and above.clip_to_below
                 else None
             )
+            # 自分の絵を持つクリップだけを数える フィルタと場面切り替えは写す絵を持たない
+            # それらを挟んだときに AviUtl がどれを写すかは測っていない
+            self._drawn.append((track, clip))
 
     def _draw_trail(
         self, track: Track, clip: Clip, frame: int, rate: FrameRate, depth: int
@@ -1016,14 +1044,17 @@ class FrameRenderer:
     ) -> None:
         """クリップ 1 本を描く
 
-        ``below`` はスクリプトの ``frm`` として読む合成先 別の合成先へ描き分けるとき
-        （:meth:`_draw_into`）に、下の絵を溜めた外側を渡す
+        ``below`` はスクリプトの ``frm`` とフレームバッファが写す合成先 別の合成先へ
+        描き分けるとき（:meth:`_draw_into`）に、下の絵を溜めた外側を渡す
         """
         if clip.scene_id is not None:
             self._draw_scene(track, clip, frame, rate, depth)
             return
         if clip.source is not None and clip.source.kind == "framebuffer":
-            self._draw_framebuffer(track, clip, frame, rate, depth)
+            self._draw_framebuffer(track, clip, frame, rate, depth, below=below)
+            return
+        if clip.source is not None and clip.source.kind == PREVIOUS_OBJECT.kind:
+            self._draw_previous(track, clip, frame, rate, depth)
             return
         local_frame = frame - clip.timeline_start
         opacity = clip.opacity.at(local_frame)
@@ -1190,12 +1221,23 @@ class FrameRenderer:
         return layer
 
     def _draw_into(
-        self, layer: Compositor, track: Track, clip: Clip, frame: int, rate: FrameRate, depth: int
+        self,
+        layer: Compositor,
+        track: Track,
+        clip: Clip,
+        frame: int,
+        rate: FrameRate,
+        depth: int,
+        *,
+        trail: bool = False,
     ) -> None:
+        """``clip`` だけを空の ``layer`` へ描く ``trail`` なら残像（:meth:`_draw_trail`）も描く"""
         outer = self._compositor
         self._compositor = layer
         try:
             layer.begin((0.0, 0.0, 0.0, 0.0))
+            if trail:
+                self._draw_trail(track, clip, frame, rate, depth)
             # 描く先は空の layer に切り替えてある スクリプトが画面（frm）として写すのは
             # 下の絵を溜めた outer 空の方を写すと、下の絵ではなく黒を写す
             self._draw_clip(track, clip, frame, rate, depth, below=outer)
@@ -1358,7 +1400,14 @@ class FrameRenderer:
         outer.draw_handle(result.color, full, opacity=opacity, flip=False, blend=clip.blend_mode)
 
     def _draw_framebuffer(
-        self, track: Track, clip: Clip, frame: int, rate: FrameRate, depth: int = 0
+        self,
+        track: Track,
+        clip: Clip,
+        frame: int,
+        rate: FrameRate,
+        depth: int = 0,
+        *,
+        below: Compositor | None = None,
     ) -> None:
         """それまでに重ねた画面を写し取り、エフェクトを掛けて重ねる
 
@@ -1367,24 +1416,43 @@ class FrameRenderer:
         いるので、そう伝えて渡す 合成は透明な下地から始まるので、伝えないと半透明の
         縁が暗くなる
 
+        ``below`` は別の空の合成先へ描き分けているとき（:meth:`_draw_into`）の、下の絵を
+        溜めた外側 いまの合成先は空なので、そちらを写すと黒い画面で全体を覆う
+
         AviUtl スクリプトを積んでいれば、写し取った画面を CPU へ読み戻して渡す
         毎フレームの往復になるので、積んでいるクリップだけで行う
         """
         local_frame = frame - clip.timeline_start
         gpu_effects, scripts = split_effects(clip.effects)
         width, height = self._compositor.width, self._compositor.height
+        screen = below if below is not None else self._compositor
         with self._context:
             if self._grab is None:
                 self._grab = Framebuffer(width, height)
             self._grab.resize(width, height)
-            GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, self._compositor.canvas.handle)
+            GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, screen.canvas.handle)
             GL.glBindFramebuffer(GL.GL_DRAW_FRAMEBUFFER, self._grab.handle)
             GL.glBlitFramebuffer(
                 0, 0, width, height, 0, 0, width, height, GL.GL_COLOR_BUFFER_BIT, GL.GL_NEAREST
             )
             # 写し取った画面は黒の上に置いた絵にする YMM4 は何も無い所も不透明な黒として
             # 写すので、反転すると白くなる 透明のまま渡すと反転しても黒のまま残る
-            self._compositor.underlay((0.0, 0.0, 0.0, 1.0), target=self._grab)
+            # AviUtl2 は透明のまま写す（``transparent``） 半分に縮めて重ねた写しの黒い所が、
+            # 下の四角を隠さなかった（#195）
+            origin = clip.source
+            if origin is None or origin.params.get("transparent") is not True:
+                self._compositor.underlay((0.0, 0.0, 0.0, 1.0), target=self._grab)
+            # 直前オブジェクトが写すのは、このとき写し取った絵（:meth:`_draw_previous`）
+            # 後から写し直すと、自分が置いた縮めた写しまで入る（#195 の探り po05）
+            seen = self._layer("framebuffer_seen", depth)
+            seen.begin((0.0, 0.0, 0.0, 0.0))
+            seen.draw_handle(
+                self._grab.color,
+                Placement(0.0, 0.0, float(width), float(height)),
+                flip=False,
+                premultiplied=True,
+            )
+            self._framebuffer_seen[depth] = clip.id
             if scripts:
                 grabbed = self._layer("framebuffer", depth)
                 grabbed.begin((0.0, 0.0, 0.0, 0.0))
@@ -1425,6 +1493,104 @@ class FrameRenderer:
                 # エフェクトを通した結果はストレートアルファ 写しただけなら事前乗算のまま
                 premultiplied=source is self._grab,
             )
+
+    def _draw_previous(
+        self, track: Track, clip: Clip, frame: int, rate: FrameRate, depth: int
+    ) -> None:
+        """すぐ下に描いたクリップの絵を、自分の描画の欄で置き直す（AviUtl の 直前オブジェクト）
+
+        AviUtl2 に描かせると、下の四角の位置は足されず自分の位置にだけ写り、下に掛けた
+        単色化は写った（#195） 下のクリップの描画の欄（反転・配置）を外して画面の真ん中に
+        描き、その絵を入れ子のシーンと同じく 1 枚の絵として自分のエフェクトへ渡す
+
+        下の不透明度と合成方法も写さない AviUtl ではどちらも位置と同じ 標準描画 の項目で、
+        写さなかった位置と同じ扱いにした 不透明度は AviUtl2 で測り、下を 50 にしても写しは
+        不透明のままだった 合成方法を外すのは測っていない 下に何も無ければ何も描かない
+        """
+        before = self._drawn
+        if not before:
+            return
+        below_track, below_clip = before[-1]
+        picture = replace(
+            below_clip,
+            effects=tuple(
+                effect
+                for effect in below_clip.effects
+                if not (effect.fixed and effect.kind in PICTURE_FIXED)
+            ),
+            opacity=AnimatedValue(1.0),
+            blend_mode=BlendMode.NORMAL,
+        )
+        # 直前オブジェクトを重ねたときは下の写しをさらに写す 段ごとに合成先を分けないと、
+        # 写している最中の絵へ下の写しを描き込んでしまう
+        layer = self._layer(f"previous{len(before)}", depth)
+        if (
+            below_clip.source is not None
+            and below_clip.source.kind == "framebuffer"
+            and self._framebuffer_seen.get(depth) == below_clip.id
+        ):
+            # 下がフレームバッファなら、写し取ったときの絵をそのまま使う AviUtl2 で下の四角を
+            # 写したフレームバッファ（拡大率 50・Y -250）を写すと、下の四角が元の大きさで
+            # 自分の位置にだけ出た（#195 の探り po05） 描き直すと、フレームバッファが置いた
+            # 縮めた写しまで写し取られて入る フレームバッファのエフェクトは掛けていない
+            # （測っていない）
+            layer.begin((0.0, 0.0, 0.0, 0.0))
+            layer.draw_handle(
+                self._layer("framebuffer_seen", depth).canvas.color,
+                Placement(0.0, 0.0, float(layer.width), float(layer.height)),
+                flip=False,
+                premultiplied=True,
+            )
+        else:
+            # 下のクリップにとっての「すぐ下」は、自分より 1 つ前まで
+            self._drawn = before[:-1]
+            try:
+                # 残像は本体とは別に前のフレームを描いて作る ここで描かないと、下のクリップには
+                # 付いている残像が写しにだけ無い
+                self._draw_into(layer, below_track, picture, frame, rate, depth, trail=True)
+            finally:
+                self._drawn = before
+
+        local_frame = frame - clip.timeline_start
+        opacity = clip.opacity.at(local_frame)
+        gpu_effects, scripts = split_effects(clip.effects)
+        full = Placement(0.0, 0.0, float(layer.width), float(layer.height))
+        if scripts:
+            # スクリプトは CPU の画像を書き換える作り 写した絵を 1 枚読み戻して渡す
+            # ストレートアルファで読む 事前乗算のまま渡すと、半透明の所が暗くなる
+            self._draw_scripted(
+                track,
+                clip,
+                layer.read(straight=True),
+                gpu_effects,
+                local_frame,
+                rate,
+                opacity,
+                on_canvas=True,
+            )
+            return
+        if not self._effects.has_work(gpu_effects):
+            self._compositor.draw_handle(
+                layer.canvas.color,
+                full,
+                opacity=opacity,
+                flip=False,
+                blend=clip.blend_mode,
+                premultiplied=True,
+            )
+            return
+        result = self._effects.apply(
+            layer.canvas,
+            gpu_effects,
+            frame=local_frame,
+            fps=float(rate.fps),
+            flip_source=False,
+            duration=clip.duration,
+            premultiplied=True,
+        )
+        self._compositor.draw_handle(
+            result.color, full, opacity=opacity, flip=False, blend=clip.blend_mode
+        )
 
     def _draw_filter(
         self, track: Track, clip: Clip, frame: int, rate: FrameRate, depth: int

@@ -868,3 +868,71 @@ def test_the_temporary_name_steps_around_a_file_that_already_exists(tmp_path: Pa
     chosen = Path(completed.stdout.decode("utf-8"))
     assert chosen == tmp_path / "foo.sashimono-bbbbbbbb.part.mp4"
     assert taken.read_bytes() == b"own video"
+
+
+def test_the_same_rate_written_two_ways_is_not_a_frame_short(
+    tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """プロジェクトの 29.97 と書き出しの 30000/1001 は同じ fps 比で掛けると端数が切り上がる
+
+    20 分（35964 コマ）の揃った書き出しを 1 コマ足りないと読み、出力を退けていた（PR #221）
+    """
+    from fractions import Fraction
+
+    output = tmp_path / "a.mp4"
+    output.write_bytes(b"")
+    monkeypatch.setattr(tool, "written_length", lambda _: (35964, Fraction(30000, 1001)))
+    assert tool.check_length(output, 35964, Fraction(2997, 100))
+    monkeypatch.setattr(tool, "written_length", lambda _: (35963, Fraction(30000, 1001)))
+    monkeypatch.setattr(tool, "short_name", lambda path: tmp_path / "short.mp4")
+    assert not tool.check_length(output, 35964, Fraction(2997, 100))
+
+
+def test_a_slightly_different_rate_is_still_converted_by_time(
+    tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """30 と 30.001 は本当に違う fps 同じと見ると、終わりの 2 コマに届かない書き出しを通す
+
+    NTSC の書き方の違いを割合の近さで揃えていたころは、1 万分の 1 より近い fps を
+    時間に直さずに数えていた（PR #221）
+    """
+    from fractions import Fraction
+
+    output = tmp_path / "a.mp4"
+    output.write_bytes(b"")
+    rate = Fraction(30001, 1000)
+    monkeypatch.setattr(tool, "short_name", lambda path: tmp_path / "short.mp4")
+    monkeypatch.setattr(tool, "written_length", lambda _: (36000, rate))
+    assert not tool.check_length(output, 36000, Fraction(30))
+    output.write_bytes(b"")
+    monkeypatch.setattr(tool, "written_length", lambda _: (36002, rate))
+    assert tool.check_length(output, 36000, Fraction(30))
+
+
+@pytest.mark.parametrize(("project", "written"), [("23.976", 24000), ("59.94", 60000)])
+def test_other_ntsc_rates_written_two_ways_are_the_same(
+    tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, project: str, written: int
+) -> None:
+    """29.97 の他の NTSC の組も揃える 揃えないと端数の切り上げで 1 コマ足りないと読む"""
+    from fractions import Fraction
+
+    output = tmp_path / "a.mp4"
+    output.write_bytes(b"")
+    rate = Fraction(written, 1001)
+    monkeypatch.setattr(tool, "written_length", lambda _: (35964, rate))
+    assert tool.check_length(output, 35964, Fraction(project))
+
+
+@pytest.mark.parametrize("fps", ["NaN", "Infinity", "true"])
+def test_a_project_with_a_broken_rate_is_refused_without_a_traceback(
+    tool: ModuleType, tmp_path: Path, fps: str
+) -> None:
+    """JSON の読み込みは NaN と Infinity を通し、true は int として通る
+
+    そのまま分数へ直すと ValueError で止まっていた
+    """
+    project = tmp_path / "a.ymmp"
+    _project(project, [(0, 4)])
+    text = project.read_text(encoding="utf-8-sig").replace('"FPS": 30', f'"FPS": {fps}')
+    project.write_text(text, encoding="utf-8-sig")
+    assert tool.project_length(project) is None
