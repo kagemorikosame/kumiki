@@ -384,6 +384,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     for name in sorted(_backups(folder) - backups_before):
         # AviUtl2 自身の自動控え 本人の控えと同じ置き場なので消さずに知らせる
         print(f"AviUtl2 が自動控えを足しました {folder / 'Backup' / name}")
+    written = len(list(partial.glob("*.png"))) if code == 0 else 0
+    if code == 0 and written != frames:
+        # PowerShell の終了コードだけを信じない YMM4 の道具では、書き出しが途中で止まっても
+        # PowerShell が書き終えたと言った（Issue #210） 足りない連番を出すと、compare が
+        # 欠けた枠を「AviUtl2 が何も描かない」と読む
+        print(f"AviUtl2 の書き出しが途中で止まりました {written} / {frames} 枚")
+        code = 1
     if code != 0:
         # 書き終えなかった絵は捨てる この名前は始めに無いことを確かめて作ったので、中身は今回の物
         shutil.rmtree(partial, ignore_errors=True)
