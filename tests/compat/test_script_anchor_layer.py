@@ -107,6 +107,14 @@ class TestCModule:
         (line,) = report.missing
         assert "C モジュールの DLL" in line and "32 ビット" not in line
 
+    def test_a_broken_dll_is_not_called_a_c_module(self, tmp_path: Path) -> None:
+        # PE の見出しを読めない DLL を C のモジュールと決めつけると、壊れたファイルを置き直せば
+        # 済む所で読めない理由を取り違える（PR #218 の指摘）
+        (tmp_path / "bridge.dll").write_bytes(b"not a dll")
+        _, report = _run('local b = require("bridge")', folder=tmp_path)
+        (line,) = report.missing
+        assert "読み取れなかった" in line and "C モジュール" not in line
+
     def test_a_module_that_is_not_there_is_still_not_found(self, tmp_path: Path) -> None:
         _, report = _run('local b = require("nothing")', folder=tmp_path)
         assert list(report.missing) == ['モジュール "nothing" が見つかりません']
@@ -273,5 +281,9 @@ def test_a_clip_id_shared_with_a_scene_keeps_its_own_layer(gl_context: Any) -> N
     try:
         assert renderer._layer_number(clip) == 2
         assert renderer._layer_number(twin) == 1
+        # フィルタや切り抜きは描く前にクリップを作り直す 実体で引けなくても、置かれた
+        # トラックを渡せばシーンの番号になる 識別子へ落ちるとメインの 2 になる（PR #218 の指摘）
+        remade = replace(twin, opacity=twin.opacity)
+        assert renderer._layer_number(remade, scene.timeline.tracks[0]) == 1
     finally:
         renderer.close()

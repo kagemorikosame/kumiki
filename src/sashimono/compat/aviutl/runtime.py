@@ -608,7 +608,15 @@ class LuaScriptRuntime:
         library = self._locate(name, (C_MODULE_SUFFIX,))
         if library is None:
             return f'モジュール "{name}" が見つかりません'
-        if _machine(library) == MACHINE_I386:
+        machine = _machine(library)
+        if machine is None:
+            # 開けないか PE の見出しが壊れている 読めない理由を C のモジュールだからと決めつけると、
+            # 壊れたファイルを置き直せば済む所で探す向きを誤らせる
+            return (
+                f'モジュール "{name}" は DLL（{library.name}）だが、形式か CPU の種類を'
+                "読み取れなかったので読まない"
+            )
+        if machine == MACHINE_I386:
             return (
                 f'モジュール "{name}" は 32 ビットの DLL（{library.name}）で、'
                 "64 ビットの Sashimono では読めない"
