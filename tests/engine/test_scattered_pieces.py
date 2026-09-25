@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Callable, Iterator
 
@@ -29,6 +30,7 @@ from sashimono.effects import EffectDefinition, Pieces, TrackSpec, registry
 from sashimono.effects.builtin import PIECE_PRELUDE, PRELUDE
 from sashimono.effects.sources import SHAPE
 from sashimono.engine.gpu import GLContextError, OffscreenGLContext, ScreenQuad
+from sashimono.engine.gpu.effects import piece_grid
 from sashimono.engine.render import FrameRenderer
 
 WIDTH, HEIGHT = 480, 480
@@ -270,6 +272,45 @@ class TestCrash:
                 fragment_shader="",
                 pieces=Pieces(size="size", minimum=4.0, vertex_shader=""),
             )
+
+    @pytest.mark.parametrize("minimum", [0.0, -4.0, math.nan, math.inf])
+    def test_the_smallest_piece_must_be_a_positive_number(self, minimum: float) -> None:
+        """升目の一辺の下限が正の数でなければ、定義の時点で断る
+
+        下限は升目の数を求めるときに割る数になる 0 や NaN を通すと、大きさの項目を 0 に
+        した所でプレビューも書き出しも例外で止まる
+        """
+        with pytest.raises(ValueError, match="下限"):
+            EffectDefinition(
+                kind="broken_pieces",
+                label="壊れた破片",
+                category="テスト",
+                parameters=(TrackSpec("size", "大きさ", 0, 400, 50, unit="px"),),
+                fragment_shader="",
+                pieces=Pieces(size="size", minimum=minimum, vertex_shader=""),
+            )
+
+    def test_a_piece_barely_touched_by_the_content_is_drawn(self) -> None:
+        """中身の端が升目にわずかに掛かるだけでも、その升目は描く
+
+        画質を落とすと升目の一辺も中身の端も半端な数になる 一辺 2.5 で中身が 2.6 まで
+        あるとき、端の画素の中心（2.1）で数えると [2.5, 5.0) の升目が抜け、そこに残る
+        中身の縁（2.5〜2.6）が消える
+        """
+        first, columns, rows = piece_grid((0.0, 0.0, 2.6, 2.6), 2.5, 480, 480)
+        assert first == (0, 0)
+        assert (columns, rows) == (2, 2)
+
+    def test_the_grid_stops_at_the_content_edge(self) -> None:
+        """升目の境目で終わる中身は、その先の升目まで数えない 数えると空の四角を描く"""
+        assert piece_grid((220.0, 220.0, 260.0, 260.0), 4.0, 480, 480) == ((55, 55), 10, 10)
+        assert piece_grid((0.0, 0.0, 250.0, 100.0), 50.0, 480, 480) == ((0, 0), 5, 2)
+
+    def test_nothing_outside_the_buffer_is_counted(self) -> None:
+        """バッファの外の中身は読めば透明なので、升目を数えない 画面より大きく置いた絵で
+        四角の数だけが膨らむ"""
+        assert piece_grid((-1000.0, -1000.0, 5000.0, 5000.0), 10.0, 100, 50) == ((0, 0), 10, 5)
+        assert piece_grid((600.0, 0.0, 700.0, 50.0), 10.0, 100, 50)[1] == 0
 
     def test_out_of_range_values_do_not_empty_the_search(
         self, draw: Callable[..., np.ndarray]

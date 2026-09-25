@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -118,6 +119,11 @@ class EffectDefinition:
         if unknown:
             raise ValueError(f"{self.kind}: 何もしない値の項目が定義に無い: {unknown}")
         if self.pieces is not None:
+            # 下限は升目の一辺として割る数になる 0 や NaN を通すと、大きさの項目が 0 のときに
+            # 升目の数が求まらず、プレビューも書き出しも例外で止まる
+            minimum = self.pieces.minimum
+            if not (math.isfinite(minimum) and minimum > 0.0):
+                raise ValueError(f"{self.kind}: 升目の一辺の下限は正の数にする: {minimum}")
             # 升目の大きさが読めないと、エンジンは下限の大きさで割って四角の数が膨らむ
             if not isinstance(self.spec(self.pieces.size), TrackSpec):
                 raise ValueError(f"{self.kind}: 升目の大きさの項目が数の項目に無い")

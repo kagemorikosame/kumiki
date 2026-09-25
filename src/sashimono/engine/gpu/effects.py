@@ -39,7 +39,7 @@ from sashimono.engine.gpu.glutil import (
 )
 from sashimono.engine.gpu.images import EffectImages
 
-__all__ = ["EffectProcessor", "srgb_to_linear"]
+__all__ = ["EffectProcessor", "piece_grid", "srgb_to_linear"]
 
 
 _log = logging.getLogger(__name__)
@@ -333,25 +333,14 @@ class EffectProcessor:
         受け渡すので、重ね終えてから戻す 描いた後の先頭（``_front``）は変わらない
         """
         cell = _piece_size(definition, effect, frame, self.pixel_scale)
-        # 欠片は元の絵の中身の範囲にしか無い そこに掛かる升目だけを描けば、散った後でも
-        # 元の絵を割った数より多くは描かない u_object ではなく u_content で切る
-        # 前の変形で広げた絵は u_object の外まである（#199）
-        # バッファの外でも切る 外の画素は元から無い（読めば透明）ので描いても何も出ず、
-        # 画面より大きく置いた絵で四角の数だけが膨らむ
-        left, bottom, right, top = self._content
-        left, bottom = max(left, 0.0), max(bottom, 0.0)
-        right, top = min(right, float(self.width)), min(top, float(self.height))
-        first = (math.floor(left / cell), math.floor(bottom / cell))
-        last = (math.floor((right - 0.5) / cell), math.floor((top - 0.5) / cell))
-        columns = last[0] - first[0] + 1
-        rows = last[1] - first[1] + 1
+        first, columns, rows = piece_grid(self._content, cell, self.width, self.height)
         program.set_float("u_cell", cell)
         program.set_ivec2("u_first", first)
         program.set_int("u_columns", max(columns, 1))
 
         GL.glEnable(GL.GL_BLEND)
         GL.glBlendFunc(GL.GL_ONE, GL.GL_ONE_MINUS_SRC_ALPHA)
-        self._quad.draw_instanced(max(columns, 0) * max(rows, 0))
+        self._quad.draw_instanced(columns * rows)
         GL.glDisable(GL.GL_BLEND)
 
         # 読み終えた入力のバッファへ、ストレートアルファに戻して書く 入力はもう読まない
@@ -537,6 +526,29 @@ def _number(
     value = effect.params.get(name)
     raw = spec.default_value() if value is None else value
     return float(spec.scaled_at(spec.coerce(raw), frame, scale))
+
+
+def piece_grid(
+    content: tuple[float, float, float, float], cell: float, width: int, height: int
+) -> tuple[tuple[int, int], int, int]:
+    """中身の範囲（左・下・右・上）に掛かる升目 左下の升目の番号・横の数・縦の数を返す
+
+    欠片は元の絵の中身の範囲にしか無い そこに掛かる升目だけを描けば、散った後でも
+    元の絵を割った数より多くは描かない u_object ではなく u_content で切る
+    前の変形で広げた絵は u_object の外まである（#199）
+    バッファの外でも切る 外の画素は元から無い（読めば透明）ので描いても何も出ず、
+    画面より大きく置いた絵で四角の数だけが膨らむ
+
+    右と上の端は、端に少しでも掛かる升目まで数える 画質を落とすと升目の一辺も中身の端も
+    半端な数になり、端の画素の中心だけで数えると、中身の残る最後の升目が丸ごと抜ける
+    """
+    left, bottom, right, top = content
+    left, bottom = max(left, 0.0), max(bottom, 0.0)
+    right, top = min(right, float(width)), min(top, float(height))
+    first = (math.floor(left / cell), math.floor(bottom / cell))
+    columns = max(math.ceil(right / cell) - first[0], 0)
+    rows = max(math.ceil(top / cell) - first[1], 0)
+    return first, columns, rows
 
 
 def _piece_size(definition: EffectDefinition, effect: Effect, frame: int, scale: float) -> float:
