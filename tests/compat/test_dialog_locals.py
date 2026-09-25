@@ -58,6 +58,13 @@ class TestDialogLocals:
         state = _run(runtime, source, {"local mlr": None})
         assert (state.ox, state.oy) == (1.0, 1.0)
 
+    def test_a_body_starting_with_a_bracket_still_runs(self) -> None:
+        # 宣言と本文の間に文の区切りが無いと、括弧で始まる本文が直前の値の呼び出しに読まれ、
+        # スクリプトが 1 行目で落ちる
+        runtime = LuaScriptRuntime(report=CompatibilityReport())
+        state = _run(runtime, "(function() obj.ox = mlr end)()", {"local mlr": 3})
+        assert state.ox == 3.0
+
     def test_line_numbers_in_errors_stay_the_same(self) -> None:
         # 頭に宣言を足しても、失敗したときの行番号がスクリプトの行とずれない
         runtime = LuaScriptRuntime(report=CompatibilityReport())

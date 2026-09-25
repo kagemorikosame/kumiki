@@ -1495,7 +1495,11 @@ def _blend_mode(value: Any) -> str:
     """``obj.setoption("blend", 値)`` の値を lua.txt の名前へ 数は旧形式の並び"""
     if isinstance(value, str) and not value.strip().lstrip("-").isdigit():
         return value.strip().lower() or "none"
-    number = int(_as_float(value))
+    raw = _as_float(value)
+    if not math.isfinite(raw):
+        # int(NaN) や int(無限大) は例外になり、描画ごと止まる 写していない名前として記録させる
+        return str(raw)
+    number = int(raw)
     return _BLEND_NUMBERS[number] if 0 <= number < len(_BLEND_NUMBERS) else str(number)
 
 

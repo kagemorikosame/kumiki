@@ -63,11 +63,13 @@ class TestDst:
         assert state.buffers["tmp"][..., 3].max() == 0
 
     def test_dst_frm_goes_back_to_the_screen(self) -> None:
+        # frm へ戻せないと、シーンチェンジなどが最後に画面へ描く絵が仮想バッファへ入って消える
         state = _run('obj.setoption("dst", "tmp", 10, 8) obj.setoption("dst", "frm") obj.draw()')
         assert len(state.draws) == 1
         assert state.buffers["tmp"][..., 3].max() == 0
 
     def test_an_unknown_target_is_recorded(self) -> None:
+        # 知らない描き先を黙って捨てると、仮想バッファへ描くつもりの絵が画面へ出た理由が分からない
         report = CompatibilityReport()
         state = _run('obj.setoption("dst", "xyz") obj.draw()', report=report)
         assert len(state.draws) == 1
@@ -96,11 +98,13 @@ class TestAlphaBlends:
         assert tuple(int(v) for v in buffer[0, 0]) == (255, 0, 0, 55)
 
     def test_alpha_sub_does_not_go_below_zero(self) -> None:
+        # 0 で止めずに引く量の方を使うと、削る所に不透明度が残って角が透明にならない
         buffer = _pixel((255, 0, 0), 50)
         raster.draw_image(buffer, _pixel((0, 0, 0), 200), blend="alpha_sub")
         assert int(buffer[0, 0, 3]) == 0
 
     def test_alpha_max_takes_the_larger_opacity(self) -> None:
+        # 大きい方を取らないと、重ねた所が下の絵より透明になって縁が薄く抜ける
         buffer = _pixel((255, 0, 0), 200)
         raster.draw_image(buffer, _pixel((0, 0, 255), 100), blend="alpha_max")
         assert int(buffer[0, 0, 3]) == 200
@@ -137,6 +141,17 @@ class TestAlphaBlends:
         report = CompatibilityReport()
         _run(
             f'obj.setoption("dst", "tmp", 6, 4) obj.setoption("blend", {mode}) obj.draw()',
+            report=report,
+        )
+        assert any("blend" in line for line in report.missing)
+
+    @pytest.mark.parametrize("value", ["0/0", "1/0"])
+    def test_a_blend_that_is_not_a_number_is_recorded(self, value: str) -> None:
+        # int(NaN) や int(無限大) は例外になり、スクリプトの失敗としても扱われずに描画ごと止まる
+        report = CompatibilityReport()
+        _run(
+            f'obj.setoption("dst", "tmp", 6, 4) obj.setoption("blend", {value}) obj.draw()'
+            ' obj.setoption("dst", "frm") obj.draw()',
             report=report,
         )
         assert any("blend" in line for line in report.missing)
@@ -188,6 +203,7 @@ class TestInvertAlpha:
         assert int(state.image[0, 0, 3]) == 255
 
     def test_mirroring_with_it_is_done_too(self) -> None:
+        # 一緒に渡した 左右反転 を落とすと、透明度だけ反転して絵が裏返らない
         image = _white()
         image[0, 0] = (255, 0, 0, 128)
         state = _run('obj.effect("反転", "透明度反転", 1, "左右反転", 1)', image=image)

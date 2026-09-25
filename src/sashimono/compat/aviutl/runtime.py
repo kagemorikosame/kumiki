@@ -532,7 +532,8 @@ class LuaScriptRuntime:
         }
         globals_table[_DIALOG_LOCALS] = self._lua.table_from(given)
         declared = " ".join(f'local {name} = {_DIALOG_LOCALS}["{name}"]' for name in names)
-        return f"{declared} {_strip_bom(source)}"
+        # 宣言と本文の間は ; で区切る 括弧で始まる本文が、直前の値の呼び出しに読まれる
+        return f"{declared}; {_strip_bom(source)}"
 
     # --- モジュール ---
 
