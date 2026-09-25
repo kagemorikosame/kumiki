@@ -91,11 +91,12 @@ def has_outline(clip: Clip) -> bool:
 
     シーン・画面の写し取り・フィルタ・場面切り替えは、自分の絵を 1 枚の矩形として置かない
     （下の絵や入れ子の合成をそのまま使う） 枠を出すと、掴んでも枠のとおりには動かない
+    直前オブジェクトの絵は下のクリップ次第で、自分の中身から大きさを出せない
     """
     if clip.scene_id is not None or clip.is_filter:
         return False
     source = clip.source
-    return source is None or source.kind not in ("framebuffer", "transition")
+    return source is None or source.kind not in ("framebuffer", "transition", "previous_object")
 
 
 def media_pixel_size(project: Project, clip: Clip) -> tuple[int, int] | None:

@@ -22,6 +22,7 @@ from PySide6.QtGui import QImage
 from sashimono.compat.aviutl.embedded import has_embedded
 from sashimono.compat.aviutl.objapi import DrawCall
 from sashimono.compat.aviutl.report import global_report
+from sashimono.core.commands.fixed import PICTURE_FIXED
 from sashimono.core.model import (
     AnimatedValue,
     Blending,
@@ -38,6 +39,7 @@ from sashimono.core.model import (
 )
 from sashimono.core.timebase import FrameRate, seconds_to_frame
 from sashimono.effects.easing import ease
+from sashimono.effects.sources import PREVIOUS_OBJECT
 from sashimono.engine.audio_shapes import spectrum_window
 from sashimono.engine.cache.proxy import ProxyStore
 from sashimono.engine.decode import AudioDecoder, ProbeError, VideoDecoder
@@ -481,6 +483,10 @@ class FrameRenderer:
         self._nested: dict[int, Compositor] = {}
         #: クリップを下のクリップの形で切り抜くときに使う合成先（役目と深さごと）
         self._layers: dict[tuple[str, int], Compositor] = {}
+        #: いま重ねている段で、自分の絵を描いたクリップ（下から順） 直前オブジェクトが写す相手
+        #: 段ごと（:meth:`_compose_tracks`）に作り直す 入れ子のシーンや場面切り替えの中の
+        #: クリップを、外の直前オブジェクトの相手にしないため
+        self._drawn: list[tuple[Track, Clip]] = []
         #: 音声波形が音を読むデコーダ（道ごと） 映像のデコーダとは別に持つ
         self._audio: OrderedDict[WaveformKey, AudioDecoder] = OrderedDict()
         #: 開けなかった音 毎フレーム開き直さないために覚えておく
@@ -649,6 +655,22 @@ class FrameRenderer:
         # 描き始める前に、この段のクリップぶんのデコードを走らせておく
         # 描きながら 1 本ずつデコードすると、重ねた枚数だけ待ちが直列に並ぶ
         self._prefetch_decodes([clip for _, _, clip in visible], frame, rate)
+        outer_drawn = self._drawn
+        self._drawn = []
+        try:
+            self._compose_visible(tracks, visible, frame, rate, depth)
+        finally:
+            self._drawn = outer_drawn
+
+    def _compose_visible(
+        self,
+        tracks: list[Track],
+        visible: list[tuple[int, Track, Clip]],
+        frame: int,
+        rate: FrameRate,
+        depth: int,
+    ) -> None:
+        """:meth:`_compose_tracks` が選んだクリップを下から重ねる"""
         below: Compositor | None = None
         for position, (index, track, clip) in enumerate(visible):
             if clip.source is not None and clip.source.kind == "transition":
@@ -673,6 +695,9 @@ class FrameRenderer:
                 if above is not None and above.clip_to_below
                 else None
             )
+            # 自分の絵を持つクリップだけを数える フィルタと場面切り替えは写す絵を持たない
+            # それらを挟んだときに AviUtl がどれを写すかは測っていない
+            self._drawn.append((track, clip))
 
     def _draw_trail(
         self, track: Track, clip: Clip, frame: int, rate: FrameRate, depth: int
@@ -1024,6 +1049,9 @@ class FrameRenderer:
             return
         if clip.source is not None and clip.source.kind == "framebuffer":
             self._draw_framebuffer(track, clip, frame, rate, depth)
+            return
+        if clip.source is not None and clip.source.kind == PREVIOUS_OBJECT.kind:
+            self._draw_previous(track, clip, frame, rate, depth)
             return
         local_frame = frame - clip.timeline_start
         opacity = clip.opacity.at(local_frame)
@@ -1425,6 +1453,83 @@ class FrameRenderer:
                 # エフェクトを通した結果はストレートアルファ 写しただけなら事前乗算のまま
                 premultiplied=source is self._grab,
             )
+
+    def _draw_previous(
+        self, track: Track, clip: Clip, frame: int, rate: FrameRate, depth: int
+    ) -> None:
+        """すぐ下に描いたクリップの絵を、自分の描画の欄で置き直す（AviUtl の 直前オブジェクト）
+
+        AviUtl2 に描かせると、下の四角の位置は足されず自分の位置にだけ写り、下に掛けた
+        単色化は写った（#195） 下のクリップの描画の欄（反転・配置）を外して画面の真ん中に
+        描き、その絵を入れ子のシーンと同じく 1 枚の絵として自分のエフェクトへ渡す
+
+        下の不透明度と合成方法も写さない AviUtl ではどちらも位置と同じ 標準描画 の項目で、
+        写さなかった位置と同じ扱いにした（ここは測っていない） 下に何も無ければ何も描かない
+        """
+        before = self._drawn
+        if not before:
+            return
+        below_track, below_clip = before[-1]
+        picture = replace(
+            below_clip,
+            effects=tuple(
+                effect
+                for effect in below_clip.effects
+                if not (effect.fixed and effect.kind in PICTURE_FIXED)
+            ),
+            opacity=AnimatedValue(1.0),
+            blend_mode=BlendMode.NORMAL,
+        )
+        # 直前オブジェクトを重ねたときは下の写しをさらに写す 段ごとに合成先を分けないと、
+        # 写している最中の絵へ下の写しを描き込んでしまう
+        layer = self._layer(f"previous{len(before)}", depth)
+        # 下のクリップにとっての「すぐ下」は、自分より 1 つ前まで
+        self._drawn = before[:-1]
+        try:
+            self._draw_into(layer, below_track, picture, frame, rate, depth)
+        finally:
+            self._drawn = before
+
+        local_frame = frame - clip.timeline_start
+        opacity = clip.opacity.at(local_frame)
+        gpu_effects, scripts = split_effects(clip.effects)
+        full = Placement(0.0, 0.0, float(layer.width), float(layer.height))
+        if scripts:
+            # スクリプトは CPU の画像を書き換える作り 写した絵を 1 枚読み戻して渡す
+            # ストレートアルファで読む 事前乗算のまま渡すと、半透明の所が暗くなる
+            self._draw_scripted(
+                track,
+                clip,
+                layer.read(straight=True),
+                gpu_effects,
+                local_frame,
+                rate,
+                opacity,
+                on_canvas=True,
+            )
+            return
+        if not self._effects.has_work(gpu_effects):
+            self._compositor.draw_handle(
+                layer.canvas.color,
+                full,
+                opacity=opacity,
+                flip=False,
+                blend=clip.blend_mode,
+                premultiplied=True,
+            )
+            return
+        result = self._effects.apply(
+            layer.canvas,
+            gpu_effects,
+            frame=local_frame,
+            fps=float(rate.fps),
+            flip_source=False,
+            duration=clip.duration,
+            premultiplied=True,
+        )
+        self._compositor.draw_handle(
+            result.color, full, opacity=opacity, flip=False, blend=clip.blend_mode
+        )
 
     def _draw_filter(
         self, track: Track, clip: Clip, frame: int, rate: FrameRate, depth: int
