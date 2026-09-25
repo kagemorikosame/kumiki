@@ -1346,6 +1346,8 @@ def _text(item: dict[str, Any]) -> GeneratedSource:
             item.get("LetterSpacing2"), 0.0, length=length, keyframes=keyframes
         ),
         "align": align,
+        # YMM4 の基準位置の左右は、文字の塊の端を位置に合わせる（行揃えと同じ向き）
+        "anchor": align,
         "valign": valign,
         "vertical": _is_vertical(item),
     }
@@ -1481,10 +1483,12 @@ def _pen(
     first = strokes[0] if strokes and isinstance(strokes[0], dict) else {}
     attributes = first.get("DrawingAttributes")
     attributes = attributes if isinstance(attributes, dict) else {}
-    # 点は画面の左上を原点にした画素 こちらの線は絵の中心が原点で Y は上が正
-    # （配布物の点は 1920x1080 の画面で描かれている）
+    # 点は画面の左上を原点にした画素で Y は下が正 画面の大きさによらず同じ画素の所に出る
+    # （1920x1080 と 1280x720 で同じ点を YMM4 に描かせて確かめた #198） 真ん中からの画素へ
+    # 直すのは描くとき（``points_from``） 読む所で 1920x1080 を決め打ちで引くと、ほかの
+    # 大きさのプロジェクトで線がずれる
     points = [
-        f"{number(point.get('X'), 0.0) - 960.0:g},{540.0 - number(point.get('Y'), 0.0):g}"
+        f"{number(point.get('X'), 0.0):g},{number(point.get('Y'), 0.0):g}"
         for point in first.get("StylusPoints") or []
         if isinstance(point, dict)
     ]
@@ -1495,6 +1499,7 @@ def _pen(
         params={
             "shape": "polyline",
             "points": ";".join(points),
+            "points_from": "corner",
             "closed": False,
             "color": colour(attributes.get("Color"), (1.0, 1.0, 1.0, 1.0)),
             "line_width": _scaled(
@@ -1531,6 +1536,7 @@ def _timer(parameter: dict[str, Any], item: dict[str, Any]) -> GeneratedSource:
             parameter.get("LetterSpacing2"), 0.0, length=length, keyframes=keyframes
         ),
         "align": align,
+        "anchor": align,
         "valign": valign,
     }
     font = parameter.get("Font")

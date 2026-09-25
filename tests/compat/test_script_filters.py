@@ -196,7 +196,7 @@ class TestFilters:
         assert any("単色化の color" in line for line in report.lines())
 
     def test_the_colour_correction_counts_from_a_hundred(self) -> None:
-        """スクリプトの 色調補正 は 100 が元のまま 輝度は倍率、明るさは足す量
+        """スクリプトの 色調補正 は 100 が元のまま 輝度は Y の倍率、明るさは足す量（#188 で測った）
 
         アクリル矩形は 輝度 30 と 明るさ 135 で、明るさの幅を 30% に縮めて真ん中へ寄せる
         そのまま入れると 輝度 と 明るさ が同じ項目へ入り、明るさが倍になって白く飛んでいた
@@ -204,11 +204,11 @@ class TestFilters:
         (effect,) = _requested(
             'obj.effect("色調補正", "明るさ", 135, "輝度", 30, "彩度", 100, "色相", 0)'
         )
-        assert effect.kind == "color"
-        assert _value(effect, "gain") == 30.0
-        assert _value(effect, "offset") == 35.0
-        assert _value(effect, "saturation") == 0.0
-        assert _value(effect, "brightness") == 0.0
+        assert effect.kind == "color_correct"
+        assert _value(effect, "luma") == 30.0
+        assert _value(effect, "brightness") == 135.0
+        assert _value(effect, "saturation") == 100.0
+        assert _value(effect, "hue") == 0.0
 
     def test_the_lens_blur_keeps_its_brightness(self) -> None:
         # 磨りガラス矩形は 光の強さ 32 を渡す 明るさの倍率へ入れると板が暗く沈む

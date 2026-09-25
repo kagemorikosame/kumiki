@@ -47,6 +47,9 @@ NOISE_KINDS = (
 )
 
 
+#: ノイズで薄める先 塗らずに不透明度か色を 1 - 値 倍にする（YMM4 の NoiseEffect の IsAlpha）
+_NOISE_MASKS = (("off", "使わない"), ("alpha", "不透明度"), ("color", "色"))
+
 _EXTEND = (("clamp", "端の色"), ("wrap", "繰り返し"), ("mirror", "折り返し"))
 
 _STOP_UNIFORMS = "\n".join(
@@ -96,6 +99,7 @@ uniform bool pattern_only;
 uniform bool key_only;
 uniform vec4 key_color;
 uniform vec4 keep_color;
+uniform int noise_mask;
 uniform bool relative;
 uniform int noise_kind;
 uniform float noise_strength;
@@ -223,7 +227,9 @@ float cell_noise(vec2 q, float z, float salt, bool distance_only) {
 }
 
 // YMM4 のノイズのブラシ 大きさ 100% の目の粗さは、YMM4 に描かせた絵の粒の数から決めた
-float noise_value(vec2 p, float salt) {
+float shaped_noise(float v, float strength);
+
+float noise_raw(vec2 p, float salt) {
     // 粒の大きさ（下の 2〜60）は画面の画素 画質を落とした下書きでも粒が絵に対して同じ大きさに
     // 見えるよう、画面 1 画素あたりの画素数を掛ける 掛けないと下書きだけ粒が 2〜4 倍に粗くなる
     vec2 scale = max(vec2(noise_scale_x, noise_scale_y) * 0.01, vec2(0.0001)) * u_pixel_scale;
@@ -231,7 +237,14 @@ float noise_value(vec2 p, float salt) {
     float z = noise_z + speed_z * u_time;
     float v;
     if (noise_kind == 1) {
-        v = layered(floor(moved / (2.0 * scale)), z * 7.0, salt);
+        // 砂嵐は升ごとにばらばらの値 勾配ノイズを升の角（整数の点）で引くと、どこでも 0.5 の
+        // 一様な灰になっていた（#177 大きさ 1000% の不透明度が YMM4 は 0.03〜0.97 に散り、
+        // こちらは 0.5 の一枚だった） 升の大きさは大きさ 100% で 1 画素 YMM4 の絵は
+        // 大きさ 1000% で隣の画素との相関が 0.98、8 画素離れて 0.22 だった
+        vec2 cell = floor(moved / scale);
+        float depth = z * 7.0;
+        float lower = floor(depth) + salt * 31.0;
+        v = mix(lattice_value(cell, lower), lattice_value(cell, lower + 1.0), fract(depth));
     } else if (noise_kind == 4 || noise_kind == 5) {
         float grain = noise_kind == 5 ? 60.0 : 25.0;
         v = cell_noise(moved / (grain * scale), z, salt, noise_kind == 5);
@@ -243,8 +256,16 @@ float noise_value(vec2 p, float salt) {
         // なめらかな種類の値は 0.35〜0.65 ほどに収まる（YMM4 の絵と同じ散らばり）
         v = fractal_sum(moved / (48.0 * scale), z, salt);
     }
-    // 強さは値に掛ける しきい値を上げると明るい側へ寄る 段階は値を量子化する
-    v *= max(noise_strength, 0.0) * 0.01;
+    return v;
+}
+
+float noise_value(vec2 p, float salt) {
+    return shaped_noise(noise_raw(p, salt), max(noise_strength, 0.0) * 0.01);
+}
+
+// 強さは値に掛ける しきい値を上げると明るい側へ寄る 段階は値を量子化する
+float shaped_noise(float v, float strength) {
+    v *= strength;
     v /= max(1.0 - clamp(noise_threshold * 0.01, 0.0, 0.99), 0.01);
     float levels = max(noise_levels, 2.0);
     if (levels < 255.5) v = floor(clamp(v, 0.0, 0.9999) * levels) / (levels - 1.0);
@@ -339,6 +360,20 @@ void main() {
     vec4 base = texture(u_texture, v_uv);
     vec2 pixel = v_uv * u_size - object_center();
     pixel.y = -pixel.y;
+    if (noise_mask != 0) {
+        // YMM4 のノイズ（NoiseEffect） 模様の値だけ薄める 1 で消え 0 で元のまま
+        // 不透明度なら不透明度に、色なら符号化した色に 1 - 値 を掛ける（#177 の探りで
+        // 強さ 100 の乱数が不透明度の平均 0.50、強さ 50 が 0.75、灰 128 の色が 64 になった）
+        // 強さ s が 1 まではノイズ n で 1 - s n、1 を越えると (2 - s)(1 - n) 強さ 120・150・200 で
+        // 不透明度の平均が 0.41・0.25・0（散らばりは平均に比例して縮む）だった 値を s 倍して
+        // 切り詰めると 0.42・0.33・0.25 になり、強い所が消えきらない
+        float n = shaped_noise(noise_raw(pixel - vec2(center_x, center_y), 0.0), 1.0);
+        float s = max(noise_strength, 0.0) * 0.01;
+        float keep = s <= 1.0 ? 1.0 - s * n : max(2.0 - s, 0.0) * (1.0 - n);
+        if (noise_mask == 1) { frag_color = vec4(base.rgb, base.a * keep); return; }
+        frag_color = vec4(to_linear(to_srgb(base.rgb) * keep), base.a);
+        return;
+    }
     vec4 paint = pattern_smooth(pixel);
     float amount = clamp(opacity * 0.01, 0.0, 1.0) * paint.a;
     if (pattern_only) {
@@ -411,6 +446,8 @@ def register_paint_effects() -> None:
                 # 不透明度 0 は「渡していない」印 前の版の保存は線の色を持たないので、
                 # 目印からの近さで塗りの所を決める
                 ColorSpec("keep_color", "目印と一緒に描いた線の色", (0.0, 0.0, 0.0, 0.0)),
+                # 模様を塗らずにノイズの値で薄める（YMM4 の NoiseEffect）
+                SelectSpec("noise_mask", "ノイズで薄める", _NOISE_MASKS, "off"),
                 ValueSpec("stops", "色の数", 2, minimum=1, maximum=MAX_STOPS),
                 *_stop_parameters(),
                 SelectSpec("extend", "端の扱い", _EXTEND, "clamp"),
