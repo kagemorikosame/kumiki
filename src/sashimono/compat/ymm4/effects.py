@@ -571,7 +571,8 @@ def _inout_offset(r: _Reader) -> Effect | None:
         "inout_offset",
         offset_x=r.plain("Value"),
         offset_y=-r.plain("Value2"),
-        offset_z=r.plain("Value3"),
+        # 実物は素の数だが、動く値の形で来ても奥行きの動きを落とさないよう track で読む
+        offset_z=r.track("Value3"),
         **_in_out(r),
     )
 

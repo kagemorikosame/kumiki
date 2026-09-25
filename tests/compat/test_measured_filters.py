@@ -117,16 +117,25 @@ class TestYmm4TextStyles:
         # Border 以外どれも「知らない文字装飾」になり、縁が付かなかった
         report = CompatibilityReport()
         result = map_decorations([], report, size=100.0, style=style, style_colour="#FFFF0000")
-        assert not report.lines()
+        assert not any("文字装飾:" in line for line in report.lines())
         assert _value(result.params["border_width"]) == pytest.approx(width)
 
+    def test_the_sharp_corner_is_recorded(self) -> None:
+        # Sharp の付く縁取りは太さだけ合わせ、角は丸いまま描く 記録が無いと、尖った角が
+        # 丸まったことに互換性レポートで気付けない
+        report = CompatibilityReport()
+        map_decorations([], report, size=100.0, style="SharpBorder")
+        assert any("尖った角: SharpBorder" in line for line in report.lines())
+
     def test_the_shadow_moves_four_pixels(self) -> None:
+        # 前は AviUtl2 の表（0.06）から引いて 6 画素ずれ、影が字から 2 画素離れて太く見えた
         result = map_decorations([], CompatibilityReport(), size=100.0, style="Shadow")
         assert _value(result.params["shadow_x"]) == pytest.approx(4.0)
         # 右下へずれる こちらの Y は上が正
         assert _value(result.params["shadow_y"]) == pytest.approx(-4.0)
 
     def test_the_light_shadow_is_half_as_dark(self) -> None:
+        # 前は ShadowLight を知らない名前として影を付けず、薄い影の字がただの白い字になった
         result = map_decorations(
             [], CompatibilityReport(), size=100.0, style="ShadowLight", style_colour="#FF000000"
         )
@@ -193,6 +202,19 @@ class TestYmm4InOut:
         (effect,) = map_video_effects([entry], report, length=60).effects
         assert not report.lines()
         assert _value(effect.params["offset_z"]) == 100.0
+        # 動く値の形で来ても動きを落とさない 素の数で読むと最初の値で止まる
+        moving = {
+            **entry,
+            "Value3": {
+                "Values": [{"Value": 0.0}, {"Value": 200.0}],
+                "Span": 0.0,
+                "AnimationType": "直線移動",
+            },
+        }
+        (animated_effect,) = map_video_effects([moving], CompatibilityReport(), length=60).effects
+        depth = animated_effect.params["offset_z"]
+        assert isinstance(depth, AnimatedValue)
+        assert depth.at(59) > depth.at(0) + 150.0
         box = _box(draw(_square(100), (effect,)))
         assert box is not None
         # 1024 / (1024 - 100) で 108 前後（YMM4 の奥行き 1000 なら 111）
@@ -292,6 +314,19 @@ class TestYmm4Pen:
         assert centred_points(values, 1280, 720) == [(220.0, -80.0), (420.0, -280.0)]
 
 
+class TestVerticalTextAnchor:
+    def test_a_vertical_text_follows_the_anchor(self, draw: Callable[..., np.ndarray]) -> None:
+        # 縦書きは横の基準と縦の基準を見ずに、いつも塊の真ん中を位置に置いていた
+        # 左・上を基準にしたら、塊の左の端と上の端が位置に来る
+        text = TEXT.create(
+            text="HH", size=60, font="Arial", vertical=True, anchor="left", valign="top"
+        )
+        box = _box(draw(text))
+        assert box is not None
+        assert box[0] >= WIDTH / 2 - 2
+        assert box[1] >= HEIGHT / 2 - 2
+
+
 class TestYmm4TextAnchor:
     def test_the_left_base_point_puts_the_left_edge_on_the_position(
         self, draw: Callable[..., np.ndarray]
@@ -353,8 +388,33 @@ class TestAviUtlDecorations:
         assert _value(params["border_width"]) == pytest.approx(width)
 
     def test_the_shadow_moves_five_pixels(self) -> None:
+        # 前の 0.06 では 6 画素ずれ、AviUtl2 より影が 1 画素字から離れた
         params = decoration_params(DECORATIONS["影付き文字"], 100.0, (0.0, 0.0, 0.0, 1.0))
         assert _value(params["shadow_x"]) == pytest.approx(5.0)
+
+    def test_the_edge_of_a_tall_letter_is_cut_too(self, draw: Callable[..., np.ndarray]) -> None:
+        # 字の形だけを先に切ると、後から付ける縁が枠の外へ広がる 縁も枠で切る
+        text = TEXT.create(
+            text="H<th2>H<th>H",
+            size=100,
+            font="Arial",
+            layout="aviutl",
+            border_width=8,
+            border_color=(1.0, 0.0, 0.0, 1.0),
+        )
+        plain = TEXT.create(
+            text="HHH",
+            size=100,
+            font="Arial",
+            layout="aviutl",
+            border_width=8,
+            border_color=(1.0, 0.0, 0.0, 1.0),
+        )
+        tall, flat = _box(draw(text), 40), _box(draw(plain), 40)
+        assert tall is not None and flat is not None
+        # 枠（高さ 114）で切れる 字の形だけを切ると縁が上下へ 8 ずつ出て 130 になる
+        assert tall[3] - tall[1] <= 116
+        assert flat[3] - flat[1] < tall[3] - tall[1]
 
     def test_a_tall_letter_is_cut_by_the_text_frame(self, draw: Callable[..., np.ndarray]) -> None:
         # AviUtl2 は ``H<th2>H<th>H`` の真ん中の字を文字の枠（高さ 114）の上下で切った
@@ -411,13 +471,16 @@ class TestAviUtlColorCorrection:
         assert tuple(int(v) for v in image[200, 200]) == pytest.approx(expected, abs=4)
 
     def test_the_script_reads_the_same_way(self) -> None:
+        # スクリプトの obj.effect だけ別の写し方をしていたころは、同じ値でもエイリアスと
+        # スクリプトで色が違った（アクリル矩形の板の明るさが変わる）
         (effect,) = script_filter_effects("色調補正", {"明るさ": 135, "輝度": 30})
         assert effect.kind == "color_correct"
         assert _value(effect.params["brightness"]) == 135.0
         assert _value(effect.params["luma"]) == 30.0
 
     def test_the_aviutl1_contrast_is_read(self) -> None:
-        # AviUtl1 の .exa はコントラストを半角で書く
+        # AviUtl1 の .exa はコントラストを半角で書く 読まずにいると、コントラストを上げた
+        # エイリアスが元のままの色で描かれ、読めなかったことも記録にしか残らない
         effect = self._effect(**{"ｺﾝﾄﾗｽﾄ": "150.0"})
         assert _value(effect.params["contrast"]) == 150.0
 
@@ -433,6 +496,7 @@ class TestAviUtlSlantClip:
         return draw(_square(200), (effect,))
 
     def test_zero_width_drops_the_bottom(self, draw: Callable[..., np.ndarray]) -> None:
+        # 幅 0 は線の片側を落とす 幅を帯として読み違えると、線 1 本しか残らない（前の crop_angle）
         assert _box(self._clipped(draw, "0")) == pytest.approx((100, 100, 300, 200), abs=1)
 
     def test_a_positive_width_keeps_a_band(self, draw: Callable[..., np.ndarray]) -> None:
@@ -453,6 +517,16 @@ class TestAviUtlBlurAndBorder:
         image = draw(_square(200), (effect,))
         assert _box(image, 250) == pytest.approx((100, 100, 300, 300), abs=1)
 
+    def test_a_full_blur_still_draws_the_edge(self, draw: Callable[..., np.ndarray]) -> None:
+        # ぼかし 100% は太さを全部ぼかしに回して太さ 0 になる 太さ 0 で何も描かない作りの
+        # ままだと、縁が黙って消える
+        effect = _filter(
+            _entry("縁取り", サイズ="10", ぼかし="100", 縁色="ff0000"), (), CompatibilityReport()
+        )
+        assert effect is not None
+        image = draw(_square(200), (effect,))
+        assert int(image[200, 95, 0]) > 20
+
     def test_the_border_blur_is_a_share_of_its_size(self) -> None:
         # ぼかし 20 の縁（サイズ 10）は外の端から 3 画素かけて落ちた ぼかしは太さの割合
         report = CompatibilityReport()
@@ -465,6 +539,7 @@ class TestAviUtlBlurAndBorder:
 
 class TestAviUtlContents:
     def test_the_framebuffer_becomes_the_screen_copy(self) -> None:
+        # 前は未対応の中身として何も置かず、下の絵に掛けるはずの効果がまるごと消えた
         from sashimono.compat.aviutl.mapping import _content
 
         report = CompatibilityReport()
@@ -476,6 +551,8 @@ class TestAviUtlContents:
         assert not report.lines()
 
     def test_clearing_the_framebuffer_is_recorded(self) -> None:
+        # こちらは下の絵を消せない 記録が無いと、AviUtl2 では消える下の絵が残っていることに
+        # 気付けない
         from sashimono.compat.aviutl.mapping import _content
 
         report = CompatibilityReport()

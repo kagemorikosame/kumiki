@@ -99,6 +99,9 @@ def map_decorations(
         if decoration is None:
             report.note_missing(f"YMM4 の文字装飾: {style}")
         else:
+            if style.startswith("Sharp"):
+                # 太さは合わせたが角は丸いまま 黙って丸めると尖った角が消えたことに気付けない
+                report.note_missing(f"YMM4 の文字装飾の尖った角: {style}（丸い角で描いた）")
             result.params.update(decoration_params(decoration, size, tint))
 
     if not isinstance(decorations, list):

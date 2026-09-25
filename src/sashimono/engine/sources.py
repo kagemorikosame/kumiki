@@ -571,6 +571,10 @@ class _Look:
 _Part = tuple[str, QFont, float, _Look, float, tuple[float, float, float]]
 
 
+#: 見た目 1 つぶんの字 3 つ目は描くときに切る形（変形した字だけ文字の枠 ほかは ``None``）
+_Group = tuple[QPainterPath, "_Look", QPainterPath | None]
+
+
 def _aviutl_lines(
     lines: list[TaggedLine],
     family: str,
@@ -579,7 +583,7 @@ def _aviutl_lines(
     values: dict[str, object],
     centre_x: float,
     centre_y: float,
-) -> tuple[list[tuple[QPainterPath, _Look]], Frame]:
+) -> tuple[list[_Group], Frame]:
     """AviUtl2 の組み方で行を並べ、見た目ごとの字の輪郭と文字の枠を返す
 
     AviUtl2 に描かせて測った決まり（#64 の見本 ``kumiki_p8_t_*``）
@@ -659,9 +663,12 @@ def _aviutl_lines(
     left = centre_x - widest * {"left": 0.0, "right": 1.0}.get(align, 0.5)
     top = centre_y - block_height * _VERTICAL_SHARE.get(str(values.get("valign", "middle")), 0.5)
 
-    paths: dict[_Look, QPainterPath] = {}
+    # 見た目ごとに、そのまま置いた字と変形した字を分けて持つ（:data:`_Group`）
+    paths: dict[tuple[_Look, bool], QPainterPath] = {}
     # 伸ばしたり回したりした字は文字の枠（テキストの入れ物）で切る AviUtl2 の絵は枠の大きさ
     # なので、はみ出した所は描かれない（``H<th2>H`` の真ん中の字が枠の上下で切れた #184）
+    # 切るのは描くとき（:func:`_paint_layers`） 字の形を先に切ると、後から付ける縁と影が
+    # 枠の外へ広がり、切った面にも元の字に無い縁が付く
     frame = QPainterPath()
     frame.addRect(QRectF(left, top, widest, block_height))
     line_top = top
@@ -672,21 +679,22 @@ def _aviutl_lines(
         # 置くと 2 文字目から先が太った分だけ前の字に食い込む
         for part, font, step, look, gap, shape in parts:
             x += gap
-            target = paths.setdefault(look, QPainterPath())
-            if shape == (1.0, 1.0, 0.0):
+            plain = shape == (1.0, 1.0, 0.0)
+            target = paths.setdefault((look, not plain), QPainterPath())
+            if plain:
                 target.addText(QPointF(x, baseline), font, part)
             else:
                 glyph = QPainterPath()
                 glyph.addText(QPointF(x, baseline), font, part)
-                shaped = _shaped(glyph, x + step / 2.0, line_top + pitch / 2.0, shape)
-                target.addPath(shaped.intersected(frame))
+                target.addPath(_shaped(glyph, x + step / 2.0, line_top + pitch / 2.0, shape))
             x += step
         line_top += pitch + after
 
-    groups: list[tuple[QPainterPath, _Look]] = []
-    for look, path in paths.items():
+    groups: list[_Group] = []
+    for (look, shaped), path in paths.items():
         embolden = look.embolden
-        groups.append((_emboldened(path, embolden) if embolden > 0.0 else path, look))
+        drawn = _emboldened(path, embolden) if embolden > 0.0 else path
+        groups.append((drawn, look, frame if shaped else None))
     return groups, (left, top, left + widest, top + block_height)
 
 
@@ -844,8 +852,17 @@ def _draw_vertical_text(
     centre_x = width / 2.0 + float(values.get("pos_x", 0.0))  # type: ignore[arg-type]
     centre_y = height / 2.0 - float(values.get("pos_y", 0.0))  # type: ignore[arg-type]
     tallest = max((len(column) for column in columns), default=0)
-    left = centre_x + column_width * (len(columns) - 1) / 2.0
-    top = centre_y - advance * tallest / 2.0
+    # 塊の基準は横書きと同じ ``anchor`` と ``valign`` 既定（中・中）は塊の真ん中が位置で、
+    # 前の置き方と同じ 見ずにいると、左上を基準にした縦書きも真ん中に置かれる
+    block_width = column_width * len(columns)
+    block_left = centre_x - block_width * _HORIZONTAL_SHARE.get(
+        str(values.get("anchor", "center")), 0.5
+    )
+    # 右端の列の真ん中 列は右から左へ並ぶ
+    left = block_left + block_width - column_width / 2.0
+    top = centre_y - advance * tallest * _VERTICAL_SHARE.get(
+        str(values.get("valign", "middle")), 0.5
+    )
 
     path = QPainterPath()
     for column_index, column in enumerate(columns):
@@ -870,12 +887,12 @@ def _paint_glyphs(
     縦書きでも横書きでも飾りの付け方は同じなので、ここに 1 つだけ置く
     順番は下から影・縁・塗り 入れ替えると縁が影を隠す
     """
-    _paint_layers(painter, [(path, values)], width, height)
+    _paint_layers(painter, [(path, values, None)], width, height)
 
 
 def _paint_groups(
     painter: QPainter,
-    groups: list[tuple[QPainterPath, _Look]],
+    groups: list[_Group],
     values: dict[str, object],
     width: int,
     height: int,
@@ -884,8 +901,8 @@ def _paint_groups(
     _paint_layers(
         painter,
         [
-            (path, _redecorated(_recoloured(values, look.color, look.edge), look))
-            for path, look in groups
+            (path, _redecorated(_recoloured(values, look.color, look.edge), look), clip)
+            for path, look, clip in groups
         ],
         width,
         height,
@@ -929,7 +946,7 @@ def _redecorated(values: dict[str, object], look: _Look) -> dict[str, object]:
 
 def _paint_layers(
     painter: QPainter,
-    layers: list[tuple[QPainterPath, dict[str, object]]],
+    layers: list[tuple[QPainterPath, dict[str, object], QPainterPath | None]],
     width: int,
     height: int,
 ) -> None:
@@ -937,22 +954,41 @@ def _paint_layers(
 
     色が 1 つのときと同じ順にする 色ごとに影・縁・塗りを描き切ると、字が近い所で
     後の色の縁が前の色の塗りに被さり、色を変えただけで前の字が欠ける
+    3 つ目の形があれば、影・縁・塗りのどれもその内側だけに描く（変形した字を文字の枠で切る）
     """
-    for path, look in layers:
+    for path, look, clip in layers:
         shadow = _shadow_layer(path, look, painter)
         if shadow is not None:
             # 影の面は絵の画素で作ってある 描く座標の縮め方を外してから重ねる
             # 外さないと、画質を落としたプレビューで影の面がもう 1 度縮む
+            # 切る形は縮め方を外す前に当てる（当てたときの座標で持たれる）
             painter.save()
+            if clip is not None:
+                painter.setClipPath(clip)
             painter.resetTransform()
             painter.drawImage(0, 0, shadow)
             painter.restore()
-    for path, look in layers:
+    for path, look, clip in layers:
         border_width = float(look.get("border_width", 0.0))  # type: ignore[arg-type]
         if border_width > 0:
-            painter.fillPath(_stroke(path, border_width), _color(look.get("border_color")))
-    for path, look in layers:
-        painter.fillPath(path, _color(look.get("color")))
+            _fill_within(
+                painter, _stroke(path, border_width), _color(look.get("border_color")), clip
+            )
+    for path, look, clip in layers:
+        _fill_within(painter, path, _color(look.get("color")), clip)
+
+
+def _fill_within(
+    painter: QPainter, path: QPainterPath, colour: QColor, clip: QPainterPath | None
+) -> None:
+    """``path`` を塗る ``clip`` があればその内側だけ"""
+    if clip is None:
+        painter.fillPath(path, colour)
+        return
+    painter.save()
+    painter.setClipPath(clip)
+    painter.fillPath(path, colour)
+    painter.restore()
 
 
 def _recoloured(

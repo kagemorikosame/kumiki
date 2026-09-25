@@ -524,7 +524,8 @@ vec4 edge_color() {
 
 void main() {
     vec4 base = texture(u_texture, v_uv);
-    if (width <= 0.0) {
+    // 太さ 0 でもぼかしがあれば縁を描く（AviUtl の 縁取り の ぼかし 100% は太さを全部ぼかしに回す）
+    if (width <= 0.0 && blur <= 0.0) {
         // 縁だけで縁が無ければ何も残らない 元の絵を返すと、太さを 0 へ動かした所で
         // 消えていた塗りが急に現れる
         frag_color = outline_only ? vec4(0.0) : base;
