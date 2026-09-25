@@ -23,6 +23,7 @@ import pytest
 from sashimono.engine.decode import probe as probe_module
 from sashimono.engine.decode.audio import AudioDecoder
 from sashimono.engine.decode.probe import (
+    PROBE_CACHE_SIZE,
     ROTATION_PACKET_LIMIT,
     clear_probe_cache,
     forget_probe,
@@ -288,4 +289,19 @@ def test_reimporting_does_not_take_a_probe_started_before_forgetting(
         old.result(timeout=10)
     # 古い調べの結果は覚えていない 残っているのは読み込み直しの 1 つだけ
     kept = [key for key in probe_module._cache if key[0] == sample_av.path]
-    assert [key[2] for key in kept] == [probe_module._generation[sample_av.path]]
+    assert len(kept) == 1
+    # 調べ終われば世代は残さない 扱った場所の数だけ増え続けない
+    assert sample_av.path not in probe_module._generation
+
+
+def test_forgetting_many_files_leaves_no_generations(tmp_path: Path) -> None:
+    # 捨てるたびに場所ごとの世代を残すと、覚えた結果が追い出された後も、扱った場所の数だけ
+    # 増え続ける（#227 の Qodo の指摘） 調べている最中の物が無ければ世代は要らない
+    for number in range(PROBE_CACHE_SIZE + 8):
+        path = tmp_path / f"{number}.wav"
+        _wav(path, channels=1, rate=8000)
+        probe_media(path)
+        forget_probe(path)
+        probe_media(path)
+    assert probe_module._generation == {}
+    assert len(probe_module._cache) <= PROBE_CACHE_SIZE

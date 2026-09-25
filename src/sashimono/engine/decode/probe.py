@@ -83,12 +83,14 @@ def forget_probe(path: Path) -> None:
     """``path`` について覚えている結果を捨てる 素材を読み込む操作の前に呼ぶ"""
     target = Path(path)
     with _lock:
-        # 世代を進める いま調べている最中の古い調べは、終わっても覚えさせず、これから
-        # 読み込む側もそれを待たない 待つと、捨てる前に始まった調べの結果を受け取り、
-        # その結果が捨てた後に覚え直される
-        _generation[target] = _generation.get(target, 0) + 1
         for key in [key for key in _cache if key[0] == target]:
             del _cache[key]
+        # 調べている最中の物があれば世代を進める 古い調べは終わっても覚えさせず、これから
+        # 読み込む側もそれを待たない 待つと、捨てる前に始まった調べの結果を受け取り、
+        # その結果が捨てた後に覚え直される 調べている物が無ければ、覚え直される物も
+        # 待たされる物も無いので世代は要らない
+        if any(key[0] == target for key in _pending):
+            _generation[target] = _generation.get(target, 0) + 1
 
 
 def clear_probe_cache() -> None:
@@ -97,14 +99,17 @@ def clear_probe_cache() -> None:
         _cache.clear()
 
 
-#: 鍵 場所・中身の印・世代（:func:`forget_probe` で進む）
-_Key = tuple[Path, tuple[int, ...], int]
+#: 覚えた結果の鍵 場所・中身の印
+_Key = tuple[Path, tuple[int, ...]]
+#: 調べている最中の印の鍵 場所・中身の印・世代（:func:`forget_probe` で進む）
+_PendingKey = tuple[Path, tuple[int, ...], int]
 
 #: 調べた結果 古い物から捨てる
 _cache: OrderedDict[_Key, _Facts] = OrderedDict()
 #: いま調べている素材 同じ素材を頼んだほかのスレッドは、これが終わるのを待つ
-_pending: dict[_Key, threading.Event] = {}
-#: 場所ごとの世代 捨てた回数
+_pending: dict[_PendingKey, threading.Event] = {}
+#: 調べている最中の物がある場所だけの世代 無い場所は 0 とみなす
+#: 調べ終わってその場所に調べている物が無くなれば消すので、扱った場所の数だけ増え続けない
 _generation: dict[Path, int] = {}
 _lock = threading.Lock()
 
@@ -115,38 +120,52 @@ def _facts(path: Path, identity: tuple[int, ...]) -> _Facts:
     ``functools.lru_cache`` は同じ鍵の同時の呼び出しを待ち合わせず、読み込みの 4 本の
     スレッドが同じ素材を 2 重 3 重に開く 調べている間は印を立て、ほかは待つ
     開けなかった素材は覚えない 待っていた側は自分で開き直して、同じ理由の例外を受け取る
-    鍵には世代を入れる :func:`forget_probe` の後に頼んだ側は、捨てる前に始まった調べを
-    待たずに自分で開き、捨てる前に始まった調べの結果は覚えない
+    調べている最中の印には世代を入れる :func:`forget_probe` の後に頼んだ側は、捨てる前に
+    始まった調べを待たずに自分で開き、捨てる前に始まった調べの結果は覚えない
     """
+    key = (path, identity)
     while True:
         with _lock:
-            key = (path, identity, _generation.get(path, 0))
             found = _cache.get(key)
             if found is not None:
                 _cache.move_to_end(key)
                 return found
-            waiting = _pending.get(key)
+            mine = (path, identity, _generation.get(path, 0))
+            waiting = _pending.get(mine)
             if waiting is None:
                 done = threading.Event()
-                _pending[key] = done
+                _pending[mine] = done
                 break
         waiting.wait()
     try:
         facts = _read_facts(path)
     except BaseException:
         with _lock:
-            del _pending[key]
+            _finish(mine)
         done.set()
         raise
     with _lock:
         # 調べている間に捨てられていたら覚えない 読み込み直した側の結果だけを残す
-        if _generation.get(path, 0) == key[2]:
+        if _generation.get(path, 0) == mine[2]:
             _cache[key] = facts
             while len(_cache) > PROBE_CACHE_SIZE:
                 _cache.popitem(last=False)
-        del _pending[key]
+        _finish(mine)
     done.set()
     return facts
+
+
+def _finish(mine: _PendingKey) -> None:
+    """調べ終わった印を外す その場所に調べている物が残っていなければ世代も消す
+
+    ``_lock`` を持って呼ぶ 世代は、捨てる前に始まった調べを見分けるためだけの物で、
+    調べている物が無くなれば見分ける相手がいない 消して 0 へ戻しても、覚えた結果の鍵に
+    世代は入っていないので、覚えた結果は外れない
+    """
+    del _pending[mine]
+    path = mine[0]
+    if not any(key[0] == path for key in _pending):
+        _generation.pop(path, None)
 
 
 #: 覚えた結果を使ってよいかを見るために読む、ファイルの頭と尻の長さ（バイト）
