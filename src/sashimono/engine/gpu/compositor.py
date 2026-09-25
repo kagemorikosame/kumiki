@@ -24,6 +24,7 @@ import numpy as np
 from OpenGL import GL
 
 from sashimono.effects.blending import BLEND_FUNCTIONS, blend_index
+from sashimono.effects.sampling import AREA_SAMPLING
 from sashimono.engine.gpu.glutil import (
     FULL_RECT,
     IDENTITY,
@@ -71,11 +72,13 @@ uniform bool u_premultiplied;
 uniform bool u_encoded;
 """
     + _SRGB_FUNCTIONS
+    + AREA_SAMPLING
     + """
 void main() {
-    // sRGB テクスチャなので、この時点で値はリニア
-    vec4 color = texture(u_texture, v_uv);
-    if (u_premultiplied && color.a > 0.0001) color.rgb /= color.a;
+    // sRGB テクスチャなので、この時点で値はリニア 縮めて置くときは事前乗算で平均する
+    // GL の補間のままだと、透明な所に残った色が縁へにじむ（#179）
+    vec4 color = area_premul(u_texture, v_uv, dFdx(v_uv), dFdy(v_uv), u_premultiplied);
+    color = color.a > 0.0001 ? vec4(color.rgb / color.a, color.a) : vec4(0.0);
     // 事前乗算の絵はキャンバスの写しで、もう符号化されている もう 1 度掛けると白っぽく浮く
     if (u_encoded && !u_premultiplied) color.rgb = srgb_encode(color.rgb);
     frag_color = vec4(color.rgb, color.a * u_opacity);
@@ -169,6 +172,7 @@ uniform bool u_encoded;
 """
     + _SRGB_FUNCTIONS
     + BLEND_FUNCTIONS
+    + AREA_SAMPLING
     + """
 // 混ぜる式は符号化した値（sRGB）で計算する AviUtl も YMM4 もそうしている
 // sRGB で重ねるキャンバスでは、下の絵も上の絵ももう符号化されている
@@ -179,11 +183,13 @@ vec3 blend(vec3 below, vec3 above) {
 }
 
 void main() {
-    vec4 source = texture(u_texture, v_uv);
     // 置き換えで使う、事前乗算のままの値 ストレートへ戻してからもう 1 度掛けると、
     // 戻すのを飛ばすごく薄い所（0.0001 以下）で不透明度が 2 回掛かって暗くなる
-    vec4 sampled = source;
-    if (u_premultiplied && source.a > 0.0001) source.rgb /= source.a;
+    // 縮めて置くときは事前乗算で平均する（#179）
+    vec4 sampled = area_premul(u_texture, v_uv, dFdx(v_uv), dFdy(v_uv), u_premultiplied);
+    vec4 source = sampled.a > 0.0001
+        ? vec4(sampled.rgb / sampled.a, sampled.a)
+        : vec4(0.0, 0.0, 0.0, sampled.a);
     if (u_encoded && !u_premultiplied) source.rgb = srgb_encode(source.rgb);
     float above_alpha = clamp(source.a * u_opacity, 0.0, 1.0);
     vec4 backdrop = texture(u_backdrop, gl_FragCoord.xy / u_canvas);
@@ -209,6 +215,8 @@ void main() {
         // キャンバスに従う（プロジェクトの重ね合わせの設定） 事前乗算のまま混ぜないと、
         // 透明な所と混ぜたときに色だけが残って縁が明るく浮く
         float amount = clamp(u_opacity, 0.0, 1.0);
+        // 事前乗算で届いた絵はキャンバスの写しで、キャンバスと同じ色の空間にある 素材（リニア）は
+        // sRGB のキャンバスなら上で符号化した色を使う sampled のままだとリニアの値が混ざり暗く沈む
         vec4 upper = u_premultiplied ? sampled : vec4(source.rgb * source.a, source.a);
         frag_color = mix(backdrop, upper, amount);
         return;
