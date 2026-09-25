@@ -126,7 +126,7 @@ class ScriptStage:
     def run_scene_change(
         self,
         clip: Clip,
-        effect: Effect,
+        effects: tuple[Effect, ...],
         before: np.ndarray,
         after: np.ndarray,
         *,
@@ -134,7 +134,10 @@ class ScriptStage:
         fps: float,
         progress: float,
     ) -> tuple[DrawCall, ...] | None:
-        """シーンチェンジのスクリプトを走らせる 走らなければ ``None``
+        """シーンチェンジのスクリプトを積んだ順に走らせる どれかが走らなければ ``None``
+
+        何本も積んだときは、アニメーション効果と同じく 1 つの ``obj`` を順に渡していく
+        （前のスクリプトが削った絵に、次のスクリプトがさらに手を入れる）
 
         **前の場面をオブジェクト、後の場面をフレームバッファ**に入れて走らせる 返した描画を
         フレームバッファ（後の場面）の上へ重ねた物がその時刻の絵になる 進み具合（0〜1）は
@@ -150,7 +153,7 @@ class ScriptStage:
         """
         draws, failed = self._run(
             clip,
-            (effect,),
+            effects,
             before,
             frame=frame,
             fps=fps,

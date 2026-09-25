@@ -769,12 +769,13 @@ class FrameRenderer:
 
         # AviUtl のシーンチェンジのスクリプトは前の場面に掛ける効果ではなく、切り替えそのもの
         # 前の場面の効果に混ぜると、場面へ掛けられないスクリプトとして数えられて何も起きない
-        scene_change = next(
-            (e for e in clip.effects if e.enabled and is_scene_change(e.kind)), None
-        )
+        # 積んだ順にすべて走らせる 先頭の 1 本だけにすると、2 本目以降が描かれず記録にも残らない
+        # 外すのは走らせる物（有効な物）だけ 切った物は前の場面の列に残し、ほかの切った効果と
+        # 同じく何もしない
+        scene_changes = tuple(e for e in clip.effects if e.enabled and is_scene_change(e.kind))
         before_image = self._transition_scene(
             before,
-            tuple(e for e in clip.effects if not is_scene_change(e.kind)),
+            tuple(e for e in clip.effects if not any(e is s for s in scene_changes)),
             "before",
             clip,
             local_frame,
@@ -786,8 +787,8 @@ class FrameRenderer:
         )
 
         outer.begin((0.0, 0.0, 0.0, 0.0))
-        if scene_change is not None and self._draw_scene_change(
-            scene_change, before_image, after_image, clip, local_frame, rate, progress
+        if scene_changes and self._draw_scene_change(
+            scene_changes, before_image, after_image, clip, local_frame, rate, progress
         ):
             return
         direction = (math.cos(math.radians(degrees)), math.sin(math.radians(degrees)))
@@ -840,7 +841,7 @@ class FrameRenderer:
 
     def _draw_scene_change(
         self,
-        effect: Effect,
+        effects: tuple[Effect, ...],
         before_image: Compositor,
         after_image: Compositor,
         clip: Clip,
@@ -863,7 +864,7 @@ class FrameRenderer:
             return False
         calls = stage.run_scene_change(
             clip,
-            effect,
+            effects,
             self._screen_picture(before_image),
             self._screen_picture(after_image),
             frame=local_frame,
@@ -873,10 +874,14 @@ class FrameRenderer:
         if calls is None:
             # ffi が要るスクリプト（sigma のディザ 4 本）はここへ来る 利用者の決定で ffi は
             # 許さない（配布スクリプトから任意のメモリや DLL に触れられるため） 何が走らずに
-            # 素通しになったのかを、スクリプトの名前で数えて残す
-            entry = script_catalog().get(effect.kind)
-            label = entry.label if entry is not None else effect.kind
-            global_report.note_missing(f"シーンチェンジのスクリプトが走らない（素通し）: {label}")
+            # 素通しになったのかを、スクリプトの名前で数えて残す 何本も積んだときは
+            # どれが落ちたかを切り分けていないので、素通しにした物をすべて数える
+            for effect in effects:
+                entry = script_catalog().get(effect.kind)
+                label = entry.label if entry is not None else effect.kind
+                global_report.note_missing(
+                    f"シーンチェンジのスクリプトが走らない（素通し）: {label}"
+                )
             return False
         outer = self._compositor
         full = Placement(0.0, 0.0, float(outer.width), float(outer.height))
@@ -917,7 +922,9 @@ class FrameRenderer:
         別の合成先へ描き写してから返す
         """
         gpu_effects, scripts = split_effects(effects)
-        if scripts:
+        # 切ったスクリプトは描かないので数えない 数えると、切ったシーンチェンジ（前の場面の
+        # 列に残る）まで場面へ掛けられない穴として出る
+        if any(script.enabled for script in scripts):
             global_report.note_missing("場面切り替えに積んだ AviUtl スクリプト")
         if not self._effects.has_work(gpu_effects):
             return image

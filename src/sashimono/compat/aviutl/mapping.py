@@ -1271,6 +1271,10 @@ def _scene_change(entry: ExoEntry, log: CompatibilityReport) -> GeneratedSource:
         # 前後を入れ替えるのか進み方を逆にするのかを確かめていない 配布物 4 本はどれも 0
         log.note_missing("シーンチェンジの反転")
     style = _BUILT_IN_SCENE_CHANGES.get(name)
+    if style is not None and not _is_off(entry.params.get("調整", "")):
+        # 組み込みの 調整 の意味（クロスフェードなら何が変わるのか）は確かめておらず、
+        # 写し先の切り替え方にも当てる欄が無い 黙って捨てると違う切り替わり方に気付けない
+        log.note_missing(f"シーンチェンジの調整: {name}")
     if style is None:
         style = "switch"
         if not name:
