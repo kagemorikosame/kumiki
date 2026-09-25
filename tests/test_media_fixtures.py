@@ -16,7 +16,12 @@ from typing import Any
 
 import pytest
 
-from tests.media_fixtures import ENCODER_LIST_TIMEOUT, libx264_available, make_sample
+from tests.media_fixtures import (
+    ENCODER_LIST_TIMEOUT,
+    encoder_available,
+    libx264_available,
+    make_sample,
+)
 
 WITH_X264 = """Encoders:
  V..... libx264              libx264 H.264 / AVC / MPEG-4 AVC
@@ -34,9 +39,9 @@ ONLY_IN_THE_DESCRIPTION = """Encoders:
 @pytest.fixture(autouse=True)
 def forget_the_answer() -> Iterator[None]:
     """覚えた判定を試験ごとに捨てる 覚えたままだと隣の試験へ漏れる"""
-    libx264_available.cache_clear()
+    encoder_available.cache_clear()
     yield
-    libx264_available.cache_clear()
+    encoder_available.cache_clear()
 
 
 def fake_ffmpeg(

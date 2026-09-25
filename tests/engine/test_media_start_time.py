@@ -17,6 +17,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import av
 import numpy as np
 import pytest
 
@@ -173,6 +174,8 @@ def _stream(start: Fraction | None, length: Fraction, base: Fraction) -> Any:
         start_time=None if start is None else int(start / base),
         duration=int(length / base),
         time_base=base,
+        # 印の無い普通の道 カバー画像（attached_pic）は映像に数えないので、解析が印を見る
+        disposition=av.stream.Disposition(0),
     )
 
 

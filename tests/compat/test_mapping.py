@@ -6,14 +6,31 @@
 
 from __future__ import annotations
 
+from fractions import Fraction
+from pathlib import Path
+
 import pytest
 
 from sashimono.compat.aviutl.encoding import encode_utf16_hex
 from sashimono.compat.aviutl.exo import parse_exo
-from sashimono.compat.aviutl.mapping import MappedObject, map_exo, map_object, media_paths
+from sashimono.compat.aviutl.mapping import (
+    SILENT_SOUND,
+    MappedObject,
+    map_exo,
+    map_object,
+    media_paths,
+)
 from sashimono.compat.aviutl.report import CompatibilityReport
-from sashimono.core.commands import AddClip
-from sashimono.core.model import MediaId, Project, ProjectSettings
+from sashimono.core.commands import AddClip, AddMedia
+from sashimono.core.model import (
+    AudioStreamInfo,
+    MediaId,
+    MediaItem,
+    Project,
+    ProjectSettings,
+    TrackKind,
+    VideoStreamInfo,
+)
 from sashimono.core.timebase import FrameRate
 
 RATE = FrameRate(30)
@@ -263,3 +280,101 @@ class TestMediaFiles:
         commands = map_exo(exo, project, media={MEDIA_PATH: media}, report=CompatibilityReport())
         placed = [command.clip for command in commands if isinstance(command, AddClip)]
         assert [clip.media_id for clip in placed] == [media]
+
+
+def _media_item(*, video: bool, audio_index: int | None) -> MediaItem:
+    """``.exo`` から指す素材 映像は 0 番、音は ``audio_index`` 番"""
+    return MediaItem(
+        path=Path(MEDIA_PATH),
+        duration=Fraction(2),
+        video_streams=(
+            VideoStreamInfo(
+                index=0,
+                width=64,
+                height=64,
+                frame_rate=RATE,
+                time_base=Fraction(1, 30),
+                codec="h264",
+                pixel_format="yuv420p",
+            ),
+        )
+        if video
+        else (),
+        audio_streams=()
+        if audio_index is None
+        else (
+            AudioStreamInfo(
+                index=audio_index,
+                sample_rate=48000,
+                channels=2,
+                time_base=Fraction(1, 48000),
+                codec="aac",
+            ),
+        ),
+    )
+
+
+def _import_exo(name: str, item: MediaItem, report: CompatibilityReport | None = None) -> Project:
+    """UI の読み込みと同じ順で、素材の登録と配置を 1 つずつ当てる"""
+    exo = parse_exo(second_generation(name, MEDIA_PATH))
+    project = AddMedia(item).apply(Project.create(ProjectSettings(frame_rate=RATE)))
+    commands = map_exo(
+        exo,
+        project,
+        media={MEDIA_PATH: item.id},
+        items=(item,),
+        report=report if report is not None else CompatibilityReport(),
+    )
+    for command in commands:
+        project = command.apply(project)
+    return project
+
+
+class TestSoundFiles:
+    """分ける方式で ``.exo`` の音声ファイルを置く先"""
+
+    def test_a_sound_only_file_goes_on_an_audio_track(self) -> None:
+        """音だけの素材を指す音声ファイルは音声トラックへ置く
+
+        映像トラックへ置くと ``AddClip`` が断り、``.exo`` の読み込み全体が失敗する
+        """
+        project = _import_exo("音声ファイル", _media_item(video=False, audio_index=0))
+
+        (track,) = project.timeline.tracks
+        assert track.kind is TrackKind.AUDIO
+        assert len(track.clips) == 1
+
+    def test_a_sound_file_pointing_at_a_video_plays_its_sound(self) -> None:
+        """動画を指す音声ファイル（AviUtl が動画の音を書く形）は音声トラックで鳴らす
+
+        映像トラックへ置くと動画がもう 1 枚描かれ、音は鳴らない 音のストリームの番号を
+        持たせないと 0 番（映像）を音として読みに行く
+        """
+        project = _import_exo("音声ファイル", _media_item(video=True, audio_index=1))
+
+        (track,) = project.timeline.tracks
+        assert track.kind is TrackKind.AUDIO
+        (clip,) = track.clips
+        assert clip.stream_index == 1
+        # 音の欄だけを持つ 描画の欄があると、設定画面に効かない位置や反転が並ぶ
+        assert [effect.kind for effect in clip.effects] == ["audio_volume", "audio_fade"]
+
+    def test_a_sound_file_pointing_at_a_silent_video_is_left_out_and_counted(self) -> None:
+        """音の無い素材を指す音声ファイルは置かず、互換性の記録に数える
+
+        音声トラックへ置くと ``AddClip`` が断って読み込み全体が失敗し、映像トラックへ
+        置くと動画が描かれる 黙って落とすと、読み込んだ数が合わない理由を追えない
+        """
+        report = CompatibilityReport()
+        project = _import_exo("音声ファイル", _media_item(video=True, audio_index=None), report)
+
+        assert all(not track.clips for track in project.timeline.tracks)
+        assert report.missing[SILENT_SOUND] == 1
+
+    def test_a_video_file_stays_on_a_video_track(self) -> None:
+        # 音声ファイルを分けた道で、動画ファイルまで音声トラックへ持っていかない
+        project = _import_exo("動画ファイル", _media_item(video=True, audio_index=1))
+
+        (track,) = project.timeline.tracks
+        assert track.kind is TrackKind.VIDEO
+        assert len(track.clips) == 1

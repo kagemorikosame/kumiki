@@ -570,6 +570,11 @@ def _media_file(entry: ExoEntry) -> str:
     return entry.value("ファイル", "file").strip()
 
 
+#: 音の無い素材を指すので置かなかった音声ファイルの記録 テンプレートの配置
+#: （:func:`~sashimono.compat.catalog.place`）と同じ行に数える
+SILENT_SOUND = "音の無い素材を指す音声ファイル（置かずに飛ばした）"
+
+
 def map_exo(
     exo: ExoFile,
     project: Project,
@@ -591,29 +596,50 @@ def map_exo(
     AviUtl は動画の音を別の 音声ファイル として書くので、持たせると二重に鳴る
     ``items`` はこれから登録する素材 鳴らす音の番号を素材から引くのに使う
     （登録済みの素材はプロジェクトから引く）
+
+    分ける方式では 音声ファイル を音声トラックへ置く（テンプレートを置く
+    :func:`~sashimono.compat.catalog.place` と同じ） 映像トラックへ置くと、音だけの素材は
+    ``AddClip`` に断られて読み込み全体が失敗し、動画を指すものは動画がもう 1 枚描かれる
     """
+    # catalog はこのモジュールを読み込むので、頭で読むと輪になる
+    from sashimono.compat.catalog import _sound_tracks_for
+
     log = report if report is not None else global_report
-    mapped = [map_object(obj, project.rate, report=log) for obj in exo.objects]
-    mapped = [item for item in mapped if item is not None]
+    written = [map_object(obj, project.rate, report=log) for obj in exo.objects]
+    known = media or {}
+    mixed = places_mixed(project)
+    library = {item.id: item for item in (*project.media, *items)}
+
+    def content(item: MappedObject) -> MediaItem | None:
+        media_id = known.get(item.media_path) if item.media_path else None
+        return library.get(media_id) if media_id is not None else None
+
+    def silent(item: MappedObject) -> bool:
+        # 分ける方式で音の無い素材を指す音声ファイルは、元のソフトでも何も鳴らさない
+        # 音声トラックへ置くと断られる（混合のレイヤーは絵を隠して鳴らさずに置ける）
+        # 黙って落とすと、読み込んだ数が合わない理由を追えないので数えて残す
+        linked = content(item) if not mixed and _heard(item) else None
+        if linked is None or linked.audio_streams:
+            return False
+        log.note_missing(SILENT_SOUND)
+        return True
+
+    mapped = [item for item in written if item is not None and not silent(item)]
     if not mapped:
         return []
 
     commands: list[Command] = []
-    mixed = places_mixed(project)
-    layers = {item.layer for item in mapped if item is not None}
-    drawn = {item.layer for item in mapped if item is not None and item.kind != "音声ファイル"}
-    tracks = (
-        layer_tracks(project, layers, commands, heard_only=layers - drawn)
-        if mixed
-        else _tracks_for(project, layers, commands)
-    )
-    library = {item.id: item for item in (*project.media, *items)}
+    layers = {item.layer for item in mapped}
+    drawn = {item.layer for item in mapped if not _heard(item)}
+    if mixed:
+        tracks = layer_tracks(project, layers, commands, heard_only=layers - drawn)
+    else:
+        # 分ける方式の音声ファイルは音声トラックへ置くので、映像トラックは作らない
+        tracks = _tracks_for(project, drawn, commands) if drawn else {}
 
-    known = media or {}
+    placements: list[tuple[MappedObject, Clip]] = []
     for item in mapped:
-        if item is None:  # pragma: no cover - 直前で除いている
-            continue
-        track = tracks[item.layer]
+        linked = content(item)
         placed = Clip(
             timeline_start=item.clip.timeline_start + at_frame,
             duration=item.clip.duration,
@@ -629,11 +655,10 @@ def map_exo(
         # 素材を置いたときと同じ欄を持たせる 標準描画 と 音声再生 から写した物は印が
         # 付いているので、既定のままで写さなかった欄だけが足される
         # 中身の無いエイリアス（効果だけ）は置いても何も映らないので、欄も持たせない
-        sound = item.kind == "音声ファイル"
+        sound = _heard(item)
         picture = not sound and item.kind != "effects" and takes_picture_items(placed)
         placed = with_fixed_items(placed, picture=picture, sound=sound)
         if mixed and sound:
-            linked = library.get(placed.media_id) if placed.media_id is not None else None
             stream = heard_stream(linked, 0, log)
             placed = replace(
                 placed,
@@ -641,8 +666,29 @@ def map_exo(
                 audio_stream=stream,
                 stream_index=placed.stream_index if stream is None else stream,
             )
-        commands.append(AddClip(track.id, placed))
+        elif sound and linked is not None:
+            # 動画を指すときに 0 番のまま鳴らすと、映像のストリームを音として読みに行く
+            placed = replace(placed, stream_index=linked.audio_streams[0].index)
+        placements.append((item, placed))
+
+    # 分ける方式の音声トラックは重なりを見て空いている所を探す 映像と同じくレイヤー番号を
+    # そのまま番号にすると、10 段目の効果音のために音声トラックを 10 本作ることになる
+    heard = (
+        {}
+        if mixed
+        else _sound_tracks_for(
+            project, [(item, clip) for item, clip in placements if _heard(item)], commands
+        )
+    )
+    for item, clip in placements:
+        track = heard[id(clip)] if not mixed and _heard(item) else tracks[item.layer]
+        commands.append(AddClip(track.id, clip))
     return commands
+
+
+def _heard(item: MappedObject) -> bool:
+    """音声トラックへ置くものか 音声ファイルは指す素材に映像があっても音だけを使う"""
+    return item.kind == "音声ファイル"
 
 
 def map_object(

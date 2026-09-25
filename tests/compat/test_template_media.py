@@ -18,6 +18,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from sashimono.compat.aviutl.mapping import SILENT_SOUND
 from sashimono.compat.aviutl.report import CompatibilityReport
 from sashimono.compat.catalog import Probe, gather_media, place
 from sashimono.compat.mapped import MappedObject
@@ -755,3 +756,85 @@ def test_a_late_starting_file_stops_on_its_last_frame(
     assert before is not None
     assert not np.array_equal(before, last)
     assert np.array_equal(held, last)
+
+
+def _sound_second(path: Path) -> MediaItem | None:
+    """映像が 0 番、音が 1 番の動画 実際の .mp4 はたいていこの並び"""
+    (audio,) = sound(path).audio_streams
+    return replace(movie(path), audio_streams=(replace(audio, index=1),))
+
+
+def test_an_audio_object_pointing_at_a_video_is_heard_not_drawn(tmp_path: Path) -> None:
+    """動画を指す「音声ファイル」は、音声トラックで素材の音を鳴らす
+
+    AviUtl は動画の音の半分を、同じ .mp4 を指す音声ファイルのオブジェクトとして書く
+    YMM4 の音声アイテムも動画を指せる 素材に映像があるかどうかで決めると映像トラックへ
+    置かれ、動画がもう 1 枚重なって描かれ、音はどこからも鳴らない
+    """
+    movie_file = tmp_path / "映像.mp4"
+    movie_file.write_bytes(b"")
+    objects = [
+        media_object(movie_file, "動画ファイル", layer=1),
+        media_object(movie_file, "音声ファイル", layer=2),
+    ]
+    project = put(objects, Project.create(), _sound_second)
+
+    (picture,) = clips_of(project, TrackKind.VIDEO)
+    (heard,) = clips_of(project, TrackKind.AUDIO)
+    assert picture.media_id == heard.media_id == project.media[0].id
+    # 0 番のまま鳴らすと、映像のストリームを音として読みに行く
+    assert heard.stream_index == 1
+    # 音のクリップは描画の欄を持たない 持つと設定画面に効かない位置や反転が並ぶ
+    assert [effect.kind for effect in heard.effects] == ["audio_volume", "audio_fade"]
+
+
+def test_an_audio_object_pointing_at_a_silent_video_is_left_out(tmp_path: Path) -> None:
+    """音の無い動画を指す「音声ファイル」は置かない
+
+    元のソフトでも何も鳴らず何も描かない 音声トラックへ置くと ``AddClip`` が断って
+    テンプレート全体が置けなくなり、映像トラックへ置くと動画が描かれてしまう
+    """
+    silent = tmp_path / "無音.mp4"
+    silent.write_bytes(b"")
+
+    def no_sound(path: Path) -> MediaItem | None:
+        return replace(movie(path), audio_streams=())
+
+    objects = [media_object(silent, "音声ファイル", layer=2)] * 2
+    report = CompatibilityReport()
+    project = Project.create()
+    plan = gather_media(objects, project, no_sound)
+    placed = place(objects, project, media=plan.media, report=report)
+    project = apply(project, [*plan.commands, *placed])
+
+    assert clips_of(project, TrackKind.VIDEO) == []
+    assert clips_of(project, TrackKind.AUDIO) == []
+    # 黙って落とすと読み込んだ数が合わない理由を追えない 落とした数だけ数える
+    assert report.missing[SILENT_SOUND] == 2
+
+
+def test_a_left_out_audio_object_does_not_push_the_rest_back(tmp_path: Path) -> None:
+    """置かない音声ファイルが一番早くても、残りは指定した位置から始まる
+
+    頭を揃える基準に落とす物まで入れると、10 フレーム後ろにある画像が
+    ``at_frame`` ではなく 10 フレーム後ろへ置かれる
+    """
+    silent = tmp_path / "無音.mp4"
+    silent.write_bytes(b"")
+    picture = tmp_path / "絵.png"
+    picture.write_bytes(b"")
+
+    def probe(path: Path) -> MediaItem | None:
+        if path.suffix == ".png":
+            return still(path)
+        return replace(movie(path), audio_streams=())
+
+    objects = [
+        media_object(silent, "音声ファイル", layer=2, start=0),
+        media_object(picture, "画像ファイル", layer=1, start=10),
+    ]
+    project = put(objects, Project.create(), probe, at_frame=30)
+
+    (clip,) = clips_of(project, TrackKind.VIDEO)
+    assert clip.timeline_start == 30
+    assert clips_of(project, TrackKind.AUDIO) == []
