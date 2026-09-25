@@ -304,15 +304,41 @@ float blurred_value(float measure, float width) {
     return sum / rings;
 }
 
-// ぼかしのある時に、合成の画素でぼかした値を補うだけで足りる割合
-// 縁の坂（太さとぼかしの広がり）が合成の画素 6 つより狭いと、補うと坂が均されて
-// 緩む所が内へずれる 12 より広ければ補うだけの方が合う 縁を直線と見る値は、上下の縁や
-// 角をまたぐ大きなぼかしで折れ目が出て、補っても消えない 間はなめらかに混ぜて、
-// ぼかしを動かした時に光り方が跳ねないようにする
-float coarse_share() {
+// ぼかしのある時の縁の坂の広さ（太さとぼかしの広がり 合成の画素）
+float blurred_slope() {
     float sigma = max(blur / u_pixel_scale * 0.5, 0.5);
-    float slope = (fine_width() + 2.5 * sigma) * u_pixel_scale;
-    return clamp((slope - 6.0) / 6.0, 0.0, 1.0);
+    return (fine_width() + 2.5 * sigma) * u_pixel_scale;
+}
+
+// 坂がこれより広いと、書き出しの画素を思い描かずに前の描き方で描く（draw_mode）
+const float LEGACY_SLOPE = 9.0;
+
+// ぼかしのある時に、合成の画素でぼかした値を補うだけで足りる割合
+// 坂が合成の画素 3 つより狭いと、補うと坂が均されて緩む所が内へずれる 広いほど補うだけの
+// 方が合う 縁を直線と見る値は、上下の縁や角をまたぐぼかしで折れ目が出て、補っても
+// 消えない 坂の広さでなめらかに混ぜて、ぼかしを動かした時に光り方が跳ねないようにする
+float coarse_share() {
+    return clamp((blurred_slope() - 3.0) / (LEGACY_SLOPE - 3.0), 0.0, 1.0);
+}
+
+// 描き方 書き出しと同じ式・前の思い描き方（#182）・今の思い描き方（#194）
+const int DRAW_PLAIN = 0;
+const int DRAW_LEGACY = 1;
+const int DRAW_FINE = 2;
+
+// 今の思い描き方が前の描き方より縮めた書き出しから離れる所は、前の描き方のまま描く
+// 四角と楕円・太さ 1〜128・ぼかし 0〜96 の 592 通りで前と今を比べて、どれも前より
+// 離れないように決めた（#194）
+// ぼかしの無い 48 を超える太さは、輪の間が 1 画素でなくなり、輪の半径と画素の中心が
+// 揃う所で書き出しの丸め方を当てきれない ぼかしの坂が広い所は、前の合成の画素で刻んで
+// ぼかす描き方の方が四角の角や尾根で合う 坂の広さの境で描き方が切り替わるが、境の
+// 両側はどちらも縮めた書き出しに近いので、跳ねは小さい
+int draw_mode() {
+    if (!fine_rings()) return DRAW_PLAIN;
+    bool legacy = !fine_blurred() ? fine_width() > 48.0 : blurred_slope() >= LEGACY_SLOPE;
+    if (!legacy) return DRAW_FINE;
+    // 前の思い描き方は、ぼかしの無い 46 合成画素までの太さだけだった
+    return blur <= 0.0 && thickness <= 46.0 ? DRAW_LEGACY : DRAW_PLAIN;
 }
 
 // 書き出しの画素 1 つの高さ
@@ -325,7 +351,6 @@ float fine_height(vec2 uv) {
     vec4 field = texture(u_texture, uv);
     if (fine_blurred()) {
         float share = coarse_share();
-        if (share >= 1.0) return profile_height(field.a);
         float straight = blurred_value(measure_at(uv), fine_width()) + field.a - field.g;
         return profile_height(mix(straight, field.a, share));
     }
@@ -367,8 +392,54 @@ vec3 fine_lit(vec3 under, vec3 light, float k) {
     return sum / taken;
 }
 
+// 前の思い描き方（#182）で、縁から distance 画素の所に書き出しが置く高さ
+float legacy_height(float distance, float width) {
+    if (distance <= 0.0) return profile_height(0.0);
+    float rings = ceil(min(width, 48.0));
+    float ring = floor(distance * rings / width) + 1.0;
+    return profile_height(min(ring / rings, 1.0));
+}
+
+// 前の思い描き方（#182） 縁からの距離と向きを合成の画素で刻んだ輪から取り、縁を直線と
+// 見て覆う書き出しの画素に光を当てる 四角の縁ならどの画素も書き出しと同じ段に入る
+vec3 legacy_lit(vec3 under, vec3 light, float k, float width) {
+    vec2 step_ = 1.0 / u_size;
+    float here = texture(u_texture, v_uv).a * width - 0.5;
+    vec2 slope = vec2(
+        texture(u_texture, v_uv + vec2(step_.x, 0.0)).a
+            - texture(u_texture, v_uv - vec2(step_.x, 0.0)).a,
+        texture(u_texture, v_uv + vec2(0.0, step_.y)).a
+            - texture(u_texture, v_uv - vec2(0.0, step_.y)).a
+    );
+    vec2 inward = length(slope) > 1e-6 ? normalize(slope) : vec2(0.0);
+    float scale = 1.0 / u_pixel_scale;
+    int count = fine_count();
+    float full = min(thickness * scale, 128.0);
+    float strength = surface_scale * scale;
+    vec3 sum = vec3(0.0);
+    float taken = 0.0;
+    for (int y = 0; y < count; ++y) {
+        for (int x = 0; x < count; ++x) {
+            vec2 offset = (vec2(float(x), float(y)) + 0.5) / float(count) - 0.5;
+            float distance = (here + dot(offset, inward)) * scale;
+            // 縁の外に掛かる書き出しの画素は、書き出しでも光らない（形の外）
+            if (distance <= 0.0) continue;
+            float g = (legacy_height(distance + 1.0, full) - legacy_height(distance - 1.0, full))
+                * 0.5;
+            vec3 normal = normalize(vec3(-inward * g * strength, 1.0));
+            sum += lit_color(under, shade(normal, light, k));
+            taken += 1.0;
+        }
+    }
+    if (taken <= 0.0) return lit_color(under, shade(vec3(0.0, 0.0, 1.0), light, k));
+    return sum / taken;
+}
+
 void main() {
-    bool fine = fine_rings();
+    int mode = draw_mode();
+    bool fine = mode == DRAW_FINE;
+    // 前の思い描き方は、縁から帯の外の平らな所まで（太さ + 2 画素）を 1 画素ずつ刻む
+    float legacy_width = ceil(thickness) + 2.0;
     if (u_pass == 0) {
         // 書き出しの画素を思い描く時は、縁までの測りを赤へ、縁の内向きの角度を青へ置く
         if (fine) {
@@ -379,7 +450,7 @@ void main() {
         // 縁からの距離を太さで割った値（0 が縁、1 が太さ以上の内側）を作る
         float inside = texture(u_texture, v_uv).a;
         if (inside < 0.5) { frag_color = vec4(1.0, 1.0, 1.0, 0.0); return; }
-        float width = clamp(thickness, 1.0, 128.0);
+        float width = mode == DRAW_LEGACY ? legacy_width : clamp(thickness, 1.0, 128.0);
         float nearest = width;
         int rings = int(ceil(min(width, 48.0)));
         for (int ring = 1; ring <= rings; ++ring) {
@@ -403,7 +474,6 @@ void main() {
         if (blurred) {
             int count = fine_count();
             float width = fine_width();
-            bool straight_needed = coarse_share() < 1.0;
             float steps = 0.0;
             float straight = 0.0;
             for (int y = 0; y < count; ++y) {
@@ -411,7 +481,7 @@ void main() {
                     vec2 offset = (vec2(float(x), float(y)) + 0.5) / float(count) - 0.5;
                     float measure = measure_at(v_uv + offset / u_size);
                     steps += export_value(measure, width);
-                    if (straight_needed) straight += blurred_value(measure, width);
+                    straight += blurred_value(measure, width);
                 }
             }
             float taken = float(count * count);
@@ -441,6 +511,10 @@ void main() {
     vec3 under = to_srgb(base.rgb);
     if (fine) {
         frag_color = vec4(to_linear(fine_lit(under, light, k)), base.a);
+        return;
+    }
+    if (mode == DRAW_LEGACY) {
+        frag_color = vec4(to_linear(legacy_lit(under, light, k, legacy_width)), base.a);
         return;
     }
     vec2 step_ = 1.0 / u_size;

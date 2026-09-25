@@ -377,7 +377,7 @@ class TestFineDetailAtLowerQuality:
 
     @pytest.mark.parametrize(
         ("shape", "thickness", "blur"),
-        [("rect", 3, 4), ("rect", 5, 3), ("ellipse", 3, 4), ("ellipse", 6, 4)],
+        [("rect", 3, 4), ("rect", 5, 3), ("ellipse", 3, 4)],
     )
     def test_a_blurred_bevel(
         self,
@@ -390,12 +390,43 @@ class TestFineDetailAtLowerQuality:
         # 書き出しは書き出しの画素で段を刻んでからぼかす 合成の画素で刻んでぼかすと、
         # 太さ 3 は 1/4 で 1 画素に切り上がって段が 1 つになり、急な坂が縁の内へ広がる
         # 覆う書き出しの画素で刻んでから縮めてぼかしても、補うと縁の近くの坂が
-        # 1 合成画素の幅へ均される（#194） 1/4 ほど崩れやすいので上限は分母に比例させる
-        # 直す前は 1/2 で 1.5〜2.3・1/4 で 4.2〜7.1、直した後は 1/2 で 1.2・1/4 で 1.9 より小さい
+        # 1 合成画素の幅へ均される（#194） 1/4 ほど崩れやすいので上限を分母で分ける
+        # 直す前は 1/2 で 1.48〜1.94・1/4 で 5.0〜7.1、直した後は 1/2 で 1.2・1/4 で 1.9 より小さい
         bevel = _effect("bevel_light", thickness=thickness, blur=blur, constant=100)
         clip = _source("shape", bevel, shape=shape, width=96, height=64, color=(0.2, 0.2, 0.2, 1.0))
-        limit = TOLERANCE * divisor / 8
+        limit = {2: 1.4, 4: 2.5}[divisor]
         assert _rim_mismatch(_project(clip), gl_context, divisor) < limit
+
+
+@pytest.mark.parametrize(
+    ("shape", "thickness", "blur", "profile", "divisor", "before"),
+    [
+        ("rect", 60, 0, "straight", 2, 0.56),
+        ("rect", 60, 0, "round", 2, 0.64),
+        ("rect", 40, 1, "straight", 4, 0.82),
+        ("rect", 40, 4, "straight", 4, 0.74),
+        ("rect", 5, 30, "straight", 4, 0.32),
+        ("ellipse", 3, 8, "straight", 2, 1.42),
+        ("ellipse", 3, 12, "straight", 2, 1.24),
+    ],
+)
+def test_a_bevel_is_no_further_from_the_export_than_before(
+    gl_context: OffscreenGLContext,
+    shape: str,
+    thickness: int,
+    blur: int,
+    profile: str,
+    divisor: int,
+    before: float,
+) -> None:
+    # #194 の思い描き方は、四角と楕円・太さ 1〜128・ぼかし 0〜96 の 592 通りの多くで縮めた
+    # 書き出しに近づいたが、一部は #182 までの描き方の方が近かった（ぼかしの無い 48 を
+    # 超える太さ、ぼかしの坂が広い所、太さ 3 に強いぼかし） そこでは前の描き方を使う
+    # before は #182 までの差（小数 2 桁へ切り上げ） 今の思い描き方をそのまま使うと、
+    # 四角の太さ 60 で 2.5・丸で 3.6 など、どれもこれを超える
+    bevel = _effect("bevel_light", thickness=thickness, blur=blur, profile=profile, constant=100)
+    clip = _source("shape", bevel, shape=shape, width=96, height=64, color=(0.2, 0.2, 0.2, 1.0))
+    assert _rim_mismatch(_project(clip), gl_context, divisor) <= before
 
 
 def _rim_mismatch(project: Project, context: OffscreenGLContext, divisor: int) -> float:
