@@ -864,8 +864,11 @@ void main() {
 """
 )
 
-#: 1 画素で調べる粒の数の上限 粒ごとに全画素を回すので、増やすと書き出しが重くなる
-MAX_PARTICLES = 512
+#: 1 画素で調べる粒の数の上限 上限を超えた古い粒は描かない（読み込む所で記録に残す）
+#: 重さは居る粒の数に比例し、上限は GPU が止まるほど重い設定を防ぐ栓 1080p の書き出しで
+#: 1500 粒（配布物の雪）が 1 枚 35ms、4096 粒で 95ms ほど（#199 で測った）
+#: 前の 512 では配布物の雨（800 粒）と雪（1500 粒）の古い粒が黙って消えていた
+MAX_PARTICLES = 4096
 
 _PARTICLES = _shader(
     f"const int MAX_PARTICLES = {MAX_PARTICLES};\n"
@@ -903,6 +906,10 @@ void main() {
     vec2 centre = object_center();
     vec2 pixel = v_uv * u_size;
     vec2 wind = vec2(cos(radians(wind_angle)), sin(radians(wind_angle))) * wind_speed;
+    // 粒の中心から絵の中身の一番遠い角まで（等倍） どう回しても粒の絵はこの円の中に収まる
+    // u_object ではなく u_content で測る 前の変形で広げた絵は u_object の外まである
+    vec2 corner = max(abs(u_content.xy - centre), abs(u_content.zw - centre));
+    float reach = length(corner) + 1.0;
     vec4 result = vec4(0.0);
     for (int k = 0; k < MAX_PARTICLES; ++k) {
         if (float(k) >= count) break;
@@ -923,9 +930,13 @@ void main() {
         float t = age / life;
         float scale = mix(size, size * end_scale * 0.01, t) * 0.01;
         if (scale <= 0.0001) continue;
+        // 粒の絵が届かない画素は回す前に外す 絵を読む（4 点を混ぜる）所が一番重く、
+        // 粒の数だけ全画素で読むと上限を上げたぶんだけ書き出しが重くなる
+        vec2 offset = pixel - place;
+        if (dot(offset, offset) > reach * reach * scale * scale) continue;
         float fade_from = 1.0 - clamp(fade * 0.01, 0.0, 1.0);
         float alpha = t > fade_from ? 1.0 - (t - fade_from) / max(1.0 - fade_from, 1e-4) : 1.0;
-        vec2 local = (pixel - place) / scale;
+        vec2 local = offset / scale;
         float spin = radians(rotation * (rand(index, 4.0) * 2.0 - 1.0) * jitter + rotation);
         local = mat2(cos(spin), -sin(spin), sin(spin), cos(spin)) * local;
         vec4 c = sample_pixel(centre + local);
@@ -1126,6 +1137,7 @@ def register_optics_effects() -> None:
             kind="directional_key",
             label="2 色の間で抜く",
             category="色",
+            keeps_content=True,
             parameters=(
                 ColorSpec("background", "抜く色", (0.02, 0.02, 0.02, 1.0)),
                 ColorSpec("foreground", "残す色", (0.8, 0.8, 0.8, 1.0)),
