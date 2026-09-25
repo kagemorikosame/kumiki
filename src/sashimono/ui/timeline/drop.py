@@ -96,13 +96,20 @@ class DropPreview:
         return frozenset(c.track.id for c in self.commands if isinstance(c, AddTrack))
 
 
-def preview_drop(project: Project, guide: DropGuide) -> DropPreview:
+def preview_drop(project: Project, guide: DropGuide, *, split_audio: bool = True) -> DropPreview:
+    """``split_audio`` は窓が置くときと同じ値を渡す（:func:`place_media`）"""
     media = [
         item for media_id in guide.media_ids if (item := project.find_media(media_id)) is not None
     ]
     if not media:
         return DropPreview(guide, project.timeline)
-    commands = place_media(project, media, at_frame=guide.spot.frame, track_id=guide.spot.track_id)
+    commands = place_media(
+        project,
+        media,
+        at_frame=guide.spot.frame,
+        track_id=guide.spot.track_id,
+        split_audio=split_audio,
+    )
     # 足すトラックだけを当てる クリップまで当てると、枠の点線ではなく本物のクリップに見える
     shown = project
     for command in commands:

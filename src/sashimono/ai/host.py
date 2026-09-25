@@ -98,6 +98,15 @@ class EditorHost(Protocol):
         """素材を読み、メディアプールに入れられる形にする"""
         ...
 
+    @property
+    def split_audio_streams(self) -> bool:
+        """音声が何本もある素材を、音ごとに別のトラックへ置くか（本人の設定）
+
+        AI が置いた素材も画面から置いた素材と同じ置き方にする 食い違うと、同じ動画でも
+        頼み方によってレイヤーの数が変わる
+        """
+        ...
+
     def analyze(self, media: MediaItem) -> None:
         """波形とサムネイルの用意を予約する"""
         ...

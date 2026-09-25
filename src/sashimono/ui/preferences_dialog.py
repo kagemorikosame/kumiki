@@ -38,7 +38,13 @@ from sashimono.ui.media_match import MATCH_CHOICES
 from sashimono.ui.media_pool import VIEW_ICONS, VIEW_LIST
 from sashimono.ui.preview_handles import KEYFRAME_DRAG_CHOICES
 from sashimono.ui.project_settings_dialog import LAYER_MODE_CHOICES
-from sashimono.ui.workspace import DOCK_TABS_BOTTOM, DOCK_TABS_TOP, Preferences
+from sashimono.ui.workspace import (
+    DOCK_TABS_BOTTOM,
+    DOCK_TABS_TOP,
+    MULTI_AUDIO_FIRST,
+    MULTI_AUDIO_SPLIT,
+    Preferences,
+)
 
 __all__ = [
     "DECODE_THREADS",
@@ -243,6 +249,20 @@ class PreferencesDialog(QDialog):
             "新規作成の窓でもプロジェクトごとに選べる 開いたプロジェクトの方式は変えない"
         )
         form.addRow("新しいプロジェクトの置き方", self._new_project_layers)
+        self._multi_audio = QComboBox(self)
+        self._multi_audio.addItem("音声ごとにレイヤーを分ける（既定）", MULTI_AUDIO_SPLIT)
+        self._multi_audio.addItem("1 本目だけ映像と一緒に置く", MULTI_AUDIO_FIRST)
+        self._multi_audio.setCurrentIndex(
+            max(0, self._multi_audio.findData(preferences.multi_audio))
+        )
+        self._multi_audio.setToolTip(
+            "ゲームの録画のマイクの声のように、音声が 2 本以上ある動画を置いたとき "
+            "分けると、置いたレイヤーに映像、その次のレイヤーから音声を 1 本ずつ並べ、"
+            "足りなければレイヤーを足す（映像と音声のトラックを分ける方式では音声トラックを"
+            "音声ごとに使う） どれも一緒に動く 1 本目だけにすると 2 本目以降は置かない "
+            "音声が 1 本の動画はどちらでも変わらない"
+        )
+        form.addRow("音声が複数ある動画の置き方", self._multi_audio)
         self._dock_tabs = QComboBox(self)
         self._dock_tabs.addItem("上（既定）", DOCK_TABS_TOP)
         self._dock_tabs.addItem("下", DOCK_TABS_BOTTOM)
@@ -419,4 +439,5 @@ class PreferencesDialog(QDialog):
             keyframe_drag=str(self._keyframe_drag.currentData()),
             value_lines=self._value_lines.isChecked(),
             new_project_layers=str(self._new_project_layers.currentData()),
+            multi_audio=str(self._multi_audio.currentData()),
         )
