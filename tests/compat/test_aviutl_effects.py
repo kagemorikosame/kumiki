@@ -363,8 +363,9 @@ class TestTheLeftoverSettings:
     def test_a_setting_in_use_is_still_recorded(self) -> None:
         # 使っている設定まで数えるのをやめると、落とした所が記録から消えて
         # 「写せたつもりで違う絵」に気付けなくなる
-        _, report = _effects("縁取り\nサイズ=6\nぼかし=3\n縁色=ffffff")
-        assert any("縁取りの項目: ぼかし" in line for line in report.lines())
+        # 縁取りのぼかしは #192 で写すようになったので、まだ写さないレンズブラーの光の強さで見る
+        _, report = _effects("レンズブラー\n範囲=16\n光の強さ=32")
+        assert any("レンズブラーの項目: 光の強さ" in line for line in report.lines())
 
     def test_a_zero_that_moves_is_still_in_use(self) -> None:
         # 0 から動く値を「使っていない」と数えると、動きを落としたことが記録から消える

@@ -26,7 +26,14 @@ from sashimono.core.model import AnimatedValue, Effect, ParamValue
 from sashimono.effects.definition import registry
 from sashimono.effects.paint import MAX_STOPS
 
-__all__ = ["BLEND_NAMES", "brush_effect", "fill_foreground", "gradient_effect", "is_solid"]
+__all__ = [
+    "BLEND_NAMES",
+    "brush_effect",
+    "fill_foreground",
+    "gradient_effect",
+    "is_solid",
+    "noise_mask",
+]
 
 #: YMM4 の合成モードの名前と、塗りのエフェクトの合成 実物の名前だけを並べる
 #: （``Lighten`` ``Darken`` のような名前は YMM4 が読み込みで断る）
@@ -338,6 +345,26 @@ def brush_effect(
             "opacity": opacity or AnimatedValue(100.0),
         }
     )
+    return _create(params)
+
+
+def noise_mask(
+    entry: dict[str, Any], report: CompatibilityReport, *, length: int = 1, keyframes: Any = None
+) -> Effect | None:
+    """「ノイズ」エフェクト（``NoiseEffect``） ノイズの値だけ不透明度か色を薄める
+
+    値の作り方はノイズのブラシと同じ（強さを掛け、しきい値で持ち上げ、段階で刻む）
+    YMM4 に描かせた白い四角（#177 の探り）は、乱数・強さ 100 で不透明度の平均 0.50、
+    強さ 50 で 0.75、しきい値 50 で半分が消え、色を薄める方（``IsAlpha`` が偽）は灰 128 が
+    64 になった どれも「1 - 値」を掛けると合う 強さ 200 は全部が消え、この読みと合わない
+    （読みなら半分残る） 配布物は強さ 11〜164 で、200 を越える物は無い
+    """
+    params = _noise(entry, length, keyframes, report)
+    if entry.get("IsColor") is True:
+        # 色ごとのノイズは 1 つの値で薄める 色ずれまでは写さない
+        report.note_missing("YMM4 のノイズの色ごとの値（1 つの値で薄めた）")
+        params["colorful"] = False
+    params["noise_mask"] = "alpha" if entry.get("IsAlpha") is not False else "color"
     return _create(params)
 
 

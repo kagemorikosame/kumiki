@@ -12,6 +12,9 @@
     .venv\\Scripts\\python.exe tools\\ymm4_probes.py .work\\probes\\probes.ymmt
     .venv\\Scripts\\python.exe tools\\ymm4_compare.py --work .work\\probe \
         build .work\\probes\\probes.ymmt
+
+2 つ目の引数で何回目の試験かを選ぶ（``first``〜``seventh``） ``seventh`` は画面の大きさで
+意味の変わる物を見るので、``build --size 1280x720`` で並べる
 """
 
 from __future__ import annotations
@@ -1793,6 +1796,586 @@ def build_fifth(
     ]
 
 
+#: 6 回目の探りの文字 縁の太さを測るので、縁の付く辺が長くまっすぐな H にする
+PROBE_TEXT = "H"
+#: 文字装飾の列挙 YMM4 本体（4.56.1.1）の ``YukkuriMovieMaker.Project.Items.Style`` を
+#: メタデータの表から読んだ 配布物の 125 個はどれも Normal だった
+TEXT_STYLES = (
+    "Normal",
+    "Shadow",
+    "ShadowLight",
+    "Border",
+    "BorderLight",
+    "SharpBorder",
+    "SharpBorderLight",
+)
+
+
+def put(node: dict[str, Any], **values: Any) -> dict[str, Any]:
+    """:func:`set_values` と同じ入れ方で、ひな形に無い項目は断る
+
+    無い項目を足すと、動く値の形を知らないまま素の数で書くことになり、YMM4 がプロジェクトを
+    開けない 書き出しの道具は読み込みの失敗の窓を見られないので、ここで止める
+    """
+    missing = [key for key in values if key not in node]
+    if missing:
+        raise KeyError(f"{node.get('$type', '?')} に無い項目: {', '.join(missing)}")
+    return set_values(node, **values)
+
+
+#: ペンの探りの線 1920x1080 の画面の真ん中を曲がり角にした L の字（画面の左上が原点の画素）
+PEN_POINTS: tuple[tuple[float, float], ...] = (
+    *((860.0, 440.0 + step * 10.0) for step in range(21)),
+    *((870.0 + step * 10.0, 640.0) for step in range(20)),
+)
+
+
+def pen_item(points: tuple[tuple[float, float], ...] = PEN_POINTS) -> dict[str, Any]:
+    """配布物のペンの図形の形を借り、線を 1 本だけにして ``points`` を通す"""
+    found = _fixture_item(
+        lambda item: type_name(item) == "ShapeItem" and "PenShape" in str(item.get("ShapeType2"))
+    )
+    assert found is not None, "PenShape"
+    strokes = found["ShapeParameter"]["Strokes"]
+    first = copy.deepcopy(strokes[0])
+    template = first["StylusPoints"][0]
+    first["StylusPoints"] = [{**template, "X": x, "Y": y} for x, y in points]
+    found["ShapeParameter"]["Strokes"] = [first]
+    found.update(
+        {
+            "Frame": 0,
+            "Layer": 0,
+            "Length": 60,
+            "X": still(0.0),
+            "Y": still(0.0),
+            "Zoom": still(100.0),
+            "Rotation": still(0.0),
+            "Opacity": still(100.0),
+            "Blend": "Normal",
+            "Group": 0,
+            "IsInverted": False,
+            "VideoEffects": [],
+            "KeyFrames": {"Frames": [], "Count": 0},
+        }
+    )
+    for key in ("Offset", "Length", "Thickness"):
+        if isinstance(found["ShapeParameter"].get(key), dict):
+            found["ShapeParameter"][key] = still({"Offset": 0.0, "Length": 100.0}.get(key, 100.0))
+    return found
+
+
+def build_sixth(
+    samples: dict[str, dict[str, Any]], brushes: dict[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """6 回目の試験 #184・#192・#198 の値の意味と、#177 で見つけた退場と単色化とノイズ
+
+    最後に置くのは フレームバッファ にリール回転を掛けた物 #177 の書き出しは
+    シュバッと演出素材（フレームバッファにリール回転）の頭で 2 度止まった 止まっても
+    前の探りが残るように、疑わしい物ほど後ろに置く
+    """
+    probes: list[tuple[str, list[dict[str, Any]]]] = []
+
+    def rectangle(
+        width: float = 300.0,
+        height: float = 300.0,
+        colour: str = "#FFFFFFFF",
+        *,
+        stroke: float = 10000.0,
+        layer: int = 0,
+    ) -> dict[str, Any]:
+        item = base_shape(0, layer, 60)
+        item["ShapeParameter"]["Width"] = still(width)
+        item["ShapeParameter"]["Height"] = still(height)
+        item["ShapeParameter"]["StrokeThickness"] = still(stroke)
+        item["ShapeParameter"]["Brush"] = solid(colour)
+        return item
+
+    def effect(kind: str, **values: Any) -> dict[str, Any]:
+        entry = copy.deepcopy(samples[kind])
+        entry["IsEnabled"] = True
+        return put(entry, **values)
+
+    def add(name: str, *items: dict[str, Any]) -> None:
+        probes.append((name, list(items)))
+
+    def text(
+        style: str = "Normal",
+        size: float = 100.0,
+        content: str = PROBE_TEXT,
+        base_point: str = "CenterCenter",
+    ) -> dict[str, Any]:
+        found = _fixture_item(lambda item: type_name(item) == "TextItem")
+        assert found is not None
+        found.update(
+            {
+                "Text": content,
+                "Decorations": [],
+                "Font": "Arial",
+                "FontSize": still(size),
+                "LineHeight2": still(100.0),
+                "LetterSpacing2": still(0.0),
+                "BasePoint": base_point,
+                "FontColor": "#FFFFFFFF",
+                "Style": style,
+                "StyleColor": "#FFFF0000",
+                "Bold": False,
+                "Italic": False,
+                "X": still(0.0),
+                "Y": still(0.0),
+                "Zoom": still(100.0),
+                "Rotation": still(0.0),
+                "Opacity": still(100.0),
+                "IsInverted": False,
+                "VideoEffects": [],
+                "Frame": 0,
+                "Layer": 0,
+                "Length": 60,
+                "Group": 0,
+                "KeyFrames": {"Frames": [], "Count": 0},
+            }
+        )
+        return found
+
+    def outline(**values: Any) -> dict[str, Any]:
+        entry = effect(
+            "OutlineEffect",
+            StrokeThickness=4.0,
+            Blur=0.0,
+            X=0.0,
+            Y=0.0,
+            Opacity=100.0,
+            Zoom=100.0,
+            Rotation=0.0,
+            IsOutlineOnly=False,
+            IsAngular=False,
+        )
+        entry["StrokeBrush"] = solid("#FF6FEEED")
+        return set_values(entry, **values)
+
+    def group(*effects: dict[str, Any], span: int = 2) -> dict[str, Any]:
+        found = _fixture_item(lambda item: type_name(item) == "GroupItem")
+        assert found is not None
+        found.update(
+            {
+                "GroupRange": span,
+                "IsGroupOnly": False,
+                "X": still(0.0),
+                "Y": still(0.0),
+                "Z": still(0.0),
+                "Zoom": still(100.0),
+                "Rotation": still(0.0),
+                "Opacity": still(100.0),
+                "IsInverted": False,
+                "VideoEffects": list(effects),
+                "Frame": 0,
+                "Layer": 0,
+                "Length": 60,
+                "Group": 0,
+                "KeyFrames": {"Frames": [], "Count": 0},
+            }
+        )
+        return found
+
+    def hollow_frames(layer: int) -> list[dict[str, Any]]:
+        """太さ 2 の線だけの四角を 2 つ 細い線の周りの縁がどう付くかを見る"""
+        return [
+            rectangle(600.0, 300.0, stroke=2.0, layer=layer),
+            rectangle(300.0, 150.0, stroke=2.0, layer=layer + 1),
+        ]
+
+    # --- #184 テキストの文字装飾 縁と影の太さ 大きさ 100 と 50 ---
+    for style in TEXT_STYLES:
+        add(f"text_style_{style.lower()}", text(style))
+    add("text_style_border_size50", text("Border", size=50.0))
+    add("text_style_border_size200", text("Border", size=200.0))
+
+    # --- #192 細い線の周りの縁 グループの縁と、図形そのものの縁 ---
+    add("thin_group_outline_sf", group(outline(Blur=2.5, Opacity=50.9)), *hollow_frames(1))
+    add("thin_group_outline_plain", group(outline()), *hollow_frames(1))
+    add("thin_group_outline_blur", group(outline(Blur=2.5)), *hollow_frames(1))
+    add("thin_group_outline_half", group(outline(Opacity=50.9)), *hollow_frames(1))
+    framed = hollow_frames(0)
+    framed[0]["VideoEffects"] = [outline(Blur=2.5, Opacity=50.9)]
+    framed[1]["VideoEffects"] = [outline(Blur=2.5, Opacity=50.9)]
+    add("thin_item_outline_sf", *framed)
+    # 縁の位置のずらし Y の向き（配布物の 3 つは -1）
+    add(
+        "outline_offset_y_minus20",
+        rectangle(400.0, 200.0, layer=0)
+        | {"VideoEffects": [outline(Y=-20.0, StrokeThickness=10.0)]},
+    )
+    add(
+        "outline_offset_x30",
+        rectangle(400.0, 200.0, layer=0)
+        | {"VideoEffects": [outline(X=30.0, StrokeThickness=10.0)]},
+    )
+    add(
+        "group_outline_offset_y_minus20",
+        group(outline(Y=-20.0, StrokeThickness=10.0), span=1),
+        rectangle(400.0, 200.0, layer=1),
+    )
+
+    # --- #198 登場の移動の Value3 ---
+    for value3 in (0.0, 300.0, -300.0):
+        add(
+            f"inout_move_value3_{int(value3)}",
+            rectangle()
+            | {
+                "VideoEffects": [
+                    effect(
+                        "InOutMoveEffect",
+                        Value=0.0,
+                        Value2=0.0,
+                        Value3=value3,
+                        IsInEffect=True,
+                        IsOutEffect=False,
+                        EffectTimeSeconds=2.0,
+                        EasingType="Linear",
+                        EasingMode="In",
+                    )
+                ]
+            },
+        )
+
+    # --- #198 中心点の原点 左上を基準にしたテキストを回す ---
+    for horizontal, vertical in (("Origin", "Origin"), ("Center", "Center"), ("Left", "Top")):
+        item = text(content="HHHH", base_point="LeftTop")
+        item["X"] = still(-200.0)
+        item["Y"] = still(-100.0)
+        item["VideoEffects"] = [
+            effect(
+                "CenterPointEffect",
+                Horizontal=horizontal,
+                Vertical=vertical,
+                X=0.0,
+                Y=0.0,
+                IsKeepPosition=True,
+            ),
+            effect("RotateEffect", X=0.0, Y=0.0, Z=30.0, Is3D=False),
+        ]
+        add(f"center_text_lefttop_{horizontal.lower()}_{vertical.lower()}", item)
+
+    # --- #198 反射と押し出しの光の方位 ---
+    for azimuth in (0.0, 45.0, 90.0, 180.0, 270.0):
+        entry = effect("ReflectionAndExtrusionEffect", Blur=0.0)
+        entry["Lighting"]["LightSource"]["Azimuth"] = still(azimuth)
+        add(
+            f"reflection_azimuth{int(azimuth)}",
+            rectangle(600.0, 300.0, "#FFE08A2C") | {"VideoEffects": [entry]},
+        )
+
+    # --- #198 リール回転の向きと極座標の角度の基準 上が赤・下が青の縦のグラデーション ---
+    def vertical_gradient() -> dict[str, Any]:
+        item = rectangle(600.0, 300.0)
+        brush = copy.deepcopy(brushes["LinearGradientBrushPlugin"])
+        brush["Parameter"]["Stops"] = [
+            {"Offset": 0.0, "Color": "#FFFF3030"},
+            {"Offset": 1.0, "Color": "#FF3060FF"},
+        ]
+        set_values(brush["Parameter"], Size=300.0, Offset=0.0, Angle=90.0)
+        brush["Parameter"]["CoordinateMode"] = "Pixel"
+        brush["Parameter"]["ExtendMode"] = "Clamp"
+        item["ShapeParameter"]["Brush"] = brush
+        return item
+
+    def horizontal_gradient() -> dict[str, Any]:
+        item = vertical_gradient()
+        set_values(item["ShapeParameter"]["Brush"]["Parameter"], Size=600.0, Angle=0.0)
+        return item
+
+    for direction in (0.0, 90.0, -90.0):
+        add(
+            f"reel_rotation10_direction{int(direction)}",
+            vertical_gradient()
+            | {
+                "VideoEffects": [
+                    effect(
+                        "ReelSpinEffect", Rotation=10.0, Direction=direction, Blur=0.0, Tile=False
+                    )
+                ]
+            },
+        )
+    add(
+        "polar_horizontal_gradient",
+        horizontal_gradient()
+        | {"VideoEffects": [effect("PolarTransformEffect", CoreWidth=0.0, TwistAngle=0.0)]},
+    )
+    add(
+        "polar_vertical_gradient",
+        vertical_gradient()
+        | {"VideoEffects": [effect("PolarTransformEffect", CoreWidth=0.0, TwistAngle=0.0)]},
+    )
+
+    # --- #198 残像 アイテムが終わった後の区間に残るか 30 フレームのアイテムを 60 の枠に ---
+    moving = rectangle(200.0, 200.0)
+    moving["Length"] = 30
+    moving["X"] = {
+        "Values": [{"Value": -600.0}, {"Value": 600.0}],
+        "Span": 0.0,
+        "AnimationType": "直線移動",
+    }
+    moving["VideoEffects"] = [effect("AfterImageEffect", Strength=50.0, Mode="Front")]
+    add("after_image_tail", moving)
+
+    # --- #177 退場のイージングの向き 回転 90 度 Back の Out と In ---
+    for mode in ("Out", "In"):
+        add(
+            f"inout_rotate_out_back_{mode.lower()}",
+            rectangle(400.0, 100.0)
+            | {
+                "VideoEffects": [
+                    effect(
+                        "InOutRotateEffect",
+                        ValueX=0.0,
+                        ValueY=0.0,
+                        ValueZ=90.0,
+                        Is3D=False,
+                        IsInEffect=False,
+                        IsOutEffect=True,
+                        EffectTimeSeconds=1.0,
+                        EasingType="Back",
+                        EasingMode=mode,
+                    )
+                ]
+            },
+        )
+
+    # --- #177 単色化 明るさを保つか ---
+    for keep in (False, True):
+        add(
+            f"monocolor_keep_{str(keep).lower()}",
+            horizontal_gradient()
+            | {
+                "VideoEffects": [
+                    effect(
+                        "MonocolorizationEffect",
+                        Strength=100.0,
+                        Color="#FF292110" if not keep else "#FF40A0FF",
+                        KeepBrightness=keep,
+                    )
+                ]
+            },
+        )
+
+    # --- #177 ノイズ（NoiseEffect）の透明度 乱数なので面の平均と散らばりで読む ---
+    def noise_effect(kind: str, **values: Any) -> dict[str, Any]:
+        entry = effect("NoiseEffect", IsColor=False, IsAlpha=True, IsUniqueSeed=False)
+        entry["NoiseType"] = kind
+        parameter = copy.deepcopy(samples[f"{kind}NoiseParameter"])
+        set_values(
+            parameter,
+            Strength=100.0,
+            Threshold=0.0,
+            Levels=256.0,
+            Octaves=5.0,
+            X=0.0,
+            Y=0.0,
+            Z=0.0,
+            SpeedX=0.0,
+            SpeedY=0.0,
+            SpeedZ=0.0,
+            ScaleX=1000.0,
+            ScaleY=1000.0,
+            ScaleZ=100.0,
+            Angle=0.0,
+        )
+        if "Size" in parameter:
+            set_values(parameter, Size=100.0)
+        set_values(parameter, **values)
+        entry["NoiseParameter"] = parameter
+        return entry
+
+    for label, kind, values in (
+        ("random", "Random", {}),
+        ("random_threshold50", "Random", {"Threshold": 50.0}),
+        ("random_strength200", "Random", {"Strength": 200.0}),
+        ("random_strength50", "Random", {"Strength": 50.0}),
+        ("perlin", "Perlin", {}),
+    ):
+        add(
+            f"noise_alpha_{label}",
+            rectangle(800.0, 400.0) | {"VideoEffects": [noise_effect(kind, **values)]},
+        )
+    colour_noise = noise_effect("Random")
+    colour_noise["IsAlpha"] = False
+    add(
+        "noise_colour_random",
+        rectangle(800.0, 400.0, "#FF808080") | {"VideoEffects": [colour_noise]},
+    )
+
+    # --- #198 ペン（1920x1080 の基準 1280x720 は 7 回目） ---
+    add("pen_cross", pen_item())
+
+    # --- #177 最後に フレームバッファへリール回転（シュバッと演出素材と同じ形） ---
+    buffer = _fixture_item(lambda item: type_name(item) == "FrameBufferItem")
+    assert buffer is not None
+    buffer.update(
+        {
+            "Frame": 0,
+            "Layer": 1,
+            "Length": 60,
+            "IsHidden": False,
+            "IsLocked": False,
+            "VideoEffects": [
+                effect("ReelSpinEffect", Rotation=30.0, Direction=0.0, Blur=50.0, Tile=False)
+            ],
+        }
+    )
+    add("frame_buffer_reel_spin", vertical_gradient(), buffer)
+
+    return [
+        {"Name": f"probe6_{name}", "Path": ["probe6", name], "Items": items}
+        for name, items in probes
+    ]
+
+
+def build_seventh(
+    samples: dict[str, dict[str, Any]], brushes: dict[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """7 回目の試験 画面を 1280x720 にして書き出す（``ymm4_compare.py build --size 1280x720``）
+
+    - ペンの点の座標の基準（#198） 1920x1080 では 6 回目の ``pen_cross`` と一致した
+      点が画面の左上からの画素なら、L の角が画面の真ん中から右下へずれる
+    - 細かい格子の周りのグループの縁（#192 SFっぽい吹き出し(右) と同じ格子と縁）
+    - ノイズの強さ 100 より上（6 回目の 200 は全部が消えた）
+    - 最後に、シュバッと演出素材と同じ形のフレームバッファ（頭のずれと動くリール回転）
+    """
+    probes: list[tuple[str, list[dict[str, Any]]]] = []
+
+    def add(name: str, *items: dict[str, Any]) -> None:
+        probes.append((name, list(items)))
+
+    def effect(kind: str, **values: Any) -> dict[str, Any]:
+        entry = copy.deepcopy(samples[kind])
+        entry["IsEnabled"] = True
+        return put(entry, **values)
+
+    def grid(cell: float = 12.0, layer: int = 0) -> dict[str, Any]:
+        item = base_shape(0, layer, 60)
+        item["ShapeParameter"]["Width"] = still(600.0)
+        item["ShapeParameter"]["Height"] = still(300.0)
+        brush = copy.deepcopy(brushes["GridLineBrushPlugin"])
+        brush["Parameter"]["StrokeColor"] = "#FF1C9F9D"
+        brush["Parameter"]["BackgroundColor"] = "#00FFFFFF"
+        put(
+            brush["Parameter"],
+            Thickness=1.3,
+            Width=cell,
+            Height=cell,
+            Zoom=100.0,
+            X=0.0,
+            Y=0.0,
+            Angle=-45.0,
+            Aspect=0.0,
+        )
+        brush["Parameter"]["IsInverted"] = False
+        item["ShapeParameter"]["Brush"] = brush
+        item["Opacity"] = still(75.2)
+        return item
+
+    def outline(**values: Any) -> dict[str, Any]:
+        entry = effect(
+            "OutlineEffect",
+            StrokeThickness=4.0,
+            Blur=2.5,
+            X=0.0,
+            Y=0.0,
+            Opacity=50.9,
+            Zoom=100.0,
+            Rotation=0.0,
+            IsOutlineOnly=False,
+            IsAngular=False,
+        )
+        entry["StrokeBrush"] = solid("#FF6FEEED")
+        return put(entry, **values)
+
+    def group(*effects: dict[str, Any]) -> dict[str, Any]:
+        found = _fixture_item(lambda item: type_name(item) == "GroupItem")
+        assert found is not None
+        found.update(
+            {
+                "GroupRange": 1,
+                "X": still(0.0),
+                "Y": still(0.0),
+                "Z": still(0.0),
+                "Zoom": still(100.0),
+                "Rotation": still(0.0),
+                "Opacity": still(100.0),
+                "IsInverted": False,
+                "VideoEffects": list(effects),
+                "Frame": 0,
+                "Layer": 0,
+                "Length": 60,
+                "Group": 0,
+                "KeyFrames": {"Frames": [], "Count": 0},
+            }
+        )
+        return found
+
+    add("pen_l_1280x720", pen_item())
+
+    add("grid_group_outline_sf", group(outline()), grid(layer=1))
+    add("grid_group_outline_sharp", group(outline(Blur=0.0, Opacity=100.0)), grid(layer=1))
+    add("grid_item_outline_sf", grid() | {"VideoEffects": [outline()]})
+    add("grid_group_outline_cell24", group(outline()), grid(24.0, layer=1))
+    add("grid_plain", grid())
+
+    for strength in (120.0, 150.0, 200.0):
+        entry = effect("NoiseEffect", IsColor=False, IsAlpha=True, IsUniqueSeed=False)
+        entry["NoiseType"] = "Random"
+        parameter = copy.deepcopy(samples["RandomNoiseParameter"])
+        put(
+            parameter,
+            Strength=strength,
+            Threshold=0.0,
+            Levels=256.0,
+            SpeedX=0.0,
+            SpeedY=0.0,
+            SpeedZ=0.0,
+            ScaleX=1000.0,
+            ScaleY=1000.0,
+            Angle=0.0,
+        )
+        entry["NoiseParameter"] = parameter
+        square = base_shape(0, 0, 60)
+        square["ShapeParameter"]["Width"] = still(600.0)
+        square["ShapeParameter"]["Height"] = still(300.0)
+        square["ShapeParameter"]["Brush"] = solid("#FFFFFFFF")
+        square["VideoEffects"] = [entry]
+        add(f"noise_alpha_random_strength{int(strength)}", square)
+
+    # シュバッと演出素材と同じ形 頭を 4 秒ずらしたフレームバッファに、0 → 100 と動くリール回転
+    buffer = _fixture_item(lambda item: type_name(item) == "FrameBufferItem")
+    assert buffer is not None
+    reel = effect("ReelSpinEffect", Direction=0.0, Tile=False)
+    reel["Rotation"] = {
+        "Values": [{"Value": 0.0}, {"Value": 100.0}, {"Value": 100.0}],
+        "Span": 0.0,
+        "AnimationType": "Expo_Out",
+    }
+    reel["Blur"] = {
+        "Values": [{"Value": 50.0}, {"Value": 50.0}, {"Value": 50.0}],
+        "Span": 0.0,
+        "AnimationType": "Expo_Out",
+    }
+    buffer.update(
+        {
+            "Frame": 0,
+            "Layer": 1,
+            "Length": 60,
+            "IsHidden": False,
+            "IsLocked": False,
+            "ContentOffset": "00:00:04",
+            "VideoEffects": [reel],
+        }
+    )
+    add("frame_buffer_offset_reel_keys", grid(), buffer)
+    return [
+        {"Name": f"probe7_{name}", "Path": ["probe7", name], "Items": items}
+        for name, items in probes
+    ]
+
+
 def _all_effects(name: str) -> list[dict[str, Any]]:
     found: list[dict[str, Any]] = []
     for path in sorted(FIXTURES.rglob("*.ymmt")):
@@ -1808,14 +2391,16 @@ def _all_effects(name: str) -> list[dict[str, Any]]:
 
 def main() -> int:
     target = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / ".work" / "probes" / "probes.ymmt"
-    samples, brushes = collect_samples()
     which = sys.argv[2] if len(sys.argv) > 2 else "first"
+    samples, brushes = collect_samples()
     builders = {
         "first": build,
         "second": build_second,
         "third": build_third,
         "fourth": build_fourth,
         "fifth": build_fifth,
+        "sixth": build_sixth,
+        "seventh": build_seventh,
     }
     templates = builders[which](samples, brushes)
     target.parent.mkdir(parents=True, exist_ok=True)
