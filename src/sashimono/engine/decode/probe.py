@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import json
-import shutil
-import subprocess
+import functools
 from fractions import Fraction
 from pathlib import Path
 
@@ -14,7 +12,14 @@ import av.error
 from sashimono.core.model import AudioStreamInfo, MediaItem, VideoStreamInfo
 from sashimono.core.timebase import FrameRate
 
-__all__ = ["ProbeError", "media_origin", "moving_pictures", "probe_media"]
+__all__ = [
+    "PROBE_CACHE_SIZE",
+    "ProbeError",
+    "clear_probe_cache",
+    "media_origin",
+    "moving_pictures",
+    "probe_media",
+]
 
 #: 静止画として扱う拡張子 長さを持たず、タイムライン上で任意に伸ばせる
 STILL_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff"})
@@ -27,16 +32,50 @@ class ProbeError(Exception):
     """素材を開けない、または中身を解釈できない"""
 
 
+#: 調べた結果を覚えておく素材の数 1 本あたり数百バイトなので、多めに持っても軽い
+PROBE_CACHE_SIZE = 512
+
+_Facts = tuple[Fraction, tuple[VideoStreamInfo, ...], tuple[AudioStreamInfo, ...]]
+
+
 def probe_media(path: Path) -> MediaItem:
     """ファイルを解析して素材情報を返す
 
     映像・音声の各ストリームを個別に記録する 多言語音声や 5.1ch の素材では
     音声が複数本あり、読み込み時にそれぞれ別トラックへ展開できるようにするため
+
+    同じファイル（場所・更新時刻・大きさが同じ）を 2 度目からは開かずに答える
+    映像と音声のデコーダは作るたびにここを呼ぶ（再生やシークのたび、控えや字幕起こしも）
+    毎回開くと、そのたびに素材を開いて頭の 1 枚を復号する 素材 ID は呼ぶたびに新しく作る
+    読み込みのたびに別の素材として登録するため
     """
     path = Path(path)
-    if not path.exists():
-        raise ProbeError(f"ファイルが見つからない: {path}")
+    try:
+        stat = path.stat()
+    except OSError:
+        raise ProbeError(f"ファイルが見つからない: {path}") from None
+    duration, video_streams, audio_streams = _facts(path, stat.st_mtime_ns, stat.st_size)
+    return MediaItem(
+        path=path,
+        duration=duration,
+        video_streams=video_streams,
+        audio_streams=audio_streams,
+    )
 
+
+def clear_probe_cache() -> None:
+    """覚えている調べた結果を捨てる 試験で開いた回数を数えるときのため"""
+    _facts.cache_clear()
+
+
+@functools.lru_cache(maxsize=PROBE_CACHE_SIZE)
+def _facts(path: Path, mtime_ns: int, size: int) -> _Facts:
+    """素材の長さとストリーム 更新時刻と大きさを鍵に入れる
+
+    同じ場所へ書き出し直した素材を古い長さで置かないため 開けなかった素材は覚えない
+    （例外は ``lru_cache`` に残らない） 置き直せば次は開き直す
+    """
+    del mtime_ns, size
     try:
         container = av.open(str(path))
     except (av.error.FFmpegError, OSError) as exc:
@@ -44,24 +83,17 @@ def probe_media(path: Path) -> MediaItem:
 
     with container:
         is_still = path.suffix.lower() in STILL_SUFFIXES
-        rotation = 0 if is_still else _probe_rotation(path)
-
         origin = media_origin(container)
-        video_streams = tuple(
-            _video_info(stream, rotation, origin) for stream in moving_pictures(container)
-        )
+        pictures = moving_pictures(container)
         audio_streams = tuple(_audio_info(stream) for stream in container.streams.audio)
-        if not video_streams and not audio_streams:
+        if not pictures and not audio_streams:
             raise ProbeError(f"映像も音声も含まれていない: {path}")
-
         duration = Fraction(0) if is_still else _container_duration(container, origin)
+        # 回転は最後に読む 頭の 1 枚を復号するので、ほかの値を読む前に進めない
+        rotation = 0 if is_still or not pictures else _display_rotation(container, pictures[0])
+        video_streams = tuple(_video_info(stream, rotation, origin) for stream in pictures)
 
-    return MediaItem(
-        path=path,
-        duration=duration,
-        video_streams=video_streams,
-        audio_streams=audio_streams,
-    )
+    return duration, video_streams, audio_streams
 
 
 def moving_pictures(container: av.container.InputContainer) -> list[av.VideoStream]:
@@ -222,46 +254,26 @@ def _audio_info(stream: av.audio.stream.AudioStream) -> AudioStreamInfo:
     )
 
 
-def _probe_rotation(path: Path) -> int:
+def _display_rotation(container: av.container.InputContainer, stream: av.VideoStream) -> int:
     """表示時に適用すべき時計回りの回転角を返す
 
-    PyAV 18 は表示行列に setter しか公開していないので、ここだけ ffprobe に頼る
-    スマホの縦撮り素材は回転情報を持つのが普通で、無視すると横倒しで表示される
+    スマホの縦撮り素材は回転情報（表示行列）を持つのが普通で、無視すると横倒しで表示される
+    PyAV 18 はストリームの表示行列を読む口を持たない（書く口だけ）が、FFmpeg はストリームの
+    表示行列を復号した絵へ写すので、頭の 1 枚を復号してその絵の回転を読む
+
+    前は ffprobe を別のプログラムとして起こして読んでいた 窓を持たない配布版では、素材を
+    調べるたび（読み込み・再生・控え・字幕起こし）に黒い窓が一瞬出た（ffprobe が PATH に
+    無い機械では回転を読めず、縦撮りが横倒しのままだった） 頭の 1 枚の復号は 1080p で 5ms、
+    4K の H.265 で 30ms ほどで、ffprobe を起こす 35〜45ms より速い
+
     取得できない場合は 0 を返し、素材の読み込み自体は続行する
     """
-    ffprobe = shutil.which("ffprobe")
-    if ffprobe is None:
-        return 0
-
     try:
-        completed = subprocess.run(
-            [
-                ffprobe,
-                "-v",
-                "error",
-                "-select_streams",
-                "v:0",
-                "-show_entries",
-                "stream_side_data=rotation",
-                "-of",
-                "json",
-                str(path),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-        )
-        payload = json.loads(completed.stdout or "{}")
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        frame = next(iter(container.decode(stream)), None)
+    except (av.error.FFmpegError, OSError, ValueError):
         return 0
-
-    for stream in payload.get("streams", []):
-        for side_data in stream.get("side_data_list", []):
-            value = side_data.get("rotation")
-            if value is None:
-                continue
-            # ffprobe は反時計回りの角度を返す 表示時に必要なのは時計回りなので反転する
-            clockwise = round(-float(value)) % 360
-            return clockwise if clockwise in (0, 90, 180, 270) else 0
-    return 0
+    if frame is None:
+        return 0
+    # 絵の回転は ffprobe と同じく反時計回りの角度 表示時に必要なのは時計回りなので反転する
+    clockwise = round(-float(frame.rotation)) % 360
+    return clockwise if clockwise in (0, 90, 180, 270) else 0
