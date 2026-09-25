@@ -204,7 +204,7 @@ class TestLayerOrder:
     ) -> None:
         # 前はヘッダが狭く、「レイヤー 1」が「レイ… 1」に切れて読めなかった
         # 空の family は画面に使う既定のフォント
-        from PySide6.QtGui import QFont, QFontDatabase, QFontMetrics
+        from PySide6.QtGui import QFont, QFontDatabase, QFontInfo, QFontMetrics
 
         from sashimono.ui.timeline.painter import shown_track_name
 
@@ -215,6 +215,12 @@ class TestLayerOrder:
             pytest.skip(f"{family} が入っていない機械")
         font = QFont(family) if family else QApplication.font()
         font.setPointSizeF(points)
+        # 既定のフォントも同じ Windows で QT_QPA_PLATFORM=offscreen にすると、Qt は
+        # フォントを 1 つも読まず（families() が空）、既定の "Sans Serif" はどの実物にも
+        # 当たらない 測る物は 1 文字をどれも 1 字幅の四角とする代わりで、「レイヤー 100」
+        # が 96 px になって 84 px の欄からはみ出す 画面に出る字の幅ではないので飛ばす
+        if QFontInfo(font).family() not in QFontDatabase.families():
+            pytest.skip("既定のフォントがどの実物にも当たらない（offscreen など）")
         metrics = QFontMetrics(font)
         for number in (1, 10, 100):
             track = _layer(number)
