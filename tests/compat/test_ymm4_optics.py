@@ -426,6 +426,60 @@ class TestCropByAngle:
         assert image[155, 155, 0] > 200, "右下が切れている"
         assert image[45, 155, 0] < 20, "右上が残っている（帯が反対の斜めに伸びている）"
 
+    @pytest.mark.parametrize("keep", [True, False])
+    def test_the_band_is_measured_from_the_centre_point(self, keep: bool) -> None:
+        """前に中心点があれば、帯の位置（X）は絵の中央ではなく中心点から測る
+
+        SFっぽい吹き出し(右) の名札は、左端を中心点にしてから角度で切り抜く YMM4 の
+        書き出しでは、帯が左端から X の所にあった（位置を保つ・保たないのどちらも）
+        絵の中央から測ると、名札が 233 と 500 画素ずれた所に出る（#179）
+        """
+        white = {
+            "$type": "YukkuriMovieMaker.Plugin.Brush.SolidColorBrushParameter, YukkuriMovieMaker",
+            "Color": "#FFFFFFFF",
+        }
+        image = _drawn(
+            _shape_item(
+                "QuadrilateralShapePlugin",
+                {
+                    "SizeMode": "WidthHeight",
+                    "Width": _still(160.0),
+                    "Height": _still(40.0),
+                    "Brush": {
+                        "Type": "N.SolidColorBrushPlugin, YukkuriMovieMaker",
+                        "Parameter": white,
+                    },
+                },
+                VideoEffects=[
+                    {
+                        "$type": "N.CenterPointEffect, YukkuriMovieMaker",
+                        "IsEnabled": True,
+                        "Horizontal": "Left",
+                        "Vertical": "Center",
+                        "X": _still(0.0),
+                        "Y": _still(0.0),
+                        "IsKeepPosition": keep,
+                    },
+                    {
+                        "$type": "N.CropByAngleEffect, YukkuriMovieMaker",
+                        "IsEnabled": True,
+                        "X": _still(20.0),
+                        "Y": _still(0.0),
+                        # 縦に伸びる帯 横の位置だけで見分けられる
+                        "Angle": _still(90.0),
+                        "Blur": _still(0.0),
+                        "Width": _still(20.0),
+                    },
+                ],
+            ),
+            size=400,
+        )
+        # 左端は、位置を保てば 120、保たなければ中心点が絵の置き場（200）へ寄る
+        left = 120 if keep else 200
+        row = image[200, :, 0]
+        assert row[left + 20] > 200, "中心点から X の所の帯が無い"
+        assert row[left + 80 + 20] < 20, "絵の中央から X の所に帯が残っている"
+
 
 class TestBrokenValues:
     def test_a_noise_brush_with_a_broken_octave_still_loads(self) -> None:

@@ -17,6 +17,7 @@ from OpenGL import GL
 
 from sashimono.core.model import Effect, ParamValue
 from sashimono.effects import EffectDefinition, registry
+from sashimono.effects.sampling import AREA_SAMPLING
 from sashimono.effects.spec import (
     CheckSpec,
     ColorSpec,
@@ -477,7 +478,8 @@ def _number(
     return float(spec.scaled_at(spec.coerce(raw), frame, scale))
 
 
-_BLIT_FRAGMENT = """
+_BLIT_FRAGMENT = (
+    """
 #version 430 core
 in vec2 v_uv;
 out vec4 frag_color;
@@ -485,9 +487,14 @@ uniform sampler2D u_texture;
 uniform bool u_premultiplied;
 // 渡された絵が sRGB で符号化した値か（sRGB で重ねた合成先のキャンバス）
 uniform bool u_decode;
+"""
+    + AREA_SAMPLING
+    + """
 void main() {
-    vec4 color = texture(u_texture, v_uv);
-    if (u_premultiplied && color.a > 0.0001) color.rgb /= color.a;
+    // 素材を枠へ収めて縮めるときも、変形のエフェクトと同じく事前乗算で平均する
+    // GL の補間のままだと、透明な所に残った色が縁へにじむ（#179）
+    vec4 color = area_premul(u_texture, v_uv, dFdx(v_uv), dFdy(v_uv), u_premultiplied);
+    color = color.a > 0.0001 ? vec4(color.rgb / color.a, color.a) : vec4(0.0);
     if (u_decode) {
         vec3 c = clamp(color.rgb, 0.0, 1.0);
         color.rgb = mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
@@ -495,3 +502,4 @@ void main() {
     frag_color = color;
 }
 """
+)
