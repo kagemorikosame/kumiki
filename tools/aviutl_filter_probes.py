@@ -1,0 +1,536 @@
+r"""フィルタと中身の意味を AviUtl2 に描かせて測る（#184・#188・#192・#195）
+
+    .venv\Scripts\python.exe tools\aviutl_filter_probes.py --work .work\aviutl-filters build
+    .venv\Scripts\python.exe tools\aviutl2_export.py --project .work\aviutl-filters\compare.aup2 ^
+        --output .work\aviutl-filters\aviutl --aviutl2 J:\aviutl2_v2.1.6a\aviutl2.exe
+    .venv\Scripts\python.exe tools\aviutl_filter_probes.py --work .work\aviutl-filters measure
+
+測るもの
+
+- 文字装飾の縁と影の太さ（``縁取り文字`` などを Arial 100 の H で） 縦に伸ばした字の切れ方
+- 斜めクリッピングの向きと幅、色調補正の各項目、レンズブラーの光の強さ、ぼかしとレンズブラーの
+  サイズ固定
+- 縁取りのぼかし
+- 中身の フレームバッファ と 直前オブジェクト（下のレイヤーに置いた白い四角をどう写すか）
+
+見本は合成の物だけ（白の図形と、その場で作る色の画像） 配布物は使わないので、測った数を試験の
+定数へそのまま写せる 1 本の見本が 2 つのレイヤーを使うことがあるので、プロジェクトは
+``tools/aviutl_compare.py`` の並べ方を借りずにここで書く（レイヤー 0 と 1 を同じ区間に置く）
+AviUtl2 を起こす回数を減らすため、測るものを 1 つのプロジェクトにまとめてある
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import struct
+import sys
+import zlib
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import numpy as np
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tools"))
+sys.path.insert(0, str(ROOT / "src"))
+
+import aviutl_compare  # noqa: E402
+
+#: 見本の長さ（フレーム） 動かないので短くてよい
+LENGTH = 6
+#: 見本どうしの間
+GAP = 4
+
+#: 1 つのオブジェクトの節の並び（中身・フィルタ…・描画） 行は ``項目=値``
+Blocks = list[list[str]]
+
+
+@dataclass(frozen=True)
+class Probe:
+    """見本 1 本 ``layers`` はレイヤー 0 から順のオブジェクト"""
+
+    name: str
+    layers: tuple[Blocks, ...] = field(default_factory=tuple)
+
+
+def draw(x: float = 0.0, y: float = 0.0, zoom: float = 100.0) -> list[str]:
+    """標準描画 AviUtl2 が書いたエイリアスと同じ並び"""
+    return [
+        "effect.name=標準描画",
+        f"X={x:.2f}",
+        f"Y={y:.2f}",
+        "Z=0.00",
+        "Group=1",
+        "中心X=0.00",
+        "中心Y=0.00",
+        "中心Z=0.00",
+        "Group3=1",
+        "X軸回転=0.00",
+        "Y軸回転=0.00",
+        "Z軸回転=0.00",
+        "Group2=1",
+        f"拡大率={zoom:.3f}",
+        "縦横比=0.000",
+        "透明度=0.00",
+        "合成モード=通常",
+    ]
+
+
+def square(size: int = 300, colour: str = "ffffff") -> list[str]:
+    return [
+        "effect.name=図形",
+        "図形の種類=四角形",
+        f"サイズ={size}",
+        "縦横比=0.00",
+        "ライン幅=4000",
+        f"色={colour}",
+        "角を丸くする=0",
+    ]
+
+
+def image(path: Path) -> list[str]:
+    return ["effect.name=画像ファイル", f"ファイル={path}"]
+
+
+def text(
+    content: str, decoration: str = "標準文字", size: float = 100.0, edge: str = "ff0000"
+) -> list[str]:
+    """``tools/aviutl_tag_probes.py`` の見本と同じ項目（AviUtl2 v2.1.6a に作らせた形）"""
+    return [
+        "effect.name=テキスト",
+        f"サイズ={size:.2f}",
+        "字間=0.00",
+        "行間=0.00",
+        "表示速度=0.00",
+        "フォント=Arial",
+        "文字色=ffffff",
+        f"影・縁色={edge}",
+        f"文字装飾={decoration}",
+        "文字揃え=中央揃え[中]",
+        "B=0",
+        "I=0",
+        f"テキスト={content}",
+        "文字毎に個別オブジェクト=0",
+        "自動スクロール=0",
+        "移動座標上に表示=0",
+        "オブジェクトの長さを自動調節=0",
+    ]
+
+
+def filter_block(name: str, **values: object) -> list[str]:
+    return [f"effect.name={name}", *(f"{key}={value}" for key, value in values.items())]
+
+
+def single(*blocks: list[str]) -> tuple[Blocks, ...]:
+    return (list(blocks),)
+
+
+#: 文字装飾の名前（AviUtl2 の一覧の並び）
+DECORATIONS = (
+    "標準文字",
+    "影付き文字",
+    "影付き文字（薄）",
+    "縁取り文字",
+    "縁取り文字（細）",
+    "縁取り文字（太）",
+    "縁取り文字（角）",
+)
+
+
+def probes(folder: Path) -> tuple[Probe, ...]:
+    patches = (folder / "patches.png").resolve()
+    dots = (folder / "dots.png").resolve()
+    blue = (folder / "blue.png").resolve()
+    found: list[Probe] = []
+
+    # --- #184 文字装飾の太さ Arial 100 の H ---
+    for index, decoration in enumerate(DECORATIONS):
+        found.append(Probe(f"fp01_deco{index}", single(text("H", decoration), draw())))
+    found.append(Probe("fp02_border_size50", single(text("H", "縁取り文字", 50.0), draw())))
+    found.append(Probe("fp03_border_size200", single(text("H", "縁取り文字", 200.0), draw())))
+    # 縦に伸ばした字 文字の枠を青で塗って、枠のどこで切れるかを見る
+    framed = text("H<th2>H<th>H")
+    frame_fill = filter_block(
+        "画像合成",
+        X="0.0",
+        Y="0.0",
+        Group="1",
+        拡大率="100.00",
+        合成モード="後方から合成",
+        画像=str(blue),
+        ループ画像="1",
+        ループ再生="1",
+    )
+    found.append(Probe("fp04_tall_th2", single(framed, frame_fill, draw())))
+    # 1 回目は 影付き文字（薄） と 縁取り文字（細）（太）（角） が標準文字のまま描かれた
+    # 設定欄の名前を読まなかったので、制御文字の番号（``<@Arial,番号>``）と半角の括弧で測り直す
+    for number in range(1, 7):
+        found.append(Probe(f"fp05_deco_tag{number}", single(text(f"<@Arial,{number}>H"), draw())))
+    for index, decoration in enumerate(DECORATIONS[2:], start=2):
+        half = decoration.replace("（", "(").replace("）", ")")
+        found.append(Probe(f"fp06_deco_half{index}", single(text("H", half), draw())))
+
+    # --- #188 斜めクリッピング 白い四角 300 の中心を通る線 ---
+    def slant(angle: float, width: float = 0.0, blur: float = 0.0) -> list[str]:
+        return filter_block(
+            "斜めクリッピング",
+            中心X="0.0",
+            中心Y="0.0",
+            角度=f"{angle:.1f}",
+            ぼかし=f"{blur:.0f}",
+            幅=f"{width:.0f}",
+        )
+
+    found.append(Probe("fp10_slant_a0", single(square(), slant(0.0), draw())))
+    found.append(Probe("fp11_slant_a30", single(square(), slant(30.0), draw())))
+    found.append(Probe("fp12_slant_a-30", single(square(), slant(-30.0), draw())))
+    found.append(Probe("fp13_slant_a90", single(square(), slant(90.0), draw())))
+    found.append(Probe("fp14_slant_a0_w100", single(square(), slant(0.0, 100.0), draw())))
+    found.append(Probe("fp15_slant_a0_wm100", single(square(), slant(0.0, -100.0), draw())))
+
+    # --- #188 色調補正 3 色の升（灰 128・橙・青） ---
+    neutral = {
+        "明るさ": "100.0",
+        "コントラスト": "100.0",
+        "色相": "0.0",
+        "輝度": "100.0",
+        "彩度": "100.0",
+        "飽和する": "0",
+    }
+    for label, change in (
+        ("neutral", {}),
+        ("bright150", {"明るさ": "150.0"}),
+        ("bright50", {"明るさ": "50.0"}),
+        ("contrast150", {"コントラスト": "150.0"}),
+        ("luma150", {"輝度": "150.0"}),
+        ("sat50", {"彩度": "50.0"}),
+        ("hue90", {"色相": "90.0"}),
+    ):
+        values = {**neutral, **change}
+        found.append(
+            Probe(
+                f"fp20_color_{label}",
+                single(image(patches), filter_block("色調補正", **values), draw()),
+            )
+        )
+    # 何も掛けない升 色の基準
+    found.append(Probe("fp29_color_plain", single(image(patches), draw())))
+
+    # --- #188 レンズブラーの光の強さ 黒地に白い点 ---
+    for strength in (0, 10, 25, 50, 100):
+        found.append(
+            Probe(
+                f"fp30_lens_light{strength}",
+                single(
+                    image(dots),
+                    filter_block("レンズブラー", 範囲="20", 光の強さ=str(strength), サイズ固定="0"),
+                    draw(),
+                ),
+            )
+        )
+    # サイズ固定 白い四角の外へにじむかどうか
+    for fixed in (0, 1):
+        found.append(
+            Probe(
+                f"fp33_blur_fixed{fixed}",
+                single(
+                    square(),
+                    filter_block(
+                        "ぼかし", 範囲="30", 縦横比="0.0", 光の強さ="0", サイズ固定=str(fixed)
+                    ),
+                    draw(),
+                ),
+            )
+        )
+        found.append(
+            Probe(
+                f"fp35_lens_fixed{fixed}",
+                single(
+                    square(),
+                    filter_block("レンズブラー", 範囲="30", 光の強さ="0", サイズ固定=str(fixed)),
+                    draw(),
+                ),
+            )
+        )
+
+    # --- #192 縁取りのぼかし ---
+    for blur in (0, 5, 20):
+        found.append(
+            Probe(
+                f"fp40_border_blur{blur}",
+                single(
+                    square(),
+                    filter_block("縁取り", サイズ="10", ぼかし=str(blur), 縁色="ff0000"),
+                    draw(),
+                ),
+            )
+        )
+
+    # --- #195 中身 下のレイヤーの白い四角（左）をどう写すか ---
+    below = [square(200), draw(x=-400.0)]
+    found.append(
+        Probe(
+            "fp50_framebuffer",
+            (
+                below,
+                [["effect.name=フレームバッファ", "フレームバッファをクリア=0"], draw(zoom=50.0)],
+            ),
+        )
+    )
+    found.append(
+        Probe(
+            "fp51_framebuffer_clear",
+            (
+                below,
+                [["effect.name=フレームバッファ", "フレームバッファをクリア=1"], draw(zoom=50.0)],
+            ),
+        )
+    )
+    found.append(Probe("fp52_previous", (below, [["effect.name=直前オブジェクト"], draw(x=400.0)])))
+    # 直前オブジェクト は下のオブジェクトのフィルタまで写すか 下の四角を赤く塗っておく
+    painted = [square(200), filter_block("単色化", 強さ="100.0", 色="ff0000", 輝度を保持する="0")]
+    found.append(
+        Probe(
+            "fp53_previous_filtered",
+            ([*painted, draw(x=-400.0)], [["effect.name=直前オブジェクト"], draw(x=400.0)]),
+        )
+    )
+    return tuple(found)
+
+
+def chosen(found: tuple[Probe, ...], only: str) -> tuple[Probe, ...]:
+    """``--only`` で選んだ見本 名前の頭で選ぶ（``fp05,fp31`` 空なら全部）
+
+    AviUtl2 を起こすたびに自動控えが回るので、足した見本だけを書き出せるようにする
+    """
+    heads = tuple(head.strip() for head in only.split(",") if head.strip())
+    if not heads:
+        return found
+    return tuple(probe for probe in found if probe.name.startswith(heads))
+
+
+def _png(width: int, height: int, pixels: bytes) -> bytes:
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        body = kind + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", header)
+        + chunk(b"IDAT", zlib.compress(pixels))
+        + chunk(b"IEND", b"")
+    )
+
+
+#: 色調補正の升の色 灰は真ん中、橙と青は彩度と色相の動きが見える色
+PATCH_COLOURS = ((128, 128, 128), (200, 100, 50), (50, 150, 220))
+#: 升 1 つの大きさ（画素）
+PATCH = 100
+
+
+def patches_png() -> bytes:
+    rows = []
+    for _ in range(PATCH):
+        row = b"".join(bytes(colour) * PATCH for colour in PATCH_COLOURS)
+        rows.append(b"\x00" + row)
+    return _png(PATCH * len(PATCH_COLOURS), PATCH, b"".join(rows))
+
+
+def dots_png(width: int = 600, height: int = 300, span: int = 60, radius: int = 6) -> bytes:
+    ys, xs = np.mgrid[0:height, 0:width]
+    local_x = (xs % span) - span / 2
+    local_y = (ys % span) - span / 2
+    lit = (local_x**2 + local_y**2) <= radius**2
+    pixels = np.where(lit[..., None], 255, 0).astype(np.uint8).repeat(3, axis=2)
+    rows = [b"\x00" + pixels[y].tobytes() for y in range(height)]
+    return _png(width, height, b"".join(rows))
+
+
+def blue_png() -> bytes:
+    return _png(1, 1, b"\x00\x00\x00\xff")
+
+
+def write_project(work: Path, chosen: tuple[Probe, ...]) -> dict[str, object]:
+    """見本を並べた .aup2 と、見本の区間の一覧を書く"""
+    target = work / "compare.aup2"
+    out = [
+        aviutl_compare._HEADER.format(
+            file=target,
+            width=aviutl_compare.WIDTH,
+            height=aviutl_compare.HEIGHT,
+            rate=aviutl_compare.FPS,
+            audio_rate=aviutl_compare.AUDIO_RATE,
+        )
+    ]
+    cases: list[dict[str, object]] = []
+    number = 0
+    cursor = 0
+    for probe in chosen:
+        end = cursor + LENGTH - 1
+        for layer, blocks in enumerate(probe.layers):
+            out.append(f"[{number}]")
+            out.append(f"layer={layer}")
+            out.append(f"frame={cursor},{end}")
+            for index, block in enumerate(blocks):
+                out.append(f"[{number}.{index}]")
+                out.extend(block)
+            number += 1
+        cases.append(
+            {"name": probe.name, "start": cursor, "length": LENGTH, "layers": probe.layers}
+        )
+        cursor += LENGTH + GAP
+    target.write_text("\n".join(out) + "\n", encoding="utf-8")
+    manifest: dict[str, object] = {"cases": cases}
+    (work / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8"
+    )
+    return manifest
+
+
+def command_build(work: Path, only: str = "") -> int:
+    folder = work / "probes"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "patches.png").write_bytes(patches_png())
+    (folder / "dots.png").write_bytes(dots_png())
+    (folder / "blue.png").write_bytes(blue_png())
+    picked = chosen(probes(folder), only)
+    if not picked:
+        print(f"--only {only} に当たる見本がありません")
+        return 1
+    write_project(work, picked)
+    last = len(picked) * (LENGTH + GAP)
+    print(f"{len(picked)} 本を並べた（{last} フレーム）")
+    print(
+        f"AviUtl2 で {work / 'compare.aup2'} を開き、{work / aviutl_compare.PNG_FOLDER} へ書き出す"
+    )
+    return 0
+
+
+def object_text(blocks: Blocks) -> str:
+    """1 レイヤーの見本を Sashimono の読み込みへ渡す ``.object`` の形"""
+    lines = ["[Object]", f"frame=0,{LENGTH - 1}"]
+    for index, block in enumerate(blocks):
+        lines.append(f"[Object.{index}]")
+        lines.extend(block)
+    return "\r\n".join(lines) + "\r\n"
+
+
+def command_measure(work: Path) -> int:
+    """AviUtl2 の書き出しと Sashimono の絵で、見本ごとの明るい外形と升の色を並べる"""
+    from dataclasses import replace
+
+    from sashimono.compat.aviutl.exo import load_exo
+    from sashimono.compat.aviutl.mapping import map_object
+    from sashimono.compat.aviutl.report import CompatibilityReport
+    from sashimono.core.model import ProjectSettings
+    from sashimono.core.timebase import FrameRate
+    from sashimono.engine.render import FrameRenderer
+
+    manifest = json.loads((work / "manifest.json").read_text(encoding="utf-8"))
+    cases = manifest["cases"]
+    frames = {case["name"]: int(case["start"]) + LENGTH // 2 for case in cases}
+    references = aviutl_compare.reference_frames(work, set(frames.values()))
+    if references is None:
+        print(f"{work / aviutl_compare.PNG_FOLDER} に書き出しがありません 先に書き出してください")
+        return 1
+    settings = ProjectSettings(
+        width=aviutl_compare.WIDTH,
+        height=aviutl_compare.HEIGHT,
+        frame_rate=FrameRate(aviutl_compare.FPS),
+        sample_rate=aviutl_compare.AUDIO_RATE,
+    )
+    report = CompatibilityReport()
+    scratch = work / "objects"
+    scratch.mkdir(exist_ok=True)
+    rows: list[dict[str, object]] = []
+    pictures: dict[str, np.ndarray] = {}
+    renderer: FrameRenderer | None = None
+    try:
+        for case in cases:
+            name = str(case["name"])
+            frame = frames[name]
+            reference = references.get(frame)
+            if reference is None:
+                print(f"{name}: 書き出しにフレーム {frame} がありません")
+                return 1
+            objects = []
+            for layer, blocks in enumerate(case["layers"]):
+                path = scratch / f"{name}_{layer}.object"
+                path.write_bytes(object_text(blocks).encode("utf-8"))
+                for obj in load_exo(path).objects:
+                    mapped = map_object(obj, settings.frame_rate, report=report)
+                    if mapped is not None:
+                        objects.append(replace(mapped, layer=layer + 1))
+            project, _ = aviutl_compare.placed_project(objects, settings, int(case["start"]))
+            if renderer is None:
+                renderer = FrameRenderer(project)
+            else:
+                renderer.set_project(project)
+            ours = np.asarray(renderer.render(frame))[..., :3]
+            theirs = np.asarray(reference)[..., :3]
+            pictures[f"{name}_aviutl"] = theirs
+            pictures[f"{name}_sashimono"] = ours
+            row = {"name": name, "aviutl": describe(theirs), "sashimono": describe(ours)}
+            rows.append(row)
+            print(name)
+            print(f"  AviUtl2   {row['aviutl']}")
+            print(f"  Sashimono {row['sashimono']}")
+    finally:
+        if renderer is not None:
+            renderer.close()
+    (work / "measure.json").write_text(json.dumps(rows, ensure_ascii=False, indent=1), "utf-8")
+    np.savez_compressed(work / "measure.npz", **pictures)
+    for line in report.lines():
+        print(f"  記録: {line}")
+    return 0
+
+
+def _box(mask: np.ndarray) -> list[int] | None:
+    rows = np.nonzero(mask.any(axis=1))[0]
+    columns = np.nonzero(mask.any(axis=0))[0]
+    if rows.size == 0 or columns.size == 0:
+        return None
+    return [int(columns[0]), int(rows[0]), int(columns[-1]) + 1, int(rows[-1]) + 1]
+
+
+def describe(image: np.ndarray) -> dict[str, object]:
+    """明るい所・白・赤の外形と、升 3 つの真ん中の色（色調補正の見本用）"""
+    pixels = image.astype(int)
+    red, green, blue = pixels[..., 0], pixels[..., 1], pixels[..., 2]
+    height, width = image.shape[:2]
+    centre_y = height // 2
+    patches = []
+    for index in range(len(PATCH_COLOURS)):
+        centre_x = width // 2 + (index - 1) * PATCH
+        spot = image[centre_y - 10 : centre_y + 10, centre_x - 10 : centre_x + 10]
+        patches.append([round(float(v), 1) for v in spot.reshape(-1, 3).mean(axis=0)])
+    return {
+        "lit": _box(image.max(axis=2) >= 128),
+        "white": _box((red > 200) & (green > 200) & (blue > 200)),
+        "red": _box((red > 100) & (green < 90) & (blue < 90)),
+        "blue": _box((blue > 150) & (red < 80) & (green < 80)),
+        "patches": patches,
+        "mean": round(float(image.mean()), 2),
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--work", type=Path, required=True, help="作業フォルダ")
+    parser.add_argument("command", choices=("build", "measure"))
+    parser.add_argument(
+        "--only", default="", help="並べる見本の名前の頭（fp05,fp31 のように , で区切る）"
+    )
+    arguments = parser.parse_args(argv)
+    # 丸ごとの道にする 相対のまま渡すと、プロジェクトに書く自分の道（``file=``）が相対になる
+    work: Path = arguments.work.resolve()
+    work.mkdir(parents=True, exist_ok=True)
+    if arguments.command == "build":
+        return command_build(work, arguments.only)
+    return command_measure(work)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

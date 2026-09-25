@@ -97,6 +97,8 @@ from sashimono.compat.ymm4.values import number, type_name  # noqa: E402
 WIDTH, HEIGHT, FPS = 1920, 1080, 30
 #: 比べる絵の大きさ YMM4 の書き出しは圧縮されるので、縮めてならしてから比べる
 COMPARE_WIDTH, COMPARE_HEIGHT = 480, 270
+#: 縮める割合（縦横それぞれ）
+SHRINK = WIDTH // COMPARE_WIDTH
 #: テンプレート 1 本あたりの最短の枠（フレーム）
 MIN_SLOT = 60
 #: 枠と枠の間に空ける黒 前のテンプレートの残りが次へ混ざらないように
@@ -261,13 +263,22 @@ def build_cases(files: list[Path]) -> tuple[list[Case], list[str]]:
     return cases, skipped
 
 
-def write_project(cases: list[Case], target: Path) -> None:
+def write_project(
+    cases: list[Case], target: Path, *, width: int = WIDTH, height: int = HEIGHT
+) -> None:
     items = [item for case in cases for item in case.items]
     length = max((case.start + case.length for case in cases), default=1) + GAP
-    write_document(items, length, target)
+    write_document(items, length, target, width=width, height=height)
 
 
-def write_document(items: list[dict[str, Any]], length: int, target: Path) -> None:
+def write_document(
+    items: list[dict[str, Any]],
+    length: int,
+    target: Path,
+    *,
+    width: int = WIDTH,
+    height: int = HEIGHT,
+) -> None:
     """アイテムの並びを YMM4 のプロジェクト（.ymmp）として書く
 
     絵の比較と音の探りで同じ書き方を使う YMM4 は BOM 付きの UTF-8 でないと
@@ -281,7 +292,7 @@ def write_document(items: list[dict[str, Any]], length: int, target: Path) -> No
             {
                 "ID": str(uuid.uuid4()),
                 "Name": "メイン",
-                "VideoInfo": {"FPS": FPS, "Hz": 48000, "Width": WIDTH, "Height": HEIGHT},
+                "VideoInfo": {"FPS": FPS, "Hz": 48000, "Width": width, "Height": height},
                 "Items": items,
                 "LayerSettings": {"Items": []},
                 "CurrentFrame": 0,
@@ -306,11 +317,13 @@ def command_build(arguments: argparse.Namespace) -> int:
     if arguments.exclude:
         # YMM4 自身が書き出しに失敗するテンプレートがある 外して並べ直す
         files = [path for path in files if not any(word in path.name for word in arguments.exclude)]
+    files = move_last(files, getattr(arguments, "last", []))
     cases, skipped = build_cases(files)
-    write_project(cases, work / "compare.ymmp")
+    width, height = getattr(arguments, "size", (WIDTH, HEIGHT))
+    write_project(cases, work / "compare.ymmp", width=width, height=height)
     manifest = {
-        "width": WIDTH,
-        "height": HEIGHT,
+        "width": width,
+        "height": height,
         "fps": FPS,
         "skipped": skipped,
         "cases": [
@@ -339,6 +352,39 @@ def command_build(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def screen_size(text: str) -> tuple[int, int]:
+    """``1280x720`` の形の画面の大きさ 4 で割り切れない大きさは縮めた比較が端を切るので断る"""
+    width, _, height = text.lower().partition("x")
+    try:
+        size = (int(width), int(height))
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text} は 幅x高さ の形でない") from None
+    if min(size) <= 0 or any(value % SHRINK for value in size):
+        raise argparse.ArgumentTypeError(f"{text} は {SHRINK} で割り切れる正の大きさにする")
+    return size
+
+
+def move_last(files: list[Path], words: list[str]) -> list[Path]:
+    """名前に ``words`` のどれかを含むファイルを後ろへ回す 語の順に並べ、最後の語の物が最後
+
+    YMM4 は書き出しの途中で黙って止まることがある（aomoya の書き出しは、最初のフレーム
+    バッファのアイテムの頭の 15766 フレームで 2 度とも止まった #177） 止める物を後ろへ
+    回せば、前の物は全部書き出され、どれで止まったかも止まった所で分かる
+    """
+    if not words:
+        return files
+    rest = [path for path in files if not any(word in path.name for word in words)]
+    # 2 つの語に当たるファイルは後ろの語の所へ置く 2 度並べるとテンプレートが重なる
+    tail: list[Path] = []
+    for word in words:
+        for path in files:
+            if word in path.name:
+                if path in tail:
+                    tail.remove(path)
+                tail.append(path)
+    return rest + tail
+
+
 def export_arguments(project: Path, video: Path, *, no_compressor: bool = False) -> list[str]:
     """``tools/ymm4_export.py`` へ渡す引数 案内の命令と試験で読ませる引数を 1 か所で作る
 
@@ -365,11 +411,15 @@ def print_export_hint(project: Path, video: Path, *, no_compressor: bool = False
 
 
 def _shrink(image: np.ndarray) -> np.ndarray:
-    """面積の平均で縮める 1920x1080 から 4 分の 1 ならちょうど割り切れる"""
+    """面積の平均で縦横 4 分の 1 に縮める 1920x1080 なら 480x270（``COMPARE_WIDTH``）
+
+    画面の大きさを変えた探り（``build --size``）も同じ割合で縮める 決まった 480x270 へ
+    合わせると、1280x720 は割り切れずに右と下が切れる
+    """
     height, width = image.shape[:2]
-    fy, fx = height // COMPARE_HEIGHT, width // COMPARE_WIDTH
-    cropped = image[: COMPARE_HEIGHT * fy, : COMPARE_WIDTH * fx, :3].astype(np.float32)
-    return cropped.reshape(COMPARE_HEIGHT, fy, COMPARE_WIDTH, fx, 3).mean(axis=(1, 3))
+    rows, columns = height // SHRINK, width // SHRINK
+    cropped = image[: rows * SHRINK, : columns * SHRINK, :3].astype(np.float32)
+    return cropped.reshape(rows, SHRINK, columns, SHRINK, 3).mean(axis=(1, 3))
 
 
 def _save_png(image: np.ndarray, target: Path) -> None:
@@ -650,7 +700,10 @@ def compare_work(
     references = References(_ymm4_frames(video))
 
     settings = ProjectSettings(
-        width=WIDTH, height=HEIGHT, frame_rate=FrameRate(FPS), blending=blending
+        width=int(manifest.get("width", WIDTH)),
+        height=int(manifest.get("height", HEIGHT)),
+        frame_rate=FrameRate(FPS),
+        blending=blending,
     )
     images = output / "images"
     images.mkdir(parents=True, exist_ok=True)
@@ -3203,6 +3256,18 @@ def main() -> int:
     build = commands.add_parser("build")
     build.add_argument("sources", type=Path, nargs="+")
     build.add_argument("--exclude", action="append", default=[], help="ファイル名に含む語で外す")
+    build.add_argument(
+        "--last",
+        action="append",
+        default=[],
+        help="ファイル名に含む語で後ろへ回す（YMM4 が書き出しを止める物を後ろへ）",
+    )
+    build.add_argument(
+        "--size",
+        type=screen_size,
+        default=(WIDTH, HEIGHT),
+        help=f"画面の大きさ（既定 {WIDTH}x{HEIGHT}） ペンの点のように画面で意味の変わる物の探り用",
+    )
     compare = commands.add_parser("compare")
     compare.add_argument("--only", default="")
     compare.add_argument("--top", type=int, default=30)
