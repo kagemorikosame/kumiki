@@ -266,12 +266,127 @@ class TestEffectOnly:
         assert report.missing["アニメーション効果: 内側シャドー@別の束"] == 1
 
 
-class TestScriptedContents:
-    def test_custom_objects_and_scene_changes_are_counted_by_script(self) -> None:
-        report = CompatibilityReport()
-        map_object(parse_exo(SCENE_ALIAS).objects[0], RATE, report=report)
-        assert report.missing["シーンチェンジ: ディザワイプ(時計)@ディザσ"] == 1
+#: SCENE_ALIAS が呼ぶスクリプト 制御文字は ``@ディザσ.scn`` の ディザワイプ(時計) のまま
+#: 中身は ffi を使わない短い物に替えた 読み込みの試験なので走らせない
+SCENE_SCRIPT = (
+    "@ディザワイプ(時計)\n"
+    "--track0:初期角,-360,360,0\n"
+    "--track1:ぼかし角,0,180,45,1\n"
+    "--dialog:ドットサイズ,_1=3;ドット縦横比,_2=0;パターン (0〜7),_3=4;└(7)のシード,_4=123;"
+    "α精度(0~30),_5=0;Xずれ,_6=0;Yずれ,_7=0;TRACK,_0=nil;\n"
+    'obj.setoption("dst","frm")\n'
+    "obj.draw()\n"
+)
 
+
+@pytest.fixture
+def scene_scripts(tmp_path: Path) -> Iterator[ScriptCatalog]:
+    """``@ディザσ.scn`` だけを置いた一覧 終わったら元の一覧へ戻す"""
+    root = tmp_path / "scene_scripts"
+    root.mkdir()
+    (root / "@ディザσ.scn").write_text(SCENE_SCRIPT, encoding="cp932")
+    # 同じ名前のアニメーション効果を置く 種類を見ずに選ぶと、場面切り替えにこちらが繋がる
+    (root / "@ディザσ.anm").write_text("@ディザワイプ(時計)\nobj.ox = 0\n", encoding="cp932")
+    saved = catalog_module._catalog
+    created = ScriptCatalog(roots=(root,))
+    created.scan()
+    set_script_catalog(created)
+    yield created
+    catalog_module._catalog = saved
+    if saved is not None:
+        saved.register_all()
+
+
+class TestSceneChange:
+    """AviUtl のシーンチェンジを場面切り替え（生成オブジェクト ``transition``）として置く（#196）
+
+    以前は「シーンチェンジ: 名前」と数えるだけで、中身の無いクリップを置いていた
+    置いても何も映らず、下の場面は切り替わらずにそのまま流れた
+    """
+
+    def test_a_scripted_scene_change_becomes_a_transition_running_the_script(
+        self, scene_scripts: ScriptCatalog
+    ) -> None:
+        report = CompatibilityReport()
+        mapped = map_object(parse_exo(SCENE_ALIAS).objects[0], RATE, report=report)
+        assert mapped is not None
+        assert mapped.clip.source is not None
+        assert mapped.clip.source.kind == "transition"
+        # スクリプトが走らないとき（ffi が要る物など）は、真ん中で入れ替えるだけにする
+        assert mapped.clip.source.params["style"] == "switch"
+        (script,) = mapped.clip.effects
+        entry = scene_scripts.get(script.kind)
+        assert entry is not None
+        # アニメーション効果の同じ名前に繋がると、場面ではなく前の場面の効果として掛かる
+        assert entry.kind == "scn"
+        assert script.params["track1"] == AnimatedValue(45.0)
+        assert script.params["_1"] == AnimatedValue(3.0)
+        assert not [line for line in report.missing if line.startswith("シーンチェンジ")]
+
+    def test_the_adjust_slider_is_the_first_track(self, scene_scripts: ScriptCatalog) -> None:
+        # AviUtl1 はスクリプトの track0 を 調整 の名前で書く（配布物 4 本とも track0 が無い）
+        # 読まないと、初期角を変えた時計のワイプが既定の 0 度から回り始める
+        del scene_scripts
+        text = SCENE_ALIAS.replace("調整=0.00", "調整=90.00")
+        mapped = map_object(parse_exo(text).objects[0], RATE, report=CompatibilityReport())
+        assert mapped is not None
+        (script,) = mapped.clip.effects
+        assert script.params["track0"] == AnimatedValue(90.0)
+
+    def test_the_reverse_is_counted(self, scene_scripts: ScriptCatalog) -> None:
+        # 反転が前後を入れ替えるのか、進み方を逆にするのかは実物で確かめていない
+        del scene_scripts
+        report = CompatibilityReport()
+        text = SCENE_ALIAS.replace("反転=0", "反転=1")
+        map_object(parse_exo(text).objects[0], RATE, report=report)
+        assert report.missing["シーンチェンジの反転"] == 1
+
+    def test_a_missing_script_still_switches_the_scenes(self, scene_scripts: ScriptCatalog) -> None:
+        # スクリプトが手元に無くても場面切り替えは置く 何も置かないと、前の場面が
+        # 切り替わらずに流れ、置いたシーンチェンジの区間も分からない
+        del scene_scripts
+        report = CompatibilityReport()
+        text = SCENE_ALIAS.replace("@ディザσ", "@別の束")
+        mapped = map_object(parse_exo(text).objects[0], RATE, report=report)
+        assert mapped is not None
+        assert mapped.clip.source is not None
+        assert mapped.clip.source.kind == "transition"
+        assert mapped.clip.effects == ()
+        assert report.missing["シーンチェンジ: ディザワイプ(時計)@別の束"] == 1
+
+    def test_the_built_in_cross_fade_is_a_fade(self) -> None:
+        # fade に写さないと、じわっと混ざるはずの切り替えが真ん中で急に入れ替わる
+        report = CompatibilityReport()
+        text = SCENE_ALIAS.replace("ディザワイプ(時計)@ディザσ", "クロスフェード")
+        mapped = map_object(parse_exo(text).objects[0], RATE, report=report)
+        assert mapped is not None
+        assert mapped.clip.source is not None
+        assert mapped.clip.source.params["style"] == "fade"
+        assert mapped.clip.effects == ()
+        assert not [line for line in report.missing if line.startswith("シーンチェンジ")]
+
+    def test_the_adjust_of_a_built_in_is_counted(self) -> None:
+        # 組み込みのクロスフェードには 調整 を当てる欄が無い 数えずに捨てると、
+        # 調整 を変えた作品が違う切り替わり方になったことに気付けない
+        report = CompatibilityReport()
+        text = SCENE_ALIAS.replace("ディザワイプ(時計)@ディザσ", "クロスフェード").replace(
+            "調整=0.00", "調整=50.00"
+        )
+        map_object(parse_exo(text).objects[0], RATE, report=report)
+        assert report.missing["シーンチェンジの調整: クロスフェード"] == 1
+
+    def test_a_built_in_by_number_is_counted(self) -> None:
+        # 名前の無い組み込みは type の番号で指すと思われるが、番号と種類の対応は見ていない
+        report = CompatibilityReport()
+        text = SCENE_ALIAS.replace("name=ディザワイプ(時計)@ディザσ", "name=")
+        mapped = map_object(parse_exo(text).objects[0], RATE, report=report)
+        assert mapped is not None
+        assert mapped.clip.source is not None
+        assert mapped.clip.source.kind == "transition"
+        assert report.missing["シーンチェンジ: 組み込みの番号 2"] == 1
+
+
+class TestScriptedContents:
     def test_the_audio_volume_is_kept(self) -> None:
         report = CompatibilityReport()
         mapped = map_object(parse_exo(AUDIO_ALIAS).objects[0], RATE, report=report)

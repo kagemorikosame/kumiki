@@ -857,6 +857,7 @@ def register_stylize_effects() -> None:
             kind="exposure",
             label="露出",
             category="色",
+            keeps_content=True,
             parameters=(TrackSpec("amount", "露出", 0, 1000, 100, unit="%"),),
             fragment_shader=_EXPOSURE,
         ),
@@ -914,6 +915,7 @@ def register_stylize_effects() -> None:
             kind="highlights_shadows",
             label="ハイライトとシャドウ",
             category="色",
+            keeps_content=True,
             parameters=(
                 TrackSpec("highlights", "ハイライト", -100, 100, 0, unit="%"),
                 TrackSpec("shadows", "シャドウ", -100, 100, 0, unit="%"),
@@ -965,12 +967,14 @@ def register_stylize_effects() -> None:
             kind="invert",
             label="色の反転",
             category="色",
+            keeps_content=True,
             fragment_shader=_INVERT,
         ),
         EffectDefinition(
             kind="tint",
             label="色付け",
             category="色",
+            keeps_content=True,
             parameters=(ColorSpec("color", "色", (1.0, 0.9, 0.7, 1.0)),),
             fragment_shader=_TINT,
         ),
@@ -1093,6 +1097,7 @@ def register_stylize_effects() -> None:
             kind="binarize",
             label="2 値化",
             category="色",
+            keeps_content=True,
             parameters=(
                 TrackSpec("threshold", "しきい値", 0, 100, 50, unit="%"),
                 CheckSpec("invert", "反転", False),
@@ -1116,6 +1121,8 @@ def register_stylize_effects() -> None:
             kind="linear_transfer",
             label="色の直線変換",
             category="色",
+            # 中身の範囲を保つ印は付けない 不透明度の切片が正なら透明な所にも α を置くので、
+            # 付けると後ろの粒や欠片が、新しく見えた所を探さずに切れる
             parameters=(
                 TrackSpec("red_slope", "赤の傾き", -1000, 1000, 100, unit="%"),
                 TrackSpec("red_intercept", "赤の切片", -100, 100, 0, unit="%"),
@@ -1132,6 +1139,7 @@ def register_stylize_effects() -> None:
             kind="border_blur",
             label="縁のぼかし",
             category="ぼかし",
+            keeps_content=True,
             parameters=(TrackSpec("blur", "ぼかし", 0, 96, 10, unit="px"),),
             fragment_shader=_BORDER_BLUR,
             passes=2,

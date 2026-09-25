@@ -321,6 +321,7 @@ def register_grading_effects() -> None:
             kind="color_grade",
             label="拡張色調補正",
             category="色",
+            keeps_content=True,
             parameters=(
                 TrackSpec("luma_gain", "明るさのゲイン", -100, 100, 0, unit="%"),
                 TrackSpec("luma_gamma", "明るさのガンマ", -100, 100, 0, unit="%"),
@@ -351,6 +352,7 @@ def register_grading_effects() -> None:
             kind="gradient_map",
             label="グラデーションマップ",
             category="色",
+            keeps_content=True,
             parameters=(
                 TrackSpec("strength", "強さ", 0, 100, 100, unit="%"),
                 # 透明度は持たない AviUtl の 暗部色 明部色 も色だけで、
@@ -365,6 +367,7 @@ def register_grading_effects() -> None:
             kind="color_range_shift",
             label="特定色域変換",
             category="色",
+            keeps_content=True,
             parameters=(
                 # 透明度は持たない 色の近さを測るのにも塗り替えるのにも使わないので、
                 # 置くと触っても何も起きないつまみになる（AviUtl の側も色だけ）

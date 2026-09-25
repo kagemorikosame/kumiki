@@ -13,6 +13,7 @@ lupa が同梱している LuaJIT 2.1（5.1 互換）を使い、無ければ Lu
 from __future__ import annotations
 
 import ctypes
+import re
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -343,6 +344,8 @@ class LuaScriptRuntime:
         #: どこで見つかったか スクリプトのフォルダと名前ごとに 1 度だけ探す
         #: 毎コマ呼ばれる所なので、毎回フォルダを探し直すと重くなる
         self._found: dict[tuple[object, ...], Path | None] = {}
+        #: 置き場ごとの深い所のモジュールの索引（:meth:`_deep_index`）
+        self._deep: dict[Path, dict[tuple[str, str], Path]] = {}
 
     # --- 準備 ---
 
@@ -415,7 +418,7 @@ class LuaScriptRuntime:
             self._folder = folder
             try:
                 self._prepare(api, header, state)
-                function = self._compile(source, script)
+                function = self._compile(self._with_locals(source, state, header), script)
                 self._call_guarded(function)
             except LuaError as exc:
                 self._report.note_failure(script or "スクリプト", str(exc))
@@ -495,12 +498,48 @@ class LuaScriptRuntime:
         いない値を読めてしまい、動いたり動かなかったりする
         """
         globals_table = self._lua.globals()
-        for name in self._injected - set(state.values):
+        # ``local 名前`` の欄は大域変数にしない（:meth:`_with_locals`）
+        values = {name: value for name, value in state.values.items() if not _is_local(name)}
+        for name in self._injected - set(values):
             globals_table[name] = None
-        self._injected = set(state.values)
-        for name, value in state.values.items():
+        self._injected = set(values)
+        for name, value in values.items():
             # バイトに戻せない代用符号だけを置き換える（lua_text を参照）
             globals_table[name] = lua_text(value, self._report)
+
+    def _with_locals(
+        self, source: str, state: ObjectState, header: ScriptHeader | None = None
+    ) -> str:
+        """``--dialog`` の ``local 名前=初期値`` を、本文の頭で宣言するローカル変数にした本文
+
+        AviUtl はこの形の欄を本文の頭の ``local`` 宣言として渡す（PSDToolKit の 吹き出し の
+        ``local mlr=24``） 値は 1 つの表を通して渡し、宣言は 1 行目の頭に並べる 行を足すと、
+        失敗したときの行番号が 1 つずつずれる
+
+
+        値の無い欄（初期値が nil で設定欄を作らない物、値が ``None`` の物）も宣言して nil にする
+        宣言しないと、同じランタイムで前に走ったスクリプトが残した同じ名前の大域変数を読む
+        """
+        values = {
+            bare: value
+            for name, value in state.values.items()
+            if _is_local(name) and _LUA_NAME.fullmatch(bare := name[6:].strip())
+        }
+        names = [name for name in (header.locals if header else ()) if _LUA_NAME.fullmatch(name)]
+        names = list(dict.fromkeys([*names, *values]))
+        globals_table = self._lua.globals()
+        if not names:
+            globals_table[_DIALOG_LOCALS] = None
+            return source
+        given = {
+            name: lua_text(value, self._report)
+            for name, value in values.items()
+            if value is not None
+        }
+        globals_table[_DIALOG_LOCALS] = self._lua.table_from(given)
+        declared = " ".join(f'local {name} = {_DIALOG_LOCALS}["{name}"]' for name in names)
+        # 宣言と本文の間は ; で区切る 括弧で始まる本文が、直前の値の呼び出しに読まれる
+        return f"{declared}; {_strip_bom(source)}"
 
     # --- モジュール ---
 
@@ -509,6 +548,7 @@ class LuaScriptRuntime:
         self._roots = roots
         # 探す場所が変わったので、見つけた場所の控えは使えない
         self._found.clear()
+        self._deep.clear()
 
     def _locate(self, name: str, suffixes: tuple[str, ...]) -> Path | None:
         """モジュールの場所 スクリプトのフォルダと名前ごとに 1 度だけ探す"""
@@ -759,7 +799,35 @@ class LuaScriptRuntime:
                 found = next(folder.glob(f"*/{name}{suffix}"), None)
                 if found is not None:
                     return found
+        # 浅い所に無ければ、置き場の深い所まで探す テキスト欄の Lua はスクリプト自身の
+        # フォルダを持たず、PSDToolKit を配布のまま置く（src/lua の下）と require("PSDToolKit")
+        # が見つからずに字幕表示が subobj を作れない 浅い所を先に見終えてから探すので、
+        # 同じ名前が浅い所にあればそちらを読む（今まで読んでいた物を変えない）
+        for root in self._roots:
+            index = self._deep_index(root)
+            for suffix in suffixes:
+                found = index.get((name.casefold(), suffix.casefold()))
+                if found is not None:
+                    return found
         return None
+
+    def _deep_index(self, root: Path) -> dict[tuple[str, str], Path]:
+        """置き場の 2 段より下にあるモジュールの索引 置き場ごとに 1 度だけ歩いて作る
+
+        名前ごとに置き場を歩くと、毎回違う無い名前を require するスクリプトが、Lua の命令数の
+        上限の外で置き場全体の走査を繰り返し、描画を止められる 名前と拡張子は大文字小文字を
+        区別しない（Windows のファイル名と同じ） 同じ名前が何か所にもあれば浅い物を取る
+        """
+        index = self._deep.get(root)
+        if index is not None:
+            return index
+        index = {}
+        suffixes = {suffix.casefold() for suffix in MODULE_SUFFIXES}
+        for path in sorted(root.glob("*/*/**/*"), key=_shallow_first):
+            if path.suffix.casefold() in suffixes and path.is_file():
+                index.setdefault((path.stem.casefold(), path.suffix.casefold()), path)
+        self._deep[root] = index
+        return index
 
     def _compile(self, source: str, script: str) -> Any:
         try:
@@ -780,6 +848,23 @@ class LuaScriptRuntime:
         if message is not None:
             raise LuaError("実行が長すぎます" if timed_out else str(message))
         return value
+
+
+#: ``--dialog`` の ``local`` の欄の値を本文へ渡す表の大域変数名 配布物と名前がぶつからない綴り
+_DIALOG_LOCALS = "__sashimono_dialog_locals"
+
+#: Lua の変数名として書ける綴り ほかの物を宣言へ書くと、本文ごと読めなくなる
+_LUA_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _is_local(name: str) -> bool:
+    """``--dialog`` の欄の名前が ``local 名前`` の形か"""
+    return name.startswith("local ")
+
+
+def _shallow_first(path: Path) -> tuple[int, str]:
+    """深く探して見つけた物の並べ方 浅い物から、同じ深さなら名前の順 探すたびに変わらない"""
+    return (len(path.parts), str(path))
 
 
 def _is_native(path: Path) -> bool:

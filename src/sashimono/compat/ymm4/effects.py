@@ -23,6 +23,7 @@ from sashimono.compat.ymm4.values import animated, brush_colour, colour, number
 from sashimono.core.model import AnimatedValue, Effect
 from sashimono.effects.definition import registry
 from sashimono.effects.motion import MESH_MAX_POINTS
+from sashimono.effects.optics import MAX_PARTICLES
 
 __all__ = ["CenterPoint", "center_point", "map_effect", "mapped_names"]
 
@@ -990,13 +991,42 @@ def _jump(r: _Reader) -> Effect | None:
     )
 
 
+def _most_alive(rate: AnimatedValue, lifetime: AnimatedValue, length: int) -> float:
+    """アイテムの間で同時に居る粒の数（1 秒の数 x 寿命）の一番多い所 読めなければ NaN
+
+    フレームごとに補間した値を掛ける キーフレームの値だけを見ると、行き過ぎて戻る曲線
+    （Back・Elastic）の山を見落とし、2 つの山が別の時刻でも掛け合わせて多すぎると誤る
+    粒の数はシェーダもフレームの値から数えるので、同じ数え方になる
+    """
+    frames = range(max(length, 1) + 1) if rate.is_animated or lifetime.is_animated else (0,)
+    most = 0.0
+    for frame in frames:
+        # シェーダと同じく負の数と短すぎる寿命は寄せる
+        alive = max(rate.at(frame), 0.0) * max(lifetime.at(frame), 0.01)
+        if not math.isfinite(alive):
+            return math.nan
+        most = max(most, alive)
+    return most
+
+
 def _particles(r: _Reader) -> Effect | None:
     # 奥行き（Z・遠近・仰角）と渦の流れは平面の動きに畳んだ
     r.unused("Z", "EmitElevation", "ElevationSpreadAngle", "CurlStrength")
+    rate = r.track("Rate", 50.0)
+    lifetime = r.track("Lifetime", 2.0)
+    # 同時に居る粒は 1 秒の数 x 寿命 上限を超えた古い粒は描かないので、黙って消さずに残す
+    alive = _most_alive(rate, lifetime, r.length)
+    if not math.isfinite(alive):
+        r.report.note_missing("YMM4 のパーティクルの同時に居る粒の数（数として読めない）")
+    elif alive > MAX_PARTICLES:
+        r.report.note_missing(
+            "YMM4 のパーティクルの同時に居る粒の数"
+            f"（上限 {MAX_PARTICLES} を超えた古い粒は描かない）"
+        )
     return _create(
         "particles",
-        rate=r.track("Rate", 50.0),
-        lifetime=r.track("Lifetime", 2.0),
+        rate=rate,
+        lifetime=lifetime,
         preroll=r.track("Preroll"),
         size=r.track("Size", 100.0),
         end_scale=r.track("EndScale", 100.0),

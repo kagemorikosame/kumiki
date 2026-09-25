@@ -7,14 +7,15 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 from sashimono.core.model import AnimatedValue, Effect, ParamValue
-from sashimono.effects.spec import ParameterGroup, ParameterSpec, ParamInput
+from sashimono.effects.spec import ParameterGroup, ParameterSpec, ParamInput, TrackSpec
 
-__all__ = ["EffectDefinition", "EffectRegistry", "registry"]
+__all__ = ["EffectDefinition", "EffectRegistry", "Pieces", "registry"]
 
 
 #: 音を加工する関数の形 引数は サンプル・解いた値・時間まわりの手がかり
@@ -23,6 +24,28 @@ __all__ = ["EffectDefinition", "EffectRegistry", "registry"]
 #: （:mod:`sashimono.effects.audio`）がこの定義を取り込むため
 #: 実体の型で書くと取り込みが輪になる
 AudioProcess = Callable[[Any, dict[str, float], Any], Any]
+
+
+@dataclass(frozen=True, slots=True)
+class Pieces:
+    """絵を升目に割り、升目 1 つずつを四角として描くエフェクトの描き方（破片）
+
+    出力の画素ごとに「ここへ来る欠片」を探すと、欠片を遠くまで散らすほど 1 画素で
+    調べる欠片が増える 1080p を 4 画素の欠片に割ると 1 コマ 90ms を超えた（#207）
+    四角として描けば、欠片 1 つの手間は欠片の面積だけで済み、どこへ散っても変わらない
+
+    エンジンは中身の範囲（``u_content``）に掛かる升目の数だけ四角を描く（インスタンス描画）
+    升目は ``(0, 0)`` から ``u_cell`` 刻み ``vertex_shader`` は
+    :data:`sashimono.effects.builtin.PIECE_PRELUDE` から始め、升目ごとの動きを決めて
+    ``place_piece`` を呼ぶ ``fragment_shader`` は ``v_source``（元の絵のどこを読むか）を
+    受け取り、**事前乗算**の色を返す 重なった欠片は描いた順に手前へ重なる
+    """
+
+    #: 升目の一辺を持つ項目名 画素で決める項目（``px``）なので、画質を落とせば縮む
+    size: str
+    #: 一辺の下限（画面の画素） 細かすぎる升目で四角の数が膨らまないように止める
+    minimum: float
+    vertex_shader: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +93,14 @@ class EffectDefinition:
     #: 並びの終わりで、このシェーダに ``u_source``（取っておいた絵）と ``u_texture``
     #: （後ろを掛け終えた絵）を渡して混ぜさせる その場では何も描かない
     scopes_following: bool = False
+    #: 絵の中身を動かさず、透明な所に色を置かないか（色だけを変える・縁を削る）
+    #:
+    #: エンジンはこれの立たないエフェクトを掛けた後、中身の範囲（``u_content``）を
+    #: バッファ全体に広げる 後ろの粒や欠片はその範囲で探す所を狭めるので、立てれば
+    #: 速いまま描ける 透明な所に色を置く物に立てると、はみ出した分が粒や欠片から切れる
+    keeps_content: bool = False
+    #: 画面いっぱいの四角 1 枚ではなく、升目ごとの四角で描くか（:class:`Pieces`）
+    pieces: Pieces | None = None
     #: この値の組なら絵を変えない、という項目と値（動かない値だけが当たる）
     #:
     #: クリップが最初から持つ配置と反転（固定の項目）は、置いたクリップすべてに付く
@@ -87,6 +118,18 @@ class EffectDefinition:
         unknown = [name for name, _ in self.idle_when if name not in names]
         if unknown:
             raise ValueError(f"{self.kind}: 何もしない値の項目が定義に無い: {unknown}")
+        if self.pieces is not None:
+            # 下限は升目の一辺として割る数になる 0 や NaN を通すと、大きさの項目が 0 のときに
+            # 升目の数が求まらず、プレビューも書き出しも例外で止まる
+            minimum = self.pieces.minimum
+            if not (math.isfinite(minimum) and minimum > 0.0):
+                raise ValueError(f"{self.kind}: 升目の一辺の下限は正の数にする: {minimum}")
+            # 升目の大きさが読めないと、エンジンは下限の大きさで割って四角の数が膨らむ
+            if not isinstance(self.spec(self.pieces.size), TrackSpec):
+                raise ValueError(f"{self.kind}: 升目の大きさの項目が数の項目に無い")
+            # 四角で描く道は 1 回しか描かない 2 回目以降のパスは黙って捨てることになる
+            if self.passes != 1 or self.fragment_shader is None:
+                raise ValueError(f"{self.kind}: 升目で描くのは 1 パスのシェーダだけ")
 
     def is_idle(self, effect: Effect) -> bool:
         """``effect`` が絵を何も変えない値か :attr:`idle_when` が空なら常に偽

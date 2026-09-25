@@ -23,7 +23,15 @@ from sashimono.effects.spec import (
     ValueSpec,
 )
 
-__all__ = ["PRELUDE", "register_builtin_effects"]
+__all__ = ["PIECE_PRELUDE", "PRELUDE", "register_builtin_effects"]
+
+#: 0..1 の擬似乱数 升目で描く頂点シェーダ（:data:`PIECE_PRELUDE`）にも同じ物を入れる
+#: 2 か所に書き写すと、片方だけ直したときに同じ種から違う乱数が出る
+_HASH = """
+float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+}
+"""
 
 #: すべてのフラグメントシェーダの先頭に付く共通部分
 #: uniform の宣言と、よく使う小さな関数を置く
@@ -43,6 +51,10 @@ uniform float u_fps;           // 1 秒あたりのフレーム数
 uniform float u_duration;      // クリップの長さ（秒） 退場の動きは終わりから逆算する
 uniform vec4 u_object;         // 絵が置かれた範囲（画素、左・下・右・上 Y は上が正）
 uniform vec2 u_origin;         // 絵の原点（画素、Y は上が正） ふつうは範囲の中央
+// 絵の中身が載りうる範囲（画素、左・下・右・上 Y は上が正） u_object は変形では広がらないので、
+// 前のエフェクトが絵を動かしたり広げたりした後は、中身が u_object の外にもありうる
+// 中身の外を読まずに済ませる（粒・欠片を探す範囲を狭める）ときはこちらを使う
+uniform vec4 u_content;
 // 合成の画素 1 つが、画面（プロジェクトの解像度）の画素いくつ分かの逆数 等倍で 1、1/2 画質で 0.5
 // 画素で決める設定（TrackSpec の pixels）はエンジンがこれを掛けてから渡す シェーダの中に
 // 書いた画素の長さは、これを掛けて使う 掛けないと、画質を落としたプレビューで 2 倍に出る
@@ -180,11 +192,9 @@ vec4 blur1d(sampler2D tex, vec2 uv, vec2 direction, float radius) {
     return unpremul(sum / total);
 }
 
-// 0..1 の擬似乱数
-float hash(vec2 p) {
-    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
-}
-
+"""
+    + _HASH
+    + """
 // エフェクトが読む画像（FileSpec の texture）の 1 点 p は画像の左上を原点とする
 // 画素（Y は下が正） 画像は上の行から積んであるので、そのまま割れば UV になる
 // loop が偽なら画像の外は透明 真なら敷き詰める（AviUtl2 の ループ画像）
@@ -198,6 +208,62 @@ vec4 image_pixel(sampler2D image, vec2 size, vec2 p, bool loop) {
         return vec4(0.0);
     }
     return texture(image, uv);
+}
+"""
+)
+
+#: 升目ごとに四角を描くエフェクト（:class:`~sashimono.effects.definition.Pieces`）の
+#: 頂点シェーダの先頭に付く共通部分 uniform はフラグメント側の :data:`PRELUDE` と同じ名前で
+#: 同じ値が届く 升目の数え方は ``u_cell``（一辺の画素）・``u_first``（中身の範囲の左下の
+#: 升目の番号）・``u_columns``（横に並ぶ升目の数）で、エンジンがインスタンスの番号から引く
+#:
+#: 頂点シェーダは ``place_piece`` を 1 度呼んで終える フラグメント側へは ``v_source``
+#: （元の絵のどこを読むか、画素）が届く 升目の外は描かれないので、フラグメント側で
+#: 「この画素はどの欠片か」を探さずに済む
+PIECE_PRELUDE = (
+    """
+#version 430 core
+layout(location = 0) in vec2 a_position;
+out vec2 v_uv;
+out vec2 v_source;
+
+uniform vec2 u_size;
+uniform float u_time;
+uniform float u_frame;
+uniform float u_fps;
+uniform float u_duration;
+uniform vec4 u_object;
+uniform vec2 u_origin;
+uniform vec4 u_content;
+uniform float u_pixel_scale;
+uniform float u_cell;
+uniform ivec2 u_first;
+uniform int u_columns;
+
+const float PI = 3.14159265358979;
+"""
+    + _HASH
+    + """
+vec2 object_center() { return (u_object.xy + u_object.zw) * 0.5; }
+
+// この四角の升目の番号 升目は (0, 0) から u_cell 刻みで、Y は上が正
+vec2 piece_index() {
+    return vec2(u_first + ivec2(gl_InstanceID % u_columns, gl_InstanceID / u_columns));
+}
+
+// 升目の真ん中（元の絵の画素）
+vec2 piece_home() { return (piece_index() + 0.5) * u_cell; }
+
+// 升目を真ん中が centre に来るよう置き、angle（ラジアン）だけ時計回りに回す
+// 元の絵を読む位置は升目の中のまま 四角の中は GL が直線で補うので、回しても読む位置がずれない
+void place_piece(vec2 centre, float angle) {
+    vec2 corner = a_position * 0.5 * u_cell;
+    float c = cos(angle);
+    float s = sin(angle);
+    vec2 pixel = centre + mat2(c, -s, s, c) * corner;
+    v_source = piece_home() + corner;
+    v_uv = pixel / u_size;
+    gl_Position = vec4(v_uv * 2.0 - 1.0, 0.0, 1.0);
 }
 """
 )
@@ -1012,6 +1078,7 @@ def register_builtin_effects() -> None:
             kind="color",
             label="色調補正",
             category="色",
+            keeps_content=True,
             parameters=(
                 TrackSpec("brightness", "明るさ", -100, 100, 0, unit="%"),
                 TrackSpec("contrast", "コントラスト", -100, 300, 0, unit="%"),
@@ -1221,6 +1288,7 @@ def register_builtin_effects() -> None:
             kind="fill",
             label="単色塗り",
             category="色",
+            keeps_content=True,
             parameters=(
                 ColorSpec("color", "色", (1.0, 1.0, 1.0, 1.0)),
                 TrackSpec("amount", "強さ", 0, 100, 100, unit="%"),
@@ -1235,6 +1303,8 @@ def register_builtin_effects() -> None:
             kind="opacity",
             label="不透明度",
             category="合成",
+            # α を掛けるだけで外に色を置かない 印が無いと後ろの粒を探す範囲がバッファ全体へ広がる
+            keeps_content=True,
             parameters=(TrackSpec("amount", "不透明度", 0, 100, 100, unit="%"),),
             fragment_shader=_OPACITY,
         )
