@@ -13,9 +13,17 @@ from __future__ import annotations
 
 import numpy as np
 
-from sashimono.compat.aviutl.objapi import EffectRequest, ObjectState
-from sashimono.compat.aviutl.report import CompatibilityReport
+from sashimono.compat.aviutl.catalog import ScriptCatalog
+from sashimono.compat.aviutl.objapi import (
+    MAX_BAKES,
+    MAX_STACKED_EFFECTS,
+    EffectRequest,
+    ObjectState,
+)
+from sashimono.compat.aviutl.report import CompatibilityReport, global_report
 from sashimono.compat.aviutl.runtime import LuaScriptRuntime
+from sashimono.core.model import Effect
+from sashimono.engine.render.scripts import ScriptStage
 
 BLUR = 'obj.effect("ぼかし", "範囲", 4)'
 
@@ -88,6 +96,61 @@ class TestSettle:
         assert baker.calls == []
         assert state.effects == []
         assert state.image.shape[:2] == (4, 4)
+
+    def test_an_unchanged_picture_stays_shared(self) -> None:
+        # 掛ける物が無いと、掛ける関数は受けた配列をそのまま返す（ScriptEffectBaker） そこで
+        # 共有の印を消すと、putpixel が記録済みの描画の絵へ直に書き、先に描いた方まで変わる
+        state = ObjectState(image=np.full((4, 4, 4), 255, np.uint8), screen_w=320, screen_h=180)
+        runtime = LuaScriptRuntime(apply_effects=lambda image, effects: image)
+        result = runtime.run(f"obj.draw() {BLUR} obj.putpixel(0, 0, 0x000000, 1)", state)
+        assert not result.failed, result.message
+        drawn = state.draws[0].image
+        assert tuple(drawn[0, 0]) == (255, 255, 255, 255)
+        assert tuple(state.image[0, 0]) == (0, 0, 0, 255)
+
+    def test_baking_stops_at_the_limit(self) -> None:
+        # 1 回ごとに GPU で掛けて読み戻す 積んでは読む繰り返しを許すと 1 コマが止まるほど重い
+        # 上限を越えたら焼き込まず、効果は描くときに掛かるまま残して記録する
+        loop = f"for i = 1, {MAX_BAKES + 5} do {BLUR} obj.getpixel(0, 0) end"
+        state, baker, report = _run(f"{loop} {BLUR}")
+        assert len(baker.calls) == MAX_BAKES
+        assert state.effects
+        assert sum("焼き込みが" in line for line in report.missing) == 1
+
+    def test_stacked_effects_stop_growing_after_the_bake_limit(self) -> None:
+        # 焼き込みの上限を越えた後も積み続けると、列が命令数の上限まで伸び、描くときに
+        # 1 つずつ GPU のパスになって 1 コマが止まる 越えた分は捨てて 1 度だけ記録する
+        loop = f"for i = 1, {MAX_BAKES + 500} do {BLUR} obj.getpixel(0, 0) end"
+        state, baker, report = _run(loop)
+        assert len(baker.calls) == MAX_BAKES
+        assert len(state.result()[-1].effects) == MAX_STACKED_EFFECTS
+        assert sum("積んだ効果が" in line for line in report.missing) == 1
+
+    def test_embedded_text_does_not_bake(self) -> None:
+        # テキスト欄に埋め込んだ Lua は文字を書き出すだけで、作業用の絵は捨てる そのうえ
+        # GL を使わない範囲の計算（FrameRenderer.object_extent）からも走る ここで GPU の
+        # 焼き込みを呼ぶと、GL のコンテキストが無くて Lua ごと失敗し、文字が求まらない
+        seen: list[int] = []
+
+        def bake(
+            image: np.ndarray, effects: tuple[Effect, ...], frame: int, fps: float, duration: int
+        ) -> np.ndarray:
+            del effects, fps, duration
+            seen.append(frame)
+            raise RuntimeError("GL のコンテキストが無い")
+
+        stage = ScriptStage(ScriptCatalog(roots=()), screen=(320, 180), apply_effects=bake)
+        before = dict(global_report.missing)
+        text = stage.expand_text(
+            f"<?{BLUR} obj.getpixel(0, 0) mes('字')?>", frame=12, fps=24.0, duration=48
+        )
+        assert seen == []
+        assert text == "字"
+        # 掛けずに読んだことは記録に残す getpixel の値を文字に使うと、掛ける前の絵の値になる
+        assert any(
+            "テキスト欄の Lua" in line and count > before.get(line, 0)
+            for line, count in global_report.missing.items()
+        )
 
     def test_without_a_baker_the_order_is_recorded(self) -> None:
         # 掛ける関数を持たない所（GPU の無い道具）では焼き込めない 黙ると順が入れ替わった

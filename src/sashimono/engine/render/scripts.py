@@ -165,6 +165,8 @@ class ScriptStage:
         if self._apply_effects is None:  # pragma: no cover - 渡されたときだけランタイムへ渡す
             return image
         frame, fps, duration = self._timing
+        # 描くときと同じ写し方をする（:func:`requested_effects`） 別に写すと、焼き込んだときだけ
+        # 項目名や Y の向きが違って掛かる
         effects = tuple(effect for request in requests for effect in _to_effects(request))
         return self._apply_effects(image, effects, frame, fps, duration)
 

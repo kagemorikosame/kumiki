@@ -334,6 +334,10 @@ class ObjApi:
         #: 積んだ効果をいまの絵へ掛けて返す関数 ``(絵, 効果の組) -> 絵`` 効果は GPU で
         #: 掛けるので外から渡す 無ければ焼き込めない（:meth:`_settle_effects`）
         self._apply_effects = apply_effects
+        #: この実行で焼き込んだ回数（:data:`MAX_BAKES`）
+        self._bakes = 0
+        #: 積んだ効果の数が上限（:data:`MAX_STACKED_EFFECTS`）を越えたことを記録済みか
+        self._effects_overflowed = False
         self._random = random.Random(0)
 
     # --- 値の読み書き ---
@@ -652,6 +656,16 @@ class ObjApi:
             if not self.state.effects:
                 self._expand(params)
                 return
+        if len(self.state.effects) >= MAX_STACKED_EFFECTS:
+            # 積んだ効果は描くときに 1 つずつ GPU のパスになる 焼き込みの上限を越えた後や、
+            # 焼き込まずに積み続けるスクリプトでは列が命令数の上限まで伸び、1 コマが止まる
+            # 越えた分は捨てる 黙ると効果が掛からない理由が分からないので 1 度だけ記録する
+            if not self._effects_overflowed:
+                self._effects_overflowed = True
+                self._report.note_missing(
+                    f"obj.effect({original})（積んだ効果が {MAX_STACKED_EFFECTS} 個を越えた）"
+                )
+            return
         self.state.effects.append(EffectRequest(kind=kind, params=params, original=original))
 
     def _clip(self, values: dict[str, float | str]) -> None:
@@ -798,16 +812,38 @@ class ObjApi:
         state = self.state
         if not state.effects:
             return
+        if self._emit is not None:
+            # テキスト欄に埋め込んだ Lua は文字を書き出すだけで、絵（1x1 の作業用）は捨てる
+            # 焼き込んでも見える物は変わらない そのうえ GL を使わない範囲の計算
+            # （FrameRenderer.object_extent）からも走るので、GPU で掛けると落ちる ただし
+            # obj.getpixel の値を文字に使うと掛ける前の絵を読んだ値になるので、記録は残す
+            self._report.note_missing(f"{caller}（テキスト欄の Lua では先に積んだ効果を掛けない）")
+            return
         if self._apply_effects is None:
             self._report.note_missing(f"{caller}（先に積んだ効果の焼き込み）")
             return
-        applied = self._apply_effects(state.image, tuple(state.effects))
-        if applied is None:
+        if self._bakes >= MAX_BAKES:
+            # 1 回ごとに GPU で掛けて読み戻す 効果を積んでは画素を読む繰り返しを許すと、Lua の
+            # 命令数の上限の内でも 1 コマが止まるほど重くなる 上限を越えたら焼き込まず、効果は
+            # 描くときに掛かるまま残す 黙ると順が違う理由が分からないので 1 度だけ記録する
+            if self._bakes == MAX_BAKES:
+                self._report.note_missing(
+                    f"{caller}（焼き込みが 1 回の実行で {MAX_BAKES} 回を越えた）"
+                )
+                self._bakes += 1
+            return
+        self._bakes += 1
+        original = state.image
+        baked = self._apply_effects(original, tuple(state.effects))
+        if baked is None:
             # 掛ける側が断った（GPU の作れる大きさを超える） 理由は掛ける側が記録に残す
             # 効果は描くときに掛かるまま残す 捨てると効果ごと消える
             return
-        state.image = applied
-        state.image_shared = False
+        # 掛ける物が無い（範囲 0 のぼかしなど）と同じ配列が返る そのときに共有の印を消すと、
+        # 後の putpixel が記録済みの描画やバッファの絵へ直に書く
+        if baked is not original:
+            state.image = baked
+            state.image_shared = False
         state.effects.clear()
 
     def _drop_effects(self) -> None:
@@ -1021,16 +1057,17 @@ class ObjApi:
         引数を省くと絵の幅と高さを返す（lua.txt） sigma の 単純図形σ は菱形の角度と
         アクリル矩形の切り出す量をこれで決める 1 画素目の色を返すと、幅が 0xffffff の
         絵として角度を求め、菱形が四角のまま残る
+
+        大きさも色も、先に積んだ効果を掛けた後の絵から読む AviUtl のぼかしは絵を広げる
         """
+        # 大きさも obj.w と同じく積んだ効果を掛けた後の物 sigma は 領域拡張 や
+        # 縁取り の直後にこれで大きさを読む
+        self._settle_effects("obj.getpixel")
         if not args:
-            # 大きさも obj.w と同じく積んだ効果を掛けた後の物 sigma は 領域拡張 や
-            # 縁取り の直後にこれで大きさを読む
-            self._settle_effects("obj.getpixel")
             return (self.state.width, self.state.height)
         return self._pixel(*args)
 
     def _pixel(self, x: Any = 0, y: Any = 0, kind: Any = "col") -> Any:
-        self._settle_effects("obj.getpixel")
         image = self.state.image
         column, row = int(_as_float(x)), int(_as_float(y))
         if not (0 <= row < image.shape[0] and 0 <= column < image.shape[1]):
@@ -1260,6 +1297,14 @@ MAX_FIGURE_SIZE = 4096
 
 #: 名前付きバッファの数の上限 AviUtl の配布スクリプトが使うのは tmp と数個の cache だけ
 MAX_BUFFERS = 16
+
+#: 1 回の実行で積んだ効果を焼き込む回数の上限（:meth:`ObjApi._settle_effects`）
+#: 実物の配布物は 1 つの処理で数回（sigma の 縁取り → 写す → 単色化 → 写す など）
+MAX_BAKES = 64
+
+#: 焼き込まずに積んでおける効果の数の上限（:meth:`ObjApi.lua_effect`） 1 つずつ描くときの
+#: GPU のパスになる 実物の配布物が 1 度に積むのは数個（sigma の 単色化 → ぼかし など）
+MAX_STACKED_EFFECTS = 32
 
 #: フレームバッファ（それまでに下へ重ねた画面）のバッファ名 lua.txt の ``frm``
 FRAMEBUFFER = "frm"
