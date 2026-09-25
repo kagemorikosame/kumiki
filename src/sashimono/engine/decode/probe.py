@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import hashlib
 from fractions import Fraction
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from sashimono.core.timebase import FrameRate
 
 __all__ = [
     "PROBE_CACHE_SIZE",
+    "ROTATION_PACKET_LIMIT",
     "ProbeError",
     "clear_probe_cache",
     "media_origin",
@@ -32,6 +34,10 @@ class ProbeError(Exception):
     """素材を開けない、または中身を解釈できない"""
 
 
+#: 回転を読むために頭の 1 枚を待つ間に読むパケットの上限 B フレームやスレッドの遅れで
+#: 最初の数十パケットは絵が出ないことがあるので、それより十分多く取る
+ROTATION_PACKET_LIMIT = 256
+
 #: 調べた結果を覚えておく素材の数 1 本あたり数百バイトなので、多めに持っても軽い
 PROBE_CACHE_SIZE = 512
 
@@ -44,17 +50,13 @@ def probe_media(path: Path) -> MediaItem:
     映像・音声の各ストリームを個別に記録する 多言語音声や 5.1ch の素材では
     音声が複数本あり、読み込み時にそれぞれ別トラックへ展開できるようにするため
 
-    同じファイル（場所・更新時刻・大きさが同じ）を 2 度目からは開かずに答える
+    同じファイル（:func:`_identity` が同じ）を 2 度目からは開かずに答える
     映像と音声のデコーダは作るたびにここを呼ぶ（再生やシークのたび、控えや字幕起こしも）
     毎回開くと、そのたびに素材を開いて頭の 1 枚を復号する 素材 ID は呼ぶたびに新しく作る
     読み込みのたびに別の素材として登録するため
     """
     path = Path(path)
-    try:
-        stat = path.stat()
-    except OSError:
-        raise ProbeError(f"ファイルが見つからない: {path}") from None
-    duration, video_streams, audio_streams = _facts(path, stat.st_mtime_ns, stat.st_size)
+    duration, video_streams, audio_streams = _facts(path, _identity(path))
     return MediaItem(
         path=path,
         duration=duration,
@@ -68,14 +70,47 @@ def clear_probe_cache() -> None:
     _facts.cache_clear()
 
 
+#: 覚えた結果を使ってよいかを見るために読む、ファイルの頭と尻の長さ（バイト）
+#: 素材のヘッダ（mp4 の moov が頭か尻にある・wav の fmt）はたいていこの中に入る
+_FINGERPRINT_BYTES = 64 * 1024
+
+
+def _identity(path: Path) -> tuple[int, ...]:
+    """覚えた結果を使ってよいかを決める印 中身が変わっていれば変わる
+
+    更新時刻と大きさだけだと、同じ大きさの別の素材で上書きして更新時刻を戻した物
+    （時刻を保つ写し方・展開）を見分けられず、前の長さや解像度のまま置いてしまう
+    ファイルの番号（名前を替えて差し替えると変わる）・状態の変わった時刻（POSIX では
+    時刻を戻しても変わる）・頭と尻の中身の要約も入れる 読むのは 128KB だけで、
+    素材を開いて頭の 1 枚を復号するより軽い
+    """
+    try:
+        stat = path.stat()
+        digest = hashlib.blake2b(digest_size=16)
+        with path.open("rb") as handle:
+            digest.update(handle.read(_FINGERPRINT_BYTES))
+            if stat.st_size > _FINGERPRINT_BYTES:
+                handle.seek(max(_FINGERPRINT_BYTES, stat.st_size - _FINGERPRINT_BYTES))
+                digest.update(handle.read(_FINGERPRINT_BYTES))
+    except OSError:
+        raise ProbeError(f"ファイルが見つからない: {path}") from None
+    return (
+        stat.st_mtime_ns,
+        stat.st_size,
+        stat.st_ino,
+        stat.st_ctime_ns,
+        int.from_bytes(digest.digest(), "big"),
+    )
+
+
 @functools.lru_cache(maxsize=PROBE_CACHE_SIZE)
-def _facts(path: Path, mtime_ns: int, size: int) -> _Facts:
-    """素材の長さとストリーム 更新時刻と大きさを鍵に入れる
+def _facts(path: Path, identity: tuple[int, ...]) -> _Facts:
+    """素材の長さとストリーム 中身の印（:func:`_identity`）を鍵に入れる
 
     同じ場所へ書き出し直した素材を古い長さで置かないため 開けなかった素材は覚えない
     （例外は ``lru_cache`` に残らない） 置き直せば次は開き直す
     """
-    del mtime_ns, size
+    del identity
     try:
         container = av.open(str(path))
     except (av.error.FFmpegError, OSError) as exc:
@@ -266,10 +301,20 @@ def _display_rotation(container: av.container.InputContainer, stream: av.VideoSt
     無い機械では回転を読めず、縦撮りが横倒しのままだった） 頭の 1 枚の復号は 1080p で 5ms、
     4K の H.265 で 30ms ほどで、ffprobe を起こす 35〜45ms より速い
 
-    取得できない場合は 0 を返し、素材の読み込み自体は続行する
+    取得できない場合は 0 を返し、素材の読み込み自体は続行する 読むパケットには上限
+    （:data:`ROTATION_PACKET_LIMIT`）を置く 絵を 1 枚も出さない映像（壊れた道・復号できない
+    符号）で頭の 1 枚を待ち続けると、ファイルの終わりまで読み、大きな素材では読み込みや
+    再生の始まりが止まる（前の ffprobe には 15 秒の上限があった）
     """
+    frame: av.VideoFrame | None = None
     try:
-        frame = next(iter(container.decode(stream)), None)
+        for count, packet in enumerate(container.demux(stream)):
+            if count >= ROTATION_PACKET_LIMIT:
+                return 0
+            frames = packet.decode()
+            if frames:
+                frame = frames[0]
+                break
     except (av.error.FFmpegError, OSError, ValueError):
         return 0
     if frame is None:

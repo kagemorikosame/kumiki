@@ -9,13 +9,17 @@ from __future__ import annotations
 
 import os
 import subprocess
+import wave
+from collections.abc import Iterator
 from pathlib import Path
+from typing import cast
 
 import av
 import pytest
 
+from sashimono.engine.decode import probe as probe_module
 from sashimono.engine.decode.audio import AudioDecoder
-from sashimono.engine.decode.probe import clear_probe_cache, probe_media
+from sashimono.engine.decode.probe import ROTATION_PACKET_LIMIT, clear_probe_cache, probe_media
 from sashimono.engine.decode.video import VideoDecoder
 from tests.media_fixtures import SampleMedia, make_rotated
 
@@ -115,3 +119,61 @@ def test_a_rewritten_file_is_opened_again(
     os.utime(copy, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
     probe_media(copy)
     assert len(opened) == 2
+
+
+def _wav(path: Path, *, channels: int, rate: int) -> None:
+    """1 秒ぶんの無音の wav 声の数と標本の速さを掛けた大きさが同じなら、ファイルも同じ大きさ"""
+    with wave.open(str(path), "wb") as out:
+        out.setnchannels(channels)
+        out.setsampwidth(2)
+        out.setframerate(rate)
+        out.writeframes(b"\0" * (2 * channels * rate))
+
+
+def test_a_same_size_overwrite_with_the_old_time_is_read_again(tmp_path: Path) -> None:
+    # 時刻を保つ写し方で同じ大きさの別の素材に差し替えると、更新時刻と大きさだけの鍵では
+    # 前の素材の声の数や長さのまま置いてしまう（#227 の Qodo の指摘）
+    path = tmp_path / "差し替え.wav"
+    _wav(path, channels=1, rate=16000)
+    before = path.stat()
+    assert probe_media(path).audio_streams[0].channels == 1
+    _wav(path, channels=2, rate=8000)
+    assert path.stat().st_size == before.st_size
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert probe_media(path).audio_streams[0].channels == 2
+
+
+class _SilentPacket:
+    def decode(self) -> list[object]:
+        return []
+
+
+class _NoPictures:
+    """絵を 1 枚も出さない映像の入れ物 読んだパケットの数を数える"""
+
+    def __init__(self, packets: int) -> None:
+        self.packets = packets
+        self.read = 0
+
+    def _packets(self) -> Iterator[_SilentPacket]:
+        for _ in range(self.packets):
+            self.read += 1
+            yield _SilentPacket()
+
+    def demux(self, *_streams: object) -> Iterator[_SilentPacket]:
+        return self._packets()
+
+    def decode(self, *_streams: object) -> Iterator[object]:
+        for packet in self._packets():
+            yield from packet.decode()
+
+
+def test_waiting_for_the_first_picture_is_bounded() -> None:
+    # 絵の出ない映像で頭の 1 枚を待ち続けると、ファイルの終わりまで読み、大きな素材では
+    # 読み込みや再生の始まりが止まる（#227 の CodeRabbit の指摘）
+    container = _NoPictures(ROTATION_PACKET_LIMIT * 10)
+    rotation = probe_module._display_rotation(
+        cast(av.container.InputContainer, container), cast(av.VideoStream, object())
+    )
+    assert rotation == 0
+    assert container.read <= ROTATION_PACKET_LIMIT + 1
