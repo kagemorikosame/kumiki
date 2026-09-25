@@ -926,8 +926,20 @@ class FrameRenderer:
             self._context.release()
 
     def _draw_clip(
-        self, track: Track, clip: Clip, frame: int, rate: FrameRate, depth: int = 0
+        self,
+        track: Track,
+        clip: Clip,
+        frame: int,
+        rate: FrameRate,
+        depth: int = 0,
+        *,
+        below: Compositor | None = None,
     ) -> None:
+        """クリップ 1 本を描く
+
+        ``below`` はスクリプトの ``frm`` として読む合成先 別の合成先へ描き分けるとき
+        （:meth:`_draw_into`）に、下の絵を溜めた外側を渡す
+        """
         if clip.scene_id is not None:
             self._draw_scene(track, clip, frame, rate, depth)
             return
@@ -965,6 +977,7 @@ class FrameRenderer:
                 rate,
                 opacity,
                 offset=offset,
+                below=below,
             )
             return
 
@@ -1104,7 +1117,9 @@ class FrameRenderer:
         self._compositor = layer
         try:
             layer.begin((0.0, 0.0, 0.0, 0.0))
-            self._draw_clip(track, clip, frame, rate, depth)
+            # 描く先は空の layer に切り替えてある スクリプトが画面（frm）として写すのは
+            # 下の絵を溜めた outer 空の方を写すと、下の絵ではなく黒を写す
+            self._draw_clip(track, clip, frame, rate, depth, below=outer)
         finally:
             self._compositor = outer
 
@@ -1376,6 +1391,9 @@ class FrameRenderer:
                     rate,
                     1.0,
                     on_canvas=True,
+                    # 合成先は空の after に切り替えてある 画面として写すのは下の絵を
+                    # 溜めた outer 空の方を写すと黒一色の絵で下の絵を置き換える
+                    below=outer,
                 )
             finally:
                 self._compositor = outer
@@ -1411,8 +1429,11 @@ class FrameRenderer:
         offset: tuple[float, float] = (0.0, 0.0),
         *,
         on_canvas: bool = False,
+        below: Compositor | None = None,
     ) -> None:
         """AviUtl スクリプトを積んだクリップを描く
+
+        ``below`` は ``obj.copybuffer`` の ``frm`` で読む合成先（:meth:`_screen_picture`）
 
         スクリプトは「何回・どこへ・どう変形して描くか」を返す 1 回とは限らない
         （残像や複製を作るスクリプトがある）ので、返ってきた分だけ合成する
@@ -1437,6 +1458,7 @@ class FrameRenderer:
             image,
             frame=local_frame,
             fps=float(rate.fps),
+            framebuffer=lambda: self._screen_picture(below),
         )
         texture = self._texture_for(track.id)
         screen_width, screen_height = self._project.settings.resolution
@@ -1444,9 +1466,14 @@ class FrameRenderer:
         def shrunk(point: tuple[float, float]) -> tuple[float, float]:
             return point[0] * scale_x, point[1] * scale_y
 
+        # スクリプトが obj.effect で頼んだ効果は、置き場所を決める固定の欄（配置・反転）より
+        # 先に掛ける AviUtl でもスクリプトの中の効果は 標準描画 の前に掛かる 後に掛けると、
+        # 動かした後の絵を切ることになり、位置を変えた菱形が斜めの切り落としで消えていた
+        leading = tuple(effect for effect in gpu_effects if not effect.fixed)
+        placing = tuple(effect for effect in gpu_effects if effect.fixed)
         for call in calls:
             texture.upload(call.image)
-            combined = gpu_effects + requested_effects(call)
+            combined = leading + requested_effects(call) + placing
             alpha = opacity * call.alpha
 
             if call.quad is not None:
@@ -1553,6 +1580,45 @@ class FrameRenderer:
                 blend=clip.blend_mode,
                 matrix=matrix,
             )
+
+    def _screen_picture(self, below: Compositor | None = None) -> np.ndarray:
+        """それまでに重ねた画面を、スクリプトへ渡す絵にする（``obj.copybuffer`` の ``frm``）
+
+        ``below`` は読む合成先 省けばいまの合成先 フィルタのクリップは掛けた結果を空の
+        合成先へ描くので、下の絵を溜めた外側の合成先を渡す（:meth:`_draw_filter`）
+
+        AviUtl のフレームバッファは何も描いていない所も不透明な黒 :meth:`_draw_framebuffer`
+        と同じく黒を敷いて写す 透明のまま渡すと、アクリル矩形のように下の絵をぼかして
+        透かす板が、何も無い所で透明になって消える
+
+        描いている最中の合成先は読みながら同じ所へ描けないので、いったん別の所へ写す
+        大きさは画面の画素 画質を落としたプレビューでも、スクリプトが切り出す量
+        （``obj.w`` から決める）は書き出しと同じにしておく（:meth:`_draw_scripted`）
+        """
+        source = below if below is not None else self._compositor
+        width, height = source.width, source.height
+        with self._context:
+            if self._grab is None:
+                self._grab = Framebuffer(width, height)
+            self._grab.resize(width, height)
+            GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, source.canvas.handle)
+            GL.glBindFramebuffer(GL.GL_DRAW_FRAMEBUFFER, self._grab.handle)
+            GL.glBlitFramebuffer(
+                0, 0, width, height, 0, 0, width, height, GL.GL_COLOR_BUFFER_BIT, GL.GL_NEAREST
+            )
+            source.underlay((0.0, 0.0, 0.0, 1.0), target=self._grab)
+            copied = self._layer("script_framebuffer", 0)
+            copied.begin((0.0, 0.0, 0.0, 0.0))
+            copied.draw_handle(
+                self._grab.color,
+                Placement(0.0, 0.0, float(width), float(height)),
+                flip=False,
+                premultiplied=True,
+            )
+            picture = copied.read()
+        if self._scale != (1.0, 1.0):
+            picture = _resized(picture, self._project.settings.resolution)
+        return picture
 
     def _draw_on_quad(
         self,

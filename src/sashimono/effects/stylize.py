@@ -90,6 +90,28 @@ void main() {
 }
 """)
 
+_CROP_SLANT = _shader("""
+uniform float center_x;
+uniform float center_y;
+uniform float angle;
+uniform float blur;
+
+void main() {
+    // 中心を通る線の片側を切り落とす（AviUtl の 斜めクリッピング）
+    // 角度 0 で線は横向き、中心より下を落として上を残す 角度は画面上で時計回りが正
+    // どちらも sigma の 単純図形σ が菱形を 4 回の切り落としで作る並びから読んだ
+    // （向きを 1 つでも取り違えると、角の三角形ではなく真ん中を落として何も残らない）
+    // 画面の Y 下向きで落とす側は (-sin, cos) ここは Y 上向きなので (-sin, -cos)
+    vec2 p = v_uv * u_size - object_center() - vec2(center_x, center_y);
+    float r = radians(angle);
+    float side = dot(p, vec2(-sin(r), -cos(r)));
+    float edge = max(blur * 0.5, 0.5);
+    float keep = 1.0 - smoothstep(-edge, edge, side);
+    vec4 color = texture(u_texture, v_uv);
+    frag_color = vec4(color.rgb, color.a * keep);
+}
+""")
+
 _ROUND_CORNER = _shader("""
 uniform float radius;
 uniform float blur;
@@ -792,6 +814,18 @@ def register_stylize_effects() -> None:
                 TrackSpec("anchor_y", "基準のずれ Y", -4000, 4000, 0, step=1, unit="px"),
             ),
             fragment_shader=_CROP_ANGLE,
+        ),
+        EffectDefinition(
+            kind="crop_slant",
+            label="斜めクリッピング",
+            category="形",
+            parameters=(
+                TrackSpec("center_x", "中心 X", -4000, 4000, 0, step=1, unit="px"),
+                TrackSpec("center_y", "中心 Y", -4000, 4000, 0, step=1, unit="px"),
+                TrackSpec("angle", "角度", -360, 360, 0, unit="度"),
+                TrackSpec("blur", "ぼかし", 0, 400, 0, unit="px"),
+            ),
+            fragment_shader=_CROP_SLANT,
         ),
         EffectDefinition(
             kind="round_corner",

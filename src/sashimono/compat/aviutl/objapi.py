@@ -19,13 +19,14 @@ import codecs
 import math
 import random
 import re
-from collections.abc import Buffer
+from collections.abc import Buffer, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
 
 from sashimono.compat.aviutl import raster
+from sashimono.compat.aviutl.mapping import script_filter_kind
 from sashimono.compat.aviutl.native import PixelData
 from sashimono.compat.aviutl.report import CompatibilityReport, global_report
 
@@ -77,25 +78,6 @@ def lua_text(value: Any, report: CompatibilityReport | None = None) -> Any:
         return _FOREIGN_SURROGATE.sub("\ufffd", value)
     return value
 
-
-#: AviUtl のフィルタ名と、こちらのエフェクト種別の対応
-#: 名前が同じでも中身は完全には一致しない 見た目の系統を合わせるための対応表
-EFFECT_NAMES: dict[str, str] = {
-    "ぼかし": "blur",
-    "発光": "glow",
-    "グロー": "glow",
-    "色調補正": "color",
-    "クロマキー": "chroma_key",
-    "縁取り": "border",
-    "影": "shadow",
-    "シャドー": "shadow",
-    "シャープ": "sharpen",
-    "ノイズ": "noise",
-    "モザイク": "mosaic",
-    "マスク": "mask",
-    "領域拡張": "crop",
-    "クリッピング": "crop",
-}
 
 #: AviUtl の図形名と、こちらの図形の対応
 FIGURE_NAMES: dict[str, str] = {
@@ -166,6 +148,15 @@ class ObjectState:
     index: int = 0
     num: int = 1
 
+    #: 表示基準座標 ``obj.x`` ``obj.y`` ``obj.z``（画面中央から、Y は下が正）
+    #: クリップの配置の欄の値 描くときはこの後で配置の欄が位置を足すので、ここは
+    #: 読ませるだけで ``ox`` のように描く位置へは足さない 0 のままにすると、
+    #: 画面を写して自分の位置の所を切り出すアクリル矩形が、動かしても画面の
+    #: 真ん中の絵を映す
+    base_x: float = 0.0
+    base_y: float = 0.0
+    base_z: float = 0.0
+
     ox: float = 0.0
     oy: float = 0.0
     oz: float = 0.0
@@ -203,6 +194,9 @@ class ObjectState:
     #: :attr:`image` を描画の記録やバッファと共有している 画素を書き換える前に
     #: 複製する 描くたびに複製すると、何十回も描くスクリプトで画像の数だけ写す
     image_shared: bool = False
+    #: フレームバッファ（それまでに下へ重ねた画面）を読む関数 描く側が渡す
+    #: 画面を読み戻すのは重いので、``obj.copybuffer(…, "frm")`` が呼ばれたときだけ読む
+    framebuffer: Callable[[], np.ndarray | None] | None = None
 
     @property
     def width(self) -> int:
@@ -358,8 +352,8 @@ class ObjApi:
         if name == "h":
             return state.height
         if name in ("x", "y", "z"):
-            # 表示基準座標 こちらでは中央を原点にしているので 0
-            return 0.0
+            # 表示基準座標（標準描画の X・Y・Z） 描く側がクリップの配置から入れる
+            return getattr(state, f"base_{name}")
         if name in _READABLE:
             return getattr(state, name)
         if name.startswith("track") and name[5:].isdigit():
@@ -638,7 +632,9 @@ class ObjApi:
         if original == RESIZE_EFFECT:
             self._resize(args[1:])
             return
-        kind = EFFECT_NAMES.get(original)
+        # 名前はエイリアスの読み込みと同じ対応表で引く 別の表を持つと、読み込みでは
+        # 描けるフィルタがスクリプトからは呼べない（斜めクリッピング・単色化がそうだった）
+        kind = script_filter_kind(original)
         if kind is None:
             self._report.note_missing(f"obj.effect({original})")
             return
@@ -646,6 +642,9 @@ class ObjApi:
         params: dict[str, float | str] = {}
         for index in range(1, len(args) - 1, 2):
             params[str(args[index])] = _as_param(args[index + 1])
+        if original == CLIP_EFFECT and not self.state.effects:
+            self._clip(params)
+            return
         if len(self.state.effects) >= MAX_STACKED_EFFECTS:
             # 積んだ効果は描くときに 1 つずつ GPU のパスになる 焼き込みの上限を越えた後や、
             # 焼き込まずに積み続けるスクリプトでは列が命令数の上限まで伸び、1 コマが止まる
@@ -657,6 +656,43 @@ class ObjApi:
                 )
             return
         self.state.effects.append(EffectRequest(kind=kind, params=params, original=original))
+
+    def _clip(self, values: dict[str, float | str]) -> None:
+        """``obj.effect("クリッピング", "上", 10, …, "中心の位置を変更", 1)``
+
+        先に積んだ効果が無ければ、描くときではなくここで絵を切る 後に続く
+        ``obj.getpixel()`` や ``obj.w`` が切った後の大きさを見るため（:meth:`_resize` と同じ）
+        アクリル矩形は画面を写した絵をここで板の大きさへ切り、その大きさを読んで
+        次の手順を決める 先に積んだ効果があれば、順を守って描くときに切る
+
+        ``中心の位置を変更`` が偽なら、残った所は元の場所に留まる（切って真ん中がずれた分だけ
+        位置と回転の中心を戻す） 真なら、切った後の絵の真ん中がオブジェクトの位置へ来る
+        sigma の 単純図形σ は、画面を写した絵から板の所を切り出して板の位置へ置くのに
+        真を渡す 偽と取り違えると、板の中に映る絵が板の位置の分だけずれる
+        """
+        state = self.state
+        amounts = {name: _as_float(values.get(name, 0.0)) for name in ("上", "下", "左", "右")}
+        if not all(math.isfinite(value) for value in amounts.values()):
+            self._report.note_missing("obj.effect(クリッピング) の量（数ではない）")
+            return
+        top, bottom, left, right = (
+            max(0, round(amounts[name])) for name in ("上", "下", "左", "右")
+        )
+        height, width = state.image.shape[:2]
+        if top + bottom >= height or left + right >= width:
+            # 全部切った AviUtl でも何も描かれない 0 画素の絵は作れないので透明な 1 画素
+            state.image = np.zeros((1, 1, 4), dtype=np.uint8)
+        else:
+            # 切り口だけを見る形のままだと、元の絵（描画の記録やバッファと共有している
+            # ことがある）と画素を分け合い、後の putpixel が記録済みの絵まで書き換える
+            state.image = state.image[top : height - bottom, left : width - right].copy()
+        state.image_shared = False
+        if not _as_float(values.get("中心の位置を変更", 0.0)):
+            shift_x, shift_y = (left - right) / 2.0, (top - bottom) / 2.0
+            state.ox += shift_x
+            state.oy += shift_y
+            state.cx -= shift_x
+            state.cy -= shift_y
 
     def _offscreen(self) -> None:
         """``obj.effect("オフスクリーン描画")``
@@ -855,9 +891,18 @@ class ObjApi:
             # 写す絵は効果を掛けた後の絵 sigma は 領域拡張 や 縁取り の直後に写して取っておく
             self._settle_effects("obj.copybuffer")
 
-        origin = state.image if origin_name == "obj" else state.buffers.get(origin_name)
+        if origin_name == FRAMEBUFFER:
+            origin = state.framebuffer() if state.framebuffer is not None else None
+        elif origin_name == "obj":
+            origin = state.image
+        else:
+            origin = state.buffers.get(origin_name)
         if origin is None:
             self._report.note_missing(f'obj.copybuffer(source="{source}")')
+            return
+        if target_name == FRAMEBUFFER:
+            # 画面へ直に書くのは、描く順をこちらの合成に任せている作りでは受けられない
+            self._report.note_missing('obj.copybuffer("frm", …)')
             return
         if target_name == "obj":
             if origin_name != "obj":
@@ -944,9 +989,21 @@ class ObjApi:
 
     # --- 画素 ---
 
-    def lua_getpixel(self, x: int = 0, y: int = 0, kind: str = "col") -> Any:
-        """1 画素を読む ``kind`` が ``"col"`` なら ``色, 不透明度``"""
+    def lua_getpixel(self, *args: Any) -> Any:
+        """1 画素を読む ``kind`` が ``"col"`` なら ``色, 不透明度``
+
+        引数を省くと絵の幅と高さを返す（lua.txt） sigma の 単純図形σ は菱形の角度と
+        アクリル矩形の切り出す量をこれで決める 1 画素目の色を返すと、幅が 0xffffff の
+        絵として角度を求め、菱形が四角のまま残る
+
+        大きさも色も、先に積んだ効果を掛けた後の絵から読む AviUtl のぼかしは絵を広げる
+        """
         self._settle_effects("obj.getpixel")
+        if not args:
+            return (self.state.width, self.state.height)
+        return self._pixel(*args)
+
+    def _pixel(self, x: Any = 0, y: Any = 0, kind: Any = "col") -> Any:
         image = self.state.image
         column, row = int(_as_float(x)), int(_as_float(y))
         if not (0 <= row < image.shape[0] and 0 <= column < image.shape[1]):
@@ -1185,12 +1242,18 @@ MAX_BAKES = 64
 #: GPU のパスになる 実物の配布物が 1 度に積むのは数個（sigma の 単色化 → ぼかし など）
 MAX_STACKED_EFFECTS = 32
 
+#: フレームバッファ（それまでに下へ重ねた画面）のバッファ名 lua.txt の ``frm``
+FRAMEBUFFER = "frm"
+
 
 #: それまでに積んだ効果を絵へ焼き込むフィルタの名前
 OFFSCREEN_EFFECT = "オフスクリーン描画"
 
 #: 絵の大きさをその場で変えるフィルタの名前（:meth:`ObjApi._resize`）
 RESIZE_EFFECT = "リサイズ"
+
+#: 先に積んだ効果が無ければその場で絵を切るフィルタの名前（:meth:`ObjApi._clip`）
+CLIP_EFFECT = "クリッピング"
 
 #: ``obj.load("figure")`` の線の太さがこれ以上なら塗りつぶし 図形オブジェクトの読み込み
 #: （:mod:`sashimono.compat.aviutl.mapping`）と同じ決まり AviUtl2 の既定値がこの値
