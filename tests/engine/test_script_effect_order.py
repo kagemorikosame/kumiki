@@ -16,7 +16,7 @@ import pytest
 
 from sashimono.compat.aviutl import catalog as catalog_module
 from sashimono.compat.aviutl.catalog import ScriptCatalog, set_script_catalog
-from sashimono.compat.aviutl.report import CompatibilityReport
+from sashimono.compat.aviutl.report import CompatibilityReport, global_report
 from sashimono.core.commands import AddClip, AddTrack
 from sashimono.core.model import (
     AnimatedValue,
@@ -202,3 +202,17 @@ class TestMargin:
                 assert baker.apply(image, (_shadow(200.0),), 0, 30.0, 30) is None
             finally:
                 baker.release()
+
+    def test_a_picture_over_the_canvas_limit_is_not_baked(self) -> None:
+        # 絵そのものが作業場の上限を超える（8192 のプロジェクトの背景の図形など）と、余白を 0 に
+        # しても上限より大きいバッファを何枚も作る GPU の上限が大きい機械ではそのまま作り、
+        # メモリが尽きて例外が描画まで伝わる 作らずに None を返し、理由を記録に残す
+        image = np.zeros((1, BAKE_CANVAS_LIMIT + 1, 4), np.uint8)
+        baker = ScriptEffectBaker()
+        baker.gpu_limit = 1 << 20
+        before = dict(global_report.missing)
+        assert baker.apply(image, (_shadow(10.0),), 0, 30.0, 30) is None
+        assert any(
+            "作業場の上限" in line and count > before.get(line, 0)
+            for line, count in global_report.missing.items()
+        )

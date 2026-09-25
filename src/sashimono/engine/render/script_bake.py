@@ -68,6 +68,15 @@ class ScriptEffectBaker:
         効果を掛けただけで小さくなる
         """
         height, width = image.shape[:2]
+        if max(width, height) > BAKE_CANVAS_LIMIT:
+            # 絵そのものが上限を超える（8192 のプロジェクトの背景の図形など）と、余白を 0 にしても
+            # 上限より大きいバッファを何枚も作る GPU の上限が大きい機械ではそのまま作り、メモリが
+            # 尽きて例外が描画まで伝わる 焼き込まずに返し、効果は積んだまま描くときに掛ける
+            global_report.note_missing(
+                f"obj.effect の焼き込み（絵 {width}x{height} が作業場の上限"
+                f" {BAKE_CANVAS_LIMIT} を超える）"
+            )
+            return None
         # 余白は効果が絵を運ぶ量から決める 決め打ちにすると、それより遠くへずらす影が
         # 作業場の外へ出て消え、obj.w や写し取った絵からも消える（#186）
         margin = fitted_margin(width, height, bake_margin(effects, frame))
