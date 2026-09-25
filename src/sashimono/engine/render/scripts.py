@@ -126,15 +126,18 @@ class ScriptStage:
     def run_scene_change(
         self,
         clip: Clip,
-        effect: Effect,
+        effects: tuple[Effect, ...],
         before: np.ndarray,
         after: np.ndarray,
         *,
         frame: int,
         fps: float,
         progress: float,
-    ) -> tuple[DrawCall, ...] | None:
-        """シーンチェンジのスクリプトを走らせる 走らなければ ``None``
+    ) -> tuple[tuple[DrawCall, ...], tuple[Effect, ...]]:
+        """シーンチェンジのスクリプトを積んだ順に走らせ、描画の一覧と走らなかった効果を返す
+
+        何本も積んだときは、アニメーション効果と同じく 1 つの ``obj`` を順に渡していく
+        （前のスクリプトが削った絵に、次のスクリプトがさらに手を入れる）
 
         **前の場面をオブジェクト、後の場面をフレームバッファ**に入れて走らせる 返した描画を
         フレームバッファ（後の場面）の上へ重ねた物がその時刻の絵になる 進み具合（0〜1）は
@@ -145,19 +148,19 @@ class ScriptStage:
         抜く・扇や図形や斜めに切る）フレームバッファを見せる 逆に入れると、4 本とも後の
         場面から始まって前の場面で終わる 実物の AviUtl で並べて測ってはいない
 
-        走らなかったことを返すのは、失敗したときの描画（前の場面をそのまま 1 回）を重ねると、
-        最後まで前の場面のまま切り替わらないため 呼ぶ側は切り替え方どおりに描き直す
+        走らなかった効果を返すのは、失敗したときの描画（前の場面をそのまま 1 回）を重ねると、
+        最後まで前の場面のまま切り替わらないため 空でなければ、呼ぶ側は切り替え方どおりに
+        描き直し、走らなかった物だけを数える（走った物まで数えると、どれを直せばよいか分からない）
         """
-        draws, failed = self._run(
+        return self._run(
             clip,
-            (effect,),
+            effects,
             before,
             frame=frame,
             fps=fps,
             framebuffer=lambda: after,
             scenechange=progress,
         )
-        return None if failed else draws
 
     def _run(
         self,
@@ -170,8 +173,8 @@ class ScriptStage:
         layer: int = 0,
         framebuffer: Callable[[], np.ndarray | None] | None = None,
         scenechange: float | None = None,
-    ) -> tuple[tuple[DrawCall, ...], bool]:
-        """スクリプトを順に走らせ、描画の一覧と、走らなかった物があったかを返す"""
+    ) -> tuple[tuple[DrawCall, ...], tuple[Effect, ...]]:
+        """スクリプトを順に走らせ、描画の一覧と、走らなかった効果を返す"""
         state = ObjectState(
             image=image,
             screen_w=self._screen[0],
@@ -186,13 +189,13 @@ class ScriptStage:
         self._timing = (frame, fps, max(1, clip.duration))
         state.base_x, state.base_y = _placed_at(clip, frame)
 
-        failed = False
+        failed: list[Effect] = []
         for effect in effects:
             entry = self._catalog.get(effect.kind)
             if entry is None:
                 # 手元に無いスクリプトは走らせていない シーンチェンジでは、失敗と同じく
                 # 切り替え方どおりに描き直してもらう
-                failed = True
+                failed.append(effect)
                 continue
             _apply_params(state, effect, frame)
             result = self._runtime.run(
@@ -202,9 +205,10 @@ class ScriptStage:
                 script=entry.label,
                 folder=entry.folder,
             )
-            failed = failed or result.failed
+            if result.failed:
+                failed.append(effect)
 
-        return state.result(), failed
+        return state.result(), tuple(failed)
 
     def expand_text(
         self,
@@ -342,7 +346,10 @@ def _apply_params(state: ObjectState, effect: Effect, frame: int) -> None:
     definition = registry.get(effect.kind)
     specs = definition.parameters if definition is not None else ()
 
+    # 設定欄は効果ごとの物 トラックバーと同じくチェックも戻す 戻さないと、チェックを持たない
+    # 後のスクリプトが、前のスクリプトで入れたチェックを自分の物として読む
     state.track = [0.0, 0.0, 0.0, 0.0]
+    state.check0 = False
     state.values.clear()
     for spec in specs:
         raw = effect.params.get(spec.name, spec.default_value())

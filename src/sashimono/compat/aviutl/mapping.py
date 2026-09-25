@@ -129,6 +129,10 @@ _CONTENT_NAMES = frozenset(
         "フレームバッファ",
         "直前のオブジェクト",
         "時間制御",
+        # AviUtl2 v2.1.6a の本体（aviutl2.exe）に入っている名前 上の 2 つは一覧の呼び名で、
+        # AviUtl2 は ``直前オブジェクト`` を中身として読んで下の絵の写しを置いた（#195）
+        "直前オブジェクト",
+        "時間制御(オブジェクト)",
     }
 )
 
@@ -203,7 +207,8 @@ def _byte_percent(value: float) -> float:
 #:
 #: 項目名は AviUtl2 に効果を積んだエイリアスを作らせて読み取った（推測していない）
 _PARAMS: dict[str, dict[str, _Param]] = {
-    "ぼかし": {"範囲": _Param("radius")},
+    # サイズ固定 は絵の範囲の外を読まない（外へにじまず端も薄れない AviUtl2 で測った #188）
+    "ぼかし": {"範囲": _Param("radius"), "サイズ固定": _Param("fixed_size")},
     "発光": {
         "強さ": _Param("intensity"),
         "しきい値": _Param("threshold"),
@@ -215,10 +220,16 @@ _PARAMS: dict[str, dict[str, _Param]] = {
         "拡散": _Param("radius"),
     },
     "拡散光": {"強さ": _Param("intensity"), "拡散": _Param("radius")},
+    # 色調補正 どれも 100 で元のまま（色相だけ 0） AviUtl2 に 3 色の升を描かせて式を測った
+    # （:data:`sashimono.effects.builtin._COLOR_CORRECT` #188） 前は Sashimono の色調補正へ
+    # 値のまま入れていて、元のままの 100 が「明るさ +100%」になり升が白く飛んだ
+    # AviUtl1 の .exa はコントラストを半角で書く（``ｺﾝﾄﾗｽﾄ``）
     "色調補正": {
         "明るさ": _Param("brightness"),
         "コントラスト": _Param("contrast"),
+        "ｺﾝﾄﾗｽﾄ": _Param("contrast"),
         "色相": _Param("hue"),
+        "輝度": _Param("luma"),
         "彩度": _Param("saturation"),
     },
     "クロマキー": {
@@ -364,13 +375,14 @@ _PARAMS: dict[str, dict[str, _Param]] = {
     "カラーキー": {"色差範囲": _Param("tolerance"), "境界補正": _Param("feather")},
     "ルミナンスキー": {"基準輝度": _Param("threshold"), "輝度範囲": _Param("smoothness")},
     # 斜めクリッピング は線の片側を切り落とす（:data:`_FILTERS` の crop_slant）
-    # 幅 は写さない（0 でなければ記録に残る） 意味を実物で確かめていない
-    # 以前は帯だけを残す crop_angle へ写していて、幅 0 では線 1 本しか残らなかった
+    # AviUtl2 に描かせて向きを確かめた 角度 0 で下を消し、30 と -30 と 90 も線の向きどおり
+    # 幅 は正で線を真ん中にした帯だけを残し、負で帯を消す（#188）
     "斜めクリッピング": {
         "中心X": _Param("center_x"),
         "中心Y": _Param("center_y", _flip),
         "角度": _Param("angle"),
         "ぼかし": _Param("blur"),
+        "幅": _Param("width"),
     },
     "波紋": {
         "中心X": _Param("center_x"),
@@ -475,7 +487,7 @@ _FILTERS: dict[str, str] = {
     "発光": "glow",
     "グロー": "glow",
     "拡散光": "glow",
-    "色調補正": "color",
+    "色調補正": "color_correct",
     "クロマキー": "chroma_key",
     "縁取り": "border",
     "枠線": "border",
@@ -1240,6 +1252,14 @@ def _content(
         return empty_object(), "", entry.name
     if entry.name == _SCENE_CHANGE:
         return _scene_change(entry, log), "", entry.name
+    if entry.name == "フレームバッファ":
+        # それまでに重ねた画面を素材にする（YMM4 の FrameBufferItem と同じ写し先）
+        # AviUtl2 に下のレイヤーの白い四角を拡大率 50 で写させると、元の四角の上に半分の
+        # 大きさの写しが重なった（#195） フレームバッファをクリア を立てると元の四角が
+        # 消えて写しだけが残るが、こちらは下の絵を消せないので数えて残す
+        if entry.params.get("フレームバッファをクリア", "0").strip() not in ("", "0"):
+            log.note_missing("フレームバッファをクリア")
+        return GeneratedSource(kind="framebuffer"), "", "framebuffer"
     if entry.name in _SCRIPTED_CONTENTS:
         # スクリプトで中身を作るもの（手元にスクリプトの無い AviUtl1 の カスタムオブジェクト）
         # どのスクリプトかで出来る絵がまるで違うので、名前ごとに数える
@@ -1272,6 +1292,10 @@ def _scene_change(entry: ExoEntry, log: CompatibilityReport) -> GeneratedSource:
         # 前後を入れ替えるのか進み方を逆にするのかを確かめていない 配布物 4 本はどれも 0
         log.note_missing("シーンチェンジの反転")
     style = _BUILT_IN_SCENE_CHANGES.get(name)
+    if style is not None and not _is_off(entry.params.get("調整", "")):
+        # 組み込みの 調整 の意味（クロスフェードなら何が変わるのか）は確かめておらず、
+        # 写し先の切り替え方にも当てる欄が無い 黙って捨てると違う切り替わり方に気付けない
+        log.note_missing(f"シーンチェンジの調整: {name}")
     if style is None:
         style = "switch"
         if not name:
@@ -2104,27 +2128,42 @@ def _filter(
             if spec is not None:
                 params[spec.name] = spec.coerce(chosen)
 
+    if entry.name == "縁取り" and _border_blur(entry, params):
+        handled.add("ぼかし")
     _check_images(entry, definition, params, handled, log)
     _note_dropped(entry, handled, log)
     return Effect(kind=kind, params=params)
 
 
-#: ``obj.effect`` からだけ使う項目の読み方
+def _border_blur(entry: ExoEntry, params: dict[str, ParamValue]) -> bool:
+    """縁取りの ぼかし を写す 動かない値だけ 写せたら真
+
+    ぼかし は縁の太さに対する割合（%）で、縁の外の端は動かさずに内側へなだらかにする
+    AviUtl2 に白い四角 300 へ サイズ 10 を描かせると、ぼかし 0 は外の端 1 画素で落ち、
+    5 で端の画素が 46、20 で 3・40・156 と 3 画素かけて落ちた（#192） こちらの縁のぼかしは
+    太さの前後へ等しく広がるので、広がる幅だけ太さを細めて外の端をそろえる
+    """
+    blur_text = entry.params.get("ぼかし", "")
+    size_text = entry.params.get("サイズ", "")
+    try:
+        blur = float(blur_text)
+        size = float(size_text)
+    except ValueError:
+        return False
+    if not (math.isfinite(blur) and math.isfinite(size)) or blur <= 0.0 or size <= 0.0:
+        return blur == 0.0
+    soft = size * min(blur, 100.0) / 100.0
+    params["width"] = AnimatedValue(max(size - soft, 0.0))
+    params["blur"] = AnimatedValue(soft)
+    return True
+
+
+#: ``obj.effect`` からだけ使う項目の読み方 今は無い（エイリアスと同じ表を引く）
 #:
-#: スクリプトの ``obj.effect`` は AviUtl1 の決まりで数を渡す 色調補正は 100 が元のまま
-#: で、輝度 は明るさの倍率、明るさ は足す量 sigma の 単純図形σ（アクリル矩形）が
-#: 輝度の幅 ``s`` と中心 ``c`` から ``輝度 = 100*s`` ``明るさ = 100*(1 + c - s/2)`` を作り、
-#: 明るさ が 0..200 に収まらないぶんを繰り返し掛けて足しているのがその裏付け
-#: エイリアスの 色調補正 は AviUtl2 の書き方でまだ確かめていないので、こちらは使わない
-_SCRIPT_PARAMS: dict[str, dict[str, _Param]] = {
-    "色調補正": {
-        "明るさ": _Param("offset", lambda value: value - 100.0),
-        "輝度": _Param("gain"),
-        "コントラスト": _Param("contrast", lambda value: value - 100.0),
-        "彩度": _Param("saturation", lambda value: value - 100.0),
-        "色相": _Param("hue"),
-    },
-}
+#: 色調補正 は前はここで Sashimono の色調補正（足す量と倍率）へ別に写していた AviUtl2 に
+#: 描かせて測ると、エイリアスもスクリプトも同じ 100 が元のままの式で、エイリアスの表を
+#: 同じ写し先（``color_correct``）へ直したので分けておく理由が無くなった（#188）
+_SCRIPT_PARAMS: dict[str, dict[str, _Param]] = {}
 
 #: ``obj.effect`` で色を渡すときの項目名 ダイアログの名前（``色``）ではなくこれで渡す
 _SCRIPT_COLOR = "color"

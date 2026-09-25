@@ -1424,7 +1424,7 @@ def test_a_missing_ceilings_file_fails_but_can_be_written(
     無いファイルを空の上限と読むと、``--ceilings`` の打ち間違いでどのテンプレートも
     見張られず、どれだけ離れても終了コード 0 になる
     """
-    row = (80.0, "後光", "a.ymmt", 1, "x", "")
+    row = tool.Row(80.0, "後光", "a.ymmt", 1, "x", "")
     monkeypatch.setattr(tool, "compare_work", lambda *args, **kwargs: [row])
     missing = tmp_path / "打ち間違い.json"
     assert tool.command_compare(_compare_arguments(tmp_path, ceilings=missing)) == 1
@@ -1443,7 +1443,7 @@ def test_frames_missing_from_the_export_fail_instead_of_passing_half_measured(
     書き出しが途中で切れると、前半の行だけが残る そのまま上限を見ると後半の
     フレームを見ないまま通り、``--write-ceilings`` は半端な測りで上限を書き換える
     """
-    row = (10.0, "後光", "a.ymmt", 1, "x", "")
+    row = tool.Row(10.0, "後光", "a.ymmt", 1, "x", "")
 
     def half(
         *args: object, missing: list[tuple[str, int]] | None = None, **kwargs: object
@@ -1473,7 +1473,7 @@ def test_a_ceiling_that_is_not_a_number_stops_before_comparing(
 
     def compare(*args: object, **kwargs: object) -> list[object]:
         compared.append(True)
-        return [(500.0, "後光", "a.ymmt", 1, "x", "")]
+        return [tool.Row(500.0, "後光", "a.ymmt", 1, "x", "")]
 
     monkeypatch.setattr(tool, "compare_work", compare)
     path = tmp_path / "ceilings.json"
@@ -1537,6 +1537,218 @@ def test_templates_the_export_never_reached_are_told_apart_by_their_ceiling(
     assert unmeasured == ["雨", "時計"]
 
 
+def _screen(tool: ModuleType) -> np.ndarray:
+    return np.zeros((tool.HEIGHT, tool.WIDTH, 3), dtype=np.uint8)
+
+
+def test_a_thin_line_hidden_by_the_shrunk_mean_shows_in_the_edge_measure(
+    tool: ModuleType,
+) -> None:
+    """1 画素の線が片方にだけあっても、縮めた平均では 0.3 ほどにしかならない
+
+    文字の縁取りや細い線だけが食い違っても、上限を見る差（4 分の 1 に縮めた平均）には
+    ほとんど出ない（#200） 縮めない絵の縁の差と、差の大きい画素の割合を別の数で出す
+    縮めた平均は今までと同じ数のままにする 変えると上限の意味が変わる
+    """
+    reference = _screen(tool)
+    reference[540, 200:1700] = 255
+    ours = _screen(tool)
+    measured, a, b = tool.measure(reference, ours)
+    assert measured.difference == pytest.approx(
+        float(np.abs(tool._shrink(reference) - tool._shrink(ours)).mean())
+    )
+    assert measured.difference < 1.0
+    assert measured.edge > 50.0
+    assert measured.outliers > 0.05
+    assert a.shape == b.shape == (tool.COMPARE_HEIGHT, tool.COMPARE_WIDTH, 3)
+
+
+def test_the_same_picture_measures_zero_even_with_an_alpha_channel(tool: ModuleType) -> None:
+    """同じ絵なら 3 つの数がどれも 0 こちらの描いた絵は透明度の列を持つので、それも読める"""
+    reference = _screen(tool)
+    reference[300:320, 400:1400] = (240, 200, 40)
+    ours = np.concatenate(
+        [reference, np.full((*reference.shape[:2], 1), 255, dtype=np.uint8)], axis=2
+    )
+    measured, _, _ = tool.measure(reference, ours)
+    assert (measured.difference, measured.edge, measured.outliers) == (0.0, 0.0, 0.0)
+
+
+def test_a_few_stray_edge_pixels_do_not_read_as_a_large_edge_difference(tool: ModuleType) -> None:
+    """黒の中の小さな光の粒が食い違うだけで縁の差が大きく出ると、本当に縁の違う枠と
+    見分けられない（aomoya のキラリンエフェクトは縮めた平均 0.01 で 46.4 と出た）"""
+    reference = _screen(tool)
+    reference[500:503, 900:903] = 255
+    measured, _, _ = tool.measure(reference, _screen(tool))
+    assert measured.edge < 5.0
+
+
+def test_compression_noise_on_a_flat_area_is_not_read_as_an_edge(tool: ModuleType) -> None:
+    """圧縮の揺れ（数段の上下）を縁や外れた画素と数えると、どの枠も同じだけ大きく出て
+    本当の縁の違いが埋もれる"""
+    generator = np.random.default_rng(7)
+    reference = np.full((tool.HEIGHT, tool.WIDTH, 3), 128, dtype=np.uint8)
+    noise = generator.integers(-3, 4, size=reference.shape)
+    ours = (reference.astype(np.int16) + noise).clip(0, 255).astype(np.uint8)
+    measured, _, _ = tool.measure(reference, ours)
+    assert measured.edge == 0.0
+    assert measured.outliers == 0.0
+
+
+def test_the_ceilings_still_look_only_at_the_shrunk_mean(tool: ModuleType) -> None:
+    """縁の差や外れた画素が大きくても、上限は縮めた平均だけで見る
+
+    上限（ymm4_compare_ceilings.json）は縮めた平均で測った値 別の数を混ぜると、
+    書き出しを変えずに今の上限が超えたことになる
+    """
+    rows = [tool.Row(5.0, "雨", "b.ymmt", 1, "x", "", edge=90.0, outliers=3.0)]
+    worst = tool.worst_by_template(rows)
+    assert worst == {"雨": 5.0}
+    assert tool.over_ceilings(worst, {"雨": 8.0}) == []
+
+
+def test_the_report_carries_the_edge_and_outlier_columns(tool: ModuleType, tmp_path: Path) -> None:
+    """一覧（report.json / report.html）に縁の差と外れた画素の割合が並ぶ 数に出さないと
+    縁の違いは絵を 1 枚ずつ見るまで分からない"""
+    from sashimono.compat.aviutl.report import CompatibilityReport
+
+    rows = [tool.Row(5.0, "雨", "b.ymmt", 1, "x", "", edge=90.0, outliers=3.0)]
+    tool.write_reports(tmp_path, rows, [], CompatibilityReport())
+    saved = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
+    assert saved[0]["difference"] == 5.0
+    assert saved[0]["edge"] == 90.0
+    assert saved[0]["outliers"] == 3.0
+    page = (tmp_path / "report.html").read_text(encoding="utf-8")
+    assert "縁 90.0" in page and "外れ 3.00%" in page
+
+
+def test_the_console_lists_the_largest_edge_differences_too(
+    tool: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """縮めた平均の順だけを出すと、縁だけが違う枠は下に埋もれて目に入らない"""
+    rows = [
+        tool.Row(30.0, "後光", "a.ymmt", 1, "x", "", edge=4.0),
+        tool.Row(2.0, "縁取り文字", "c.ymmt", 9, "y", "", edge=120.0),
+    ]
+    monkeypatch.setattr(tool, "compare_work", lambda *args, **kwargs: rows)
+    (tmp_path / "ceilings.json").write_text(json.dumps({"後光": 71.0}), encoding="utf-8")
+    assert tool.command_compare(_compare_arguments(tmp_path, top=1)) == 0
+    out = capsys.readouterr().out
+    edge_part = out.split("縁の差の大きい順", 1)[1]
+    assert "縁取り文字" in edge_part.splitlines()[1]
+
+
+AFTER_IMAGE = (
+    "YukkuriMovieMaker.Plugin.Community.Effect.Video.AfterImage.AfterImageEffect,"
+    " YukkuriMovieMaker.Plugin.Community"
+)
+
+
+def _text_item(frame: int, length: int, *, trail: bool = False) -> dict[str, object]:
+    effects = [{"$type": AFTER_IMAGE, "IsEnabled": True}] if trail else []
+    return {
+        "$type": "YukkuriMovieMaker.Project.Items.TextItem, YukkuriMovieMaker",
+        "Frame": frame,
+        "Layer": 0,
+        "Length": length,
+        "VideoEffects": effects,
+    }
+
+
+def test_a_template_with_an_after_image_leaves_room_before_the_next(tool: ModuleType) -> None:
+    """残像を掛けたテンプレートの後ろは、次の枠との間を広げる
+
+    YMM4 の残像はアイテムが終わった後も絵が残る 空きが 6 フレームのままだと、
+    次のテンプレートの頭に YMM4 の絵だけ前の文字が写り込み、差が大きく出る（#200）
+    残らないテンプレートの間は今のまま（書き出し直しても並びが大きく動かない）
+    """
+    cases = tool.place_cases(
+        [
+            ("a.ymmt", 0, "残像", [_text_item(0, 90, trail=True)]),
+            ("a.ymmt", 1, "次", [_text_item(0, 90)]),
+            ("a.ymmt", 2, "その次", [_text_item(0, 90)]),
+        ]
+    )
+    first, second, third = cases
+    assert second.start >= first.start + first.length + tool.LINGER
+    assert third.start == second.start + second.length + tool.GAP
+
+
+def _manifest_case(
+    name: str, start: int, length: int, items: list[dict[str, object]]
+) -> dict[str, object]:
+    return {
+        "name": name,
+        "file": "a.ymmt",
+        "index": 0,
+        "start": start,
+        "length": length,
+        "items": items,
+    }
+
+
+def test_frames_the_previous_template_still_reaches_are_not_compared(tool: ModuleType) -> None:
+    """前に作った並び（空き 6 フレーム）の書き出しでも、写り込む所は比べない
+
+    YMM4 を起動し直さずに今の書き出しで比べられるように、前の枠の絵が残りうる所
+    （残像ならアイテムの終わりから :data:`LINGER` まで）を次の枠から外す 枠より長い
+    アイテム（切り詰める前に作った並び）も、終わりまで次の枠へ届く
+    """
+    raw = [
+        _manifest_case("残像", 0, 90, [_text_item(0, 90, trail=True)]),
+        _manifest_case("次", 96, 60, [_text_item(96, 60)]),
+        _manifest_case("その次", 162, 60, [_text_item(162, 60)]),
+        _manifest_case("長い", 228, 60, [_text_item(228, 150)]),
+        _manifest_case("隠れる", 294, 60, [_text_item(294, 60)]),
+    ]
+    shadows = tool.shadowed_until(raw)
+    assert shadows == [0, 90 + tool.LINGER, 156, 222, 378]
+    after = tool.Case(**raw[1])
+    assert min(after.sample_frames(clear_from=shadows[1])) >= 90 + tool.LINGER
+    assert after.sample_frames(every=True, clear_from=shadows[1]) == list(range(120, 156))
+    plain = tool.Case(**raw[2])
+    assert plain.sample_frames(clear_from=shadows[2]) == plain.sample_frames()
+    hidden = tool.Case(**raw[4])
+    assert hidden.sample_frames(clear_from=shadows[4]) == []
+
+
+def test_only_the_lingering_item_adds_the_linger(tool: ModuleType) -> None:
+    """残像の分は残像を持つアイテムの終わりから数える
+
+    テンプレートの一番遅い終わりへ足すと、短い残像と長いふつうのアイテムが同居したとき、
+    ふつうのアイテムが消えた後の 30 フレームまで次の枠から外れ、比べる枚数が減る（#204）
+    """
+    items = [_text_item(0, 30, trail=True), _text_item(0, 200)]
+    assert tool.reach(items) == 200
+    items = [_text_item(0, 190, trail=True), _text_item(0, 200)]
+    assert tool.reach(items) == 190 + tool.LINGER
+
+
+def test_a_watched_template_hidden_by_the_previous_one_fails_instead_of_passing(
+    tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """上限を持つテンプレートが前の枠の残りに隠れて 1 枚も比べられなければ終了コード 1
+
+    黙って飛ばすと、見張っているはずのテンプレートが見張りから外れたことに気付けない
+    """
+
+    def hidden(*args: object, shadowed: list[str] | None = None, **kwargs: object) -> list[object]:
+        assert shadowed is not None, "隠れたテンプレートを受け取る入れ物を渡していない"
+        shadowed.append("後光")
+        return [tool.Row(5.0, "雨", "b.ymmt", 1, "x", "")]
+
+    monkeypatch.setattr(tool, "compare_work", hidden)
+    (tmp_path / "ceilings.json").write_text(
+        json.dumps({"後光": 71.0, "雨": 27.0}), encoding="utf-8"
+    )
+    assert tool.command_compare(_compare_arguments(tmp_path)) == 1
+    (tmp_path / "ceilings.json").write_text(json.dumps({"雨": 27.0}), encoding="utf-8")
+    assert tool.command_compare(_compare_arguments(tmp_path)) == 0
+
+
 REAL_WORK = ROOT / ".work" / "ymm4-compare"
 
 
@@ -1552,11 +1764,14 @@ def test_the_real_templates_stay_within_their_ceilings(tool: ModuleType, tmp_pat
     if not (REAL_WORK / "ymm4.mp4").exists() or not (REAL_WORK / "manifest.json").exists():
         pytest.skip(f"YMM4 の書き出しが {REAL_WORK} に無い")
     missing: list[tuple[str, int]] = []
-    rows = tool.compare_work(REAL_WORK, tmp_path, missing=missing)
+    shadowed: list[str] = []
+    rows = tool.compare_work(REAL_WORK, tmp_path, missing=missing, shadowed=shadowed)
     assert rows, "比べた絵が 1 枚も無い（書き出しと並べ方が食い違っている）"
     ceilings = tool.read_ceilings(tool.CEILINGS)
     problems, _ = tool.unmeasured_templates(rows, missing, ceilings)
     assert problems == [], "上限を持つテンプレートのフレームが書き出しに無い"
+    hidden = [name for name in shadowed if name in ceilings]
+    assert hidden == [], "上限を持つテンプレートが前の枠の絵に隠れて比べられない"
     assert tool.over_ceilings(tool.worst_by_template(rows), ceilings) == []
 
 

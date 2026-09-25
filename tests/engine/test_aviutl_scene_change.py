@@ -35,6 +35,7 @@ from sashimono.core.timebase import FrameRate
 from sashimono.effects.sources import TRANSITION
 from sashimono.engine.gpu import GLContextError, OffscreenGLContext
 from sashimono.engine.render import FrameRenderer
+from sashimono.engine.render.scripts import _apply_params
 
 SETTINGS = ProjectSettings(width=64, height=36, frame_rate=FrameRate(30))
 RED = (1.0, 0.0, 0.0, 1.0)
@@ -47,6 +48,12 @@ obj.setoption("dst","frm")
 obj.draw()
 @後を写す
 obj.copybuffer("obj","frm")
+obj.setoption("dst","frm")
+obj.draw()
+@半分にする
+obj.alpha = obj.alpha * 0.5
+@半分にして描く
+obj.alpha = obj.alpha * 0.5
 obj.setoption("dst","frm")
 obj.draw()
 @落ちる
@@ -84,9 +91,16 @@ def _fill(color: tuple[float, float, float, float]) -> GeneratedSource:
     return GeneratedSource(kind="shape", params={"shape": "background", "color": color})
 
 
-def _project(scripts: ScriptCatalog, label: str) -> Project:
-    """赤（0〜30）から青（30〜60）へ シーンチェンジは 20〜40 真ん中で入れ替わる形を既定にする"""
-    (entry,) = [e for e in scripts.of_kind("scn") if e.label == label]
+def _project(scripts: ScriptCatalog, *labels: str, enabled: bool = True) -> Project:
+    """赤（0〜30）から青（30〜60）へ シーンチェンジは 20〜40 真ん中で入れ替わる形を既定にする
+
+    ``labels`` のスクリプトを並べた順に積む ``enabled`` を倒すとどれも切った状態で積む
+    """
+    effects = []
+    for label in labels:
+        (entry,) = [e for e in scripts.of_kind("scn") if e.label == label]
+        params = entry.definition().default_params()
+        effects.append(Effect(kind=entry.identifier, params=params, enabled=enabled))
     base = Project.create(SETTINGS)
     scenes = Track(
         TrackKind.VIDEO,
@@ -100,7 +114,7 @@ def _project(scripts: ScriptCatalog, label: str) -> Project:
         timeline_start=20,
         duration=20,
         source=TRANSITION.create(style="switch"),
-        effects=(Effect(kind=entry.identifier, params=entry.definition().default_params()),),
+        effects=tuple(effects),
     )
     tracks = (scenes, Track(TrackKind.VIDEO, "V2", (change,)))
     return base.with_timeline(replace(base.timeline, tracks=tracks))
@@ -147,6 +161,14 @@ class TestObjApi:
         assert state.buffers["tmp"].shape == (6, 8, 4)
         assert not report.missing
 
+    def test_the_check_of_the_previous_script_is_not_carried_over(self) -> None:
+        # シーンチェンジもアニメーション効果も 1 つの obj を順に渡す チェックを戻さないと、
+        # チェックを持たない後のスクリプトが、前のスクリプトで入れたチェックを読む
+        state = ObjectState(image=blank_image(4, 4))
+        state.check0 = True
+        _apply_params(state, Effect(kind="aviutl:無い.scn:チェック無し", params={}), 0)
+        assert state.check0 is False
+
 
 class TestRender:
     def test_the_old_scene_fades_over_the_new_by_the_progress(
@@ -182,3 +204,39 @@ class TestRender:
         assert early[18, 32, 0] > 200 and early[18, 32, 2] < 30, early[18, 32]
         assert late[18, 32, 2] > 200 and late[18, 32, 0] < 30, late[18, 32]
         assert report.missing["シーンチェンジのスクリプトが走らない（素通し）: 落ちる"] == 2
+
+    def test_every_stacked_scene_change_runs_in_order(
+        self, scripts: ScriptCatalog, gl_context: OffscreenGLContext
+    ) -> None:
+        # 2 本を積むと、前の場面（切れ目の手前で止めた赤）の不透明度が 2 回半分になって、
+        # 1/4 で後の場面（青）の上に出る 先頭の 1 本だけを走らせると、描くのは 1 本目の
+        # 自動の描画だけで半分（赤 127）
+        project = _project(scripts, "半分にする", "半分にして描く")
+        (drawn,), report = _render(project, gl_context, 35)
+        red, _, blue = (int(value) for value in drawn[18, 32, :3])
+        assert 30 < red < 100 and blue > 120, (drawn[18, 32], report.missing)
+        assert "場面切り替えに積んだ AviUtl スクリプト" not in report.missing
+        assert not [line for line in report.missing if "素通し" in line]
+
+    def test_only_the_script_that_failed_is_counted(
+        self, scripts: ScriptCatalog, gl_context: OffscreenGLContext
+    ) -> None:
+        # 1 本でも走らなければ切り替え全体を素通しにするが、数えるのは走らなかった物だけ
+        # 走った物まで数えると、互換性レポートからどれを直せばよいか分からない
+        project = _project(scripts, "半分にして描く", "落ちる")
+        (early, late), report = _render(project, gl_context, 25, 35)
+        assert early[18, 32, 0] > 200 and early[18, 32, 2] < 30, early[18, 32]
+        assert late[18, 32, 2] > 200 and late[18, 32, 0] < 30, late[18, 32]
+        passed = {line for line in report.missing if "素通し" in line}
+        assert passed == {"シーンチェンジのスクリプトが走らない（素通し）: 落ちる"}
+
+    def test_a_switched_off_scene_change_is_neither_run_nor_counted(
+        self, scripts: ScriptCatalog, gl_context: OffscreenGLContext
+    ) -> None:
+        # 切ったスクリプトは走らせず、切り替え方どおり真ん中で入れ替える
+        # 前の場面の列に残るので、場面へ掛けられないスクリプトとしても数えない
+        project = _project(scripts, "後を写す", enabled=False)
+        (early, late), report = _render(project, gl_context, 25, 35)
+        assert early[18, 32, 0] > 200 and early[18, 32, 2] < 30, early[18, 32]
+        assert late[18, 32, 2] > 200 and late[18, 32, 0] < 30, late[18, 32]
+        assert "場面切り替えに積んだ AviUtl スクリプト" not in report.missing

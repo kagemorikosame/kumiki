@@ -19,6 +19,7 @@ from sashimono.core.model import AnimatedValue, Effect, Project, ProjectSettings
 from sashimono.core.timebase import FrameRate
 from sashimono.engine.gpu import GLContextError, OffscreenGLContext
 from sashimono.engine.render import FrameRenderer
+from sashimono.engine.sources import centred_points
 
 
 def _still(amount: float) -> dict[str, Any]:
@@ -297,9 +298,12 @@ class TestShapes:
         report = CompatibilityReport()
         source = map_template([item], report=report)[0].clip.source
         assert source is not None
-        # 点は画面の左上からの座標 中心を引き、Y は上向きへ直す
-        # この直しが抜けると、線が中心からずれたうえ上下が逆さまに出る
-        assert source.params["points"] == "0,0;100,-100"
+        # 点は画面の左上からの座標のまま持ち、中心を引いて Y を上向きへ直すのは描くとき
+        # この印が抜けると、線が中心からずれたうえ上下が逆さまに出る
+        assert source.params["points"] == "960,540;1060,640"
+        assert source.params["points_from"] == "corner"
+        values = dict(source.params)
+        assert centred_points(values, 1920, 1080) == [(0.0, 0.0), (100.0, -100.0)]
         assert _value(source.params["line_width"]) == pytest.approx(320.0)
         assert _value(source.params["trim_end"]) == pytest.approx(90.0)
 

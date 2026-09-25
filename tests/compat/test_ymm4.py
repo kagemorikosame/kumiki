@@ -396,7 +396,7 @@ class TestTextFields:
         assert (source.params["align"], source.params["valign"]) == ("center", "middle")
 
     def test_the_style_becomes_a_decoration(self) -> None:
-        source = self.mapped(Style="ThickBorder", StyleColor="#FF112233")
+        source = self.mapped(Style="SharpBorder", StyleColor="#FF112233")
         assert value_at(source.params["border_width"]) > 0
         assert source.params["border_color"] == pytest.approx(
             (0x11 / 255, 0x22 / 255, 0x33 / 255, 1.0)

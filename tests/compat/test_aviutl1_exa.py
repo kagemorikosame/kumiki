@@ -355,6 +355,7 @@ class TestSceneChange:
         assert report.missing["シーンチェンジ: ディザワイプ(時計)@別の束"] == 1
 
     def test_the_built_in_cross_fade_is_a_fade(self) -> None:
+        # fade に写さないと、じわっと混ざるはずの切り替えが真ん中で急に入れ替わる
         report = CompatibilityReport()
         text = SCENE_ALIAS.replace("ディザワイプ(時計)@ディザσ", "クロスフェード")
         mapped = map_object(parse_exo(text).objects[0], RATE, report=report)
@@ -363,6 +364,16 @@ class TestSceneChange:
         assert mapped.clip.source.params["style"] == "fade"
         assert mapped.clip.effects == ()
         assert not [line for line in report.missing if line.startswith("シーンチェンジ")]
+
+    def test_the_adjust_of_a_built_in_is_counted(self) -> None:
+        # 組み込みのクロスフェードには 調整 を当てる欄が無い 数えずに捨てると、
+        # 調整 を変えた作品が違う切り替わり方になったことに気付けない
+        report = CompatibilityReport()
+        text = SCENE_ALIAS.replace("ディザワイプ(時計)@ディザσ", "クロスフェード").replace(
+            "調整=0.00", "調整=50.00"
+        )
+        map_object(parse_exo(text).objects[0], RATE, report=report)
+        assert report.missing["シーンチェンジの調整: クロスフェード"] == 1
 
     def test_a_built_in_by_number_is_counted(self) -> None:
         # 名前の無い組み込みは type の番号で指すと思われるが、番号と種類の対応は見ていない
