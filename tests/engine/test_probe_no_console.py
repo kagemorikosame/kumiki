@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 import wave
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import cast
 
@@ -19,7 +21,12 @@ import pytest
 
 from sashimono.engine.decode import probe as probe_module
 from sashimono.engine.decode.audio import AudioDecoder
-from sashimono.engine.decode.probe import ROTATION_PACKET_LIMIT, clear_probe_cache, probe_media
+from sashimono.engine.decode.probe import (
+    ROTATION_PACKET_LIMIT,
+    clear_probe_cache,
+    forget_probe,
+    probe_media,
+)
 from sashimono.engine.decode.video import VideoDecoder
 from tests.media_fixtures import SampleMedia, make_rotated
 
@@ -176,4 +183,75 @@ def test_waiting_for_the_first_picture_is_bounded() -> None:
         cast(av.container.InputContainer, container), cast(av.VideoStream, object())
     )
     assert rotation == 0
-    assert container.read <= ROTATION_PACKET_LIMIT + 1
+    # 上限ちょうどで止まる 数えてから止めると、上限の次の 1 つまで読む（#227 の CodeRabbit）
+    assert container.read == ROTATION_PACKET_LIMIT
+
+
+def test_the_same_file_asked_at_once_is_opened_once(
+    sample_av: SampleMedia, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 同じ鍵の同時の呼び出しを待ち合わせないと、読み込みの 4 本のスレッドが同じ素材を
+    # 何重にも開く（#227 の Qodo の指摘）
+    opened: list[str] = []
+    real = av.open
+
+    def slow(target: str, *args: object, **kwargs: object) -> object:
+        opened.append(target)
+        # 開くのに時間の掛かる素材 待っている間にほかのスレッドが同じ素材を頼む
+        time.sleep(0.2)
+        return real(target, *args, **kwargs)  # type: ignore[call-overload]  # 数えるだけの素通し
+
+    monkeypatch.setattr(av, "open", slow)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        items = list(pool.map(lambda _n: probe_media(sample_av.path), range(4)))
+    assert len(opened) == 1
+    assert len({item.duration for item in items}) == 1
+
+
+def test_forgetting_opens_the_file_again(
+    sample_av: SampleMedia, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 読み込み直しでも覚えた結果を返すと、真ん中だけ書き換えて時刻を戻した素材を前の中身で
+    # 置く（中身の印では見分けられない #227 の CodeRabbit） 読み込む操作では捨てる
+    opened = _count_opens(monkeypatch)
+    probe_media(sample_av.path)
+    probe_media(sample_av.path)
+    forget_probe(sample_av.path)
+    probe_media(sample_av.path)
+    assert len(opened) == 2
+
+
+def test_each_video_stream_keeps_its_own_rotation(
+    media_dir: Path, sample_av: SampleMedia, tmp_path: Path
+) -> None:
+    # 1 本目の回転をほかの映像にも写すと、向きの違う 2 本目が横倒しになる（#227 の CodeRabbit）
+    path = tmp_path / "二つの向き.mp4"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-display_rotation",
+            "90",
+            "-i",
+            str(sample_av.path),
+            "-display_rotation",
+            "180",
+            "-i",
+            str(sample_av.path),
+            "-map",
+            "0:v",
+            "-map",
+            "1:v",
+            "-c",
+            "copy",
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    del media_dir
+    item = probe_media(path)
+    assert [stream.rotation for stream in item.video_streams] == [270, 180]

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-import functools
 import hashlib
+import itertools
+import threading
+from collections import OrderedDict
 from fractions import Fraction
 from pathlib import Path
+from typing import cast
 
 import av
 import av.error
@@ -18,6 +21,7 @@ __all__ = [
     "ROTATION_PACKET_LIMIT",
     "ProbeError",
     "clear_probe_cache",
+    "forget_probe",
     "media_origin",
     "moving_pictures",
     "probe_media",
@@ -54,6 +58,16 @@ def probe_media(path: Path) -> MediaItem:
     映像と音声のデコーダは作るたびにここを呼ぶ（再生やシークのたび、控えや字幕起こしも）
     毎回開くと、そのたびに素材を開いて頭の 1 枚を復号する 素材 ID は呼ぶたびに新しく作る
     読み込みのたびに別の素材として登録するため
+
+    覚えた結果を使い回すのは、読み込んだ後の素材を開き直す所（デコーダ・控え・字幕起こし）
+    のためと割り切る 中身の印は、同じ大きさのまま真ん中だけを書き換えて時刻を戻した物を
+    見分けられない（見分けるには全体を読むことになり、覚える意味が無くなる） そこで
+    素材を読み込む操作（ファイルの読み込み・ドロップ・テンプレートや .exo の素材・AI の
+    読み込み）は :func:`forget_probe` で覚えた結果を捨ててから呼ぶ 読み込み直せば必ず
+    開き直す
+
+    同じ素材を同時に何本ものスレッドから頼まれたら、開くのは 1 回で、ほかは待って同じ
+    結果を受け取る（読み込みは 4 本のスレッドで調べる）
     """
     path = Path(path)
     duration, video_streams, audio_streams = _facts(path, _identity(path))
@@ -65,9 +79,63 @@ def probe_media(path: Path) -> MediaItem:
     )
 
 
+def forget_probe(path: Path) -> None:
+    """``path`` について覚えている結果を捨てる 素材を読み込む操作の前に呼ぶ"""
+    target = Path(path)
+    with _lock:
+        for key in [key for key in _cache if key[0] == target]:
+            del _cache[key]
+
+
 def clear_probe_cache() -> None:
     """覚えている調べた結果を捨てる 試験で開いた回数を数えるときのため"""
-    _facts.cache_clear()
+    with _lock:
+        _cache.clear()
+
+
+_Key = tuple[Path, tuple[int, ...]]
+
+#: 調べた結果 古い物から捨てる
+_cache: OrderedDict[_Key, _Facts] = OrderedDict()
+#: いま調べている素材 同じ素材を頼んだほかのスレッドは、これが終わるのを待つ
+_pending: dict[_Key, threading.Event] = {}
+_lock = threading.Lock()
+
+
+def _facts(path: Path, identity: tuple[int, ...]) -> _Facts:
+    """素材の長さとストリーム 覚えていればそれを、無ければ開いて調べて覚える
+
+    ``functools.lru_cache`` は同じ鍵の同時の呼び出しを待ち合わせず、読み込みの 4 本の
+    スレッドが同じ素材を 2 重 3 重に開く 調べている間は印を立て、ほかは待つ
+    開けなかった素材は覚えない 待っていた側は自分で開き直して、同じ理由の例外を受け取る
+    """
+    key = (path, identity)
+    while True:
+        with _lock:
+            found = _cache.get(key)
+            if found is not None:
+                _cache.move_to_end(key)
+                return found
+            waiting = _pending.get(key)
+            if waiting is None:
+                done = threading.Event()
+                _pending[key] = done
+                break
+        waiting.wait()
+    try:
+        facts = _read_facts(path)
+    except BaseException:
+        with _lock:
+            del _pending[key]
+        done.set()
+        raise
+    with _lock:
+        _cache[key] = facts
+        while len(_cache) > PROBE_CACHE_SIZE:
+            _cache.popitem(last=False)
+        del _pending[key]
+    done.set()
+    return facts
 
 
 #: 覚えた結果を使ってよいかを見るために読む、ファイルの頭と尻の長さ（バイト）
@@ -80,9 +148,11 @@ def _identity(path: Path) -> tuple[int, ...]:
 
     更新時刻と大きさだけだと、同じ大きさの別の素材で上書きして更新時刻を戻した物
     （時刻を保つ写し方・展開）を見分けられず、前の長さや解像度のまま置いてしまう
-    ファイルの番号（名前を替えて差し替えると変わる）・状態の変わった時刻（POSIX では
-    時刻を戻しても変わる）・頭と尻の中身の要約も入れる 読むのは 128KB だけで、
-    素材を開いて頭の 1 枚を復号するより軽い
+    ファイルの番号（名前を替えて差し替えると変わる）・``st_ctime_ns``（POSIX では状態の
+    変わった時刻で、時刻を戻しても変わる Windows の Python 3.12 と 3.13 では作った時刻で、
+    上書きでは変わらない）・頭と尻の中身の要約も入れる 読むのは 128KB だけで、素材を
+    開いて頭の 1 枚を復号するより軽い 真ん中だけの書き換えはこれでも見分けられないので、
+    読み込む操作では覚えた結果を捨てる（:func:`probe_media`）
     """
     try:
         stat = path.stat()
@@ -103,14 +173,8 @@ def _identity(path: Path) -> tuple[int, ...]:
     )
 
 
-@functools.lru_cache(maxsize=PROBE_CACHE_SIZE)
-def _facts(path: Path, identity: tuple[int, ...]) -> _Facts:
-    """素材の長さとストリーム 中身の印（:func:`_identity`）を鍵に入れる
-
-    同じ場所へ書き出し直した素材を古い長さで置かないため 開けなかった素材は覚えない
-    （例外は ``lru_cache`` に残らない） 置き直せば次は開き直す
-    """
-    del identity
+def _read_facts(path: Path) -> _Facts:
+    """素材を開いて、長さとストリームを調べる"""
     try:
         container = av.open(str(path))
     except (av.error.FFmpegError, OSError) as exc:
@@ -125,10 +189,35 @@ def _facts(path: Path, identity: tuple[int, ...]) -> _Facts:
             raise ProbeError(f"映像も音声も含まれていない: {path}")
         duration = Fraction(0) if is_still else _container_duration(container, origin)
         # 回転は最後に読む 頭の 1 枚を復号するので、ほかの値を読む前に進めない
-        rotation = 0 if is_still or not pictures else _display_rotation(container, pictures[0])
-        video_streams = tuple(_video_info(stream, rotation, origin) for stream in pictures)
+        rotations = [0] * len(pictures) if is_still else _rotations(path, container, pictures)
+        video_streams = tuple(
+            _video_info(stream, rotation, origin)
+            for stream, rotation in zip(pictures, rotations, strict=True)
+        )
 
     return duration, video_streams, audio_streams
+
+
+def _rotations(
+    path: Path, container: av.container.InputContainer, pictures: list[av.VideoStream]
+) -> list[int]:
+    """映像ストリームごとの回転 表示行列はストリームごとに持つ
+
+    1 本目の回転をほかへ写すと、向きの違う 2 本目（別のカメラの角度など）が横倒しになる
+    2 本目からは開き直して頭から読む 1 本目の頭の 1 枚を読んだ所から続けると、
+    2 本目の頭のパケットを読み飛ばしている
+    """
+    if not pictures:
+        return []
+    rotations = [_display_rotation(container, pictures[0])]
+    for stream in pictures[1:]:
+        try:
+            with av.open(str(path)) as again:
+                same = cast(av.VideoStream, again.streams[stream.index])
+                rotations.append(_display_rotation(again, same))
+        except (av.error.FFmpegError, OSError, IndexError):
+            rotations.append(0)
+    return rotations
 
 
 def moving_pictures(container: av.container.InputContainer) -> list[av.VideoStream]:
@@ -308,9 +397,8 @@ def _display_rotation(container: av.container.InputContainer, stream: av.VideoSt
     """
     frame: av.VideoFrame | None = None
     try:
-        for count, packet in enumerate(container.demux(stream)):
-            if count >= ROTATION_PACKET_LIMIT:
-                return 0
+        # 上限の数だけ取り出す 数えてから止めると、上限の次の 1 つまで読んでしまう
+        for packet in itertools.islice(container.demux(stream), ROTATION_PACKET_LIMIT):
             frames = packet.decode()
             if frames:
                 frame = frames[0]
