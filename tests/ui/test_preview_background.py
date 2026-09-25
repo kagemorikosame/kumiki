@@ -7,12 +7,14 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable, Collection, Iterator
 from dataclasses import replace
+from typing import Any
 
 import pytest
-from PySide6.QtCore import QElapsedTimer, Qt, QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QApplication
 
 from sashimono.core.commands import AddClip, AddTrack
@@ -31,6 +33,7 @@ from sashimono.core.timebase import FrameRate
 from sashimono.engine.cache.proxy import ProxyStore
 from sashimono.engine.gpu import GLContextError
 from sashimono.engine.render import Invalidation, PreviewCache, RenderQuality
+from sashimono.engine.render.background import WAIT_FOR_WORKER_S, BackgroundPrefetch
 from sashimono.engine.render.prefetch import CacheSurface
 from sashimono.ui.preview import PreviewWidget
 from tests.ui.test_preview_prefetch import StubCache, StubRenderer, _project
@@ -546,23 +549,86 @@ class TestTheScreenKeepsAnswering:
 
         画面のスレッドで貯めると、1 コマ描く間はイベントループが止まる
         （4K を 3 枚重ねて効果を積むと 1 コマ 60ms） ここでは貯める側の 1 コマを
-        0.3 秒にして、再生ヘッドを動かした後の 10ms おきのタイマーが 0.15 秒より
-        遅れないことを見る 遅くするのは貯める道（``_compose_into``）だけで、
-        貯まっていないコマを画面の側でその場で描く道は速いまま
+        わざと遅くして、その間を**どのスレッドが**過ごしたかと、過ごす間に画面の
+        スレッドの 10ms おきのタイマーが 1 度でも届いたかを見る 遅くするのは貯める道
+        （``_compose_into``）だけで、貯まっていないコマを画面の側でその場で描く道は速いまま
+
+        タイマーの間隔の長さ（壁時計）では判定しない 画面の側は、要るコマを走り係が
+        ちょうど描いていると ``WAIT_FOR_WORKER_S``（200ms）まで待つ作りで、機械が混んで
+        その順番になると 202ms 止まり、150ms の上限で変更と関係なく落ちた（#214）
+        画面のスレッドで描くか、画面のスレッドが走り係の描き終わりを待つ形に壊すと、
+        遅いコマの間タイマーは 1 度も届かない 混み具合に関係なく 0 回になる
+
+        その「待つ」所も必ず通す 走り係が描いている最中のコマへ再生ヘッドを動かし、
+        そのコマは画面のタイマーが届くまで描き終えさせない 待つ所が上限で諦めず
+        描き終わりまで待つ形に壊すと、画面は走り係を、走り係は画面を待って進まなくなる
+        待つ長さの上限そのものは tests/engine/test_background_prefetch.py が見ている
         """
         original = PreviewCache._compose_into
+        original_show = BackgroundPrefetch.show
+        # 画面の側が走り係を待つ上限より十分長くする 同じ長さだと、正しく作っていても
+        # 待つ間がコマの間を埋めてタイマーが 1 度も届かないことがある
+        slow_s = WAIT_FOR_WORKER_S + 0.3
+        # 待たせるコマを描き終えるのに要るタイマーの回数 画面が待つ所から抜けて
+        # イベントループへ戻ったことの証しにする
+        release_ticks = 3
+        screen_thread = threading.get_ident()
+        ticks = [0]
+        # タイマーを動かしている間に始まって終わったコマだけを見る 動かす前から描いて
+        # いたコマは、動かした直後に終わるとタイマーが届く暇が無い
+        watching = [False]
+        # (描いたスレッド, 描き始めのタイマーの回数, 描き終わりのタイマーの回数)
+        slow_frames: list[tuple[int, int, int]] = []
+        # 画面に待たせるコマ 用意ができたら次に走り係が描き始めたコマを選ぶ
+        armed = [False]
+        target: list[int | None] = [None]
+        # 画面の側がそのコマを出しに来たときのタイマーの回数
+        asked: list[int] = []
+        # 待たせたコマを描き終えられたか 画面が戻らず逃げ道で抜けたら False
+        released: list[bool] = []
+        claim = threading.Lock()
+        # 再生ヘッドを最初に動かす先
+        start = 30
 
         def slow(cache: PreviewCache, frame: int, surface: CacheSurface) -> None:
-            time.sleep(0.3)
+            began, before = watching[0], ticks[0]
+            if threading.get_ident() != screen_thread and armed[0]:
+                with claim:
+                    # 画面がいま出しているコマは選ばない ``set_frame`` は同じ番号だと
+                    # 何もせず戻るので、画面が出しに来ないまま逃げ道で抜けて落ちる
+                    # 走り係は再生ヘッドを受け取った直後、画面が描き終えて次のコマへ
+                    # 送る前に、いまのコマを描き始めることがある
+                    mine = target[0] is None and frame != start
+                    if mine:
+                        target[0] = frame
+                if mine:
+                    # 画面が出しに来てから、タイマーが届くまで描き終えない 逃げ道の
+                    # 長さは判定に使わない 固まったまま試験が終わらないのを防ぐだけ
+                    limit = time.perf_counter() + 10
+                    while time.perf_counter() < limit and not (
+                        asked and ticks[0] >= asked[0] + release_ticks
+                    ):
+                        time.sleep(0.005)
+                    released.append(bool(asked) and ticks[0] >= asked[0] + release_ticks)
+                    original(cache, frame, surface)
+                    return
+            time.sleep(slow_s)
+            if began and watching[0]:
+                slow_frames.append((threading.get_ident(), before, ticks[0]))
             original(cache, frame, surface)
 
+        def show(background: BackgroundPrefetch, frame: int, *args: Any) -> bool:
+            if frame == target[0] and not asked:
+                asked.append(ticks[0])
+            return original_show(background, frame, *args)
+
         monkeypatch.setattr(PreviewCache, "_compose_into", slow)
+        monkeypatch.setattr(BackgroundPrefetch, "show", show)
         widget = PreviewWidget(_fading_project(), prefetch_bytes=64 * 64 * 4 * 6)
         # 画面へは出さない 本人の画面に窓を出したり、マウスを取り合ったりしない
         widget.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
         widget.resize(64, 64)
         widget.show()
-        gaps: list[float] = []
         try:
             deadline = time.perf_counter() + 10
             while widget.renderer is None and time.perf_counter() < deadline:
@@ -571,38 +637,60 @@ class TestTheScreenKeepsAnswering:
                 pytest.skip("プレビュー窓の GL を作れない")
             # 走り係ができるまで待つ 作るのは 1 度きりで、GL のコンテキストを作る
             # 100ms ほどは画面のスレッドで掛かる ここで見たいのは貯める間の方
-            ready = time.perf_counter() + 1.0
+            # 待つ長さは混んだ機械でも足りるよう長く取る 作れれば即座に抜ける
+            ready = time.perf_counter() + 10
             while time.perf_counter() < ready and not getattr(
                 widget, "prefetch_in_background", False
             ):
                 qt_application.processEvents()
-            clock = QElapsedTimer()
-            clock.start()
-            last = [clock.nsecsElapsed()]
 
             def tick() -> None:
-                now = clock.nsecsElapsed()
-                gaps.append((now - last[0]) / 1e6)
-                last[0] = now
+                ticks[0] += 1
 
             timer = QTimer()
             timer.setTimerType(Qt.TimerType.PreciseTimer)
             timer.setInterval(10)
             timer.timeout.connect(tick)
             timer.start()
+            watching[0] = True
             # 再生ヘッドを動かすと、そこから貯め直す
-            widget.set_frame(30)
-            end = time.perf_counter() + 1.5
-            while time.perf_counter() < end:
+            widget.set_frame(start)
+            # 遅いコマを描き終え、画面に待たせるコマを描き終え、動かした先が貯まるまで
+            # 回す 決まった長さで切ると、混んだ機械では貯まる前に切れて落ちる 上限は
+            # 固まったときの逃げ道
+            ahead = set(range(start, start + 10))
+            moved = False
+            end = time.perf_counter() + 30
+            while time.perf_counter() < end and (
+                len(slow_frames) < 2 or not released or not widget.cached_frames & ahead
+            ):
                 qt_application.processEvents()
+                if slow_frames and not armed[0]:
+                    armed[0] = True
+                if target[0] is not None and not moved:
+                    # 走り係が描いている最中のコマを画面が要るようにする
+                    moved = True
+                    widget.set_frame(target[0])
+            watching[0] = False
             timer.stop()
             background = getattr(widget, "prefetch_in_background", False)
-            stored = widget.cached_frames & set(range(30, 36))
+            stored = widget.cached_frames & ahead
         finally:
             widget.shutdown()
             widget.deleteLater()
             qt_application.processEvents()
-        assert gaps, "タイマーが 1 度も届いていない"
-        assert max(gaps) < 150, f"イベントループが {max(gaps):.0f}ms 止まった"
+        assert slow_frames, "遅くしたコマをタイマーを動かす間に 1 枚も描き終えていない"
+        on_screen = [entry for entry in slow_frames if entry[0] == screen_thread]
+        assert not on_screen, f"遅いコマを画面のスレッドで {len(on_screen)} 枚描いた"
+        # 別のスレッドで描いていても、画面のスレッドがその描き終わりを待っていれば
+        # ループは止まる 1 コマずつ見る 1 枚でも 0 回なら、そのコマの間は止まっていた
+        answered = [after - before for _, before, after in slow_frames]
+        assert min(answered) > 0, (
+            f"描く間にタイマーが届かないコマがある（コマごとの回数 {answered}）"
+        )
+        assert asked, "走り係が描いている最中のコマを画面の側が出しに来ていない"
+        assert released == [True], (
+            "走り係が描いている最中のコマを出すときに、画面が上限で諦めず描き終わりを待った"
+        )
         assert background, "別のスレッドで先読みしていない"
         assert stored, "動かした先を貯めていない（遅くした道を通っていない）"
