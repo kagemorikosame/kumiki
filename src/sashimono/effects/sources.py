@@ -28,6 +28,7 @@ from sashimono.effects.spec import (
 __all__ = [
     "FILTER",
     "FRAMEBUFFER",
+    "PREVIOUS_OBJECT",
     "SHAPE",
     "TEXT",
     "TRANSITION",
@@ -283,7 +284,13 @@ SHAPE = SourceDefinition(
 #: それまでに重ねた画面を、そのまま素材として使う（YMM4 の ``FrameBufferItem``）
 #: 下にある絵へぼかしや色調補正を掛けた帯を作るのに使われる 絵は CPU では作らず、
 #: レンダラが GPU の中で写し取る（:mod:`sashimono.engine.render.renderer`）
-FRAMEBUFFER = SourceDefinition(kind="framebuffer", label="フレームバッファ")
+#: ``transparent`` は何も無い所を透明のまま写す（AviUtl2 のフレームバッファ） 既定の偽は
+#: YMM4 と同じく不透明な黒として写す（#143 反転で周りが白くなる）
+FRAMEBUFFER = SourceDefinition(
+    kind="framebuffer",
+    label="フレームバッファ",
+    parameters=(CheckSpec("transparent", "何も無い所を透明のまま写す", False),),
+)
 
 
 #: 下のトラックを重ね終えた絵へ、クリップのエフェクトを掛ける（AviUtl のフィルタオブジェクト）
@@ -292,6 +299,14 @@ FRAMEBUFFER = SourceDefinition(kind="framebuffer", label="フレームバッフ�
 #: 不透明度は掛ける前と後の混ぜ具合 合成方法は使わない（AviUtl のフィルタオブジェクトにも無い）
 #: 絵はレンダラが GPU の中で作る（:mod:`sashimono.engine.render.renderer`）
 FILTER = SourceDefinition(kind=FILTER_KIND, label="フィルタ")
+
+
+#: すぐ下に重ねたクリップの絵を、自分の位置へ写す（AviUtl の ``直前オブジェクト``）
+#: 写すのは下のクリップのエフェクトを掛けた絵で、下のクリップの描画の欄（反転・配置）と
+#: 不透明度・合成方法は写さない 置く位置・大きさは自分の描画の欄で決める
+#: AviUtl2 に描かせて、下の位置は足されず、下に掛けた単色化は写ることを確かめた（#195）
+#: 絵はレンダラが GPU の中で作る（:mod:`sashimono.engine.render.renderer`）
+PREVIOUS_OBJECT = SourceDefinition(kind="previous_object", label="直前オブジェクト")
 
 
 #: 下のトラックの絵を、前の場面から後の場面へ切り替える（YMM4 の ``TransitionItem``）
@@ -339,4 +354,4 @@ class SourceRegistry:
         return kind in self._definitions
 
 
-source_registry = SourceRegistry((TEXT, SHAPE, FRAMEBUFFER, FILTER, TRANSITION))
+source_registry = SourceRegistry((TEXT, SHAPE, FRAMEBUFFER, FILTER, TRANSITION, PREVIOUS_OBJECT))

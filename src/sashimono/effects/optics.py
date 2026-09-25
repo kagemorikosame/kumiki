@@ -548,11 +548,26 @@ _LENS_BLUR = _shader(
 uniform float radius;
 uniform float brightness;
 uniform float edge_strength;
+uniform bool fixed_size;
+
+// 大きさを変えない（AviUtl の サイズ固定）なら、絵の置かれた範囲の外を読まずに端を読み直す
+vec4 lens_sample(vec2 uv) {
+    if (!fixed_size) return texture(u_texture, uv);
+    vec2 pixel = clamp(uv * u_size, u_object.xy + 0.5, u_object.zw - 0.5);
+    return texture(u_texture, pixel / u_size);
+}
 
 void main() {
     // 丸い絞りのぼかし 縁ほど重くして、玉ボケの輪が明るく中が抜けて見えるようにする
     vec4 centre = texture(u_texture, v_uv);
     if (radius < 0.5) { frag_color = centre; return; }
+    // AviUtl2 に白い四角 300 を範囲 30 でぼかさせると、サイズ固定では端が薄れず 300 のまま
+    // だった（#188 #210） 範囲の外はそのまま返す
+    vec2 here = v_uv * u_size;
+    if (fixed_size && (any(lessThan(here, u_object.xy)) || any(greaterThan(here, u_object.zw)))) {
+        frag_color = centre;
+        return;
+    }
     int rings = int(clamp(ceil(radius / 3.0), 2.0, 10.0));
     vec3 sum = centre.rgb * centre.a;
     float alpha = centre.a;
@@ -563,7 +578,7 @@ void main() {
         float weight = 1.0 + max(edge_strength, 0.0) * pow(float(ring) / float(rings), 2.0);
         for (int k = 0; k < count; ++k) {
             float a = PI * 2.0 * (float(k) + 0.5 * float(ring % 2)) / float(count);
-            vec4 c = texture(u_texture, v_uv + vec2(cos(a), sin(a)) * r / u_size);
+            vec4 c = lens_sample(v_uv + vec2(cos(a), sin(a)) * r / u_size);
             sum += c.rgb * c.a * weight;
             alpha += c.a * weight;
             total += weight;
@@ -1021,6 +1036,7 @@ def register_optics_effects() -> None:
                 TrackSpec("radius", "範囲", 0, 200, 10, unit="px"),
                 TrackSpec("brightness", "明るさ", 0, 1000, 100, unit="%"),
                 TrackSpec("edge_strength", "輪の強さ", 0, 20, 2, step=0.1),
+                CheckSpec("fixed_size", "大きさを変えない", False),
             ),
             fragment_shader=_LENS_BLUR,
         ),

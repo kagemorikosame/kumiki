@@ -383,3 +383,12 @@ def test_scenes_and_filters_have_no_outline() -> None:
     nested = Clip(timeline_start=0, duration=10, scene_id=SceneId("入れ子"))
     assert not has_outline(nested)
     assert clip_outline(project, nested, 0) is None
+
+
+def test_the_previous_object_has_no_outline() -> None:
+    # 直前オブジェクトの絵は下のクリップ次第で、自分の中身からは大きさが分からない
+    # 枠を出すと、中身の無い生成オブジェクトとして掴んでも絵と合わない枠が出る
+    copy = Clip(
+        timeline_start=0, duration=10, source=GeneratedSource(kind="previous_object", params={})
+    )
+    assert not has_outline(copy)

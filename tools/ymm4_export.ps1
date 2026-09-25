@@ -175,6 +175,13 @@ function Get-ExportDialog($Main) {
     foreach ($child in $Main.FindAll($Scope::Children, (New-Condition $Uia::ClassNameProperty 'Window'))) {
         if (Find-Named $child '出力' $ControlTypes::Button) { return $child }
     }
+    # 主の窓の子ではなく、デスクトップの直下に出ることがある（2026-09-25 比べるプロジェクトの
+    # 後ろを組み直した物で 2 度 名前も「動画出力」ではなく ViewModel の型名だった）
+    # 見つけられないと書き出しに進めず、閉じる所でもこの窓が主の窓を閉じさせない
+    foreach ($window in Get-TopWindows) {
+        if ($window -eq $Main) { continue }
+        if (Find-Named $window '出力' $ControlTypes::Button) { return $window }
+    }
     return $null
 }
 

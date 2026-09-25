@@ -49,7 +49,7 @@ from sashimono.core.model import (
 )
 from sashimono.core.timebase import FrameRate
 from sashimono.effects.definition import EffectDefinition, registry
-from sashimono.effects.sources import TRANSITION
+from sashimono.effects.sources import PREVIOUS_OBJECT, TRANSITION
 from sashimono.effects.spec import (
     IMAGE_SUFFIXES,
     CheckSpec,
@@ -154,6 +154,10 @@ _CUSTOM_OBJECT = "カスタムオブジェクト"
 
 #: 場面切り替え（生成オブジェクト ``transition``）として置く中身（#196）
 _SCENE_CHANGE = "シーンチェンジ"
+
+#: 下のオブジェクトの絵を自分の位置へ写す中身（生成オブジェクト ``previous_object`` #195）
+#: AviUtl2 v2.1.6a の本体の名前 AviUtl2 に書き出させて確かめたのはこの名前だけ
+_PREVIOUS_OBJECT = "直前オブジェクト"
 
 #: 組み込みのシーンチェンジのうち、場面切り替えの切り替え方でそのまま描ける物
 #: 名前は AviUtl の一覧の表示名 実物の配布物には 1 回も出てこない（sigma の 4 本は
@@ -370,7 +374,7 @@ _PARAMS: dict[str, dict[str, _Param]] = {
     # 光の強さ は写さない（0 でなければ記録に残る） 写し先の brightness は 100% が
     # 元のままの倍率で、光の強さ（0 が既定）をそのまま入れると真っ黒になる
     # 単純図形σ の 磨りガラス矩形 は 32 を渡し、暗い板になっていた（#170）
-    "レンズブラー": {"範囲": _Param("radius")},
+    "レンズブラー": {"範囲": _Param("radius"), "サイズ固定": _Param("fixed_size")},
     "色ずれ": {"ずれ幅": _Param("shift"), "角度": _Param("angle"), "強さ": _Param("strength")},
     "カラーキー": {"色差範囲": _Param("tolerance"), "境界補正": _Param("feather")},
     "ルミナンスキー": {"基準輝度": _Param("threshold"), "輝度範囲": _Param("smoothness")},
@@ -1259,7 +1263,19 @@ def _content(
         # 消えて写しだけが残るが、こちらは下の絵を消せないので数えて残す
         if entry.params.get("フレームバッファをクリア", "0").strip() not in ("", "0"):
             log.note_missing("フレームバッファをクリア")
-        return GeneratedSource(kind="framebuffer"), "", "framebuffer"
+        # 何も無い所は透明のまま写す AviUtl2 で下の四角の上へ写しを半分に縮めて重ねると、
+        # 写しの黒いはずの所が下の四角を隠さなかった（#195 の探り po05）
+        return (
+            GeneratedSource(kind="framebuffer", params={"transparent": True}),
+            "",
+            "framebuffer",
+        )
+    if entry.name == _PREVIOUS_OBJECT:
+        # AviUtl2 は下のレイヤーの四角を、下の位置を足さずに自分の位置へ同じ大きさで写し、
+        # 下に掛けた単色化の赤も写した（#195） 測った物は項目を持たないので、書いてあれば数える
+        # 一覧の呼び名 ``直前のオブジェクト`` はファイルに出るのを見ていないので、ここでは読まない
+        _note_dropped(entry, set(), log)
+        return PREVIOUS_OBJECT.create(), "", PREVIOUS_OBJECT.kind
     if entry.name in _SCRIPTED_CONTENTS:
         # スクリプトで中身を作るもの（手元にスクリプトの無い AviUtl1 の カスタムオブジェクト）
         # どのスクリプトかで出来る絵がまるで違うので、名前ごとに数える
