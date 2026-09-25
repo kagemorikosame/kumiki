@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
 import time
 import wave
 from collections.abc import Iterator
@@ -255,3 +256,36 @@ def test_each_video_stream_keeps_its_own_rotation(
     del media_dir
     item = probe_media(path)
     assert [stream.rotation for stream in item.video_streams] == [270, 180]
+
+
+def test_reimporting_does_not_take_a_probe_started_before_forgetting(
+    sample_av: SampleMedia, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 捨てる前に始まった調べを読み込み直しが待つと、差し替える前の中身を受け取り、その結果が
+    # 捨てた後に覚え直される（#227 の Qodo の指摘）
+    opened: list[str] = []
+    started = threading.Event()
+    release = threading.Event()
+    real = av.open
+
+    def held(target: str, *args: object, **kwargs: object) -> object:
+        opened.append(target)
+        if len(opened) == 1:
+            # 1 本目の調べは、読み込み直しが終わるまで開いている途中で止める
+            started.set()
+            release.wait(timeout=10)
+        return real(target, *args, **kwargs)  # type: ignore[call-overload]  # 数えるだけの素通し
+
+    monkeypatch.setattr(av, "open", held)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        old = pool.submit(probe_media, sample_av.path)
+        assert started.wait(timeout=10)
+        forget_probe(sample_av.path)
+        probe_media(sample_av.path)
+        # 読み込み直しは古い調べを待たずに自分で開いた（待っていたらここへ来ない）
+        assert len(opened) == 2
+        release.set()
+        old.result(timeout=10)
+    # 古い調べの結果は覚えていない 残っているのは読み込み直しの 1 つだけ
+    kept = [key for key in probe_module._cache if key[0] == sample_av.path]
+    assert [key[2] for key in kept] == [probe_module._generation[sample_av.path]]

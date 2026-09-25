@@ -83,6 +83,10 @@ def forget_probe(path: Path) -> None:
     """``path`` について覚えている結果を捨てる 素材を読み込む操作の前に呼ぶ"""
     target = Path(path)
     with _lock:
+        # 世代を進める いま調べている最中の古い調べは、終わっても覚えさせず、これから
+        # 読み込む側もそれを待たない 待つと、捨てる前に始まった調べの結果を受け取り、
+        # その結果が捨てた後に覚え直される
+        _generation[target] = _generation.get(target, 0) + 1
         for key in [key for key in _cache if key[0] == target]:
             del _cache[key]
 
@@ -93,12 +97,15 @@ def clear_probe_cache() -> None:
         _cache.clear()
 
 
-_Key = tuple[Path, tuple[int, ...]]
+#: 鍵 場所・中身の印・世代（:func:`forget_probe` で進む）
+_Key = tuple[Path, tuple[int, ...], int]
 
 #: 調べた結果 古い物から捨てる
 _cache: OrderedDict[_Key, _Facts] = OrderedDict()
 #: いま調べている素材 同じ素材を頼んだほかのスレッドは、これが終わるのを待つ
 _pending: dict[_Key, threading.Event] = {}
+#: 場所ごとの世代 捨てた回数
+_generation: dict[Path, int] = {}
 _lock = threading.Lock()
 
 
@@ -108,10 +115,12 @@ def _facts(path: Path, identity: tuple[int, ...]) -> _Facts:
     ``functools.lru_cache`` は同じ鍵の同時の呼び出しを待ち合わせず、読み込みの 4 本の
     スレッドが同じ素材を 2 重 3 重に開く 調べている間は印を立て、ほかは待つ
     開けなかった素材は覚えない 待っていた側は自分で開き直して、同じ理由の例外を受け取る
+    鍵には世代を入れる :func:`forget_probe` の後に頼んだ側は、捨てる前に始まった調べを
+    待たずに自分で開き、捨てる前に始まった調べの結果は覚えない
     """
-    key = (path, identity)
     while True:
         with _lock:
+            key = (path, identity, _generation.get(path, 0))
             found = _cache.get(key)
             if found is not None:
                 _cache.move_to_end(key)
@@ -130,9 +139,11 @@ def _facts(path: Path, identity: tuple[int, ...]) -> _Facts:
         done.set()
         raise
     with _lock:
-        _cache[key] = facts
-        while len(_cache) > PROBE_CACHE_SIZE:
-            _cache.popitem(last=False)
+        # 調べている間に捨てられていたら覚えない 読み込み直した側の結果だけを残す
+        if _generation.get(path, 0) == key[2]:
+            _cache[key] = facts
+            while len(_cache) > PROBE_CACHE_SIZE:
+                _cache.popitem(last=False)
         del _pending[key]
     done.set()
     return facts
