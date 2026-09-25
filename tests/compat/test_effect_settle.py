@@ -20,7 +20,7 @@ from sashimono.compat.aviutl.objapi import (
     EffectRequest,
     ObjectState,
 )
-from sashimono.compat.aviutl.report import CompatibilityReport
+from sashimono.compat.aviutl.report import CompatibilityReport, global_report
 from sashimono.compat.aviutl.runtime import LuaScriptRuntime
 from sashimono.core.model import Effect
 from sashimono.engine.render.scripts import ScriptStage
@@ -140,11 +140,17 @@ class TestSettle:
             raise RuntimeError("GL のコンテキストが無い")
 
         stage = ScriptStage(ScriptCatalog(roots=()), screen=(320, 180), apply_effects=bake)
+        before = dict(global_report.missing)
         text = stage.expand_text(
             f"<?{BLUR} obj.getpixel(0, 0) mes('字')?>", frame=12, fps=24.0, duration=48
         )
         assert seen == []
         assert text == "字"
+        # 掛けずに読んだことは記録に残す getpixel の値を文字に使うと、掛ける前の絵の値になる
+        assert any(
+            "テキスト欄の Lua" in line and count > before.get(line, 0)
+            for line, count in global_report.missing.items()
+        )
 
     def test_without_a_baker_the_order_is_recorded(self) -> None:
         # 掛ける関数を持たない所（GPU の無い道具）では焼き込めない 黙ると順が入れ替わった
