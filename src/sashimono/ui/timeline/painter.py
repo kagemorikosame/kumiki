@@ -10,11 +10,14 @@
 from __future__ import annotations
 
 import bisect
+import math
+import weakref
+from collections import OrderedDict
 from collections.abc import Callable, Collection, Sequence
 from fractions import Fraction
 
 import numpy as np
-from PySide6.QtCore import QLineF, QPointF, QRect, QRectF, Qt
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QImage, QPainter, QPen
 
 from sashimono.compat.aviutl.custom_object import (
@@ -45,6 +48,9 @@ __all__ = [
     "ADD_TRACK_BUTTON_TEXT",
     "DETAIL_MIN_WIDTH",
     "TRACK_BUTTONS",
+    "WAVEFORM_CACHE_BYTES",
+    "WAVEFORM_IMAGE_MAX_COLUMNS",
+    "clear_waveform_images",
     "clip_content",
     "clips_in_range",
     "draw_clip",
@@ -565,11 +571,43 @@ def _draw_waveform(
 ) -> None:
     """クリップの上に波形を描く
 
-    見えている範囲だけを、1 ピクセル 1 本の縦線として描く 素材全体の波形を
-    毎回描こうとすると、長尺素材で描画が止まる
+    1 ピクセル 1 本の縦線を塗った画像を作り、貯めておいて貼る 同じ倍率なら、
+    再生ヘッドが動くたびの描き直しでもスクロールでも、束ねる所から作り直さずに済む
+    （実素材を 100 本並べた全体表示で、毎回作ると波形だけで 5ms を超えた #205）
+
+    クリップ全体を 1 枚にするのは幅が :data:`WAVEFORM_IMAGE_MAX_COLUMNS` までのとき
+    それより広い（長尺素材を大きく拡大した）ときは見えている範囲だけを作る 素材全体を
+    画像にすると、長尺素材でメモリと時間を食う
     """
-    columns = rect.width()
-    if columns <= 0 or rect.height() <= 2:
+    height = rect.height()
+    if rect.width() <= 0 or height <= 2:
+        return
+
+    clip_left = layout.frame_to_x(clip.timeline_start)
+    total_columns = math.ceil(clip.duration * layout.pixels_per_frame)
+    if total_columns <= WAVEFORM_IMAGE_MAX_COLUMNS:
+        # クリップの頭から数えた列で作る 見えている左端から数えると、スクロールで
+        # 1 画素動くたびに列の区切りが変わり、画像を使い回せないうえ波形が揺れて見える
+        end_seconds = clip.source_in + clip.duration * rate.frame_duration * clip.speed
+        image = _WAVEFORM_IMAGES.get(
+            waveform,
+            int(clip.source_in * waveform.sample_rate),
+            int(end_seconds * waveform.sample_rate),
+            total_columns,
+            height,
+        )
+        if image is None:
+            return
+        # クリップの矩形（clip_rect_for）と同じく画素へ切り捨てた左端に揃える
+        offset = rect.left() - math.floor(clip_left)
+        width = min(rect.width(), image.width() - max(0, offset))
+        if width <= 0:
+            return
+        painter.drawImage(
+            QPoint(rect.left() + max(0, -offset), rect.top()),
+            image,
+            QRect(max(0, offset), 0, width, height),
+        )
         return
 
     # 見えている左端・右端が、素材のどのサンプルにあたるかを求める
@@ -577,35 +615,114 @@ def _draw_waveform(
     end_frame = layout.frame_at(rect.right()) - clip.timeline_start
     start_seconds = clip.source_in + start_frame * rate.frame_duration * clip.speed
     end_seconds = clip.source_in + end_frame * rate.frame_duration * clip.speed
+    image = _WAVEFORM_IMAGES.get(
+        waveform,
+        int(start_seconds * waveform.sample_rate),
+        int(end_seconds * waveform.sample_rate),
+        rect.width(),
+        height,
+    )
+    if image is not None:
+        painter.drawImage(rect.topLeft(), image)
 
-    start_sample = int(start_seconds * waveform.sample_rate)
-    end_sample = int(end_seconds * waveform.sample_rate)
-    if end_sample <= start_sample:
-        return
 
-    envelope = waveform.envelope(start_sample, end_sample, columns)
-    # チャンネルをまとめて 1 本の波形にする ステレオを上下に分けるのは
-    # トラックを高くしたときの表示として P2 で入れる
-    minimum = envelope[:, :, 0].min(axis=1)
-    maximum = envelope[:, :, 1].max(axis=1)
+#: クリップ全体の波形を 1 枚の画像にする幅の上限（画素） 1920 幅の画面で 4 画面分
+#: これより広いときは見えている範囲だけを作る
+WAVEFORM_IMAGE_MAX_COLUMNS = 8192
 
-    centre = rect.top() + rect.height() / 2.0
-    half = rect.height() / 2.0 - 1.0
-    # 切り詰めと位置はまとめて求め、線も 1 度で渡す 列ごとに numpy の値を切り詰めて
-    # drawLine を呼ぶと、実素材を 100 本並べた全体表示で 1 回の描画が 50ms 近くになった
-    # （60fps の予算は 16.7ms #201）
+#: 波形の画像を貯めておく量の上限（バイト） 高さ 40 画素で 1920 幅のクリップが 1 枚 300KB ほど
+#: 全体表示で見える数（数十枚）と、少し前の倍率の分が入れば足りる
+WAVEFORM_CACHE_BYTES = 32 * 1024 * 1024
+
+
+class _WaveformImages:
+    """作った波形の画像を、古く使った物から捨てながら貯める
+
+    素材の解析結果（:class:`Waveform`）は弱参照で持つ 強く持つと、使わなくなった素材の
+    解析をメインウィンドウが捨てても、ここが抱えてメモリが空かない
+    """
+
+    def __init__(self, budget: int) -> None:
+        self._budget = budget
+        self._used = 0
+        self._entries: OrderedDict[
+            tuple[int, int, int, int, int, int], tuple[weakref.ref[Waveform], QImage]
+        ] = OrderedDict()
+
+    def get(
+        self, waveform: Waveform, start: int, end: int, columns: int, height: int
+    ) -> QImage | None:
+        # 色も鍵に入れる 見た目を切り替えたのに前の色の画像が残らないように
+        key = (id(waveform), start, end, columns, height, Colors.WAVEFORM.rgba())
+        entry = self._entries.get(key)
+        # id は解放された物の番号を使い回す 弱参照が同じ物を指すときだけ使う
+        if entry is not None and entry[0]() is waveform:
+            self._entries.move_to_end(key)
+            return entry[1]
+        if entry is not None:
+            self._drop(key)
+        if end <= start:
+            return None
+        envelope = waveform.envelope(start, end, columns)
+        # チャンネルをまとめて 1 本の波形にする ステレオを上下に分けるのは
+        # トラックを高くしたときの表示として P2 で入れる
+        image = waveform_image(envelope[:, :, 0].min(axis=1), envelope[:, :, 1].max(axis=1), height)
+        self._entries[key] = (weakref.ref(waveform), image)
+        self._used += image.sizeInBytes()
+        while self._used > self._budget and len(self._entries) > 1:
+            self._drop(next(iter(self._entries)))
+        return image
+
+    def clear(self) -> None:
+        self._entries.clear()
+        self._used = 0
+
+    def _drop(self, key: tuple[int, int, int, int, int, int]) -> None:
+        _, image = self._entries.pop(key)
+        self._used -= image.sizeInBytes()
+
+
+_WAVEFORM_IMAGES = _WaveformImages(WAVEFORM_CACHE_BYTES)
+
+
+def clear_waveform_images() -> None:
+    """貯めた波形の画像を捨てる 貯めていないときの速さを測る道具と試験が使う"""
+    _WAVEFORM_IMAGES.clear()
+
+
+def waveform_image(minimum: np.ndarray, maximum: np.ndarray, height: int) -> QImage:
+    """列ごとの最小・最大から、1 列 1 本の縦線を塗った画像を作る
+
+    幅は列の数、線の無い所は透明 真ん中から振幅の分だけ上下へ伸ばし、1 を超える値は
+    切り詰める 無音でも 1 画素は残す（何も描かないと音のクリップなのか見分けられない）
+
+    線を 1 本ずつ ``QLineF`` にして ``drawLines`` へ渡していたときは、実素材を 100 本並べた
+    全体表示で線を作るだけで 8ms ほど掛かり、60fps の予算（16.7ms）を超えた（#205）
+    numpy で画素をまとめて塗れば、Python で列を回す所が無くなる
+    """
+    columns = int(minimum.shape[0])
+    centre = height / 2.0
+    half = height / 2.0 - 1.0
     tops = centre - np.clip(maximum, -1.0, 1.0).astype(np.float64) * half
     bottoms = np.maximum(centre - np.clip(minimum, -1.0, 1.0).astype(np.float64) * half, tops + 1.0)
-    left = rect.left()
-    painter.setPen(QPen(Colors.WAVEFORM, 1))
-    painter.drawLines(
-        [
-            QLineF(left + column, top, left + column, bottom)
-            for column, (top, bottom) in enumerate(
-                zip(tops.tolist(), bottoms.tolist(), strict=True)
-            )
-        ]
+    # 端の座標を含む行から塗る 太さ 1 のペン（アンチエイリアス無し）で線を引いたときと同じ行になる
+    rows = np.arange(height, dtype=np.float64)[:, np.newaxis]
+    mask = (rows >= np.floor(tops)[np.newaxis, :]) & (rows <= np.floor(bottoms)[np.newaxis, :])
+    colour = Colors.WAVEFORM
+    # 乗算済みの ARGB で持つ 色が半透明でも、そのまま重ねれば線で描いたときと同じ色になる
+    alpha = colour.alpha()
+    premultiplied = (
+        (alpha << 24)
+        | ((colour.red() * alpha // 255) << 16)
+        | ((colour.green() * alpha // 255) << 8)
+        | (colour.blue() * alpha // 255)
     )
+    pixels = np.where(mask, np.uint32(premultiplied), np.uint32(0)).astype(np.uint32)
+    image = QImage(
+        pixels.tobytes(), columns, height, columns * 4, QImage.Format.Format_ARGB32_Premultiplied
+    )
+    # QImage は渡したバイト列を参照するだけ 元が先に消えると描く所で落ちるので写しを返す
+    return image.copy()
 
 
 def draw_playhead(painter: QPainter, layout: TimelineLayout, frame: int, height: int) -> None:

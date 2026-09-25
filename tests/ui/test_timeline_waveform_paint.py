@@ -1,43 +1,46 @@
-"""タイムラインのクリップに波形を描く所の速さ（#201）
+"""タイムラインのクリップに波形を描く所の速さ（#201 #205）
 
 実素材を 100 本並べて測ると、1 回の描画が 50ms 近くかかり、60fps の予算（16.7ms）を
 大きく超えた 重いのは波形で、見えている列ごとに Python で値を切り詰めて drawLine を
-呼んでいた（1920 幅に音のトラックが 4 本で 7000 回を超える） 描く線は今までと同じまま、
-まとめて 1 度で渡すことを押さえる
+呼んでいた（#201） まとめて drawLines に渡すようにしても、列ごとに QLineF を作る所が
+8ms ほど残った（#205） 今は線を numpy で画像に塗り、同じ倍率の間は作った画像を貯めて貼る
+描く絵は線で描いていたときと同じまま、作り直す回数が減ったことを押さえる
 """
 
 from __future__ import annotations
 
-from typing import cast
+import gc
+import weakref
+from collections.abc import Iterator
 
 import numpy as np
+import pytest
 from PySide6.QtCore import QLineF, QRect
-from PySide6.QtGui import QPainter, QPen
+from PySide6.QtGui import QImage, QPainter, QPen
 
 from sashimono.core.model import Clip
 from sashimono.core.timebase import FrameRate
 from sashimono.effects.sources import TEXT
 from sashimono.engine.audio import PeakLevel, Waveform
+from sashimono.ui.theme import Colors, Metrics
 from sashimono.ui.timeline.layout import TimelineLayout
-from sashimono.ui.timeline.painter import _draw_waveform
+from sashimono.ui.timeline.painter import (
+    WAVEFORM_IMAGE_MAX_COLUMNS,
+    _draw_waveform,
+    _WaveformImages,
+    clear_waveform_images,
+    waveform_image,
+)
+
+RATE = FrameRate(30)
 
 
-class _Recorder:
-    """描く命令だけを書き留める 線の数と形を数えるため"""
-
-    def __init__(self) -> None:
-        self.single = 0
-        self.batches: list[list[QLineF]] = []
-
-    def setPen(self, pen: QPen) -> None:  # noqa: N802 - QPainter に合わせる
-        del pen
-
-    def drawLine(self, *args: object) -> None:  # noqa: N802 - QPainter に合わせる
-        del args
-        self.single += 1
-
-    def drawLines(self, lines: list[QLineF]) -> None:  # noqa: N802 - QPainter に合わせる
-        self.batches.append(list(lines))
+@pytest.fixture(autouse=True)
+def _fresh_images() -> Iterator[None]:
+    # 前の試験が貯めた画像を使うと、作り直す回数を数える試験が 0 回と数える
+    clear_waveform_images()
+    yield
+    clear_waveform_images()
 
 
 def _waveform(low: float, high: float, seconds: int = 4) -> Waveform:
@@ -53,44 +56,153 @@ def _waveform(low: float, high: float, seconds: int = 4) -> Waveform:
     )
 
 
-def _draw(waveform: Waveform, rect: QRect) -> _Recorder:
-    recorder = _Recorder()
-    clip = Clip(timeline_start=0, duration=90, source=TEXT.create())
-    _draw_waveform(
-        cast("QPainter", recorder),
-        rect,
-        clip,
-        TimelineLayout(pixels_per_frame=10.0),
-        FrameRate(30),
-        waveform,
+def _pixels(image: QImage) -> np.ndarray:
+    image = image.convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
+    view = np.frombuffer(image.constBits(), dtype=np.uint32, count=image.width() * image.height())
+    return view.reshape(image.height(), image.width()).copy()
+
+
+def _paint(
+    waveform: Waveform, rect: QRect, layout: TimelineLayout, clip: Clip | None = None
+) -> np.ndarray:
+    """``rect`` へ描いた画面を返す"""
+    canvas = QImage(
+        rect.right() + 10, rect.bottom() + 10, QImage.Format.Format_ARGB32_Premultiplied
     )
-    return recorder
+    canvas.fill(0)
+    painter = QPainter(canvas)
+    clip = clip or Clip(timeline_start=0, duration=90, source=TEXT.create())
+    _draw_waveform(painter, rect, clip, layout, RATE, waveform)
+    painter.end()
+    return _pixels(canvas)
 
 
-def test_the_waveform_is_drawn_in_one_call_not_one_per_column() -> None:
-    """列ごとに drawLine を呼ぶと、100 本並べたときの描画が 50ms 近くになる"""
-    recorder = _draw(_waveform(-0.5, 0.5), QRect(200, 10, 400, 42))
-    assert recorder.single == 0
-    assert len(recorder.batches) == 1
-    assert len(recorder.batches[0]) == 400
+def _count_envelopes(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """``Waveform.envelope`` が呼ばれるたびに列の数を書き留める"""
+    calls: list[int] = []
+    original = Waveform.envelope
+
+    def counting(self: Waveform, start: int, end: int, columns: int) -> np.ndarray:
+        calls.append(columns)
+        return original(self, start, end, columns)
+
+    monkeypatch.setattr(Waveform, "envelope", counting)
+    return calls
 
 
-def test_the_batched_lines_keep_the_shape_of_the_waveform() -> None:
-    """まとめても線の位置は同じ 真ん中から振幅の分だけ上下へ伸び、1 を超える値は切り詰める"""
-    rect = QRect(200, 10, 400, 42)
-    centre, half = rect.top() + rect.height() / 2.0, rect.height() / 2.0 - 1.0
-    lines = _draw(_waveform(-0.5, 0.5), rect).batches[0]
-    assert lines[0].x1() == lines[0].x2() == rect.left()
-    assert lines[-1].x1() == rect.left() + 399
-    assert lines[0].y1() == centre - 0.5 * half
-    assert lines[0].y2() == centre + 0.5 * half
-    clipped = _draw(_waveform(-3.0, 3.0), rect).batches[0]
-    assert clipped[5].y1() == centre - half
-    assert clipped[5].y2() == centre + half
+def test_the_image_paints_the_same_pixels_as_the_lines_it_replaced() -> None:
+    """線を引いていたときと同じ画素を塗る 1 画素ずれると、切り替えた前後で波形が太って見える"""
+    rng = np.random.default_rng(1)
+    for height in (5, 20, 41, 42, 77):
+        maximum = rng.uniform(-1.5, 1.5, 300).astype(np.float32)
+        minimum = np.minimum(maximum, rng.uniform(-1.5, 1.5, 300).astype(np.float32))
+        maximum[:20] = minimum[:20] = 0.0
+        expected = QImage(300, height, QImage.Format.Format_ARGB32_Premultiplied)
+        expected.fill(0)
+        painter = QPainter(expected)
+        centre, half = height / 2.0, height / 2.0 - 1.0
+        tops = centre - np.clip(maximum, -1.0, 1.0).astype(np.float64) * half
+        bottoms = np.maximum(
+            centre - np.clip(minimum, -1.0, 1.0).astype(np.float64) * half, tops + 1.0
+        )
+        painter.setPen(QPen(Colors.WAVEFORM, 1))
+        painter.drawLines(
+            [
+                QLineF(column, top, column, bottom)
+                for column, (top, bottom) in enumerate(
+                    zip(tops.tolist(), bottoms.tolist(), strict=True)
+                )
+            ]
+        )
+        painter.end()
+        drawn = _pixels(waveform_image(minimum, maximum, height))
+        assert np.array_equal(drawn, _pixels(expected)), height
 
 
-def test_silence_still_leaves_a_one_pixel_line() -> None:
-    """無音でも 1 画素の線を残す 何も描かないと、音のクリップなのか見分けられない"""
-    rect = QRect(200, 10, 400, 42)
-    lines = _draw(_waveform(0.0, 0.0), rect).batches[0]
-    assert all(line.y2() - line.y1() == 1.0 for line in lines)
+def test_silence_still_leaves_a_thin_line() -> None:
+    """無音でも細い線を残す 何も描かないと、音のクリップなのか見分けられない
+
+    長さ 1 の線は、線で描いていたときも端の 2 行を塗っていた
+    """
+    silent = np.zeros(400, dtype=np.float32)
+    painted = (_pixels(waveform_image(silent, silent, 42)) != 0).sum(axis=0)
+    assert ((painted >= 1) & (painted <= 2)).all()
+
+
+def test_repainting_at_the_same_zoom_does_not_rebuild_the_waveform(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """再生ヘッドが動くたびの描き直しとスクロールで、束ねる所から作り直さない
+
+    作り直すと、実素材を 100 本並べた全体表示で波形だけで 5ms を超え、ほかと合わせて
+    60fps の予算を超えた（#205）
+    """
+    calls = _count_envelopes(monkeypatch)
+    waveform = _waveform(-0.5, 0.5)
+    rect = QRect(Metrics.TRACK_HEADER_WIDTH, 10, 400, 42)
+    first = _paint(waveform, rect, TimelineLayout(pixels_per_frame=10.0))
+    again = _paint(waveform, rect, TimelineLayout(pixels_per_frame=10.0))
+    _paint(waveform, rect, TimelineLayout(pixels_per_frame=10.0, scroll_frame=12.0))
+    assert len(calls) == 1
+    assert np.array_equal(first, again)
+    _paint(waveform, rect, TimelineLayout(pixels_per_frame=20.0))
+    assert len(calls) == 2
+
+
+def test_a_clip_scrolled_past_the_left_edge_shows_its_later_part() -> None:
+    """頭が画面の左へ出たクリップは、見えている所の波形を出す
+
+    クリップ全体の画像を作って貼るので、貼る所を間違えると頭の波形が左端に出る
+    """
+    peaks = np.zeros((48000 * 3 // 256, 2, 2), dtype=np.float32)
+    half = peaks.shape[0] // 2
+    # 前半は無音、後半は大きな音
+    peaks[half:, :, 0] = -0.9
+    peaks[half:, :, 1] = 0.9
+    waveform = Waveform(48000, 2, 48000 * 3, (PeakLevel(256, peaks),))
+    layout = TimelineLayout(pixels_per_frame=10.0, scroll_frame=60.0)
+    rect = QRect(Metrics.TRACK_HEADER_WIDTH, 10, 300, 42)
+    pixels = _paint(waveform, rect, layout)
+    painted = (pixels[rect.top() : rect.bottom() + 1, rect.left() : rect.right() + 1] != 0).sum(
+        axis=0
+    )
+    # 60 フレーム目から先（2 秒目から先）は後半なので、どの列も縦に長い線
+    assert (painted > 30).all()
+
+
+def test_a_clip_wider_than_the_limit_builds_only_the_visible_part(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """長尺素材を大きく拡大したときは、クリップ全体を画像にしない メモリと時間を食う"""
+    calls = _count_envelopes(monkeypatch)
+    waveform = _waveform(-0.5, 0.5, seconds=60)
+    clip = Clip(timeline_start=0, duration=1800, source=TEXT.create())
+    layout = TimelineLayout(pixels_per_frame=WAVEFORM_IMAGE_MAX_COLUMNS / 1000)
+    rect = QRect(Metrics.TRACK_HEADER_WIDTH, 10, 500, 42)
+    pixels = _paint(waveform, rect, layout, clip)
+    assert calls == [500]
+    assert (pixels[rect.top() : rect.bottom() + 1, rect.left() : rect.right() + 1] != 0).any()
+
+
+def test_old_images_are_dropped_past_the_budget() -> None:
+    """貯める量には上限がある 無いと、倍率を変えるたびに作った画像が残り続ける"""
+    waveform = _waveform(-0.5, 0.5)
+    images = _WaveformImages(budget=3 * 100 * 40 * 4)
+    for columns in range(100, 110):
+        assert images.get(waveform, 0, 48000, columns, 40) is not None
+    assert images._used <= 3 * 100 * 40 * 4
+    assert len(images._entries) <= 3
+
+
+def test_the_cache_does_not_keep_a_discarded_waveform_alive() -> None:
+    """使わなくなった素材の解析を捨てたら、貯めた画像が解析を抱えたままにしない"""
+    waveform = _waveform(-0.5, 0.5)
+    _paint(
+        waveform,
+        QRect(Metrics.TRACK_HEADER_WIDTH, 10, 400, 42),
+        TimelineLayout(pixels_per_frame=10.0),
+    )
+    alive = weakref.ref(waveform)
+    del waveform
+    gc.collect()
+    assert alive() is None
