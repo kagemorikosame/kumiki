@@ -366,11 +366,15 @@ def new_track(project: Project, kind: TrackKind, *, effect: bool = False) -> Add
     置いたクリップが出ない（:func:`_filter_track` と同じ決まり） レイヤー（混合）は絵の側の
     ソロを見る（:func:`~sashimono.core.commands.layers.solo_for_new_track`）
 
-    レイヤーも末尾（一番手前 番号の一番大きいレイヤー）へ足す エフェクトのレイヤーは
-    名前が ``FX`` と番号のレイヤーで、一番手前に入るので下のレイヤーすべてに掛かる
+    レイヤーも末尾（一番手前 番号の一番大きいレイヤー）へ足す 混合の方式にはエフェクトの
+    レイヤーを作らない（利用者の要望 分けない方式ではフィルタも普通のレイヤーへ置く）
+    フィルタの置き先は :func:`~sashimono.core.commands.layers.free_layer` が普通のレイヤーから
+    選ぶので、下の絵すべてに掛かる所へ入る
     """
-    if effect and kind is TrackKind.AUDIO:
-        raise ValueError("エフェクトトラックは映像トラックかレイヤーとして作る")
+    if effect and kind is not TrackKind.VIDEO:
+        raise ValueError(
+            "エフェクトトラックは映像トラックとして作る（レイヤーではフィルタも普通のレイヤーに置く）"
+        )
     same = [t for t in project.timeline.tracks if t.kind is kind]
     if effect:
         name = _unused_name(
@@ -395,10 +399,14 @@ def _unused_name(project: Project, prefix: str, number: int) -> str:
 
 
 def is_effect_track(track: Track) -> bool:
-    """フィルタを置くために足した映像トラックかレイヤーか（名前が ``FX`` と番号）"""
-    return (
-        track.kind is not TrackKind.AUDIO and _EFFECT_TRACK_NAME.fullmatch(track.name) is not None
-    )
+    """フィルタを置くために足した映像トラックか（名前が ``FX`` と番号）
+
+    レイヤーは名前が ``FX`` と番号でも普通のレイヤーとして扱う 前の版で作ったエフェクトの
+    レイヤーが残った作品や、分ける方式から変換した作品でも、混合の方式では名前で振る舞いを
+    変えない（利用者の要望） 名前も中身も変えないので、分ける方式へ戻せばまた
+    エフェクトトラックになる
+    """
+    return track.kind is TrackKind.VIDEO and _EFFECT_TRACK_NAME.fullmatch(track.name) is not None
 
 
 def insert_generated(

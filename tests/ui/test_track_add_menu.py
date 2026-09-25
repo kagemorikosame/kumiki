@@ -176,10 +176,8 @@ class TestTrackAddButton:
         settings = replace(view.project.settings, layer_mode=LayerMode.MIXED)
         view.set_project(replace(view.project, settings=settings))
         _wire(view)
-        assert _texts(view.build_track_add_menu()) == [
-            "レイヤー",
-            "エフェクトレイヤー（フィルタ用）",
-        ]
+        # エフェクトのレイヤーも出さない（利用者の要望 分けない方式では普通のレイヤーに何でも置く）
+        assert _texts(view.build_track_add_menu()) == ["レイヤー"]
         _find(view.build_track_add_menu(), "レイヤー").trigger()
         added = view.project.timeline.tracks[-1]
         assert (added.name, added.kind) == ("レイヤー 1", TrackKind.MIXED)
@@ -429,6 +427,27 @@ class TestAddingFromTheEmptySpace:
         _find(menu, "フィルタを置く").trigger()
         (clip,) = _track(view, "FX1").clips
         assert clip.is_filter
+
+    def test_an_old_fx_layer_is_an_ordinary_layer(self, view: TimelineView) -> None:
+        # 利用者の要望 分けない方式ではエフェクトのレイヤーを持たない 前の版で作った
+        # FX のレイヤーだけ右クリックの頭が変わると、同じレイヤーなのに扱いが違って見える
+        settings = replace(view.project.settings, layer_mode=LayerMode.MIXED)
+        tracks = (Track(TrackKind.MIXED, "レイヤー 1"), Track(TrackKind.MIXED, "FX1"))
+        view.set_project(
+            replace(
+                view.project,
+                settings=settings,
+                timeline=replace(view.project.timeline, tracks=tracks),
+            )
+        )
+        _wire(view)
+        menu = view.build_context_menu(_point(view, "FX1", 30))
+        assert "フィルタを置く" not in _texts(menu)
+        # フィルタは〔追加〕から、ほかのレイヤーと同じく置ける
+        _find(view.build_context_menu(_point(view, "FX1", 30)), "追加", "フィルタ").trigger()
+        (clip,) = _track(view, "FX1").clips
+        assert clip.is_filter
+        assert [t.name for t in view.project.timeline.tracks] == ["レイヤー 1", "FX1"]
 
 
 class TestEffectsOnAClip:
