@@ -250,6 +250,66 @@ def shadowed_until(cases: list[dict[str, Any]]) -> list[int]:
     return result
 
 
+#: 書き出しの頭で先に 1 度描いておくエフェクト（#210 の 1）
+#: YMM4 4.56.1.1 は、その書き出しで方向で色を抜く（DirectionalColorKey）を初めて描くのが
+#: シュバッと演出素材（フレームバッファにリール回転・グループの帯）の中だと、書き出しを黙って止める
+#: 頭に素の四角を置いても止まり（37 / 466 コマ）、同じ帯を先に単独で描いておくと最後まで書けた
+#: （1833 / 1833 コマ） 並べ方によらず、その前に 1 度でも描いていれば止まらない
+WARM_UP_EFFECTS = frozenset({"DirectionalColorKeyEffect"})
+#: 準備に使う長さ（フレーム） 比べる枠の前に置き、比べない
+WARM_UP_LENGTH = 6
+
+
+def _effects_in(value: Any) -> Iterator[dict[str, Any]]:
+    if isinstance(value, dict):
+        yield value
+        for inner in value.values():
+            yield from _effects_in(inner)
+    elif isinstance(value, list):
+        for inner in value:
+            yield from _effects_in(inner)
+
+
+def warm_up_items(cases: list[Case]) -> list[dict[str, Any]]:
+    """比べる枠の前に置く準備のアイテム 準備の要るエフェクトが無ければ空
+
+    準備の要るエフェクトを持つ最初のアイテムを写し、そのエフェクトだけを残して頭に置く
+    写したアイテムの形（図形とブラシ）はそのままなので、エフェクトが受け取る絵も同じ
+    """
+    warm: list[dict[str, Any]] = []
+    wanted = set(WARM_UP_EFFECTS)
+    for case in cases:
+        for item in case.items:
+            effects = item.get("VideoEffects")
+            if not isinstance(effects, list):
+                continue
+            found = [
+                effect
+                for effect in effects
+                if isinstance(effect, dict)
+                and type_name(effect) in wanted
+                and effect.get("IsEnabled") is not False
+            ]
+            if not found or type_name(item) != "ShapeItem":
+                continue
+            copied = copy.deepcopy(item)
+            copied.update(
+                {
+                    "Frame": 0,
+                    "Length": WARM_UP_LENGTH,
+                    "Layer": 0,
+                    "KeyFrames": {"Frames": [], "Count": 0},
+                    "VideoEffects": copy.deepcopy(found),
+                    "Remark": "比べる前の準備（#210）",
+                }
+            )
+            warm.append(copied)
+            wanted -= {type_name(effect) for effect in found}
+            if not wanted:
+                return warm
+    return warm
+
+
 def build_cases(files: list[Path]) -> tuple[list[Case], list[str]]:
     skipped: list[str] = []
     templates: list[tuple[str, int, str, list[dict[str, Any]]]] = []
@@ -261,16 +321,25 @@ def build_cases(files: list[Path]) -> tuple[list[Case], list[str]]:
                 skipped.append(f"{template.name}（{', '.join(sorted(kinds & SKIPPED_ITEMS))}）")
                 continue
             templates.append((path.name, index, template.name, items))
-    return place_cases(templates), skipped
+    # 準備の要るエフェクトがあれば、比べる枠を準備の分だけ後ろから始める
+    needs_warm_up = any(
+        type_name(node) in WARM_UP_EFFECTS
+        for _, _, _, items in templates
+        for node in _effects_in(items)
+    )
+    start = WARM_UP_LENGTH + GAP if needs_warm_up else 0
+    return place_cases(templates, start=start), skipped
 
 
-def place_cases(templates: Iterable[tuple[str, int, str, list[dict[str, Any]]]]) -> list[Case]:
+def place_cases(
+    templates: Iterable[tuple[str, int, str, list[dict[str, Any]]]], *, start: int = 0
+) -> list[Case]:
     """テンプレート（ファイル名・番号・名前・アイテム）を時間をずらして並べる
 
-    アイテムは並べた位置へ書き換える（呼ぶ側で写しておくこと）
+    アイテムは並べた位置へ書き換える（呼ぶ側で写しておくこと） ``start`` は最初の枠の頭
     """
     cases: list[Case] = []
-    cursor = 0
+    cursor = start
     for file_name, index, name, items in templates:
         first, end = _span(items)
         length = max(MIN_SLOT, min(end - first, 300))
@@ -333,7 +402,7 @@ def place_cases(templates: Iterable[tuple[str, int, str, list[dict[str, Any]]]])
 def write_project(
     cases: list[Case], target: Path, *, width: int = WIDTH, height: int = HEIGHT
 ) -> None:
-    items = [item for case in cases for item in case.items]
+    items = [*warm_up_items(cases), *(item for case in cases for item in case.items)]
     length = max((case.start + case.length for case in cases), default=1) + GAP
     write_document(items, length, target, width=width, height=height)
 

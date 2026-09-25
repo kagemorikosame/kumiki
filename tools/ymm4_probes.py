@@ -2376,6 +2376,226 @@ def build_seventh(
     ]
 
 
+def _fixture_template(word: str) -> list[dict[str, Any]]:
+    """名前に ``word`` を含む配布テンプレートのアイテム 頭を 0 フレーム・0 レイヤーへ寄せる"""
+    for path in sorted(FIXTURES.rglob("*.ymmt")):
+        for template in load_template(path):
+            if word in template.name:
+                items = [copy.deepcopy(item) for item in template.items]
+                first = min(int(item.get("Frame", 0)) for item in items)
+                top = min(int(item.get("Layer", 0)) for item in items)
+                for item in items:
+                    item["Frame"] = int(item.get("Frame", 0)) - first
+                    item["Layer"] = int(item.get("Layer", 0)) - top
+                return items
+    raise KeyError(word)
+
+
+def build_eighth(
+    samples: dict[str, dict[str, Any]], brushes: dict[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """8 回目の試験（#210 #216） どれも 2 秒（60 フレーム）
+
+    - 縁取りの濃さが元の絵の不透明度に従うか（細かい格子の上の縁 #210 の 5）
+    - ノイズで歪めるときのしきい値の効き方（水の中風の横の帯 #210 の 3）
+    - 除算の重ね方 下に何も無い所・黒・灰の上（周辺カラークリスタルノイズ #210 の 4）
+    - 画面外から登場の入り始めの位置 図形・グループ・ずらした図形（#216 の 2）
+    - 最後に、書き出しを止めるシュバッと演出素材を 1 つずつ組み立てる（#210 の 1）
+      軽い物から順に足していくので、止まったコマでどの足し方が止めたかが分かる
+    """
+    probes: list[tuple[str, list[dict[str, Any]]]] = []
+
+    def add(name: str, *items: dict[str, Any]) -> None:
+        probes.append((name, list(items)))
+
+    def effect(kind: str, **values: Any) -> dict[str, Any]:
+        entry = copy.deepcopy(samples[kind])
+        entry["IsEnabled"] = True
+        return put(entry, **values)
+
+    def rectangle(
+        width: float,
+        height: float,
+        colour: str = "#FFFFFFFF",
+        *,
+        layer: int = 0,
+        x: float = 0.0,
+    ) -> dict[str, Any]:
+        item = base_shape(0, layer, 60)
+        item["ShapeParameter"]["Width"] = still(width)
+        item["ShapeParameter"]["Height"] = still(height)
+        item["ShapeParameter"]["Brush"] = solid(colour)
+        item["X"] = still(x)
+        return item
+
+    def outline(**values: Any) -> dict[str, Any]:
+        entry = effect(
+            "OutlineEffect",
+            StrokeThickness=6.0,
+            Blur=0.0,
+            X=0.0,
+            Y=0.0,
+            Opacity=100.0,
+            Zoom=100.0,
+            Rotation=0.0,
+            IsOutlineOnly=False,
+            IsAngular=False,
+        )
+        entry["StrokeBrush"] = solid("#FF6FEEED")
+        return put(entry, **values)
+
+    def group(*effects: dict[str, Any], span: int = 1) -> dict[str, Any]:
+        found = _fixture_item(lambda item: type_name(item) == "GroupItem")
+        assert found is not None
+        found.update(
+            {
+                "GroupRange": span,
+                "IsGroupOnly": False,
+                "X": still(0.0),
+                "Y": still(0.0),
+                "Z": still(0.0),
+                "Zoom": still(100.0),
+                "Rotation": still(0.0),
+                "Opacity": still(100.0),
+                "IsInverted": False,
+                "VideoEffects": list(effects),
+                "Frame": 0,
+                "Layer": 0,
+                "Length": 60,
+                "Group": 0,
+                "KeyFrames": {"Frames": [], "Count": 0},
+            }
+        )
+        return found
+
+    # --- #210 の 5 縁の濃さ 不透明度 50 の四角・色の不透明度 50 の四角・細い線 ---
+    half = rectangle(300.0, 300.0)
+    half["Opacity"] = still(50.0)
+    half["VideoEffects"] = [outline()]
+    add("outline_item_opacity50", half)
+    add(
+        "outline_colour_alpha50",
+        rectangle(300.0, 300.0, "#80FFFFFF") | {"VideoEffects": [outline()]},
+    )
+    add(
+        "outline_group_over_opacity50",
+        group(outline()),
+        rectangle(300.0, 300.0, layer=1) | {"Opacity": still(50.0)},
+    )
+    for thickness in (1.0, 2.0, 4.0):
+        add(
+            f"outline_thin_line{int(thickness)}",
+            rectangle(800.0, thickness) | {"VideoEffects": [outline(StrokeThickness=4.0)]},
+        )
+
+    # --- #210 の 3 ノイズで歪めるときのしきい値 横の細い線を縦にずらす ---
+    def wobble(threshold: float, levels: float = 256.0) -> dict[str, Any]:
+        entry = effect("NoiseDisplacementMapEffect", Blur=0.0)
+        entry["Mode"] = "Move"
+        entry["Transform"] = {
+            "$type": f"{EFFECTS}.DisplacementMapMoveTransform, YukkuriMovieMaker",
+            "XScale": still(0.0),
+            "YScale": still(200.0),
+        }
+        entry["NoiseType"] = "Perlin"
+        parameter = copy.deepcopy(samples["PerlinNoiseParameter"])
+        put(
+            parameter,
+            Strength=100.0,
+            Threshold=threshold,
+            Levels=levels,
+            Octaves=1.0,
+            X=0.0,
+            Y=0.0,
+            Z=0.0,
+            SpeedX=0.0,
+            SpeedY=0.0,
+            SpeedZ=0.0,
+            ScaleX=400.0,
+            ScaleY=400.0,
+            ScaleZ=100.0,
+        )
+        entry["NoiseParameter"] = parameter
+        return entry
+
+    for threshold in (0.0, 30.0, 60.0):
+        add(
+            f"wobble_threshold{int(threshold)}",
+            rectangle(1800.0, 4.0) | {"VideoEffects": [wobble(threshold)]},
+        )
+    add("wobble_levels4", rectangle(1800.0, 4.0) | {"VideoEffects": [wobble(0.0, 4.0)]})
+
+    # --- #210 の 4 除算 下に何も無い・黒・灰の上 ---
+    for label, below in (("empty", None), ("black", "#FF000000"), ("grey", "#FF808080")):
+        items: list[dict[str, Any]] = []
+        if below is not None:
+            items.append(rectangle(1920.0, 1080.0, below, layer=0))
+        top = rectangle(600.0, 300.0, "#FF4080C0", layer=1)
+        top["Blend"] = "Division"
+        items.append(top)
+        add(f"division_{label}", *items)
+    faint = rectangle(600.0, 300.0, "#FF4080C0", layer=1) | {
+        "Blend": "Division",
+        "Opacity": still(63.5),
+    }
+    add("division_grey_opacity63", rectangle(1920.0, 1080.0, "#FF808080", layer=0), faint)
+
+    # --- #216 の 2 画面外から登場（右から 直線 2 秒） ---
+    def enter(direction: str = "Right") -> dict[str, Any]:
+        return effect(
+            "InOutMoveFromOutsideFrameEffect",
+            Value=direction,
+            IsInEffect=True,
+            IsOutEffect=False,
+            EffectTimeSeconds=2.0,
+            EasingType="Linear",
+            EasingMode="In",
+        )
+
+    add("enter_right_shape", rectangle(640.0, 360.0, "#FFE08A2C") | {"VideoEffects": [enter()]})
+    add(
+        "enter_right_shape_x300",
+        rectangle(640.0, 360.0, "#FFE08A2C", x=300.0) | {"VideoEffects": [enter()]},
+    )
+    add(
+        "enter_left_shape", rectangle(640.0, 360.0, "#FFE08A2C") | {"VideoEffects": [enter("Left")]}
+    )
+    add("enter_right_group", group(enter()), rectangle(640.0, 360.0, "#FFE08A2C", layer=1))
+    add(
+        "enter_right_group_x300",
+        group(enter()),
+        rectangle(640.0, 360.0, "#FFE08A2C", layer=1, x=300.0),
+    )
+
+    # --- #210 の 1 シュバッと演出素材を組み立てる 最後に置く ---
+    whole = _fixture_template("シュバッと演出素材(横)")
+    by_layer = {int(item["Layer"]): item for item in whole}
+    stripes_group, band_a, band_b = (by_layer[i] for i in range(1, 4))
+
+    def only(item: dict[str, Any], layer: int, keep: tuple[str, ...]) -> dict[str, Any]:
+        copied = copy.deepcopy(item)
+        copied["Layer"] = layer
+        copied["VideoEffects"] = [e for e in copied["VideoEffects"] if type_name(e) in keep]
+        return copied
+
+    add("shuba_band_brush_only", only(band_a, 0, ()))
+    add("shuba_band_blur", only(band_a, 0, ("GaussianBlurEffect",)))
+    add("shuba_band_invert", only(band_a, 0, ("GaussianBlurEffect", "InvertEffect")))
+    add("shuba_band_b_sharpen", only(band_b, 0, ("GaussianBlurEffect", "SharpenEffect")))
+    add("shuba_band_key", only(band_a, 0, ("GaussianBlurEffect", "DirectionalColorKeyEffect")))
+    add(
+        "shuba_band_b_key",
+        only(band_b, 0, ("GaussianBlurEffect", "DirectionalColorKeyEffect", "SharpenEffect")),
+    )
+    add("shuba_bands_grouped", *(copy.deepcopy(i) for i in (stripes_group, band_a, band_b)))
+    add("shuba_whole", *(copy.deepcopy(i) for i in whole))
+    del brushes
+    return [
+        {"Name": f"probe8_{name}", "Path": ["probe8", name], "Items": items}
+        for name, items in probes
+    ]
+
+
 def _all_effects(name: str) -> list[dict[str, Any]]:
     found: list[dict[str, Any]] = []
     for path in sorted(FIXTURES.rglob("*.ymmt")):
@@ -2401,6 +2621,7 @@ def main() -> int:
         "fifth": build_fifth,
         "sixth": build_sixth,
         "seventh": build_seventh,
+        "eighth": build_eighth,
     }
     templates = builders[which](samples, brushes)
     target.parent.mkdir(parents=True, exist_ok=True)
