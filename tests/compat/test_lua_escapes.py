@@ -9,10 +9,17 @@
 
 from __future__ import annotations
 
+import faulthandler
+import subprocess
+import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from importlib import import_module
+from pathlib import Path
 from typing import Any
 
 import pytest
+from _pytest.faulthandler import fault_handler_stderr_fd_key
 
 from sashimono.compat.aviutl.control import lua_string, lua_value, parse_control
 from sashimono.compat.aviutl.objapi import ObjectState
@@ -70,6 +77,37 @@ def _luajit() -> Any:
 
 LUAJIT = _luajit()
 
+#: LuaJIT が Lua のエラーを投げるときの Windows の例外の番号の頭 最後の桁が Lua の
+#: 状態の番号（3 が文法の誤り、2 が実行時の誤り） 間の ``4c4a`` は "LJ"
+_LUAJIT_EXCEPTION_CODE = "0xe24c4a0"
+
+
+@contextmanager
+def _faulthandler_paused(config: pytest.Config) -> Iterator[None]:
+    """LuaJIT にわざとエラーを出させる間だけ、faulthandler の書き出しを止める
+
+    Windows の LuaJIT は Lua のエラーを必ず SEH の例外（``0xe24c4a0X``）で投げて
+    自分で捕まえる Lua の ``pcall`` の中でも同じ faulthandler は捕まるかどうかを
+    見ずに、上の位が立った番号をすべて致命的な物として書き出すので、``LuaError`` に
+    なるだけの誤りでも ``Windows fatal exception`` が出る これが試験の出力に並ぶと、
+    本物の落ち方が起きても紛れて見落とす（#222）
+
+    番号で選んで黙らせる口は faulthandler に無いので、止める間を狭くして済ませる
+    戻すときは pytest が開いた書き出し先（複製した標準エラー）へ戻す 番号 2 の
+    標準エラーへ戻すと、試験の間は取り込みの一時ファイルへ向いていて誰も読まない
+    戻し先が分からないときは止めない 止めたまま戻せないと、以降の本物の落ち方が
+    1 つも書き出されなくなる
+    """
+    stderr = config.stash.get(fault_handler_stderr_fd_key, None)
+    if not faulthandler.is_enabled() or stderr is None:
+        yield
+        return
+    faulthandler.disable()
+    try:
+        yield
+    finally:
+        faulthandler.enable(file=stderr)
+
 
 @pytest.mark.parametrize("body", ESCAPES)
 def test_the_same_bytes_as_luajit(body: str) -> None:
@@ -81,13 +119,50 @@ def test_the_same_bytes_as_luajit(body: str) -> None:
 
 
 @pytest.mark.parametrize("body", BAD_ESCAPES)
-def test_what_luajit_rejects_is_left_as_written(body: str) -> None:
+def test_what_luajit_rejects_is_left_as_written(body: str, pytestconfig: pytest.Config) -> None:
     # 推し量って直すと、AviUtl1 では読めない値が動く値として紛れる
     literal = '"' + body + '"'
     if LUAJIT is not None:
-        with pytest.raises(Exception):  # noqa: B017 - lupa の例外の種類は版で違う
+        with (
+            _faulthandler_paused(pytestconfig),
+            pytest.raises(Exception),  # noqa: B017 - lupa の例外の種類は版で違う
+        ):
             LUAJIT.execute(b"return " + literal.encode("utf-8"))
     assert lua_string(literal) == literal
+
+
+def test_luajit_errors_do_not_print_a_fatal_exception() -> None:
+    """LuaJIT が捕まえる誤りが、試験の出力に致命的な例外として並ばない
+
+    並ぶと、本物の落ち方（読み書きの違反など）が起きても同じ見た目の行に紛れて
+    見落とす faulthandler の書き出しは pytest の取り込みを通らないので、別の
+    プロセスで走らせて出力を見る
+    """
+    if LUAJIT is None:
+        pytest.skip("LuaJIT が無い")
+    target = f"{Path(__file__)}::test_what_luajit_rejects_is_left_as_written"
+    completed = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", target],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=300,
+        check=False,
+    )
+    output = completed.stdout + completed.stderr
+    assert completed.returncode == 0, output
+    assert _LUAJIT_EXCEPTION_CODE not in output, output
+
+
+def test_the_faulthandler_is_back_after_a_luajit_error(pytestconfig: pytest.Config) -> None:
+    # 戻し損ねると、それより後の試験で本物が落ちても何も書き出されない
+    if LUAJIT is None:
+        pytest.skip("LuaJIT が無い")
+    assert faulthandler.is_enabled()
+    with _faulthandler_paused(pytestconfig), pytest.raises(Exception):  # noqa: B017
+        LUAJIT.execute(b'error("x")')
+    assert faulthandler.is_enabled()
 
 
 def test_the_old_shortcuts_are_gone() -> None:
