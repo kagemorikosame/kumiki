@@ -19,6 +19,7 @@ from sashimono.core.commands import (
     Document,
     SetTrackState,
     convert_layers,
+    insert_filter,
     insert_media,
     place_media,
     switch_layer_mode,
@@ -29,6 +30,7 @@ from sashimono.core.commands.fixed import (
     TRANSFORM_EFFECT_KIND,
     VOLUME_EFFECT_KIND,
 )
+from sashimono.core.commands.insert import is_effect_track, new_track
 from sashimono.core.model import (
     AnimatedValue,
     Clip,
@@ -379,3 +381,30 @@ def test_the_speed_and_source_position_must_match_to_pair(video_media: MediaItem
     project = project.with_timeline(project.timeline.replace_track(audio))
     converted = _to(project, LayerMode.MIXED)
     assert len(converted.timeline.tracks) == 2
+
+
+# --- エフェクトトラック（FX と番号の映像トラック） ---
+
+
+def test_an_effect_track_becomes_an_ordinary_layer_and_comes_back(video_media: MediaItem) -> None:
+    # 利用者の要望 分けない方式ではエフェクトのレイヤーを持たない 変換で名前を変えたり
+    # 中身を動かしたりすると、戻したときにエフェクトトラックとフィルタの位置が失われる
+    project = _separated(video_media)
+    project = _apply(project, [new_track(project, TrackKind.VIDEO, effect=True)])
+    fx = project.timeline.tracks[-1]
+    project = _apply(project, insert_filter(project, at_frame=0, duration=30, track_id=fx.id))
+    assert is_effect_track(project.timeline.tracks[-1])
+
+    mixed = _to(project, LayerMode.MIXED)
+    layer = mixed.timeline.tracks[-1]
+    assert (layer.kind, layer.name) == (TrackKind.MIXED, "FX1")
+    # 混合の方式では名前で振る舞いを変えない 普通のレイヤーとして扱う
+    assert not is_effect_track(layer)
+    (placed,) = layer.clips
+    assert placed.is_filter
+
+    back = _to(mixed, LayerMode.SEPARATED)
+    restored = back.timeline.tracks[-1]
+    assert (restored.kind, restored.name) == (TrackKind.VIDEO, "FX1")
+    assert is_effect_track(restored)
+    assert restored.clips[0].is_filter

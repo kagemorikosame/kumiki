@@ -20,7 +20,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 
 from sashimono.core.commands.base import Command
-from sashimono.core.commands.edit import AddTrack
+from sashimono.core.commands.edit import AddClip, AddTrack
 from sashimono.core.model import (
     Clip,
     LayerMode,
@@ -35,6 +35,7 @@ from sashimono.core.model import (
 __all__ = [
     "active_layers",
     "free_layer",
+    "layer_after",
     "media_placements",
     "new_layer",
     "places_mixed",
@@ -176,8 +177,46 @@ def free_layer(
     return new_layer(project, commands, picture=picture)
 
 
+def layer_after(
+    project: Project, after: Track, start: int, end: int, commands: list[Command]
+) -> Track:
+    """``after`` より後ろ（番号の大きい側 画面では下）で ``[start, end)`` が空いた、鳴るレイヤー
+
+    無ければ並びの末尾へ足すコマンドを積んで返す 音声ストリームが何本もある素材の 2 本目
+    以降の音を置くためのもの（利用者の要望 レイヤー 1 に映像、レイヤー 2 以降に音）
+
+    奥（レイヤー 1）から空きを探す :func:`free_layer` を使うと、絵より奥の空いたレイヤーへ
+    音が入り、映像の次のレイヤーから音が並ぶ形にならない 埋まったレイヤーは飛ばして次を見る
+    間へ新しいレイヤーを差し込むと、後ろのレイヤーの名前（番号）と並びが食い違う
+
+    ``commands`` の中で先に置いたクリップも埋まりに数える まだ当てていないので、
+    トラックのクリップだけを見ると、同じ新しいレイヤーへ 2 本目の音も入れて重なる
+    """
+    created = _created(commands)
+    ordered = [*project.timeline.tracks, *created]
+    pending = {
+        c.track_id for c in commands if isinstance(c, AddClip) and c.clip.overlaps(start, end)
+    }
+    # 作ったばかりのトラックはソロを引き継いでいるので、鳴る側に数える
+    heard = {t.id for t in created} | {t.id for t in active_layers(project, picture=False)}
+    index = next((i for i, t in enumerate(ordered) if t.id == after.id), len(ordered))
+    for track in ordered[index + 1 :]:
+        if (
+            track.kind is TrackKind.MIXED
+            and track.id in heard
+            and track.id not in pending
+            and not track.locked
+            and not any(clip.overlaps(start, end) for clip in track.clips)
+        ):
+            return track
+    return new_layer(project, commands, picture=False)
+
+
 def media_placements(
-    project: Project, picture: Clip | None, sound: Clip | None
+    project: Project,
+    picture: Clip | None,
+    sound: Clip | None,
+    more_sounds: Sequence[Clip] = (),
 ) -> list[tuple[TrackKind, Clip]]:
     """素材の絵のクリップと音のクリップを、方式に合わせて置く種類とクリップの組にする
 
@@ -191,14 +230,22 @@ def media_placements(
     頼んだときと同じ並びになる 大きさの決め方（:attr:`Clip.native_size`）なども絵の
     クリップのまま持つ リンクは外す 1 本しか無いのに組を残すと、あとで別の素材と
     誤って連動する余地を残す
+
+    ``more_sounds`` は 2 本目以降の音声ストリームの音のクリップ（音声が何本もある素材）
+    分ける方式ではそれぞれを音声トラックへ、混合の方式では 1 本にまとめず、絵だけの
+    クリップと音ごとの音だけのクリップに分ける どちらも置く側が付けたリンクのまま
+    （絵と音がすべて一緒に動くため） 返す並びは絵・1 本目の音・2 本目の音… の順で、
+    置く側はこの順に次のレイヤーへ並べる
     """
+    sounds = [s for s in (sound, *more_sounds) if s is not None]
     if not places_mixed(project):
         placements: list[tuple[TrackKind, Clip]] = []
         if picture is not None:
             placements.append((TrackKind.VIDEO, picture))
-        if sound is not None:
-            placements.append((TrackKind.AUDIO, sound))
+        placements.extend((TrackKind.AUDIO, s) for s in sounds)
         return placements
+    if len(sounds) > 1:
+        return _split_on_layers(picture, sounds)
     base = picture if picture is not None else sound
     if base is None:
         return []
@@ -213,3 +260,32 @@ def media_placements(
         ),
     )
     return [(TrackKind.MIXED, merged)]
+
+
+def _split_on_layers(picture: Clip | None, sounds: list[Clip]) -> list[tuple[TrackKind, Clip]]:
+    """絵だけのクリップと、音ごとの音だけのクリップ（どれも混合トラックへ置く形）
+
+    音だけのクリップは、音声トラックのクリップをレイヤーへ移したときと同じ形にする
+    （:func:`~sashimono.core.commands.edit._carried_across` 絵の番号は映像ストリーム、
+    鳴らす番号は :attr:`Clip.audio_stream`、絵は出さない） 絵の番号を音の番号のままに
+    すると、あとで絵を出したときに映像ではない番号でデコーダを開く
+    """
+    placements: list[tuple[TrackKind, Clip]] = []
+    if picture is not None:
+        # 絵のクリップに音を持たせると、1 本目の音が絵と音のレイヤーの 2 か所で鳴る
+        placements.append((TrackKind.MIXED, replace(picture, audio_stream=None, show_picture=True)))
+    for sound in sounds:
+        placements.append(
+            (
+                TrackKind.MIXED,
+                replace(
+                    sound,
+                    stream_index=picture.stream_index
+                    if picture is not None
+                    else sound.stream_index,
+                    audio_stream=sound.stream_index,
+                    show_picture=False,
+                ),
+            )
+        )
+    return placements

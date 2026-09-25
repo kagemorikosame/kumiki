@@ -27,6 +27,7 @@ from sashimono.core.commands.fixed import (
 from sashimono.core.commands.layers import (
     active_layers,
     free_layer,
+    layer_after,
     media_placements,
     places_mixed,
     solo_for_new_track,
@@ -78,7 +79,11 @@ _EFFECT_TRACK_NAME = re.compile(rf"{EFFECT_TRACK_PREFIX}\d+")
 
 
 def insert_media(
-    project: Project, media: MediaItem, *, at_frame: int | None = None
+    project: Project,
+    media: MediaItem,
+    *,
+    at_frame: int | None = None,
+    split_audio: bool = True,
 ) -> list[Command]:
     """素材をメディアプールへ入れ、タイムラインの末尾（または指定位置）へ置く
 
@@ -86,6 +91,11 @@ def insert_media(
     片方を動かせばもう片方も追従し、分割も同時に行われる
     混合の方式（:func:`~sashimono.core.commands.layers.places_mixed`）では 1 本の
     クリップにして、範囲の空いたレイヤーへ置く
+
+    ``split_audio`` は音声ストリームが 2 本以上ある素材の置き方（本人の設定
+    ``Preferences.multi_audio`` から渡す） 真なら音ごとに別のトラックへ置き、
+    混合の方式では絵のレイヤーの次のレイヤーから音を 1 本ずつ並べる（Issue #27 の要望）
+    偽なら 1 本目の音だけを置く 既定を真にするのは設定の既定と揃えるため
     """
     start = project.duration if at_frame is None else max(0, at_frame)
     return _place(
@@ -93,6 +103,7 @@ def insert_media(
         media,
         start,
         lambda kind, clip, commands: _find_or_create(project, kind, clip, commands),
+        split_audio=split_audio,
     )
 
 
@@ -102,6 +113,7 @@ def place_media(
     *,
     at_frame: int,
     track_id: TrackId | None = None,
+    split_audio: bool = True,
 ) -> list[Command]:
     """素材を、落とした位置（フレームとトラック）から順に並べて置く
 
@@ -115,11 +127,18 @@ def place_media(
     映像と音声を持つ素材は、落とした側の種類だけがそのトラックへ入り、
     もう片方は合う種類の空いたトラックへ入る
     混合の方式では 1 本のクリップで、落としたレイヤーが空いていればそこへ入る
+    音声が何本もある素材の置き方（``split_audio``）は :func:`insert_media` と同じ
     """
     commands: list[Command] = []
     cursor = max(0, at_frame)
     for item in media:
-        placed = _place(project, item, cursor, _free_picker(project, cursor, track_id))
+        placed = _place(
+            project,
+            item,
+            cursor,
+            _free_picker(project, cursor, track_id),
+            split_audio=split_audio,
+        )
         for command in placed:
             project = command.apply(project)
         commands.extend(placed)
@@ -128,8 +147,20 @@ def place_media(
     return commands
 
 
-def _place(project: Project, media: MediaItem, start: int, pick: _TrackPicker) -> list[Command]:
-    """素材を 1 本、``start`` から置くコマンド トラックは ``pick`` が決める"""
+def _place(
+    project: Project,
+    media: MediaItem,
+    start: int,
+    pick: _TrackPicker,
+    *,
+    split_audio: bool,
+) -> list[Command]:
+    """素材を 1 本、``start`` から置くコマンド トラックは ``pick`` が決める
+
+    混合の方式で音を分けて置くときは、2 本目からの置き先を ``pick`` に尋ねず、
+    前に置いたレイヤーの次から探す（:func:`~sashimono.core.commands.layers.layer_after`）
+    ``pick`` は奥から空きを探すので、絵より奥の空いたレイヤーへ音が戻る
+    """
     commands: list[Command] = []
     if project.find_media(media.id) is None:
         commands.append(AddMedia(media))
@@ -138,9 +169,11 @@ def _place(project: Project, media: MediaItem, start: int, pick: _TrackPicker) -
     if duration <= 0:
         return commands
 
-    # 映像と音声の両方があるときだけリンクする 1 本しかないのにグループを
+    streams = media.audio_streams if split_audio else media.audio_streams[:1]
+    parts = (1 if media.has_video or media.is_still else 0) + len(streams)
+    # 置くクリップが 2 本以上あるときだけリンクする 1 本しかないのにグループを
     # 付けると、あとで別の素材と誤って連動する余地を残すことになる
-    group = new_group_id() if media.has_video and media.has_audio else None
+    group = new_group_id() if parts > 1 else None
 
     picture: Clip | None = None
     if media.has_video or media.is_still:
@@ -158,23 +191,32 @@ def _place(project: Project, media: MediaItem, start: int, pick: _TrackPicker) -
             picture=True,
         )
 
-    sound: Clip | None = None
-    if media.has_audio:
-        sound = Clip(
+    # 音ごとに作る 音量とフェードの欄は 2 本目以降の音にも付ける 付けないと、
+    # 置いた直後に 2 本目の音だけ音量をいじれない
+    sounds = [
+        Clip(
             timeline_start=start,
             duration=duration,
             media_id=media.id,
-            stream_index=media.audio_streams[0].index,
+            stream_index=stream.index,
             link_group=group,
             effects=(default_volume_effect(), fixed_effect(FADE_EFFECT_KIND)),
         )
+        for stream in streams
+    ]
 
     # 絵と音を 2 本に分けるか 1 本にまとめるかは方式で決まる 置く物（エフェクトなど）は
     # 上で方式を問わずに作り、分かれ道は置く所だけにする 方式ごとに作り分けると、
     # 置いたときに付ける物を片方の方式にだけ足し忘れる
-    for kind, clip in media_placements(project, picture, sound):
-        track = pick(kind, clip, commands)
+    first_sound = sounds[0] if sounds else None
+    previous: Track | None = None
+    for kind, clip in media_placements(project, picture, first_sound, sounds[1:]):
+        if kind is TrackKind.MIXED and previous is not None:
+            track = layer_after(project, previous, clip.timeline_start, clip.timeline_end, commands)
+        else:
+            track = pick(kind, clip, commands)
         commands.append(AddClip(track.id, clip))
+        previous = track
 
     return commands
 
@@ -217,15 +259,31 @@ def _find_or_create(
         return free_layer(
             project, clip.timeline_start, clip.timeline_end, commands, picture=clip.show_picture
         )
+    taken = _pending_tracks(commands, clip.timeline_start, clip.timeline_end)
     for command in commands:
-        if isinstance(command, AddTrack) and command.track.kind is kind:
+        if (
+            isinstance(command, AddTrack)
+            and command.track.kind is kind
+            and command.track.id not in taken
+        ):
             return command.track
 
-    existing = [t for t in project.timeline.tracks if t.kind is kind and not t.locked]
+    existing = [
+        t for t in project.timeline.tracks if t.kind is kind and not t.locked and t.id not in taken
+    ]
     if existing:
         return existing[0]
 
     return _new_track(project, kind, commands)
+
+
+def _pending_tracks(commands: list[Command], start: int, end: int) -> set[TrackId]:
+    """``commands`` の中で ``[start, end)`` にクリップを置くトラック
+
+    音声が何本もある素材の音を 1 本ずつ置くとき、まだ当てていない 1 本目の音と同じ
+    トラックを 2 本目にも選ぶと、重なりで断られて何も置かれない
+    """
+    return {c.track_id for c in commands if isinstance(c, AddClip) and c.clip.overlaps(start, end)}
 
 
 def _free_picker(project: Project, start: int, preferred: TrackId | None) -> _TrackPicker:
@@ -257,11 +315,18 @@ def _free_or_create(
     落としたトラック（``preferred``）を先に見る 並びの順だけで探すと、
     V3 へ落としたのに空いている V1 へ入り、落とした所と違う所に出る
     """
+    taken = _pending_tracks(commands, start, start + duration)
     for command in commands:
-        if isinstance(command, AddTrack) and command.track.kind is kind:
+        if (
+            isinstance(command, AddTrack)
+            and command.track.kind is kind
+            and command.track.id not in taken
+        ):
             return command.track
 
-    candidates = [t for t in project.timeline.tracks if t.kind is kind and not t.locked]
+    candidates = [
+        t for t in project.timeline.tracks if t.kind is kind and not t.locked and t.id not in taken
+    ]
     candidates.sort(key=lambda track: track.id != preferred)
     for track in candidates:
         if not any(clip.overlaps(start, start + duration) for clip in track.clips):
@@ -271,8 +336,16 @@ def _free_or_create(
 
 def _new_track(project: Project, kind: TrackKind, commands: list[Command]) -> Track:
     prefix = "V" if kind is TrackKind.VIDEO else "A"
-    index = sum(1 for t in project.timeline.tracks if t.kind is kind) + 1
-    track = Track(kind=kind, name=_unused_name(project, prefix, index))
+    # 同じ置き方の中で先に作ったトラックも数える 音声が何本もある素材で音声トラックを
+    # 続けて作ると、数えないと A1 が 2 本並ぶ
+    created = [c.track for c in commands if isinstance(c, AddTrack)]
+    index = sum(1 for t in (*project.timeline.tracks, *created) if t.kind is kind) + 1
+    taken = {t.name for t in created}
+    name = _unused_name(project, prefix, index)
+    while name in taken:
+        index += 1
+        name = _unused_name(project, prefix, index)
+    track = Track(kind=kind, name=name)
     commands.append(AddTrack(track))
     return track
 
@@ -293,11 +366,15 @@ def new_track(project: Project, kind: TrackKind, *, effect: bool = False) -> Add
     置いたクリップが出ない（:func:`_filter_track` と同じ決まり） レイヤー（混合）は絵の側の
     ソロを見る（:func:`~sashimono.core.commands.layers.solo_for_new_track`）
 
-    レイヤーも末尾（一番手前 番号の一番大きいレイヤー）へ足す エフェクトのレイヤーは
-    名前が ``FX`` と番号のレイヤーで、一番手前に入るので下のレイヤーすべてに掛かる
+    レイヤーも末尾（一番手前 番号の一番大きいレイヤー）へ足す 混合の方式にはエフェクトの
+    レイヤーを作らない（利用者の要望 分けない方式ではフィルタも普通のレイヤーへ置く）
+    フィルタの置き先は :func:`~sashimono.core.commands.layers.free_layer` が普通のレイヤーから
+    選ぶので、下の絵すべてに掛かる所へ入る
     """
-    if effect and kind is TrackKind.AUDIO:
-        raise ValueError("エフェクトトラックは映像トラックかレイヤーとして作る")
+    if effect and kind is not TrackKind.VIDEO:
+        raise ValueError(
+            "エフェクトトラックは映像トラックとして作る（レイヤーではフィルタも普通のレイヤーに置く）"
+        )
     same = [t for t in project.timeline.tracks if t.kind is kind]
     if effect:
         name = _unused_name(
@@ -322,10 +399,14 @@ def _unused_name(project: Project, prefix: str, number: int) -> str:
 
 
 def is_effect_track(track: Track) -> bool:
-    """フィルタを置くために足した映像トラックかレイヤーか（名前が ``FX`` と番号）"""
-    return (
-        track.kind is not TrackKind.AUDIO and _EFFECT_TRACK_NAME.fullmatch(track.name) is not None
-    )
+    """フィルタを置くために足した映像トラックか（名前が ``FX`` と番号）
+
+    レイヤーは名前が ``FX`` と番号でも普通のレイヤーとして扱う 前の版で作ったエフェクトの
+    レイヤーが残った作品や、分ける方式から変換した作品でも、混合の方式では名前で振る舞いを
+    変えない（利用者の要望） 名前も中身も変えないので、分ける方式へ戻せばまた
+    エフェクトトラックになる
+    """
+    return track.kind is TrackKind.VIDEO and _EFFECT_TRACK_NAME.fullmatch(track.name) is not None
 
 
 def insert_generated(
