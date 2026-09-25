@@ -187,6 +187,10 @@ class ObjectState:
     effects: list[EffectRequest] = field(default_factory=list)
     #: ``obj.load("buffer")`` などで使う作業用バッファ
     buffers: dict[str, np.ndarray] = field(default_factory=dict)
+    #: バッファの絵にまだ掛けていない効果 効果を積んだ絵を写したが先に掛けられなかった
+    #: （焼き込みの上限や GPU の大きさの上限）とき、絵と一緒に持ち運ぶ 絵を読み戻せば
+    #: 効果も積み直すので、描くときに正しい順で掛かる（:meth:`ObjApi.lua_copybuffer`）
+    buffer_effects: dict[str, tuple[EffectRequest, ...]] = field(default_factory=dict)
     #: ``obj.setfont`` で決めた書体 ``obj.mes`` が使う
     font: dict[str, Any] = field(default_factory=dict)
     #: ``obj.setoption`` で設定した描画オプション
@@ -442,7 +446,7 @@ class ObjApi:
 
         if self._drawing_to_tempbuffer():
             # 仮想バッファへはここで CPU が貼る 画面へ描くときに掛かる効果は、ここでは掛からない
-            self._settle_effects("obj.drawpoly")
+            self._settle_before_poly()
             corners = [(values[i], values[i + 1]) for i in range(0, 12, 3)]
             rest = values[12:]
             uvs = None
@@ -496,6 +500,8 @@ class ObjApi:
         何も描かれていない画面と同じ大きさの透明な物として扱う
         """
         state = self.state
+        # 重ねる前に、持ち運んできた効果を下の絵へ掛けておく 後で掛けると重ねた物までぼける
+        self._settle_buffer("tmp", "仮想バッファへの描画")
         buffer = state.buffers.get("tmp")
         if buffer is None:
             buffer = np.zeros((state.screen_h, state.screen_w, 4), dtype=np.uint8)
@@ -519,15 +525,53 @@ class ObjApi:
             # 黙って等倍で描くと、形の違う絵ができても気づけない
             self._report.note_missing("obj.draw（仮想バッファへ、回転か拡大つき）")
             return
+        left = _as_float(x) if x is not None else 0.0
+        top = _as_float(y) if y is not None else 0.0
+        opacity = _as_float(alpha) if alpha is not None else 1.0
         # 画面へ描くときに掛かる効果は、CPU が貼る仮想バッファには掛からない 先に掛けておく
-        self._settle_effects("obj.draw")
-        raster.draw_image(
-            self._tempbuffer(),
-            self.state.image,
-            _as_float(x) if x is not None else 0.0,
-            _as_float(y) if y is not None else 0.0,
-            _as_float(alpha) if alpha is not None else 1.0,
-        )
+        if not self._settle_effects("obj.draw", note=False):
+            if self._carry_draw(left, top, opacity):
+                return
+            self._report.note_missing("obj.draw（先に積んだ効果を掛けずに仮想バッファへ描いた）")
+        raster.draw_image(self._tempbuffer(), self.state.image, left, top, opacity)
+
+    def _settle_before_poly(self) -> None:
+        """仮想バッファへ ``obj.drawpoly`` で貼る前に、積んだ効果を絵へ掛ける
+
+        四隅で貼った絵は元の絵と形が違うので、効果を持ち運べない 掛けられなければ、掛けずに
+        貼ったことを記録する 焼き込みの上限を越えた後は、そこで 1 度記録するだけで、以降の
+        貼り付けは黙って効果の無い絵を貼っていた
+        """
+        if not self._settle_effects("obj.drawpoly", note=False):
+            self._report.note_missing(
+                "obj.drawpoly（先に積んだ効果を掛けずに仮想バッファへ描いた）"
+            )
+
+    def _carry_draw(self, x: float, y: float, alpha: float) -> bool:
+        """掛けられなかった効果ごと、絵を空の仮想バッファへそのまま写す 写せたら真
+
+        同じ大きさの空の仮想バッファへ真ん中に不透明なまま描くと、仮想バッファは絵そのものに
+        なる 効果も一緒に持っていけば、``obj.load("tempbuffer")`` で読み戻した絵へ描くときに
+        正しい順で掛かる 位置や透明度を付けた描き方と、ほかの絵の上へ重ねる描き方は、効果を
+        掛けた後の絵でないと重ねられないので写さない sigma の 透明度適用 や PSDToolKit の
+        吹き出しは、同じ大きさの仮想バッファへ透明度を付けて描き直すので、ここでは写せない
+        （先に掛けられなければ記録に残る）
+        """
+        state = self.state
+        buffer = state.buffers.get("tmp")
+        normal = str(state.options.get("blend", "none")).strip().lower() in ("none", "0", "0.0")
+        if (
+            buffer is None
+            or (x, y, alpha) != (0.0, 0.0, 1.0)
+            or not normal
+            or "tmp" in state.buffer_effects
+            or buffer.shape != state.image.shape
+            or buffer[..., 3].any()
+        ):
+            return False
+        state.buffers["tmp"] = state.image.copy()
+        self._carry("tmp", tuple(state.effects))
+        return True
 
     def _drawpoly_table(self, table: Any, rest: tuple[Any, ...]) -> None:
         """``obj.drawpoly({表}[, 頂点の数, 透明度])`` 頂点の表を並べた形
@@ -557,7 +601,7 @@ class ObjApi:
             for face in range(0, len(vertices), 4):
                 self._drawpoly_quad_to_screen(vertices[face : face + 4], alpha)
             return
-        self._settle_effects("obj.drawpoly")
+        self._settle_before_poly()
         for face in range(0, len(vertices), count):
             points = vertices[face : face + count]
             corners = [(vertex[0], vertex[1]) for vertex in points]
@@ -798,7 +842,7 @@ class ObjApi:
         state.image = raster.resize(state.image, *size, smooth=not values.get("補間なし", 0.0))
         state.image_shared = False
 
-    def _settle_effects(self, caller: str) -> None:
+    def _settle_effects(self, caller: str, *, note: bool = True) -> bool:
         """積んだ効果をいまの絵へ掛けてしまう その場で絵を読む・変える呼び出しの前に呼ぶ
 
         AviUtl の ``obj.effect`` はその場で絵を変える こちらは積んでおいて描くときに GPU で
@@ -807,21 +851,53 @@ class ObjApi:
         いつも掛けると、効果を積んで描くだけのスクリプトまで 1 回ごとに GPU から読み戻す
 
         掛ける関数が無い（GPU を持たない試験や道具）ときは焼き込めない 黙ると順が入れ替わった
-        理由が分からないので記録に残し、効果は描くときに掛かるまま残す
+        理由が分からないので記録に残し、効果は描くときに掛かるまま残す ``note`` が偽なら
+        その記録は呼ぶ側に任せる 効果をバッファへ一緒に持ち運べる所（:meth:`lua_copybuffer`）
+        では順が入れ替わらないので、記録すると描けている物まで未対応に数える
+
+        積んだ効果が残っていなければ真
         """
         state = self.state
         if not state.effects:
-            return
+            return True
+        original = state.image
+        baked = self._baked(caller, original, tuple(state.effects), note=note)
+        if baked is None:
+            return False
+        # 掛ける物が無い（範囲 0 のぼかしなど）と同じ配列が返る そのときに共有の印を消すと、
+        # 後の putpixel が記録済みの描画やバッファの絵へ直に書く
+        if baked is not original:
+            state.image = baked
+            state.image_shared = False
+        state.effects.clear()
+        return True
+
+    def _baked(
+        self,
+        caller: str,
+        image: np.ndarray,
+        effects: tuple[EffectRequest, ...],
+        *,
+        note: bool = True,
+    ) -> np.ndarray | None:
+        """``image`` へ ``effects`` を掛けた絵 掛けられなければ ``None``
+
+        掛けられないときの効果は呼ぶ側が持ったままにする 捨てると効果ごと消える
+        """
         if self._emit is not None:
             # テキスト欄に埋め込んだ Lua は文字を書き出すだけで、絵（1x1 の作業用）は捨てる
             # 焼き込んでも見える物は変わらない そのうえ GL を使わない範囲の計算
             # （FrameRenderer.object_extent）からも走るので、GPU で掛けると落ちる ただし
             # obj.getpixel の値を文字に使うと掛ける前の絵を読んだ値になるので、記録は残す
-            self._report.note_missing(f"{caller}（テキスト欄の Lua では先に積んだ効果を掛けない）")
-            return
+            if note:
+                self._report.note_missing(
+                    f"{caller}（テキスト欄の Lua では先に積んだ効果を掛けない）"
+                )
+            return None
         if self._apply_effects is None:
-            self._report.note_missing(f"{caller}（先に積んだ効果の焼き込み）")
-            return
+            if note:
+                self._report.note_missing(f"{caller}（先に積んだ効果の焼き込み）")
+            return None
         if self._bakes >= MAX_BAKES:
             # 1 回ごとに GPU で掛けて読み戻す 効果を積んでは画素を読む繰り返しを許すと、Lua の
             # 命令数の上限の内でも 1 コマが止まるほど重くなる 上限を越えたら焼き込まず、効果は
@@ -831,20 +907,11 @@ class ObjApi:
                     f"{caller}（焼き込みが 1 回の実行で {MAX_BAKES} 回を越えた）"
                 )
                 self._bakes += 1
-            return
+            return None
         self._bakes += 1
-        original = state.image
-        baked = self._apply_effects(original, tuple(state.effects))
-        if baked is None:
-            # 掛ける側が断った（GPU の作れる大きさを超える） 理由は掛ける側が記録に残す
-            # 効果は描くときに掛かるまま残す 捨てると効果ごと消える
-            return
-        # 掛ける物が無い（範囲 0 のぼかしなど）と同じ配列が返る そのときに共有の印を消すと、
-        # 後の putpixel が記録済みの描画やバッファの絵へ直に書く
-        if baked is not original:
-            state.image = baked
-            state.image_shared = False
-        state.effects.clear()
+        # 掛ける側が断った（GPU の作れる大きさを超える）ときも None 理由は掛ける側が記録に残す
+        baked: np.ndarray | None = self._apply_effects(image, effects)
+        return baked
 
     def _drop_effects(self) -> None:
         """絵を差し替える呼び出しの前に、積んだ効果を捨てる
@@ -937,6 +1004,8 @@ class ObjApi:
             self._report.note_missing(f'obj.load("buffer", "{name}")')
             return
         self._drop_effects()
+        # バッファと一緒に持ち運んだ効果は、読み戻した絵へ積み直す（:meth:`lua_copybuffer`）
+        self.state.effects.extend(self.state.buffer_effects.get(name, ()))
         self.state.image = stored
         self.state.image_shared = True
 
@@ -949,9 +1018,15 @@ class ObjApi:
         state = self.state
         origin_name = _buffer_name(str(source))
         target_name = _buffer_name(str(destination))
+        carried: tuple[EffectRequest, ...] = ()
         if origin_name == "obj" and target_name != "obj":
             # 写す絵は効果を掛けた後の絵 sigma は 領域拡張 や 縁取り の直後に写して取っておく
-            self._settle_effects("obj.copybuffer")
+            # 掛けられなければ、掛けていない絵と効果を一緒に写す 読み戻したときに効果も積み直す
+            # ので、描くときに掛かる順は AviUtl と同じ
+            self._settle_effects("obj.copybuffer", note=False)
+            carried = tuple(state.effects)
+        elif origin_name not in ("obj", FRAMEBUFFER):
+            carried = state.buffer_effects.get(origin_name, ())
 
         if origin_name == FRAMEBUFFER:
             origin = state.framebuffer() if state.framebuffer is not None else None
@@ -969,6 +1044,8 @@ class ObjApi:
         if target_name == "obj":
             if origin_name != "obj":
                 self._drop_effects()
+                # バッファと一緒に持ち運んだ効果は、読み戻した絵へ積み直す
+                state.effects.extend(carried)
             state.image = origin.copy()
             state.image_shared = False
             return
@@ -977,6 +1054,36 @@ class ObjApi:
             self._report.note_missing("obj.copybuffer（バッファの数が上限を超えた）")
             return
         state.buffers[target_name] = origin.copy()
+        self._carry(target_name, carried)
+
+    def _carry(self, name: str, effects: tuple[EffectRequest, ...]) -> None:
+        """バッファ ``name`` の絵にまだ掛けていない効果を覚える 空なら忘れる
+
+        絵を丸ごと差し替えたバッファに前の絵の効果が残ると、読み戻した新しい絵に掛かる
+        """
+        if effects:
+            self.state.buffer_effects[name] = effects
+        else:
+            self.state.buffer_effects.pop(name, None)
+
+    def _settle_buffer(self, name: str, caller: str) -> None:
+        """バッファ ``name`` と一緒に持ち運んだ効果を、その絵へ掛けてしまう
+
+        バッファの画素そのものを読む・重ねる前に呼ぶ（仮想バッファへ描く、``getpixeldata``）
+        掛けられなければ効果は持ったまま、順が入れ替わったことを記録に残す 読み戻した絵へ
+        描くときに掛かるが、その間に重ねた物にまで掛かる
+        """
+        state = self.state
+        effects = state.buffer_effects.get(name)
+        stored = state.buffers.get(name)
+        if not effects or stored is None:
+            return
+        baked = self._baked(caller, stored, effects, note=False)
+        if baked is None:
+            self._report.note_missing(f"{caller}（バッファと持ち運んだ効果を先に掛けられない）")
+            return
+        state.buffers[name] = baked
+        del state.buffer_effects[name]
 
     def lua_mes(self, text: Any = "") -> None:
         """テキストを描く ``obj.mes`` と ``obj.load("text", …)`` の実体"""
@@ -1139,6 +1246,8 @@ class ObjApi:
             self.state.image_shared = False
         elif key == "tmp" or key.startswith("cache:"):
             self.state.buffers[key] = np.ascontiguousarray(pixels.copy())
+            # 絵を差し替えたので、前の絵と一緒に持ち運んできた効果は掛けない
+            self._carry(key, ())
         else:
             self._report.note_missing(f'obj.putpixeldata("{name}")')
 
@@ -1150,6 +1259,8 @@ class ObjApi:
             self._settle_effects("obj.getpixeldata")
             return self.state.image
         if key == "tmp" or key.startswith("cache:"):
+            # DLL が受け取るのも効果を掛けた後の絵 持ち運んできた効果はここで掛ける
+            self._settle_buffer(key, f'obj.getpixeldata("{target}")')
             stored = self.state.buffers.get(key)
             if stored is None:
                 self._report.note_missing(f'obj.getpixeldata("{target}")（まだ無いバッファ）')
@@ -1183,6 +1294,8 @@ class ObjApi:
                     f" {width}x{height} に切った）"
                 )
             self.state.buffers["tmp"] = np.zeros((height, width, 4), dtype=np.uint8)
+            # 作り直した空の仮想バッファに、前の絵と持ち運んだ効果を残さない
+            self._carry("tmp", ())
         if key not in ("drawtarget", "blend", "focus_mode", "culling", "billboard"):
             self._report.note_missing(f'obj.setoption("{key}")')
 
@@ -1195,10 +1308,24 @@ class ObjApi:
             return False
         return self.state.options.get(key)
 
-    def lua_setanchor(self, *args: Any) -> None:
-        """アンカーの表示 画面上の操作なので、値だけ受けて記録する"""
-        del args
-        self._report.note_missing("obj.setanchor")
+    def lua_setanchor(self, name: Any = "", count: Any = 0, *options: Any) -> int:
+        """アンカーを編集画面に出す ``obj.setanchor("track", 0, "line")``
+
+        描く絵には何も足さない（lua.txt 「アンカーポイントを表示します」） 変数へ座標を書くのも
+        編集画面でアンカーを動かしたときだけで、描くときには変数も値も変えない 記録に残すと、
+        sigma の 単純変形σ の 5 本（領域サイズ指定・回転中心・軸指定回転など）が描けているのに
+        未対応に数えられる
+
+        返すのはアンカーの数 変数の名前なら渡された数 ``"track"`` や ``"x,y"`` のトラックバーは
+        中間点の数だけ点がある物だが、スクリプトから見えるのはいまの時刻の値 1 つだけなので 1
+        （``obj.getvalue("track.x", 0, i)`` もいまの値を返す）
+        """
+        del options
+        text = str(name)
+        if text == "track" or "," in text:
+            return 1
+        number = _as_float(count)
+        return max(0, int(number)) if math.isfinite(number) else 0
 
     def lua_getvalue(self, target: str = "", *args: Any) -> Any:
         """設定値を読む ``obj.getvalue("track0")`` など

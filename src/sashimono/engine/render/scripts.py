@@ -139,6 +139,7 @@ class ScriptStage:
         fps: float,
         duration: int,
         font: dict[str, Any] | None = None,
+        layer: int = 0,
     ) -> str:
         """テキスト欄に埋め込んだ Lua を、そのフレームの文字にする
 
@@ -146,6 +147,9 @@ class ScriptStage:
         これを返す 渡さないと、合成フォントのエイリアスのように
         ``obj.getfont`` で大きさや字間を取って組むスクリプトが、
         設定欄に書いた値ではなく既定値で組む
+
+        ``layer`` は ``obj.layer`` PSDToolKit の字幕はテキストの Lua でレイヤー番号ごとに
+        字幕の状態を置き、同じレイヤーの吹き出しがそれを読む
         """
         state = ObjectState(
             image=blank_image(1, 1),
@@ -154,6 +158,7 @@ class ScriptStage:
             frame=frame,
             totalframe=max(1, duration),
             framerate=fps,
+            layer=layer,
             font=dict(font) if font else {},
         )
         return self._runtime.expand_text(text, state)

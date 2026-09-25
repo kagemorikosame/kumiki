@@ -486,6 +486,8 @@ class FrameRenderer:
         #: 移動軌跡の道の置き場 描くたびに頭から位置を引き直さないために覚えておく
         #: レンダラごとに持つ 共有すると、1 つを閉じたときに他のレンダラの道まで消える
         self._trail_paths = TrailPaths()
+        #: クリップごとのレイヤー番号（スクリプトの ``obj.layer``） プロジェクトごとに 1 度数える
+        self._layer_numbers: tuple[Project, dict[ClipId, int]] | None = None
         self._closed = False
 
     @property
@@ -1464,6 +1466,7 @@ class FrameRenderer:
             image,
             frame=local_frame,
             fps=float(rate.fps),
+            layer=self._layer_number(clip),
             framebuffer=lambda: self._screen_picture(below),
         )
         texture = self._texture_for(track.id)
@@ -1586,6 +1589,28 @@ class FrameRenderer:
                 blend=clip.blend_mode,
                 matrix=matrix,
             )
+
+    def _layer_number(self, clip: Clip) -> int:
+        """スクリプトへ渡す ``obj.layer`` 置かれたトラックが同じ種類の中で奥から何本目か（1 から）
+
+        混合トラックでは AviUtl のレイヤー番号と同じ（:mod:`sashimono.compat.layers`） 0 のまま
+        渡すと、PSDToolKit のようにレイヤー番号で字幕や口パクの状態を分けるスクリプトで、
+        別のレイヤーのオブジェクトどうしが同じ状態を書き換え合う
+        どこにも無いクリップ（切り替えの途中に作る物など）は 1
+        """
+        cached = self._layer_numbers
+        if cached is None or cached[0] is not self._project:
+            numbers: dict[ClipId, int] = {}
+            timelines = (self._project.timeline, *(s.timeline for s in self._project.scenes))
+            for timeline in timelines:
+                counted: dict[object, int] = {}
+                for track in timeline.tracks:
+                    counted[track.kind] = counted.get(track.kind, 0) + 1
+                    for placed in track.clips:
+                        numbers[placed.id] = counted[track.kind]
+            cached = (self._project, numbers)
+            self._layer_numbers = cached
+        return cached[1].get(clip.id, 1)
 
     def _screen_picture(self, below: Compositor | None = None) -> np.ndarray:
         """それまでに重ねた画面を、スクリプトへ渡す絵にする（``obj.copybuffer`` の ``frm``）
@@ -1857,6 +1882,7 @@ class FrameRenderer:
                     # 渡さないと、合成フォントのエイリアスが大きさも字間も
                     # 既定値で組み、設定欄をいじっても絵が変わらない
                     font=text_font(source.params, local_frame),
+                    layer=self._layer_number(clip),
                 )
                 source = source.with_param("text", expanded)
         # 画面の左上から数えた線の点（YMM4 のペン）は、ここで画面の大きさを引いて中心からの点へ
