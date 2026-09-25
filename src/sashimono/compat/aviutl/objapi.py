@@ -652,14 +652,6 @@ class ObjApi:
             if not self.state.effects:
                 self._expand(params)
                 return
-        if original == CLIP_EFFECT and _as_float(params.get("中心の位置を変更", 0.0)):
-            amounts = [_as_float(params.get(name, 0.0)) for name in ("上", "下", "左", "右")]
-            if amounts[0] != amounts[1] or amounts[2] != amounts[3]:
-                # 描くときの crop は切り口を元の場所に残す 真ん中へ寄せ直す分は写せないので
-                # 記録に残す 黙ると、切った絵がオブジェクトの位置へ来ない理由が出ない
-                self._report.note_missing(
-                    "obj.effect(クリッピング) の 中心の位置を変更（先に積んだ効果の後）"
-                )
         self.state.effects.append(EffectRequest(kind=kind, params=params, original=original))
 
     def _clip(self, values: dict[str, float | str]) -> None:

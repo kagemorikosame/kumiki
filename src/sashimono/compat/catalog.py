@@ -24,7 +24,7 @@ from fractions import Fraction
 from pathlib import Path, PureWindowsPath
 
 from sashimono.compat.aviutl.exo import ExoParseError, load_exo
-from sashimono.compat.aviutl.mapping import map_object
+from sashimono.compat.aviutl.mapping import SILENT_SOUND, map_object
 from sashimono.compat.aviutl.report import CompatibilityReport, global_report
 from sashimono.compat.layers import heard_stream, layer_tracks
 from sashimono.compat.mapped import MappedObject, fitted_effect, fitted_value
@@ -432,6 +432,20 @@ def place(
 
     known = media or {}
     log = report if report is not None else global_report
+    mixed = places_mixed(project)
+    if not mixed:
+        # 分ける方式では、音の無い素材を指す音声ファイルを置かない 元のソフトでも何も
+        # 鳴らず何も描かず、置くと ``AddClip`` が断って 1 回の Undo にまとめた配置が全部
+        # 取り消される 下で頭を揃える前に除く 除かずに一番早い物がこれだと、残りが
+        # ``at_frame`` ではなくその分だけ後ろへ置かれる
+        # 黙って落とすと、読み込んだ数が合わない理由を追えないので数えて残す
+        # （混合のレイヤーは絵を隠して鳴らさずに置けるので、そのまま置く）
+        kept = [item for item in objects if not _silent_sound(item, known)]
+        for _ in range(len(objects) - len(kept)):
+            log.note_missing(SILENT_SOUND)
+        objects = kept
+        if not objects:
+            return []
     seen = [item for item in objects if not _is_sound(item, known)]
 
     # 一番早いオブジェクトが ``at_frame`` に来るように、まとめてずらす
@@ -452,7 +466,6 @@ def place(
     # 含めて重なりを見ないと、同じトラックへ重ねて置いて ``AddClip`` に断られる
     prepared: list[tuple[MappedObject, Clip | None, Clip | None]] = []
     # 混合の方式で置く物（レイヤーの番号とクリップ） 分けないので 1 つに 1 本
-    mixed = places_mixed(project)
     layered: list[tuple[MappedObject, Clip]] = []
     for item in objects:
         placed = timed(item)
@@ -478,6 +491,9 @@ def place(
         if _is_sound(item, known):
             # 音だけの素材を読む動画アイテムでも、止めるのは絵だけ 音のクリップには持たせない
             heard = replace(placed, hold_at=None, native_size=False)
+            if linked is not None:
+                # 動画を指すときに 0 番のまま鳴らすと、映像のストリームを音として読みに行く
+                heard = replace(heard, stream_index=linked.audio_streams[0].index)
             prepared.append((item, None, _with_audio_effects(heard, item)))
             continue
         prepared.append((item, *_split_sound(placed, item, linked)))
@@ -689,14 +705,23 @@ def _media_of(item: MappedObject, known: Mapping[str, MediaItem]) -> MediaItem |
 def _is_sound(item: MappedObject, known: Mapping[str, MediaItem]) -> bool:
     """音声トラックへ置くものか
 
-    素材が見つかっていれば、映像を持つかどうかで決める（映像も持つ動画は映像トラック）
-    見つからなければ種類の名前で決める 素材の無い音声を映像トラックへ置くと、
-    あとで素材を足しても映像トラックでは鳴らない
+    音声ファイル（YMM4 の音声アイテムも同じ種類）は、指す素材に映像があっても音だけ
+    AviUtl は動画の音の半分を、同じ .mp4 を指す音声ファイルとして書く 素材の中身で
+    決めると映像トラックへ置かれ、動画がもう 1 枚描かれて音は鳴らない
+    素材の無い音声を映像トラックへ置くと、あとで素材を足しても映像トラックでは鳴らない
+
+    ほかの種類は、素材が見つかっていれば映像を持つかどうかで決める
     """
+    if item.kind == "音声ファイル" and item.clip.source is None:
+        return True
     linked = _media_of(item, known)
-    if linked is not None:
-        return not (linked.has_video or linked.is_still)
-    return item.kind == "音声ファイル" and item.clip.source is None
+    return linked is not None and not (linked.has_video or linked.is_still)
+
+
+def _silent_sound(item: MappedObject, known: Mapping[str, MediaItem]) -> bool:
+    """音の無い素材を指す音声ファイルか 素材が見つからない物は分からないので偽"""
+    linked = _media_of(item, known)
+    return _is_sound(item, known) and linked is not None and not linked.audio_streams
 
 
 def _sound_tracks_for(

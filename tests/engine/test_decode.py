@@ -20,6 +20,7 @@ from sashimono.engine.decode import AudioDecoder, ProbeError, VideoDecoder, prob
 from tests.media_fixtures import (
     SampleMedia,
     decode_all_frames,
+    encoder_available,
     libx264_available,
     make_delayed,
     make_rotated,
@@ -44,6 +45,42 @@ def _short_picture(directory: Path) -> Path:
             check=True,
             capture_output=True,
         )  # fmt: skip
+    return path
+
+
+def _covered_mp3(directory: Path) -> Path:
+    """カバー画像（attached_pic）の付いた 2 秒の mp3 音楽の配布物によくある形"""
+    path = directory / "covered.mp3"
+    if path.exists():
+        return path
+    # 飛ばすのは使えない環境だけ（ffmpeg が無い・使う符号化器を入れずに組み立てた）
+    # 作る途中の失敗まで飛ばすと、引数の誤りでもカバー画像の試験が黙って走らなくなる
+    # 符号化器は下の 2 つの命令で指定する物すべて（音の libmp3lame と絵の png）
+    lacking = [name for name in ("libmp3lame", "png") if not encoder_available(name)]
+    if lacking:
+        pytest.skip(
+            f"ffmpeg か符号化器（{', '.join(lacking)}）が無いのでカバー画像付きの mp3 を作れない"
+        )
+    # 画像を先に 1 枚作ってから重ねる 1 回で作ろうと -frames:v 1 を付けると、
+    # 出力全体がその 1 枚の長さで切れて音が 26ms しか残らない
+    cover = directory / "cover.png"
+    steps = [
+        [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "lavfi", "-i", "color=c=red:size=32x32", "-frames:v", "1", str(cover),
+        ],
+        [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=2:sample_rate=44100",
+            "-i", str(cover), "-map", "0:a", "-map", "1:v",
+            "-c:a", "libmp3lame", "-c:v", "png", "-disposition:v:0", "attached_pic",
+            "-id3v2_version", "3", str(path),
+        ],
+    ]  # fmt: skip
+    for step in steps:
+        made = subprocess.run(step, capture_output=True, check=False)
+        if made.returncode != 0:
+            pytest.fail(f"カバー画像付きの mp3 を作れない: {made.stderr.decode(errors='replace')}")
     return path
 
 
@@ -101,6 +138,18 @@ class TestProbe:
         assert late.video_streams[0].end_time == Fraction(2)
         assert late.duration == Fraction(2)
 
+    def test_the_cover_art_of_an_mp3_is_not_a_video(self, media_dir: Path) -> None:
+        """mp3 に付いたカバー画像（attached_pic）は映像ストリームに数えない
+
+        数えると mp3 が動画として扱われ、置くと映像トラックへ絵として置かれて描かれる
+        絵が 1 枚しか無いのにデコーダが時刻でシークし、途中の時刻で落ちる
+        """
+        item = probe_media(_covered_mp3(media_dir))
+        assert not item.has_video
+        assert item.has_audio
+        # 原点と長さもカバー画像の時刻で決めない 音の長さ（2 秒）のまま
+        assert float(item.duration) == pytest.approx(2.0, abs=0.1)
+
     def test_video_only_media(self, sample_long: SampleMedia) -> None:
         item = probe_media(sample_long.path)
         assert item.has_video
@@ -127,6 +176,12 @@ class TestProbe:
 
 
 class TestVideoDecoder:
+    def test_an_mp3_with_cover_art_has_no_picture_to_decode(self, media_dir: Path) -> None:
+        # カバー画像を映像として開くと、2 枚目の無い絵の中をシークして PermissionError で落ちる
+        # 映像の無い素材として断れば、呼ぶ側はほかの音だけの素材と同じに扱える
+        with pytest.raises(ProbeError, match="映像ストリームが無い"):
+            VideoDecoder(_covered_mp3(media_dir))
+
     def test_reads_the_first_frame(self, sample_av: SampleMedia) -> None:
         with VideoDecoder(sample_av.path) as decoder:
             frame = decoder.frame_at(Fraction(0))

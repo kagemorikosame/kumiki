@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 __all__ = [
     "SampleMedia",
     "decode_all_frames",
+    "encoder_available",
     "ffmpeg_available",
     "libx264_available",
     "make_rotated",
@@ -37,14 +38,21 @@ def ffmpeg_available() -> bool:
 ENCODER_LIST_TIMEOUT = 30
 
 
-@functools.cache
 def libx264_available() -> bool:
     """外の ffmpeg で H.264 を焼けるか
 
     ffmpeg があっても libx264 が入っていない組み立て方があり、そこでは素材を
     作る所で落ちる 落ちると取り付け口（fixture）のエラーになり、「使えない
     環境では飛ばす」という他の場所の決まりと食い違うので、先に見て分ける
-    一覧を取るのに 100ms 前後かかるので、1 度だけ見て覚える
+    """
+    return encoder_available("libx264")
+
+
+@functools.cache
+def encoder_available(name: str) -> bool:
+    """外の ffmpeg に符号化器 ``name`` が入っているか
+
+    一覧を取るのに 100ms 前後かかるので、名前ごとに 1 度だけ見て覚える
     """
     if not ffmpeg_available():
         return False
@@ -62,13 +70,13 @@ def libx264_available() -> bool:
         return False
     if listing.returncode != 0:
         return False
-    # 一覧は「 V....D libx264   libx264 H.264 ...」の形 説明文にも libx264 の
-    # 字が出るので、名前の欄（2 列目）が一致する行だけを数える
+    # 一覧は「 V....D libx264   libx264 H.264 ...」の形 説明文にも符号化器の
+    # 名前が出るので、名前の欄（2 列目）が一致する行だけを数える
     # 手元の ffmpeg 8.1.2 は一覧を標準出力へ出すが、組み立て方によっては
     # 標準エラーへ出るという指摘があったので、両方を見る
     for line in (listing.stdout + "\n" + listing.stderr).splitlines():
         columns = line.split()
-        if len(columns) >= 2 and columns[1] == "libx264":
+        if len(columns) >= 2 and columns[1] == name:
             return True
     return False
 

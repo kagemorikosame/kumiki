@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 
 from sashimono.compat.aviutl.catalog import ScriptCatalog
-from sashimono.compat.aviutl.mapping import script_filter_effect
+from sashimono.compat.aviutl.mapping import script_filter_effects
 from sashimono.compat.aviutl.objapi import DrawCall, ObjectState
 from sashimono.compat.aviutl.report import CompatibilityReport
 from sashimono.compat.aviutl.runtime import LuaScriptRuntime, blank_image
@@ -65,8 +65,8 @@ class TestSize:
         assert (state.ox, state.oy) == (40.0, 20.0)
 
     def test_getpixel_with_a_position_still_reads_the_colour(self) -> None:
-        # 位置を渡したときまで大きさを返すと、色を読むスクリプトが幅を色として読み、
-        # 縁取りや塗りの色が幅の数（0x28 など）の暗い色になる
+        # 引数なしの分岐が位置つきの呼び出しまで幅と高さを返すと、画素を読んで色を決める
+        # スクリプトが全部、幅と高さを色として読んで崩れる
         state = _state(4, 4)
         state.image[1, 2] = (255, 0, 0, 255)
         _run("local c, a = obj.getpixel(2, 1) obj.ox = c obj.oy = a", state)
@@ -133,27 +133,6 @@ class TestClip:
         assert (state.ox, state.oy) == (-2.0, -1.0)
         assert (state.cx, state.cy) == (2.0, 1.0)
 
-    def test_a_deferred_uneven_recentre_is_recorded(self) -> None:
-        # 描くときへ回した クリッピング は切り口を元の場所に残す 中心の位置を変更 で真ん中へ
-        # 寄せ直す分はそこでは写せない 黙ると、切った絵がオブジェクトの位置へ来ない理由が出ない
-        report = CompatibilityReport()
-        _requested(
-            'obj.effect("ぼかし", "範囲", 4)'
-            ' obj.effect("クリッピング", "上", 3, "下", 1, "中心の位置を変更", 1)',
-            report,
-        )
-        assert any("中心の位置を変更" in line for line in report.lines())
-
-    def test_a_deferred_even_recentre_is_not_recorded(self) -> None:
-        # 上下と左右が同じ量なら真ん中は動かない 記録すると、本当に写せない物が埋もれる
-        report = CompatibilityReport()
-        _requested(
-            'obj.effect("ぼかし", "範囲", 4)'
-            ' obj.effect("クリッピング", "上", 3, "下", 3, "中心の位置を変更", 1)',
-            report,
-        )
-        assert not any("中心の位置を変更" in line for line in report.lines())
-
     def test_a_clip_after_other_effects_waits_for_them(self) -> None:
         # 先に積んだぼかしより前に切ると、ぼかしが切り口の外の絵を混ぜなくなる
         effects = _requested(
@@ -161,6 +140,20 @@ class TestClip:
         )
         assert [effect.kind for effect in effects] == ["blur", "crop"]
         assert _value(effects[1], "top") == 3.0
+
+    def test_a_waiting_clip_still_recentres(self) -> None:
+        """後に回したクリッピングでも、中心の位置を変更 は切った後の平行移動として続く
+
+        落とすと、先に効果を積んでから片側を切るスクリプトで、残りが真ん中へ戻らない
+        動かす量はエイリアスの読み込み（AviUtl2 で測った）と同じ 横が (右 − 左) / 2
+        """
+        effects = _requested(
+            'obj.effect("ぼかし", "範囲", 4)'
+            ' obj.effect("クリッピング", "上", 10, "左", 20, "右", 80, "中心の位置を変更", 1)'
+        )
+        assert [effect.kind for effect in effects] == ["blur", "crop", "transform"]
+        assert _value(effects[2], "pos_x") == 30.0
+        assert _value(effects[2], "pos_y") == 5.0
 
 
 class TestFilters:
@@ -193,6 +186,15 @@ class TestFilters:
         assert _value(effect, "amount") == 20.0
         assert effect.params["keep_luma"] is True
 
+    def test_a_colour_that_is_not_a_number_does_not_stop_the_frame(self) -> None:
+        # Lua の 0/0 は NaN のまま来る int() が例外を出すと、そのフレームの描画ごと止まる
+        # 色の欄は既定のままにして、読めなかったことを記録に残す
+        report = CompatibilityReport()
+        for broken in (float("nan"), float("inf")):
+            (effect,) = script_filter_effects("単色化", {"color": broken}, report=report)
+            assert effect.kind == "fill"
+        assert any("単色化の color" in line for line in report.lines())
+
     def test_the_colour_correction_counts_from_a_hundred(self) -> None:
         """スクリプトの 色調補正 は 100 が元のまま 輝度は倍率、明るさは足す量
 
@@ -216,11 +218,13 @@ class TestFilters:
         assert _value(effect, "brightness") == 100.0
         # 写せない値は、描くときに記録へ残る
         report = CompatibilityReport()
-        script_filter_effect("レンズブラー", {"範囲": 16.0, "光の強さ": 32.0}, report=report)
+        script_filter_effects("レンズブラー", {"範囲": 16.0, "光の強さ": 32.0}, report=report)
         assert any("レンズブラーの項目: 光の強さ" in line for line in report.lines())
 
     def test_a_filter_the_import_knows_is_called(self) -> None:
         # 読み込みで写せる効果は、スクリプトからも同じ名前で呼べる（表を 1 つにした）
+        # 表が分かれると、読み込みでは写せる効果が obj.effect では未対応として記録されて
+        # 掛からないか、別の効果に化ける（以前の表は 領域拡張 を切り抜きの crop へ写していた）
         (effect,) = _requested('obj.effect("ミラー", "透明度", 10)')
         assert effect.kind == "mirror"
         assert _value(effect, "opacity") == 10.0
@@ -270,14 +274,3 @@ class TestPlacement:
         )
         assert isinstance(call, DrawCall)
         assert (call.x, call.y) == (100.0, -40.0)
-
-
-class TestBrokenColour:
-    def test_a_colour_that_is_not_a_number_is_recorded(self) -> None:
-        # Lua の 0/0 や math.huge が color に来ても、描くときに例外でフレームごと止めない
-        # 既定の色で描き、数でなかったことを記録に残す
-        for broken in (float("nan"), float("inf")):
-            report = CompatibilityReport()
-            effect = script_filter_effect("単色化", {"color": broken}, report=report)
-            assert effect is not None
-            assert any("color" in line for line in report.lines())

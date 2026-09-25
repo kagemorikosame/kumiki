@@ -60,12 +60,29 @@ uniform float center_y;
 uniform float angle;
 uniform float width;
 uniform float blur;
+uniform int pivot_h;
+uniform int pivot_v;
+uniform float anchor_x;
+uniform float anchor_y;
 
 void main() {
     // 中心を通り angle の向きに伸びる帯（幅 width）だけを残す
+    // 中心は基準の点から測る 既定は絵の中央 YMM4 で前に中心点があれば、その点が基準に
+    // なる（SFっぽい吹き出し(右) の名札は左端から X の所で切れていた） 並びは変形の
+    // 中心の選び方と同じ
+    vec2 base = object_center();
+    if (pivot_h == 0) base.x = u_size.x * 0.5;
+    if (pivot_v == 0) base.y = u_size.y * 0.5;
+    if (pivot_h == 1) base.x = u_object.x;
+    if (pivot_h == 2) base.x = u_object.z;
+    if (pivot_v == 1) base.y = u_object.w;
+    if (pivot_v == 2) base.y = u_object.y;
+    if (pivot_h == 4) base.x = object_origin().x;
+    if (pivot_v == 4) base.y = object_origin().y;
+    vec2 centre = base + vec2(anchor_x, anchor_y) + vec2(center_x, center_y);
     vec2 pixel = v_uv * u_size;
     vec2 normal = vec2(cos(radians(angle)), sin(radians(angle)));
-    float distance = abs(dot(pixel - object_center() - vec2(center_x, center_y), normal));
+    float distance = abs(dot(pixel - centre, normal));
     float edge = max(blur, 0.5);
     float keep = 1.0 - smoothstep(width * 0.5 - edge, width * 0.5 + edge, distance);
     vec4 color = texture(u_texture, v_uv);
@@ -769,6 +786,32 @@ def register_stylize_effects() -> None:
                 TrackSpec("angle", "角度", -360, 360, 0, unit="度"),
                 TrackSpec("width", "幅", 0, 8000, 400, step=1, unit="px"),
                 TrackSpec("blur", "ぼかし", 0, 400, 0, unit="px"),
+                SelectSpec(
+                    "pivot_h",
+                    "基準の横",
+                    (
+                        ("screen", "画面の中央"),
+                        ("left", "絵の左端"),
+                        ("right", "絵の右端"),
+                        ("center", "絵の中央"),
+                        ("origin", "絵の原点"),
+                    ),
+                    "center",
+                ),
+                SelectSpec(
+                    "pivot_v",
+                    "基準の縦",
+                    (
+                        ("screen", "画面の中央"),
+                        ("top", "絵の上端"),
+                        ("bottom", "絵の下端"),
+                        ("middle", "絵の中央"),
+                        ("origin", "絵の原点"),
+                    ),
+                    "middle",
+                ),
+                TrackSpec("anchor_x", "基準のずれ X", -4000, 4000, 0, step=1, unit="px"),
+                TrackSpec("anchor_y", "基準のずれ Y", -4000, 4000, 0, step=1, unit="px"),
             ),
             fragment_shader=_CROP_ANGLE,
         ),

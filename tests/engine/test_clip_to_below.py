@@ -114,6 +114,39 @@ def test_without_clipping_the_cover_fills_the_screen(gl_context: OffscreenGLCont
     assert image[2, 2, 0] > 200
 
 
+def test_a_clipped_script_reads_the_screen_below(gl_context: OffscreenGLContext) -> None:
+    """切り抜かれるスクリプトの ``obj.copybuffer("obj", "frm")`` は下に重ねた絵を写す（#170）
+
+    切り抜く側は空の合成先へ描いてから形で切る その空の方を画面として写すと、
+    アクリル矩形が下の絵ではなく黒をぼかした板になる 形の中は下の青が見えるはず
+    """
+    from sashimono.compat.aviutl import catalog as catalog_module
+    from sashimono.compat.aviutl.catalog import ScriptCatalog, set_script_catalog
+    from sashimono.compat.aviutl.custom_object import custom_object_clip
+    from sashimono.effects import registry
+
+    saved = catalog_module._catalog
+    catalog = ScriptCatalog(roots=())
+    catalog.add_text("aviutl:試験/@写す.obj:画面", 'obj.copybuffer("obj", "frm")', kind="obj")
+    set_script_catalog(catalog)
+    try:
+        definition = registry.get("aviutl:試験/@写す.obj:画面")
+        assert definition is not None
+        base = Project.create(SETTINGS)
+        square = Clip(timeline_start=0, duration=10, source=_shape((0.0, 0.0, 1.0, 1.0), 20.0))
+        copied = replace(custom_object_clip(definition.create(), duration=10), clip_to_below=True)
+        tracks = (
+            Track(TrackKind.VIDEO, "V1", (square,)),
+            Track(TrackKind.VIDEO, "V2", (copied,)),
+        )
+        image = _render(base.with_timeline(replace(base.timeline, tracks=tracks)), gl_context)
+    finally:
+        catalog_module._catalog = saved
+        if saved is not None:
+            saved.register_all()
+    assert image[32, 32, 2] > 200, image[32, 32]
+
+
 def test_the_setting_is_saved() -> None:
     project = _project(clipped=True)
     loaded = project_from_dict(project_to_dict(project))
