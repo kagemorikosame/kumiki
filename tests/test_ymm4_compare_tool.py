@@ -2070,3 +2070,50 @@ def test_a_colour_key_is_drawn_once_before_the_first_case(tool: ModuleType) -> N
         tool.warm_up_items(tool.place_cases([("a.ymmt", 0, "素", [tool.base_shape(0, 0, 60)])]))
         == []
     )
+
+
+def test_a_disabled_colour_key_does_not_shift_the_cases(tool: ModuleType, tmp_path: Path) -> None:
+    """効いていない方向で色を抜くだけなら準備は要らない 枠だけずらすと、準備が無いまま全部が
+
+    12 フレーム後ろへずれ、乱数を使うテンプレートの比べる絵まで変わる（PR #221）
+    """
+    key = {"$type": "N.DirectionalColorKeyEffect, Y", "IsEnabled": False}
+    band = tool.base_shape(0, 0, 60)
+    band["VideoEffects"] = [key]
+    template = tmp_path / "a.ymmt"
+    _ymmt(template, [band])
+    cases, _ = tool.build_cases([template])
+    assert cases[0].start == 0
+    assert tool.warm_up_items(cases) == []
+
+
+def test_a_colour_key_on_a_group_is_warmed_with_a_picture_below(
+    tool: ModuleType, tmp_path: Path
+) -> None:
+    """グループにだけ付いた方向で色を抜くも準備する グループだけ置くと絵が無く、描かれない
+
+    前は図形のアイテムだけを探し、グループのときは準備を作らないまま枠だけずらしていた
+    """
+    key = {"$type": "N.DirectionalColorKeyEffect, Y", "IsEnabled": True}
+    group = {
+        "$type": "YukkuriMovieMaker.Project.Items.GroupItem, YukkuriMovieMaker",
+        "Frame": 0,
+        "Layer": 0,
+        "Length": 60,
+        "GroupRange": 3,
+        "VideoEffects": [key],
+    }
+    template = tmp_path / "a.ymmt"
+    _ymmt(template, [group, tool.base_shape(0, 1, 60)])
+    cases, _ = tool.build_cases([template])
+    assert cases[0].start == tool.WARM_UP_LENGTH + tool.GAP
+    warm = tool.warm_up_items(cases)
+    assert [tool.type_name(item) for item in warm] == ["GroupItem", "ShapeItem"]
+    assert warm[0]["GroupRange"] == 1
+    assert (warm[1]["Frame"], warm[1]["Layer"], warm[1]["Length"]) == (0, 1, tool.WARM_UP_LENGTH)
+
+
+def _ymmt(path: Path, items: list[dict[str, Any]]) -> None:
+    """テンプレート 1 本の .ymmt（``tools/ymm4_probes.py`` が書く形と同じ素の JSON）"""
+    template = {"Name": "t", "Path": ["t"], "Items": items}
+    path.write_text(json.dumps({"ItemTemplates": [template]}, ensure_ascii=False), "utf-8")

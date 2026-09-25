@@ -260,26 +260,19 @@ WARM_UP_EFFECTS = frozenset({"DirectionalColorKeyEffect"})
 WARM_UP_LENGTH = 6
 
 
-def _effects_in(value: Any) -> Iterator[dict[str, Any]]:
-    if isinstance(value, dict):
-        yield value
-        for inner in value.values():
-            yield from _effects_in(inner)
-    elif isinstance(value, list):
-        for inner in value:
-            yield from _effects_in(inner)
+def _warm_up_from(item_lists: Iterable[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    """準備のアイテムを作る 準備の要るエフェクトが無ければ空
 
-
-def warm_up_items(cases: list[Case]) -> list[dict[str, Any]]:
-    """比べる枠の前に置く準備のアイテム 準備の要るエフェクトが無ければ空
-
-    準備の要るエフェクトを持つ最初のアイテムを写し、そのエフェクトだけを残して頭に置く
+    アイテムの ``VideoEffects`` にある、効いている（``IsEnabled`` が偽でない）準備の要る
+    エフェクトを探す 見つけたアイテムを写し、そのエフェクトだけを残して頭に置く
     写したアイテムの形（図形とブラシ）はそのままなので、エフェクトが受け取る絵も同じ
+    グループに付いていれば、グループだけでは絵が無いので下地の図形を 1 つ下に敷く
+    枠をずらすかどうかもこの結果で決める 探し方を 2 つ持つと、準備が無いのに枠だけずれる
     """
     warm: list[dict[str, Any]] = []
     wanted = set(WARM_UP_EFFECTS)
-    for case in cases:
-        for item in case.items:
+    for items in item_lists:
+        for item in items:
             effects = item.get("VideoEffects")
             if not isinstance(effects, list):
                 continue
@@ -290,7 +283,7 @@ def warm_up_items(cases: list[Case]) -> list[dict[str, Any]]:
                 and type_name(effect) in wanted
                 and effect.get("IsEnabled") is not False
             ]
-            if not found or type_name(item) != "ShapeItem":
+            if not found:
                 continue
             copied = copy.deepcopy(item)
             copied.update(
@@ -304,10 +297,18 @@ def warm_up_items(cases: list[Case]) -> list[dict[str, Any]]:
                 }
             )
             warm.append(copied)
+            if type_name(item) == "GroupItem":
+                copied["GroupRange"] = 1
+                warm.append(base_shape(0, 1, WARM_UP_LENGTH))
             wanted -= {type_name(effect) for effect in found}
             if not wanted:
                 return warm
     return warm
+
+
+def warm_up_items(cases: list[Case]) -> list[dict[str, Any]]:
+    """比べる枠の前に置く準備のアイテム（:func:`_warm_up_from`）"""
+    return _warm_up_from(case.items for case in cases)
 
 
 def build_cases(files: list[Path]) -> tuple[list[Case], list[str]]:
@@ -321,13 +322,8 @@ def build_cases(files: list[Path]) -> tuple[list[Case], list[str]]:
                 skipped.append(f"{template.name}（{', '.join(sorted(kinds & SKIPPED_ITEMS))}）")
                 continue
             templates.append((path.name, index, template.name, items))
-    # 準備の要るエフェクトがあれば、比べる枠を準備の分だけ後ろから始める
-    needs_warm_up = any(
-        type_name(node) in WARM_UP_EFFECTS
-        for _, _, _, items in templates
-        for node in _effects_in(items)
-    )
-    start = WARM_UP_LENGTH + GAP if needs_warm_up else 0
+    # 準備のアイテムを作れるときだけ、比べる枠を準備の分だけ後ろから始める
+    start = WARM_UP_LENGTH + GAP if _warm_up_from(items for _, _, _, items in templates) else 0
     return place_cases(templates, start=start), skipped
 
 

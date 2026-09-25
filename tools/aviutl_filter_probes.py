@@ -28,14 +28,21 @@ import sys
 import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from sashimono.compat.mapped import MappedObject
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT / "src"))
 
 import aviutl_compare  # noqa: E402
+
+from sashimono.compat.aviutl.report import CompatibilityReport  # noqa: E402
+from sashimono.core.timebase import FrameRate  # noqa: E402
 
 #: 見本の長さ（フレーム） 動かないので短くてよい
 LENGTH = 6
@@ -310,6 +317,10 @@ def probes(folder: Path) -> tuple[Probe, ...]:
 
 #: シーン 1 の長さ（フレーム） 白い四角が左から右へ動く
 SCENE_LENGTH = 60
+#: シーン 1 を読む見本の名前の頭
+SCENE_PROBES = "sc"
+#: 上のオブジェクトでクリッピングする見出しの行（本体の文字列から読んだ名前）
+CLIP_UPPER = "clipping.upper=1"
 
 
 def moving_square(length: int, colour: str = "ffffff") -> list[list[str]]:
@@ -560,7 +571,10 @@ def write_project(work: Path, chosen: tuple[Probe, ...]) -> dict[str, object]:
             {"name": probe.name, "start": cursor, "length": probe.length, "layers": probe.layers}
         )
         cursor += probe.length + GAP
-    out.extend(scene_one(number))
+    # シーン 1 の節は、シーンを読む見本を並べたときだけ足す 書き方がまだ違っていて、中身が
+    # ルートのシーンの頭に置かれる（#221） 足すと頭の 60 フレームの見本に動く四角が重なる
+    if any(probe.name.startswith(SCENE_PROBES) for probe in chosen):
+        out.extend(scene_one(number))
     target.write_text("\n".join(out) + "\n", encoding="utf-8")
     manifest: dict[str, object] = {"cases": cases}
     (work / "manifest.json").write_text(
@@ -591,9 +605,9 @@ def command_build(work: Path, only: str = "", *, third: bool = False) -> int:
     return 0
 
 
-def object_text(blocks: Blocks) -> str:
-    """1 レイヤーの見本を Sashimono の読み込みへ渡す ``.object`` の形"""
-    lines = ["[Object]", f"frame=0,{LENGTH - 1}"]
+def object_text(blocks: Blocks, length: int = LENGTH) -> str:
+    """1 レイヤーの見本を Sashimono の読み込みへ渡す ``.object`` の形 長さは見本の長さ"""
+    lines = ["[Object]", f"frame=0,{length - 1}"]
     if blocks and blocks[0] and blocks[0][0] == HEADER:
         blocks = blocks[1:]
     for index, block in enumerate(blocks):
@@ -602,20 +616,52 @@ def object_text(blocks: Blocks) -> str:
     return "\r\n".join(lines) + "\r\n"
 
 
-def command_measure(work: Path) -> int:
-    """AviUtl2 の書き出しと Sashimono の絵で、見本ごとの明るい外形と升の色を並べる"""
+def layer_objects(
+    case: dict[str, Any], scratch: Path, rate: FrameRate, report: CompatibilityReport
+) -> list[MappedObject]:
+    """見本 1 本のレイヤーを Sashimono の読み込みで写す レイヤーは下から 1 番
+
+    長さは見本ごとの長さ（時間で変わる見本は 60 フレーム） 決まった 6 フレームで書くと、
+    6 フレームより後ろを比べるときに Sashimono の側だけ何も無い
+    見出しの ``clipping.upper=1`` は読み込み（エイリアスの形）に無いので、ここでクリップへ移す
+    移さないと、AviUtl2 が切り抜いた見本を Sashimono だけ切らずに描く
+    """
     from dataclasses import replace
 
     from sashimono.compat.aviutl.exo import load_exo
     from sashimono.compat.aviutl.mapping import map_object
-    from sashimono.compat.aviutl.report import CompatibilityReport
+
+    length = int(case.get("length", LENGTH))
+    objects: list[MappedObject] = []
+    for layer, blocks in enumerate(case["layers"]):
+        path = scratch / f"{case['name']}_{layer}.object"
+        path.write_bytes(object_text(blocks, length).encode("utf-8"))
+        clipped = (
+            bool(blocks)
+            and bool(blocks[0])
+            and blocks[0][0] == HEADER
+            and (CLIP_UPPER in blocks[0][1:])
+        )
+        for obj in load_exo(path).objects:
+            mapped = map_object(obj, rate, report=report)
+            if mapped is None:
+                continue
+            if clipped:
+                mapped = replace(mapped, clip=replace(mapped.clip, clip_to_below=True))
+            objects.append(replace(mapped, layer=layer + 1))
+    return objects
+
+
+def command_measure(work: Path) -> int:
+    """AviUtl2 の書き出しと Sashimono の絵で、見本ごとの明るい外形と升の色を並べる"""
     from sashimono.core.model import ProjectSettings
-    from sashimono.core.timebase import FrameRate
     from sashimono.engine.render import FrameRenderer
 
     manifest = json.loads((work / "manifest.json").read_text(encoding="utf-8"))
     cases = manifest["cases"]
-    frames = {case["name"]: int(case["start"]) + LENGTH // 2 for case in cases}
+    frames = {
+        case["name"]: int(case["start"]) + int(case.get("length", LENGTH)) // 2 for case in cases
+    }
     references = aviutl_compare.reference_frames(work, set(frames.values()))
     if references is None:
         print(f"{work / aviutl_compare.PNG_FOLDER} に書き出しがありません 先に書き出してください")
@@ -640,14 +686,7 @@ def command_measure(work: Path) -> int:
             if reference is None:
                 print(f"{name}: 書き出しにフレーム {frame} がありません")
                 return 1
-            objects = []
-            for layer, blocks in enumerate(case["layers"]):
-                path = scratch / f"{name}_{layer}.object"
-                path.write_bytes(object_text(blocks).encode("utf-8"))
-                for obj in load_exo(path).objects:
-                    mapped = map_object(obj, settings.frame_rate, report=report)
-                    if mapped is not None:
-                        objects.append(replace(mapped, layer=layer + 1))
+            objects = layer_objects(case, scratch, settings.frame_rate, report)
             project, _ = aviutl_compare.placed_project(objects, settings, int(case["start"]))
             if renderer is None:
                 renderer = FrameRenderer(project)

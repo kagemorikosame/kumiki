@@ -301,7 +301,9 @@ def project_length(project: Path) -> tuple[int, Fraction] | None:
         return None
     info = timeline.get("VideoInfo")
     fps = info.get("FPS") if isinstance(info, dict) else None
-    if not ends or not isinstance(fps, int | float) or fps <= 0:
+    # NaN や Infinity は JSON の読み込みが通してしまう そのまま Fraction へ渡すと
+    # ValueError の traceback で止まり、案内が出ない
+    if not ends or not isinstance(fps, int | float) or not math.isfinite(fps) or fps <= 0:
         return None
     # YMM4 の fps は整数か 29.97 のような小数 小数のまま割ると 1 コマの丸めが揺れる
     return max(ends), Fraction(str(fps)).limit_denominator(1001)
@@ -360,6 +362,10 @@ def short_name(output: Path, mark: Callable[[], str] | None = None) -> Path:
     raise FileExistsError(f"退ける名前が既にある物と重ならずに選べない（{output.parent}）")
 
 
+#: 書き出しとプロジェクトの fps を同じと見る違い（割合） 29.97 と 30000/1001 は 1 万分の 0.01
+SAME_RATE = Fraction(1, 10000)
+
+
 def check_length(output: Path, expected: int, fps: Fraction) -> bool:
     """書き出しがプロジェクトの終わりまで届いたか 足りなければ知らせて出力を退ける"""
     written = written_length(output)
@@ -369,7 +375,12 @@ def check_length(output: Path, expected: int, fps: Fraction) -> bool:
         count, rate = written
         # 書き出しの窓の fps がプロジェクトと違うことがある 時間で揃え、書き出しのコマで数える
         # 切り上げる 切り捨てると、終わりの 1 コマに届かない書き出しを揃っていると読む
-        needed = math.ceil(expected * rate / fps)
+        # 同じ fps の書き方の違い（29.97 と 30000/1001）は同じと見る 比で掛けると
+        # 1 コマの端数が切り上がり、揃った書き出しを 1 コマ足りないと読む
+        if abs(rate - fps) <= fps * SAME_RATE:
+            needed = expected
+        else:
+            needed = math.ceil(expected * rate / fps)
         if count >= needed:
             print(f"長さを確かめました {count} / {needed} コマ")
             return True
