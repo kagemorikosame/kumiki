@@ -26,6 +26,7 @@ uniform float top;
 uniform float bottom;
 uniform float left;
 uniform float right;
+uniform bool fill;
 
 void main() {
     // AviUtl の 領域拡張 はオブジェクトの入れ物を四方へ広げる
@@ -37,7 +38,16 @@ void main() {
     //
     // 画素の Y は上が正 下へ動かすには負を足す
     vec2 shift = vec2(-(right - left), -(top - bottom)) * 0.5;
-    frag_color = sample_pixel(v_uv * u_size - shift);
+    vec2 source = v_uv * u_size - shift;
+    if (fill) {
+        // 塗りつぶし は広げた所を縁の画素で埋める（スクリプトの obj.effect と同じ）
+        // 埋めるのは広げた入れ物の中だけ 外まで縁を伸ばすと画面の端まで帯が伸びる
+        vec4 grown = u_object + vec4(-left, -bottom, right, top);
+        if (all(greaterThanEqual(source, grown.xy)) && all(lessThan(source, grown.zw))) {
+            source = clamp(source, u_object.xy + 0.5, u_object.zw - 0.5);
+        }
+    }
+    frag_color = sample_pixel(source);
 }
 """)
 
@@ -275,6 +285,7 @@ def register_warp_effects() -> None:
                 TrackSpec("bottom", "下", 0, 4000, 0, step=1, unit="px"),
                 TrackSpec("left", "左", 0, 4000, 0, step=1, unit="px"),
                 TrackSpec("right", "右", 0, 4000, 0, step=1, unit="px"),
+                CheckSpec("fill", "塗りつぶし", False),
             ),
             fragment_shader=_EXPAND,
             expands_object=("top", "bottom", "left", "right"),

@@ -109,6 +109,25 @@ class TestExpandArea:
         )
         assert after == before
 
+    def test_fill_paints_the_new_area_with_the_edge(self, draw: Callable[..., np.ndarray]) -> None:
+        # 塗りつぶし は広げた所を縁の色で埋める（#190） 埋めないと .exa の 領域拡張 は
+        # 塗りつぶしを付けても入れ物が透明に広がるだけで、スクリプトから広げたときと食い違う
+        effect = registry.require("expand_area").create(top=40.0, left=20.0, fill=True)
+        lit = _extent(draw(effect))
+        plain = _extent(draw())
+        # 絵は右下へ半分ずれ（10, 20）、埋めた所は左へ 20・上へ 40 広がる
+        assert lit[0] == pytest.approx(plain[0] - 10, abs=2)
+        assert lit[1] == pytest.approx(plain[1] + 10, abs=2)
+        assert lit[2] == pytest.approx(plain[2] - 20, abs=2)
+        assert lit[3] == pytest.approx(plain[3] + 20, abs=2)
+
+    def test_fill_stays_inside_the_new_area(self, draw: Callable[..., np.ndarray]) -> None:
+        # 広げた量の外まで縁の色を伸ばすと、画面の端まで帯が伸びる
+        effect = registry.require("expand_area").create(right=30.0, fill=True)
+        image = draw(effect)
+        lit = image[:, :, :3].max(axis=2) > 24
+        assert int(lit.sum()) == pytest.approx((SQUARE + 30) * SQUARE, rel=0.05)
+
 
 class TestMirror:
     def _mirror(self, **params: float | str) -> Effect:

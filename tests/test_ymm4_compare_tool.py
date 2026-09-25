@@ -17,7 +17,7 @@ import sys
 from fractions import Fraction
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pytest
@@ -1386,6 +1386,11 @@ def test_writing_ceilings_keeps_the_templates_that_were_not_measured(
 
 def _compare_arguments(tmp_path: Path, **overrides: object) -> SimpleNamespace:
     (tmp_path / "ymm4.mp4").write_bytes(b"")
+    # 縁の差の上限は名指しすると無ければ断るので、空の物を置いておく 既定（None）にすると
+    # 手元のリポジトリの上限を読み、試験が並べたテンプレートと混ざる
+    edge = tmp_path / "edge_ceilings.json"
+    if not edge.exists():
+        edge.write_text("{}", encoding="utf-8")
     values: dict[str, object] = {
         "work": tmp_path,
         "output": None,
@@ -1682,12 +1687,53 @@ def test_edge_ceilings_are_optional_and_rewritten_only_for_listed_templates(
     (tmp_path / "ceilings.json").write_text(
         json.dumps({"ぽよ登場": 3.5, "震え": 4.0}), encoding="utf-8"
     )
-    # ファイルが無ければ縁は見ない
-    assert tool.command_compare(_compare_arguments(tmp_path)) == 0
+    # 既定のファイルが無ければ縁は見ない
+    monkeypatch.setattr(tool, "EDGE_CEILINGS", tmp_path / "missing_default.json")
+    assert tool.command_compare(_compare_arguments(tmp_path, edge_ceilings=None)) == 0
     edge = tmp_path / "edge_ceilings.json"
     edge.write_text(json.dumps({"ぽよ登場": 60.0}), encoding="utf-8")
     assert tool.command_compare(_compare_arguments(tmp_path, write_ceilings=True)) == 0
     assert tool.read_ceilings(edge) == {"ぽよ登場": 20.5}
+
+
+def test_a_named_edge_ceilings_file_that_is_missing_fails(
+    tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--edge-ceilings で名指ししたファイルが無ければ終了コード 1（#217 の指摘）
+
+    空として通すと、打ち間違えたときに縁の見張りが黙って外れる
+    """
+    rows = [tool.Row(0.5, "ぽよ登場", "a.ymmt", 1, "x", "", edge=48.0)]
+    monkeypatch.setattr(tool, "compare_work", lambda *args, **kwargs: rows)
+    (tmp_path / "ceilings.json").write_text(json.dumps({"ぽよ登場": 3.5}), encoding="utf-8")
+    typo = tmp_path / "edge_celings.json"
+    assert tool.command_compare(_compare_arguments(tmp_path, edge_ceilings=typo)) == 1
+
+
+def test_a_template_watched_only_for_edges_must_be_compared(
+    tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """縁の上限だけを持つテンプレートも、書き出しに無ければ・隠れていれば終了コード 1
+
+    縮めた平均の上限だけで見ると、縁の上限だけを持つ物は比べずに通る（#217 の指摘）
+    """
+    rows = [tool.Row(0.5, "雨", "b.ymmt", 1, "x", "")]
+
+    def partly_missing(*args: object, **kwargs: Any) -> list[object]:
+        kwargs["missing"].append(("ぽよ登場", 3))
+        return list(rows)
+
+    monkeypatch.setattr(tool, "compare_work", partly_missing)
+    (tmp_path / "ceilings.json").write_text(json.dumps({"雨": 8.0}), encoding="utf-8")
+    (tmp_path / "edge_ceilings.json").write_text(json.dumps({"ぽよ登場": 20.0}), encoding="utf-8")
+    assert tool.command_compare(_compare_arguments(tmp_path)) == 1
+
+    def hidden(*args: object, **kwargs: Any) -> list[object]:
+        kwargs["shadowed"].append("ぽよ登場")
+        return list(rows)
+
+    monkeypatch.setattr(tool, "compare_work", hidden)
+    assert tool.command_compare(_compare_arguments(tmp_path)) == 1
 
 
 AFTER_IMAGE = (

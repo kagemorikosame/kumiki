@@ -17,7 +17,7 @@ from sashimono.effects import region as _region
 from sashimono.effects import spawn as _spawn
 from sashimono.effects import stylize as _stylize
 from sashimono.effects import warp as _warp
-from sashimono.effects.definition import EffectDefinition, EffectRegistry, registry
+from sashimono.effects.definition import EffectDefinition, EffectRegistry, Pieces, registry
 from sashimono.effects.spec import (
     CheckSpec,
     ColorSpec,
@@ -57,6 +57,7 @@ __all__ = [
     "ParameterGroup",
     "ParameterKind",
     "ParameterSpec",
+    "Pieces",
     "SelectSpec",
     "TextSpec",
     "TrackSpec",

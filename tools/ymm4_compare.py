@@ -789,14 +789,23 @@ def command_compare(arguments: argparse.Namespace) -> int:
     if not arguments.write_ceilings and not arguments.ceilings.exists():
         print(f"{arguments.ceilings} がありません 作るなら --write-ceilings を付けてください")
         return 1
+    # 縁の差の上限は既定のファイルなら無くてもよい 見張ると決めたテンプレートだけが持つ
+    # （:data:`EDGE_CEILINGS`） --edge-ceilings で名指ししたのに無いのは打ち間違いなので断る
+    # 空として通すと、縁の見張りが黙って外れる（#217 の指摘）
+    edge_path: Path = arguments.edge_ceilings or EDGE_CEILINGS
+    if arguments.edge_ceilings is not None and not edge_path.exists():
+        print(f"{edge_path} がありません 縁の差の上限を見るファイルを確かめてください")
+        return 1
     # 比べるのに 1 分ほど掛かる 壊れた上限は比べる前に知らせる
-    # 縁の差の上限は無くてもよい 見張ると決めたテンプレートだけが持つ（:data:`EDGE_CEILINGS`）
     try:
         ceilings = read_ceilings(arguments.ceilings)
-        edge_ceilings = read_ceilings(arguments.edge_ceilings)
+        edge_ceilings = read_ceilings(edge_path)
     except ValueError as error:
         print(f"上限を読めない: {error}")
         return 1
+    # 比べられなかった・隠れたテンプレートは、どちらかの上限を持つ物をすべて見る 縁の上限だけを
+    # 持つ物を外すと、書き出しに届かなくても縁の見張りを黙って通る（#217 の指摘）
+    watched = ceilings | edge_ceilings
     words = [word for word in arguments.only.split(",") if word]
     missing: list[tuple[str, int]] = []
     shadowed: list[str] = []
@@ -827,7 +836,7 @@ def command_compare(arguments: argparse.Namespace) -> int:
         print(f"{row.edge:6.1f}  差 {row.difference:5.1f}  {row.name}  フレーム {row.frame}")
 
     problems, unmeasured = unmeasured_templates(
-        rows, missing, ceilings, writing=arguments.write_ceilings
+        rows, missing, watched, writing=arguments.write_ceilings
     )
     if unmeasured:
         print(f"\n書き出しが届いておらず比べなかったテンプレート（上限なし）: {len(unmeasured)} 本")
@@ -839,7 +848,7 @@ def command_compare(arguments: argparse.Namespace) -> int:
             problems += [
                 f"{name} 上限があるのに前の枠の絵に隠れて比べられない"
                 for name in shadowed
-                if name in ceilings
+                if name in watched
             ]
     if problems:
         print("\n比べられないフレームがあり、測りが足りない")
@@ -852,14 +861,14 @@ def command_compare(arguments: argparse.Namespace) -> int:
     if arguments.write_ceilings:
         write_ceilings(arguments.ceilings, worst)
         print(f"上限を書き換えた: {arguments.ceilings}")
-        if arguments.edge_ceilings.exists():
+        if edge_path.exists():
             write_ceilings(
-                arguments.edge_ceilings,
+                edge_path,
                 worst_edges,
                 margin=EDGE_CEILING_MARGIN,
                 only_listed=True,
             )
-            print(f"縁の差の上限を書き換えた: {arguments.edge_ceilings}")
+            print(f"縁の差の上限を書き換えた: {edge_path}")
         return 0
     failed = False
     exceeded = over_ceilings(worst, ceilings)
@@ -871,7 +880,7 @@ def command_compare(arguments: argparse.Namespace) -> int:
     # 縁の差は縮めた平均と別に見る 平均が上限の中でも、動きがずれると縁だけが大きく出る
     edges_exceeded = over_ceilings(worst_edges, edge_ceilings, label="縁")
     if edges_exceeded:
-        print(f"\n縁の差の上限を超えた（{arguments.edge_ceilings.name}）")
+        print(f"\n縁の差の上限を超えた（{edge_path.name}）")
         for line in edges_exceeded:
             print(f"  {line}")
         failed = True
@@ -3544,8 +3553,11 @@ def main() -> int:
     compare.add_argument(
         "--edge-ceilings",
         type=Path,
-        default=EDGE_CEILINGS,
-        help="テンプレートごとの縁の差の上限（書いてある物だけ見る） 超えたら終了コード 1",
+        default=None,
+        help=(
+            f"テンプレートごとの縁の差の上限（書いてある物だけ見る 既定 {EDGE_CEILINGS.name}）"
+            " 名指しして無ければ終了コード 1"
+        ),
     )
     compare.add_argument(
         "--write-ceilings",
