@@ -328,11 +328,14 @@ def brush_effect(
     opacity: AnimatedValue | None = None,
     pattern_only: bool = False,
     key_only: bool = False,
+    key_color: tuple[float, float, float, float] | None = None,
+    keep_color: tuple[float, float, float, float] | None = None,
 ) -> Effect | None:
     """ブラシで塗るエフェクト 写せないブラシなら ``None``
 
-    ``key_only`` は目印の色（マゼンタ）で塗った所だけを模様に替える
-    （線の図形の塗りのように、絵の一部だけを模様にしたいとき）
+    ``key_only`` は目印の色（``key_color``）で塗った所だけを模様に替える
+    （線の図形の塗りのように、絵の一部だけを模様にしたいとき） ``keep_color`` は
+    目印と一緒に描いた線の色 渡すと、2 色の縁の中間色からも塗りの割合を割り出す
     """
     params = _pattern_params(brush, length, keyframes, report)
     if params is None:
@@ -345,6 +348,10 @@ def brush_effect(
             "opacity": opacity or AnimatedValue(100.0),
         }
     )
+    if key_color is not None:
+        params["key_color"] = key_color
+    if keep_color is not None:
+        params["keep_color"] = keep_color
     return _create(params)
 
 
