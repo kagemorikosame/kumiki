@@ -28,6 +28,7 @@ from sashimono.effects.spec import (
 __all__ = [
     "FILTER",
     "FRAMEBUFFER",
+    "PREVIOUS_OBJECT",
     "SHAPE",
     "TEXT",
     "TRANSITION",
@@ -294,6 +295,14 @@ FRAMEBUFFER = SourceDefinition(kind="framebuffer", label="フレームバッフ�
 FILTER = SourceDefinition(kind=FILTER_KIND, label="フィルタ")
 
 
+#: すぐ下に重ねたクリップの絵を、自分の位置へ写す（AviUtl の ``直前オブジェクト``）
+#: 写すのは下のクリップのエフェクトを掛けた絵で、下のクリップの描画の欄（反転・配置）と
+#: 不透明度・合成方法は写さない 置く位置・大きさは自分の描画の欄で決める
+#: AviUtl2 に描かせて、下の位置は足されず、下に掛けた単色化は写ることを確かめた（#195）
+#: 絵はレンダラが GPU の中で作る（:mod:`sashimono.engine.render.renderer`）
+PREVIOUS_OBJECT = SourceDefinition(kind="previous_object", label="直前オブジェクト")
+
+
 #: 下のトラックの絵を、前の場面から後の場面へ切り替える（YMM4 の ``TransitionItem``）
 #: 前の場面はクリップに掛けたエフェクト、後の場面は ``Clip.after_effects`` を通す
 #: 絵はレンダラが GPU の中で作る（:mod:`sashimono.engine.render.renderer`）
@@ -339,4 +348,4 @@ class SourceRegistry:
         return kind in self._definitions
 
 
-source_registry = SourceRegistry((TEXT, SHAPE, FRAMEBUFFER, FILTER, TRANSITION))
+source_registry = SourceRegistry((TEXT, SHAPE, FRAMEBUFFER, FILTER, TRANSITION, PREVIOUS_OBJECT))

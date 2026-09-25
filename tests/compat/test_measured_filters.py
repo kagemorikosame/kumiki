@@ -30,7 +30,7 @@ from sashimono.core.model import (
 )
 from sashimono.core.timebase import FrameRate
 from sashimono.effects import registry
-from sashimono.effects.sources import SHAPE, TEXT
+from sashimono.effects.sources import PREVIOUS_OBJECT, SHAPE, TEXT
 from sashimono.engine.gpu import GLContextError, OffscreenGLContext
 from sashimono.engine.render import FrameRenderer
 from sashimono.engine.sources import centred_points
@@ -559,11 +559,112 @@ class TestAviUtlContents:
         _content(_entry("フレームバッファ", フレームバッファをクリア="1"), (), report)
         assert any("フレームバッファをクリア" in line for line in report.lines())
 
-    def test_the_previous_object_is_a_known_content(self) -> None:
-        # AviUtl2 の本体の名前は ``直前オブジェクト`` 知らない名前として数えると、
-        # 中身として写せていないことが互換性レポートで見分けられない
+    def test_the_previous_object_becomes_the_copy_of_the_one_below(self) -> None:
+        # 前は未対応の中身として何も置かず、下の絵の写しが丸ごと消えていた
         from sashimono.compat.aviutl.mapping import _content
 
         report = CompatibilityReport()
-        _content(_entry("直前オブジェクト"), (), report)
-        assert any("未対応の中身: 直前オブジェクト" in line for line in report.lines())
+        source, path, kind = _content(_entry("直前オブジェクト"), (), report)
+        assert source is not None and source.kind == PREVIOUS_OBJECT.kind
+        assert (path, kind) == ("", PREVIOUS_OBJECT.kind)
+        assert not report.lines()
+
+    def test_unknown_items_of_the_previous_object_are_recorded(self) -> None:
+        # 測った 直前オブジェクト は項目を 1 つも持たなかった 知らない項目を黙って捨てると、
+        # 写せていない設定があることに互換性レポートで気付けない
+        from sashimono.compat.aviutl.mapping import _content
+
+        report = CompatibilityReport()
+        _content(_entry("直前オブジェクト", 何か="1"), (), report)
+        assert any("何か" in line for line in report.lines())
+
+
+def _object_text(*entries: tuple[str, dict[str, str]]) -> str:
+    """AviUtl2 の ``.object`` と同じ書き方の 1 オブジェクト（0 から 5 フレーム）"""
+    lines = ["[Object]", "frame=0,5"]
+    for index, (name, params) in enumerate(entries):
+        lines += [f"[Object.{index}]", f"effect.name={name}"]
+        lines += [f"{key}={value}" for key, value in params.items()]
+    return "\n".join(lines) + "\n"
+
+
+def _aviutl_draw(x: float) -> tuple[str, dict[str, str]]:
+    return ("標準描画", {"X": f"{x:.2f}", "Y": "0.00", "拡大率": "100.000", "透明度": "0.00"})
+
+
+def _aviutl_square(*filters: tuple[str, dict[str, str]]) -> tuple[tuple[str, dict[str, str]], ...]:
+    figure = {"図形の種類": "四角形", "サイズ": "100", "色": "ffffff", "ライン幅": "4000"}
+    return (("図形", figure), *filters)
+
+
+class TestAviUtlPreviousObject:
+    """``tools/aviutl_filter_probes.py`` の fp52・fp53 と同じ組み（#195）
+
+    AviUtl2 は下のレイヤーの四角（X=-400）を、直前オブジェクトの位置（X=400）へ同じ大きさで
+    写し、下の四角に掛けた単色化の赤も写した 外形は 460〜660 と 1260〜1460（1920 幅）で、
+    明るさの平均は四角 1 つの 2 倍 ここでは 400x400 に収まるよう X を ±100、四角を 100 にする
+    """
+
+    def _render(self, gl: OffscreenGLContext, *texts: str) -> np.ndarray:
+        from sashimono.compat.aviutl.exo import parse_exo
+        from sashimono.compat.aviutl.mapping import map_object
+
+        rate = FrameRate(30)
+        report = CompatibilityReport()
+        clips = []
+        for text in texts:
+            mapped = map_object(parse_exo(text).objects[0], rate, report=report)
+            assert mapped is not None
+            clips.append(mapped.clip)
+        assert not report.lines()
+        project = Project.create(ProjectSettings(width=WIDTH, height=HEIGHT, frame_rate=rate))
+        tracks = tuple(Track(kind=TrackKind.VIDEO, clips=(clip,)) for clip in clips)
+        project = project.with_timeline(
+            project.timeline.__class__(rate=project.rate, tracks=tracks)
+        )
+        renderer = FrameRenderer(project, context=gl)
+        try:
+            return np.asarray(renderer.render(0))[..., :3]
+        finally:
+            renderer.close()
+
+    def test_the_copy_is_placed_at_its_own_position(self, gl: OffscreenGLContext) -> None:
+        # 下の四角の位置（X=-100）まで足すと写しが X=0 に来る 自分の位置だけで置くこと
+        below = _object_text(*_aviutl_square(), _aviutl_draw(-100.0))
+        above = _object_text(("直前オブジェクト", {}), _aviutl_draw(100.0))
+        image = self._render(gl, below, above)
+        half = WIDTH // 2
+        assert _box(image[:, :half]) == (50, 150, 150, 250)
+        right = _box(image[:, half:])
+        assert right is not None
+        assert (right[0] + half, right[1], right[2] + half, right[3]) == (250, 150, 350, 250)
+        # 明るい所は四角 2 つぶん（AviUtl2 の明るさの平均が 2 倍だったのと同じ）
+        # 写しを同じ大きさで置かないと数が合わない
+        assert int((image.max(axis=2) >= 128).sum()) == 2 * 100 * 100
+
+    def test_the_copy_keeps_the_filters_of_the_one_below(self, gl: OffscreenGLContext) -> None:
+        # AviUtl2 は下の四角に掛けた単色化の赤まで写した 素の図形を写すと写しだけ白く出る
+        paint = ("単色化", {"強さ": "100.0", "色": "ff0000", "輝度を保持する": "0"})
+        below = _object_text(*_aviutl_square(paint), _aviutl_draw(-100.0))
+        above = _object_text(("直前オブジェクト", {}), _aviutl_draw(100.0))
+        image = self._render(gl, below, above)
+        assert tuple(int(v) for v in image[200, 100]) == (255, 0, 0)
+        assert tuple(int(v) for v in image[200, 300]) == (255, 0, 0)
+
+    def test_a_chain_copies_the_copy(self, gl: OffscreenGLContext) -> None:
+        # 直前オブジェクトを 2 つ重ねると、2 つ目は 1 つ目（下の四角の写し）を写す
+        # 1 つ目を写す相手が無いものとして扱うと、2 つ目が何も出さない
+        # 1 つ目の位置は写さないので、2 つ目は自分の位置（真ん中から上へ 120）にだけ出る
+        below = _object_text(*_aviutl_square(), _aviutl_draw(-100.0))
+        first = _object_text(("直前オブジェクト", {}), _aviutl_draw(100.0))
+        second = _object_text(("直前オブジェクト", {}), ("標準描画", {"Y": "-120.00"}))
+        image = self._render(gl, below, first, second)
+        assert int(image[80, 200].max()) == 255
+        assert int((image.max(axis=2) >= 128).sum()) == 3 * 100 * 100
+
+    def test_nothing_below_draws_nothing(self, gl: OffscreenGLContext) -> None:
+        # 写す相手の無い直前オブジェクトは何も描かない 画面の写し取りのように黒で覆うと、
+        # 置いただけで画面が黒くなる
+        above = _object_text(("直前オブジェクト", {}), _aviutl_draw(100.0))
+        image = self._render(gl, above)
+        assert int(image.max()) == 0

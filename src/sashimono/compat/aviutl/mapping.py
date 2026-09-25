@@ -49,7 +49,7 @@ from sashimono.core.model import (
 )
 from sashimono.core.timebase import FrameRate
 from sashimono.effects.definition import EffectDefinition, registry
-from sashimono.effects.sources import TRANSITION
+from sashimono.effects.sources import PREVIOUS_OBJECT, TRANSITION
 from sashimono.effects.spec import (
     IMAGE_SUFFIXES,
     CheckSpec,
@@ -154,6 +154,10 @@ _CUSTOM_OBJECT = "カスタムオブジェクト"
 
 #: 場面切り替え（生成オブジェクト ``transition``）として置く中身（#196）
 _SCENE_CHANGE = "シーンチェンジ"
+
+#: 下のオブジェクトの絵を自分の位置へ写す中身（生成オブジェクト ``previous_object`` #195）
+#: AviUtl2 v2.1.6a の本体の名前 AviUtl2 に書き出させて確かめたのはこの名前だけ
+_PREVIOUS_OBJECT = "直前オブジェクト"
 
 #: 組み込みのシーンチェンジのうち、場面切り替えの切り替え方でそのまま描ける物
 #: 名前は AviUtl の一覧の表示名 実物の配布物には 1 回も出てこない（sigma の 4 本は
@@ -1260,6 +1264,12 @@ def _content(
         if entry.params.get("フレームバッファをクリア", "0").strip() not in ("", "0"):
             log.note_missing("フレームバッファをクリア")
         return GeneratedSource(kind="framebuffer"), "", "framebuffer"
+    if entry.name == _PREVIOUS_OBJECT:
+        # AviUtl2 は下のレイヤーの四角を、下の位置を足さずに自分の位置へ同じ大きさで写し、
+        # 下に掛けた単色化の赤も写した（#195） 測った物は項目を持たないので、書いてあれば数える
+        # 一覧の呼び名 ``直前のオブジェクト`` はファイルに出るのを見ていないので、ここでは読まない
+        _note_dropped(entry, set(), log)
+        return PREVIOUS_OBJECT.create(), "", PREVIOUS_OBJECT.kind
     if entry.name in _SCRIPTED_CONTENTS:
         # スクリプトで中身を作るもの（手元にスクリプトの無い AviUtl1 の カスタムオブジェクト）
         # どのスクリプトかで出来る絵がまるで違うので、名前ごとに数える
