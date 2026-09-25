@@ -27,6 +27,7 @@ All review output (titles, descriptions, evidence, recommended fixes) must be wr
 - 互換層（src/sashimono/compat/）は、未対応のものを黙って捨てず CompatibilityReport に記録しているか見る 1 種類読めないだけでファイル全体を例外で止めていないか 形式の判定をクラス名だけで行っているか（名前空間やアセンブリ名は版で変わる）
 - CI（.github/workflows/）は手元の tools/verify.py と同じものを走らせる 片方だけに検査が増えていたら指摘する
 - tests/fixtures/ の中は他人が作った配布物なので見ない
+- 作業中やレビューで出た懸念点は、別の Issue や PR に分けず同じ PR の中で直す決まり 「別の PR に分ける」「後続の Issue で対応する」ことを勧めず、見つけた懸念はこの PR の中で直す前提で、直し方と一緒に指摘する 外のライブラリの中や、実物のアプリの起動・利用者の判断が要る物のように、この PR で直せない物だけは理由を添えて切り出しを勧めてよい
 """
 compliance_user_guidelines = """
 【出力の言語】ルール違反の指摘もすべて日本語で書いてください 英語で書かないでください
