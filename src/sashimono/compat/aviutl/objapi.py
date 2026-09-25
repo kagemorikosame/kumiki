@@ -342,6 +342,8 @@ class ObjApi:
         self._apply_effects = apply_effects
         #: この実行で焼き込んだ回数（:data:`MAX_BAKES`）
         self._bakes = 0
+        #: 積んだ効果の数が上限（:data:`MAX_STACKED_EFFECTS`）を越えたことを記録済みか
+        self._effects_overflowed = False
         self._random = random.Random(0)
 
     # --- 値の読み書き ---
@@ -644,6 +646,16 @@ class ObjApi:
         params: dict[str, float | str] = {}
         for index in range(1, len(args) - 1, 2):
             params[str(args[index])] = _as_param(args[index + 1])
+        if len(self.state.effects) >= MAX_STACKED_EFFECTS:
+            # 積んだ効果は描くときに 1 つずつ GPU のパスになる 焼き込みの上限を越えた後や、
+            # 焼き込まずに積み続けるスクリプトでは列が命令数の上限まで伸び、1 コマが止まる
+            # 越えた分は捨てる 黙ると効果が掛からない理由が分からないので 1 度だけ記録する
+            if not self._effects_overflowed:
+                self._effects_overflowed = True
+                self._report.note_missing(
+                    f"obj.effect({original})（積んだ効果が {MAX_STACKED_EFFECTS} 個を越えた）"
+                )
+            return
         self.state.effects.append(EffectRequest(kind=kind, params=params, original=original))
 
     def _offscreen(self) -> None:
@@ -1168,6 +1180,10 @@ MAX_BUFFERS = 16
 #: 1 回の実行で積んだ効果を焼き込む回数の上限（:meth:`ObjApi._settle_effects`）
 #: 実物の配布物は 1 つの処理で数回（sigma の 縁取り → 写す → 単色化 → 写す など）
 MAX_BAKES = 64
+
+#: 焼き込まずに積んでおける効果の数の上限（:meth:`ObjApi.lua_effect`） 1 つずつ描くときの
+#: GPU のパスになる 実物の配布物が 1 度に積むのは数個（sigma の 単色化 → ぼかし など）
+MAX_STACKED_EFFECTS = 32
 
 
 #: それまでに積んだ効果を絵へ焼き込むフィルタの名前

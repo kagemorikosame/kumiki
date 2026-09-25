@@ -14,7 +14,12 @@ from __future__ import annotations
 import numpy as np
 
 from sashimono.compat.aviutl.catalog import ScriptCatalog
-from sashimono.compat.aviutl.objapi import MAX_BAKES, EffectRequest, ObjectState
+from sashimono.compat.aviutl.objapi import (
+    MAX_BAKES,
+    MAX_STACKED_EFFECTS,
+    EffectRequest,
+    ObjectState,
+)
 from sashimono.compat.aviutl.report import CompatibilityReport
 from sashimono.compat.aviutl.runtime import LuaScriptRuntime
 from sashimono.core.model import Effect
@@ -111,6 +116,15 @@ class TestSettle:
         assert len(baker.calls) == MAX_BAKES
         assert state.effects
         assert sum("焼き込みが" in line for line in report.missing) == 1
+
+    def test_stacked_effects_stop_growing_after_the_bake_limit(self) -> None:
+        # 焼き込みの上限を越えた後も積み続けると、列が命令数の上限まで伸び、描くときに
+        # 1 つずつ GPU のパスになって 1 コマが止まる 越えた分は捨てて 1 度だけ記録する
+        loop = f"for i = 1, {MAX_BAKES + 500} do {BLUR} obj.getpixel(0, 0) end"
+        state, baker, report = _run(loop)
+        assert len(baker.calls) == MAX_BAKES
+        assert len(state.result()[-1].effects) == MAX_STACKED_EFFECTS
+        assert sum("積んだ効果が" in line for line in report.missing) == 1
 
     def test_embedded_text_bakes_at_its_own_time(self) -> None:
         # テキスト欄に埋め込んだ Lua も同じランタイムで焼き込む 時刻を置き直さないと、
