@@ -18,17 +18,18 @@ import pytest
 from PySide6.QtCore import QLineF, QRect
 from PySide6.QtGui import QImage, QPainter, QPen
 
-from sashimono.core.model import Clip
+from sashimono.core.model import Clip, Track, TrackKind
 from sashimono.core.timebase import FrameRate
 from sashimono.effects.sources import TEXT
 from sashimono.engine.audio import PeakLevel, Waveform
 from sashimono.ui.theme import Colors, Metrics
-from sashimono.ui.timeline.layout import TimelineLayout
+from sashimono.ui.timeline.layout import TimelineLayout, TrackBand
 from sashimono.ui.timeline.painter import (
     WAVEFORM_IMAGE_MAX_COLUMNS,
     _draw_waveform,
     _WaveformImages,
     clear_waveform_images,
+    clip_rect_for,
     waveform_image,
 )
 
@@ -168,6 +169,28 @@ def test_a_clip_scrolled_past_the_left_edge_shows_its_later_part() -> None:
     )
     # 60 フレーム目から先（2 秒目から先）は後半なので、どの列も縦に長い線
     assert (painted > 30).all()
+
+
+def test_the_end_of_the_sound_is_drawn_when_the_clip_starts_between_pixels() -> None:
+    """左端が画素の途中にあっても、音の終わりまで描く（#217 の指摘）
+
+    列の数を 長さ × 倍率 の切り上げにすると、左端の端数の分だけ最後の列が矩形の外へ出て、
+    音の終わりのピークが消えた
+    """
+    peaks = np.zeros((48000 * 3 // 256, 2, 2), dtype=np.float32)
+    # 最後の 2% だけ大きな音 前は 1 列にも入らなかった
+    tail = int(peaks.shape[0] * 0.98)
+    peaks[tail:, :, 0] = -0.9
+    peaks[tail:, :, 1] = 0.9
+    waveform = Waveform(48000, 2, 48000 * 3, (PeakLevel(256, peaks),))
+    layout = TimelineLayout(pixels_per_frame=10.2 / 90)
+    clip = Clip(timeline_start=6, duration=90, source=TEXT.create())
+    band = TrackBand(Track(TrackKind.AUDIO, "A1", (clip,)), 10, 46)
+    rect = clip_rect_for(clip, band, layout, 1920)
+    assert rect is not None
+    pixels = _paint(waveform, rect, layout, clip)
+    last = pixels[rect.top() : rect.bottom() + 1, rect.right()]
+    assert (last != 0).sum() > 30
 
 
 def test_a_clip_wider_than_the_limit_builds_only_the_visible_part(

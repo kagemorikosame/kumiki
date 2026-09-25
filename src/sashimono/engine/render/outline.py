@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from sashimono.core.commands.fixed import FLIP_EFFECT_KIND, TRANSFORM_EFFECT_KIND
 from sashimono.core.model import Clip, Effect, Project
 from sashimono.effects import registry
-from sashimono.effects.definition import turned_object
+from sashimono.effects.definition import object_pivot, turned_object
 from sashimono.effects.spec import CheckSpec, SelectSpec, TrackSpec
 from sashimono.engine.gpu import fit_placement
 from sashimono.engine.render.scripts import split_effects
@@ -268,7 +268,7 @@ def _follow_effects(
             # 枠は置いた矩形のままなので、ぴったりだと言わない
             approximate = True
         if definition.turns_object:
-            obj = turned_object(obj)
+            obj = turned_object(obj, _turn_pivot(effect, obj, space, local, scale))
         if definition.expands_object is not None:
             obj = _grow(obj, definition.expands_object, effect, local, scale)
 
@@ -358,6 +358,36 @@ def _flip(points: Sequence[Point], effect: Effect, obj: Box) -> list[Point]:
         )
         for x, y in points
     ]
+
+
+def _turn_pivot(
+    effect: Effect, obj: Box, space: tuple[float, float], local: int, scale: float
+) -> tuple[float, float]:
+    """回すエフェクトの支点（EffectProcessor._grow_object と同じ 原点は範囲の中央）"""
+    definition = registry.get(effect.kind)
+
+    def choice(name: str) -> str:
+        spec = definition.spec(name) if definition is not None else None
+        value = spec.coerce(effect.params.get(name)) if isinstance(spec, SelectSpec) else ""
+        return value if isinstance(value, str) else ""
+
+    def number(name: str) -> float:
+        spec = definition.spec(name) if definition is not None else None
+        if not isinstance(spec, TrackSpec):
+            return 0.0
+        raw = effect.params.get(name)
+        value = spec.coerce(spec.default_value() if raw is None else raw)
+        return float(spec.scaled_at(value, local, scale))
+
+    centre = ((obj[0] + obj[2]) / 2.0, (obj[1] + obj[3]) / 2.0)
+    return object_pivot(
+        choice("pivot_h"),
+        choice("pivot_v"),
+        (number("anchor_x"), number("anchor_y")),
+        obj,
+        space,
+        centre,
+    )
 
 
 def _grow(

@@ -584,7 +584,14 @@ def _draw_waveform(
         return
 
     clip_left = layout.frame_to_x(clip.timeline_start)
-    total_columns = math.ceil(clip.duration * layout.pixels_per_frame)
+    # 列の数はクリップが画面で占める画素の数（clip_rect_for と同じく左右を画素へ切り捨てる）
+    # 長さ × 倍率を切り上げると、左端に端数があるとき最後の列が矩形の外へ出て、
+    # 音の終わりのピークが描かれない（#217 の指摘） 端数で 1 列増減するだけなので、
+    # 貯める画像は 1 本のクリップにつき 2 枚まで
+    total_columns = max(
+        1,
+        math.floor(layout.frame_to_x(clip.timeline_end)) - math.floor(clip_left),
+    )
     if total_columns <= WAVEFORM_IMAGE_MAX_COLUMNS:
         # クリップの頭から数えた列で作る 見えている左端から数えると、スクロールで
         # 1 画素動くたびに列の区切りが変わり、画像を使い回せないうえ波形が揺れて見える

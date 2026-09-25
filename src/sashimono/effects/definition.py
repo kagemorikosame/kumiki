@@ -15,7 +15,7 @@ from typing import Any
 from sashimono.core.model import AnimatedValue, Effect, ParamValue
 from sashimono.effects.spec import ParameterGroup, ParameterSpec, ParamInput
 
-__all__ = ["EffectDefinition", "EffectRegistry", "registry", "turned_object"]
+__all__ = ["EffectDefinition", "EffectRegistry", "object_pivot", "registry", "turned_object"]
 
 
 #: 音を加工する関数の形 引数は サンプル・解いた値・時間まわりの手がかり
@@ -152,15 +152,45 @@ class EffectDefinition:
         return {spec.name: spec.coerce(params.get(spec.name)) for spec in self.parameters}
 
 
-def turned_object(box: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+def turned_object(
+    box: tuple[float, float, float, float], pivot: tuple[float, float] | None = None
+) -> tuple[float, float, float, float]:
     """回しても収まる範囲（:attr:`EffectDefinition.turns_object`） 左・下・右・上の並び
 
-    範囲の中心はそのまま、対角線を直径とする円を囲む正方形にする
+    ``pivot`` の周りに回したときに四隅が通る円を囲む正方形 省くと範囲の中心で、そのときは
+    対角線を直径とする円になる 支点を端や画面の中央へ動かした渦巻きで中心の正方形を渡すと、
+    回った絵がはみ出し、後ろの跳ねや拡大が別の中心と下端を使う（#217 の指摘 YMM4 で測ったのは
+    中心を支点にした渦巻きだけ）
     """
     left, bottom, right, top = box
-    centre_x, centre_y = (left + right) * 0.5, (bottom + top) * 0.5
-    half = math.hypot(right - left, top - bottom) * 0.5
-    return (centre_x - half, centre_y - half, centre_x + half, centre_y + half)
+    if pivot is None:
+        pivot = ((left + right) * 0.5, (bottom + top) * 0.5)
+    x, y = pivot
+    half = max(math.hypot(cx - x, cy - y) for cx in (left, right) for cy in (bottom, top))
+    return (x - half, y - half, x + half, y + half)
+
+
+def object_pivot(
+    horizontal: str,
+    vertical: str,
+    anchor: tuple[float, float],
+    box: tuple[float, float, float, float],
+    size: tuple[float, float],
+    origin: tuple[float, float],
+) -> tuple[float, float]:
+    """支点の選び方（``pivot_h`` ``pivot_v`` と中心 X Y）から支点を求める
+
+    シェーダの ``pivot_point``（:mod:`sashimono.effects.motion` の ``_PIVOT``）と同じ決まり
+    向きは GL と同じ（Y は上が正 ``box`` は左・下・右・上）
+    """
+    left, bottom, right, top = box
+    x = {"screen": size[0] * 0.5, "left": left, "right": right, "origin": origin[0]}.get(
+        horizontal, (left + right) * 0.5
+    )
+    y = {"screen": size[1] * 0.5, "top": top, "bottom": bottom, "origin": origin[1]}.get(
+        vertical, (bottom + top) * 0.5
+    )
+    return (x + anchor[0], y + anchor[1])
 
 
 class EffectRegistry:

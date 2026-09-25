@@ -21,7 +21,7 @@ from sashimono.compat.ymm4.decorations import map_video_effects
 from sashimono.compat.ymm4.template import map_template
 from sashimono.core.model import AnimatedValue, Project, ProjectSettings
 from sashimono.core.timebase import FrameRate
-from sashimono.effects.definition import turned_object
+from sashimono.effects.definition import object_pivot, turned_object
 from sashimono.engine.gpu import GLContextError, OffscreenGLContext
 from sashimono.engine.render import FrameRenderer
 
@@ -236,6 +236,25 @@ def test_a_turned_object_is_the_square_around_its_diagonal() -> None:
     assert (bottom + top) / 2.0 == pytest.approx(540.0)
     assert right - left == pytest.approx(2.0 * half)
     assert top - bottom == pytest.approx(2.0 * half)
+
+
+def test_a_turned_object_follows_a_moved_pivot() -> None:
+    """支点を動かした渦巻きは、その支点の周りに回して収まる正方形を渡す（#217 の指摘）
+
+    範囲の中心の正方形のままだと、下端を支点にした渦巻きで回った絵が下へはみ出し、
+    後ろの跳ねや拡大が別の中心と下端を使う
+    """
+    box = (640.0, 360.0, 1280.0, 720.0)
+    pivot = object_pivot("center", "bottom", (0.0, 0.0), box, (1920.0, 1080.0), (960.0, 540.0))
+    assert pivot == (960.0, 360.0)
+    left, bottom, right, top = turned_object(box, pivot)
+    reach = math.hypot(320.0, 360.0)
+    assert (left, bottom, right, top) == pytest.approx(
+        (960.0 - reach, 360.0 - reach, 960.0 + reach, 360.0 + reach)
+    )
+    # 画面の中央を選び、中心 X と Y でずらした支点も同じ決まり
+    moved = object_pivot("screen", "screen", (10.0, -20.0), box, (1920.0, 1080.0), (0.0, 0.0))
+    assert moved == (970.0, 520.0)
 
 
 @pytest.mark.usefixtures("gpu")
