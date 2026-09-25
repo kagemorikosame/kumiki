@@ -79,6 +79,9 @@ class ScriptHeader:
     labels: tuple[str, ...] = ()
     #: 解釈できなかった制御行 互換性の穴として記録に残す
     unknown: tuple[str, ...] = field(default_factory=tuple)
+    #: ``--dialog`` の ``local 名前=…`` の名前 初期値が nil で欄を作らない物も含む
+    #: 本文の頭でローカル変数として宣言する（:meth:`LuaScriptRuntime._with_locals`）
+    locals: tuple[str, ...] = ()
 
     def spec(self, name: str) -> ParameterSpec | None:
         return next((p for p in self.parameters if p.name == name), None)
@@ -156,6 +159,7 @@ def parse_control(text: str, *, name: str = "") -> ScriptHeader:
     labels: list[str] = []
     unknown: list[str] = []
     setup: list[str] = []
+    local_names: list[str] = []
 
     for line in text.splitlines():
         stripped = line.strip()
@@ -190,6 +194,7 @@ def parse_control(text: str, *, name: str = "") -> ScriptHeader:
             spec = _value(body, named)
         elif kind == "dialog":
             parameters.extend(_dialog(body, unknown))
+            local_names.extend(_dialog_locals(body))
             continue
         elif kind == "param":
             setup.append(body)
@@ -213,7 +218,23 @@ def parse_control(text: str, *, name: str = "") -> ScriptHeader:
         setup="\n".join(setup),
         labels=tuple(labels),
         unknown=tuple(unknown),
+        locals=tuple(dict.fromkeys(local_names)),
     )
+
+
+def _dialog_locals(body: str) -> list[str]:
+    """``--dialog`` の欄のうち ``local 名前=…`` の名前 初期値が nil の欄も拾う
+
+    nil の欄は設定欄を作らない（:func:`_dialog`）が、本文ではローカル変数のまま 宣言しないと、
+    同じランタイムで前に走ったスクリプトが残した同じ名前の大域変数を読む
+    """
+    names: list[str] = []
+    for chunk in split_dialog(body):
+        _, separator, assignment = chunk.strip().partition(",")
+        name = assignment.partition("=")[0].strip()
+        if separator and name.startswith("local "):
+            names.append(name[len("local ") :].strip())
+    return names
 
 
 #: 意味は分かるが、まだ効かせていない制御文字

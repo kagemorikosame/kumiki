@@ -406,6 +406,7 @@ class ObjApi:
         if self._drawing_to_tempbuffer():
             self._draw_to_tempbuffer(x, y, z, zoom, alpha, rx, ry, rz)
             return
+        self._note_screen_blend()
         call = state.snapshot()
         if x is not None:
             call.x = _as_float(x)
@@ -481,6 +482,7 @@ class ObjApi:
         if rest:
             alpha = rest[0]
 
+        self._note_screen_blend()
         call = state.snapshot()
         call.quad = quad
         call.uv = uv
@@ -530,7 +532,25 @@ class ObjApi:
             _as_float(x) if x is not None else 0.0,
             _as_float(y) if y is not None else 0.0,
             _as_float(alpha) if alpha is not None else 1.0,
+            blend=self._tempbuffer_blend(),
         )
+
+    def _tempbuffer_blend(self) -> str:
+        """仮想バッファへ重ねる合成モード 写していない物は記録に残して通常で描く"""
+        mode = _blend_mode(self.state.options.get("blend", 0))
+        if mode in raster.BLENDS:
+            return mode
+        self._report.note_missing(f'obj.setoption("blend", "{mode}")（仮想バッファへ）')
+        return "none"
+
+    def _note_screen_blend(self) -> None:
+        """画面へ描くときの合成モードは描画の記録へ渡していない 通常以外なら記録に残す
+
+        黙ると、加算で重ねるつもりの光が通常で描かれた理由が分からない
+        """
+        mode = _blend_mode(self.state.options.get("blend", 0))
+        if mode != "none":
+            self._report.note_missing(f'obj.setoption("blend", "{mode}")（画面へ）')
 
     def _drawpoly_table(self, table: Any, rest: tuple[Any, ...]) -> None:
         """``obj.drawpoly({表}[, 頂点の数, 透明度])`` 頂点の表を並べた形
@@ -571,6 +591,7 @@ class ObjApi:
                 self._fill_polygon(corners, None, colors, alpha)
 
     def _drawpoly_quad_to_screen(self, vertices: list[list[float]], alpha: float) -> None:
+        self._note_screen_blend()
         state = self.state
         image = state.image
         call = state.snapshot()
@@ -602,6 +623,7 @@ class ObjApi:
             uvs=tuple(uvs) if uvs is not None else None,
             colors=tuple(colors) if colors is not None else None,
             alpha=alpha,
+            blend=self._tempbuffer_blend(),
         )
 
     def _fill_quad(
@@ -612,6 +634,7 @@ class ObjApi:
         alpha: float,
     ) -> None:
         """四角形を 2 つの三角形に分けて描く（0-1-2 と 0-2-3）"""
+        blend = self._tempbuffer_blend()
         for first, second, third in ((0, 1, 2), (0, 2, 3)):
             raster.draw_triangle(
                 self._tempbuffer(),
@@ -622,6 +645,7 @@ class ObjApi:
                 if colors is not None
                 else None,
                 alpha=alpha,
+                blend=blend,
             )
 
     def lua_effect(self, *args: Any) -> None:
@@ -646,18 +670,14 @@ class ObjApi:
         params: dict[str, float | str] = {}
         for index in range(1, len(args) - 1, 2):
             params[str(args[index])] = _as_param(args[index + 1])
-        if original == CLIP_EFFECT and not self.state.effects:
-            # 先に積んだ効果があるときは焼き込まずに描くときへ回す 焼き込みはぼかしの
-            # サイズ固定（絵を広げない）を持たないので、アクリル矩形のように ぼかし の広がりを
-            # 見込んで切る配布物で、焼き込んで広がった分だけ板が大きく残る
-            self._clip(params)
-            return
-        if original == EXPAND_EFFECT:
-            # 先に積んだ効果は広げる前の絵へ掛ける 掛けられなければ、広げるのも描くときへ
-            # 回して順を守る（そのときの大きさは広げる前のまま）
-            self._settle_effects("obj.effect(領域拡張)")
+        in_place = self._in_place(original, params)
+        if in_place is not None:
+            # その場で絵を変えるフィルタ 先に積んだ効果は変える前の絵へ掛ける（ぼかしてから
+            # 切る・広げる） 掛けられなければ、これも積んで描くときへ回し順を守る（そのときの
+            # 大きさは変える前のまま 透明度反転 は描くときに落ち、互換性レポートに出る）
+            self._settle_effects(f"obj.effect({original})")
             if not self.state.effects:
-                self._expand(params)
+                in_place(params)
                 return
         if len(self.state.effects) >= MAX_STACKED_EFFECTS:
             # 積んだ効果は描くときに 1 つずつ GPU のパスになる 焼き込みの上限を越えた後や、
@@ -671,13 +691,30 @@ class ObjApi:
             return
         self.state.effects.append(EffectRequest(kind=kind, params=params, original=original))
 
+    def _in_place(
+        self, original: str, params: dict[str, float | str]
+    ) -> Callable[[dict[str, float | str]], None] | None:
+        """その場で CPU が掛けるフィルタ 描くときの GPU に任せる物は ``None``
+
+        クリッピング と 領域拡張 は、sigma と PSDToolKit が直後に ``obj.w`` や ``obj.getpixel()``
+        で大きさを読む 透明度反転 は GPU の 反転 が持たない
+        """
+        if original == CLIP_EFFECT:
+            return self._clip
+        if original == EXPAND_EFFECT:
+            return self._expand
+        if original == INVERT_EFFECT and _inverts_alpha(params):
+            return self._invert
+        return None
+
     def _clip(self, values: dict[str, float | str]) -> None:
         """``obj.effect("クリッピング", "上", 10, …, "中心の位置を変更", 1)``
 
-        先に積んだ効果が無ければ、描くときではなくここで絵を切る 後に続く
-        ``obj.getpixel()`` や ``obj.w`` が切った後の大きさを見るため（:meth:`_resize` と同じ）
-        アクリル矩形は画面を写した絵をここで板の大きさへ切り、その大きさを読んで
-        次の手順を決める 先に積んだ効果があれば、順を守って描くときに切る
+        描くときではなくここで絵を切る 後に続く ``obj.getpixel()`` や ``obj.w`` が切った後の
+        大きさを見るため（:meth:`_resize` と同じ） アクリル矩形は画面を写した絵をここで板の
+        大きさへ切り、その大きさを読んで次の手順を決める 先に積んだ効果は切る前に掛ける
+        （:meth:`_settle_effects` ぼかしの サイズ固定 もそこで扱う） 掛けられなければ、順を
+        守って描くときに切る
 
         ``中心の位置を変更`` が偽なら、残った所は元の場所に留まる（切って真ん中がずれた分だけ
         位置と回転の中心を戻す） 真なら、切った後の絵の真ん中がオブジェクトの位置へ来る
@@ -746,6 +783,24 @@ class ObjApi:
             ((top, bottom), (left, right), (0, 0)),
             mode="edge" if fill else "constant",
         )
+        state.image_shared = False
+
+    def _invert(self, values: dict[str, float | str]) -> None:
+        """``obj.effect("反転", "透明度反転", 1)`` 透明な所と不透明な所を入れ替える
+
+        sigma は 内側シャドー・縁取りα・四隅丸め などで、反転した絵を ``alpha_add`` や
+        ``alpha_sub`` で重ねて形を作る（:func:`sashimono.compat.aviutl.raster._over`）
+        色はそのまま残す 透明だった所は持っていた色（広げた所なら黒）で不透明になり、
+        続く 単色化 で塗られる 一緒に渡された 上下反転・左右反転 もここで裏返す
+        """
+        state = self.state
+        image = state.image.copy()
+        image[..., 3] = 255 - image[..., 3]
+        if _as_float(values.get("上下反転", 0.0)):
+            image = image[::-1]
+        if _as_float(values.get("左右反転", 0.0)):
+            image = image[:, ::-1]
+        state.image = np.ascontiguousarray(image)
         state.image_shared = False
 
     def _offscreen(self) -> None:
@@ -825,6 +880,16 @@ class ObjApi:
         if self._apply_effects is None:
             self._report.note_missing(f"{caller}（先に積んだ効果の焼き込み）")
             return
+        # サイズ固定 のぼかしはそれだけで 1 回掛け、掛ける前の大きさへ戻す 前後の効果と
+        # まとめて掛けると、どこまでがぼかしで広がった分かが分からない
+        while state.effects:
+            count = _first_segment(state.effects)
+            if not self._bake(caller, count):
+                return
+
+    def _bake(self, caller: str, count: int) -> bool:
+        """積んだ効果の頭から ``count`` 個を掛ける 掛けられなければ偽（効果は積んだまま）"""
+        state = self.state
         if self._bakes >= MAX_BAKES:
             # 1 回ごとに GPU で掛けて読み戻す 効果を積んでは画素を読む繰り返しを許すと、Lua の
             # 命令数の上限の内でも 1 コマが止まるほど重くなる 上限を越えたら焼き込まず、効果は
@@ -834,20 +899,33 @@ class ObjApi:
                     f"{caller}（焼き込みが 1 回の実行で {MAX_BAKES} 回を越えた）"
                 )
                 self._bakes += 1
-            return
+            return False
+        apply = self._apply_effects
+        if apply is None:  # pragma: no cover - 呼ぶ側（_settle_effects）が先に見ている
+            return False
         self._bakes += 1
         original = state.image
-        baked = self._apply_effects(original, tuple(state.effects))
+        requests = tuple(state.effects[:count])
+        fixed = _is_fixed_blur(requests[-1])
+        if fixed:
+            # サイズ固定 はここで扱う 写す先の ぼかし へ渡すと、扱えた物まで未対応と記録される
+            last = requests[-1]
+            kept = {name: value for name, value in last.params.items() if name != FIXED_SIZE}
+            requests = (EffectRequest(kind=last.kind, params=kept, original=last.original),)
+        baked = apply(original, requests)
         if baked is None:
             # 掛ける側が断った（GPU の作れる大きさを超える） 理由は掛ける側が記録に残す
             # 効果は描くときに掛かるまま残す 捨てると効果ごと消える
-            return
+            return False
+        if fixed:
+            baked = _centre_crop(baked, original.shape[0], original.shape[1])
         # 掛ける物が無い（範囲 0 のぼかしなど）と同じ配列が返る そのときに共有の印を消すと、
         # 後の putpixel が記録済みの描画やバッファの絵へ直に書く
         if baked is not original:
             state.image = baked
             state.image_shared = False
-        state.effects.clear()
+        del state.effects[:count]
+        return True
 
     def _drop_effects(self) -> None:
         """絵を差し替える呼び出しの前に、積んだ効果を捨てる
@@ -1169,6 +1247,9 @@ class ObjApi:
 
     def lua_setoption(self, name: str = "", *values: Any) -> None:
         key = str(name)
+        if key == "blend" and not values:
+            # 合成モードを省くと通常（lua.txt の更新履歴） 真を入れると旧形式の 1（加算）に読める
+            values = (0,)
         if key == "dst" and values:
             # AviUtl1 の描く先の短い書き方 ``frm`` はフレームバッファ、``tmp`` は仮想バッファで、
             # ``drawtarget`` の ``framebuffer`` ``tempbuffer`` と同じ物（大きさの渡し方も同じ）
@@ -1332,15 +1413,94 @@ OFFSCREEN_EFFECT = "オフスクリーン描画"
 #: 絵の大きさをその場で変えるフィルタの名前（:meth:`ObjApi._resize`）
 RESIZE_EFFECT = "リサイズ"
 
-#: 先に積んだ効果が無ければその場で絵を切るフィルタの名前（:meth:`ObjApi._clip`）
+#: その場で絵を切るフィルタの名前（:meth:`ObjApi._clip`）
 CLIP_EFFECT = "クリッピング"
 
 #: その場で絵を広げるフィルタの名前（:meth:`ObjApi._expand`）
 EXPAND_EFFECT = "領域拡張"
 
+#: サイズ固定 を先に掛ける段で扱うフィルタの名前と項目（:meth:`ObjApi._bake`）
+BLUR_EFFECT = "ぼかし"
+FIXED_SIZE = "サイズ固定"
+#: 先に掛ける段でいつも大きさを保つぼかし（:func:`_is_fixed_blur`）
+LENS_BLUR_EFFECT = "レンズブラー"
+
+#: 透明度反転 をその場で掛けるフィルタの名前（:meth:`ObjApi._invert`）
+INVERT_EFFECT = "反転"
+
+#: 透明度反転 と一緒にその場で掛けられる 反転 の項目 輝度反転・色相反転 は写していない
+_INVERT_ITEMS = frozenset({"透明度反転", "上下反転", "左右反転"})
+
+#: ``obj.setoption("blend")`` の旧スクリプトファイル形式の数（lua.txt の並び順）
+_BLEND_NUMBERS = (
+    "none",
+    "add",
+    "sub",
+    "mul",
+    "screen",
+    "overlay",
+    "light",
+    "dark",
+    "brightness",
+    "chroma",
+    "shadow",
+    "light_dark",
+    "diff",
+)
 #: ``obj.load("figure")`` の線の太さがこれ以上なら塗りつぶし 図形オブジェクトの読み込み
 #: （:mod:`sashimono.compat.aviutl.mapping`）と同じ決まり AviUtl2 の既定値がこの値
 FILLED_LINE = 4000.0
+
+
+def _is_fixed_blur(request: EffectRequest) -> bool:
+    """絵の大きさを変えないぼかしか ``サイズ固定`` の付いた ぼかし と、レンズブラー
+
+    レンズブラー を広げないとしたのは AviUtl1 で測った物ではなく、sigma の 磨りガラス矩形 の
+    書き方から読んだ物 ぼかし には サイズ固定 を付け、レンズブラー には付けずに、どちらも
+    広がりの分だけ大きく切り出してから同じ量を クリッピング で落とす レンズブラー が
+    広げるなら、板が四方にぼかしの範囲だけ大きく残る
+    """
+    if request.original == LENS_BLUR_EFFECT:
+        return True
+    return request.original == BLUR_EFFECT and bool(_as_float(request.params.get(FIXED_SIZE, 0.0)))
+
+
+def _first_segment(requests: list[EffectRequest]) -> int:
+    """積んだ効果のうち、まとめて 1 回で掛ける頭の数
+
+    サイズ固定 のぼかしの前で切り、それ自体は 1 つで掛ける
+    """
+    for index, request in enumerate(requests):
+        if _is_fixed_blur(request):
+            return index if index else 1
+    return len(requests)
+
+
+def _centre_crop(image: np.ndarray, height: int, width: int) -> np.ndarray:
+    """真ん中を ``width`` x ``height`` だけ残す 掛ける側は広がった分を上下・左右同じ幅で返す"""
+    top = (image.shape[0] - height) // 2
+    left = (image.shape[1] - width) // 2
+    if top <= 0 and left <= 0:
+        return image
+    top, left = max(0, top), max(0, left)
+    return np.ascontiguousarray(image[top : top + height, left : left + width])
+
+
+def _inverts_alpha(params: dict[str, float | str]) -> bool:
+    """``obj.effect("反転", …)`` がその場で掛けられる形か 透明度反転 が真で、ほかは裏返しだけ"""
+    return bool(_as_float(params.get("透明度反転", 0.0))) and set(params) <= _INVERT_ITEMS
+
+
+def _blend_mode(value: Any) -> str:
+    """``obj.setoption("blend", 値)`` の値を lua.txt の名前へ 数は旧形式の並び"""
+    if isinstance(value, str) and not value.strip().lstrip("-").isdigit():
+        return value.strip().lower() or "none"
+    raw = _as_float(value)
+    if not math.isfinite(raw):
+        # int(NaN) や int(無限大) は例外になり、描画ごと止まる 写していない名前として記録させる
+        return str(raw)
+    number = int(raw)
+    return _BLEND_NUMBERS[number] if 0 <= number < len(_BLEND_NUMBERS) else str(number)
 
 
 def _is_table(value: Any) -> bool:
