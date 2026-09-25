@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import bisect
-from collections.abc import Collection, Sequence
+from collections.abc import Callable, Collection, Sequence
 from fractions import Fraction
 
 import numpy as np
@@ -22,7 +22,16 @@ from sashimono.compat.aviutl.custom_object import (
     custom_object_script,
     script_label,
 )
-from sashimono.core.model import Clip, ClipId, MediaItem, Timeline, Track, TrackKind
+from sashimono.core.model import (
+    Clip,
+    ClipId,
+    MediaItem,
+    Timeline,
+    Track,
+    TrackKind,
+    draws_picture,
+    plays_sound,
+)
 from sashimono.core.timebase import FrameRate, format_timecode
 from sashimono.effects.sources import source_registry
 from sashimono.engine.audio import Waveform
@@ -36,6 +45,7 @@ __all__ = [
     "ADD_TRACK_BUTTON_TEXT",
     "DETAIL_MIN_WIDTH",
     "TRACK_BUTTONS",
+    "clip_content",
     "clips_in_range",
     "draw_clip",
     "draw_dense_clips",
@@ -44,9 +54,11 @@ __all__ = [
     "draw_track_add_button",
     "draw_track_background",
     "draw_track_header",
+    "shown_track_name",
     "to_qimage",
     "track_add_button_rect",
     "track_button_rects",
+    "track_name_rect",
 ]
 
 #: 目盛りの間隔として使える値（フレーム数の基準となる秒数）
@@ -139,9 +151,14 @@ def draw_track_background(painter: QPainter, band: TrackBand, width: int) -> Non
 #: 描画と当たり判定の両方がこの並びを使う
 TRACK_BUTTONS: tuple[tuple[str, str, str, QColor], ...] = (
     ("muted", "M", "ミュート", Colors.TRACK_MUTE),
-    ("solo", "S", "ソロ（同じ種類のほかのトラックを止める）", Colors.TRACK_SOLO),
+    # ソロは絵と音の役割の中で効く（Timeline の決まり） レイヤーのソロは映像トラックの絵と
+    # 音声トラックの音の両方を止めるので、「同じ種類」とは書かない
+    ("solo", "S", "ソロ（絵・音のそれぞれで、ほかのトラックを止める）", Colors.TRACK_SOLO),
     ("locked", "L", "ロック（クリップを動かせなくする）", Colors.TRACK_LOCK),
 )
+
+#: 名前の無いトラックに出す種類の言葉 2 択で書くと、名前の無いレイヤーが「音声」と出る
+_KIND_NAMES = {TrackKind.VIDEO: "映像", TrackKind.AUDIO: "音声", TrackKind.MIXED: "レイヤー"}
 
 _BUTTON_WIDTH = 18
 _BUTTON_HEIGHT = 16
@@ -171,6 +188,24 @@ def track_button_rects(band: TrackBand) -> list[tuple[str, str, QRect]]:
     ]
 
 
+def track_name_rect(band: TrackBand) -> QRect:
+    """ヘッダの名前を書く所 左の余白からボタンの手前まで"""
+    left = 8
+    right = track_button_rects(band)[0][2].left() - 4
+    return QRect(left, band.top + 5, right - left, _BUTTON_HEIGHT)
+
+
+def shown_track_name(track: Track, metrics: QFontMetrics) -> str:
+    """ヘッダに出す名前 描くのと試験が同じ物を見る
+
+    収まらない名前は真ん中を詰める 末尾を詰めると「レイヤー 1」から「レイヤー 4」までが
+    どれも「レイヤ…」になり、何番のレイヤーなのかが読めない（番号は名前の末尾にある）
+    """
+    name = track.name or _KIND_NAMES[track.kind]
+    width = track_name_rect(TrackBand(track, 0, 0)).width()
+    return metrics.elidedText(name, Qt.TextElideMode.ElideMiddle, width)
+
+
 def draw_track_header(painter: QPainter, band: TrackBand, *, active: bool = True) -> None:
     """トラック名と、ミュート・ソロ・ロックの切り替えボタン
 
@@ -188,11 +223,10 @@ def draw_track_header(painter: QPainter, band: TrackBand, *, active: bool = True
     track = band.track
     buttons = track_button_rects(band)
     painter.setPen(QPen(Colors.TEXT if active else Colors.TEXT_MUTED, 1))
-    name = track.name or ("映像" if track.kind is TrackKind.VIDEO else "音声")
-    name_width = buttons[0][2].left() - 8 - 4
-    elided = QFontMetrics(painter.font()).elidedText(name, Qt.TextElideMode.ElideRight, name_width)
     painter.drawText(
-        QRect(8, band.top + 5, name_width, _BUTTON_HEIGHT), Qt.AlignmentFlag.AlignVCenter, elided
+        track_name_rect(band),
+        Qt.AlignmentFlag.AlignVCenter,
+        shown_track_name(track, QFontMetrics(painter.font())),
     )
 
     font = QFont(painter.font())
@@ -275,7 +309,10 @@ def draw_clip(
     ``clip_rect`` は画面に見えている部分に切り詰めた矩形 クリップ全体の矩形を
     渡すと、長いクリップで画面外まで描こうとして無駄が出る
     """
-    is_video = band.track.kind is TrackKind.VIDEO
+    picture, sound = clip_content(band.track, clip, media)
+    # 色は絵を描くかで決める レイヤーの BGM やナレーションを映像の色で塗ると、
+    # 音だけの物がどれなのかを名前を読むまで見分けられない
+    is_video = picture or not sound
     body = Colors.VIDEO_CLIP if is_video else Colors.AUDIO_CLIP
     border = Colors.VIDEO_CLIP_BORDER if is_video else Colors.AUDIO_CLIP_BORDER
     if clip.is_filter:
@@ -292,10 +329,11 @@ def draw_clip(
         max(0, clip_rect.height() - Metrics.CLIP_LABEL_HEIGHT),
     )
     if content.height() > 4:
-        if is_video and filmstrip is not None:
-            _draw_filmstrip(painter, content, clip, layout, rate, filmstrip)
-        elif not is_video and waveform is not None:
-            _draw_waveform(painter, content, clip, layout, rate, waveform)
+        picture_rect, sound_rect = _split_content(content, picture, sound)
+        if picture_rect is not None and filmstrip is not None:
+            _draw_filmstrip(painter, picture_rect, clip, layout, rate, filmstrip)
+        if sound_rect is not None and waveform is not None:
+            _draw_waveform(painter, sound_rect, clip, layout, rate, waveform)
 
     _draw_clip_label(painter, clip_rect, clip, media, scene_name)
     if clip.group_id is not None:
@@ -310,6 +348,45 @@ def draw_clip(
     painter.setPen(QPen(Colors.SELECTION if selected else border, 2 if selected else 1))
     painter.drawRect(clip_rect.adjusted(0, 0, -1, -1))
     painter.restore()
+
+
+def clip_content(track: Track, clip: Clip, media: MediaItem | None) -> tuple[bool, bool]:
+    """クリップの中に描く物（サムネイル, 波形）
+
+    映像・音声のトラックは種類で決まる（今までどおり 映像トラックに置いたシーンは音も
+    鳴るが、帯には絵だけを描く） レイヤー（混合）は 1 本のクリップが絵も音も持てるので、
+    描く・鳴らすかで決める（:func:`~sashimono.core.model.draws_picture` と
+    :func:`~sashimono.core.model.plays_sound`） 種類だけで見ると、音付きの動画の音が
+    帯に出ず、音量を下げた所も無音の所も見えない
+    """
+    if track.kind is TrackKind.MIXED:
+        return draws_picture(track, clip, media), plays_sound(track, clip, media)
+    video = track.kind is TrackKind.VIDEO
+    return video, not video
+
+
+#: 絵と音の両方を描くとき、波形に回す高さの割合と、これより低ければ波形を諦める高さ（画素）
+#: 絵を上、波形を下に置く（YMM4 の音付き動画と同じ並び） 波形が細すぎると線にしか見えない
+_SOUND_SHARE = 0.4
+_MIN_SPLIT_HEIGHT = 20
+
+
+def _split_content(content: QRect, picture: bool, sound: bool) -> tuple[QRect | None, QRect | None]:
+    """中身の矩形を、サムネイルの所と波形の所に分ける 描かない方は ``None``
+
+    両方あるときは 1 本の中を上下に分ける 重ねて描くと、波形がサムネイルに溶けて読めない
+    低いトラックでは絵だけにする（どちらかを諦めるなら、何のクリップかが分かる絵を残す）
+    """
+    if not sound:
+        return (content if picture else None), None
+    if not picture:
+        return None, content
+    if content.height() < _MIN_SPLIT_HEIGHT:
+        return content, None
+    wave = max(1, round(content.height() * _SOUND_SHARE))
+    top = QRect(content.left(), content.top(), content.width(), content.height() - wave)
+    bottom = QRect(content.left(), top.bottom() + 1, content.width(), wave)
+    return top, bottom
 
 
 #: これより細いクリップは名前もサムネイルも描かない 字が 1 文字も入らない幅
@@ -340,8 +417,12 @@ def draw_dense_clips(
     layout: TimelineLayout,
     width: int,
     selected: Collection[ClipId],
+    sound_only: Callable[[Clip], bool] | None = None,
 ) -> None:
     """名前も入らない細いクリップを、色の帯としてまとめて塗る
+
+    ``sound_only`` はレイヤー（混合）で音だけのクリップか レイヤーは 1 本の中に絵と音の
+    クリップが混ざるので、音だけの物を音声の色で塗る 渡さなければトラックの種類で決める
 
     全体を表示すると数千本が数画素ずつになる 1 本ずつ名前・枠・切り抜きを描くと
     3000 本で 58ms（60fps の予算の 3 倍半）かかった さらに 1 万本では、描く前の
@@ -351,36 +432,40 @@ def draw_dense_clips(
     top, height = band.top + 1, band.height - 3
     if height <= 0 or not clips:
         return
-    video = band.track.kind is TrackKind.VIDEO
-    body = Colors.VIDEO_CLIP if video else Colors.AUDIO_CLIP
-    dimmed = _dimmed(body)
-    border = Colors.VIDEO_CLIP_BORDER if video else Colors.AUDIO_CLIP_BORDER
+    # 色の番号 0 が映像・1 が音声 帯を分ける目印にも使う
+    bodies = (Colors.VIDEO_CLIP, Colors.AUDIO_CLIP)
+    dims = (_dimmed(bodies[0]), _dimmed(bodies[1]))
+    borders = (Colors.VIDEO_CLIP_BORDER, Colors.AUDIO_CLIP_BORDER)
+    fixed = 1 if band.track.kind is TrackKind.AUDIO else 0
 
     header = Metrics.TRACK_HEADER_WIDTH
     scroll, scale = layout.scroll_frame, layout.pixels_per_frame
     # 帯はあとから右へ伸ばすので、組ではなく書き換えられる list で持つ
     # 組にすると、クリップ 1 本ごとに帯を作り直すことになる
     runs: list[list[int]] = []
-    edges: list[int] = []
+    edges: list[tuple[int, int]] = []
     marked: list[tuple[int, int]] = []
     for clip in clips:
         left = max(header, int(header + (clip.timeline_start - scroll) * scale))
         right = max(left + 1, min(width, int(header + (clip.timeline_end - scroll) * scale)))
         enabled = 1 if clip.enabled else 0
-        if runs and runs[-1][2] == enabled and left <= runs[-1][1]:
-            runs[-1][1] = max(runs[-1][1], right)
+        colour = fixed if sound_only is None else (1 if sound_only(clip) else 0)
+        last = runs[-1] if runs else None
+        if last is not None and last[2] == enabled and last[3] == colour and left <= last[1]:
+            last[1] = max(last[1], right)
         else:
-            runs.append([left, right, enabled])
+            runs.append([left, right, enabled, colour])
         if right - left >= _EDGE_MIN_WIDTH:
-            edges.append(left)
+            edges.append((left, colour))
         if clip.id in selected:
             marked.append((left, right))
 
     # 塗りを全部済ませてから線を引く 交互にすると、あとの帯が前の線を塗りつぶす
-    for left, right, enabled in runs:
-        painter.fillRect(left, top, right - left, height, body if enabled else dimmed)
-    for left in edges:
-        painter.fillRect(left, top, 1, height, border)
+    for left, right, enabled, colour in runs:
+        fill = bodies[colour] if enabled else dims[colour]
+        painter.fillRect(left, top, right - left, height, fill)
+    for left, colour in edges:
+        painter.fillRect(left, top, 1, height, borders[colour])
     if marked:
         painter.setPen(QPen(Colors.SELECTION, 2))
         painter.setBrush(Qt.BrushStyle.NoBrush)

@@ -415,6 +415,25 @@ class TestDecorationEffects:
         assert 90 < just_outside[0] < 170, "縁の濃さが半分になっていない"
         assert centre(half)[1] > 200, "中身まで薄くなった"
 
+    def test_border_blur_softens_the_outer_edge(self, draw: Callable[..., np.ndarray]) -> None:
+        """縁のぼかしは、縁の外側をなだらかに薄くする ぼかし 0 は今までと同じくっきりした縁
+
+        YMM4 の縁取りの ``Blur`` 読まずにいると、ぼかして薄く光らせる縁（SFっぽい
+        吹き出し(右) の 2.5）がくっきり太く出て、格子の隙間を埋める（#179）
+        """
+        square = white_square(60)
+        border = registry.require("border")
+        sharp = draw(square, (border.create(width=8, color=(1.0, 0.0, 0.0, 1.0)),))
+        soft = draw(square, (border.create(width=8, color=(1.0, 0.0, 0.0, 1.0), blur=8),))
+        plain = draw(square, (border.create(width=8, color=(1.0, 0.0, 0.0, 1.0), blur=0),))
+        assert np.array_equal(sharp, plain), "ぼかし 0 で絵が変わった"
+        # 四角の右端は 130 縁はその外 8 画素 ぼかすと、縁の外まで薄く広がり、縁の外寄りは薄まる
+        row = HEIGHT // 2
+        assert sharp[row, 130 + 11][0] < 20
+        assert soft[row, 130 + 11][0] > 20, "縁の外へ広がっていない"
+        assert soft[row, 130 + 7][0] < sharp[row, 130 + 7][0] - 20, "縁の外寄りが薄まっていない"
+        assert soft[row, 130 + 1][0] > 200, "縁の内側まで薄まった"
+
     def test_a_crop_of_nothing_keeps_the_border_outside(
         self, draw: Callable[..., np.ndarray]
     ) -> None:
@@ -451,6 +470,35 @@ class TestDecorationEffects:
         red, green, blue = centre(image)
         assert red > 40, "縞が描かれていない"
         assert max(green, blue) < 20, "透明な所の白が混ざった"
+
+    def test_a_thin_slanted_grid_is_evenly_dense(self, draw: Callable[..., np.ndarray]) -> None:
+        """斜めの細い格子は、どこを切り取っても同じ濃さに見える
+
+        線を画素ごとに「乗る・乗らない」で描くと、太さ 1.3 の線が場所によって 1 画素にも
+        2 画素にもなり、菱形の大きな濃淡（モアレ）が浮く YMM4 の格子は線の縁をなめらかに
+        描くので出ない（SFっぽい吹き出し(右) の 45 度・12 画素の格子 #179）
+        """
+        grid = registry.require("brush_fill").create(
+            pattern="grid",
+            pattern_only=True,
+            stops=2,
+            color0=(1.0, 1.0, 1.0, 1.0),
+            color1=(1.0, 1.0, 1.0, 0.0),
+            thickness=1.3,
+            cell_width=12,
+            cell_height=12,
+            angle=-45,
+        )
+        image = draw(white_square(180), (grid,)).astype(float)[..., 0]
+        # 格子の 2 周期ほどの升目ごとの濃さ 升目の大きさは周期の倍数から外し、区切り方で
+        # 濃さが揃って見えるのを避ける
+        blocks = [
+            image[y : y + 34, x : x + 34].mean()
+            for y in range(15, 15 + 34 * 5, 34)
+            for x in range(15, 15 + 34 * 5, 34)
+        ]
+        assert min(blocks) > 20, "格子が描かれていない"
+        assert max(blocks) - min(blocks) < 10, f"升目ごとの濃さが揺れる: {np.round(blocks)}"
 
     def test_shadow_falls_in_the_requested_direction(self, draw: Callable[..., np.ndarray]) -> None:
         # Y は正が上 変形の pos_y と揃っていないと、同じ「Y」の表示で

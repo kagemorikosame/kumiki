@@ -39,7 +39,13 @@ from typing import Any
 from sashimono.compat.aviutl.report import CompatibilityReport, global_report
 from sashimono.compat.mapped import MappedObject, fitted_effect
 from sashimono.compat.ymm4.brushes import BLEND_NAMES, brush_effect, is_solid
-from sashimono.compat.ymm4.decorations import map_decorations, map_video_effects, with_pivot
+from sashimono.compat.ymm4.decorations import (
+    has_outline,
+    map_decorations,
+    map_video_effects,
+    outlines_fit_text,
+    with_pivot,
+)
 from sashimono.compat.ymm4.effects import CenterPoint
 from sashimono.compat.ymm4.values import (
     animated,
@@ -619,19 +625,13 @@ def _group_effects(item: dict[str, Any], log: CompatibilityReport) -> list[Effec
     """``GroupItem`` が持っているエフェクト 位置の動きも含む
 
     グループに付いた縁取りは、文字そのものの飾りではなく**まとめた絵の外側**に
-    掛かる だからテキストの設定ではなく縁取りエフェクトとして扱う
+    掛かる 映像エフェクトの読み方（:func:`map_video_effects`）がテキスト以外の縁取りを
+    並びの位置のまま縁取りエフェクトにするので、ここでは並べるだけでよい
     """
     length = max(1, int(number(item.get("Length"), 1.0)))
     keyframes = item.get("KeyFrames")
-    params, chain, final = _video_chain(item, log, length, keyframes)
-
-    outlines: list[Effect] = []
-    border = registry.get("border")
-    width = params.get("border_width")
-    if border is not None and isinstance(width, AnimatedValue) and width.static > 0:
-        outlines.append(border.create(width=width, color=params.get("border_color")))
-
-    return [*outlines, *chain, *final]
+    _, chain, final = _video_chain(item, log, length, keyframes)
+    return [*chain, *final]
 
 
 #: 描画を遅らせる印（DrawLazyEffect）の設定と、その場で当てる配置の項目
@@ -644,12 +644,18 @@ _RESTING = {"X": 0.0, "Y": 0.0, "Zoom": 100.0, "Rotation": 0.0}
 
 
 def _video_chain(
-    item: dict[str, Any], log: CompatibilityReport, length: int, keyframes: Any
+    item: dict[str, Any],
+    log: CompatibilityReport,
+    length: int,
+    keyframes: Any,
+    *,
+    text: bool = False,
 ) -> tuple[dict[str, ParamValue], list[Effect], list[Effect]]:
     """映像エフェクトの並びと、最後に当てる配置（反転と位置・拡大・回転）
 
     YMM4 はエフェクトを掛けた絵を最後に置く ただし描画を遅らせる印があれば、印の場所で
     印が指す分（位置・拡大・回転）だけを先に当て、残りを最後に当てる（試験で確かめた）
+    ``text`` が真なら、縁取りをテキストの設定（1 つ目の戻り値）へ分ける
     """
     raw = item.get("VideoEffects")
     entries = raw if isinstance(raw, list) else []
@@ -665,13 +671,23 @@ def _video_chain(
     )
     flip = _flip(item)
     if lazy is None:
-        video = map_video_effects(entries, log, length=length, keyframes=keyframes)
+        video = map_video_effects(entries, log, length=length, keyframes=keyframes, text=text)
         final = _fixed([*flip, *_placement(item, length, keyframes, video.pivot)])
         return video.params, list(video.effects), final
 
     marker = entries[lazy]
-    first = map_video_effects(entries[:lazy], log, length=length, keyframes=keyframes)
-    rest = map_video_effects(entries[lazy + 1 :], log, length=length, keyframes=keyframes)
+    # テキストの設定へ縁取りを載せるかは、分ける前の列全体で決める 区間ごとに決めると、
+    # 載せられない縁取り（縁だけ・ぼかしなど）が印の反対側にあるとき、こちら側だけが
+    # テキストへ移って並びの頭へ動く 両側に縁取りがあるときも載せない 区間ごとに一番太い
+    # ものを選ぶので、合わせるときに前の区間の分が落ちる
+    head, tail = entries[:lazy], entries[lazy + 1 :]
+    text = (
+        text
+        and outlines_fit_text(entries, length=length, keyframes=keyframes)
+        and not (has_outline(head) and has_outline(tail))
+    )
+    first = map_video_effects(head, log, length=length, keyframes=keyframes, text=text)
+    rest = map_video_effects(tail, log, length=length, keyframes=keyframes, text=text)
     early = {key: _RESTING[key] for key in _RESTING}
     late = dict(item)
     for flag, keys in _LAZY_PARTS:
@@ -746,8 +762,9 @@ def _map_item(item: dict[str, Any], log: CompatibilityReport) -> MappedObject | 
             filled = brush_effect(fill, log, length=length, keyframes=keyframes, key_only=True)
             if filled is not None:
                 effects.append(filled)
-    params, chain, final = _video_chain(item, log, length, keyframes)
-    if source is not None and source.kind == "text":
+    is_text = source is not None and source.kind == "text"
+    params, chain, final = _video_chain(item, log, length, keyframes, text=is_text)
+    if source is not None and is_text:
         decorations = map_decorations(
             item.get("Decorations"),
             log,

@@ -310,6 +310,24 @@ vec4 pattern_color(vec2 p) {
     return line ? ramp(0.0) : ramp(1.0);
 }
 
+// 縁のある模様（ストライプ・水玉・格子）は、画素の中を 4x4 に分けて平均する
+// 画素ごとに「乗る・乗らない」で描くと、太さ 1.3 の斜めの線が場所によって 1 画素にも
+// 2 画素にもなり、菱形の大きな濃淡（モアレ）が浮く（SFっぽい吹き出し(右) の格子 #179）
+// YMM4 は線の縁をなめらかに描く 事前乗算で平均するので、透明な色の RGB は混ざらない
+// グラデーションとノイズはもともとなめらかで、ノイズは重いので 1 点のまま
+vec4 pattern_smooth(vec2 p) {
+    if (pattern < 4 || pattern > 6) return pattern_color(p);
+    vec4 sum = vec4(0.0);
+    for (int j = 0; j < 4; ++j) {
+        for (int i = 0; i < 4; ++i) {
+            vec4 c = pattern_color(p + (vec2(float(i), float(j)) + 0.5) * 0.25 - 0.5);
+            sum += vec4(c.rgb * c.a, c.a);
+        }
+    }
+    sum *= 1.0 / 16.0;
+    return sum.a > 0.0 ? vec4(sum.rgb / sum.a, sum.a) : vec4(0.0);
+}
+
 """
     + BLEND_FUNCTIONS
     + """
@@ -319,7 +337,7 @@ void main() {
     vec4 base = texture(u_texture, v_uv);
     vec2 pixel = v_uv * u_size - object_center();
     pixel.y = -pixel.y;
-    vec4 paint = pattern_color(pixel);
+    vec4 paint = pattern_smooth(pixel);
     float amount = clamp(opacity * 0.01, 0.0, 1.0) * paint.a;
     if (pattern_only) {
         // 模様だけで塗る 元の絵の色は使わず、形（不透明度）だけを借りる
