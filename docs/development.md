@@ -1035,6 +1035,7 @@ YMM4 の画面を UI Automation で操作して、開く・〔ファイル(F)〕
 #### 4 回目（#195 #210 2026-09-25 `aviutl_filter_probes.py --fourth`）
 
 名前の頭で 3 つに分けて書き出した（`--only lb,po` `--only sc` `--only tc`）
+時間制御の見本は AviUtl2 を落とすので、今は `--crashing` を付けたときだけ並べる（#225）
 
 | 見たこと | 決まり |
 |---|---|

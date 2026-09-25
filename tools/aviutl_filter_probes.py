@@ -17,8 +17,9 @@ r"""フィルタと中身の意味を AviUtl2 に描かせて測る（#184・#18
 定数へそのまま写せる 1 本の見本が 2 つのレイヤーを使うことがあるので、プロジェクトは
 ``tools/aviutl_compare.py`` の並べ方を借りずにここで書く（レイヤー 0 と 1 を同じ区間に置く）
 AviUtl2 を起こす回数を減らすため、測るものを 1 つのプロジェクトにまとめてある
-3 回目と 4 回目の見本は ``--third`` ``--fourth`` で選ぶ 4 回目は ``--only`` で名前の頭
-（``lb,po`` ``sc`` ``tc``）ごとに分けて書き出す
+3 回目と 4 回目の見本は ``--third`` ``--fourth`` で選ぶ（どちらか 1 つ） 4 回目は ``--only`` で
+名前の頭（``lb,po`` ``sc``）ごとに分けて書き出す 時間制御（``tc``）の見本は AviUtl2 を落とすので、
+``--crashing`` を付けたときだけ並べる
 """
 
 from __future__ import annotations
@@ -481,16 +482,19 @@ def probes_third(folder: Path) -> tuple[Probe, ...]:
     return tuple(found)
 
 
-#: 4 回目のシーンの見本の頭に置く空きの長さ 節の書き方が違ってシーン 1 の中身がルートの頭に
+#: シーンの見本を並べるとき、頭に空ける長さ 節の書き方が違ってシーン 1 の中身がルートの頭に
 #: 置かれても、ほかの見本と重ならず、ここに四角が出ることで分かる
 SCENE_LEAD = SCENE_LENGTH
+#: AviUtl2 を落とすと分かっている見本の名前の頭 3 回目も 4 回目も、時間制御(オブジェクト) を
+#: 並べたプロジェクトで AviUtl2 が落ちた 原因が分かるまで ``--crashing`` のときだけ並べる
+CRASHING_PROBES = ("tc",)
 
 
 def probes_fourth(folder: Path) -> tuple[Probe, ...]:
     """4 回目（#195 #210） レンズブラーの光の強さ・直前オブジェクトの残り・シーン・時間制御
 
-    名前の頭で 3 つに分けて書き出す（``--only lb,po`` ``--only sc`` ``--only tc``）
-    時間制御は 3 回目に AviUtl2 が落ちたので、ほかと混ぜない
+    名前の頭で分けて書き出す（``--only lb,po`` ``--only sc``）
+    時間制御は 3 回目も 4 回目も AviUtl2 が落ちたので、``--crashing`` のときだけ並べる
     """
     dot = (folder / "dot.png").resolve()
     grey_dot = (folder / "grey_dot.png").resolve()
@@ -556,7 +560,8 @@ def probes_fourth(folder: Path) -> tuple[Probe, ...]:
 
     # --- シーン 項目の名前は 3 回目に AviUtl2 が保存し直した形 ---
     # 4 回目もシーン 1 の中身がルートに置かれ、どの見本にも何も写らなかった（節の書き方が違う）
-    found.append(Probe("sc00_lead", (), length=SCENE_LEAD))
+    # 頭の空き（SCENE_LEAD）は見本にせず write_project が空ける 見本にすると ``--only sc03`` の
+    # ように選んだときに外れ、選んだ見本がルートへ置かれた中身と重なる
 
     def scene(position: str = "0.000", speed: str = "100.00", loop: str = "0") -> Blocks:
         return [
@@ -609,11 +614,15 @@ def greys_png(levels: tuple[int, ...] = (0, 32, 64, 128, 192, 224, 255), size: i
     return _png(size * len(levels), size, (b"\x00" + row) * size)
 
 
-def chosen(found: tuple[Probe, ...], only: str) -> tuple[Probe, ...]:
+def chosen(found: tuple[Probe, ...], only: str, *, crashing: bool = False) -> tuple[Probe, ...]:
     """``--only`` で選んだ見本 名前の頭で選ぶ（``fp05,fp31`` 空なら全部）
 
     AviUtl2 を起こすたびに自動控えが回るので、足した見本だけを書き出せるようにする
+    AviUtl2 を落とす見本（:data:`CRASHING_PROBES`）は ``crashing`` のときだけ残す
+    ``--only tc`` だけで並べると、案内どおりに開いた人の AviUtl2 が落ちる
     """
+    if not crashing:
+        found = tuple(probe for probe in found if not probe.name.startswith(CRASHING_PROBES))
     heads = tuple(head.strip() for head in only.split(",") if head.strip())
     if not heads:
         return found
@@ -678,7 +687,9 @@ def write_project(work: Path, chosen: tuple[Probe, ...]) -> dict[str, object]:
     ]
     cases: list[dict[str, object]] = []
     number = 0
-    cursor = 0
+    scenes = any(probe.name.startswith(SCENE_PROBES) for probe in chosen)
+    # シーン 1 の中身がルートの頭に置かれても重ならないよう、シーンの見本があれば頭を空ける
+    cursor = SCENE_LEAD + GAP if scenes else 0
     for probe in chosen:
         end = cursor + probe.length - 1
         for layer, blocks in enumerate(probe.layers):
@@ -701,7 +712,7 @@ def write_project(work: Path, chosen: tuple[Probe, ...]) -> dict[str, object]:
         cursor += probe.length + GAP
     # シーン 1 の節は、シーンを読む見本を並べたときだけ足す 書き方がまだ違っていて、中身が
     # ルートのシーンの頭に置かれる（#221） 足すと頭の 60 フレームの見本に動く四角が重なる
-    if any(probe.name.startswith(SCENE_PROBES) for probe in chosen):
+    if scenes:
         out.extend(scene_one(number))
     target.write_text("\n".join(out) + "\n", encoding="utf-8")
     manifest: dict[str, object] = {"cases": cases}
@@ -711,7 +722,17 @@ def write_project(work: Path, chosen: tuple[Probe, ...]) -> dict[str, object]:
     return manifest
 
 
-def command_build(work: Path, only: str = "", *, third: bool = False, fourth: bool = False) -> int:
+def command_build(
+    work: Path,
+    only: str = "",
+    *,
+    third: bool = False,
+    fourth: bool = False,
+    crashing: bool = False,
+) -> int:
+    if third and fourth:
+        # 片方だけを黙って選ぶと、頼んだ見本の一部が無いプロジェクトを出して正常に終わる
+        raise ValueError("--third と --fourth は同時に選べない")
     folder = work / "probes"
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "patches.png").write_bytes(patches_png())
@@ -722,10 +743,12 @@ def command_build(work: Path, only: str = "", *, third: bool = False, fourth: bo
     (folder / "grey_dot.png").write_bytes(dots_png(200, 200, 200, 6, value=128))
     builder = probes_fourth if fourth else probes_third if third else probes
     source = builder(folder)
-    picked = chosen(source, only)
+    picked = chosen(source, only, crashing=crashing)
     if not picked:
-        print(f"--only {only} に当たる見本がありません")
+        print(f"--only {only} に当たる見本がありません（時間制御は --crashing のときだけ）")
         return 1
+    if any(probe.name.startswith(CRASHING_PROBES) for probe in picked):
+        print("!!! AviUtl2 を落とすと分かっている見本（時間制御）を並べた 開くと落ちる")
     write_project(work, picked)
     last = len(picked) * (LENGTH + GAP)
     print(f"{len(picked)} 本を並べた（{last} フレーム）")
@@ -877,22 +900,35 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--only", default="", help="並べる見本の名前の頭（fp05,fp31 のように , で区切る）"
     )
-    parser.add_argument(
+    # 3 回目と 4 回目は同時に選べない 片方を黙って捨てず、使い方の誤りとして止める
+    rounds = parser.add_mutually_exclusive_group()
+    rounds.add_argument(
         "--third",
         action="store_true",
         help="3 回目の見本（レンズブラーの光の強さ・シーン・時間制御・直前オブジェクト）を並べる",
     )
-    parser.add_argument(
+    rounds.add_argument(
         "--fourth",
         action="store_true",
-        help="4 回目の見本（レンズブラーの光の強さ・直前オブジェクトの残り・シーン・時間制御）",
+        help="4 回目の見本（レンズブラーの光の強さ・直前オブジェクトの残り・シーン）",
+    )
+    parser.add_argument(
+        "--crashing",
+        action="store_true",
+        help="AviUtl2 を落とすと分かっている見本（時間制御）も並べる 落ちる所を確かめるときだけ",
     )
     arguments = parser.parse_args(argv)
     # 丸ごとの道にする 相対のまま渡すと、プロジェクトに書く自分の道（``file=``）が相対になる
     work: Path = arguments.work.resolve()
     work.mkdir(parents=True, exist_ok=True)
     if arguments.command == "build":
-        return command_build(work, arguments.only, third=arguments.third, fourth=arguments.fourth)
+        return command_build(
+            work,
+            arguments.only,
+            third=arguments.third,
+            fourth=arguments.fourth,
+            crashing=arguments.crashing,
+        )
     return command_measure(work)
 
 

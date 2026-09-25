@@ -71,3 +71,52 @@ def test_clipping_by_the_object_above_reaches_the_clip(tool: ModuleType, tmp_pat
     objects = tool.layer_objects(case, tmp_path, FrameRate(60), CompatibilityReport())
     clipped = {obj.layer: obj.clip.clip_to_below for obj in objects}
     assert clipped == {1: False, 2: True, 3: False}
+
+
+@pytest.mark.parametrize("only", ["", "tc"])
+def test_the_crashing_time_control_is_left_out_by_default(
+    tool: ModuleType, tmp_path: Path, only: str
+) -> None:
+    """時間制御の見本は、3 回目も 4 回目も並べたプロジェクトで AviUtl2 を落とした
+
+    ``--fourth`` だけで並べたプロジェクトを案内どおりに開くと落ちる（PR #225）
+    """
+    status = tool.command_build(tmp_path, only, fourth=True)
+    if only:
+        assert status == 1
+    else:
+        assert status == 0
+        assert not any(name.startswith("tc") for name in _names(tmp_path))
+
+
+def test_the_crashing_time_control_is_written_only_when_asked(
+    tool: ModuleType, tmp_path: Path
+) -> None:
+    """落ちる所を確かめ直すときは ``--crashing`` で並べられる"""
+    assert tool.command_build(tmp_path, "tc", fourth=True, crashing=True) == 0
+    assert _names(tmp_path) == ["tc02_linear_double", "tc02_range"]
+
+
+def test_a_single_scene_probe_keeps_clear_of_the_misplaced_scene(
+    tool: ModuleType, tmp_path: Path
+) -> None:
+    """シーン 1 の中身はルートの頭（0〜59 フレーム）に置かれる
+
+    頭の空きを見本にしていたころは、``--only sc03`` で選ぶと空きが外れ、sc03 が 0 から
+    始まって動く四角と重なった（PR #225）
+    """
+    assert tool.command_build(tmp_path, "sc03", fourth=True) == 0
+    manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    (case,) = manifest["cases"]
+    assert case["name"] == "sc03_plain"
+    assert case["start"] >= tool.SCENE_LENGTH
+
+
+def test_the_third_and_fourth_rounds_cannot_be_asked_together(
+    tool: ModuleType, tmp_path: Path
+) -> None:
+    """両方を付けると 4 回目だけを並べ、3 回目を黙って捨てていた（PR #225）"""
+    with pytest.raises(SystemExit) as caught:
+        tool.main(["--work", str(tmp_path), "build", "--third", "--fourth"])
+    assert caught.value.code == 2
+    assert not (tmp_path / "compare.aup2").exists()
