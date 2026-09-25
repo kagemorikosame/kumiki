@@ -564,8 +564,9 @@ void main() {
     vec2 centre = object_center();
     vec2 pixel = v_uv * u_size;
     vec2 wind = vec2(cos(radians(wind_angle)), sin(radians(wind_angle))) * wind_speed;
-    // 粒の中心から絵の一番遠い角まで（等倍） どう回しても粒の絵はこの円の中に収まる
-    vec2 corner = max(abs(u_object.xy - centre), abs(u_object.zw - centre));
+    // 粒の中心から絵の中身の一番遠い角まで（等倍） どう回しても粒の絵はこの円の中に収まる
+    // u_object ではなく u_content で測る 前の変形で広げた絵は u_object の外まである
+    vec2 corner = max(abs(u_content.xy - centre), abs(u_content.zw - centre));
     float reach = length(corner) + 1.0;
     vec4 result = vec4(0.0);
     for (int k = 0; k < MAX_PARTICLES; ++k) {
@@ -792,6 +793,7 @@ def register_optics_effects() -> None:
             kind="directional_key",
             label="2 色の間で抜く",
             category="色",
+            keeps_content=True,
             parameters=(
                 ColorSpec("background", "抜く色", (0.02, 0.02, 0.02, 1.0)),
                 ColorSpec("foreground", "残す色", (0.8, 0.8, 0.8, 1.0)),

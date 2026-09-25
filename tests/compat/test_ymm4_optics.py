@@ -25,6 +25,14 @@ def _still(amount: float) -> dict[str, Any]:
     return {"Values": [{"Value": amount}], "Span": 0.0, "AnimationType": "なし"}
 
 
+def _moving(first: float, last: float, style: str = "直線移動") -> dict[str, Any]:
+    return {
+        "Values": [{"Value": first}, {"Value": last}],
+        "Span": 0.0,
+        "AnimationType": style,
+    }
+
+
 def _value(value: object, frame: int = 0) -> float:
     assert isinstance(value, AnimatedValue)
     return value.at(frame)
@@ -292,6 +300,38 @@ class TestParticles:
             },
         )
         assert any("パーティクル" in line and "上限" in line for line in report.lines())
+
+    def test_peaks_at_different_times_are_not_recorded(self) -> None:
+        """1 秒の数と寿命の山が別の時刻なら、2 つの山の積では記録しない
+
+        1 秒の数が 100 から 10 へ減り、寿命が 5 から 50 へ延びる 同時に居る粒は
+        どの時刻でも 1600 に届かない 山どうしを掛けると 5000 になり、上限を超えたと誤る
+        """
+        _, report = _map(
+            "ParticleOutputEffect",
+            Rate=_moving(100.0, 10.0),
+            Lifetime=_moving(5.0, 50.0),
+        )
+        assert not report.lines()
+
+    def test_an_overshooting_curve_is_recorded(self) -> None:
+        """行き過ぎて戻る曲線（Back）で、端の値より多い粒が居る時刻も記録する
+
+        1 秒の数が 100 から 2000（寿命 2 秒）なら端では 4000 で上限の中 Back_Out は
+        途中で 2000 を超えるので、その間は上限を超える
+        """
+        _, report = _map(
+            "ParticleOutputEffect",
+            Rate=_moving(100.0, 2000.0, "Back_Out"),
+            Lifetime=_still(2.0),
+        )
+        assert any("パーティクル" in line and "上限" in line for line in report.lines())
+
+    @pytest.mark.parametrize("rate", [float("nan"), float("inf"), 1e308])
+    def test_a_broken_particle_count_is_recorded_not_raised(self, rate: float) -> None:
+        """数でない粒の数（NaN・無限大・掛けて溢れる値）でも、読み込みは止まらず記録に残る"""
+        _, report = _map("ParticleOutputEffect", Rate=_still(rate), Lifetime=_still(1e308))
+        assert any("パーティクル" in line for line in report.lines())
 
     def test_particles_within_the_limit_are_not_recorded(self) -> None:
         """配布物の雪（1 秒に 100 粒・寿命 15 秒）は上限の中に収まり、記録は出ない"""

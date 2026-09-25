@@ -727,18 +727,27 @@ void main() {
 
     // 見込み位置（遅れ無しで落ちた所）から欠片がずれうる量 飛ぶ向きと散らばりの速さの
     // 最大に経過を掛け、遅れて出た欠片の落ち方の違いと、回した欠片の角の張り出しを足す
-    float fly_most = 300.0 * u_pixel_scale * fly / 100.0 * impact / 100.0
-                   + 200.0 * sqrt(2.0) * u_pixel_scale * impact / 100.0 * spread / 100.0;
-    float latest = max(elapsed - 0.5 * delay / 100.0, 0.0);
-    float drop_most = 0.5 * gravity * (elapsed * elapsed - latest * latest);
-    float reach = fly_most * elapsed + drop_most + cell * 0.71;
-    // 大きな絵を細かく割って遠くまで散らす設定だけは、見込み位置の周り 63x63 で栓をする
-    // 栓が無いと 1 画素で何万もの欠片を回し、GPU が止まるほど重くなる
-    int radius = min(int(ceil(reach / cell)) + 1, 31);
-    // 欠片は元の絵の範囲にしか無い 調べる範囲をそこで切れば、散った後でも元の絵の
-    // 欠片の数より多くは回らない
-    ivec2 first = ivec2(floor(u_object.xy / cell));
-    ivec2 last = ivec2(floor((u_object.zw - 0.5) / cell));
+    // 範囲の外の値（負の速さ・遅れ・重さ）も届きうるので、量はどれも絶対値で見る
+    // 負のまま足すと範囲が負になり、どの画素も欠片を 1 つも調べずに絵が消える
+    float fly_most = abs(300.0 * u_pixel_scale * fly / 100.0 * impact / 100.0)
+                   + abs(200.0 * sqrt(2.0) * u_pixel_scale * impact / 100.0 * spread / 100.0);
+    // 欠片ごとの経過は elapsed から遅れの分だけずれる（遅れは 0〜delay の半分秒）
+    float lagged = elapsed - 0.5 * delay / 100.0;
+    float t_low = max(min(elapsed, lagged), 0.0);
+    float t_high = max(max(elapsed, lagged), 0.0);
+    float base = elapsed * elapsed;
+    float drop_most = 0.5 * abs(gravity)
+                    * max(abs(base - t_low * t_low), abs(base - t_high * t_high));
+    float reach = fly_most * t_high + drop_most + cell * 0.71;
+    // 前の版と同じ周り 7x7 より狭くはしない 大きな絵を細かく割って遠くまで散らす設定だけは、
+    // 見込み位置の周り 63x63 で栓をする 栓が無いと 1 画素で何万もの欠片を回し、
+    // GPU が止まるほど重くなる
+    int radius = clamp(int(ceil(reach / cell)) + 1, 3, 31);
+    // 欠片は元の絵の中身の範囲にしか無い 調べる範囲をそこで切れば、散った後でも元の絵の
+    // 欠片の数より多くは回らない u_object ではなく u_content で切る 前の変形で広げた絵は
+    // u_object の外まである
+    ivec2 first = ivec2(floor(u_content.xy / cell));
+    ivec2 last = ivec2(floor((u_content.zw - 0.5) / cell));
     ivec2 low = max(ivec2(guess) - radius, first);
     ivec2 high = min(ivec2(guess) + radius, last);
 

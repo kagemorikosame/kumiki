@@ -16,6 +16,7 @@ from sashimono.core.model import (
     AnimatedValue,
     Clip,
     Effect,
+    Keyframe,
     Project,
     ProjectSettings,
     Track,
@@ -45,12 +46,12 @@ def gl() -> Iterator[OffscreenGLContext]:
 def draw(gl: OffscreenGLContext) -> Callable[..., np.ndarray]:
     """真ん中に白い四角を置いてエフェクトを掛け、``frame`` の絵を返す"""
 
-    def run(effect: Effect, *, size: int, frame: int) -> np.ndarray:
+    def run(*effects: Effect, size: int, frame: int) -> np.ndarray:
         source = SHAPE.create(shape="rect", width=size, height=size, color=(1.0, 1.0, 1.0, 1.0))
         project = Project.create(
             ProjectSettings(width=WIDTH, height=HEIGHT, frame_rate=FrameRate(FPS))
         )
-        clip = Clip(timeline_start=0, duration=60, source=source, effects=(effect,))
+        clip = Clip(timeline_start=0, duration=60, source=source, effects=effects)
         track = Track(kind=TrackKind.VIDEO, clips=(clip,))
         project = project.with_timeline(
             project.timeline.__class__(rate=project.rate, tracks=(track,))
@@ -66,6 +67,44 @@ def draw(gl: OffscreenGLContext) -> Callable[..., np.ndarray]:
 
 def _still(**values: float) -> dict[str, AnimatedValue]:
     return {key: AnimatedValue(value) for key, value in values.items()}
+
+
+def _held(value: float) -> AnimatedValue:
+    """範囲で切られない値 キーフレームの付いた値は読み込んだまま届く（前の版の保存など）"""
+    return AnimatedValue(
+        static=value, keyframes=(Keyframe(frame=0, value=value), Keyframe(frame=60, value=value))
+    )
+
+
+def _enlarged() -> Effect:
+    """絵を 4 倍に広げる変形 絵の置かれた範囲（u_object）は広がらないまま後ろへ届く"""
+    return registry.require("transform").create(scale=AnimatedValue(400.0))
+
+
+def _lit_width(image: np.ndarray) -> int:
+    columns = np.where(image[..., :3].max(axis=2).max(axis=0) > 100)[0]
+    return 0 if not len(columns) else int(columns.max() - columns.min() + 1)
+
+
+class TestKeepsContent:
+    @pytest.mark.parametrize(
+        "kind",
+        sorted(d.kind for d in registry.all() if d.keeps_content),
+    )
+    def test_nothing_appears_outside_the_picture(
+        self, draw: Callable[..., np.ndarray], kind: str
+    ) -> None:
+        """中身を動かさない印の付いたエフェクトは、絵の外（透明な所）に何も置かない
+
+        印を付けた物の後では、粒や欠片を探す範囲を元の絵の範囲に狭める 外に色を置く物に
+        印があると、その色が粒や欠片から切れる
+        """
+        size = 40
+        image = draw(registry.require(kind).create(), size=size, frame=0)
+        half = size // 2 + 2
+        outside = image.copy()
+        outside[HEIGHT // 2 - half : HEIGHT // 2 + half, WIDTH // 2 - half : WIDTH // 2 + half] = 0
+        assert outside[..., :3].max() < 10, "絵の外に色が出た"
 
 
 class TestParticles:
@@ -93,6 +132,20 @@ class TestParticles:
         assert young.min() > 100, "若い粒が描かれていない"
         assert old.min() > 100, "生まれて 0.8 秒より古い粒が消えた"
 
+    def test_a_particle_of_an_enlarged_picture_is_not_cut(
+        self, draw: Callable[..., np.ndarray]
+    ) -> None:
+        """前の変形で広げた絵の粒は、広げた大きさのまま描かれる
+
+        粒の絵が届く範囲を絵の置かれた範囲（u_object）から決めると、変形では広がらない
+        ので、広げた粒の絵が元の大きさの円で切れる
+        """
+        particles = registry.require("particles").create(
+            **_still(rate=1.0, lifetime=10.0, preroll=0.5, speed=0.0, randomness=0.0)
+        )
+        image = draw(_enlarged(), particles, size=20, frame=0)
+        assert _lit_width(image) > 70, f"粒の絵が切れた: 幅 {_lit_width(image)}"
+
 
 class TestCrash:
     def test_far_flung_pieces_are_still_drawn(self, draw: Callable[..., np.ndarray]) -> None:
@@ -113,3 +166,31 @@ class TestCrash:
         # 真ん中に固まったままではなく、ちゃんと散っている
         _, lit_columns = np.where(image[..., :3].max(axis=2) > 100)
         assert lit_columns.max() - lit_columns.min() > size * 3, "欠片が散っていない"
+
+    def test_pieces_of_an_enlarged_picture_are_not_dropped(
+        self, draw: Callable[..., np.ndarray]
+    ) -> None:
+        """前の変形で広げた絵は、崩れ始める前なら広げた大きさのまま全部見える
+
+        欠片を探す範囲を絵の置かれた範囲（u_object）で切ると、変形では広がらないので、
+        元の大きさの外に出た欠片が消える
+        """
+        effect = registry.require("crash").create(**_still(start=1.0))
+        image = draw(_enlarged(), effect, size=20, frame=0)
+        assert _lit_width(image) > 70, f"欠片が消えた: 幅 {_lit_width(image)}"
+
+    def test_out_of_range_values_do_not_empty_the_search(
+        self, draw: Callable[..., np.ndarray]
+    ) -> None:
+        """範囲の外の値（負の再生速度）が届いても、欠片を探す範囲は空にならない
+
+        散る量から探す範囲を決めるとき、負の量をそのまま使うと範囲が負になり、
+        どの画素も 1 つも欠片を調べずに絵が全部消える
+        """
+        effect = registry.require("crash").create(
+            speed=_held(-100.0), fall=_held(0.0), fly=_held(100.0)
+        )
+        size = 40
+        image = draw(effect, size=size, frame=30)
+        covered = image[..., :3].max(axis=2).sum() / 255.0
+        assert covered > size * size * 0.7, f"欠片が消えた: {covered:.0f} 画素分"

@@ -400,6 +400,7 @@ def register_paint_effects() -> None:
             kind="brush_fill",
             label="模様で塗る",
             category="色",
+            keeps_content=True,
             parameters=(
                 SelectSpec("pattern", "模様", PATTERNS, "linear"),
                 SelectSpec("blend", "合成", BLEND_MODES, "normal"),
