@@ -368,6 +368,25 @@ def test_a_project_with_a_broken_item_is_refused_without_a_traceback(
     assert ready["commands"] == []
 
 
+@pytest.mark.parametrize("span", [None, 0])
+def test_an_item_without_a_length_still_takes_one_frame(
+    tool: ModuleType, tmp_path: Path, span: int | None
+) -> None:
+    """``Length`` が無いか 0 のアイテムを 0 コマと数えると、終わりの 1 コマ欠けた書き出しを通す
+
+    読み込み（``compat/ymm4/template.py``）も比べる道具も、欠けた ``Length`` を 1 コマとして読む
+    """
+    project = tmp_path / "a.ymmp"
+    _project(project, [(0, 4)])
+    document = json.loads(project.read_text(encoding="utf-8-sig"))
+    last: dict[str, Any] = {"Frame": 5, "Layer": 1}
+    if span is not None:
+        last["Length"] = span
+    document["Timelines"][0]["Items"].append(last)
+    project.write_text(json.dumps(document), encoding="utf-8-sig")
+    assert tool.project_length(project) == (6, 30)
+
+
 def test_the_project_length_is_the_end_of_the_last_item(tool: ModuleType, tmp_path: Path) -> None:
     """タイムラインの ``Length`` で数えると、揃った書き出しまで足りないと言う
 

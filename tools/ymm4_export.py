@@ -288,8 +288,10 @@ def project_length(project: Path) -> tuple[int, Fraction] | None:
         return None
     items = timeline.get("Items")
     try:
+        # 欠けた Length は 1 コマとして読む 読み込み（compat/ymm4/template.py）や比べる道具と
+        # 揃えないと、終わりの 1 コマ欠けた書き出しを揃っていると読む
         ends = [
-            int(item.get("Frame", 0)) + int(item.get("Length", 0))
+            int(item.get("Frame", 0)) + max(1, int(item.get("Length", 1)))
             for item in (items if isinstance(items, list) else [])
             if isinstance(item, dict)
         ]
