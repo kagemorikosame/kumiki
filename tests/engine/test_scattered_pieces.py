@@ -23,7 +23,7 @@ from sashimono.core.model import (
     TrackKind,
 )
 from sashimono.core.timebase import FrameRate
-from sashimono.effects import registry
+from sashimono.effects import TrackSpec, registry
 from sashimono.effects.sources import SHAPE
 from sashimono.engine.gpu import GLContextError, OffscreenGLContext
 from sashimono.engine.render import FrameRenderer
@@ -91,20 +91,36 @@ class TestKeepsContent:
         "kind",
         sorted(d.kind for d in registry.all() if d.keeps_content),
     )
+    @pytest.mark.parametrize("extreme", ["default", "minimum", "maximum"])
     def test_nothing_appears_outside_the_picture(
-        self, draw: Callable[..., np.ndarray], kind: str
+        self, draw: Callable[..., np.ndarray], kind: str, extreme: str
     ) -> None:
-        """中身を動かさない印の付いたエフェクトは、絵の外（透明な所）に何も置かない
+        """中身を動かさない印の付いたエフェクトは、どの値でも絵の外（透明な所）に何も置かない
 
         印を付けた物の後では、粒や欠片を探す範囲を元の絵の範囲に狭める 外に色を置く物に
-        印があると、その色が粒や欠片から切れる
+        印があると、その色が粒や欠片から切れる 既定の値だけで見ると、線形変換の
+        不透明度の切片のように、値によって透明な所へ色を置く物を見落とす
         """
+        definition = registry.require(kind)
+        values = {
+            spec.name: AnimatedValue(getattr(spec, extreme))
+            for spec in definition.parameters
+            if isinstance(spec, TrackSpec)
+        }
+        # 後ろで白く塗り、外へ置かれた α を黒い背景の上でも見えるようにする
+        # 透明な所の黒に α だけを付ける物は、塗らないと背景と見分けられない
+        white = registry.require("fill").create(color=(1.0, 1.0, 1.0, 1.0))
         size = 40
-        image = draw(registry.require(kind).create(), size=size, frame=0)
+        image = draw(definition.create(**values), white, size=size, frame=0)
         half = size // 2 + 2
         outside = image.copy()
         outside[HEIGHT // 2 - half : HEIGHT // 2 + half, WIDTH // 2 - half : WIDTH // 2 + half] = 0
         assert outside[..., :3].max() < 10, "絵の外に色が出た"
+
+    def test_opacity_keeps_the_content(self) -> None:
+        """不透明度は α を掛けるだけで外に色を置かない 印が無いと、粒を探す範囲が
+        バッファ全体へ広がり、小さな絵の粒でも遠くの画素まで回す"""
+        assert registry.require("opacity").keeps_content
 
 
 class TestParticles:

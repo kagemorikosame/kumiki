@@ -1112,7 +1112,8 @@ def register_stylize_effects() -> None:
             kind="linear_transfer",
             label="色の直線変換",
             category="色",
-            keeps_content=True,
+            # 中身の範囲を保つ印は付けない 不透明度の切片が正なら透明な所にも α を置くので、
+            # 付けると後ろの粒や欠片が、新しく見えた所を探さずに切れる
             parameters=(
                 TrackSpec("red_slope", "赤の傾き", -1000, 1000, 100, unit="%"),
                 TrackSpec("red_intercept", "赤の切片", -100, 100, 0, unit="%"),

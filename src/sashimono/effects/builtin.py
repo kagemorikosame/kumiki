@@ -1138,6 +1138,8 @@ def register_builtin_effects() -> None:
             kind="opacity",
             label="不透明度",
             category="合成",
+            # α を掛けるだけで外に色を置かない 印が無いと後ろの粒を探す範囲がバッファ全体へ広がる
+            keeps_content=True,
             parameters=(TrackSpec("amount", "不透明度", 0, 100, 100, unit="%"),),
             fragment_shader=_OPACITY,
         )
