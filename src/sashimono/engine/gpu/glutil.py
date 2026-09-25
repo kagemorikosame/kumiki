@@ -137,6 +137,9 @@ class Program:
     def set_vec2(self, name: str, values: Sequence[float]) -> None:
         GL.glUniform2f(self.location(name), *(float(v) for v in values[:2]))
 
+    def set_ivec2(self, name: str, values: Sequence[int]) -> None:
+        GL.glUniform2i(self.location(name), *(int(v) for v in values[:2]))
+
     def set_vec4(self, name: str, values: Sequence[float]) -> None:
         GL.glUniform4f(self.location(name), *(float(v) for v in values[:4]))
 
@@ -191,6 +194,17 @@ class ScreenQuad:
     def draw(self) -> None:
         GL.glBindVertexArray(self._vao)
         GL.glDrawArrays(GL.GL_TRIANGLE_STRIP, 0, 4)
+        GL.glBindVertexArray(0)
+
+    def draw_instanced(self, count: int) -> None:
+        """同じ四角を ``count`` 枚描く 頂点シェーダが ``gl_InstanceID`` で置き場所を決める
+
+        欠片ごとに描く呼び出しを分けると、4 画素の欠片で 1080p を割ったときに 13 万回になる
+        """
+        if count <= 0:
+            return
+        GL.glBindVertexArray(self._vao)
+        GL.glDrawArraysInstanced(GL.GL_TRIANGLE_STRIP, 0, 4, count)
         GL.glBindVertexArray(0)
 
     def release(self) -> None:
