@@ -286,11 +286,17 @@ def project_length(project: Path) -> tuple[int, Fraction] | None:
     timeline = _timeline(document)
     if timeline is None:
         return None
-    ends = [
-        int(item.get("Frame", 0)) + int(item.get("Length", 0))
-        for item in timeline.get("Items", [])
-        if isinstance(item, dict)
-    ]
+    items = timeline.get("Items")
+    try:
+        ends = [
+            int(item.get("Frame", 0)) + int(item.get("Length", 0))
+            for item in (items if isinstance(items, list) else [])
+            if isinstance(item, dict)
+        ]
+    except (TypeError, ValueError):
+        # JSON として読めても値が数でない（null や文字）ことがある 通すと案内の無い
+        # traceback で終わり、何が悪いのか分からない
+        return None
     info = timeline.get("VideoInfo")
     fps = info.get("FPS") if isinstance(info, dict) else None
     if not ends or not isinstance(fps, int | float) or fps <= 0:
@@ -300,9 +306,12 @@ def project_length(project: Path) -> tuple[int, Fraction] | None:
 
 
 def written_length(video: Path) -> tuple[int, Fraction] | None:
-    """書き出しのコマ数と fps 開けないか映像が無ければ ``None``
+    """書き出しの復号できたコマ数と fps 開けないか映像が無ければ ``None``
 
     YMM4 が書き終えずに止まった mp4 は目次（``moov``）が無く、PyAV が開けない
+    目次のコマ数（``stream.frames``）は数えない 目次が揃っていても後ろの絵が欠けていれば
+    揃っていると読む 包みの数も、包みとコマが 1 対 1 でない形式では食い違う 復号は
+    手元の 15767 コマの書き出しで 4 秒ほどで、書き出しそのものより十分短い
     """
     import av
     import av.error
@@ -312,9 +321,15 @@ def written_length(video: Path) -> tuple[int, Fraction] | None:
             if not container.streams.video:
                 return None
             stream = container.streams.video[0]
+            stream.thread_type = "AUTO"
             rate = stream.average_rate
-            # 目次の数（stream.frames）が 0 の形式もあるので、そのときは包みを数える
-            count = stream.frames or sum(1 for packet in container.demux(stream) if packet.size)
+            count = 0
+            try:
+                for _ in container.decode(stream):
+                    count += 1
+            except av.error.FFmpegError:
+                # 途中で壊れていれば、そこまでに復号できた分が書けた長さ
+                pass
     except (av.error.FFmpegError, OSError):
         return None
     if rate is None or rate <= 0:
@@ -347,21 +362,23 @@ def check_length(output: Path, expected: int, fps: Fraction) -> bool:
     """書き出しがプロジェクトの終わりまで届いたか 足りなければ知らせて出力を退ける"""
     written = written_length(output)
     if written is None:
-        print(f"{output} を読めません 書き出しが途中で止まったか壊れています")
-        return False
-    count, rate = written
-    # 書き出しの窓の fps がプロジェクトと違うことがある 時間で揃え、書き出しのコマで数える
-    needed = math.floor(expected * rate / fps)
-    if count >= needed:
-        print(f"長さを確かめました {count} / {needed} コマ")
-        return True
-    reached = math.floor(count * fps / rate)
-    lines = [
-        f"YMM4 の書き出しが途中で止まりました {count} / {needed} コマ",
-        f"プロジェクトの {reached} フレーム目（{clock(reached, fps)}）まで、"
-        f"終わりは {expected} フレーム目（{clock(expected, fps)}）",
-        "止まった所にあるアイテムを YMM4 で確かめてください",
-    ]
+        lines = [f"{output} を読めません 書き出しが途中で止まったか壊れています"]
+    else:
+        count, rate = written
+        # 書き出しの窓の fps がプロジェクトと違うことがある 時間で揃え、書き出しのコマで数える
+        # 切り上げる 切り捨てると、終わりの 1 コマに届かない書き出しを揃っていると読む
+        needed = math.ceil(expected * rate / fps)
+        if count >= needed:
+            print(f"長さを確かめました {count} / {needed} コマ")
+            return True
+        reached = math.floor(count * fps / rate)
+        lines = [
+            f"YMM4 の書き出しが途中で止まりました {count} / {needed} コマ",
+            f"プロジェクトの {reached} フレーム目（{clock(reached, fps)}）まで、"
+            f"終わりは {expected} フレーム目（{clock(expected, fps)}）",
+            "止まった所にあるアイテムを YMM4 で確かめてください",
+        ]
+    # 読めない物も退ける 出力の名前に残すと、次の書き出しが置き換えて壊れ方を確かめられない
     try:
         aside = short_name(output)
         output.rename(aside)

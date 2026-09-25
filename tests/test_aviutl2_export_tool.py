@@ -248,6 +248,8 @@ def test_too_few_pictures_are_a_failure_even_when_the_script_says_done(
         folder = Path(command[command.index("-Folder") + 1])
         for index in range(2):
             (folder / f"frame{index}.png").write_bytes(b"png")
+        # 書き直しておかないと、戻す所を通らなくても下の確かめが通る
+        (ready["data"] / "aviutl2.ini").write_bytes(b"rewritten by aviutl2")
         return 0, False
 
     monkeypatch.setattr(tool, "run_script", run_script)

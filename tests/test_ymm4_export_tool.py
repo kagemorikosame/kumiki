@@ -43,19 +43,29 @@ def _project(path: Path, spans: list[tuple[int, int]], *, length: int | None = N
     path.write_text(json.dumps(document), encoding="utf-8-sig")
 
 
-def _video(path: Path, frames: int, fps: int = 30) -> None:
-    """YMM4 の書き出しの代わりの短い mp4 数えるのはコマ数なので、絵は小さい黒で足りる"""
+def _video(path: Path, frames: int, fps: int = 30, *, faststart: bool = False) -> None:
+    """YMM4 の書き出しの代わりの短い mp4 数えるのはコマ数なので、絵は小さい黒で足りる
+
+    ``faststart`` は目次（moov）を頭へ置く 後ろを切っても開けて、目次のコマ数だけが残る
+    """
     import av
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    with av.open(str(path), "w") as container:
+    options = {"movflags": "faststart"} if faststart else {}
+    with av.open(str(path), "w", format="mp4", options=options) as container:
         stream = container.add_stream("mpeg4", rate=fps)
         stream.width = 32
         stream.height = 32
         stream.pix_fmt = "yuv420p"
-        black = np.zeros((32, 32, 3), dtype=np.uint8)
+        # 目次を頭に置くときは、後ろを切るので 1 コマずつの大きさが要る 黒だと数十バイトで、
+        # どこで切ってもほぼ全部のコマが残るか 1 つも残らない
+        rng = np.random.default_rng(0)
         for _ in range(frames):
-            picture = av.VideoFrame.from_ndarray(black, format="rgb24")
+            if faststart:
+                pixels = rng.integers(0, 256, (32, 32, 3), dtype=np.uint8)
+            else:
+                pixels = np.zeros((32, 32, 3), dtype=np.uint8)
+            picture = av.VideoFrame.from_ndarray(pixels, format="rgb24")
             for packet in stream.encode(picture):
                 container.mux(packet)
         for packet in stream.encode(None):
@@ -296,7 +306,66 @@ def test_an_export_that_cannot_be_read_is_a_failure(
 
     monkeypatch.setattr(tool, "run_script", run_script)
     assert tool.main(_arguments(ready)) == 1
-    assert "読めません" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "読めません" in out
+    # 出力の名前に残すと、次の書き出しが置き換えて、壊れ方を確かめる物が無くなる
+    assert not ready["output"].exists()
+    [aside] = ready["output"].parent.glob("probe.sashimono-*.short.mp4")
+    assert aside.read_bytes() == b"not an mp4"
+    assert str(aside) in out
+
+
+def test_an_export_whose_index_outruns_its_pictures_is_a_failure(
+    tool: ModuleType,
+    ready: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """目次（moov）のコマ数を信じると、後ろの絵が欠けた動画を揃っていると読む
+
+    目次を頭に置いた mp4 の後ろを切り落とすと、目次は 6 コマと言うが、復号できるのは
+    切った所まで 数えるのは復号できたコマ
+    """
+
+    def run_script(command: list[str], limit: int) -> tuple[int, bool]:
+        _video(ready["output"], PROJECT_FRAMES, faststart=True)
+        data = ready["output"].read_bytes()
+        # 絵の塊（mdat）の半ばで切る 目次より前で切ると、開けない方の失敗になる
+        start = data.index(b"mdat")
+        ready["output"].write_bytes(data[: start + (len(data) - start) // 2])
+        return 0, False
+
+    monkeypatch.setattr(tool, "run_script", run_script)
+    assert tool.main(_arguments(ready)) == 1
+    assert "途中で止まりました" in capsys.readouterr().out
+
+
+def test_a_last_frame_left_short_at_another_rate_is_caught(
+    tool: ModuleType, ready: dict[str, Any]
+) -> None:
+    """換算したコマ数を切り捨てると、終わりの 1 コマ足りない書き出しを揃っていると読む
+
+    30fps で 5 コマ（1/6 秒）のプロジェクトを 15fps で書くと 2.5 コマ 2 コマでは 1/30 秒足りない
+    """
+    _project(ready["project"], [(0, 5)])
+    ready["fps"] = 15
+    ready["frames"] = 2
+    assert tool.main(_arguments(ready)) == 1
+    ready["frames"] = 3
+    assert tool.main(_arguments(ready)) == 0
+
+
+@pytest.mark.parametrize("value", [None, "abc", [1]])
+def test_a_project_with_a_broken_item_is_refused_without_a_traceback(
+    tool: ModuleType, ready: dict[str, Any], capsys: pytest.CaptureFixture[str], value: Any
+) -> None:
+    """JSON として読めても値が数でなければ、案内の無い traceback で終わっていた"""
+    document = json.loads(ready["project"].read_text(encoding="utf-8-sig"))
+    document["Timelines"][0]["Items"][0]["Frame"] = value
+    ready["project"].write_text(json.dumps(document), encoding="utf-8-sig")
+    assert tool.main(_arguments(ready)) == 1
+    assert "長さ" in capsys.readouterr().out
+    assert ready["commands"] == []
 
 
 def test_the_project_length_is_the_end_of_the_last_item(tool: ModuleType, tmp_path: Path) -> None:
