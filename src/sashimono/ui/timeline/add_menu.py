@@ -82,10 +82,9 @@ TRACK_CHOICES: tuple[tuple[str, TrackKind, bool], ...] = (
 
 #: 混合の方式（:attr:`~sashimono.core.model.LayerMode.MIXED`）での選択肢 映像と音声を
 #: 分けて足せると、方式を混合にしたのに分けたトラックが増えていく
-LAYER_CHOICES: tuple[tuple[str, TrackKind, bool], ...] = (
-    ("レイヤー", TrackKind.MIXED, False),
-    ("エフェクトレイヤー（フィルタ用）", TrackKind.MIXED, True),
-)
+#: エフェクト用のレイヤーも出さない（利用者の要望 分けない方式では普通のレイヤーに何でも
+#: 置く） フィルタは普通のレイヤーへ置け、置き先も普通のレイヤーから選ばれる
+LAYER_CHOICES: tuple[tuple[str, TrackKind, bool], ...] = (("レイヤー", TrackKind.MIXED, False),)
 
 #: カスタムオブジェクト（中身を作るスクリプト）の分類 エフェクトの一覧には出さない
 #: クリップに掛けると、今の絵を捨てて別の物を描くので、掛けたつもりの絵が消える
@@ -192,7 +191,7 @@ class TimelineAddMenus:
     # --- メニュー ---
 
     def track_add_menu(self, parent: QWidget | None = None, *, title: str = "") -> QMenu:
-        """映像・音声・エフェクトのどれを足すかを選ぶメニュー"""
+        """映像・音声・エフェクトのどれを足すかを選ぶメニュー 混合の方式ではレイヤーだけ"""
         menu = QMenu(title, parent)
         choices = LAYER_CHOICES if places_mixed(self._project) else TRACK_CHOICES
         for label, kind, effect in choices:
@@ -203,7 +202,8 @@ class TimelineAddMenus:
         """空いた所の右クリック 〔追加〕のサブメニューを足す"""
         track_id = track.id if track is not None else None
         if track is not None and is_effect_track(track):
-            # フィルタを置くために足したトラック 一番使う物をサブメニューの外へ出す
+            # フィルタを置くために足した映像トラック 一番使う物をサブメニューの外へ出す
+            # レイヤーは名前が FX でも出さない（混合の方式では名前で振る舞いを変えない）
             _action(menu, "フィルタを置く", functools.partial(self.place_filter, frame, track_id))
             menu.addSeparator()
         add = menu.addMenu("追加")

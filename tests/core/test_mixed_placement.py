@@ -419,13 +419,34 @@ class TestTracks:
         assert command.track.kind is TrackKind.MIXED
         assert command.track.name == "レイヤー 2"
 
-    def test_an_effect_layer_is_recognised(self) -> None:
-        # エフェクトのレイヤーと分からないと、右クリックに「フィルタを置く」が出ない
-        command = new_track(_mixed(), TrackKind.MIXED, effect=True)
-        assert command.track.name == "FX1"
-        assert is_effect_track(command.track)
+    def test_no_effect_layer_is_made(self) -> None:
+        # 利用者の要望 分けない方式ではエフェクトのレイヤーという種類を持たず、フィルタも
+        # 普通のレイヤーへ置く 作れてしまうと、FX の名前のレイヤーだけ振る舞いが変わる
+        with pytest.raises(ValueError):
+            new_track(_mixed(), TrackKind.MIXED, effect=True)
         with pytest.raises(ValueError):
             new_track(_mixed(), TrackKind.AUDIO, effect=True)
+
+    def test_an_old_fx_layer_is_an_ordinary_layer(self) -> None:
+        # 前の版で作った FX のレイヤーが残った作品で、名前だけで特別に扱うと、
+        # 同じレイヤーなのに右クリックの中身や置き方が変わる 名前は変えない
+        old = Track(TrackKind.MIXED, "FX1")
+        assert not is_effect_track(old)
+        project = _mixed(Track(TrackKind.MIXED, "レイヤー 1"), old)
+        assert new_track(project, TrackKind.MIXED).track.name == "レイヤー 3"
+        assert [t.name for t in project.timeline.tracks] == ["レイヤー 1", "FX1"]
+
+    def test_a_filter_goes_to_an_ordinary_layer_above_the_pictures(
+        self, video_media: MediaItem
+    ) -> None:
+        # フィルタの置き場の決まり（範囲に絵のある一番上より上の空いたレイヤー 無ければ
+        # 一番手前に足す）は保つ 足すのは普通の名前のレイヤー
+        project = _apply(_mixed(), insert_media(_mixed(), video_media))
+        commands = insert_filter(project, at_frame=0, duration=30)
+        (added,) = [c for c in commands if isinstance(c, AddTrack)]
+        assert added.track.name == "レイヤー 2"
+        placed = _apply(project, commands)
+        assert placed.timeline.tracks[-1].clips[0].is_filter
 
     def test_layers_made_by_placing_can_be_reordered(self, video_media: MediaItem) -> None:
         # 置いて作ったレイヤーが並べ替えの仲間に入らないと、重なり順を変えられない

@@ -267,6 +267,9 @@ class TimelineView(QWidget):
         self._work_area = WorkAreaEditor(self._request)
         #: ファイルや素材を引いてきている間の、落ちる所の目安 引いていなければ ``None``
         self._drop_preview: DropPreview | None = None
+        #: 音声が何本もある素材を音ごとに分けて置くか（:meth:`set_split_audio`）
+        #: 既定は設定の既定と同じ 窓が渡す前に落とされても、落とした後と同じ目安を出す
+        self._split_audio = True
         #: ヘッダを掴んでトラックの順を入れ替えるドラッグ
         self._track_mover = TrackDragger(self._request)
         #: ドラッグ中に端へ寄ったら表示を送る
@@ -302,6 +305,14 @@ class TimelineView(QWidget):
         # 長さやトラックの数が変わると、スクロールできる幅と高さも変わる
         self._sync_scroll_bars()
         self.update()
+
+    def set_split_audio(self, split: bool) -> None:
+        """音声が何本もある素材を音ごとに分けて置くか 設定（:attr:`Preferences.multi_audio`）から
+
+        落とす前の目安を、窓が実際に置くのと同じ置き方で求めるため 目安だけ設定を
+        見ないと、目安に無いレイヤーが落とした後に増える
+        """
+        self._split_audio = split
 
     def set_value_lines(self, shown: bool) -> None:
         """クリップの上に不透明度・音量の線を出すか 設定（:attr:`Preferences.value_lines`）から"""
@@ -1989,7 +2000,11 @@ class TimelineView(QWidget):
             return
         # 置く先を求めるのは目安が変わったときだけ 描くたびに求めると、素材を何本も
         # 引いているときにマウスを動かすだけで重くなる
-        self._drop_preview = preview_drop(self._project, guide) if guide is not None else None
+        self._drop_preview = (
+            preview_drop(self._project, guide, split_audio=self._split_audio)
+            if guide is not None
+            else None
+        )
         self.update()
 
     def _painted_timeline(self) -> Timeline:

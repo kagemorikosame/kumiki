@@ -36,6 +36,9 @@ __all__ = [
     "LAYOUT_VERSION",
     "MAX_PREFETCH_MB",
     "MIN_PREFETCH_MB",
+    "MULTI_AUDIO_FIRST",
+    "MULTI_AUDIO_MODES",
+    "MULTI_AUDIO_SPLIT",
     "PreferenceStore",
     "Preferences",
     "ShortcutStore",
@@ -148,6 +151,11 @@ def find_conflicts(bindings: dict[str, str]) -> dict[str, list[str]]:
 DOCK_TABS_TOP = "top"
 DOCK_TABS_BOTTOM = "bottom"
 DOCK_TAB_POSITIONS = (DOCK_TABS_TOP, DOCK_TABS_BOTTOM)
+
+#: 音声が何本もある動画の置き方 :attr:`Preferences.multi_audio` の値
+MULTI_AUDIO_SPLIT = "split"
+MULTI_AUDIO_FIRST = "first"
+MULTI_AUDIO_MODES = (MULTI_AUDIO_SPLIT, MULTI_AUDIO_FIRST)
 
 #: プレビューの画質を自動で落とし始める縦の画素数
 #: 1080p までは等倍で 60fps に入るので、落とす値打ちが無い
@@ -265,6 +273,17 @@ class Preferences:
     #: 映像と音声を別のトラックに分けて並べる方が慣れている人は切り替えられる
     #: モデルの既定（分ける）とは別に持つ 古いファイルと試験の動きを変えないため
     new_project_layers: str = LayerMode.MIXED
+    #: 音声ストリームが 2 本以上ある動画（ゲームの録画のマイクの声など）の置き方
+    #: 音ごとに別のトラックへ分ける（``split``）か、1 本目だけを映像と一緒に置くか（``first``）
+    #: 既定は分ける（利用者の要望 レイヤー 1 に映像、レイヤー 2 以降に音 Issue #27）
+    #: 1 本目だけだと 2 本目以降がタイムラインのどこにも無く、鳴らす手段に気付けない
+    #: レイヤーが増えるのを嫌う人・1 本目しか使わない人は切り替えられる
+    multi_audio: str = MULTI_AUDIO_SPLIT
+
+    @property
+    def split_audio_streams(self) -> bool:
+        """素材を置く所（:func:`~sashimono.core.commands.insert_media`）へ渡す値"""
+        return self.multi_audio == MULTI_AUDIO_SPLIT
 
     def prefetch_bytes(self) -> int:
         """先読みに使えるバイト数 切ってあれば 0
@@ -340,6 +359,7 @@ class PreferenceStore:
             new_project_layers=_choice(
                 data.get("new_project_layers"), LayerMode.ALL, plain.new_project_layers
             ),
+            multi_audio=_choice(data.get("multi_audio"), MULTI_AUDIO_MODES, plain.multi_audio),
         )
 
     def save(self, preferences: Preferences) -> None:
