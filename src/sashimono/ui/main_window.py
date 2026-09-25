@@ -107,7 +107,7 @@ from sashimono.effects.sources import SHAPE, TEXT, TRANSITION
 from sashimono.engine.audio.waveform import Waveform
 from sashimono.engine.cache import MediaAnalyzer
 from sashimono.engine.cache.proxy import ProxyBuilder, ProxyStore
-from sashimono.engine.decode import ProbeError, probe_media
+from sashimono.engine.decode import ProbeError, forget_probe, probe_media
 from sashimono.engine.decode.batch import ProbeBatch
 from sashimono.engine.gpu import opengl_usable
 from sashimono.engine.render import FrameRenderer, RenderQuality
@@ -204,6 +204,8 @@ def _probe_or_none(path: Path) -> MediaItem | None:
     開けない素材が 1 つあるだけで配置全体を止めない 見つからない素材と同じく
     数えて知らせ、ほかのアイテムは置く
     """
+    # 読み込む操作なので覚えた結果を使わない 同じ場所へ差し替えた素材を前の中身で置かないため
+    forget_probe(path)
     try:
         return probe_media(path)
     except ProbeError:
@@ -1233,6 +1235,9 @@ class MainWindow(QMainWindow):
     def _start_import(self, paths: list[Path], at: _DropTarget | None = None) -> None:
         # probe_media はこのモジュールの名前から引く 試験がここを差し替えて、
         # 開けない素材や断られる読み込みを作る
+        # 読み込み直しでは必ず開き直す 覚えた結果は再生中のデコーダの作り直しのための物
+        for path in paths:
+            forget_probe(path)
         self._import = ProbeBatch(paths, probe_media)
         if at is not None:
             self._import_spots[self._import] = at
@@ -2100,6 +2105,7 @@ class MainWindow(QMainWindow):
             if path is None:
                 missing.append(raw)
                 continue
+            forget_probe(path)
             try:
                 media = probe_media(path)
             except ProbeError:
@@ -2444,6 +2450,7 @@ class MainWindow(QMainWindow):
         )
 
     def probe(self, path: Path) -> MediaItem:
+        forget_probe(path)
         try:
             return probe_media(path)
         except ProbeError as exc:

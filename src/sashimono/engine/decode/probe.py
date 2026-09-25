@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-import json
-import shutil
-import subprocess
+import hashlib
+import itertools
+import threading
+from collections import OrderedDict
 from fractions import Fraction
 from pathlib import Path
+from typing import cast
 
 import av
 import av.error
@@ -14,7 +16,16 @@ import av.error
 from sashimono.core.model import AudioStreamInfo, MediaItem, VideoStreamInfo
 from sashimono.core.timebase import FrameRate
 
-__all__ = ["ProbeError", "media_origin", "moving_pictures", "probe_media"]
+__all__ = [
+    "PROBE_CACHE_SIZE",
+    "ROTATION_PACKET_LIMIT",
+    "ProbeError",
+    "clear_probe_cache",
+    "forget_probe",
+    "media_origin",
+    "moving_pictures",
+    "probe_media",
+]
 
 #: 静止画として扱う拡張子 長さを持たず、タイムライン上で任意に伸ばせる
 STILL_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff"})
@@ -27,16 +38,173 @@ class ProbeError(Exception):
     """素材を開けない、または中身を解釈できない"""
 
 
+#: 回転を読むために頭の 1 枚を待つ間に読むパケットの上限 B フレームやスレッドの遅れで
+#: 最初の数十パケットは絵が出ないことがあるので、それより十分多く取る
+ROTATION_PACKET_LIMIT = 256
+
+#: 調べた結果を覚えておく素材の数 1 本あたり数百バイトなので、多めに持っても軽い
+PROBE_CACHE_SIZE = 512
+
+_Facts = tuple[Fraction, tuple[VideoStreamInfo, ...], tuple[AudioStreamInfo, ...]]
+
+
 def probe_media(path: Path) -> MediaItem:
     """ファイルを解析して素材情報を返す
 
     映像・音声の各ストリームを個別に記録する 多言語音声や 5.1ch の素材では
     音声が複数本あり、読み込み時にそれぞれ別トラックへ展開できるようにするため
+
+    同じファイル（:func:`_identity` が同じ）を 2 度目からは開かずに答える
+    映像と音声のデコーダは作るたびにここを呼ぶ（再生やシークのたび、控えや字幕起こしも）
+    毎回開くと、そのたびに素材を開いて頭の 1 枚を復号する 素材 ID は呼ぶたびに新しく作る
+    読み込みのたびに別の素材として登録するため
+
+    覚えた結果を使い回すのは、読み込んだ後の素材を開き直す所（デコーダ・控え・字幕起こし）
+    のためと割り切る 中身の印は、同じ大きさのまま真ん中だけを書き換えて時刻を戻した物を
+    見分けられない（見分けるには全体を読むことになり、覚える意味が無くなる） そこで
+    素材を読み込む操作（ファイルの読み込み・ドロップ・テンプレートや .exo の素材・AI の
+    読み込み）は :func:`forget_probe` で覚えた結果を捨ててから呼ぶ 読み込み直せば必ず
+    開き直す
+
+    同じ素材を同時に何本ものスレッドから頼まれたら、開くのは 1 回で、ほかは待って同じ
+    結果を受け取る（読み込みは 4 本のスレッドで調べる）
     """
     path = Path(path)
-    if not path.exists():
-        raise ProbeError(f"ファイルが見つからない: {path}")
+    duration, video_streams, audio_streams = _facts(path, _identity(path))
+    return MediaItem(
+        path=path,
+        duration=duration,
+        video_streams=video_streams,
+        audio_streams=audio_streams,
+    )
 
+
+def forget_probe(path: Path) -> None:
+    """``path`` について覚えている結果を捨てる 素材を読み込む操作の前に呼ぶ"""
+    target = Path(path)
+    with _lock:
+        for key in [key for key in _cache if key[0] == target]:
+            del _cache[key]
+        # 調べている最中の物があれば世代を進める 古い調べは終わっても覚えさせず、これから
+        # 読み込む側もそれを待たない 待つと、捨てる前に始まった調べの結果を受け取り、
+        # その結果が捨てた後に覚え直される 調べている物が無ければ、覚え直される物も
+        # 待たされる物も無いので世代は要らない
+        if any(key[0] == target for key in _pending):
+            _generation[target] = _generation.get(target, 0) + 1
+
+
+def clear_probe_cache() -> None:
+    """覚えている調べた結果を捨てる 試験で開いた回数を数えるときのため"""
+    with _lock:
+        _cache.clear()
+
+
+#: 覚えた結果の鍵 場所・中身の印
+_Key = tuple[Path, tuple[int, ...]]
+#: 調べている最中の印の鍵 場所・中身の印・世代（:func:`forget_probe` で進む）
+_PendingKey = tuple[Path, tuple[int, ...], int]
+
+#: 調べた結果 古い物から捨てる
+_cache: OrderedDict[_Key, _Facts] = OrderedDict()
+#: いま調べている素材 同じ素材を頼んだほかのスレッドは、これが終わるのを待つ
+_pending: dict[_PendingKey, threading.Event] = {}
+#: 調べている最中の物がある場所だけの世代 無い場所は 0 とみなす
+#: 調べ終わってその場所に調べている物が無くなれば消すので、扱った場所の数だけ増え続けない
+_generation: dict[Path, int] = {}
+_lock = threading.Lock()
+
+
+def _facts(path: Path, identity: tuple[int, ...]) -> _Facts:
+    """素材の長さとストリーム 覚えていればそれを、無ければ開いて調べて覚える
+
+    ``functools.lru_cache`` は同じ鍵の同時の呼び出しを待ち合わせず、読み込みの 4 本の
+    スレッドが同じ素材を 2 重 3 重に開く 調べている間は印を立て、ほかは待つ
+    開けなかった素材は覚えない 待っていた側は自分で開き直して、同じ理由の例外を受け取る
+    調べている最中の印には世代を入れる :func:`forget_probe` の後に頼んだ側は、捨てる前に
+    始まった調べを待たずに自分で開き、捨てる前に始まった調べの結果は覚えない
+    """
+    key = (path, identity)
+    while True:
+        with _lock:
+            found = _cache.get(key)
+            if found is not None:
+                _cache.move_to_end(key)
+                return found
+            mine = (path, identity, _generation.get(path, 0))
+            waiting = _pending.get(mine)
+            if waiting is None:
+                done = threading.Event()
+                _pending[mine] = done
+                break
+        waiting.wait()
+    try:
+        facts = _read_facts(path)
+    except BaseException:
+        with _lock:
+            _finish(mine)
+        done.set()
+        raise
+    with _lock:
+        # 調べている間に捨てられていたら覚えない 読み込み直した側の結果だけを残す
+        if _generation.get(path, 0) == mine[2]:
+            _cache[key] = facts
+            while len(_cache) > PROBE_CACHE_SIZE:
+                _cache.popitem(last=False)
+        _finish(mine)
+    done.set()
+    return facts
+
+
+def _finish(mine: _PendingKey) -> None:
+    """調べ終わった印を外す その場所に調べている物が残っていなければ世代も消す
+
+    ``_lock`` を持って呼ぶ 世代は、捨てる前に始まった調べを見分けるためだけの物で、
+    調べている物が無くなれば見分ける相手がいない 消して 0 へ戻しても、覚えた結果の鍵に
+    世代は入っていないので、覚えた結果は外れない
+    """
+    del _pending[mine]
+    path = mine[0]
+    if not any(key[0] == path for key in _pending):
+        _generation.pop(path, None)
+
+
+#: 覚えた結果を使ってよいかを見るために読む、ファイルの頭と尻の長さ（バイト）
+#: 素材のヘッダ（mp4 の moov が頭か尻にある・wav の fmt）はたいていこの中に入る
+_FINGERPRINT_BYTES = 64 * 1024
+
+
+def _identity(path: Path) -> tuple[int, ...]:
+    """覚えた結果を使ってよいかを決める印 中身が変わっていれば変わる
+
+    更新時刻と大きさだけだと、同じ大きさの別の素材で上書きして更新時刻を戻した物
+    （時刻を保つ写し方・展開）を見分けられず、前の長さや解像度のまま置いてしまう
+    ファイルの番号（名前を替えて差し替えると変わる）・``st_ctime_ns``（POSIX では状態の
+    変わった時刻で、時刻を戻しても変わる Windows の Python 3.12 と 3.13 では作った時刻で、
+    上書きでは変わらない）・頭と尻の中身の要約も入れる 読むのは 128KB だけで、素材を
+    開いて頭の 1 枚を復号するより軽い 真ん中だけの書き換えはこれでも見分けられないので、
+    読み込む操作では覚えた結果を捨てる（:func:`probe_media`）
+    """
+    try:
+        stat = path.stat()
+        digest = hashlib.blake2b(digest_size=16)
+        with path.open("rb") as handle:
+            digest.update(handle.read(_FINGERPRINT_BYTES))
+            if stat.st_size > _FINGERPRINT_BYTES:
+                handle.seek(max(_FINGERPRINT_BYTES, stat.st_size - _FINGERPRINT_BYTES))
+                digest.update(handle.read(_FINGERPRINT_BYTES))
+    except OSError:
+        raise ProbeError(f"ファイルが見つからない: {path}") from None
+    return (
+        stat.st_mtime_ns,
+        stat.st_size,
+        stat.st_ino,
+        stat.st_ctime_ns,
+        int.from_bytes(digest.digest(), "big"),
+    )
+
+
+def _read_facts(path: Path) -> _Facts:
+    """素材を開いて、長さとストリームを調べる"""
     try:
         container = av.open(str(path))
     except (av.error.FFmpegError, OSError) as exc:
@@ -44,24 +212,42 @@ def probe_media(path: Path) -> MediaItem:
 
     with container:
         is_still = path.suffix.lower() in STILL_SUFFIXES
-        rotation = 0 if is_still else _probe_rotation(path)
-
         origin = media_origin(container)
-        video_streams = tuple(
-            _video_info(stream, rotation, origin) for stream in moving_pictures(container)
-        )
+        pictures = moving_pictures(container)
         audio_streams = tuple(_audio_info(stream) for stream in container.streams.audio)
-        if not video_streams and not audio_streams:
+        if not pictures and not audio_streams:
             raise ProbeError(f"映像も音声も含まれていない: {path}")
-
         duration = Fraction(0) if is_still else _container_duration(container, origin)
+        # 回転は最後に読む 頭の 1 枚を復号するので、ほかの値を読む前に進めない
+        rotations = [0] * len(pictures) if is_still else _rotations(path, container, pictures)
+        video_streams = tuple(
+            _video_info(stream, rotation, origin)
+            for stream, rotation in zip(pictures, rotations, strict=True)
+        )
 
-    return MediaItem(
-        path=path,
-        duration=duration,
-        video_streams=video_streams,
-        audio_streams=audio_streams,
-    )
+    return duration, video_streams, audio_streams
+
+
+def _rotations(
+    path: Path, container: av.container.InputContainer, pictures: list[av.VideoStream]
+) -> list[int]:
+    """映像ストリームごとの回転 表示行列はストリームごとに持つ
+
+    1 本目の回転をほかへ写すと、向きの違う 2 本目（別のカメラの角度など）が横倒しになる
+    2 本目からは開き直して頭から読む 1 本目の頭の 1 枚を読んだ所から続けると、
+    2 本目の頭のパケットを読み飛ばしている
+    """
+    if not pictures:
+        return []
+    rotations = [_display_rotation(container, pictures[0])]
+    for stream in pictures[1:]:
+        try:
+            with av.open(str(path)) as again:
+                same = cast(av.VideoStream, again.streams[stream.index])
+                rotations.append(_display_rotation(again, same))
+        except (av.error.FFmpegError, OSError, IndexError):
+            rotations.append(0)
+    return rotations
 
 
 def moving_pictures(container: av.container.InputContainer) -> list[av.VideoStream]:
@@ -222,46 +408,35 @@ def _audio_info(stream: av.audio.stream.AudioStream) -> AudioStreamInfo:
     )
 
 
-def _probe_rotation(path: Path) -> int:
+def _display_rotation(container: av.container.InputContainer, stream: av.VideoStream) -> int:
     """表示時に適用すべき時計回りの回転角を返す
 
-    PyAV 18 は表示行列に setter しか公開していないので、ここだけ ffprobe に頼る
-    スマホの縦撮り素材は回転情報を持つのが普通で、無視すると横倒しで表示される
-    取得できない場合は 0 を返し、素材の読み込み自体は続行する
+    スマホの縦撮り素材は回転情報（表示行列）を持つのが普通で、無視すると横倒しで表示される
+    PyAV 18 はストリームの表示行列を読む口を持たない（書く口だけ）が、FFmpeg はストリームの
+    表示行列を復号した絵へ写すので、頭の 1 枚を復号してその絵の回転を読む
+
+    前は ffprobe を別のプログラムとして起こして読んでいた 窓を持たない配布版では、素材を
+    調べるたび（読み込み・再生・控え・字幕起こし）に黒い窓が一瞬出た（ffprobe が PATH に
+    無い機械では回転を読めず、縦撮りが横倒しのままだった） 頭の 1 枚の復号は 1080p で 5ms、
+    4K の H.265 で 30ms ほどで、ffprobe を起こす 35〜45ms より速い
+
+    取得できない場合は 0 を返し、素材の読み込み自体は続行する 読むパケットには上限
+    （:data:`ROTATION_PACKET_LIMIT`）を置く 絵を 1 枚も出さない映像（壊れた道・復号できない
+    符号）で頭の 1 枚を待ち続けると、ファイルの終わりまで読み、大きな素材では読み込みや
+    再生の始まりが止まる（前の ffprobe には 15 秒の上限があった）
     """
-    ffprobe = shutil.which("ffprobe")
-    if ffprobe is None:
-        return 0
-
+    frame: av.VideoFrame | None = None
     try:
-        completed = subprocess.run(
-            [
-                ffprobe,
-                "-v",
-                "error",
-                "-select_streams",
-                "v:0",
-                "-show_entries",
-                "stream_side_data=rotation",
-                "-of",
-                "json",
-                str(path),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-        )
-        payload = json.loads(completed.stdout or "{}")
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        # 上限の数だけ取り出す 数えてから止めると、上限の次の 1 つまで読んでしまう
+        for packet in itertools.islice(container.demux(stream), ROTATION_PACKET_LIMIT):
+            frames = packet.decode()
+            if frames:
+                frame = frames[0]
+                break
+    except (av.error.FFmpegError, OSError, ValueError):
         return 0
-
-    for stream in payload.get("streams", []):
-        for side_data in stream.get("side_data_list", []):
-            value = side_data.get("rotation")
-            if value is None:
-                continue
-            # ffprobe は反時計回りの角度を返す 表示時に必要なのは時計回りなので反転する
-            clockwise = round(-float(value)) % 360
-            return clockwise if clockwise in (0, 90, 180, 270) else 0
-    return 0
+    if frame is None:
+        return 0
+    # 絵の回転は ffprobe と同じく反時計回りの角度 表示時に必要なのは時計回りなので反転する
+    clockwise = round(-float(frame.rotation)) % 360
+    return clockwise if clockwise in (0, 90, 180, 270) else 0
