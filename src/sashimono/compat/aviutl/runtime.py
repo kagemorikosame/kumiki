@@ -338,6 +338,8 @@ class LuaScriptRuntime:
         #: どこで見つかったか スクリプトのフォルダと名前ごとに 1 度だけ探す
         #: 毎コマ呼ばれる所なので、毎回フォルダを探し直すと重くなる
         self._found: dict[tuple[object, ...], Path | None] = {}
+        #: 置き場ごとの深い所のモジュールの索引（:meth:`_deep_index`）
+        self._deep: dict[Path, dict[tuple[str, str], Path]] = {}
 
     # --- 準備 ---
 
@@ -410,7 +412,7 @@ class LuaScriptRuntime:
             self._folder = folder
             try:
                 self._prepare(api, header, state)
-                function = self._compile(self._with_locals(source, state), script)
+                function = self._compile(self._with_locals(source, state, header), script)
                 self._call_guarded(function)
             except LuaError as exc:
                 self._report.note_failure(script or "スクリプト", str(exc))
@@ -499,26 +501,37 @@ class LuaScriptRuntime:
             # バイトに戻せない代用符号だけを置き換える（lua_text を参照）
             globals_table[name] = lua_text(value, self._report)
 
-    def _with_locals(self, source: str, state: ObjectState) -> str:
+    def _with_locals(
+        self, source: str, state: ObjectState, header: ScriptHeader | None = None
+    ) -> str:
         """``--dialog`` の ``local 名前=初期値`` を、本文の頭で宣言するローカル変数にした本文
 
         AviUtl はこの形の欄を本文の頭の ``local`` 宣言として渡す（PSDToolKit の 吹き出し の
         ``local mlr=24``） 値は 1 つの表を通して渡し、宣言は 1 行目の頭に並べる 行を足すと、
         失敗したときの行番号が 1 つずつずれる
+
+
+        値の無い欄（初期値が nil で設定欄を作らない物、値が ``None`` の物）も宣言して nil にする
+        宣言しないと、同じランタイムで前に走ったスクリプトが残した同じ名前の大域変数を読む
         """
-        found = {
-            bare: lua_text(value, self._report)
+        values = {
+            bare: value
             for name, value in state.values.items()
-            if _is_local(name)
-            and value is not None
-            and _LUA_NAME.fullmatch(bare := name[6:].strip())
+            if _is_local(name) and _LUA_NAME.fullmatch(bare := name[6:].strip())
         }
+        names = [name for name in (header.locals if header else ()) if _LUA_NAME.fullmatch(name)]
+        names = list(dict.fromkeys([*names, *values]))
         globals_table = self._lua.globals()
-        if not found:
+        if not names:
             globals_table[_DIALOG_LOCALS] = None
             return source
-        globals_table[_DIALOG_LOCALS] = self._lua.table_from(found)
-        declared = " ".join(f'local {bare} = {_DIALOG_LOCALS}["{bare}"]' for bare in found)
+        given = {
+            name: lua_text(value, self._report)
+            for name, value in values.items()
+            if value is not None
+        }
+        globals_table[_DIALOG_LOCALS] = self._lua.table_from(given)
+        declared = " ".join(f'local {name} = {_DIALOG_LOCALS}["{name}"]' for name in names)
         return f"{declared} {_strip_bom(source)}"
 
     # --- モジュール ---
@@ -528,6 +541,7 @@ class LuaScriptRuntime:
         self._roots = roots
         # 探す場所が変わったので、見つけた場所の控えは使えない
         self._found.clear()
+        self._deep.clear()
 
     def _locate(self, name: str, suffixes: tuple[str, ...]) -> Path | None:
         """モジュールの場所 スクリプトのフォルダと名前ごとに 1 度だけ探す"""
@@ -762,13 +776,31 @@ class LuaScriptRuntime:
         # フォルダを持たず、PSDToolKit を配布のまま置く（src/lua の下）と require("PSDToolKit")
         # が見つからずに字幕表示が subobj を作れない 浅い所を先に見終えてから探すので、
         # 同じ名前が浅い所にあればそちらを読む（今まで読んでいた物を変えない）
-        # 見つけた場所は名前ごとに覚える（_locate）ので、深く探すのは 1 度だけ
         for root in self._roots:
+            index = self._deep_index(root)
             for suffix in suffixes:
-                deep = sorted(root.glob(f"*/*/**/{name}{suffix}"), key=_shallow_first)
-                if deep:
-                    return deep[0]
+                found = index.get((name.casefold(), suffix.casefold()))
+                if found is not None:
+                    return found
         return None
+
+    def _deep_index(self, root: Path) -> dict[tuple[str, str], Path]:
+        """置き場の 2 段より下にあるモジュールの索引 置き場ごとに 1 度だけ歩いて作る
+
+        名前ごとに置き場を歩くと、毎回違う無い名前を require するスクリプトが、Lua の命令数の
+        上限の外で置き場全体の走査を繰り返し、描画を止められる 名前と拡張子は大文字小文字を
+        区別しない（Windows のファイル名と同じ） 同じ名前が何か所にもあれば浅い物を取る
+        """
+        index = self._deep.get(root)
+        if index is not None:
+            return index
+        index = {}
+        suffixes = {suffix.casefold() for suffix in MODULE_SUFFIXES}
+        for path in sorted(root.glob("*/*/**/*"), key=_shallow_first):
+            if path.suffix.casefold() in suffixes and path.is_file():
+                index.setdefault((path.stem.casefold(), path.suffix.casefold()), path)
+        self._deep[root] = index
+        return index
 
     def _compile(self, source: str, script: str) -> Any:
         try:

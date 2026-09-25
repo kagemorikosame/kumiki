@@ -10,8 +10,10 @@ PSDToolKit の字幕表示はテキスト欄の Lua で ``subobj=require("PSDToo
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import numpy as np
+import pytest
 
 from sashimono.compat.aviutl.objapi import ObjectState
 from sashimono.compat.aviutl.report import CompatibilityReport
@@ -60,6 +62,37 @@ class TestDeepModules:
         assert (
             _runtime(tmp_path).expand_text('<?mes(require("Same").name)?>', _state()) == "shallow"
         )
+
+    def test_the_folders_are_walked_once_for_many_missing_names(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 名前ごとに置き場全体を歩くと、毎回違う無い名前を require するスクリプトが、Lua の
+        # 命令数の上限の外で描画を止められる 歩くのは置き場ごとに 1 度だけ
+        _module(tmp_path / "a" / "b" / "c" / "Deep.lua", "deep")
+        walks: list[Path] = []
+        original_glob, original_rglob = Path.glob, Path.rglob
+
+        def glob(self: Path, pattern: str, *args: Any, **kwargs: Any) -> Any:
+            if "**" in pattern:
+                walks.append(self)
+            return original_glob(self, pattern, *args, **kwargs)
+
+        def rglob(self: Path, pattern: str, *args: Any, **kwargs: Any) -> Any:
+            walks.append(self)
+            return original_rglob(self, pattern, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "glob", glob)
+        monkeypatch.setattr(Path, "rglob", rglob)
+        runtime = _runtime(tmp_path)
+        source = (
+            "for i = 1, 20 do require('none' .. i) end"
+            " obj.ox = require('Deep').name == 'deep' and 1 or 0"
+        )
+        state = _state()
+        result = runtime.run(source, state)
+        assert not result.failed, result.message
+        assert state.ox == 1.0
+        assert len(walks) <= 1
 
     def test_a_missing_module_is_still_recorded(self, tmp_path: Path) -> None:
         report = CompatibilityReport()

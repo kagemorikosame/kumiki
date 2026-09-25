@@ -45,6 +45,19 @@ class TestDialogLocals:
         after = _run(runtime, "obj.ox = mlr == nil and 1 or 0", {})
         assert after.ox == 1.0
 
+    def test_a_nil_local_does_not_read_a_global_of_the_same_name(self) -> None:
+        # 初期値 nil の欄と値の無い欄も本文のローカル変数 宣言しないと、同じランタイムで前に
+        # 走ったスクリプトが残した同じ名前の大域変数を読み、描き方が前のスクリプトで変わる
+        source = (
+            "--dialog:表,local tbl=nil;余白,local mlr=24\n"
+            "obj.ox = tbl == nil and 1 or 0\n"
+            "obj.oy = mlr == nil and 1 or 0\n"
+        )
+        runtime = LuaScriptRuntime(report=CompatibilityReport())
+        _run(runtime, "tbl = 5 mlr = 7", {})
+        state = _run(runtime, source, {"local mlr": None})
+        assert (state.ox, state.oy) == (1.0, 1.0)
+
     def test_line_numbers_in_errors_stay_the_same(self) -> None:
         # 頭に宣言を足しても、失敗したときの行番号がスクリプトの行とずれない
         runtime = LuaScriptRuntime(report=CompatibilityReport())
