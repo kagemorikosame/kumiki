@@ -37,6 +37,11 @@ __all__ = [
 ]
 
 
+#: 積んだ効果を絵へ掛けて返す関数 ``(絵, 効果, フレーム, fps, クリップの長さ) -> 絵``
+#: GPU を持つレンダラが渡す（:class:`~sashimono.engine.render.script_bake.ScriptEffectBaker`）
+ApplyEffects = Callable[[np.ndarray, tuple[Effect, ...], int, float, int], np.ndarray]
+
+
 def split_effects(effects: tuple[Effect, ...]) -> tuple[tuple[Effect, ...], tuple[Effect, ...]]:
     """エフェクトを「GPU で処理するもの」と「スクリプト」に分ける"""
     gpu = tuple(e for e in effects if not e.kind.startswith(PREFIX))
@@ -55,10 +60,23 @@ class ScriptStage:
     用意だけで描画の余裕を食う
     """
 
-    def __init__(self, catalog: ScriptCatalog, *, screen: tuple[int, int]) -> None:
+    def __init__(
+        self,
+        catalog: ScriptCatalog,
+        *,
+        screen: tuple[int, int],
+        apply_effects: ApplyEffects | None = None,
+    ) -> None:
         self._catalog = catalog
         self._screen = screen
-        self._runtime = LuaScriptRuntime(render_source=self._render_source)
+        #: ``obj.effect`` で積んだ効果を、絵を読む・変える呼び出しの前に掛ける（#176）
+        self._apply_effects = apply_effects
+        #: いま走らせているクリップのフレーム・fps・長さ 効果の動きが時刻を見る
+        self._timing: tuple[int, float, int] = (0, 30.0, 1)
+        self._runtime = LuaScriptRuntime(
+            render_source=self._render_source,
+            apply_effects=self._apply_requested if apply_effects is not None else None,
+        )
         # 共通処理のファイル（.mod2）はスクリプトと同じ場所に置かれている
         self._runtime.set_roots(catalog.roots)
 
@@ -94,6 +112,7 @@ class ScriptStage:
             layer=layer,
             framebuffer=framebuffer,
         )
+        self._timing = (frame, fps, max(1, clip.duration))
         state.base_x, state.base_y = _placed_at(clip, frame)
 
         for effect in effects:
@@ -137,6 +156,18 @@ class ScriptStage:
             font=dict(font) if font else {},
         )
         return self._runtime.expand_text(text, state)
+
+    def _apply_requested(
+        self, image: np.ndarray, requests: tuple[EffectRequest, ...]
+    ) -> np.ndarray:
+        """``obj.effect`` で積んだ効果を、いまの絵へ掛ける"""
+        if self._apply_effects is None:  # pragma: no cover - 渡されたときだけランタイムへ渡す
+            return image
+        frame, fps, duration = self._timing
+        # 描くときと同じ写し方をする（:func:`requested_effects`） 別に写すと、焼き込んだときだけ
+        # 項目名や Y の向きが違って掛かる
+        effects = tuple(effect for request in requests for effect in _to_effects(request))
+        return self._apply_effects(image, effects, frame, fps, duration)
 
     def _render_source(
         self, kind: str, params: dict[str, object], width: int, height: int
