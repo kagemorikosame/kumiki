@@ -343,6 +343,11 @@ class ObjApi:
         self._apply_effects = apply_effects
         #: この実行で焼き込んだ回数（:data:`MAX_BAKES`）
         self._bakes = 0
+        #: 持ち運んだ効果を掛けられなかったバッファ 同じ絵と同じ効果では掛けられない条件
+        #: （焼き込みの上限・GPU の大きさの上限・掛ける関数が無い）が変わらないので、絵か効果を
+        #: 差し替えるまで掛け直さない 掛け直すと drawpoly の三角形ごとに焼き込みの回数を使い、
+        #: 記録も三角形の数だけ増える（:meth:`_settle_buffer`）
+        self._unsettled: set[str] = set()
         #: 積んだ効果の数が上限（:data:`MAX_STACKED_EFFECTS`）を越えたことを記録済みか
         self._effects_overflowed = False
         self._random = random.Random(0)
@@ -1159,6 +1164,7 @@ class ObjApi:
 
         絵を丸ごと差し替えたバッファに前の絵の効果が残ると、読み戻した新しい絵に掛かる
         """
+        self._unsettled.discard(name)
         if effects:
             self.state.buffer_effects[name] = effects
         else:
@@ -1174,12 +1180,13 @@ class ObjApi:
         state = self.state
         effects = state.buffer_effects.get(name)
         stored = state.buffers.get(name)
-        if not effects or stored is None:
+        if not effects or stored is None or name in self._unsettled:
             return
         remaining = list(effects)
         state.buffers[name] = self._apply_segments(caller, stored, remaining, note=False)
         self._carry(name, tuple(remaining))
         if remaining:
+            self._unsettled.add(name)
             self._report.note_missing(f"{caller}（バッファと持ち運んだ効果を先に掛けられない）")
 
     def lua_mes(self, text: Any = "") -> None:

@@ -190,6 +190,48 @@ def test_a_script_sees_the_layer_it_is_placed_on(gl_context: Any) -> None:
     assert columns.max() - columns.min() + 1 == 20
 
 
+def test_video_and_mixed_tracks_are_counted_together(gl_context: Any) -> None:
+    """映像と混合のトラックが並ぶタイムラインでは、絵を描くトラックをまとめて数える
+
+    種類ごとに数えていた頃は、1 本目の映像と 1 本目の混合の両方に 1 を渡し、番号で状態を
+    分けるスクリプトで別のトラックの状態が混ざった（PR #218 の指摘） 音声トラックは数えない
+    """
+    from dataclasses import replace
+
+    from sashimono.core.model import (
+        Clip,
+        GeneratedSource,
+        Project,
+        ProjectSettings,
+        Timeline,
+        Track,
+        TrackKind,
+    )
+    from sashimono.core.timebase import FrameRate
+    from sashimono.engine.render import FrameRenderer
+
+    rate = FrameRate(30)
+    below = Clip(timeline_start=0, duration=10, source=GeneratedSource(kind="text", params={}))
+    above = Clip(timeline_start=0, duration=10, source=GeneratedSource(kind="text", params={}))
+    main = Timeline(
+        rate=rate,
+        tracks=(
+            Track(TrackKind.VIDEO, "V1", (below,)),
+            Track(TrackKind.AUDIO, "A1"),
+            Track(TrackKind.MIXED, "L1", (above,)),
+        ),
+    )
+    project = replace(
+        Project.create(ProjectSettings(width=64, height=64, frame_rate=rate)), timeline=main
+    )
+    renderer = FrameRenderer(project, context=gl_context)
+    try:
+        assert renderer._layer_number(below) == 1
+        assert renderer._layer_number(above) == 2
+    finally:
+        renderer.close()
+
+
 def test_a_clip_id_shared_with_a_scene_keeps_its_own_layer(gl_context: Any) -> None:
     """別のシーンに同じ識別子のクリップがあっても、クリップごとに自分のトラックの番号を渡す
 

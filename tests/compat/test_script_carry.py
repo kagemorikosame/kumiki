@@ -58,6 +58,8 @@ class TestCarry:
         assert _kinds(state) == ["blur"]
 
     def test_a_copy_between_buffers_keeps_the_effects(self) -> None:
+        # バッファからバッファへ写すときに効果を引き継がないと、2 度写してから読み戻した絵が
+        # ぼけずに描かれる
         state, _ = _run(
             f'{BLUR} obj.copybuffer("cache:a", "obj") obj.copybuffer("cache:b", "cache:a")'
             ' obj.copybuffer("obj", "cache:b")'
@@ -124,6 +126,36 @@ class TestCarry:
         assert seen == [(4, 4, 4)]
         assert state.buffers["tmp"].shape[:2] == (8, 8)
         assert "tmp" not in state.buffer_effects
+
+    def test_a_buffer_that_could_not_be_settled_is_not_retried_per_triangle(self) -> None:
+        """掛けられなかった持ち運びの効果を、drawpoly の三角形ごとに掛け直さない
+
+        同じ絵と同じ効果では掛けられない条件が変わらない 掛け直すと三角形ごとに焼き込みの
+        回数を使って上限に届き、後の効果まで焼き込めずに順が入れ替わる 記録も三角形の数だけ
+        増える（PR #218 の指摘） 2 面の drawpoly は三角形 4 つ
+        """
+        state = ObjectState(image=np.full((4, 4, 4), 255, np.uint8), screen_w=32, screen_h=18)
+        state.buffers["tmp"] = np.zeros((8, 8, 4), np.uint8)
+        state.buffer_effects["tmp"] = (EffectRequest(kind="blur", params={}, original="ぼかし"),)
+        calls: list[int] = []
+
+        def refuse(image: np.ndarray, effects: tuple[object, ...]) -> None:
+            # GPU の大きさの上限を超えたときと同じく断る
+            del image, effects
+            calls.append(1)
+
+        report = CompatibilityReport()
+        runtime = LuaScriptRuntime(report=report, apply_effects=refuse)
+        result = runtime.run(
+            'obj.setoption("drawtarget", "tempbuffer")'
+            " obj.drawpoly({{-4,-4,0,0,0},{0,-4,0,1,0},{0,0,0,1,1},{-4,0,0,0,1},"
+            "{0,0,0,0,0},{4,0,0,1,0},{4,4,0,1,1},{0,4,0,0,1}})",
+            state,
+        )
+        assert not result.failed, result.message
+        assert calls == [1]
+        assert sum(count for line, count in report.missing.items() if "持ち運んだ" in line) == 1
+        assert "tmp" in state.buffer_effects
 
     def test_a_new_tempbuffer_forgets_the_carried_effects(self) -> None:
         # 作り直した空の仮想バッファに前の絵の効果が残ると、後から描いた絵がぼける

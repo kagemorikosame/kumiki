@@ -1689,7 +1689,7 @@ class FrameRenderer:
             )
 
     def _layer_number(self, clip: Clip) -> int:
-        """スクリプトへ渡す ``obj.layer`` 置かれたトラックが同じ種類の中で奥から何本目か（1 から）
+        """スクリプトへ渡す ``obj.layer`` 絵を描くトラックの奥から何本目か（1 から）
 
         混合トラックでは AviUtl のレイヤー番号と同じ（:mod:`sashimono.compat.layers`） 0 のまま
         渡すと、PSDToolKit のようにレイヤー番号で字幕や口パクの状態を分けるスクリプトで、
@@ -1707,12 +1707,13 @@ class FrameRenderer:
             by_id: dict[ClipId, int] = {}
             timelines = (self._project.timeline, *(s.timeline for s in self._project.scenes))
             for timeline in timelines:
-                counted: dict[object, int] = {}
-                for track in timeline.tracks:
-                    counted[track.kind] = counted.get(track.kind, 0) + 1
+                # 絵を描くトラック（映像と混合）をまとめて奥から数える 種類ごとに数えると、
+                # 映像と混合のトラックが並ぶタイムラインで両方に同じ番号が渡り、番号で状態を
+                # 分けるスクリプトで別のトラックの状態が混ざる 混合だけなら今までと同じ番号
+                for layer, track in enumerate(timeline.picture_tracks(), 1):
                     for placed in track.clips:
-                        by_object[id(placed)] = counted[track.kind]
-                        by_id.setdefault(placed.id, counted[track.kind])
+                        by_object[id(placed)] = layer
+                        by_id.setdefault(placed.id, layer)
             cached = (self._project, by_object, by_id)
             self._layer_numbers = cached
         _, by_object, by_id = cached
