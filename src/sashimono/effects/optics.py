@@ -497,8 +497,11 @@ void main() {
         if (fine && !blurred) { frag_color = here; return; }
         vec2 direction = u_pass == 2 ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
         // blur は合成の画素へ縮めて渡される（TrackSpec の px） ぼかす絵も合成の大きさなので、
-        // そのまま渡すと書き出しの半径を縮めた幅でぼかす 書き出しの画素で数える
-        // blurred_step とは、u_pixel_scale で割って単位を揃えている所だけが違う
+        // そのまま渡すと書き出しの半径を縮めた幅でぼかす ここで u_pixel_scale で割ると
+        // 2 回縮める逆になり、2 倍・4 倍の幅でぼかしてしまう
+        // blurred_step は書き出しの画素で数えるので、同じ blur を u_pixel_scale で割って
+        // 半径を揃える 求め方は別（こちらは画素ごとの重みの畳み込み、あちらは段 1 つを
+        // 同じ重みでぼかした形を正規分布の累積で近づけた物）
         vec4 spread = blur1d(u_texture, v_uv, direction, blur);
         // 思い描く時にぼかすのは段の値（アルファ）だけ 赤・緑・青は光を当てる所で読む
         frag_color = blurred ? vec4(here.rgb, spread.a) : spread;
