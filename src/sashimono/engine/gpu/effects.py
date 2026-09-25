@@ -17,6 +17,7 @@ from OpenGL import GL
 
 from sashimono.core.model import Effect, ParamValue
 from sashimono.effects import EffectDefinition, registry
+from sashimono.effects.definition import turned_object
 from sashimono.effects.sampling import AREA_SAMPLING
 from sashimono.effects.spec import (
     CheckSpec,
@@ -321,6 +322,8 @@ class EffectProcessor:
         広げないと、後ろに積んだミラーや角丸が**広げる前の範囲**で動く
         AviUtl の 領域拡張 → ミラー は、広げたぶんだけ鏡像が離れる並べ方
         """
+        if definition.turns_object:
+            self._object = turned_object(self._object)
         if definition.expands_object is None:
             return
         top, bottom, left, right = (

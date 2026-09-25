@@ -381,7 +381,13 @@ def _video_effect(name: str, entry: dict[str, Any], length: int, keyframes: Any)
             return None
         # 拡大率は ``Zoom`` に縦横それぞれの ``ZoomX`` ``ZoomY`` が掛かる
         # どれも動きうるので、素の数で読むと登場アニメーションが止まる
-        return definition.create(scale=value("Zoom", 100.0), scale_y=value("ZoomY", 100.0))
+        # 前は ``ZoomX`` を読まず、お辞儀(120F) の横 105% が掛からずに縁の差が 40 を
+        # 超えていた（#205）
+        return definition.create(
+            scale=value("Zoom", 100.0),
+            scale_x=value("ZoomX", 100.0),
+            scale_y=value("ZoomY", 100.0),
+        )
     if kind == "rotate":
         definition = registry.get("transform")
         if definition is None:  # pragma: no cover - 標準エフェクトは必ずある

@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -14,7 +15,7 @@ from typing import Any
 from sashimono.core.model import AnimatedValue, Effect, ParamValue
 from sashimono.effects.spec import ParameterGroup, ParameterSpec, ParamInput
 
-__all__ = ["EffectDefinition", "EffectRegistry", "registry"]
+__all__ = ["EffectDefinition", "EffectRegistry", "registry", "turned_object"]
 
 
 #: 音を加工する関数の形 引数は サンプル・解いた値・時間まわりの手がかり
@@ -64,6 +65,14 @@ class EffectDefinition:
     #: （ミラーの折り返す線・角丸・中心基準の動き）も広げた後の範囲で動くべき
     #: 印を付けないと、広げる前の範囲のまま後ろが動いて位置がずれる
     expands_object: tuple[str, str, str, str] | None = None
+    #: 絵を中心の周りに回すので、後ろのエフェクトには回しても収まる範囲（範囲の対角線を
+    #: 直径とする円を囲む正方形）を絵の範囲として渡すか
+    #:
+    #: YMM4 は渦巻き（SpiralTransform）の後ろの跳ねて登場の潰れを、その正方形の下端を
+    #: 支点にして潰した（お辞儀(120F) の 640x360 の四角で、下端が四角の下端より
+    #: 187 画素下の支点から潰れた分だけ下がった 対角線の半分 367 と合う #205）
+    #: 広げる前の範囲のままだと、潰れた四角が 3 画素上に浮く
+    turns_object: bool = False
     #: 後ろに積んだエフェクトを、このエフェクトの決めた範囲の中だけに効かせるか（部分フィルタ）
     #:
     #: 真のとき、エンジンはここへ来た時点の絵を取っておき、次の同じ印のエフェクトか
@@ -141,6 +150,17 @@ class EffectDefinition:
         定義に無いものは落とす
         """
         return {spec.name: spec.coerce(params.get(spec.name)) for spec in self.parameters}
+
+
+def turned_object(box: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+    """回しても収まる範囲（:attr:`EffectDefinition.turns_object`） 左・下・右・上の並び
+
+    範囲の中心はそのまま、対角線を直径とする円を囲む正方形にする
+    """
+    left, bottom, right, top = box
+    centre_x, centre_y = (left + right) * 0.5, (bottom + top) * 0.5
+    half = math.hypot(right - left, top - bottom) * 0.5
+    return (centre_x - half, centre_y - half, centre_x + half, centre_y + half)
 
 
 class EffectRegistry:

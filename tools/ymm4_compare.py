@@ -637,6 +637,16 @@ CEILINGS = ROOT / "tools" / "ymm4_compare_ceilings.json"
 #: 上限に足すゆとり GPU や書体の違いで 1 前後は揺れる それより大きく動いたら
 #: 描き方が変わったと見る（9-18 からの変化で一番小さい悪化が 3.6 だった）
 CEILING_MARGIN = 3.0
+#: テンプレートごとの縁の差（縮めない絵 :class:`Measure` の ``edge``）の上限（#205）
+#: 縮めた平均は動きの位置が 1〜5 画素ずれても 0.5 ほどにしかならず、キャラクターの動きの
+#: テンプレートのずれを見落とした 縁の差はずれると 40 を超えるので、ずれが戻れば気付ける
+#: 持つのは動きを合わせたテンプレート（キャラクターの動き）だけ 乱数で揺らす物
+#: （震え・呼吸の回転）は YMM4 の乱数を写せず、合わせても 40 前後に残る ここに書くのは
+#: 今の値が大きく悪くならないための見張り ``--write-ceilings`` は書いてある物だけを書き換える
+EDGE_CEILINGS = ROOT / "tools" / "ymm4_compare_edge_ceilings.json"
+#: 縁の差の上限に足すゆとり 同じ絵でも圧縮の揺れで 5 ほど動く（動きを合わせた ぽよ登場 の
+#: コマごとの縁の差が 5〜20 で揺れた）
+EDGE_CEILING_MARGIN = 5.0
 
 
 def worst_by_template(rows: list[Row]) -> dict[str, float]:
@@ -647,7 +657,17 @@ def worst_by_template(rows: list[Row]) -> dict[str, float]:
     return worst
 
 
-def over_ceilings(worst: dict[str, float], ceilings: dict[str, float]) -> list[str]:
+def worst_edge_by_template(rows: list[Row]) -> dict[str, float]:
+    """テンプレートごとに、比べたフレームのうち一番大きい縁の差"""
+    worst: dict[str, float] = {}
+    for row in rows:
+        worst[row.name] = max(row.edge, worst.get(row.name, 0.0))
+    return worst
+
+
+def over_ceilings(
+    worst: dict[str, float], ceilings: dict[str, float], label: str = "差"
+) -> list[str]:
     """上限を超えたテンプレートを、超えた分の大きい順に並べる
 
     上限の無いテンプレート（あとから ``build`` に足したもの）は見ない 上限を持たない
@@ -659,7 +679,7 @@ def over_ceilings(worst: dict[str, float], ceilings: dict[str, float]) -> list[s
         if name in ceilings and difference > ceilings[name]
     ]
     return [
-        f"{name} 差 {difference:.1f}（上限 {ceilings[name]:.1f}）"
+        f"{name} {label} {difference:.1f}（上限 {ceilings[name]:.1f}）"
         for _, name, difference in sorted(exceeded, reverse=True)
     ]
 
@@ -735,9 +755,23 @@ def read_ceilings(path: Path) -> dict[str, float]:
     return ceilings
 
 
-def write_ceilings(path: Path, worst: dict[str, float]) -> None:
-    """測った分だけ上限を書き換える ``--only`` で一部を測ったときに残りを消さない"""
-    merged = read_ceilings(path) | ceilings_from(worst)
+def write_ceilings(
+    path: Path,
+    worst: dict[str, float],
+    *,
+    margin: float = CEILING_MARGIN,
+    only_listed: bool = False,
+) -> None:
+    """測った分だけ上限を書き換える ``--only`` で一部を測ったときに残りを消さない
+
+    ``only_listed`` なら、ファイルに書いてあるテンプレートだけを書き換える 縁の差の
+    上限（:data:`EDGE_CEILINGS`）は見張ると決めた物だけが持つので、測ったすべてを足すと
+    乱数で揺らすテンプレートまで見張りに入る
+    """
+    current = read_ceilings(path)
+    if only_listed:
+        worst = {name: value for name, value in worst.items() if name in current}
+    merged = current | ceilings_from(worst, margin)
     path.write_text(
         json.dumps(dict(sorted(merged.items())), ensure_ascii=False, indent=1) + "\n",
         encoding="utf-8",
@@ -756,8 +790,10 @@ def command_compare(arguments: argparse.Namespace) -> int:
         print(f"{arguments.ceilings} がありません 作るなら --write-ceilings を付けてください")
         return 1
     # 比べるのに 1 分ほど掛かる 壊れた上限は比べる前に知らせる
+    # 縁の差の上限は無くてもよい 見張ると決めたテンプレートだけが持つ（:data:`EDGE_CEILINGS`）
     try:
         ceilings = read_ceilings(arguments.ceilings)
+        edge_ceilings = read_ceilings(arguments.edge_ceilings)
     except ValueError as error:
         print(f"上限を読めない: {error}")
         return 1
@@ -812,17 +848,34 @@ def command_compare(arguments: argparse.Namespace) -> int:
         return 1
 
     worst = worst_by_template(rows)
+    worst_edges = worst_edge_by_template(rows)
     if arguments.write_ceilings:
         write_ceilings(arguments.ceilings, worst)
         print(f"上限を書き換えた: {arguments.ceilings}")
+        if arguments.edge_ceilings.exists():
+            write_ceilings(
+                arguments.edge_ceilings,
+                worst_edges,
+                margin=EDGE_CEILING_MARGIN,
+                only_listed=True,
+            )
+            print(f"縁の差の上限を書き換えた: {arguments.edge_ceilings}")
         return 0
+    failed = False
     exceeded = over_ceilings(worst, ceilings)
     if exceeded:
         print(f"\n差の上限を超えた（{arguments.ceilings.name}）")
         for line in exceeded:
             print(f"  {line}")
-        return 1
-    return 0
+        failed = True
+    # 縁の差は縮めた平均と別に見る 平均が上限の中でも、動きがずれると縁だけが大きく出る
+    edges_exceeded = over_ceilings(worst_edges, edge_ceilings, label="縁")
+    if edges_exceeded:
+        print(f"\n縁の差の上限を超えた（{arguments.edge_ceilings.name}）")
+        for line in edges_exceeded:
+            print(f"  {line}")
+        failed = True
+    return 1 if failed else 0
 
 
 def compare_work(
@@ -3487,6 +3540,12 @@ def main() -> int:
         type=Path,
         default=CEILINGS,
         help="テンプレートごとの差の上限 超えたら終了コード 1",
+    )
+    compare.add_argument(
+        "--edge-ceilings",
+        type=Path,
+        default=EDGE_CEILINGS,
+        help="テンプレートごとの縁の差の上限（書いてある物だけ見る） 超えたら終了コード 1",
     )
     compare.add_argument(
         "--write-ceilings",

@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from sashimono.core.commands.fixed import FLIP_EFFECT_KIND, TRANSFORM_EFFECT_KIND
 from sashimono.core.model import Clip, Effect, Project
 from sashimono.effects import registry
+from sashimono.effects.definition import turned_object
 from sashimono.effects.spec import CheckSpec, SelectSpec, TrackSpec
 from sashimono.engine.gpu import fit_placement
 from sashimono.engine.render.scripts import split_effects
@@ -258,10 +259,16 @@ def _follow_effects(
         if after_fixed:
             # 置いた後の絵に掛かる物は、形を変えるかどうかを中身から決められない
             approximate = True
-        elif definition.category in _SHAPING_CATEGORIES or definition.expands_object is not None:
+        elif (
+            definition.category in _SHAPING_CATEGORIES
+            or definition.expands_object is not None
+            or definition.turns_object
+        ):
             # 置く前でも、切り抜き・領域拡張・動きの効果は絵の見える範囲や位置を変える
             # 枠は置いた矩形のままなので、ぴったりだと言わない
             approximate = True
+        if definition.turns_object:
+            obj = turned_object(obj)
         if definition.expands_object is not None:
             obj = _grow(obj, definition.expands_object, effect, local, scale)
 
@@ -315,8 +322,9 @@ def _transform(
     if values.get("move_to_pivot") is True:
         # シェーダは出力に (anchor - center) を足してから逆算する 前向きでは引く
         shift = (shift[0] - (anchor[0] - center[0]), shift[1] - (anchor[1] - center[1]))
-    scale_x = max(number("scale", 100.0) / 100.0, 0.0001)
-    scale_y = max(number("scale_y", 100.0) / 100.0, 0.0001) * scale_x
+    whole = max(number("scale", 100.0) / 100.0, 0.0001)
+    scale_x = max(number("scale_x", 100.0) / 100.0, 0.0001) * whole
+    scale_y = max(number("scale_y", 100.0) / 100.0, 0.0001) * whole
     angle = math.radians(number("rotation", 0.0))
     cosine, sine = math.cos(angle), math.sin(angle)
 

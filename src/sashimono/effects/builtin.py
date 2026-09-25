@@ -399,6 +399,7 @@ uniform float pos_x;
 uniform float pos_y;
 uniform float scale;
 uniform float scale_y;
+uniform float scale_x;
 uniform float rotation;
 uniform float rotation_x;
 uniform float rotation_y;
@@ -451,8 +452,9 @@ void main() {
     float s = sin(angle);
     pixel = mat2(c, -s, s, c) * pixel;
 
-    float sx = max(scale / 100.0, 0.0001);
-    float sy = max(scale_y / 100.0, 0.0001) * sx;
+    float whole = max(scale / 100.0, 0.0001);
+    float sx = max(scale_x / 100.0, 0.0001) * whole;
+    float sy = max(scale_y / 100.0, 0.0001) * whole;
     pixel /= vec2(sx, sy);
     pixel += anchor;
 
@@ -1085,6 +1087,10 @@ def register_builtin_effects() -> None:
                 TrackSpec("pos_y", "Y", -4000, 4000, 0, step=1, unit="px"),
                 TrackSpec("scale", "拡大率", 1, 800, 100, unit="%"),
                 TrackSpec("scale_y", "縦の拡大率", 1, 800, 100, unit="%"),
+                # 横だけに掛かる比 縦の比（scale_y）は横と縦の比なので、横と縦が別々に動く
+                # 拡大（YMM4 の拡大率の ZoomX と ZoomY お辞儀(120F) は横 100 → 105 → 100 と
+                # 縦 100 → 98 → 100 を同時に動かす）を 1 本では表せない #205
+                TrackSpec("scale_x", "横の拡大率", 1, 800, 100, unit="%"),
                 TrackSpec("rotation", "回転", -3600, 3600, 0, unit="度"),
                 TrackSpec("rotation_x", "X 軸回転", -3600, 3600, 0, unit="度"),
                 TrackSpec("rotation_y", "Y 軸回転", -3600, 3600, 0, unit="度"),
@@ -1124,6 +1130,7 @@ def register_builtin_effects() -> None:
                 ("pos_y", 0.0),
                 ("scale", 100.0),
                 ("scale_y", 100.0),
+                ("scale_x", 100.0),
                 ("rotation", 0.0),
                 ("rotation_x", 0.0),
                 ("rotation_y", 0.0),

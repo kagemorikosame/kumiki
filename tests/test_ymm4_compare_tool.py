@@ -1394,6 +1394,7 @@ def _compare_arguments(tmp_path: Path, **overrides: object) -> SimpleNamespace:
         "blending": "srgb",
         "top": 5,
         "ceilings": tmp_path / "ceilings.json",
+        "edge_ceilings": tmp_path / "edge_ceilings.json",
         "write_ceilings": False,
     }
     values.update(overrides)
@@ -1641,6 +1642,54 @@ def test_the_console_lists_the_largest_edge_differences_too(
     assert "縁取り文字" in edge_part.splitlines()[1]
 
 
+def test_a_template_whose_edges_drift_past_its_edge_ceiling_fails(
+    tool: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """縁の差の上限を超えたら終了コード 1 縮めた平均が上限の中でも見落とさない
+
+    キャラクターの動きのテンプレートは、動きが 1〜5 画素ずれても縮めた平均は 0.5 ほどで、
+    縁の差だけが 45 を超えた（#205）
+    """
+    rows = [
+        tool.Row(0.5, "ぽよ登場", "a.ymmt", 1, "x", "", edge=48.0),
+        tool.Row(0.5, "震え", "b.ymmt", 2, "y", "", edge=62.0),
+    ]
+    monkeypatch.setattr(tool, "compare_work", lambda *args, **kwargs: rows)
+    (tmp_path / "ceilings.json").write_text(
+        json.dumps({"ぽよ登場": 3.5, "震え": 4.0}), encoding="utf-8"
+    )
+    (tmp_path / "edge_ceilings.json").write_text(json.dumps({"ぽよ登場": 26.0}), encoding="utf-8")
+    assert tool.command_compare(_compare_arguments(tmp_path)) == 1
+    out = capsys.readouterr().out
+    assert "ぽよ登場 縁 48.0（上限 26.0）" in out
+    # 縁の上限を持たない物（乱数で揺らす震え）は見ない
+    assert "震え 縁" not in out
+
+
+def test_edge_ceilings_are_optional_and_rewritten_only_for_listed_templates(
+    tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """縁の差の上限は書いてあるテンプレートだけが持つ 書き換えで測った全部を足すと、
+    YMM4 の乱数を写せず縁が合わない物まで見張りに入る"""
+    rows = [
+        tool.Row(0.5, "ぽよ登場", "a.ymmt", 1, "x", "", edge=15.2),
+        tool.Row(0.5, "震え", "b.ymmt", 2, "y", "", edge=62.0),
+    ]
+    monkeypatch.setattr(tool, "compare_work", lambda *args, **kwargs: rows)
+    (tmp_path / "ceilings.json").write_text(
+        json.dumps({"ぽよ登場": 3.5, "震え": 4.0}), encoding="utf-8"
+    )
+    # ファイルが無ければ縁は見ない
+    assert tool.command_compare(_compare_arguments(tmp_path)) == 0
+    edge = tmp_path / "edge_ceilings.json"
+    edge.write_text(json.dumps({"ぽよ登場": 60.0}), encoding="utf-8")
+    assert tool.command_compare(_compare_arguments(tmp_path, write_ceilings=True)) == 0
+    assert tool.read_ceilings(edge) == {"ぽよ登場": 20.5}
+
+
 AFTER_IMAGE = (
     "YukkuriMovieMaker.Plugin.Community.Effect.Video.AfterImage.AfterImageEffect,"
     " YukkuriMovieMaker.Plugin.Community"
@@ -1773,6 +1822,19 @@ def test_the_real_templates_stay_within_their_ceilings(tool: ModuleType, tmp_pat
     hidden = [name for name in shadowed if name in ceilings]
     assert hidden == [], "上限を持つテンプレートが前の枠の絵に隠れて比べられない"
     assert tool.over_ceilings(tool.worst_by_template(rows), ceilings) == []
+    edges = tool.read_ceilings(tool.EDGE_CEILINGS)
+    assert tool.over_ceilings(tool.worst_edge_by_template(rows), edges, label="縁") == []
+
+
+def test_every_edge_ceiling_also_has_a_mean_ceiling(tool: ModuleType) -> None:
+    """縁の差の上限を持つテンプレートは、縮めた平均の上限も持つ
+
+    平均の上限を持たない物は、書き出しに届かなくても「比べられない」と言われない
+    縁の上限だけを書くと、見張っているつもりで 1 枚も比べずに通る
+    """
+    edges = tool.read_ceilings(tool.EDGE_CEILINGS)
+    assert edges, "縁の差の上限が 1 つも無い"
+    assert set(edges) <= set(tool.read_ceilings(tool.CEILINGS))
 
 
 def _on_screen(tool: ModuleType, width: int, height: int) -> np.ndarray:
