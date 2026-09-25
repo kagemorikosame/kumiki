@@ -52,9 +52,13 @@ class PeakLevel:
         return int(self.peaks.shape[1])
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, weakref_slot=True)
 class Waveform:
-    """1 本の音声ストリームのピーク一式"""
+    """1 本の音声ストリームのピーク一式
+
+    弱参照を取れるようにしてある タイムラインが波形の画像を貯めるとき、解析結果を
+    強く持つと、使わなくなった素材の解析を捨ててもメモリが空かない
+    """
 
     sample_rate: int
     channels: int

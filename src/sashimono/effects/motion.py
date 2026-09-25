@@ -87,12 +87,25 @@ float random_signed(float tick, float salt) {
 """
 
 #: 行って戻る動き 0 → 1 → 0 を ``interval`` 秒で 1 往復
+#: 中央揃え（元の位置を挟んで振れる）は :func:`repeat_swing` で -0.5〜0.5 を返す
+#: InOut の中央揃えは、元の位置から振れ始める（周期の 4 分の 1 だけ進めた所から）
+#: YMM4 の書き出しを 1 コマずつ測ると、反復回転（Sine と Jump）・反復移動と反復拡大
+#: （呼吸アニメーション Sine）はどれも頭のコマが元の位置で、4 分の 1 周期で振れ切った
+#: 頭から振れ切った所にいると、動きが 4 分の 1 周期ずれて縁の差が 45 ほど出ていた（#205）
+#: Out の中央揃え（ジャンプ繰り返し Circ・Out）は頭で振れ切った所にいて、今の式と合う
+#: In と、中央揃えでない往復は測った物が無いので今の式のまま
 _WAVE = """
-float repeat_wave() {
+float repeat_wave_at(float shift) {
     float span = max(interval, 0.0001);
-    float phase = fract(u_time / span);
+    float phase = fract(u_time / span + shift);
     float there = phase < 0.5 ? phase * 2.0 : 2.0 - phase * 2.0;
     return ease(there, easing, easing_mode);
+}
+float repeat_wave() {
+    return repeat_wave_at(0.0);
+}
+float repeat_swing() {
+    return repeat_wave_at(easing_mode == 2 ? 0.25 : 0.0) - 0.5;
 }
 """
 
@@ -239,7 +252,7 @@ uniform int easing_mode;
     + """
 void main() {
     // 中心揃えなら元の位置を挟んで往復する 揃えなければ元の位置から片側へ
-    float k = repeat_wave() - (centering ? 0.5 : 0.0);
+    float k = centering ? repeat_swing() : repeat_wave();
     vec2 centre = object_center() + vec2(move_x, move_y) * k;
     float scale = depth_scale(move_z * k);
     frag_color = sample_pixel(object_center() + (v_uv * u_size - centre) / scale);
@@ -262,7 +275,7 @@ uniform int easing_mode;
     + _WAVE
     + """
 void main() {
-    float k = repeat_wave() - (centering ? 0.5 : 0.0);
+    float k = centering ? repeat_swing() : repeat_wave();
     vec3 angles = vec3(0.0, 0.0, angle_z) * k;
     if (three_d) angles.xy = vec2(angle_x, angle_y) * k;
     vec2 centre = pivot_point();
@@ -328,6 +341,41 @@ void main() {
 """
 )
 
+#: 跳ねる動きの 1 周期（跳ねる と 跳ねて登場 で同じ） YMM4 の書き出しを 1 コマずつ測って
+#: 合わせた（#205）
+#: - 宙にいる間（周期の頭から period 秒）は、真ん中が 高さ × sin(π × 経過 / period) だけ上がり、
+#:   真ん中を支点に縦へ 1 + 伸び縮み / 100 倍、横へその逆数倍に伸びる 伸びは宙にいる間ずっと同じ
+#: - 着いてから interval 秒は、足元を支点に縦へ 1 - 歪み / 100 × sin(π × 経過 / interval) 倍、
+#:   横へその逆数倍に潰れる
+#: - 周期の頭と着いた瞬間はどちらでもない元の形
+#: 前は周期の頭（地面にいる間）から潰し、宙では伸ばしていなかった 着いてからの潰れが
+#: 無く、縦横 3〜5 画素ずれて縁の差が 45 を超えていた
+#: 周期の境目の比べは少しゆとりを持つ 経過が 0.3 秒と period 0.3 秒のように同じはずでも、
+#: 浮動小数の丸めで宙の側へ入ると、跳ねていないのに伸びた形が 1 コマ出る
+_JUMP_SHAPE = """
+const float JUMP_EDGE = 0.0001;
+
+void jump_shape(
+    float time, float height, float stretch, float period, float distortion, float interval,
+    out vec2 lifted, out vec2 tall, out vec2 flat_
+) {
+    lifted = vec2(0.0);
+    tall = vec2(1.0);
+    flat_ = vec2(1.0);
+    float flight = max(period, 0.01);
+    float rest = max(interval, 0.0);
+    float phase = mod(time, flight + rest);
+    if (phase > JUMP_EDGE && phase < flight - JUMP_EDGE) {
+        lifted = vec2(0.0, height * sin(PI * phase / flight));
+        float grow = max(1.0 + stretch / 100.0, 0.0001);
+        tall = vec2(1.0 / grow, grow);
+    } else if (rest > 0.0 && phase > flight + JUMP_EDGE) {
+        float press = max(1.0 - distortion / 100.0 * sin(PI * (phase - flight) / rest), 0.0001);
+        flat_ = vec2(1.0 / press, press);
+    }
+}
+"""
+
 _INOUT_JUMP = _shader(
     """
 uniform bool effect_in;
@@ -342,11 +390,11 @@ uniform float distortion;
 uniform float interval;
 uniform float offset_x;
 uniform float offset_y;
-
+"""
+    + _JUMP_SHAPE
+    + """
 void main() {
     float span = max(effect_time, 0.0001);
-    float cycle = max(period, 0.0001) + max(interval, 0.0);
-    float jump_length = max(period, 0.0001);
 
     // 登場は offset の位置から跳ねながら元の位置へ、退場は元の位置から offset へ
     float travel = 0.0;
@@ -361,23 +409,18 @@ void main() {
         jumping = true;
     }
 
-    float lift = 0.0;
-    float squash = 0.0;
+    vec2 lifted = vec2(0.0);
+    vec2 tall = vec2(1.0);
+    vec2 flat_ = vec2(1.0);
     if (jumping) {
-        float phase = mod(u_time, cycle);
-        if (phase < jump_length) {
-            float arc = sin(PI * phase / jump_length);
-            lift = height * arc;
-            // 着地の前後で縦に潰れる
-            squash = (1.0 - arc) * stretch / 100.0;
-        }
+        jump_shape(u_time, height, stretch, period, distortion, interval, lifted, tall, flat_);
     }
 
-    vec2 centre = object_center() + vec2(offset_x, offset_y) * travel + vec2(0.0, lift);
-    vec2 bottom = vec2(centre.x, centre.y - object_size().y * 0.5);
-    vec2 scale = vec2(1.0 + squash * 0.5 + distortion / 100.0 * squash, max(1.0 - squash, 0.05));
-    vec2 home = vec2(object_center().x, object_center().y - object_size().y * 0.5);
-    frag_color = sample_pixel(home + (v_uv * u_size - bottom) / scale);
+    vec2 centre = object_center();
+    vec2 foot = vec2(centre.x, centre.y - object_size().y * 0.5);
+    vec2 p = v_uv * u_size - vec2(offset_x, offset_y) * travel - lifted;
+    p = centre + (p - centre) / tall;
+    frag_color = sample_pixel(foot + (p - foot) / flat_);
 }
 """
 )
@@ -1269,6 +1312,7 @@ def register_motion_effects() -> None:
                 *_pivot_specs(),
             ),
             fragment_shader=_SPIRAL,
+            turns_object=True,
         ),
         EffectDefinition(
             kind="wave",
