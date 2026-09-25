@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import math
 import struct
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -65,6 +65,8 @@ __all__ = ["Frame", "render_source", "render_source_framed", "waveform_points"]
 
 #: 縦の基準ごとに、指定した位置より上へ出す割合 ``下`` なら全部が上に出る
 _VERTICAL_SHARE = {"top": 0.0, "middle": 0.5, "bottom": 1.0}
+#: 横の基準ごとに、指定した位置より左へ出す割合 ``右`` なら全部が左に出る
+_HORIZONTAL_SHARE = {"left": 0.0, "center": 0.5, "right": 1.0}
 
 
 def render_source(
@@ -225,7 +227,7 @@ def source_canvas(
         return width, height
     if values.get("shape") == "polyline":
         # 線の図形は点の広がりで見積もる
-        points = polyline_points(str(values.get("points", "")))
+        points = centred_points(values, width, height)
         line = float(values.get("line_width", 0.0))  # type: ignore[arg-type]
         reach_x = max((abs(x) for x, _ in points), default=0.0) + line
         reach_y = max((abs(y) for _, y in points), default=0.0) + line
@@ -438,12 +440,16 @@ def _draw_text(
     plain_metrics = QFontMetricsF(plain_font)
     plain_widest = max((plain_metrics.horizontalAdvance(line) for line in lines), default=0.0)
 
+    # 文字の塊の横の基準（``anchor``） 既定は塊の真ん中が位置 行揃えはその塊の中で揃える
+    anchor_share = _HORIZONTAL_SHARE.get(str(values.get("anchor", "center")), 0.5)
+
     def start(line_width: float, block_width: float) -> float:
+        left = centre_x - block_width * anchor_share
         if align == "left":
-            return centre_x - block_width / 2.0
+            return left
         if align == "right":
-            return centre_x + block_width / 2.0 - line_width
-        return centre_x - line_width / 2.0
+            return left + block_width - line_width
+        return left + (block_width - line_width) / 2.0
 
     path = QPainterPath()
     for index, line in enumerate(lines):
@@ -565,6 +571,10 @@ class _Look:
 _Part = tuple[str, QFont, float, _Look, float, tuple[float, float, float]]
 
 
+#: 見た目 1 つぶんの字 3 つ目は描くときに切る形（変形した字だけ文字の枠 ほかは ``None``）
+_Group = tuple[QPainterPath, "_Look", QPainterPath | None]
+
+
 def _aviutl_lines(
     lines: list[TaggedLine],
     family: str,
@@ -573,7 +583,7 @@ def _aviutl_lines(
     values: dict[str, object],
     centre_x: float,
     centre_y: float,
-) -> tuple[list[tuple[QPainterPath, _Look]], Frame]:
+) -> tuple[list[_Group], Frame]:
     """AviUtl2 の組み方で行を並べ、見た目ごとの字の輪郭と文字の枠を返す
 
     AviUtl2 に描かせて測った決まり（#64 の見本 ``kumiki_p8_t_*``）
@@ -653,7 +663,14 @@ def _aviutl_lines(
     left = centre_x - widest * {"left": 0.0, "right": 1.0}.get(align, 0.5)
     top = centre_y - block_height * _VERTICAL_SHARE.get(str(values.get("valign", "middle")), 0.5)
 
-    paths: dict[_Look, QPainterPath] = {}
+    # 見た目ごとに、そのまま置いた字と変形した字を分けて持つ（:data:`_Group`）
+    paths: dict[tuple[_Look, bool], QPainterPath] = {}
+    # 伸ばしたり回したりした字は文字の枠（テキストの入れ物）で切る AviUtl2 の絵は枠の大きさ
+    # なので、はみ出した所は描かれない（``H<th2>H`` の真ん中の字が枠の上下で切れた #184）
+    # 切るのは描くとき（:func:`_paint_layers`） 字の形を先に切ると、後から付ける縁と影が
+    # 枠の外へ広がり、切った面にも元の字に無い縁が付く
+    frame = QPainterPath()
+    frame.addRect(QRectF(left, top, widest, block_height))
     line_top = top
     for parts, advance, pitch, ascent, after in laid:
         x = left + (widest - advance) * {"left": 0.0, "right": 1.0}.get(align, 0.5)
@@ -662,8 +679,9 @@ def _aviutl_lines(
         # 置くと 2 文字目から先が太った分だけ前の字に食い込む
         for part, font, step, look, gap, shape in parts:
             x += gap
-            target = paths.setdefault(look, QPainterPath())
-            if shape == (1.0, 1.0, 0.0):
+            plain = shape == (1.0, 1.0, 0.0)
+            target = paths.setdefault((look, not plain), QPainterPath())
+            if plain:
                 target.addText(QPointF(x, baseline), font, part)
             else:
                 glyph = QPainterPath()
@@ -672,10 +690,11 @@ def _aviutl_lines(
             x += step
         line_top += pitch + after
 
-    groups: list[tuple[QPainterPath, _Look]] = []
-    for look, path in paths.items():
+    groups: list[_Group] = []
+    for (look, shaped), path in paths.items():
         embolden = look.embolden
-        groups.append((_emboldened(path, embolden) if embolden > 0.0 else path, look))
+        drawn = _emboldened(path, embolden) if embolden > 0.0 else path
+        groups.append((drawn, look, frame if shaped else None))
     return groups, (left, top, left + widest, top + block_height)
 
 
@@ -833,8 +852,17 @@ def _draw_vertical_text(
     centre_x = width / 2.0 + float(values.get("pos_x", 0.0))  # type: ignore[arg-type]
     centre_y = height / 2.0 - float(values.get("pos_y", 0.0))  # type: ignore[arg-type]
     tallest = max((len(column) for column in columns), default=0)
-    left = centre_x + column_width * (len(columns) - 1) / 2.0
-    top = centre_y - advance * tallest / 2.0
+    # 塊の基準は横書きと同じ ``anchor`` と ``valign`` 既定（中・中）は塊の真ん中が位置で、
+    # 前の置き方と同じ 見ずにいると、左上を基準にした縦書きも真ん中に置かれる
+    block_width = column_width * len(columns)
+    block_left = centre_x - block_width * _HORIZONTAL_SHARE.get(
+        str(values.get("anchor", "center")), 0.5
+    )
+    # 右端の列の真ん中 列は右から左へ並ぶ
+    left = block_left + block_width - column_width / 2.0
+    top = centre_y - advance * tallest * _VERTICAL_SHARE.get(
+        str(values.get("valign", "middle")), 0.5
+    )
 
     path = QPainterPath()
     for column_index, column in enumerate(columns):
@@ -859,12 +887,12 @@ def _paint_glyphs(
     縦書きでも横書きでも飾りの付け方は同じなので、ここに 1 つだけ置く
     順番は下から影・縁・塗り 入れ替えると縁が影を隠す
     """
-    _paint_layers(painter, [(path, values)], width, height)
+    _paint_layers(painter, [(path, values, None)], width, height)
 
 
 def _paint_groups(
     painter: QPainter,
-    groups: list[tuple[QPainterPath, _Look]],
+    groups: list[_Group],
     values: dict[str, object],
     width: int,
     height: int,
@@ -873,8 +901,8 @@ def _paint_groups(
     _paint_layers(
         painter,
         [
-            (path, _redecorated(_recoloured(values, look.color, look.edge), look))
-            for path, look in groups
+            (path, _redecorated(_recoloured(values, look.color, look.edge), look), clip)
+            for path, look, clip in groups
         ],
         width,
         height,
@@ -918,7 +946,7 @@ def _redecorated(values: dict[str, object], look: _Look) -> dict[str, object]:
 
 def _paint_layers(
     painter: QPainter,
-    layers: list[tuple[QPainterPath, dict[str, object]]],
+    layers: list[tuple[QPainterPath, dict[str, object], QPainterPath | None]],
     width: int,
     height: int,
 ) -> None:
@@ -926,22 +954,41 @@ def _paint_layers(
 
     色が 1 つのときと同じ順にする 色ごとに影・縁・塗りを描き切ると、字が近い所で
     後の色の縁が前の色の塗りに被さり、色を変えただけで前の字が欠ける
+    3 つ目の形があれば、影・縁・塗りのどれもその内側だけに描く（変形した字を文字の枠で切る）
     """
-    for path, look in layers:
+    for path, look, clip in layers:
         shadow = _shadow_layer(path, look, painter)
         if shadow is not None:
             # 影の面は絵の画素で作ってある 描く座標の縮め方を外してから重ねる
             # 外さないと、画質を落としたプレビューで影の面がもう 1 度縮む
+            # 切る形は縮め方を外す前に当てる（当てたときの座標で持たれる）
             painter.save()
+            if clip is not None:
+                painter.setClipPath(clip)
             painter.resetTransform()
             painter.drawImage(0, 0, shadow)
             painter.restore()
-    for path, look in layers:
+    for path, look, clip in layers:
         border_width = float(look.get("border_width", 0.0))  # type: ignore[arg-type]
         if border_width > 0:
-            painter.fillPath(_stroke(path, border_width), _color(look.get("border_color")))
-    for path, look in layers:
-        painter.fillPath(path, _color(look.get("color")))
+            _fill_within(
+                painter, _stroke(path, border_width), _color(look.get("border_color")), clip
+            )
+    for path, look, clip in layers:
+        _fill_within(painter, path, _color(look.get("color")), clip)
+
+
+def _fill_within(
+    painter: QPainter, path: QPainterPath, colour: QColor, clip: QPainterPath | None
+) -> None:
+    """``path`` を塗る ``clip`` があればその内側だけ"""
+    if clip is None:
+        painter.fillPath(path, colour)
+        return
+    painter.save()
+    painter.setClipPath(clip)
+    painter.fillPath(path, colour)
+    painter.restore()
 
 
 def _recoloured(
@@ -1071,7 +1118,7 @@ def _draw_shape(painter: QPainter, values: dict[str, object], width: int, height
         shape_width = float(width) + abs(float(values.get("pos_x", 0.0))) * 2.0  # type: ignore[arg-type]
         shape_height = float(height) + abs(float(values.get("pos_y", 0.0))) * 2.0  # type: ignore[arg-type]
     if str(values.get("shape", "rect")) == "polyline":
-        _draw_polyline(painter, values, centre_x, centre_y)
+        _draw_polyline(painter, values, centre_x, centre_y, width, height)
         return
     if str(values.get("shape", "rect")) == "concentration":
         _draw_concentration(painter, values, centre_x, centre_y, width, height)
@@ -1153,11 +1200,47 @@ def polyline_points(text: str) -> list[tuple[float, float]]:
     return points
 
 
-def _polyline_path(values: dict[str, object], centre_x: float, centre_y: float) -> QPainterPath:
+def centred_points(
+    values: Mapping[str, object], width: float, height: float
+) -> list[tuple[float, float]]:
+    """線の点を、中心からの画素（Y は上が正）でそろえて返す
+
+    ``points_from`` が ``corner`` なら点は画面の左上からの画素で Y は下が正（YMM4 のペン）
+    画面の大きさはここで引く YMM4 に同じ点を 1920x1080 と 1280x720 で描かせると、どちらも
+    画面の左上から同じ画素の所に線が出た（#198） 1920x1080 の真ん中を決め打ちで引くと、
+    ほかの大きさの画面で線が 320・180 ずれる
+    """
+    points = polyline_points(str(values.get("points", "")))
+    if str(values.get("points_from", "center")) == "corner":
+        return [(x - width / 2.0, height / 2.0 - y) for x, y in points]
+    return points
+
+
+def corner_points_centred(source: GeneratedSource, width: int, height: int) -> GeneratedSource:
+    """画面の左上から数えた線の点を、画面 ``width`` x ``height`` の中心からの点へ直す
+
+    それ以外の生成オブジェクトはそのまま返す 描く所（:func:`render_source_framed`）が
+    受け取るのは広げた絵や縮めたプレビューの大きさで、画面の左上が分からないため、
+    画面の大きさを知っているレンダラが描く前に呼ぶ
+    """
+    if source.kind != "shape" or source.params.get("points_from") != "corner":
+        return source
+    points = centred_points(dict(source.params), width, height)
+    text = ";".join(f"{x:g},{y:g}" for x, y in points)
+    return source.with_param("points", text).with_param("points_from", "center")
+
+
+def _polyline_path(
+    values: dict[str, object],
+    centre_x: float,
+    centre_y: float,
+    width: float = 0.0,
+    height: float = 0.0,
+) -> QPainterPath:
     points = [
         # 点も Y は上が正 ほかの位置の設定と向きがそろう
         (centre_x + x, centre_y - y)
-        for x, y in polyline_points(str(values.get("points", "")))
+        for x, y in centred_points(values, width, height)
     ]
     path = QPainterPath()
     if len(points) < 2:
@@ -1626,10 +1709,15 @@ def _trimmed(path: QPainterPath, start: float, end: float) -> QPainterPath:
 
 
 def _draw_polyline(
-    painter: QPainter, values: dict[str, object], centre_x: float, centre_y: float
+    painter: QPainter,
+    values: dict[str, object],
+    centre_x: float,
+    centre_y: float,
+    width: float,
+    height: float,
 ) -> None:
     """線の図形 閉じていれば中を塗ってから線を引く 端と角は丸める（配布物はすべて丸）"""
-    path = _polyline_path(values, centre_x, centre_y)
+    path = _polyline_path(values, centre_x, centre_y, width, height)
     if path.isEmpty():
         return
     trim_start = float(values.get("trim_start", 0.0)) / 100.0  # type: ignore[arg-type]
