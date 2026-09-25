@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib.util
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from types import ModuleType
 
@@ -178,6 +179,34 @@ def test_an_analysis_that_never_finishes_stops_with_guidance(
     monkeypatch.setattr(tool, "analyze", slow)
     assert tool.main(["--media", "--clips", "2", "--tracks", "2", "--repeat", "1"]) == 2
     assert "揃わない" in capsys.readouterr().out
+
+
+def test_the_command_ends_without_waiting_for_a_stuck_analysis(
+    tool: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """命令として走らせたときは、終了コードを返したらそのまま終わる
+
+    解析のワーカーは Python が終わるときに待たれる FFmpeg の 1 回のデコードの中で
+    止まったワーカーは取り消しの印を見られず、解析の上限で終了コード 2 を返しても
+    プロセスが終わらない（#204 の Qodo） 止まったワーカーは待たずに終える
+    """
+    stuck = threading.Event()
+    worker = threading.Thread(target=stuck.wait, daemon=True)
+    worker.start()
+    ended: list[int] = []
+
+    def end(code: int) -> None:
+        ended.append(code)
+        raise SystemExit(code)
+
+    monkeypatch.setattr(tool, "main", lambda argv=None: 2)
+    monkeypatch.setattr(tool.os, "_exit", end)
+    try:
+        with pytest.raises(SystemExit):
+            tool.run()
+    finally:
+        stuck.set()
+    assert ended == [2]
 
 
 def test_the_ffmpeg_calls_have_an_upper_limit(

@@ -347,5 +347,20 @@ def main(argv: list[str] | None = None) -> int:
     return 0 if all(results) else 1
 
 
+def run(argv: list[str] | None = None) -> None:
+    """命令として走らせる 終了コードを返したら、残ったワーカーを待たずに終わる
+
+    解析のワーカー（ThreadPoolExecutor）は、Python が終わるときに終わるまで待たれる
+    ``close()`` の取り消しは塊を読む合間にしか効かず、FFmpeg の 1 回のデコードの中で
+    止まったワーカーがいると、解析の上限で終了コード 2 を返してもプロセスが終わらない
+    測る道具は後片付けで守る物を持たない（一時フォルダに書くだけ）ので、出力を流して
+    すぐに終える
+    """
+    code = main(argv)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    run()
