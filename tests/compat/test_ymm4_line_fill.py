@@ -163,6 +163,35 @@ class TestLineFillPattern:
             red, green, blue, _ = _at(image, 0, inner + offset)
             assert red < 25 and blue < 25 and green > 200, f"境目に目印が残った: {offset}"
 
+    def test_an_old_save_keeps_the_old_look(self, gl: OffscreenGLContext) -> None:
+        """線の色を持たない前の版の保存は、前と同じ絵のまま（不透明度は元の絵のまま）
+
+        前の版は目印の所を模様の色と混ぜるだけで、α は元の絵のまま返した 新しい透かし方を
+        前の版の保存にも当てると、透明な模様の所で開き直した作品の塗りが消える
+        """
+        from sashimono.effects import registry
+        from sashimono.effects.sources import SHAPE
+
+        magenta = SHAPE.create(shape="rect", width=80, height=80, color=(1.0, 0.0, 1.0, 1.0))
+        old = registry.require("brush_fill").create(
+            pattern="solid", key_only=True, stops=1, color0=(0.0, 0.0, 1.0, 0.0)
+        )
+        project = Project.create(
+            ProjectSettings(width=WIDTH, height=HEIGHT, frame_rate=FrameRate(30))
+        )
+        clip = Clip(timeline_start=0, duration=30, source=magenta, effects=(old,))
+        track = Track(kind=TrackKind.VIDEO, clips=(clip,))
+        project = project.with_timeline(
+            project.timeline.__class__(rate=project.rate, tracks=(track,))
+        )
+        renderer = FrameRenderer(project, context=gl)
+        try:
+            image = renderer.render(0).astype(int)
+        finally:
+            renderer.close()
+        red, green, blue, _ = _at(image, 0, 0)
+        assert red > 230 and blue > 230 and green < 25, "前の版の保存で塗りが消えた"
+
     def test_both_patterned_is_recorded(self) -> None:
         """線と塗りの両方が模様のときは、塗りを線の模様と分けて描けないので記録に残す"""
         report = CompatibilityReport()

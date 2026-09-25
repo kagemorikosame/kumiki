@@ -353,20 +353,20 @@ void main() {
     if (key_only) {
         // 目印の色で塗った所だけを模様に替える share は画素のうち塗りが占める割合
         vec3 key = to_srgb(key_color.rgb);
-        float share;
-        vec3 kept = under;
-        if (keep_color.a > 0.0) {
-            // 絵は線の色と目印の色の 2 色だけ（縁はその間の色）なので、画素の色が
-            // 2 色を結ぶ線のどこにあるかで割合が決まる 目印からの近さで決めると、
-            // 境の中間色で割合がずれて目印の色が残り、目印に近い線の色は模様に食われる
-            vec3 keep = to_srgb(keep_color.rgb);
-            vec3 axis = key - keep;
-            share = clamp(dot(under - keep, axis) / max(dot(axis, axis), 1e-6), 0.0, 1.0);
-            kept = keep;
-        } else {
-            // 線の色を持たない前の版の保存（目印はマゼンタ）は、目印からの近さで決める
-            share = clamp(1.0 - length(under - key) * 3.0, 0.0, 1.0);
+        if (keep_color.a <= 0.0) {
+            // 線の色を持たない前の版の保存（目印はマゼンタ）は、前の版と同じ絵にする
+            // 目印からの近さで混ぜ、α は元の絵のまま 下の透かし方を当てると、透明な模様の
+            // 所で開き直した作品の塗りが消える
+            float near = clamp(1.0 - length(under - key) * 3.0, 0.0, 1.0);
+            frag_color = vec4(to_linear(mix(under, paint.rgb, amount * near)), base.a);
+            return;
         }
+        // 絵は線の色と目印の色の 2 色だけ（縁はその間の色）なので、画素の色が
+        // 2 色を結ぶ線のどこにあるかで割合が決まる 目印からの近さで決めると、
+        // 境の中間色で割合がずれて目印の色が残り、目印に近い線の色は模様に食われる
+        vec3 kept = to_srgb(keep_color.rgb);
+        vec3 axis = key - kept;
+        float share = clamp(dot(under - kept, axis) / max(dot(axis, axis), 1e-6), 0.0, 1.0);
         // 塗りの分は模様の不透明度で透かす 目印と混ぜると、透明な模様から目印が透ける
         float kept_alpha = base.a * (1.0 - share);
         float fill_alpha = base.a * share * amount;
