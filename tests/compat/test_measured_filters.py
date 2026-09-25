@@ -8,6 +8,7 @@ YMM4 は ``tools/ymm4_probes.py`` の 6 回目と 7 回目、AviUtl2 は ``tools
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+from dataclasses import replace
 from typing import Any, ClassVar
 
 import numpy as np
@@ -23,6 +24,7 @@ from sashimono.core.model import (
     Clip,
     Effect,
     GeneratedSource,
+    Keyframe,
     Project,
     ProjectSettings,
     Track,
@@ -668,3 +670,66 @@ class TestAviUtlPreviousObject:
         above = _object_text(("直前オブジェクト", {}), _aviutl_draw(100.0))
         image = self._render(gl, above)
         assert int(image.max()) == 0
+
+
+def _render_clips(gl: OffscreenGLContext, *clips: Clip, frame: int = 0) -> np.ndarray:
+    """1 本ずつ別のトラックに置いたクリップを下から重ねて描く（400x400・30fps）"""
+    project = Project.create(ProjectSettings(width=WIDTH, height=HEIGHT, frame_rate=FrameRate(30)))
+    tracks = tuple(Track(kind=TrackKind.VIDEO, clips=(clip,)) for clip in clips)
+    project = project.with_timeline(project.timeline.__class__(rate=project.rate, tracks=tracks))
+    renderer = FrameRenderer(project, context=gl)
+    try:
+        return np.asarray(renderer.render(frame))[..., :3]
+    finally:
+        renderer.close()
+
+
+def _placed(x: float = 0.0, y: float = 0.0) -> Effect:
+    """クリップが最初から持つ配置の欄（印付き）"""
+    return replace(registry.require("transform").create(pos_x=x, pos_y=y), fixed=True)
+
+
+class TestPreviousObjectOfSpecialClips:
+    """下のクリップが別の道で描かれるときの直前オブジェクト（#195 PR #219 の指摘）"""
+
+    def test_the_trail_of_the_one_below_is_copied(self, gl: OffscreenGLContext) -> None:
+        # 残像は本体とは別に前のフレームを描く 写すときにそこを通らないと、写しにだけ
+        # 残像が付かない 下の四角は横へ動き、配置の欄で上へ 120 に置いてある
+        moving = registry.require("transform").create(
+            pos_x=AnimatedValue(
+                keyframes=(Keyframe(frame=0, value=-100.0), Keyframe(frame=10, value=100.0))
+            )
+        )
+        trail = registry.require("after_image").create(strength=90.0, samples=10)
+        below = Clip(
+            timeline_start=0,
+            duration=30,
+            source=_square(40),
+            effects=(trail, moving, _placed(y=120.0)),
+        )
+        copy = Clip(timeline_start=0, duration=30, source=PREVIOUS_OBJECT.create())
+        image = _render_clips(gl, below, copy, frame=10)
+        # 下の本体は X=100（列 280〜320）で、2 フレーム前の残像が列 250 に残る
+        assert int(image[80, 250].max()) > 100
+        # 写しは下の配置を外して真ん中の行に出る 残像も同じ所に出る
+        assert int(image[200, 300].max()) == 255
+        assert int(image[200, 250].max()) > 100
+
+    def test_a_framebuffer_below_is_copied_from_the_screen(self, gl: OffscreenGLContext) -> None:
+        # フレームバッファを写すときに、下の絵を溜めた合成先ではなく空の写し先を読むと、
+        # 真っ黒な画面で全体を覆って下の四角まで消える
+        square = Clip(
+            timeline_start=0, duration=30, source=_square(100), effects=(_placed(-100.0),)
+        )
+        grab = Clip(timeline_start=0, duration=30, source=GeneratedSource(kind="framebuffer"))
+        copy = Clip(
+            timeline_start=0,
+            duration=30,
+            source=PREVIOUS_OBJECT.create(),
+            effects=(_placed(100.0),),
+        )
+        image = _render_clips(gl, square, grab, copy)
+        # 画面の写しを右へ 100 ずらして置くので、四角（列 50〜150）が列 150〜250 に出る
+        assert int(image[200, 200].max()) == 255
+        # 写しに覆われない左の 100 列には元の四角が残る
+        assert int(image[200, 60].max()) == 255
