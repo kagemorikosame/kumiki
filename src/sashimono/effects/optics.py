@@ -12,7 +12,7 @@ from __future__ import annotations
 from sashimono.effects.blending import BLEND_FUNCTIONS, BLEND_MODES
 from sashimono.effects.builtin import PRELUDE
 from sashimono.effects.definition import EffectDefinition, registry
-from sashimono.effects.motion import _IN_OUT, _WAVE, _easing, _in_out_specs
+from sashimono.effects.motion import _IN_OUT, _JUMP_SHAPE, _WAVE, _easing, _in_out_specs
 from sashimono.effects.spec import CheckSpec, ColorSpec, SelectSpec, TrackSpec, ValueSpec
 
 __all__ = ["register_optics_effects"]
@@ -826,7 +826,7 @@ uniform int easing_mode;
     + """
 void main() {
     // 等倍と「拡大率 × 縦横の割合」の間を往復する 中央揃えなら等倍を挟んで振れる
-    float k = repeat_wave() - (centering ? 0.5 : 0.0);
+    float k = centering ? repeat_swing() : repeat_wave();
     vec2 peak = vec2(zoom_x, zoom_y) * 0.01 * zoom * 0.01;
     vec2 scale = max(1.0 + (peak - 1.0) * k, vec2(0.0001));
     vec2 centre = object_center();
@@ -842,24 +842,19 @@ uniform float stretch;
 uniform float period;
 uniform float distortion;
 uniform float interval;
-
+"""
+    + _JUMP_SHAPE
+    + """
 void main() {
-    // 1 回の跳びは period 秒の半周期の正弦 着いたら interval 秒休む（休む間は少し潰れる）
-    float cycle = max(period, 0.01) + max(interval, 0.0);
-    float phase = mod(u_time, cycle);
-    float lift = 0.0;
-    vec2 scale = vec2(1.0);
-    if (phase < period) {
-        lift = height * sin(PI * phase / max(period, 0.01));
-        scale = vec2(1.0 - 0.01 * stretch, 1.0 + 0.0067 * stretch);
-    } else if (interval > 0.0) {
-        float squash = distortion * sin(PI * (phase - period) / interval);
-        scale = vec2(1.0 + 0.01 * squash, 1.0 - 0.0067 * squash);
-    }
-    // 潰れと伸びは足元を支点にする
-    vec2 foot = vec2(object_center().x, u_object.y);
-    vec2 p = v_uv * u_size - vec2(0.0, lift) - foot;
-    frag_color = sample_pixel(foot + p / max(scale, vec2(0.0001)));
+    // 1 回の跳びは period 秒の半周期の正弦 着いたら interval 秒潰れる（:data:`_JUMP_SHAPE`）
+    vec2 lifted;
+    vec2 tall;
+    vec2 flat_;
+    jump_shape(u_time, height, stretch, period, distortion, interval, lifted, tall, flat_);
+    vec2 centre = object_center();
+    vec2 foot = vec2(centre.x, u_object.y);
+    vec2 p = centre + (v_uv * u_size - lifted - centre) / tall;
+    frag_color = sample_pixel(foot + (p - foot) / flat_);
 }
 """
 )

@@ -132,9 +132,27 @@ def test_the_media_bench_runs_end_to_end_and_splits_out_the_contents(
     )
     assert code in (0, 1)
     out = capsys.readouterr().out
-    for title in ("サムネイルだけ", "波形だけ", "サムネイルと波形を描かない"):
+    for title in (
+        "波形の画像を貯めずに",
+        "サムネイルだけ",
+        "波形だけ",
+        "サムネイルと波形を描かない",
+    ):
         assert title in out
-    assert out.count("全体を表示") == 4
+    assert out.count("全体を表示") == 5
+
+
+def test_the_media_bench_starts_each_clip_at_a_different_place(
+    tool: ModuleType, media: tuple[MediaItem, MediaItem]
+) -> None:
+    """素材を指すクリップは頭をずらす
+
+    全部を同じ所から始めると、波形の画像が 1 枚で済み、貯めた物を貼るだけの速さを測る
+    """
+    project = tool.build_project(10, 2, 30, media=media)
+    starts = [clip.source_in for track in project.timeline.tracks for clip in track.clips]
+    assert len(set(starts)) == len(starts)
+    assert max(starts) < 1
 
 
 @pytest.mark.parametrize(

@@ -13,7 +13,8 @@ Qt と GPU の仕事で、ここで見たいのは自前の描画（クリップ
 ``--media`` を付けると、テキストの代わりに実素材（ffmpeg の ``testsrc`` の動画と
 ``sine`` の音）を並べ、サムネイルと波形の解析を済ませてから測る テキストだけでは
 サムネイルと波形を描く道を通らない 重い所を分けるため、同じ並びでサムネイルだけ・
-波形だけ・どちらも描かないときの速さも並べて出す
+波形だけ・どちらも描かないときの速さも並べて出す 波形は画像にして貯めてあるので、
+貯めた物を毎回捨てて作り直すとき（倍率を変えた直後の 1 回）の速さも出す
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ import sys
 import tempfile
 import time
 from dataclasses import replace
+from fractions import Fraction
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -56,6 +58,7 @@ from sashimono.engine.cache.thumbnails import Filmstrip  # noqa: E402
 from sashimono.engine.decode.probe import probe_media  # noqa: E402
 from sashimono.ui.timeline import TimelineView  # noqa: E402
 from sashimono.ui.timeline.layout import TimelineLayout  # noqa: E402
+from sashimono.ui.timeline.painter import clear_waveform_images  # noqa: E402
 
 #: 60fps の 1 コマ（ミリ秒）
 BUDGET_MS = 1000 / 60
@@ -182,7 +185,9 @@ def build_project(
     """クリップを隙間なく並べたプロジェクト 映像と音声を半分ずつ
 
     ``media``（動画, 音）を渡すと、映像のトラックには動画を、音声のトラックには音を指す
-    クリップを並べる 渡さなければテキスト
+    クリップを並べる 渡さなければテキスト 素材を指すクリップは頭を 1/100 秒ずつずらす
+    （1 秒未満） 全部を同じ所から始めると、波形の画像がどのクリップでも同じになり、
+    1 枚作れば残りは貯めた物を貼るだけになって、実際のプロジェクトより速く出る
     """
     # 0 は割り算で落ち、負はクリップを 1 本も作らないまま「測れた」と言ってしまう
     for name, value in (("clips", clips), ("tracks", tracks), ("length", length)):
@@ -194,7 +199,9 @@ def build_project(
     for index in range(tracks):
         kind = TrackKind.VIDEO if index % 2 == 0 else TrackKind.AUDIO
         row = tuple(
-            _clip(kind, n * length, length, media)
+            _clip(
+                kind, n * length, length, media, Fraction((index * (per_track + 1) + n) % 100, 100)
+            )
             for n in range(per_track + (1 if index < remainder else 0))
         )
         built.append(Track(kind, f"{'V' if kind is TrackKind.VIDEO else 'A'}{index + 1}", row))
@@ -203,7 +210,11 @@ def build_project(
 
 
 def _clip(
-    kind: TrackKind, start: int, length: int, media: tuple[MediaItem, MediaItem] | None
+    kind: TrackKind,
+    start: int,
+    length: int,
+    media: tuple[MediaItem, MediaItem] | None,
+    source_in: Fraction,
 ) -> Clip:
     if media is None:
         return Clip(timeline_start=start, duration=length, source=TEXT.create())
@@ -214,22 +225,32 @@ def _clip(
             duration=length,
             media_id=video.id,
             stream_index=video.video_streams[0].index,
+            source_in=source_in,
         )
     return Clip(
         timeline_start=start,
         duration=length,
         media_id=audio.id,
         stream_index=audio.audio_streams[0].index,
+        source_in=source_in,
     )
 
 
-def measure(view: TimelineView, layouts: list[TimelineLayout], repeat: int) -> list[float]:
-    """各表示状態で描いた時間（ミリ秒） 1 回目は温まっていないので捨てる"""
+def measure(
+    view: TimelineView, layouts: list[TimelineLayout], repeat: int, *, fresh: bool = False
+) -> list[float]:
+    """各表示状態で描いた時間（ミリ秒） 1 回目は温まっていないので捨てる
+
+    ``fresh`` が真なら、描くたびに貯めた波形の画像を捨てる 倍率を変えた直後の 1 回や、
+    貯める量を超えて入れ替わるときの重さは、貯めた物を貼るだけの速さからは見えない
+    """
     image = QImage(view.size(), QImage.Format.Format_ARGB32_Premultiplied)
     times: list[float] = []
     for layout in layouts:
         view._layout = layout
         for attempt in range(repeat + 1):
+            if fresh:
+                clear_waveform_images()
             painter = QPainter(image)
             started = time.perf_counter()
             view.render(painter, QPoint())
@@ -251,7 +272,9 @@ def report(name: str, times: list[float]) -> bool:
     return ok
 
 
-def run_states(view: TimelineView, project: Project, width: int, repeat: int) -> list[bool]:
+def run_states(
+    view: TimelineView, project: Project, width: int, repeat: int, *, fresh: bool = False
+) -> list[bool]:
     """全体表示・スクロール・ズームを測って並べる"""
     duration = project.duration
     fit = TimelineLayout(pixels_per_frame=(width - 132) / max(1, duration))
@@ -259,9 +282,9 @@ def run_states(view: TimelineView, project: Project, width: int, repeat: int) ->
     scroll = [TimelineLayout(scroll_frame=duration * n / steps) for n in range(steps)]
     zoom = [TimelineLayout(pixels_per_frame=fit.pixels_per_frame * (1.25**n)) for n in range(40)]
     return [
-        report("全体を表示", measure(view, [fit], repeat * 4)),
-        report("スクロール", measure(view, scroll, repeat)),
-        report("ズーム", measure(view, zoom, repeat)),
+        report("全体を表示", measure(view, [fit], repeat * 4, fresh=fresh)),
+        report("スクロール", measure(view, scroll, repeat, fresh=fresh)),
+        report("ズーム", measure(view, zoom, repeat, fresh=fresh)),
     ]
 
 
@@ -323,6 +346,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"予算 {BUDGET_MS:.1f} ms（60fps）  判定は 95 パーセンタイル")
         results = run_states(view, project, arguments.width, arguments.repeat)
         if media is not None:
+            print("\n波形の画像を貯めずに毎回作るとき（同じ並び 判定には入れない）")
+            run_states(view, project, arguments.width, arguments.repeat, fresh=True)
             # 同じ並びで中身の一部だけを描く 全部との差が、描かなかった物を描く分
             for title, filmstrips, waveforms in (
                 ("サムネイルだけを描くとき", True, False),
