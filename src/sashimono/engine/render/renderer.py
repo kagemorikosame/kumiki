@@ -1041,14 +1041,14 @@ class FrameRenderer:
     ) -> None:
         """クリップ 1 本を描く
 
-        ``below`` はスクリプトの ``frm`` として読む合成先 別の合成先へ描き分けるとき
-        （:meth:`_draw_into`）に、下の絵を溜めた外側を渡す
+        ``below`` はスクリプトの ``frm`` とフレームバッファが写す合成先 別の合成先へ
+        描き分けるとき（:meth:`_draw_into`）に、下の絵を溜めた外側を渡す
         """
         if clip.scene_id is not None:
             self._draw_scene(track, clip, frame, rate, depth)
             return
         if clip.source is not None and clip.source.kind == "framebuffer":
-            self._draw_framebuffer(track, clip, frame, rate, depth)
+            self._draw_framebuffer(track, clip, frame, rate, depth, below=below)
             return
         if clip.source is not None and clip.source.kind == PREVIOUS_OBJECT.kind:
             self._draw_previous(track, clip, frame, rate, depth)
@@ -1218,12 +1218,23 @@ class FrameRenderer:
         return layer
 
     def _draw_into(
-        self, layer: Compositor, track: Track, clip: Clip, frame: int, rate: FrameRate, depth: int
+        self,
+        layer: Compositor,
+        track: Track,
+        clip: Clip,
+        frame: int,
+        rate: FrameRate,
+        depth: int,
+        *,
+        trail: bool = False,
     ) -> None:
+        """``clip`` だけを空の ``layer`` へ描く ``trail`` なら残像（:meth:`_draw_trail`）も描く"""
         outer = self._compositor
         self._compositor = layer
         try:
             layer.begin((0.0, 0.0, 0.0, 0.0))
+            if trail:
+                self._draw_trail(track, clip, frame, rate, depth)
             # 描く先は空の layer に切り替えてある スクリプトが画面（frm）として写すのは
             # 下の絵を溜めた outer 空の方を写すと、下の絵ではなく黒を写す
             self._draw_clip(track, clip, frame, rate, depth, below=outer)
@@ -1386,7 +1397,14 @@ class FrameRenderer:
         outer.draw_handle(result.color, full, opacity=opacity, flip=False, blend=clip.blend_mode)
 
     def _draw_framebuffer(
-        self, track: Track, clip: Clip, frame: int, rate: FrameRate, depth: int = 0
+        self,
+        track: Track,
+        clip: Clip,
+        frame: int,
+        rate: FrameRate,
+        depth: int = 0,
+        *,
+        below: Compositor | None = None,
     ) -> None:
         """それまでに重ねた画面を写し取り、エフェクトを掛けて重ねる
 
@@ -1395,17 +1413,21 @@ class FrameRenderer:
         いるので、そう伝えて渡す 合成は透明な下地から始まるので、伝えないと半透明の
         縁が暗くなる
 
+        ``below`` は別の空の合成先へ描き分けているとき（:meth:`_draw_into`）の、下の絵を
+        溜めた外側 いまの合成先は空なので、そちらを写すと黒い画面で全体を覆う
+
         AviUtl スクリプトを積んでいれば、写し取った画面を CPU へ読み戻して渡す
         毎フレームの往復になるので、積んでいるクリップだけで行う
         """
         local_frame = frame - clip.timeline_start
         gpu_effects, scripts = split_effects(clip.effects)
         width, height = self._compositor.width, self._compositor.height
+        screen = below if below is not None else self._compositor
         with self._context:
             if self._grab is None:
                 self._grab = Framebuffer(width, height)
             self._grab.resize(width, height)
-            GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, self._compositor.canvas.handle)
+            GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, screen.canvas.handle)
             GL.glBindFramebuffer(GL.GL_DRAW_FRAMEBUFFER, self._grab.handle)
             GL.glBlitFramebuffer(
                 0, 0, width, height, 0, 0, width, height, GL.GL_COLOR_BUFFER_BIT, GL.GL_NEAREST
@@ -1486,7 +1508,9 @@ class FrameRenderer:
         # 下のクリップにとっての「すぐ下」は、自分より 1 つ前まで
         self._drawn = before[:-1]
         try:
-            self._draw_into(layer, below_track, picture, frame, rate, depth)
+            # 残像は本体とは別に前のフレームを描いて作る ここで描かないと、下のクリップには
+            # 付いている残像が写しにだけ無い
+            self._draw_into(layer, below_track, picture, frame, rate, depth, trail=True)
         finally:
             self._drawn = before
 
