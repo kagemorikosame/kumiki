@@ -403,6 +403,7 @@ class ObjApi:
         if self._drawing_to_tempbuffer():
             self._draw_to_tempbuffer(x, y, z, zoom, alpha, rx, ry, rz)
             return
+        self._note_screen_blend()
         call = state.snapshot()
         if x is not None:
             call.x = _as_float(x)
@@ -478,6 +479,7 @@ class ObjApi:
         if rest:
             alpha = rest[0]
 
+        self._note_screen_blend()
         call = state.snapshot()
         call.quad = quad
         call.uv = uv
@@ -527,7 +529,25 @@ class ObjApi:
             _as_float(x) if x is not None else 0.0,
             _as_float(y) if y is not None else 0.0,
             _as_float(alpha) if alpha is not None else 1.0,
+            blend=self._tempbuffer_blend(),
         )
+
+    def _tempbuffer_blend(self) -> str:
+        """仮想バッファへ重ねる合成モード 写していない物は記録に残して通常で描く"""
+        mode = _blend_mode(self.state.options.get("blend", 0))
+        if mode in raster.BLENDS:
+            return mode
+        self._report.note_missing(f'obj.setoption("blend", "{mode}")（仮想バッファへ）')
+        return "none"
+
+    def _note_screen_blend(self) -> None:
+        """画面へ描くときの合成モードは描画の記録へ渡していない 通常以外なら記録に残す
+
+        黙ると、加算で重ねるつもりの光が通常で描かれた理由が分からない
+        """
+        mode = _blend_mode(self.state.options.get("blend", 0))
+        if mode != "none":
+            self._report.note_missing(f'obj.setoption("blend", "{mode}")（画面へ）')
 
     def _drawpoly_table(self, table: Any, rest: tuple[Any, ...]) -> None:
         """``obj.drawpoly({表}[, 頂点の数, 透明度])`` 頂点の表を並べた形
@@ -568,6 +588,7 @@ class ObjApi:
                 self._fill_polygon(corners, None, colors, alpha)
 
     def _drawpoly_quad_to_screen(self, vertices: list[list[float]], alpha: float) -> None:
+        self._note_screen_blend()
         state = self.state
         image = state.image
         call = state.snapshot()
@@ -599,6 +620,7 @@ class ObjApi:
             uvs=tuple(uvs) if uvs is not None else None,
             colors=tuple(colors) if colors is not None else None,
             alpha=alpha,
+            blend=self._tempbuffer_blend(),
         )
 
     def _fill_quad(
@@ -609,6 +631,7 @@ class ObjApi:
         alpha: float,
     ) -> None:
         """四角形を 2 つの三角形に分けて描く（0-1-2 と 0-2-3）"""
+        blend = self._tempbuffer_blend()
         for first, second, third in ((0, 1, 2), (0, 2, 3)):
             raster.draw_triangle(
                 self._tempbuffer(),
@@ -619,6 +642,7 @@ class ObjApi:
                 if colors is not None
                 else None,
                 alpha=alpha,
+                blend=blend,
             )
 
     def lua_effect(self, *args: Any) -> None:
@@ -655,6 +679,14 @@ class ObjApi:
             self._settle_effects("obj.effect(領域拡張)")
             if not self.state.effects:
                 self._expand(params)
+                return
+        if original == INVERT_EFFECT and _inverts_alpha(params):
+            # 透明度反転は GPU の 反転 が持たない その場で絵を変えるので、先に積んだ効果は
+            # 領域拡張 と同じく先に掛ける 掛けられなければ積んで順を守る（反転は描くときに
+            # 落ち、互換性レポートに出る）
+            self._settle_effects("obj.effect(反転)")
+            if not self.state.effects:
+                self._invert(params)
                 return
         if len(self.state.effects) >= MAX_STACKED_EFFECTS:
             # 積んだ効果は描くときに 1 つずつ GPU のパスになる 焼き込みの上限を越えた後や、
@@ -743,6 +775,24 @@ class ObjApi:
             ((top, bottom), (left, right), (0, 0)),
             mode="edge" if fill else "constant",
         )
+        state.image_shared = False
+
+    def _invert(self, values: dict[str, float | str]) -> None:
+        """``obj.effect("反転", "透明度反転", 1)`` 透明な所と不透明な所を入れ替える
+
+        sigma は 内側シャドー・縁取りα・四隅丸め などで、反転した絵を ``alpha_add`` や
+        ``alpha_sub`` で重ねて形を作る（:func:`sashimono.compat.aviutl.raster._over`）
+        色はそのまま残す 透明だった所は持っていた色（広げた所なら黒）で不透明になり、
+        続く 単色化 で塗られる 一緒に渡された 上下反転・左右反転 もここで裏返す
+        """
+        state = self.state
+        image = state.image.copy()
+        image[..., 3] = 255 - image[..., 3]
+        if _as_float(values.get("上下反転", 0.0)):
+            image = image[::-1]
+        if _as_float(values.get("左右反転", 0.0)):
+            image = image[:, ::-1]
+        state.image = np.ascontiguousarray(image)
         state.image_shared = False
 
     def _offscreen(self) -> None:
@@ -1166,6 +1216,18 @@ class ObjApi:
 
     def lua_setoption(self, name: str = "", *values: Any) -> None:
         key = str(name)
+        if key == "dst":
+            # AviUtl1 の書き方 ``obj.setoption("dst", "tmp", 幅, 高さ)`` AviUtl2 の drawtarget と
+            # 同じ物 知らない名前として捨てると、sigma が仮想バッファへ描くつもりの絵が画面へ出る
+            target = _DST_TARGETS.get(str(values[0]).strip().lower()) if values else None
+            if target is None:
+                shown = f', "{values[0]}"' if values else ""
+                self._report.note_missing(f'obj.setoption("dst"{shown})')
+                return
+            key, values = "drawtarget", (target, *values[1:])
+        if key == "blend" and not values:
+            # 合成モードを省くと通常（lua.txt の更新履歴） 真を入れると旧形式の 1（加算）に読める
+            values = (0,)
         self.state.options[key] = values[0] if values else True
         if key == "drawtarget" and values and str(values[0]) == "tempbuffer" and len(values) >= 3:
             # 大きさを渡されたら、その大きさの透明な物で作り直す（仕様書どおり）
@@ -1322,9 +1384,48 @@ CLIP_EFFECT = "クリッピング"
 #: その場で絵を広げるフィルタの名前（:meth:`ObjApi._expand`）
 EXPAND_EFFECT = "領域拡張"
 
+#: 透明度反転 をその場で掛けるフィルタの名前（:meth:`ObjApi._invert`）
+INVERT_EFFECT = "反転"
+
+#: 透明度反転 と一緒にその場で掛けられる 反転 の項目 輝度反転・色相反転 は写していない
+_INVERT_ITEMS = frozenset({"透明度反転", "上下反転", "左右反転"})
+
+#: ``obj.setoption("blend")`` の旧スクリプトファイル形式の数（lua.txt の並び順）
+_BLEND_NUMBERS = (
+    "none",
+    "add",
+    "sub",
+    "mul",
+    "screen",
+    "overlay",
+    "light",
+    "dark",
+    "brightness",
+    "chroma",
+    "shadow",
+    "light_dark",
+    "diff",
+)
+
+#: AviUtl1 の ``obj.setoption("dst", …)`` の描き先の名前と、AviUtl2 の ``drawtarget`` の名前
+_DST_TARGETS = {"tmp": "tempbuffer", "frm": "framebuffer"}
+
 #: ``obj.load("figure")`` の線の太さがこれ以上なら塗りつぶし 図形オブジェクトの読み込み
 #: （:mod:`sashimono.compat.aviutl.mapping`）と同じ決まり AviUtl2 の既定値がこの値
 FILLED_LINE = 4000.0
+
+
+def _inverts_alpha(params: dict[str, float | str]) -> bool:
+    """``obj.effect("反転", …)`` がその場で掛けられる形か 透明度反転 が真で、ほかは裏返しだけ"""
+    return bool(_as_float(params.get("透明度反転", 0.0))) and set(params) <= _INVERT_ITEMS
+
+
+def _blend_mode(value: Any) -> str:
+    """``obj.setoption("blend", 値)`` の値を lua.txt の名前へ 数は旧形式の並び"""
+    if isinstance(value, str) and not value.strip().lstrip("-").isdigit():
+        return value.strip().lower() or "none"
+    number = int(_as_float(value))
+    return _BLEND_NUMBERS[number] if 0 <= number < len(_BLEND_NUMBERS) else str(number)
 
 
 def _is_table(value: Any) -> bool:
