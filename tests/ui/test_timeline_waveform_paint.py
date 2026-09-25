@@ -194,6 +194,15 @@ def test_old_images_are_dropped_past_the_budget() -> None:
     assert len(images._entries) <= 3
 
 
+def test_an_image_larger_than_the_budget_is_drawn_but_not_kept() -> None:
+    """1 枚で上限を超える画像は貯めない 貯めると上限を超えたまま残る（#217 の指摘）"""
+    waveform = _waveform(-0.5, 0.5)
+    images = _WaveformImages(budget=100 * 40 * 4 - 1)
+    assert images.get(waveform, 0, 48000, 100, 40) is not None
+    assert images._used <= 100 * 40 * 4 - 1
+    assert len(images._entries) == 0
+
+
 def test_the_cache_does_not_keep_a_discarded_waveform_alive() -> None:
     """使わなくなった素材の解析を捨てたら、貯めた画像が解析を抱えたままにしない"""
     waveform = _waveform(-0.5, 0.5)

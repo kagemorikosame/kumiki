@@ -667,9 +667,13 @@ class _WaveformImages:
         # チャンネルをまとめて 1 本の波形にする ステレオを上下に分けるのは
         # トラックを高くしたときの表示として P2 で入れる
         image = waveform_image(envelope[:, :, 0].min(axis=1), envelope[:, :, 1].max(axis=1), height)
+        # 1 枚で上限を超える画像（高いトラックの幅の広いクリップ）は貯めずに返す
+        # 貯めると、ほかを全部捨てても上限を超えたまま残る
+        if image.sizeInBytes() > self._budget:
+            return image
         self._entries[key] = (weakref.ref(waveform), image)
         self._used += image.sizeInBytes()
-        while self._used > self._budget and len(self._entries) > 1:
+        while self._used > self._budget:
             self._drop(next(iter(self._entries)))
         return image
 
