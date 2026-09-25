@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import math
 import struct
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -65,6 +65,8 @@ __all__ = ["Frame", "render_source", "render_source_framed", "waveform_points"]
 
 #: 縦の基準ごとに、指定した位置より上へ出す割合 ``下`` なら全部が上に出る
 _VERTICAL_SHARE = {"top": 0.0, "middle": 0.5, "bottom": 1.0}
+#: 横の基準ごとに、指定した位置より左へ出す割合 ``右`` なら全部が左に出る
+_HORIZONTAL_SHARE = {"left": 0.0, "center": 0.5, "right": 1.0}
 
 
 def render_source(
@@ -225,7 +227,7 @@ def source_canvas(
         return width, height
     if values.get("shape") == "polyline":
         # 線の図形は点の広がりで見積もる
-        points = polyline_points(str(values.get("points", "")))
+        points = centred_points(values, width, height)
         line = float(values.get("line_width", 0.0))  # type: ignore[arg-type]
         reach_x = max((abs(x) for x, _ in points), default=0.0) + line
         reach_y = max((abs(y) for _, y in points), default=0.0) + line
@@ -438,12 +440,16 @@ def _draw_text(
     plain_metrics = QFontMetricsF(plain_font)
     plain_widest = max((plain_metrics.horizontalAdvance(line) for line in lines), default=0.0)
 
+    # 文字の塊の横の基準（``anchor``） 既定は塊の真ん中が位置 行揃えはその塊の中で揃える
+    anchor_share = _HORIZONTAL_SHARE.get(str(values.get("anchor", "center")), 0.5)
+
     def start(line_width: float, block_width: float) -> float:
+        left = centre_x - block_width * anchor_share
         if align == "left":
-            return centre_x - block_width / 2.0
+            return left
         if align == "right":
-            return centre_x + block_width / 2.0 - line_width
-        return centre_x - line_width / 2.0
+            return left + block_width - line_width
+        return left + (block_width - line_width) / 2.0
 
     path = QPainterPath()
     for index, line in enumerate(lines):
@@ -654,6 +660,10 @@ def _aviutl_lines(
     top = centre_y - block_height * _VERTICAL_SHARE.get(str(values.get("valign", "middle")), 0.5)
 
     paths: dict[_Look, QPainterPath] = {}
+    # 伸ばしたり回したりした字は文字の枠（テキストの入れ物）で切る AviUtl2 の絵は枠の大きさ
+    # なので、はみ出した所は描かれない（``H<th2>H`` の真ん中の字が枠の上下で切れた #184）
+    frame = QPainterPath()
+    frame.addRect(QRectF(left, top, widest, block_height))
     line_top = top
     for parts, advance, pitch, ascent, after in laid:
         x = left + (widest - advance) * {"left": 0.0, "right": 1.0}.get(align, 0.5)
@@ -668,7 +678,8 @@ def _aviutl_lines(
             else:
                 glyph = QPainterPath()
                 glyph.addText(QPointF(x, baseline), font, part)
-                target.addPath(_shaped(glyph, x + step / 2.0, line_top + pitch / 2.0, shape))
+                shaped = _shaped(glyph, x + step / 2.0, line_top + pitch / 2.0, shape)
+                target.addPath(shaped.intersected(frame))
             x += step
         line_top += pitch + after
 
@@ -1071,7 +1082,7 @@ def _draw_shape(painter: QPainter, values: dict[str, object], width: int, height
         shape_width = float(width) + abs(float(values.get("pos_x", 0.0))) * 2.0  # type: ignore[arg-type]
         shape_height = float(height) + abs(float(values.get("pos_y", 0.0))) * 2.0  # type: ignore[arg-type]
     if str(values.get("shape", "rect")) == "polyline":
-        _draw_polyline(painter, values, centre_x, centre_y)
+        _draw_polyline(painter, values, centre_x, centre_y, width, height)
         return
     if str(values.get("shape", "rect")) == "concentration":
         _draw_concentration(painter, values, centre_x, centre_y, width, height)
@@ -1153,11 +1164,47 @@ def polyline_points(text: str) -> list[tuple[float, float]]:
     return points
 
 
-def _polyline_path(values: dict[str, object], centre_x: float, centre_y: float) -> QPainterPath:
+def centred_points(
+    values: Mapping[str, object], width: float, height: float
+) -> list[tuple[float, float]]:
+    """線の点を、中心からの画素（Y は上が正）でそろえて返す
+
+    ``points_from`` が ``corner`` なら点は画面の左上からの画素で Y は下が正（YMM4 のペン）
+    画面の大きさはここで引く YMM4 に同じ点を 1920x1080 と 1280x720 で描かせると、どちらも
+    画面の左上から同じ画素の所に線が出た（#198） 1920x1080 の真ん中を決め打ちで引くと、
+    ほかの大きさの画面で線が 320・180 ずれる
+    """
+    points = polyline_points(str(values.get("points", "")))
+    if str(values.get("points_from", "center")) == "corner":
+        return [(x - width / 2.0, height / 2.0 - y) for x, y in points]
+    return points
+
+
+def corner_points_centred(source: GeneratedSource, width: int, height: int) -> GeneratedSource:
+    """画面の左上から数えた線の点を、画面 ``width`` x ``height`` の中心からの点へ直す
+
+    それ以外の生成オブジェクトはそのまま返す 描く所（:func:`render_source_framed`）が
+    受け取るのは広げた絵や縮めたプレビューの大きさで、画面の左上が分からないため、
+    画面の大きさを知っているレンダラが描く前に呼ぶ
+    """
+    if source.kind != "shape" or source.params.get("points_from") != "corner":
+        return source
+    points = centred_points(dict(source.params), width, height)
+    text = ";".join(f"{x:g},{y:g}" for x, y in points)
+    return source.with_param("points", text).with_param("points_from", "center")
+
+
+def _polyline_path(
+    values: dict[str, object],
+    centre_x: float,
+    centre_y: float,
+    width: float = 0.0,
+    height: float = 0.0,
+) -> QPainterPath:
     points = [
         # 点も Y は上が正 ほかの位置の設定と向きがそろう
         (centre_x + x, centre_y - y)
-        for x, y in polyline_points(str(values.get("points", "")))
+        for x, y in centred_points(values, width, height)
     ]
     path = QPainterPath()
     if len(points) < 2:
@@ -1626,10 +1673,15 @@ def _trimmed(path: QPainterPath, start: float, end: float) -> QPainterPath:
 
 
 def _draw_polyline(
-    painter: QPainter, values: dict[str, object], centre_x: float, centre_y: float
+    painter: QPainter,
+    values: dict[str, object],
+    centre_x: float,
+    centre_y: float,
+    width: float,
+    height: float,
 ) -> None:
     """線の図形 閉じていれば中を塗ってから線を引く 端と角は丸める（配布物はすべて丸）"""
-    path = _polyline_path(values, centre_x, centre_y)
+    path = _polyline_path(values, centre_x, centre_y, width, height)
     if path.isEmpty():
         return
     trim_start = float(values.get("trim_start", 0.0)) / 100.0  # type: ignore[arg-type]

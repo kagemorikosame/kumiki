@@ -269,11 +269,38 @@ void main() {
 
 _BLUR = _shader("""
 uniform float radius;
+uniform bool fixed_size;
 
 void main() {
     // 横と縦に分けて畳む 1 回で 2 次元のカーネルを回すと、計算量が半径の 2 乗になる
     vec2 direction = u_pass == 0 ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
-    frag_color = blur1d(u_texture, v_uv, direction, radius);
+    if (!fixed_size) {
+        frag_color = blur1d(u_texture, v_uv, direction, radius);
+        return;
+    }
+    // 大きさを変えない（AviUtl の サイズ固定） 絵の置かれた範囲の外は読まずに端の画素を
+    // 読み直すので、外へにじまず端も薄れない AviUtl2 に白い四角 300 を範囲 30 でぼかさせると、
+    // 固定しないと端が 11 画素ほど薄れ、固定すると 300 のまま白だった（#188）
+    vec2 pixel = v_uv * u_size;
+    vec2 low = u_object.xy + 0.5;
+    vec2 high = u_object.zw - 0.5;
+    if (any(lessThan(pixel, u_object.xy)) || any(greaterThan(pixel, u_object.zw))) {
+        frag_color = texture(u_texture, v_uv);
+        return;
+    }
+    float sigma = max(radius * 0.5, 0.5);
+    vec4 sum = premul(texture(u_texture, v_uv));
+    float total = 1.0;
+    int taps = int(min(radius, 96.0));
+    for (int i = 1; i <= taps; ++i) {
+        float offset = float(i);
+        float w = exp(-0.5 * offset * offset / (sigma * sigma));
+        vec2 ahead = clamp(pixel + direction * offset, low, high) / u_size;
+        vec2 behind = clamp(pixel - direction * offset, low, high) / u_size;
+        sum += (premul(texture(u_texture, ahead)) + premul(texture(u_texture, behind))) * w;
+        total += 2.0 * w;
+    }
+    frag_color = unpremul(sum / total);
 }
 """)
 
@@ -477,6 +504,8 @@ uniform vec2 pattern_size;
 uniform bool outline_only;
 uniform float opacity;
 uniform float blur;
+uniform float offset_x;
+uniform float offset_y;
 
 // 縁の色 模様の画像があれば色の代わりにそれで塗る
 //
@@ -509,6 +538,8 @@ void main() {
     // 消え、切り上げると 2 倍・4 倍の太さに見える 整数の太さは今までと同じ絵になる
     float reach = min(width, 32.0);
     float coverage = 0.0;
+    // 縁だけをずらす（YMM4 の縁取りの X と Y） 元の絵は動かさない
+    vec2 moved = v_uv - vec2(offset_x, offset_y) / u_size;
     if (blur <= 0.0) {
         float whole = floor(reach);
         float part = reach - whole;
@@ -519,7 +550,7 @@ void main() {
                 float d = length(offset);
                 float weight = d <= reach ? 1.0 : (d <= whole + 1.0 ? part : 0.0);
                 if (weight <= 0.0) continue;
-                coverage = max(coverage, texture(u_texture, v_uv + offset / u_size).a * weight);
+                coverage = max(coverage, texture(u_texture, moved + offset / u_size).a * weight);
             }
         }
     } else {
@@ -537,7 +568,7 @@ void main() {
                 float d = length(offset);
                 float weight = 1.0 - smoothstep(reach - soft, outer, d);
                 if (weight <= 0.0) continue;
-                coverage = max(coverage, texture(u_texture, v_uv + offset / u_size).a * weight);
+                coverage = max(coverage, texture(u_texture, moved + offset / u_size).a * weight);
             }
         }
     }
@@ -857,6 +888,57 @@ void main() {
 )
 
 
+#: AviUtl2 の 色調補正 色は符号化した値（sRGB 0〜1）で計算する 値はどれも 100 で元のまま
+#: （色相だけ 0） 2026-09-25 に 3 色の升（灰 128・(200,100,50)・(50,150,220)）で測った（#188）
+#:
+#: - 明るさ 150 で 3 色とも +127、50 で -127 （(値 - 100)% の白を足す）
+#: - コントラスト 150 で灰は 128 のまま、橙が (236,86,11) （0.5 を支点に 値/100 倍）
+#: - 輝度 150 で灰が 192、橙が (255,162,112) （輝度 Y を 値/100 倍し、増えた分を 3 色へ足す）
+#: - 彩度 50 で橙が (162,112,87) （Y を支点に色差を 値/100 倍）
+#: - 色相 90 で橙が (65,173,28) （YCbCr の Cb と Cr を 90 度回す Y は BT.601）
+_COLOR_CORRECT = _shader("""
+uniform float brightness;
+uniform float contrast;
+uniform float luma;
+uniform float saturation;
+uniform float hue;
+
+const vec3 BT601 = vec3(0.299, 0.587, 0.114);
+
+vec3 encode_srgb(vec3 c) {
+    c = clamp(c, 0.0, 1.0);
+    return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+vec3 decode_srgb(vec3 c) {
+    c = clamp(c, 0.0, 1.0);
+    return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
+}
+
+void main() {
+    vec4 color = texture(u_texture, v_uv);
+    vec3 c = encode_srgb(color.rgb);
+    c += (brightness - 100.0) / 100.0;
+    c = (c - 0.5) * max(contrast, 0.0) / 100.0 + 0.5;
+    float y = dot(c, BT601);
+    c += y * (max(luma, 0.0) / 100.0 - 1.0);
+    y = dot(c, BT601);
+    c = y + (c - y) * max(saturation, 0.0) / 100.0;
+    if (abs(hue) > 0.001) {
+        float cb = (c.b - y) * 0.564;
+        float cr = (c.r - y) * 0.713;
+        float angle = radians(hue);
+        float turned_cb = cb * cos(angle) - cr * sin(angle);
+        float turned_cr = cb * sin(angle) + cr * cos(angle);
+        c = vec3(
+            y + 1.403 * turned_cr,
+            y - 0.344 * turned_cb - 0.714 * turned_cr,
+            y + 1.773 * turned_cb
+        );
+    }
+    frag_color = vec4(decode_srgb(c), color.a);
+}
+""")
+
 _FILL = _shader("""
 uniform vec4 color;
 uniform float amount;
@@ -946,7 +1028,10 @@ def register_builtin_effects() -> None:
             kind="blur",
             label="ぼかし",
             category="ぼかし",
-            parameters=(TrackSpec("radius", "範囲", 0, 96, 8, unit="px"),),
+            parameters=(
+                TrackSpec("radius", "範囲", 0, 96, 8, unit="px"),
+                CheckSpec("fixed_size", "大きさを変えない", False),
+            ),
             fragment_shader=_BLUR,
             passes=2,
         )
@@ -1069,6 +1154,8 @@ def register_builtin_effects() -> None:
                 CheckSpec("outline_only", "縁だけ", False),
                 TrackSpec("opacity", "不透明度", 0, 100, 100, unit="%"),
                 TrackSpec("blur", "ぼかし", 0, 64, 0, unit="px"),
+                TrackSpec("offset_x", "ずらす X", -4000, 4000, 0, step=1, unit="px"),
+                TrackSpec("offset_y", "ずらす Y", -4000, 4000, 0, step=1, unit="px"),
             ),
             fragment_shader=_BORDER,
         )
@@ -1113,6 +1200,21 @@ def register_builtin_effects() -> None:
         )
     )
 
+    registry.register(
+        EffectDefinition(
+            kind="color_correct",
+            label="色調補正（AviUtl）",
+            category="色",
+            parameters=(
+                TrackSpec("brightness", "明るさ", 0, 200, 100, unit="%"),
+                TrackSpec("contrast", "コントラスト", 0, 200, 100, unit="%"),
+                TrackSpec("hue", "色相", -360, 360, 0, unit="度"),
+                TrackSpec("luma", "輝度", 0, 200, 100, unit="%"),
+                TrackSpec("saturation", "彩度", 0, 200, 100, unit="%"),
+            ),
+            fragment_shader=_COLOR_CORRECT,
+        )
+    )
     registry.register(
         EffectDefinition(
             kind="fill",

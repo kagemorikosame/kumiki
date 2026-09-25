@@ -65,7 +65,13 @@ from sashimono.engine.render.scripts import (
     split_effects,
     text_font,
 )
-from sashimono.engine.sources import MAX_CANVAS, Frame, render_source_framed, source_canvas
+from sashimono.engine.sources import (
+    MAX_CANVAS,
+    Frame,
+    corner_points_centred,
+    render_source_framed,
+    source_canvas,
+)
 
 __all__ = ["FrameRenderer", "RenderQuality"]
 
@@ -1845,6 +1851,9 @@ class FrameRenderer:
                     font=text_font(source.params, local_frame),
                 )
                 source = source.with_param("text", expanded)
+        # 画面の左上から数えた線の点（YMM4 のペン）は、ここで画面の大きさを引いて中心からの点へ
+        # 直す 絵を描く所は広げた絵や縮めたプレビューの大きさしか知らず、画面の左上が分からない
+        source = corner_points_centred(source, *self._project.settings.resolution)
         if screen:
             canvas, scale = self._project.settings.resolution, (1.0, 1.0)
         else:

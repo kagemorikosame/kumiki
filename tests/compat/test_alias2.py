@@ -133,7 +133,7 @@ class TestDecoration:
         assert source is not None
         width = source.params["border_width"]
         assert isinstance(width, AnimatedValue)
-        assert width.at(0) == pytest.approx(60.0 * 0.09)
+        assert width.at(0) == pytest.approx(60.0 * 0.12)
 
     def test_the_outline_takes_the_edge_colour(self) -> None:
         item = mapped(SUBTITLE)
@@ -171,7 +171,7 @@ class TestDecoration:
     def test_half_width_brackets_mean_the_same(self) -> None:
         # 手で書き換える人がいる 綴りの違いだけで装飾が消えるのは困る
         source = mapped(SUBTITLE.replace("（太）", "(太)")).clip.source  # type: ignore[attr-defined]
-        assert source.params["border_width"].at(0) == pytest.approx(60.0 * 0.09)
+        assert source.params["border_width"].at(0) == pytest.approx(60.0 * 0.12)
 
 
 class TestLayout:

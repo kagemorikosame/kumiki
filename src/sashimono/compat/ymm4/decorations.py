@@ -4,7 +4,7 @@
 次の 2 か所に入っていた
 
 * ``Style`` / ``StyleColor`` — テキストアイテム自身が持つ文字装飾 AviUtl2 の
-  ``文字装飾`` と同じもので、:mod:`sashimono.compat.decoration` の語彙に載る
+  ``文字装飾`` に似るが、太さは YMM4 に描かせて測った別の表（:data:`_STYLES`）で持つ
 * ``VideoEffects`` — 積まれた映像エフェクトの列 手元の 2 本では
   ``OutlineEffect``（縁取り）が 152 回と圧倒的に多く、これが YMM4 の縁取りの
   実体だった
@@ -23,8 +23,8 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from sashimono.compat.aviutl.report import CompatibilityReport
-from sashimono.compat.decoration import decoration_params, find_decoration
-from sashimono.compat.ymm4.brushes import fill_foreground, gradient_effect, is_solid
+from sashimono.compat.decoration import PLAIN, TextDecoration, decoration_params
+from sashimono.compat.ymm4.brushes import fill_foreground, gradient_effect, is_solid, noise_mask
 from sashimono.compat.ymm4.effects import CenterPoint, center_point, map_effect, mapped_names
 from sashimono.compat.ymm4.values import (
     animated,
@@ -47,18 +47,22 @@ __all__ = [
 
 Colour = tuple[float, float, float, float]
 
-#: YMM4 の ``Style``（テキストの文字装飾）と、AviUtl2 での呼び名
+#: YMM4 の ``Style``（テキストの文字装飾） 名前は YMM4 本体（4.56.1.1）の列挙
+#: ``YukkuriMovieMaker.Project.Items.Style`` をメタデータの表から読んだ
+#: 前は AviUtl2 の呼び名から推した名前（ThinBorder など）で引いていて、本体に無い名前だった
 #:
-#: 中身は同じものなので、:mod:`sashimono.compat.decoration` の表に寄せて
-#: 太さの決め方を 1 か所にまとめる
-_STYLES: dict[str, str] = {
-    "Normal": "標準文字",
-    "Shadow": "影付き文字",
-    "ThinShadow": "影付き文字（薄）",
-    "Border": "縁取り文字",
-    "ThinBorder": "縁取り文字（細）",
-    "ThickBorder": "縁取り文字（太）",
-    "Outline": "縁取り文字",
+#: 太さと影のずれは、Arial 100 の H を YMM4 に描かせて測った（#184 の探り 50 と 200 でも
+#: 同じ割合） 縁取りは片側 8（50 で 4、200 で 15.5）、Light の付く縁取りは 4、影は右と下へ
+#: 4 ずれ、ShadowLight は同じずれで濃さが半分 Sharp の付く縁取りは太さが同じで角が尖る
+#: （角の形までは写さない） AviUtl2 の文字装飾とは太さが違うので、表を分けて持つ
+_STYLES: dict[str, TextDecoration] = {
+    "Normal": PLAIN,
+    "Shadow": TextDecoration("Shadow", shadow=0.04),
+    "ShadowLight": TextDecoration("ShadowLight", shadow=0.04, shadow_opacity=0.5),
+    "Border": TextDecoration("Border", border=0.08),
+    "BorderLight": TextDecoration("BorderLight", border=0.04),
+    "SharpBorder": TextDecoration("SharpBorder", border=0.08),
+    "SharpBorderLight": TextDecoration("SharpBorderLight", border=0.04),
 }
 
 
@@ -91,13 +95,11 @@ def map_decorations(
 
     tint = colour(style_colour, (0.0, 0.0, 0.0, 1.0))
     if style:
-        name = _STYLES.get(style)
-        if name is None:
+        decoration = _STYLES.get(style)
+        if decoration is None:
             report.note_missing(f"YMM4 の文字装飾: {style}")
         else:
-            decoration = find_decoration(name)
-            if decoration is not None:
-                result.params.update(decoration_params(decoration, size, tint))
+            result.params.update(decoration_params(decoration, size, tint))
 
     if not isinstance(decorations, list):
         return result
@@ -209,6 +211,13 @@ def _map_video_effects(
                 _or_skip(fill_foreground(entry, report, length=length, keyframes=keyframes))
             )
             continue
+        if name == "NoiseEffect" and isinstance(entry.get("NoiseParameter"), dict):
+            # 新しい形のノイズは模様の値で不透明度か色を薄める 前は古い形の強さ（Intensity）を
+            # 探して既定の 20 で粒を足していて、画面効果/雨 の縞が薄まらずに全面へ出た（#177）
+            result.effects.append(
+                _or_skip(noise_mask(entry, report, length=length, keyframes=keyframes))
+            )
+            continue
         if name == "GradientEffect":
             result.effects.append(
                 _or_skip(gradient_effect(entry, report, length=length, keyframes=keyframes))
@@ -242,6 +251,8 @@ _PIVOTED_KINDS = frozenset(
         "crop_angle",
         "transform",
         "inout_zoom",
+        # 登場の回転も支点を受け取る 木製看板テロップは釘の所を支点に振れて出入りする（#177）
+        "inout_rotate",
         "random_rotate",
         "random_zoom",
         "repeat_rotate",
@@ -350,11 +361,17 @@ def _video_effect(name: str, entry: dict[str, Any], length: int, keyframes: Any)
         # YMM4 の Y は下向き こちらは上向き
         return definition.create(pos_x=value("X"), pos_y=value("Y", scale=-1.0))
     if kind == "monochrome":
-        definition = registry.get("color")
+        definition = registry.get("fill")
         if definition is None:  # pragma: no cover - 標準エフェクトは必ずある
             return None
-        # 単色化 色を抜くところまでは同じ絵になる 着色まではできない
-        return definition.create(saturation=-100)
+        # 単色化は色を塗る 明るさを保つ（KeepBrightness）なら塗る色の明るさを元の絵へそろえる
+        # 前は彩度を抜くだけで色を塗らず、レトロなカウントダウン3秒 の暗い茶色
+        # （#292110 明るさを保たない）の数字が白いまま残った（#177）
+        return definition.create(
+            color=colour(entry.get("Color"), (1.0, 1.0, 1.0, 1.0)),
+            amount=value("Strength", 100.0),
+            keep_luma=entry.get("KeepBrightness") is not False,
+        )
     if kind == "zoom":
         definition = registry.get("transform")
         if definition is None:  # pragma: no cover - 標準エフェクトは必ずある
@@ -399,6 +416,9 @@ class _Outline:
     outline_only: bool
     #: 縁のぼかし（画素）
     blur: AnimatedValue
+    #: 縁だけのずれ（画素 Y は上が正） YMM4 の X と Y 配布物の 3 つは Y が -1
+    offset_x: AnimatedValue = field(default_factory=lambda: AnimatedValue(0.0))
+    offset_y: AnimatedValue = field(default_factory=lambda: AnimatedValue(0.0))
 
     @property
     def fits_text(self) -> bool:
@@ -407,7 +427,13 @@ class _Outline:
         縁だけは文字の塗りと一緒に描かれる縁取りでは表せない 動く不透明度は、色の濃さへ
         焼き込むと最初の値で止まる テキストの縁取りはぼかせない
         """
-        return not self.outline_only and not self.opacity.keyframes and _peak(self.blur) <= 0.0
+        return (
+            not self.outline_only
+            and not self.opacity.keyframes
+            and _peak(self.blur) <= 0.0
+            and _still_zero(self.offset_x)
+            and _still_zero(self.offset_y)
+        )
 
     def baked(self) -> tuple[AnimatedValue, Colour]:
         """動かない不透明度を色の濃さへ焼き込んだ太さと色"""
@@ -421,6 +447,8 @@ class _Outline:
             opacity=self.opacity,
             outline_only=self.outline_only,
             blur=self.blur,
+            offset_x=self.offset_x,
+            offset_y=self.offset_y,
         )
 
 
@@ -482,7 +510,15 @@ def _outline(
         opacity=value("Opacity", 100.0),
         outline_only=entry.get("IsOutlineOnly") is True,
         blur=_non_negative(value("Blur", 0.0)),
+        # 縁のずれ YMM4 に Y -20 を描かせると縁が 20 上へ、X 30 で 30 右へ動いた（#192）
+        # グループの縁も同じ 元の絵は動かない
+        offset_x=value("X", 0.0),
+        offset_y=animated(entry.get("Y"), 0.0, length=length, keyframes=keyframes, scale=-1.0),
     )
+
+
+def _still_zero(value: AnimatedValue) -> bool:
+    return not value.keyframes and value.static == 0.0
 
 
 def _non_negative(value: AnimatedValue) -> AnimatedValue:
@@ -528,6 +564,8 @@ def _border_effect(
     opacity: AnimatedValue | None = None,
     outline_only: bool = False,
     blur: AnimatedValue | None = None,
+    offset_x: AnimatedValue | None = None,
+    offset_y: AnimatedValue | None = None,
 ) -> Effect:
     definition = registry.get("border")
     assert definition is not None  # 標準エフェクトは必ずある
@@ -537,6 +575,8 @@ def _border_effect(
         opacity=opacity if opacity is not None else AnimatedValue(100.0),
         outline_only=outline_only,
         blur=blur if blur is not None else AnimatedValue(0.0),
+        offset_x=offset_x if offset_x is not None else AnimatedValue(0.0),
+        offset_y=offset_y if offset_y is not None else AnimatedValue(0.0),
     )
 
 

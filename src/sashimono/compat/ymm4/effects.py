@@ -565,10 +565,14 @@ def _inout_rotate(r: _Reader) -> Effect | None:
 
 
 def _inout_offset(r: _Reader) -> Effect | None:
-    # Value3 は実物で何を変えるのか読み取れなかった 配布テンプレートでは 0 のまま
-    r.unused("Value3")
+    # Value3 は手前へ出す量 YMM4 に 0・300・-300 を描かせると、300 の四角が 428 と 230 の
+    # 大きさから始まって元の大きさへ戻った（奥行き 1000 ほどの遠近 #198）
     return _create(
-        "inout_offset", offset_x=r.plain("Value"), offset_y=-r.plain("Value2"), **_in_out(r)
+        "inout_offset",
+        offset_x=r.plain("Value"),
+        offset_y=-r.plain("Value2"),
+        offset_z=r.plain("Value3"),
+        **_in_out(r),
     )
 
 
