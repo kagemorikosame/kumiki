@@ -79,42 +79,330 @@ vec3 lit_color(vec3 under, float amount) {
     return blend_colors(blend, under, clamp(color.rgb * amount * color.a, 0.0, 1.0));
 }
 
-// 画質を落とした合成で、書き出しの画素を 1 つずつ思い描いて光を平均するか
-// 書き出しの帯は画面の 1 画素ずつ刻んだ段で、いちばん外の段は傾きが半分になる 合成の
-// 1 画素には、急な段・半分の段・平らな面が太さの端数に応じて入り交じる 合成の画素で
-// 刻み直すと、端数（6 の縁を 1/4 で 1.5 画素など）で段の数と傾きが書き出しと合わず、
-// 縮めた書き出しと光り方がずれる（#182） 光は傾きに比例しないので、傾きを平均してから
-// 光を当てても合わない 覆う書き出しの画素ごとに光を当てて色で平均する
-// ぼかしは段を均すので、書き出しの画素を思い描けない その時は合成の画素で刻む
-// 太さの上限 46 は、輪を 1 画素ずつ刻める 48 から帯の外の 2 画素を引いた数
+// 画質を落とした合成で、書き出しの画素を 1 つずつ思い描いて光を当て、色で平均するか
+// 書き出しの帯は、縁から画面の 1 画素ずつ刻んだ段になる 合成の 1 画素には、急な段・
+// 緩い段・平らな面が太さの端数や縁の向きに応じて入り交じる 合成の画素で刻み直すと、
+// 端数（6 の縁を 1/4 で 1.5 画素など）で段の数と傾きが書き出しと合わず、縮めた書き出しと
+// 光り方がずれる（#182） 光は傾きに比例しないので、傾きを平均してから光を当てても
+// 合わない 覆う書き出しの画素ごとに段の高さを求め、光を当てて色で平均する
 // 書き出しの画素で 1 に満たない太さ（キーフレームの 0 や負の値も）は、書き出しが 1 へ
-// 切り上げて別の式で描くので思い描けない 通すと輪の数が 0 になり 0 で割る
+// 切り上げて別の式で描くので思い描けない
 // 画質の分母が 8 を超えると、覆う書き出しの画素を 8 × 8 までしか数えられず平均が偏る
 bool fine_rings() {
-    return u_pixel_scale < 0.999 && u_pixel_scale >= 0.125 && blur <= 0.0
-        && thickness <= 46.0 && thickness >= u_pixel_scale;
+    return u_pixel_scale < 0.999 && u_pixel_scale >= 0.125 && thickness >= u_pixel_scale;
 }
 
-// 縁の距離を刻む輪の幅
-// 書き出しの画素を思い描く時は、縁から帯の外の平らな所まで（太さ + 2 画素）の距離が要る
-// 1 画素ずつ刻むので、書き出しの輪と同じく合成の画素の升目に揃う
-float ring_width() {
-    if (fine_rings()) return ceil(thickness) + 2.0;
-    return clamp(thickness, 1.0, 128.0);
+// 1 辺で数える書き出しの画素の数 画質の分母と同じ
+int fine_count() {
+    return int(clamp(floor(1.0 / u_pixel_scale + 0.5), 1.0, 8.0));
 }
 
-// 書き出しの pass 0 が、縁から distance 画素（画素の中心）の所へ置く高さ
-// 輪は太さ（上限 128）を 48 までの数で刻み、縁の外に掛かった最初の輪の半径を太さで割る
-float export_height(float distance, float width) {
+// 書き出しの太さ（書き出しの画素） 書き出しの pass 0 と同じ範囲へ収める
+float fine_width() {
+    return clamp(thickness / u_pixel_scale, 1.0, 128.0);
+}
+
+// 合成の画素 1 つが形に掛かる割合 絵の外は端の画素を読む（テクスチャの読み方と同じ）
+float coverage_at(int x, int y) {
+    ivec2 last = ivec2(u_size) - 1;
+    return texelFetch(u_texture, clamp(ivec2(x, y), ivec2(0), last), 0).a;
+}
+
+// 縁が 1 行（swap なら 1 列）の真ん中の高さを通る位置（合成の画素）
+// 直線の縁なら、高さ 1 の帯に入る形の面積は、帯の真ん中の線の上で形に入る長さに等しい
+// 帯の 7 画素の割合を足せば、アンチエイリアスの階調から縁の位置が端数まで分かる
+float strip_edge(int line, int start, bool swap, bool inward_positive) {
+    float sum = 0.0;
+    for (int i = 0; i < 7; ++i) {
+        sum += swap ? coverage_at(line, start + i) : coverage_at(start + i, line);
+    }
+    return inward_positive ? float(start + 7) - sum : float(start) + sum;
+}
+
+// crossing（合成の画素の座標）の近くの縁を直線で近づける 近づけられなければ偽
+// アルファ 0.5 の境を補って読むと、斜めや曲がった縁では割合が距離に比例しないので、
+// 境が本当の縁から 1 合成画素の 1 割ほど（書き出しの画素で 0.2〜0.5）ずれる 書き出しは
+// 自分の細かい画素で境を読むので、ずれは書き出しの 1 画素の段 1 つ分に近い
+// 縁の 3 行ぶんの面積から直線を求めると、ずれが残らない
+bool edge_line(vec2 crossing, out vec2 point, out vec2 inward) {
+    vec2 uv = crossing / u_size;
+    vec2 step_ = 1.0 / u_size;
+    vec2 across = vec2(step_.x, 0.0);
+    vec2 down = vec2(0.0, step_.y);
+    vec2 slope = vec2(
+        texture(u_texture, uv + across).a - texture(u_texture, uv - across).a,
+        texture(u_texture, uv + down).a - texture(u_texture, uv - down).a
+    );
+    point = crossing;
+    inward = vec2(0.0);
+    if (length(slope) < 1e-3) return false;
+    // 縁が横に近ければ列ごとに足す 行ごとに足すと、縁が帯の外へ抜ける
+    bool swap = abs(slope.y) > abs(slope.x);
+    vec2 p = swap ? crossing.yx : crossing;
+    bool inward_positive = (swap ? slope.y : slope.x) > 0.0;
+    int start = int(floor(p.x)) - 3;
+    int line = int(floor(p.y));
+    float before = strip_edge(line - 1, start, swap, inward_positive);
+    float middle = strip_edge(line, start, swap, inward_positive);
+    float after = strip_edge(line + 1, start, swap, inward_positive);
+    // 3 行が 1 本の線に乗らない所（角や細い所）は直線で近づけられない
+    if (abs(after - 2.0 * middle + before) > 0.25) return false;
+    vec2 tangent = normalize(vec2(after - before, 2.0));
+    vec2 normal = vec2(tangent.y, -tangent.x);
+    if ((normal.x > 0.0) != inward_positive) normal = -normal;
+    vec2 at = vec2(middle, float(line) + 0.5);
+    point = swap ? at.yx : at;
+    inward = swap ? normal.yx : normal;
+    return true;
+}
+
+// 縁の内向きが n の直線の縁で、24 方向のうち縁へいちばん真っ直ぐ向く方向の余弦
+// 書き出しはその方向で縁を見つけるので、縁までの距離をこれで割った値が測りになる
+float facing(vec2 n) {
+    float step_ = PI / 12.0;
+    return cos(abs(mod(atan(n.y, n.x) + step_ * 0.5, step_) - step_ * 0.5));
+}
+
+// 縁の向きを持たない（縁が測る範囲に無かった）印 角度は -π..π なので重ならない
+const float NO_EDGE = 10.0;
+
+// 書き出しの pass 0 は、画素から 24 方向へ輪を広げ、形の外（アルファ 0.5 未満）に掛かった
+// 最初の輪で縁までを測る 斜めや曲がった縁では、いちばん近い方向が縁へ真っ直ぐ向かない
+// ので、縁までの本当の距離より少し遠く出る 合成の画素で輪を刻むと、この測り方の癖と
+// 1 合成画素（書き出しの 2〜4 画素）より細かい縁の位置が消え、楕円の段が書き出しとずれる
+// （#194） 同じ 24 方向で縁を越える所を刻まずに探し、書き出しの画素で数えて置く
+// 返すのは測りと、縁の内向きの角度 間の書き出しの画素は、周りの合成の画素の測りを縁の
+// 向きへ伸ばして求める（measure_at） 伸ばせるように、形の外は形までの距離を負で
+// 3 合成画素まで置き、太さの先も 2 合成画素ぶんまで測る
+vec2 edge_measure() {
+    bool inside = texture(u_texture, v_uv).a >= 0.5;
+    float reach = inside ? fine_width() * u_pixel_scale + 2.0 : 3.0;
+    int rings = int(ceil(reach));
+    vec2 centre = v_uv * u_size;
+    for (int ring = 1; ring <= rings; ++ring) {
+        float best = -1.0;
+        vec2 best_toward = vec2(0.0);
+        for (int k = 0; k < 24; ++k) {
+            float a = PI * 2.0 * float(k) / 24.0;
+            vec2 toward = vec2(cos(a), sin(a));
+            if ((texture(u_texture, v_uv + toward * float(ring) / u_size).a >= 0.5) == inside) {
+                continue;
+            }
+            // 越えた輪と 1 つ内の輪の間を半分ずつ詰める 10 回で 1/1024 合成画素
+            float near_ = float(ring - 1);
+            float far_ = float(ring);
+            for (int i = 0; i < 10; ++i) {
+                float middle = (near_ + far_) * 0.5;
+                if ((texture(u_texture, v_uv + toward * middle / u_size).a >= 0.5) == inside) {
+                    near_ = middle;
+                } else {
+                    far_ = middle;
+                }
+            }
+            float crossing = (near_ + far_) * 0.5;
+            if (best < 0.0 || crossing < best) {
+                best = crossing;
+                best_toward = toward;
+            }
+        }
+        // 先に越えた輪の方向より、後の輪で越える方向が近いことは無い
+        if (best < 0.0) continue;
+        vec2 point;
+        vec2 inward;
+        vec2 direction = inside ? -best_toward : best_toward;
+        bool straight = edge_line(centre + best_toward * best, point, inward);
+        // 縁とほぼ平行に見つけた方向は、直線との交わりが遠くへ飛ぶので決め直さない
+        if (straight && abs(dot(best_toward, inward)) > 0.5) {
+            // 見つけた方向のまま、越える所だけを縁の直線で決め直す 縁までの距離を 24 方向の
+            // 癖で割る形にすると、曲がりのきつい縁（楕円の長い軸の端）から離れた所で外れる
+            float refined = dot(point - centre, inward) / dot(best_toward, inward);
+            // 補った境から大きく離れるなら、直線で近づけたのが外れている
+            if (abs(refined - best) < 0.5) {
+                best = refined;
+                direction = inward;
+            }
+        }
+        return vec2((inside ? best : -best) / u_pixel_scale, atan(direction.y, direction.x));
+    }
+    return vec2((inside ? reach : -reach) / u_pixel_scale, NO_EDGE);
+}
+
+// 書き出しの画素（uv）の縁までの測り
+// 周りの合成の画素 4 つの測りを、それぞれの縁の向きへ伸ばして小さい方を取る 直線の縁なら
+// どれから伸ばしても同じ値になる 補う（線形に混ぜる）と、上下の縁から等しく離れた
+// 真ん中の尾根で測りが低く出る 尾根は太い縁の反射でよく掛かり、段が 1 つずれる
+float measure_at(vec2 uv) {
+    vec2 p = uv * u_size;
+    ivec2 corner = ivec2(floor(p - 0.5));
+    ivec2 last = ivec2(u_size) - 1;
+    float best = 1e9;
+    for (int j = 0; j < 2; ++j) {
+        for (int i = 0; i < 2; ++i) {
+            ivec2 texel = clamp(corner + ivec2(i, j), ivec2(0), last);
+            vec4 field = texelFetch(u_texture, texel, 0);
+            float extended = field.r;
+            if (field.b < NO_EDGE - 1.0) {
+                vec2 n = vec2(cos(field.b), sin(field.b));
+                extended += dot(p - (vec2(texel) + 0.5), n) / (facing(n) * u_pixel_scale);
+            }
+            best = min(best, extended);
+        }
+    }
+    return best;
+}
+
+// 書き出しの pass 0 が、縁から measure 画素（24 方向で測った値）の所へ置く値
+// 形の外は 0、縁の外に掛かった最初の輪の半径を太さで割る 太さの先は 1
+// 輪は太さ（上限 128）を 48 までの数で刻む
+float export_value(float measure, float width) {
+    if (measure <= 0.0) return 0.0;
+    float rings = ceil(min(width, 48.0));
+    // 輪の半径ちょうどに縁がある所は、書き出しではその輪が形の外に掛からない（アルファが
+    // ちょうど 0.5） 太さが 48 を超えて輪の間が 1 画素でなくなると、四角の縁から画素の
+    // 中心までの距離が輪の半径と揃う所が出る 測りの丸めで下へ外れないよう少し足す
+    return min((floor(measure * rings / width + 0.002) + 1.0) / rings, 1.0);
+}
+
+// 書き出しがぼかすか 書き出しのぼかしは 1 画素に満たない半径では何もしない
+bool fine_blurred() {
+    return blur / u_pixel_scale >= 1.0;
+}
+
+float normal_cdf(float z) {
+    // erf の近似（Abramowitz と Stegun 7.1.26 誤差 1.5e-7） GLSL に erf が無い
+    float x = abs(z) * 0.70710678;
+    float t = 1.0 / (1.0 + 0.3275911 * x);
+    float poly = ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t
+        + 0.254829592) * t;
+    float erf_ = 1.0 - poly * exp(-x * x);
+    return 0.5 * (1.0 + sign(z) * erf_);
+}
+
+// 書き出しのぼかし（1 次元）で、縁の内へ x 画素の所の段 1 つがどれだけ上がって見えるか
+// 書き出しのぼかしは半径の半分を標準偏差とし、半径で打ち切った重み
+float blurred_step(float x) {
+    float taps = floor(min(blur / u_pixel_scale, 96.0));
+    float reach = taps + 0.5;
+    if (x >= reach) return 1.0;
+    if (x <= -reach) return 0.0;
+    float sigma = max(blur / u_pixel_scale * 0.5, 0.5);
+    float low = normal_cdf(-reach / sigma);
+    float high = normal_cdf(reach / sigma);
+    return clamp((normal_cdf(x / sigma) - low) / (high - low), 0.0, 1.0);
+}
+
+// 縁を直線と見て、書き出しの段を縁に垂直な向きにだけぼかした値
+// 段は縁から 1 輪ごとに 1/輪の数ずつ上がる ぼかした段を足し合わせる
+// 24 方向の測りと縁までの本当の距離の違い（1 % 未満）は見ない
+float blurred_value(float measure, float width) {
+    float rings = ceil(min(width, 48.0));
+    float spacing = width / rings;
+    float sum = 0.0;
+    for (int k = 0; k < int(rings); ++k) {
+        sum += blurred_step(measure - float(k) * spacing);
+    }
+    return sum / rings;
+}
+
+// ぼかしのある時の縁の坂の広さ（太さとぼかしの広がり 合成の画素）
+float blurred_slope() {
+    float sigma = max(blur / u_pixel_scale * 0.5, 0.5);
+    return (fine_width() + 2.5 * sigma) * u_pixel_scale;
+}
+
+// 坂がこれより広いと、書き出しの画素を思い描かずに前の描き方で描く（draw_mode）
+const float LEGACY_SLOPE = 9.0;
+
+// ぼかしのある時に、合成の画素でぼかした値を補うだけで足りる割合
+// 坂が合成の画素 3 つより狭いと、補うと坂が均されて緩む所が内へずれる 広いほど補うだけの
+// 方が合う 縁を直線と見る値は、上下の縁や角をまたぐぼかしで折れ目が出て、補っても
+// 消えない 坂の広さでなめらかに混ぜて、ぼかしを動かした時に光り方が跳ねないようにする
+float coarse_share() {
+    return clamp((blurred_slope() - 3.0) / (LEGACY_SLOPE - 3.0), 0.0, 1.0);
+}
+
+// 描き方 書き出しと同じ式・前の思い描き方（#182）・今の思い描き方（#194）
+const int DRAW_PLAIN = 0;
+const int DRAW_LEGACY = 1;
+const int DRAW_FINE = 2;
+
+// 今の思い描き方が前の描き方より縮めた書き出しから離れる所は、前の描き方のまま描く
+// 四角と楕円・太さ 1〜128・ぼかし 0〜96 の 592 通りで前と今を比べて、どれも前より
+// 離れないように決めた（#194）
+// ぼかしの無い 48 を超える太さは、輪の間が 1 画素でなくなり、輪の半径と画素の中心が
+// 揃う所で書き出しの丸め方を当てきれない ぼかしの坂が広い所は、前の合成の画素で刻んで
+// ぼかす描き方の方が四角の角や尾根で合う 坂の広さの境で描き方が切り替わるが、境の
+// 両側はどちらも縮めた書き出しに近いので、跳ねは小さい
+int draw_mode() {
+    if (!fine_rings()) return DRAW_PLAIN;
+    bool legacy = !fine_blurred() ? fine_width() > 48.0 : blurred_slope() >= LEGACY_SLOPE;
+    if (!legacy) return DRAW_FINE;
+    // 前の思い描き方は、ぼかしの無い 46 合成画素までの太さだけだった
+    return blur <= 0.0 && thickness <= 46.0 ? DRAW_LEGACY : DRAW_PLAIN;
+}
+
+// 書き出しの画素 1 つの高さ
+// ぼかしが無ければ、縁までの測りを求めてから書き出しと同じく段に刻む 刻んだ段を補うと、
+// 段の境が合成の画素の升目に揃い、急な段が書き出しの 2〜4 倍の幅へ緩む
+// ぼかしがあれば、縁を直線と見てぼかした段に、合成の画素でぼかした値との違いを足す
+// 直線と見た値は角で外れるが、外れは合成の画素でぼかした値と比べると分かり、
+// なだらかなので補っても崩れない（pass 1 の緑とアルファ）
+float fine_height(vec2 uv) {
+    vec4 field = texture(u_texture, uv);
+    if (fine_blurred()) {
+        float share = coarse_share();
+        float straight = blurred_value(measure_at(uv), fine_width()) + field.a - field.g;
+        return profile_height(mix(straight, field.a, share));
+    }
+    return profile_height(export_value(measure_at(uv), fine_width()));
+}
+
+// 合成の 1 画素が覆う書き出しの画素に光を当てて、色で平均する
+// 書き出しでは形の縁の画素も、周りの段の傾きで光ってから覆う割合だけ混ざる 書き出しの
+// 画素が形に掛かる割合（縁からの距離 + 0.5）で重みを付ける
+// 高さは覆う書き出しの画素と、その上下左右の 1 画素ずつで求める 隣どうしで同じ画素を
+// 何度も読まないよう、先に升目へ溜める（1/8 で 10 × 10）
+vec3 fine_lit(vec3 under, vec3 light, float k) {
+    int count = fine_count();
+    float strength = surface_scale / u_pixel_scale;
+    float heights[10][10];
+    for (int y = 0; y < count + 2; ++y) {
+        for (int x = 0; x < count + 2; ++x) {
+            // 四隅は傾きに使わない
+            if ((x == 0 || x == count + 1) && (y == 0 || y == count + 1)) continue;
+            vec2 offset = (vec2(float(x - 1), float(y - 1)) + 0.5) / float(count) - 0.5;
+            heights[y][x] = fine_height(v_uv + offset / u_size);
+        }
+    }
+    vec3 sum = vec3(0.0);
+    float taken = 0.0;
+    for (int y = 1; y <= count; ++y) {
+        for (int x = 1; x <= count; ++x) {
+            vec2 offset = (vec2(float(x - 1), float(y - 1)) + 0.5) / float(count) - 0.5;
+            float weight = clamp(measure_at(v_uv + offset / u_size) + 0.5, 0.0, 1.0);
+            if (weight <= 0.0) continue;
+            float gx = (heights[y][x + 1] - heights[y][x - 1]) * 0.5;
+            float gy = (heights[y + 1][x] - heights[y - 1][x]) * 0.5;
+            vec3 normal = normalize(vec3(-gx * strength, -gy * strength, 1.0));
+            sum += lit_color(under, shade(normal, light, k)) * weight;
+            taken += weight;
+        }
+    }
+    if (taken <= 0.0) return lit_color(under, shade(vec3(0.0, 0.0, 1.0), light, k));
+    return sum / taken;
+}
+
+// 前の思い描き方（#182）で、縁から distance 画素の所に書き出しが置く高さ
+float legacy_height(float distance, float width) {
     if (distance <= 0.0) return profile_height(0.0);
     float rings = ceil(min(width, 48.0));
     float ring = floor(distance * rings / width) + 1.0;
     return profile_height(min(ring / rings, 1.0));
 }
 
-// 合成の 1 画素が覆う書き出しの画素に光を当てて、色で平均する
-// 縁からの距離と向きは合成の輪から取る 直線の縁ならどの画素も書き出しと同じ段に入る
-vec3 fine_lit(vec3 under, vec3 light, float k, float width) {
+// 前の思い描き方（#182） 縁からの距離と向きを合成の画素で刻んだ輪から取り、縁を直線と
+// 見て覆う書き出しの画素に光を当てる 四角の縁ならどの画素も書き出しと同じ段に入る
+vec3 legacy_lit(vec3 under, vec3 light, float k, float width) {
     vec2 step_ = 1.0 / u_size;
     float here = texture(u_texture, v_uv).a * width - 0.5;
     vec2 slope = vec2(
@@ -125,7 +413,7 @@ vec3 fine_lit(vec3 under, vec3 light, float k, float width) {
     );
     vec2 inward = length(slope) > 1e-6 ? normalize(slope) : vec2(0.0);
     float scale = 1.0 / u_pixel_scale;
-    int count = int(clamp(floor(scale + 0.5), 1.0, 8.0));
+    int count = fine_count();
     float full = min(thickness * scale, 128.0);
     float strength = surface_scale * scale;
     vec3 sum = vec3(0.0);
@@ -136,7 +424,7 @@ vec3 fine_lit(vec3 under, vec3 light, float k, float width) {
             float distance = (here + dot(offset, inward)) * scale;
             // 縁の外に掛かる書き出しの画素は、書き出しでも光らない（形の外）
             if (distance <= 0.0) continue;
-            float g = (export_height(distance + 1.0, full) - export_height(distance - 1.0, full))
+            float g = (legacy_height(distance + 1.0, full) - legacy_height(distance - 1.0, full))
                 * 0.5;
             vec3 normal = normalize(vec3(-inward * g * strength, 1.0));
             sum += lit_color(under, shade(normal, light, k));
@@ -148,11 +436,21 @@ vec3 fine_lit(vec3 under, vec3 light, float k, float width) {
 }
 
 void main() {
+    int mode = draw_mode();
+    bool fine = mode == DRAW_FINE;
+    // 前の思い描き方は、縁から帯の外の平らな所まで（太さ + 2 画素）を 1 画素ずつ刻む
+    float legacy_width = ceil(thickness) + 2.0;
     if (u_pass == 0) {
+        // 書き出しの画素を思い描く時は、縁までの測りを赤へ、縁の内向きの角度を青へ置く
+        if (fine) {
+            vec2 measured = edge_measure();
+            frag_color = vec4(measured.x, 0.0, measured.y, 1.0);
+            return;
+        }
         // 縁からの距離を太さで割った値（0 が縁、1 が太さ以上の内側）を作る
         float inside = texture(u_texture, v_uv).a;
         if (inside < 0.5) { frag_color = vec4(1.0, 1.0, 1.0, 0.0); return; }
-        float width = ring_width();
+        float width = mode == DRAW_LEGACY ? legacy_width : clamp(thickness, 1.0, 128.0);
         float nearest = width;
         int rings = int(ceil(min(width, 48.0)));
         for (int ring = 1; ring <= rings; ++ring) {
@@ -168,9 +466,45 @@ void main() {
         frag_color = vec4(1.0, 1.0, 1.0, nearest / width);
         return;
     }
-    if (u_pass == 1 || u_pass == 2) {
-        vec2 direction = u_pass == 1 ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
-        frag_color = blur1d(u_texture, v_uv, direction, blur);
+    vec4 here = texelFetch(u_texture, ivec2(gl_FragCoord.xy), 0);
+    bool blurred = fine && fine_blurred();
+    if (u_pass == 1) {
+        // ぼかす値は、書き出しと同じく覆う書き出しの画素で段に刻んでから平均する（縮める）
+        // 縁を直線と見てぼかした値も同じ所で平均して緑へ置く 赤と青（測りと縁の向き）は残す
+        if (blurred) {
+            int count = fine_count();
+            float width = fine_width();
+            float steps = 0.0;
+            float straight = 0.0;
+            for (int y = 0; y < count; ++y) {
+                for (int x = 0; x < count; ++x) {
+                    vec2 offset = (vec2(float(x), float(y)) + 0.5) / float(count) - 0.5;
+                    float measure = measure_at(v_uv + offset / u_size);
+                    steps += export_value(measure, width);
+                    straight += blurred_value(measure, width);
+                }
+            }
+            float taken = float(count * count);
+            frag_color = vec4(here.r, straight / taken, here.b, steps / taken);
+            return;
+        }
+        // 書き出しでは何もしない（画質を落とした時の刻み直しのための段） 画素をそのまま
+        // 写す 補って読むと、画素の中心でも値が丸めで揺れ、等倍の絵が前と変わりうる
+        frag_color = here;
+        return;
+    }
+    if (u_pass == 2 || u_pass == 3) {
+        if (fine && !blurred) { frag_color = here; return; }
+        vec2 direction = u_pass == 2 ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+        // blur は合成の画素へ縮めて渡される（TrackSpec の px） ぼかす絵も合成の大きさなので、
+        // そのまま渡すと書き出しの半径を縮めた幅でぼかす ここで u_pixel_scale で割ると
+        // 2 回縮める逆になり、2 倍・4 倍の幅でぼかしてしまう
+        // blurred_step は書き出しの画素で数えるので、同じ blur を u_pixel_scale で割って
+        // 半径を揃える 求め方は別（こちらは画素ごとの重みの畳み込み、あちらは段 1 つを
+        // 同じ重みでぼかした形を正規分布の累積で近づけた物）
+        vec4 spread = blur1d(u_texture, v_uv, direction, blur);
+        // 思い描く時にぼかすのは段の値（アルファ）だけ 赤・緑・青は光を当てる所で読む
+        frag_color = blurred ? vec4(here.rgb, spread.a) : spread;
         return;
     }
     vec4 base = texture(u_source, v_uv);
@@ -181,19 +515,22 @@ void main() {
     vec3 light = normalize(vec3(cos(e) * cos(a), -cos(e) * sin(a), sin(e)));
     float k = max(constant, 0.0) * 0.01;
     vec3 under = to_srgb(base.rgb);
-    float width = ring_width();
-    if (fine_rings()) {
-        frag_color = vec4(to_linear(fine_lit(under, light, k, width)), base.a);
+    if (fine) {
+        frag_color = vec4(to_linear(fine_lit(under, light, k)), base.a);
+        return;
+    }
+    if (mode == DRAW_LEGACY) {
+        frag_color = vec4(to_linear(legacy_lit(under, light, k, legacy_width)), base.a);
         return;
     }
     vec2 step_ = 1.0 / u_size;
     float gx = (height_at(v_uv + vec2(step_.x, 0.0)) - height_at(v_uv - vec2(step_.x, 0.0))) * 0.5;
     float gy = (height_at(v_uv + vec2(0.0, step_.y)) - height_at(v_uv - vec2(0.0, step_.y))) * 0.5;
-    // 1 画素に満たない太さ（ぼかした縁を画質を落とした合成で描く時）は、1 画素の帯として
-    // 描いてから、帯の画素に占める縁の割合だけ平らな面の光と混ぜる 書き出しを縮めると、
-    // 細い縁の急な面と内側の平らな面が 1 画素の中で平均される 1 画素に切り上げたままだと、
-    // 面が緩く帯が太い別の光り方になる 傾きは太さで割って、書き出しの急な面に合わせる
-    // ぼかしが段を均すので、端数の太さは太さのまま刻んでも縮めた書き出しと大きくは違わない
+    // 1 画素に満たない太さ（画質を落とした合成で、書き出しの画素を思い描けない時）は、
+    // 1 画素の帯として描いてから、帯の画素に占める縁の割合だけ平らな面の光と混ぜる
+    // 書き出しを縮めると、細い縁の急な面と内側の平らな面が 1 画素の中で平均される 1 画素に
+    // 切り上げたままだと、面が緩く帯が太い別の光り方になる 傾きは太さで割って、書き出しの
+    // 急な面に合わせる
     float share = clamp(thickness, 0.0001, 1.0);
     vec3 normal = normalize(vec3(-gx * surface_scale, -gy * surface_scale, share));
     vec3 lit = lit_color(under, shade(normal, light, k));
@@ -677,7 +1014,9 @@ def register_optics_effects() -> None:
                 CheckSpec("inverted", "へこませる", False),
             ),
             fragment_shader=_BEVEL_LIGHT,
-            passes=4,
+            # 0 が縁までの測り、1 が画質を落とした時の刻み直し（書き出しでは写すだけ）、
+            # 2・3 が横と縦のぼかし、4 が光
+            passes=5,
         ),
         EffectDefinition(
             kind="lens_blur",
