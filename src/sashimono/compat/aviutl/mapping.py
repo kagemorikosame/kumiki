@@ -291,6 +291,7 @@ _PARAMS: dict[str, dict[str, _Param]] = {
         "下": _Param("bottom"),
         "左": _Param("left"),
         "右": _Param("right"),
+        "塗りつぶし": _Param("fill"),
     },
     # ミラー 境目調整 は折り返す線を外へ動かす量（鏡像はその倍だけ離れる）
     "ミラー": {
