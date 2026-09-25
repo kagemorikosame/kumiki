@@ -2596,6 +2596,52 @@ def build_eighth(
     ]
 
 
+def build_ninth(
+    samples: dict[str, dict[str, Any]], brushes: dict[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """9 回目の試験（#216 の 2） 画面外から登場の上下 どれも 2 秒（60 フレーム）
+
+    横は画面の幅だけずらすと 8 回目で分かった 縦も画面の高さだけか、絵の端が画面の端を
+    越えるだけか（今の写し方）を、置き場を変えた四角で見分ける
+    """
+    probes: list[tuple[str, list[dict[str, Any]]]] = []
+
+    def enter(direction: str) -> dict[str, Any]:
+        entry = copy.deepcopy(samples["InOutMoveFromOutsideFrameEffect"])
+        entry["IsEnabled"] = True
+        return put(
+            entry,
+            Value=direction,
+            IsInEffect=True,
+            IsOutEffect=False,
+            EffectTimeSeconds=2.0,
+            EasingType="Linear",
+            EasingMode="In",
+        )
+
+    def rectangle(y: float = 0.0) -> dict[str, Any]:
+        item = base_shape(0, 0, 60)
+        item["ShapeParameter"]["Width"] = still(640.0)
+        item["ShapeParameter"]["Height"] = still(360.0)
+        item["ShapeParameter"]["Brush"] = solid("#FFE08A2C")
+        item["Y"] = still(y)
+        return item
+
+    for direction in ("Top", "Bottom"):
+        label = direction.lower()
+        probes.append(
+            (f"enter_{label}_shape", [rectangle() | {"VideoEffects": [enter(direction)]}])
+        )
+        probes.append(
+            (f"enter_{label}_shape_y200", [rectangle(200.0) | {"VideoEffects": [enter(direction)]}])
+        )
+    del brushes
+    return [
+        {"Name": f"probe9_{name}", "Path": ["probe9", name], "Items": items}
+        for name, items in probes
+    ]
+
+
 def _all_effects(name: str) -> list[dict[str, Any]]:
     found: list[dict[str, Any]] = []
     for path in sorted(FIXTURES.rglob("*.ymmt")):
@@ -2622,6 +2668,7 @@ def main() -> int:
         "sixth": build_sixth,
         "seventh": build_seventh,
         "eighth": build_eighth,
+        "ninth": build_ninth,
     }
     templates = builders[which](samples, brushes)
     target.parent.mkdir(parents=True, exist_ok=True)

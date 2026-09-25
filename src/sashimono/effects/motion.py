@@ -309,13 +309,14 @@ uniform int direction;
     + _IN_OUT
     + """
 void main() {
-    // 画面の外から入ってくる 縦は、隠れきった状態で絵の端が画面の端をちょうど越える
-    // 横は画面の幅だけずらす YMM4 に 640 の四角を右と左から直線で入れさせると、真ん中の
-    // コマで 992 ずれていた（1920 x 残り 0.517 #216） 絵の端から数えると 1280 しかずれない
-    // 絵の置き場によらず同じで、X 300 に置いた四角も 1920 先から入った 縦はまだ測っていない
+    // 画面の外から入ってくる 横は画面の幅、縦は画面の高さだけずらす
+    // YMM4 に 640 の四角を右と左から直線で入れさせると、真ん中のコマで 992 ずれていた
+    // （1920 x 残り 0.517 #216） 絵の端から数えると 1280 しかずれない 上と下からも
+    // 640x360 の四角が残り 0.25 で 270（1080 x 0.25）ずれ、Y 200 に置いても同じだった
+    // 絵の端が画面の端を越えるだけのずらし方（前の縦）では 720 の所から入り、早く見えてくる
     vec2 shift = vec2(0.0);
-    if (direction == 0) shift = vec2(0.0, u_size.y - u_object.y);
-    if (direction == 1) shift = vec2(0.0, -u_object.w);
+    if (direction == 0) shift = vec2(0.0, u_size.y);
+    if (direction == 1) shift = vec2(0.0, -u_size.y);
     if (direction == 2) shift = vec2(-u_size.x, 0.0);
     if (direction == 3) shift = vec2(u_size.x, 0.0);
     frag_color = sample_pixel(v_uv * u_size - shift * hidden_signed());
