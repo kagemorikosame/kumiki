@@ -12,8 +12,8 @@ YMM4 の配布テンプレートに出てくるものを、同じ効き方にな
 
 from __future__ import annotations
 
-from sashimono.effects.builtin import PRELUDE
-from sashimono.effects.definition import EffectDefinition, registry
+from sashimono.effects.builtin import PIECE_PRELUDE, PRELUDE
+from sashimono.effects.definition import EffectDefinition, Pieces, registry
 from sashimono.effects.easing import EASING_KINDS, EASING_MODES
 from sashimono.effects.spec import CheckSpec, GridSpec, SelectSpec, TrackSpec, ValueSpec
 
@@ -721,11 +721,19 @@ void main() {
 """
 )
 
-_CRASH = _shader(
-    """
+#: 欠片 1 つを四角として置く（:class:`~sashimono.effects.definition.Pieces`）
+#: 前は出力の画素ごとに見込み位置の周りの欠片を探していた 遠くへ散った欠片まで拾うには
+#: 探す範囲を広げるしかなく、1080p を 4 画素の欠片に割ると 1 コマ 90ms を超えた（#207）
+#: 四角で置けば、どこまで散っても欠片 1 つは自分の面積だけ描けば済む
+#:
+#: 重さ・飛ぶ速さ・散る速さの定数は画面の画素で決めた値なので u_pixel_scale を掛ける
+#: 欠片の大きさ（u_cell）だけ縮めてこちらを縮めないと、画質を落としたプレビューで
+#: 欠片が 2 倍・4 倍の速さで飛び散り、書き出しと崩れ方が変わる
+_CRASH_PIECE = (
+    PIECE_PRELUDE
+    + """
 uniform float start;
 uniform float speed;
-uniform float size;
 uniform float fly;
 uniform float fall;
 uniform float delay;
@@ -734,72 +742,32 @@ uniform float spread;
 uniform float spin;
 
 void main() {
-    // 絵を size 四方の欠片に割り、欠片ごとに飛ばして落とす
-    // 出力の画素に来る欠片を探す範囲は、欠片が見込み位置からずれうる量で決める
-    // 周り 7x7 に決め打ちすると、散る量を大きくした設定で画面の中の欠片が消えた（#199）
-    //
-    // 下限・重さ・飛ぶ速さ・散る速さの定数は画面の画素で決めた値なので u_pixel_scale を掛ける
-    // 欠片の大きさ（size）だけ縮めてこちらを縮めないと、画質を落としたプレビューで
-    // 欠片が 2 倍・4 倍の速さで飛び散り、書き出しと崩れ方が変わる
-    float cell = max(size, 4.0 * u_pixel_scale);
+    vec2 index = piece_index();
+    vec2 home = piece_home();
     float elapsed = max(u_time - start, 0.0) * speed / 100.0;
-    vec2 pixel = v_uv * u_size;
-    vec2 centre = object_center();
     float gravity = 1500.0 * u_pixel_scale * fall / 100.0;
-    vec2 base_drop = vec2(0.0, -0.5 * gravity * elapsed * elapsed);
-    vec2 guess = floor((pixel - base_drop) / cell);
+    float wait = hash(index + 3.1) * 0.5 * delay / 100.0;
+    float t = max(elapsed - wait, 0.0);
+    vec2 outward = normalize(home - object_center() + vec2(0.001)) * 300.0 * u_pixel_scale
+                 * fly / 100.0 * impact / 100.0;
+    vec2 scatter = (vec2(hash(index + 1.7), hash(index + 9.3)) - 0.5) * 400.0
+                 * u_pixel_scale * impact / 100.0 * spread / 100.0;
+    vec2 moved = home + (outward + scatter) * t + vec2(0.0, -0.5 * gravity * t * t);
+    // 欠片ごとに向きと速さの違う回転 経過に比例して回る
+    float turn_angle = (hash(index + 5.1) * 2.0 - 1.0) * 2.0 * PI * spin / 100.0 * t;
+    place_piece(moved, turn_angle);
+}
+"""
+)
 
-    // 見込み位置（遅れ無しで落ちた所）から欠片がずれうる量 飛ぶ向きと散らばりの速さの
-    // 最大に経過を掛け、遅れて出た欠片の落ち方の違いと、回した欠片の角の張り出しを足す
-    // 範囲の外の値（負の速さ・遅れ・重さ）も届きうるので、量はどれも絶対値で見る
-    // 負のまま足すと範囲が負になり、どの画素も欠片を 1 つも調べずに絵が消える
-    float fly_most = abs(300.0 * u_pixel_scale * fly / 100.0 * impact / 100.0)
-                   + abs(200.0 * sqrt(2.0) * u_pixel_scale * impact / 100.0 * spread / 100.0);
-    // 欠片ごとの経過は elapsed から遅れの分だけずれる（遅れは 0〜delay の半分秒）
-    float lagged = elapsed - 0.5 * delay / 100.0;
-    float t_low = max(min(elapsed, lagged), 0.0);
-    float t_high = max(max(elapsed, lagged), 0.0);
-    float base = elapsed * elapsed;
-    float drop_most = 0.5 * abs(gravity)
-                    * max(abs(base - t_low * t_low), abs(base - t_high * t_high));
-    float reach = fly_most * t_high + drop_most + cell * 0.71;
-    // 前の版と同じ周り 7x7 より狭くはしない 大きな絵を細かく割って遠くまで散らす設定だけは、
-    // 見込み位置の周り 63x63 で栓をする 栓が無いと 1 画素で何万もの欠片を回し、
-    // GPU が止まるほど重くなる
-    int radius = clamp(int(ceil(reach / cell)) + 1, 3, 31);
-    // 欠片は元の絵の中身の範囲にしか無い 調べる範囲をそこで切れば、散った後でも元の絵の
-    // 欠片の数より多くは回らない u_object ではなく u_content で切る 前の変形で広げた絵は
-    // u_object の外まである
-    ivec2 first = ivec2(floor(u_content.xy / cell));
-    ivec2 last = ivec2(floor((u_content.zw - 0.5) / cell));
-    ivec2 low = max(ivec2(guess) - radius, first);
-    ivec2 high = min(ivec2(guess) + radius, last);
+_CRASH = _shader(
+    """
+in vec2 v_source;
 
-    vec4 result = vec4(0.0);
-    for (int iy = low.y; iy <= high.y; ++iy) {
-        for (int ix = low.x; ix <= high.x; ++ix) {
-            vec2 index = vec2(float(ix), float(iy));
-            vec2 home = (index + 0.5) * cell;
-            float wait = hash(index + 3.1) * 0.5 * delay / 100.0;
-            float t = max(elapsed - wait, 0.0);
-            vec2 outward = normalize(home - centre + vec2(0.001)) * 300.0 * u_pixel_scale
-                         * fly / 100.0 * impact / 100.0;
-            vec2 scatter = (vec2(hash(index + 1.7), hash(index + 9.3)) - 0.5) * 400.0
-                         * u_pixel_scale * impact / 100.0 * spread / 100.0;
-            vec2 moved = home + (outward + scatter) * t + vec2(0.0, -0.5 * gravity * t * t);
-            // 欠片ごとに向きと速さの違う回転 経過に比例して回る
-            float turn_angle = (hash(index + 5.1) * 2.0 - 1.0) * 2.0 * PI * spin / 100.0 * t;
-            vec2 local = pixel - moved;
-            float c_ = cos(turn_angle);
-            float s_ = sin(turn_angle);
-            local = mat2(c_, s_, -s_, c_) * local;
-            vec2 source = home + local;
-            if (all(equal(floor(source / cell), index))) {
-                result = over(sample_pixel(source), result);
-            }
-        }
-    }
-    frag_color = result;
+void main() {
+    // 欠片の中の画素だけがここへ来る 重なった欠片はエンジンが描いた順に重ねるので、
+    // 事前乗算で返す
+    frag_color = premul(sample_pixel(v_source));
 }
 """
 )
@@ -1362,6 +1330,7 @@ def register_motion_effects() -> None:
                 TrackSpec("spin", "欠片の回転", 0, 1000, 0, unit="%"),
             ),
             fragment_shader=_CRASH,
+            pieces=Pieces(size="size", minimum=4.0, vertex_shader=_CRASH_PIECE),
         ),
         EffectDefinition(
             kind="noise_displacement",

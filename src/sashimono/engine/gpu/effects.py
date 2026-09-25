@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Collection
 from dataclasses import dataclass
 
@@ -305,6 +306,9 @@ class EffectProcessor:
             program.bind_texture("u_source", self._source.color, unit=1)
             self._set_parameters(program, definition, effect, frame)
 
+            if definition.pieces is not None:
+                self._draw_pieces(program, definition, effect, frame, target)
+                continue
             self._quad.draw()
             self._front = 1 - self._front
 
@@ -314,6 +318,51 @@ class EffectProcessor:
             # エフェクトにはバッファ全体を中身の範囲として渡す u_object で決めると、
             # 前の変形で広げた絵の粒や欠片が元の大きさで切れる（#199）
             self._content = (0.0, 0.0, float(self.width), float(self.height))
+
+    def _draw_pieces(
+        self,
+        program: Program,
+        definition: EffectDefinition,
+        effect: Effect,
+        frame: int,
+        target: Framebuffer,
+    ) -> None:
+        """中身の範囲に掛かる升目を 1 つずつ四角として ``target`` へ描き、先頭のバッファへ戻す
+
+        欠片は重なりうるので、事前乗算で描いた順に重ねる エフェクトの間はストレートアルファで
+        受け渡すので、重ね終えてから戻す 描いた後の先頭（``_front``）は変わらない
+        """
+        cell = _piece_size(definition, effect, frame, self.pixel_scale)
+        # 欠片は元の絵の中身の範囲にしか無い そこに掛かる升目だけを描けば、散った後でも
+        # 元の絵を割った数より多くは描かない u_object ではなく u_content で切る
+        # 前の変形で広げた絵は u_object の外まである（#199）
+        # バッファの外でも切る 外の画素は元から無い（読めば透明）ので描いても何も出ず、
+        # 画面より大きく置いた絵で四角の数だけが膨らむ
+        left, bottom, right, top = self._content
+        left, bottom = max(left, 0.0), max(bottom, 0.0)
+        right, top = min(right, float(self.width)), min(top, float(self.height))
+        first = (math.floor(left / cell), math.floor(bottom / cell))
+        last = (math.floor((right - 0.5) / cell), math.floor((top - 0.5) / cell))
+        columns = last[0] - first[0] + 1
+        rows = last[1] - first[1] + 1
+        program.set_float("u_cell", cell)
+        program.set_ivec2("u_first", first)
+        program.set_int("u_columns", max(columns, 1))
+
+        GL.glEnable(GL.GL_BLEND)
+        GL.glBlendFunc(GL.GL_ONE, GL.GL_ONE_MINUS_SRC_ALPHA)
+        self._quad.draw_instanced(max(columns, 0) * max(rows, 0))
+        GL.glDisable(GL.GL_BLEND)
+
+        # 読み終えた入力のバッファへ、ストレートアルファに戻して書く 入力はもう読まない
+        self._buffers[self._front].bind(clear=(0.0, 0.0, 0.0, 0.0))
+        self._blit.use()
+        self._blit.set_bool("u_premultiplied", True)
+        self._blit.set_bool("u_decode", False)
+        self._blit.set_vec4("u_rect", FULL_RECT)
+        self._blit.set_bool("u_flip", False)
+        self._blit.bind_texture("u_texture", target.color)
+        self._quad.draw()
 
     def _grow_object(self, definition: EffectDefinition, effect: Effect, frame: int) -> None:
         """入れ物を広げるエフェクトの後で、絵の置かれた範囲を広げる
@@ -450,9 +499,12 @@ class EffectProcessor:
         compiled: _Compiled | None = None
         if definition is not None and definition.fragment_shader is not None:
             try:
+                vertex = (
+                    VERTEX_SHADER if definition.pieces is None else definition.pieces.vertex_shader
+                )
                 compiled = _Compiled(
                     definition=definition,
-                    program=Program(VERTEX_SHADER, definition.fragment_shader),
+                    program=Program(vertex, definition.fragment_shader),
                 )
             except ShaderError as error:
                 # 1 度だけ残す 黙って捨てると、エフェクトが何も起きないまま
@@ -485,6 +537,20 @@ def _number(
     value = effect.params.get(name)
     raw = spec.default_value() if value is None else value
     return float(spec.scaled_at(spec.coerce(raw), frame, scale))
+
+
+def _piece_size(definition: EffectDefinition, effect: Effect, frame: int, scale: float) -> float:
+    """升目の一辺（合成の画素） 下限（画面の画素）より小さくしない
+
+    下限も画面の画素なので縮めてから比べる 縮めないと、画質を落としたプレビューでだけ
+    細かい欠片が下限で太り、書き出しと割れ方が変わる 数でない値（NaN・無限）は下限に
+    寄せる そのまま割ると升目の数が求まらず、描く数が壊れる
+    """
+    pieces = definition.pieces
+    assert pieces is not None
+    minimum = pieces.minimum * scale
+    size = _number(definition, effect, pieces.size, frame, scale)
+    return size if math.isfinite(size) and size > minimum else minimum
 
 
 _BLIT_FRAGMENT = (

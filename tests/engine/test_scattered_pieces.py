@@ -1,12 +1,14 @@
 """粒や欠片を画面へ撒くエフェクト（パーティクル・破片）が、撒いた分を描き切るか（#199）
 
-どちらも出力の画素ごとに「ここへ来る粒・欠片」を探して描く 探す数や範囲に上限が
-あると、上限の外の粒や欠片は画面の中に居ても黙って消える ここではそれを実際に
+粒は出力の画素ごとに「ここへ来る粒」を探して描く 探す数や範囲に上限があると、
+上限の外の粒は画面の中に居ても黙って消える 欠片も前は同じ作りで、上限の外の欠片が
+消えていた 今は欠片を 1 つずつ四角として描く（#207） ここではそれを実際に
 描いて確かめる 乱数の並びは見ず、描かれた量と広がりだけを見る
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterator
 
 import numpy as np
@@ -23,9 +25,10 @@ from sashimono.core.model import (
     TrackKind,
 )
 from sashimono.core.timebase import FrameRate
-from sashimono.effects import TrackSpec, registry
+from sashimono.effects import EffectDefinition, Pieces, TrackSpec, registry
+from sashimono.effects.builtin import PIECE_PRELUDE, PRELUDE
 from sashimono.effects.sources import SHAPE
-from sashimono.engine.gpu import GLContextError, OffscreenGLContext
+from sashimono.engine.gpu import GLContextError, OffscreenGLContext, ScreenQuad
 from sashimono.engine.render import FrameRenderer
 
 WIDTH, HEIGHT = 480, 480
@@ -194,6 +197,79 @@ class TestCrash:
         effect = registry.require("crash").create(**_still(start=1.0))
         image = draw(_enlarged(), effect, size=20, frame=0)
         assert _lit_width(image) > 70, f"欠片が消えた: 幅 {_lit_width(image)}"
+
+    def test_late_pieces_are_drawn_after_the_early_ones_fell(
+        self, draw: Callable[..., np.ndarray]
+    ) -> None:
+        """遅れて崩れ始めた欠片は、先に落ちた欠片から遠く離れても描かれる（#207）
+
+        既定の設定でも、欠片の出る時刻は最大 0.5 秒ずれる 0.5 秒の時点で、最初に出た欠片と
+        出たばかりの欠片の落ちた量の差は 190 画素ほどで、4 画素の欠片の 31 個分を超える
+        見込み位置の周り 63x63 だけを探す作りでは、まだ画面の真ん中にいる遅い欠片が消え、
+        描かれたのは 3 割ほどだった
+        """
+        effect = registry.require("crash").create(**_still(size=4.0))
+        size = 100
+        image = draw(effect, size=size, frame=15)
+        covered = image[..., :3].max(axis=2).sum() / 255.0
+        assert covered > size * size * 0.7, f"遅れた欠片が消えた: {covered:.0f} 画素分"
+
+    @pytest.mark.parametrize(("size", "pieces"), [(4.0, 100), (50.0, 4)])
+    @pytest.mark.parametrize("frame", [0, 50])
+    def test_each_piece_is_drawn_once_however_far_it_flies(
+        self,
+        draw: Callable[..., np.ndarray],
+        monkeypatch: pytest.MonkeyPatch,
+        size: float,
+        pieces: int,
+        frame: int,
+    ) -> None:
+        """欠片は升目の数だけの四角として 1 回で描く 散った後でも数は増えない（#207）
+
+        出力の画素ごとに周りの欠片を探す作りに戻ると、遠くまで散らすほど 1 画素で調べる
+        欠片が増え、1080p を 4 画素の欠片に割った書き出しで 1 コマ 90ms を超える
+        時間ではなく描く四角の数で押さえる 40 四方の絵は 480 四方の真ん中（220〜260）に
+        あるので、4 画素なら 10x10、50 画素なら 200〜300 の升目 2x2 に掛かる
+        """
+        drawn: list[int] = []
+        original = ScreenQuad.draw_instanced
+
+        def spy(quad: ScreenQuad, count: int) -> None:
+            drawn.append(count)
+            original(quad, count)
+
+        monkeypatch.setattr(ScreenQuad, "draw_instanced", spy)
+        effect = registry.require("crash").create(**_still(size=size, spread=1000.0, impact=1000.0))
+        draw(effect, size=40, frame=frame)
+        assert drawn == [pieces]
+
+    def test_a_pixel_does_not_search_for_its_piece(self) -> None:
+        """破片のシェーダは、画素ごとにも欠片ごとにも繰り返しを回さない（#207）
+
+        欠片の数や散らばりで回る数が変わる繰り返しがあると、細かく割るほど・遠くへ
+        散らすほど 1 コマが重くなる 欠片 1 つの手間は、自分の面積の画素を読むだけにする
+        """
+        definition = registry.require("crash")
+        assert definition.pieces is not None
+        assert definition.fragment_shader is not None
+        fragment = definition.fragment_shader.removeprefix(PRELUDE)
+        vertex = definition.pieces.vertex_shader.removeprefix(PIECE_PRELUDE)
+        for body in (fragment, vertex):
+            assert not re.search(r"\b(for|while)\b", body), body
+
+    def test_pieces_need_a_number_for_their_size(self) -> None:
+        """升目の大きさの項目が数の項目でなければ、定義の時点で断る
+
+        読めない大きさはエンジンが 0 と読み、下限の細かさで割って四角の数が膨らむ
+        """
+        with pytest.raises(ValueError, match="升目の大きさ"):
+            EffectDefinition(
+                kind="broken_pieces",
+                label="壊れた破片",
+                category="テスト",
+                fragment_shader="",
+                pieces=Pieces(size="size", minimum=4.0, vertex_shader=""),
+            )
 
     def test_out_of_range_values_do_not_empty_the_search(
         self, draw: Callable[..., np.ndarray]
