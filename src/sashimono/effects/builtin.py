@@ -43,6 +43,10 @@ uniform float u_fps;           // 1 秒あたりのフレーム数
 uniform float u_duration;      // クリップの長さ（秒） 退場の動きは終わりから逆算する
 uniform vec4 u_object;         // 絵が置かれた範囲（画素、左・下・右・上 Y は上が正）
 uniform vec2 u_origin;         // 絵の原点（画素、Y は上が正） ふつうは範囲の中央
+// 絵の中身が載りうる範囲（画素、左・下・右・上 Y は上が正） u_object は変形では広がらないので、
+// 前のエフェクトが絵を動かしたり広げたりした後は、中身が u_object の外にもありうる
+// 中身の外を読まずに済ませる（粒・欠片を探す範囲を狭める）ときはこちらを使う
+uniform vec4 u_content;
 // 合成の画素 1 つが、画面（プロジェクトの解像度）の画素いくつ分かの逆数 等倍で 1、1/2 画質で 0.5
 // 画素で決める設定（TrackSpec の pixels）はエンジンがこれを掛けてから渡す シェーダの中に
 // 書いた画素の長さは、これを掛けて使う 掛けないと、画質を落としたプレビューで 2 倍に出る
@@ -1012,6 +1016,7 @@ def register_builtin_effects() -> None:
             kind="color",
             label="色調補正",
             category="色",
+            keeps_content=True,
             parameters=(
                 TrackSpec("brightness", "明るさ", -100, 100, 0, unit="%"),
                 TrackSpec("contrast", "コントラスト", -100, 300, 0, unit="%"),
@@ -1221,6 +1226,7 @@ def register_builtin_effects() -> None:
             kind="fill",
             label="単色塗り",
             category="色",
+            keeps_content=True,
             parameters=(
                 ColorSpec("color", "色", (1.0, 1.0, 1.0, 1.0)),
                 TrackSpec("amount", "強さ", 0, 100, 100, unit="%"),
@@ -1235,6 +1241,8 @@ def register_builtin_effects() -> None:
             kind="opacity",
             label="不透明度",
             category="合成",
+            # α を掛けるだけで外に色を置かない 印が無いと後ろの粒を探す範囲がバッファ全体へ広がる
+            keeps_content=True,
             parameters=(TrackSpec("amount", "不透明度", 0, 100, 100, unit="%"),),
             fragment_shader=_OPACITY,
         )

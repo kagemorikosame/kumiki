@@ -87,6 +87,8 @@ class EffectProcessor:
         self._front = 0
         self._object: tuple[float, float, float, float] = (0.0, 0.0, float(width), float(height))
         self._origin: tuple[float, float] = (float(width) * 0.5, float(height) * 0.5)
+        #: 絵の中身が載りうる範囲（u_content） 素材を置いた直後は u_object と同じ
+        self._content: tuple[float, float, float, float] = self._object
         self._duration = 0
         #: 事前乗算で渡される絵（合成先のキャンバス）が sRGB で符号化した値か
         #: 重ね合わせを sRGB で行うプロジェクトで真にする（:class:`Compositor` の ``encoded``）
@@ -178,6 +180,7 @@ class EffectProcessor:
                 (self._object[1] + self._object[3]) * 0.5,
             )
         self._duration = max(duration, 0)
+        self._content = self._object
 
         #: 開いている部分フィルタ 後ろのエフェクトはこの範囲の中だけに効く
         scope: tuple[_Compiled, Effect] | None = None
@@ -296,6 +299,7 @@ class EffectProcessor:
             program.set_float("u_duration", float(self._duration) / fps if fps else 0.0)
             program.set_vec4("u_object", self._object)
             program.set_vec2("u_origin", self._origin)
+            program.set_vec4("u_content", self._content)
             program.set_float("u_pixel_scale", self.pixel_scale)
             program.bind_texture("u_texture", source_buffer.color, unit=0)
             program.bind_texture("u_source", self._source.color, unit=1)
@@ -305,6 +309,11 @@ class EffectProcessor:
             self._front = 1 - self._front
 
         self._grow_object(definition, effect, frame)
+        if not definition.keeps_content:
+            # 中身をどこへ動かしたかは分からない（変形・揺れ・散らす物）ので、後ろの
+            # エフェクトにはバッファ全体を中身の範囲として渡す u_object で決めると、
+            # 前の変形で広げた絵の粒や欠片が元の大きさで切れる（#199）
+            self._content = (0.0, 0.0, float(self.width), float(self.height))
 
     def _grow_object(self, definition: EffectDefinition, effect: Effect, frame: int) -> None:
         """入れ物を広げるエフェクトの後で、絵の置かれた範囲を広げる
