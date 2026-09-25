@@ -16,10 +16,12 @@ import pytest
 
 from sashimono.compat.aviutl import catalog as catalog_module
 from sashimono.compat.aviutl.catalog import ScriptCatalog, set_script_catalog
+from sashimono.compat.aviutl.report import CompatibilityReport, global_report
 from sashimono.core.commands import AddClip, AddTrack
 from sashimono.core.model import (
     AnimatedValue,
     Clip,
+    Effect,
     GeneratedSource,
     Project,
     ProjectSettings,
@@ -30,6 +32,13 @@ from sashimono.core.timebase import FrameRate
 from sashimono.effects import registry
 from sashimono.engine.gpu import GLContextError, OffscreenGLContext
 from sashimono.engine.render import FrameRenderer
+from sashimono.engine.render.script_bake import (
+    BAKE_CANVAS_LIMIT,
+    BAKE_MARGIN,
+    ScriptEffectBaker,
+    bake_margin,
+    fitted_margin,
+)
 
 SETTINGS = ProjectSettings(width=96, height=96, frame_rate=FrameRate(30))
 
@@ -114,3 +123,96 @@ class TestOrder:
         row = _row(_render(f"{LOAD} {RESIZE} {BLUR}", gl_context))
         assert row[48] > 250
         assert row[4] < 4
+
+
+def _shadow(offset_x: float) -> Effect:
+    """真横へ ``offset_x`` ずらした濃い影 ぼかさない"""
+    definition = registry.get("shadow")
+    assert definition is not None
+    return definition.create(offset_x=offset_x, offset_y=0.0, blur=0.0, opacity=100.0)
+
+
+class TestMargin:
+    """効果を掛ける所の余白は、積んだ効果が絵を外へ動かす量から決める（#186）
+
+    余白を決め打ちにすると、それより遠くへ動かす影や広げる物が掛けた所で切れ、
+    ``obj.w`` や写し取った絵から消える
+    """
+
+    def test_a_far_shadow_survives_the_bake(self, gl_context: OffscreenGLContext) -> None:
+        # 影を 200 画素ずらす 128 画素の余白では影が作業場の外へ出て消える
+        image = np.full((8, 8, 4), 255, np.uint8)
+        baker = ScriptEffectBaker()
+        with gl_context:
+            try:
+                baked = baker.apply(image, (_shadow(200.0),), 0, 30.0, 30)
+            finally:
+                baker.release()
+        assert baked is not None
+        # 真ん中は動かさないので、影の分だけ左右へ同じ幅で広がる
+        assert baked.shape[1] >= 8 + 2 * 200
+        middle = baked[baked.shape[0] // 2]
+        assert middle[-4:, 3].max() > 0
+
+    def test_the_margin_covers_what_the_effects_move(self) -> None:
+        # 画素で決める項目の分だけ外へ出うる 足りない余白は掛けた所で切れる
+        assert bake_margin((_shadow(200.0),), 0) >= 200
+        definition = registry.get("expand_area")
+        assert definition is not None
+        grown = definition.create(top=300.0, left=40.0)
+        assert bake_margin((grown, _shadow(-150.0)), 0) >= 300 + 150
+
+    def test_the_margin_never_drops_below_the_old_floor(self) -> None:
+        # 画素の項目を持たない効果（色だけ変える物）でも、これまでの余白は残す
+        # 縮めると、範囲の決まらない広がり（グローの光など）が切れる
+        assert bake_margin((), 0) == BAKE_MARGIN
+
+    def test_the_reach_is_not_cut_silently(self) -> None:
+        # 効果を重ねた到達距離は上限で丸めない 丸めると、足りない余白で掛けて外側が
+        # 黙って欠ける 足りないかどうかは作業場の大きさを決める所（fitted_margin）が見る
+        definition = registry.get("displacement_map")
+        assert definition is not None
+        far = definition.create(move_x=4000.0)
+        assert bake_margin((far, _shadow(200.0)), 0) >= 4200
+
+    def test_the_canvas_stays_within_the_limit(self) -> None:
+        # 絵と余白を合わせた作業場の一辺は上限までに抑える 4096 画素の絵に 4096 画素の
+        # 余白を足すと 12288 画素四方のバッファを何枚も作り、GPU のメモリが尽きる
+        report = CompatibilityReport()
+        margin = fitted_margin(4096, 100, 4096, report)
+        assert 4096 + 2 * margin <= BAKE_CANVAS_LIMIT
+        # 足りない余白で掛けたことは記録に残す 黙ると絵の外側が欠けた理由が分からない
+        assert any("余白" in line for line in report.missing)
+
+    def test_a_margin_that_fits_is_kept_and_not_recorded(self) -> None:
+        # 収まる余白まで縮めると、遠くへ動かす影の外側が欠ける 収まるのに記録すると、
+        # 本当に足りなかったときの記録が埋もれる
+        report = CompatibilityReport()
+        assert fitted_margin(100, 60, 300, report) == 300
+        assert not report.missing
+
+    def test_a_canvas_over_the_gpu_limit_is_not_baked(self, gl_context: OffscreenGLContext) -> None:
+        # GPU が作れる大きさを超える作業場は作らない 作ろうとするとフレームバッファの例外が
+        # 描画まで伝わり、フレームごと描けなくなる 焼き込まずに None を返し、効果は描くときへ回る
+        image = np.full((8, 8, 4), 255, np.uint8)
+        baker = ScriptEffectBaker()
+        baker.gpu_limit = 64
+        with gl_context:
+            try:
+                assert baker.apply(image, (_shadow(200.0),), 0, 30.0, 30) is None
+            finally:
+                baker.release()
+
+    def test_a_picture_over_the_canvas_limit_is_not_baked(self) -> None:
+        # 絵そのものが作業場の上限を超える（8192 のプロジェクトの背景の図形など）と、余白を 0 に
+        # しても上限より大きいバッファを何枚も作る GPU の上限が大きい機械ではそのまま作り、
+        # メモリが尽きて例外が描画まで伝わる 作らずに None を返し、理由を記録に残す
+        image = np.zeros((1, BAKE_CANVAS_LIMIT + 1, 4), np.uint8)
+        baker = ScriptEffectBaker()
+        baker.gpu_limit = 1 << 20
+        before = dict(global_report.missing)
+        assert baker.apply(image, (_shadow(10.0),), 0, 30.0, 30) is None
+        assert any(
+            "作業場の上限" in line and count > before.get(line, 0)
+            for line, count in global_report.missing.items()
+        )
