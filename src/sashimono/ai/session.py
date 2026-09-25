@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from sashimono.ai.bridge import EditorBridge
+from sashimono.ai.console import hide_cli_console
 from sashimono.ai.environment import bundled_claude_cli, find_claude_cli
 from sashimono.ai.models import effort_for
 from sashimono.ai.server import SERVER_NAME, build_server
@@ -243,6 +244,8 @@ class AgentSession:
     async def _main(self) -> None:
         from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 
+        # 繋ぐ前に包む 繋いだ後では、claude.exe の黒い窓がもう開いている（#228）
+        hide_cli_console()
         self._loop = asyncio.get_running_loop()
         options = ClaudeAgentOptions(
             **self.option_values(),
