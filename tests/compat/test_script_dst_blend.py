@@ -71,7 +71,7 @@ class TestDst:
         report = CompatibilityReport()
         state = _run('obj.setoption("dst", "xyz") obj.draw()', report=report)
         assert len(state.draws) == 1
-        assert any('obj.setoption("dst", "xyz")' in line for line in report.missing)
+        assert any('obj.setoption("dst")' in line for line in report.missing)
 
 
 def _pixel(rgb: tuple[int, int, int], alpha: int) -> np.ndarray:

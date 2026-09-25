@@ -17,7 +17,7 @@ from typing import Any
 import numpy as np
 
 from sashimono.compat.aviutl import PREFIX
-from sashimono.compat.aviutl.catalog import ScriptCatalog, script_catalog
+from sashimono.compat.aviutl.catalog import SCRIPT_SUFFIXES, ScriptCatalog, script_catalog
 from sashimono.compat.aviutl.control import lua_value
 from sashimono.compat.aviutl.mapping import script_filter_effects
 from sashimono.compat.aviutl.objapi import DrawCall, EffectRequest, ObjectState
@@ -29,6 +29,7 @@ from sashimono.engine.sources import render_source
 
 __all__ = [
     "ScriptStage",
+    "is_scene_change",
     "requested_effects",
     "script_catalog",
     "script_effects",
@@ -52,6 +53,20 @@ def split_effects(effects: tuple[Effect, ...]) -> tuple[tuple[Effect, ...], tupl
 
 def script_effects(effects: tuple[Effect, ...]) -> tuple[Effect, ...]:
     return tuple(e for e in effects if e.kind.startswith(PREFIX) and e.enabled)
+
+
+def is_scene_change(kind: str) -> bool:
+    """シーンチェンジ（``.scn`` ``.scn2``）のスクリプトを指す種別か
+
+    種別の中のファイル名の拡張子で見る（``aviutl:フォルダ/@ディザσ.scn:ディザワイプ(時計)``）
+    一覧に引きに行かないのは、スクリプトが手元に無い機械でも前の場面の効果と取り違えない
+    ため 取り違えると、前の場面へ掛けるスクリプトとして数えられ、場面も切り替わらない
+    """
+    if not kind.startswith(PREFIX):
+        return False
+    path = kind[len(PREFIX) :].rpartition(":")[0]
+    suffix = path[path.rfind(".") :].lower() if "." in path else ""
+    return SCRIPT_SUFFIXES.get(suffix) == "scn"
 
 
 class ScriptStage:
@@ -103,6 +118,60 @@ class ScriptStage:
         ``framebuffer`` はそれまでに下へ重ねた画面を読む関数（``obj.copybuffer`` の ``frm``）
         画面の画素の大きさで、ストレートアルファの絵を返す
         """
+        draws, _ = self._run(
+            clip, effects, image, frame=frame, fps=fps, layer=layer, framebuffer=framebuffer
+        )
+        return draws
+
+    def run_scene_change(
+        self,
+        clip: Clip,
+        effect: Effect,
+        before: np.ndarray,
+        after: np.ndarray,
+        *,
+        frame: int,
+        fps: float,
+        progress: float,
+    ) -> tuple[DrawCall, ...] | None:
+        """シーンチェンジのスクリプトを走らせる 走らなければ ``None``
+
+        **前の場面をオブジェクト、後の場面をフレームバッファ**に入れて走らせる 返した描画を
+        フレームバッファ（後の場面）の上へ重ねた物がその時刻の絵になる 進み具合（0〜1）は
+        ``obj.getvalue("scenechange")`` で読ませる
+
+        向きは配布物 4 本（sigma の ``@ディザσ.scn``）の書かれ方から読んだ どれも進み具合が
+        0 のときオブジェクトをそのまま描き、1 に近づくほどオブジェクトを削って（ディザで
+        抜く・扇や図形や斜めに切る）フレームバッファを見せる 逆に入れると、4 本とも後の
+        場面から始まって前の場面で終わる 実物の AviUtl で並べて測ってはいない
+
+        走らなかったことを返すのは、失敗したときの描画（前の場面をそのまま 1 回）を重ねると、
+        最後まで前の場面のまま切り替わらないため 呼ぶ側は切り替え方どおりに描き直す
+        """
+        draws, failed = self._run(
+            clip,
+            (effect,),
+            before,
+            frame=frame,
+            fps=fps,
+            framebuffer=lambda: after,
+            scenechange=progress,
+        )
+        return None if failed else draws
+
+    def _run(
+        self,
+        clip: Clip,
+        effects: tuple[Effect, ...],
+        image: np.ndarray,
+        *,
+        frame: int,
+        fps: float,
+        layer: int = 0,
+        framebuffer: Callable[[], np.ndarray | None] | None = None,
+        scenechange: float | None = None,
+    ) -> tuple[tuple[DrawCall, ...], bool]:
+        """スクリプトを順に走らせ、描画の一覧と、走らなかった物があったかを返す"""
         state = ObjectState(
             image=image,
             screen_w=self._screen[0],
@@ -112,24 +181,30 @@ class ScriptStage:
             framerate=fps,
             layer=layer,
             framebuffer=framebuffer,
+            scenechange=scenechange,
         )
         self._timing = (frame, fps, max(1, clip.duration))
         state.base_x, state.base_y = _placed_at(clip, frame)
 
+        failed = False
         for effect in effects:
             entry = self._catalog.get(effect.kind)
             if entry is None:
+                # 手元に無いスクリプトは走らせていない シーンチェンジでは、失敗と同じく
+                # 切り替え方どおりに描き直してもらう
+                failed = True
                 continue
             _apply_params(state, effect, frame)
-            self._runtime.run(
+            result = self._runtime.run(
                 entry.source,
                 state,
                 header=entry.header,
                 script=entry.label,
                 folder=entry.folder,
             )
+            failed = failed or result.failed
 
-        return state.result()
+        return state.result(), failed
 
     def expand_text(
         self,

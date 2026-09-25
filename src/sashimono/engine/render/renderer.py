@@ -20,6 +20,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage
 
 from sashimono.compat.aviutl.embedded import has_embedded
+from sashimono.compat.aviutl.objapi import DrawCall
 from sashimono.compat.aviutl.report import global_report
 from sashimono.core.model import (
     AnimatedValue,
@@ -60,6 +61,7 @@ from sashimono.engine.render.outline import canvas_scale, is_generated, media_pi
 from sashimono.engine.render.script_bake import ScriptEffectBaker
 from sashimono.engine.render.scripts import (
     ScriptStage,
+    is_scene_change,
     requested_effects,
     script_catalog,
     script_effects,
@@ -765,14 +767,29 @@ class FrameRenderer:
         finally:
             self._compositor = outer
 
+        # AviUtl のシーンチェンジのスクリプトは前の場面に掛ける効果ではなく、切り替えそのもの
+        # 前の場面の効果に混ぜると、場面へ掛けられないスクリプトとして数えられて何も起きない
+        scene_change = next(
+            (e for e in clip.effects if e.enabled and is_scene_change(e.kind)), None
+        )
         before_image = self._transition_scene(
-            before, clip.effects, "before", clip, local_frame, rate, depth
+            before,
+            tuple(e for e in clip.effects if not is_scene_change(e.kind)),
+            "before",
+            clip,
+            local_frame,
+            rate,
+            depth,
         )
         after_image = self._transition_scene(
             after, clip.after_effects, "after", clip, local_frame, rate, depth
         )
 
         outer.begin((0.0, 0.0, 0.0, 0.0))
+        if scene_change is not None and self._draw_scene_change(
+            scene_change, before_image, after_image, clip, local_frame, rate, progress
+        ):
+            return
         direction = (math.cos(math.radians(degrees)), math.sin(math.radians(degrees)))
         travel = abs(direction[0]) * width + abs(direction[1]) * height
 
@@ -820,6 +837,53 @@ class FrameRenderer:
         else:
             put(before_image)
             put(after_image)
+
+    def _draw_scene_change(
+        self,
+        effect: Effect,
+        before_image: Compositor,
+        after_image: Compositor,
+        clip: Clip,
+        local_frame: int,
+        rate: FrameRate,
+        progress: float,
+    ) -> bool:
+        """AviUtl のシーンチェンジのスクリプトで、いまの合成先へ切り替えの絵を描く（#196）
+
+        前の場面をオブジェクト、後の場面をフレームバッファとして走らせ、後の場面の上へ
+        スクリプトの描画を重ねる（:meth:`ScriptStage.run_scene_change` 向きもそこに書いた）
+        走らなければ ``False`` を返し、呼ぶ側が切り替え方どおりに描く（素通し）
+
+        どちらの場面も黒を敷いて渡す AviUtl のフレームバッファは何も無い所も不透明な黒で
+        （:meth:`_screen_picture`）、前の場面も同じ画面を描いた物なので同じにした
+        前後の場面の取り方・進み具合・黒を敷くことは、実物の AviUtl で測っていない
+        """
+        stage = self._script_stage()
+        if stage is None:  # pragma: no cover - 係は必ず作れる
+            return False
+        calls = stage.run_scene_change(
+            clip,
+            effect,
+            self._screen_picture(before_image),
+            self._screen_picture(after_image),
+            frame=local_frame,
+            fps=float(rate.fps),
+            progress=progress,
+        )
+        if calls is None:
+            # ffi が要るスクリプト（sigma のディザ 4 本）はここへ来る 利用者の決定で ffi は
+            # 許さない（配布スクリプトから任意のメモリや DLL に触れられるため） 何が走らずに
+            # 素通しになったのかを、スクリプトの名前で数えて残す
+            entry = script_catalog().get(effect.kind)
+            label = entry.label if entry is not None else effect.kind
+            global_report.note_missing(f"シーンチェンジのスクリプトが走らない（素通し）: {label}")
+            return False
+        outer = self._compositor
+        full = Placement(0.0, 0.0, float(outer.width), float(outer.height))
+        outer.draw_handle(after_image.canvas.color, full, flip=False, premultiplied=True)
+        outer.underlay((0.0, 0.0, 0.0, 1.0))
+        self._draw_calls(self._texture_for("scene_change"), clip, calls, (), local_frame, rate, 1.0)
+        return True
 
     def _starts_within(self, tracks: list[Track], frame: int, start: int) -> bool:
         """前の場面を描き直さず、いまの合成結果（後の場面）を写して済ませてよいかを決める
@@ -1460,7 +1524,34 @@ class FrameRenderer:
             fps=float(rate.fps),
             framebuffer=lambda: self._screen_picture(below),
         )
-        texture = self._texture_for(track.id)
+        self._draw_calls(
+            self._texture_for(track.id),
+            clip,
+            calls,
+            gpu_effects,
+            local_frame,
+            rate,
+            opacity,
+            offset,
+        )
+
+    def _draw_calls(
+        self,
+        texture: Texture,
+        clip: Clip,
+        calls: tuple[DrawCall, ...],
+        gpu_effects: tuple[Effect, ...],
+        local_frame: int,
+        rate: FrameRate,
+        opacity: float,
+        offset: tuple[float, float] = (0.0, 0.0),
+    ) -> None:
+        """スクリプトが返した描画を、いまの合成先へ順に重ねる
+
+        位置と大きさは画面の画素で返ってくるので、描く直前に合成の画素へ縮める
+        （:meth:`_draw_scripted`）
+        """
+        scale_x, scale_y = self._scale
         screen_width, screen_height = self._project.settings.resolution
 
         def shrunk(point: tuple[float, float]) -> tuple[float, float]:
