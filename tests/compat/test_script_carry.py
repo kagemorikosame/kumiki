@@ -77,6 +77,23 @@ class TestCarry:
         assert _kinds(state) == ["blur"]
         assert not any("obj.draw" in line for line in report.missing)
 
+    def test_a_tempbuffer_not_made_yet_takes_the_effects_too(self) -> None:
+        """大きさを渡さずに選んだまだ無い仮想バッファは、画面の大きさの空の物として持ち運ぶ
+
+        前は仮想バッファがまだ無いというだけで断り、画面と同じ大きさの絵の効果が読み戻した
+        ときに消えていた（PR #218 の指摘）
+        """
+        state = ObjectState(image=np.full((18, 32, 4), 255, np.uint8), screen_w=32, screen_h=18)
+        report = CompatibilityReport()
+        result = LuaScriptRuntime(report=report).run(
+            f'{BLUR} obj.setoption("drawtarget", "tempbuffer") obj.draw()'
+            ' obj.setoption("drawtarget", "framebuffer") obj.load("tempbuffer")',
+            state,
+        )
+        assert not result.failed, result.message
+        assert _kinds(state) == ["blur"]
+        assert not any("obj.draw" in line for line in report.missing)
+
     def test_a_shifted_draw_is_still_recorded(self) -> None:
         # ずらして重ねた物は、効果を掛けた後の絵でないと重ねられない 黙ると順が違う理由が分からない
         state, report = _run(

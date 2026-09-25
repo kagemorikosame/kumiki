@@ -82,6 +82,24 @@ class TestCModule:
         (line,) = report.missing
         assert "32 ビット" in line and "PSDToolKitBridge.dll" in line
 
+    def test_a_32_bit_bridge_deep_in_the_folder_is_named_as_such(self, tmp_path: Path) -> None:
+        """置き場の 2 段より下に置いた DLL も、読めない理由で記録する（PR #218 の指摘）
+
+        深い所の索引が Lua のモジュールだけを拾っていた頃は「見つかりません」と残った
+        配布のまま置いた PSDToolKit は ``src/lua/PSDToolKit`` のように深い
+        """
+        deep = tmp_path / "aviutl_psdtoolkit" / "src" / "lua"
+        deep.mkdir(parents=True)
+        _pe(deep / "PSDToolKitBridge.dll", 0x014C)
+        state = ObjectState(image=np.full((4, 4, 4), 255, np.uint8), screen_w=32, screen_h=18)
+        report = CompatibilityReport()
+        runtime = LuaScriptRuntime(report=report)
+        runtime.set_roots((tmp_path,))
+        result = runtime.run('local b = require("PSDToolKitBridge")', state)
+        assert not result.failed, result.message
+        (line,) = report.missing
+        assert "32 ビット" in line
+
     def test_a_64_bit_c_module_is_not_loaded_either(self, tmp_path: Path) -> None:
         # Lua の C の窓口を呼ぶ DLL は 64 ビットでも読まない 読めない理由は DLL だから
         _pe(tmp_path / "bridge.dll", 0x8664)
@@ -170,3 +188,48 @@ def test_a_script_sees_the_layer_it_is_placed_on(gl_context: Any) -> None:
     rows, columns = np.nonzero(lit)
     assert rows.max() - rows.min() + 1 == 20
     assert columns.max() - columns.min() + 1 == 20
+
+
+def test_a_clip_id_shared_with_a_scene_keeps_its_own_layer(gl_context: Any) -> None:
+    """別のシーンに同じ識別子のクリップがあっても、クリップごとに自分のトラックの番号を渡す
+
+    識別子だけで引いていた頃は、後から数えたシーンの番号でメインの番号が上書きされた
+    （PR #218 の指摘） メインでは 2 本目、シーンでは 1 本目に同じ識別子のクリップを置く
+    """
+    from dataclasses import replace
+
+    from sashimono.core.model import (
+        Clip,
+        GeneratedSource,
+        Project,
+        ProjectSettings,
+        Scene,
+        Timeline,
+        Track,
+        TrackKind,
+    )
+    from sashimono.core.timebase import FrameRate
+    from sashimono.engine.render import FrameRenderer
+
+    rate = FrameRate(30)
+    clip = Clip(timeline_start=0, duration=10, source=GeneratedSource(kind="text", params={}))
+    twin = replace(clip, duration=20)
+    main = Timeline(
+        rate=rate,
+        tracks=(Track(TrackKind.VIDEO, "V1"), Track(TrackKind.VIDEO, "V2", (clip,))),
+    )
+    scene = Scene(
+        name="場面", timeline=Timeline(rate=rate, tracks=(Track(TrackKind.VIDEO, "V1", (twin,)),))
+    )
+    project = replace(
+        Project.create(ProjectSettings(width=64, height=64, frame_rate=rate)),
+        timeline=main,
+        scenes=(scene,),
+    )
+    assert clip.id == twin.id
+    renderer = FrameRenderer(project, context=gl_context)
+    try:
+        assert renderer._layer_number(clip) == 2
+        assert renderer._layer_number(twin) == 1
+    finally:
+        renderer.close()

@@ -571,13 +571,17 @@ class ObjApi:
         """
         state = self.state
         buffer = state.buffers.get("tmp")
+        # まだ作っていない仮想バッファは、描くときに画面の大きさの空の物になる
+        # （:meth:`_tempbuffer`） 作るのを待たずにその大きさで比べる 無いだけで断ると、
+        # 大きさを渡さずに仮想バッファを選んだスクリプトで、画面と同じ大きさの絵の効果が
+        # 読み戻したときに消える
+        shape = (state.screen_h, state.screen_w, 4) if buffer is None else buffer.shape
         if (
-            buffer is None
-            or (x, y, alpha) != (0.0, 0.0, 1.0)
+            (x, y, alpha) != (0.0, 0.0, 1.0)
             or _blend_mode(state.options.get("blend", 0)) != "none"
             or "tmp" in state.buffer_effects
-            or buffer.shape != state.image.shape
-            or buffer[..., 3].any()
+            or shape != state.image.shape
+            or (buffer is not None and buffer[..., 3].any())
         ):
             return False
         state.buffers["tmp"] = state.image.copy()

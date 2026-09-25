@@ -822,7 +822,10 @@ class LuaScriptRuntime:
         if index is not None:
             return index
         index = {}
-        suffixes = {suffix.casefold() for suffix in MODULE_SUFFIXES}
+        # C の DLL も索引に入れる 引くときは呼ぶ側が頼んだ拡張子だけを見るので、require が
+        # DLL を読むことにはならない 入れないと、深い所に置いた 32 ビットの DLL が
+        # 「見つかりません」と記録される（:meth:`_unloadable`）
+        suffixes = {suffix.casefold() for suffix in (*MODULE_SUFFIXES, C_MODULE_SUFFIX)}
         for path in sorted(root.glob("*/*/**/*"), key=_shallow_first):
             if path.suffix.casefold() in suffixes and path.is_file():
                 index.setdefault((path.stem.casefold(), path.suffix.casefold()), path)

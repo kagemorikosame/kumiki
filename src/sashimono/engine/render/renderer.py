@@ -489,7 +489,7 @@ class FrameRenderer:
         #: レンダラごとに持つ 共有すると、1 つを閉じたときに他のレンダラの道まで消える
         self._trail_paths = TrailPaths()
         #: クリップごとのレイヤー番号（スクリプトの ``obj.layer``） プロジェクトごとに 1 度数える
-        self._layer_numbers: tuple[Project, dict[ClipId, int]] | None = None
+        self._layer_numbers: tuple[Project, dict[int, int], dict[ClipId, int]] | None = None
         self._closed = False
 
     @property
@@ -1698,17 +1698,25 @@ class FrameRenderer:
         """
         cached = self._layer_numbers
         if cached is None or cached[0] is not self._project:
-            numbers: dict[ClipId, int] = {}
+            # クリップの実体で引く 識別子だけで引くと、別のシーンに同じ識別子のクリップがある
+            # プロジェクト（識別子はタイムラインをまたいで重ならないと確かめていない）で、後から
+            # 数えたシーンの番号が前の番号を上書きする 実体はプロジェクトを持っている間は
+            # 生きているので ``id()`` が変わらない 描くときに作り直したクリップは識別子で引く
+            # （そのときは先に数えたメインのタイムラインの番号）
+            by_object: dict[int, int] = {}
+            by_id: dict[ClipId, int] = {}
             timelines = (self._project.timeline, *(s.timeline for s in self._project.scenes))
             for timeline in timelines:
                 counted: dict[object, int] = {}
                 for track in timeline.tracks:
                     counted[track.kind] = counted.get(track.kind, 0) + 1
                     for placed in track.clips:
-                        numbers[placed.id] = counted[track.kind]
-            cached = (self._project, numbers)
+                        by_object[id(placed)] = counted[track.kind]
+                        by_id.setdefault(placed.id, counted[track.kind])
+            cached = (self._project, by_object, by_id)
             self._layer_numbers = cached
-        return cached[1].get(clip.id, 1)
+        _, by_object, by_id = cached
+        return by_object.get(id(clip), by_id.get(clip.id, 1))
 
     def _screen_picture(self, below: Compositor | None = None) -> np.ndarray:
         """それまでに重ねた画面を、スクリプトへ渡す絵にする（``obj.copybuffer`` の ``frm``）
