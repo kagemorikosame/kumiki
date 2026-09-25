@@ -35,6 +35,7 @@ from sashimono.core.timebase import FrameRate
 from sashimono.effects.sources import TRANSITION
 from sashimono.engine.gpu import GLContextError, OffscreenGLContext
 from sashimono.engine.render import FrameRenderer
+from sashimono.engine.render.scripts import _apply_params
 
 SETTINGS = ProjectSettings(width=64, height=36, frame_rate=FrameRate(30))
 RED = (1.0, 0.0, 0.0, 1.0)
@@ -160,6 +161,14 @@ class TestObjApi:
         assert state.buffers["tmp"].shape == (6, 8, 4)
         assert not report.missing
 
+    def test_the_check_of_the_previous_script_is_not_carried_over(self) -> None:
+        # シーンチェンジもアニメーション効果も 1 つの obj を順に渡す チェックを戻さないと、
+        # チェックを持たない後のスクリプトが、前のスクリプトで入れたチェックを読む
+        state = ObjectState(image=blank_image(4, 4))
+        state.check0 = True
+        _apply_params(state, Effect(kind="aviutl:無い.scn:チェック無し", params={}), 0)
+        assert state.check0 is False
+
 
 class TestRender:
     def test_the_old_scene_fades_over_the_new_by_the_progress(
@@ -208,6 +217,18 @@ class TestRender:
         assert 30 < red < 100 and blue > 120, (drawn[18, 32], report.missing)
         assert "場面切り替えに積んだ AviUtl スクリプト" not in report.missing
         assert not [line for line in report.missing if "素通し" in line]
+
+    def test_only_the_script_that_failed_is_counted(
+        self, scripts: ScriptCatalog, gl_context: OffscreenGLContext
+    ) -> None:
+        # 1 本でも走らなければ切り替え全体を素通しにするが、数えるのは走らなかった物だけ
+        # 走った物まで数えると、互換性レポートからどれを直せばよいか分からない
+        project = _project(scripts, "半分にして描く", "落ちる")
+        (early, late), report = _render(project, gl_context, 25, 35)
+        assert early[18, 32, 0] > 200 and early[18, 32, 2] < 30, early[18, 32]
+        assert late[18, 32, 2] > 200 and late[18, 32, 0] < 30, late[18, 32]
+        passed = {line for line in report.missing if "素通し" in line}
+        assert passed == {"シーンチェンジのスクリプトが走らない（素通し）: 落ちる"}
 
     def test_a_switched_off_scene_change_is_neither_run_nor_counted(
         self, scripts: ScriptCatalog, gl_context: OffscreenGLContext

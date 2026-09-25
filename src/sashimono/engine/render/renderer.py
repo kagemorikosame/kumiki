@@ -862,7 +862,7 @@ class FrameRenderer:
         stage = self._script_stage()
         if stage is None:  # pragma: no cover - 係は必ず作れる
             return False
-        calls = stage.run_scene_change(
+        calls, failed = stage.run_scene_change(
             clip,
             effects,
             self._screen_picture(before_image),
@@ -871,12 +871,12 @@ class FrameRenderer:
             fps=float(rate.fps),
             progress=progress,
         )
-        if calls is None:
+        if failed:
             # ffi が要るスクリプト（sigma のディザ 4 本）はここへ来る 利用者の決定で ffi は
             # 許さない（配布スクリプトから任意のメモリや DLL に触れられるため） 何が走らずに
-            # 素通しになったのかを、スクリプトの名前で数えて残す 何本も積んだときは
-            # どれが落ちたかを切り分けていないので、素通しにした物をすべて数える
-            for effect in effects:
+            # 素通しになったのかを、スクリプトの名前で数えて残す 何本も積んだときも数えるのは
+            # 走らなかった物だけ 走った物まで数えると、どれを直せばよいか分からない
+            for effect in failed:
                 entry = script_catalog().get(effect.kind)
                 label = entry.label if entry is not None else effect.kind
                 global_report.note_missing(
