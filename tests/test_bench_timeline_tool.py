@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -19,12 +20,15 @@ from sashimono.core.model import MediaItem, TrackKind
 from sashimono.engine.cache import MediaAnalyzer
 from sashimono.engine.cache.store import CacheStore
 from sashimono.ui.timeline import TimelineView
-from tests.media_fixtures import libx264_available
+from tests.media_fixtures import encoder_available, libx264_available
 
 ROOT = Path(__file__).resolve().parent.parent
 
+# 動画は libx264、音は aac で作る 片方だけの ffmpeg では素材を作る所で落ち、
+# 飛ばすはずの試験がどれも取り付け口のエラーになる
 pytestmark = pytest.mark.skipif(
-    not libx264_available(), reason="ffmpeg に libx264 が無いので実素材を作れない"
+    not (libx264_available() and encoder_available("aac")),
+    reason="ffmpeg に libx264 か aac が無いので実素材を作れない",
 )
 
 
@@ -130,6 +134,66 @@ def test_the_media_bench_runs_end_to_end_and_splits_out_the_contents(
     for title in ("サムネイルだけ", "波形だけ", "サムネイルと波形を描かない"):
         assert title in out
     assert out.count("全体を表示") == 4
+
+
+@pytest.mark.parametrize(
+    "stuck",
+    [
+        subprocess.TimeoutExpired(["ffmpeg"], 1.0),
+        subprocess.CalledProcessError(1, ["ffmpeg"]),
+    ],
+)
+def test_a_stuck_or_failed_ffmpeg_stops_with_guidance(
+    tool: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    stuck: Exception,
+) -> None:
+    """素材を作る ffmpeg が止まっても落ちても、トレースバックでなく案内を出して終了コード 2
+
+    TimeoutExpired は OSError の仲間でも CalledProcessError の仲間でもない 受けないと
+    待つ上限を付けても、上限に掛かったときにトレースバックで終わる（#204）
+    """
+
+    def fail(*args: object, **kwargs: object) -> None:
+        raise stuck
+
+    monkeypatch.setattr(tool, "make_media", fail)
+    assert tool.main(["--media", "--clips", "2", "--tracks", "2", "--repeat", "1"]) == 2
+    assert "素材を作れない" in capsys.readouterr().out
+
+
+def test_an_analysis_that_never_finishes_stops_with_guidance(
+    tool: ModuleType,
+    media: tuple[MediaItem, MediaItem],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """解析が待つ上限を超えたら、案内を出して終了コード 2 トレースバックで終わらない（#204）"""
+
+    def slow(*args: object, **kwargs: object) -> None:
+        raise TimeoutError("120 秒待ってもサムネイルと波形が揃わない")
+
+    monkeypatch.setattr(tool, "make_media", lambda *args, **kwargs: media)
+    monkeypatch.setattr(tool, "analyze", slow)
+    assert tool.main(["--media", "--clips", "2", "--tracks", "2", "--repeat", "1"]) == 2
+    assert "揃わない" in capsys.readouterr().out
+
+
+def test_the_ffmpeg_calls_have_an_upper_limit(
+    tool: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """応答しない ffmpeg に当たっても、素材を作る所で待ち続けない（#204）"""
+    seen: list[object] = []
+
+    def record(*args: object, **kwargs: object) -> None:
+        seen.append(kwargs.get("timeout"))
+        raise subprocess.CalledProcessError(1, ["ffmpeg"])
+
+    monkeypatch.setattr(tool.subprocess, "run", record)
+    with pytest.raises(subprocess.CalledProcessError):
+        tool.make_media(tmp_path / "media")
+    assert seen == [tool.FFMPEG_TIMEOUT]
 
 
 def test_the_partial_analyzer_shows_only_what_was_chosen(

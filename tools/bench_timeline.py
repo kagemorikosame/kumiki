@@ -66,6 +66,9 @@ MEDIA_SECONDS = 10
 MEDIA_SIZE = "1280x720"
 #: 解析を待つ上限（秒） 10 秒の素材 2 本なら数秒で済む 止まったら測らずに知らせる
 ANALYZE_TIMEOUT = 120.0
+#: ffmpeg で素材を 1 本作るのを待つ上限（秒） 10 秒の素材なら 1 秒ほどで済む 応答しない
+#: ffmpeg に当たると、上限が無ければ道具も試験もいつまでも戻らない
+FFMPEG_TIMEOUT = 120.0
 
 
 class PlainAnalyzer(MediaAnalyzer):
@@ -127,6 +130,7 @@ def make_media(directory: Path, seconds: int = MEDIA_SECONDS) -> tuple[MediaItem
         ],
         check=True,
         capture_output=True,
+        timeout=FFMPEG_TIMEOUT,
     )
     subprocess.run(
         [
@@ -143,6 +147,7 @@ def make_media(directory: Path, seconds: int = MEDIA_SECONDS) -> tuple[MediaItem
         ],
         check=True,
         capture_output=True,
+        timeout=FFMPEG_TIMEOUT,
     )
     return probe_media(video), probe_media(audio)
 
@@ -294,11 +299,17 @@ def main(argv: list[str] | None = None) -> int:
             seconds = max(MEDIA_SECONDS, math.ceil(arguments.length * rate.frame_duration) + 1)
             try:
                 media = make_media(work / "media", seconds)
-            except (OSError, subprocess.CalledProcessError) as error:
-                print(f"素材を作れない（ffmpeg と libx264 を見てください）: {error}")
+            # TimeoutExpired は OSError の仲間でも CalledProcessError の仲間でもない
+            # 受けないと、待つ上限に掛かったときにトレースバックで終わる
+            except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+                print(f"素材を作れない（ffmpeg と libx264・aac を見てください）: {error}")
                 return 2
             started = time.perf_counter()
-            analyze(analyzer, media)
+            try:
+                analyze(analyzer, media)
+            except TimeoutError as error:
+                print(f"測らずに止めた: {error}")
+                return 2
             print(f"サムネイルと波形の解析 {time.perf_counter() - started:.1f} 秒")
         project = build_project(clips, arguments.tracks, arguments.length, media=media)
         view = TimelineView(project, analyzer)

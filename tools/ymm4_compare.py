@@ -219,11 +219,15 @@ def _lingers(value: Any) -> bool:
 
 
 def reach(items: list[dict[str, Any]]) -> int:
-    """アイテムの絵が届く最後の次のフレーム 残像なら終わった後に残る分（:data:`LINGER`）も足す"""
-    if not items:
-        return 0
-    _, end = _span(items)
-    return end + (LINGER if _lingers(items) else 0)
+    """アイテムの絵が届く最後の次のフレーム 残像なら終わった後に残る分（:data:`LINGER`）も足す
+
+    残る分は残像を持つアイテムの終わりから数える 一番遅い終わりへ足すと、短い残像と
+    長いふつうのアイテムが同居したとき、何も残らない所まで次の枠から外れる
+    """
+    return max(
+        (_span([item])[1] + (LINGER if _lingers(item) else 0) for item in items),
+        default=0,
+    )
 
 
 def shadowed_until(cases: list[dict[str, Any]]) -> list[int]:

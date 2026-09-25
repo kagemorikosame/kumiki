@@ -1715,6 +1715,18 @@ def test_frames_the_previous_template_still_reaches_are_not_compared(tool: Modul
     assert hidden.sample_frames(clear_from=shadows[4]) == []
 
 
+def test_only_the_lingering_item_adds_the_linger(tool: ModuleType) -> None:
+    """残像の分は残像を持つアイテムの終わりから数える
+
+    テンプレートの一番遅い終わりへ足すと、短い残像と長いふつうのアイテムが同居したとき、
+    ふつうのアイテムが消えた後の 30 フレームまで次の枠から外れ、比べる枚数が減る（#204）
+    """
+    items = [_text_item(0, 30, trail=True), _text_item(0, 200)]
+    assert tool.reach(items) == 200
+    items = [_text_item(0, 190, trail=True), _text_item(0, 200)]
+    assert tool.reach(items) == 190 + tool.LINGER
+
+
 def test_a_watched_template_hidden_by_the_previous_one_fails_instead_of_passing(
     tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
