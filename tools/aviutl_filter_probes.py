@@ -52,6 +52,15 @@ class Probe:
 
     name: str
     layers: tuple[Blocks, ...] = field(default_factory=tuple)
+    #: 見本の長さ（フレーム） 時間で変わる物（時間制御・シーン・残像）は長くする
+    length: int = LENGTH
+
+
+#: レイヤーの頭に置くと、中身ではなくオブジェクトの見出し（``[N]`` の下）へ書く行の組
+#: ``clipping.upper=1`` は 上のオブジェクトでクリッピング（本体の文字列から読んだ名前）
+HEADER = "#header"
+#: 空いたレイヤー 何も置かない
+EMPTY: Blocks = []
 
 
 def draw(x: float = 0.0, y: float = 0.0, zoom: float = 100.0) -> list[str]:
@@ -299,6 +308,170 @@ def probes(folder: Path) -> tuple[Probe, ...]:
     return tuple(found)
 
 
+#: シーン 1 の長さ（フレーム） 白い四角が左から右へ動く
+SCENE_LENGTH = 60
+
+
+def moving_square(length: int, colour: str = "ffffff") -> list[list[str]]:
+    """左 -400 から右 400 へ直線で動く四角 時間の進み方を位置で読む"""
+    moving = draw()
+    moving[1] = "X=-400.00,400.00,直線移動,0"
+    return [square(100, colour), moving]
+
+
+def scene_one(first_number: int) -> list[str]:
+    """シーン 1（白い四角が 60 フレームで左から右へ動く）の節 オブジェクトの番号は続きから"""
+    lines = [
+        "[scene.1]",
+        "scene=1",
+        "name=Probe",
+        f"video.width={aviutl_compare.WIDTH}",
+        f"video.height={aviutl_compare.HEIGHT}",
+        f"video.rate={aviutl_compare.FPS}",
+        "video.scale=1",
+        f"audio.rate={aviutl_compare.AUDIO_RATE}",
+        "cursor.frame=0",
+        "cursor.layer=0",
+        "preview.frame=0",
+        "display.frame=0",
+        "display.layer=0",
+        "display.zoom=10000",
+        "display.order=0",
+        "display.camera=",
+        f"[{first_number}]",
+        "layer=0",
+        f"frame=0,{SCENE_LENGTH - 1}",
+    ]
+    for index, block in enumerate(moving_square(SCENE_LENGTH)):
+        lines.append(f"[{first_number}.{index}]")
+        lines.extend(block)
+    return lines
+
+
+def probes_third(folder: Path) -> tuple[Probe, ...]:
+    """3 回目（#188 #195 #210） レンズブラーの光の強さ・シーン・時間制御・直前オブジェクト"""
+    greys = (folder / "greys.png").resolve()
+    dot = (folder / "dot.png").resolve()
+    found: list[Probe] = []
+    # --- レンズブラーの光の強さ 7 段の灰の升（どの升も一様）と、黒地にひとつの白い点 ---
+    for strength in (0, 25, 50, 100):
+        found.append(
+            Probe(
+                f"lb01_greys_light{strength}",
+                single(
+                    image(greys),
+                    filter_block("レンズブラー", 範囲="10", 光の強さ=str(strength), サイズ固定="1"),
+                    draw(),
+                ),
+            )
+        )
+        found.append(
+            Probe(
+                f"lb02_dot_light{strength}",
+                single(
+                    image(dot),
+                    filter_block("レンズブラー", 範囲="20", 光の強さ=str(strength), サイズ固定="1"),
+                    draw(),
+                ),
+            )
+        )
+    # --- シーン シーン 1 を読む 項目の名前が分からないので 2 通り ---
+    for label, key in (("ascii", "scene"), ("jp", "シーン")):
+        found.append(
+            Probe(
+                f"sc01_scene_{label}",
+                (
+                    [
+                        ["effect.name=シーン", f"{key}=1", "再生位置=0.000", "再生速度=100.00"],
+                        draw(),
+                    ],
+                ),
+                length=SCENE_LENGTH,
+            )
+        )
+    found.append(
+        Probe(
+            "sc02_scene_half_speed",
+            ([["effect.name=シーン", "scene=1", "シーン=1", "再生速度=50.00"], draw()],),
+            length=SCENE_LENGTH,
+        )
+    )
+
+    # --- 直前オブジェクト（#195 PR #219 の決めた点） 下の四角は左 -400、写しは右 400 ---
+    def below(**draw_changes: str) -> list[list[str]]:
+        placed = draw(x=-400.0)
+        for key, value in draw_changes.items():
+            placed = [f"{key}={value}" if line.startswith(f"{key}=") else line for line in placed]
+        return [square(200), placed]
+
+    previous = [["effect.name=直前オブジェクト"], draw(x=400.0)]
+    found.append(Probe("po01_plain", (below(), previous)))
+    found.append(Probe("po02_below_opacity50", (below(透明度="50.00"), previous)))
+    found.append(Probe("po03_below_add", (below(合成モード="加算"), previous)))
+    found.append(Probe("po04_empty_layer_between", (below(), EMPTY, previous)))
+    found.append(
+        Probe(
+            "po05_framebuffer_below",
+            (
+                below(),
+                [
+                    ["effect.name=フレームバッファ", "フレームバッファをクリア=0"],
+                    draw(y=-250.0, zoom=50.0),
+                ],
+                previous,
+            ),
+        )
+    )
+    # 上のオブジェクトでクリッピング 下の四角の上に縦長の細い四角を置き、その形で切る
+    found.append(
+        Probe(
+            "po06_below_clipped",
+            (
+                below(),
+                [[HEADER, "clipping.upper=1"], square(200), draw(x=-400.0)],
+                previous,
+            ),
+        )
+    )
+    # 残像（モーションブラーの残像）がある下の四角
+    moving = moving_square(60)
+    moving.insert(1, filter_block("モーションブラー", 間隔="1.00", 分解能="10", 残像="1"))
+    found.append(Probe("po07_below_afterimage", (moving, previous), length=60))
+    # --- 時間制御(オブジェクト) 下の動く四角の時間をどう変えるか 最後に置く ---
+    # 1 回目の書き出しは 位置=0.500（動かない値）の頭で AviUtl2 が落ちた（例外の自動控えが残った）
+    # 落ちても前の見本が残るよう、ここを最後にし、落ちた並びは一番後ろへ回す
+    for label, position in (
+        ("linear_double", "0.000,2.000,直線移動,0"),
+        ("range", "0.000,1.000,再生範囲,0"),
+        ("still_half", "0.500"),
+    ):
+        found.append(
+            Probe(
+                f"tc01_{label}",
+                (
+                    [
+                        [
+                            "effect.name=時間制御(オブジェクト)",
+                            f"位置={position}",
+                            "繰り返し=0",
+                            "コマ落ち=0",
+                            "対象レイヤー数=1",
+                        ]
+                    ],
+                    moving_square(60),
+                ),
+                length=60,
+            )
+        )
+    return tuple(found)
+
+
+def greys_png(levels: tuple[int, ...] = (0, 32, 64, 128, 192, 224, 255), size: int = 60) -> bytes:
+    """一様な灰の升を横に並べた絵 レンズブラーで升の真ん中が変わらなければ一様な所は保たれる"""
+    row = b"".join(bytes((value, value, value)) * size for value in levels)
+    return _png(size * len(levels), size, (b"\x00" + row) * size)
+
+
 def chosen(found: tuple[Probe, ...], only: str) -> tuple[Probe, ...]:
     """``--only`` で選んだ見本 名前の頭で選ぶ（``fp05,fp31`` 空なら全部）
 
@@ -368,19 +541,26 @@ def write_project(work: Path, chosen: tuple[Probe, ...]) -> dict[str, object]:
     number = 0
     cursor = 0
     for probe in chosen:
-        end = cursor + LENGTH - 1
+        end = cursor + probe.length - 1
         for layer, blocks in enumerate(probe.layers):
+            if not blocks:
+                continue
             out.append(f"[{number}]")
             out.append(f"layer={layer}")
             out.append(f"frame={cursor},{end}")
-            for index, block in enumerate(blocks):
+            body = list(blocks)
+            if body[0] and body[0][0] == HEADER:
+                out.extend(body[0][1:])
+                body = body[1:]
+            for index, block in enumerate(body):
                 out.append(f"[{number}.{index}]")
                 out.extend(block)
             number += 1
         cases.append(
-            {"name": probe.name, "start": cursor, "length": LENGTH, "layers": probe.layers}
+            {"name": probe.name, "start": cursor, "length": probe.length, "layers": probe.layers}
         )
-        cursor += LENGTH + GAP
+        cursor += probe.length + GAP
+    out.extend(scene_one(number))
     target.write_text("\n".join(out) + "\n", encoding="utf-8")
     manifest: dict[str, object] = {"cases": cases}
     (work / "manifest.json").write_text(
@@ -389,13 +569,16 @@ def write_project(work: Path, chosen: tuple[Probe, ...]) -> dict[str, object]:
     return manifest
 
 
-def command_build(work: Path, only: str = "") -> int:
+def command_build(work: Path, only: str = "", *, third: bool = False) -> int:
     folder = work / "probes"
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "patches.png").write_bytes(patches_png())
     (folder / "dots.png").write_bytes(dots_png())
     (folder / "blue.png").write_bytes(blue_png())
-    picked = chosen(probes(folder), only)
+    (folder / "greys.png").write_bytes(greys_png())
+    (folder / "dot.png").write_bytes(dots_png(200, 200, 200, 6))
+    source = probes_third(folder) if third else probes(folder)
+    picked = chosen(source, only)
     if not picked:
         print(f"--only {only} に当たる見本がありません")
         return 1
@@ -411,6 +594,8 @@ def command_build(work: Path, only: str = "") -> int:
 def object_text(blocks: Blocks) -> str:
     """1 レイヤーの見本を Sashimono の読み込みへ渡す ``.object`` の形"""
     lines = ["[Object]", f"frame=0,{LENGTH - 1}"]
+    if blocks and blocks[0] and blocks[0][0] == HEADER:
+        blocks = blocks[1:]
     for index, block in enumerate(blocks):
         lines.append(f"[Object.{index}]")
         lines.extend(block)
@@ -523,12 +708,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--only", default="", help="並べる見本の名前の頭（fp05,fp31 のように , で区切る）"
     )
+    parser.add_argument(
+        "--third",
+        action="store_true",
+        help="3 回目の見本（レンズブラーの光の強さ・シーン・時間制御・直前オブジェクト）を並べる",
+    )
     arguments = parser.parse_args(argv)
     # 丸ごとの道にする 相対のまま渡すと、プロジェクトに書く自分の道（``file=``）が相対になる
     work: Path = arguments.work.resolve()
     work.mkdir(parents=True, exist_ok=True)
     if arguments.command == "build":
-        return command_build(work, arguments.only)
+        return command_build(work, arguments.only, third=arguments.third)
     return command_measure(work)
 
 

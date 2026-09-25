@@ -487,6 +487,9 @@ class FrameRenderer:
         #: 段ごと（:meth:`_compose_tracks`）に作り直す 入れ子のシーンや場面切り替えの中の
         #: クリップを、外の直前オブジェクトの相手にしないため
         self._drawn: list[tuple[Track, Clip]] = []
+        #: 段ごとに、最後に写し取ったフレームバッファのクリップ 写し取った絵は
+        #: ``framebuffer_seen`` の合成先にある（:meth:`_draw_previous` が下の写しに使う）
+        self._framebuffer_seen: dict[int, str] = {}
         #: 音声波形が音を読むデコーダ（道ごと） 映像のデコーダとは別に持つ
         self._audio: OrderedDict[WaveformKey, AudioDecoder] = OrderedDict()
         #: 開けなかった音 毎フレーム開き直さないために覚えておく
@@ -1434,7 +1437,22 @@ class FrameRenderer:
             )
             # 写し取った画面は黒の上に置いた絵にする YMM4 は何も無い所も不透明な黒として
             # 写すので、反転すると白くなる 透明のまま渡すと反転しても黒のまま残る
-            self._compositor.underlay((0.0, 0.0, 0.0, 1.0), target=self._grab)
+            # AviUtl2 は透明のまま写す（``transparent``） 半分に縮めて重ねた写しの黒い所が、
+            # 下の四角を隠さなかった（#195）
+            origin = clip.source
+            if origin is None or origin.params.get("transparent") is not True:
+                self._compositor.underlay((0.0, 0.0, 0.0, 1.0), target=self._grab)
+            # 直前オブジェクトが写すのは、このとき写し取った絵（:meth:`_draw_previous`）
+            # 後から写し直すと、自分が置いた縮めた写しまで入る（#195 の探り po05）
+            seen = self._layer("framebuffer_seen", depth)
+            seen.begin((0.0, 0.0, 0.0, 0.0))
+            seen.draw_handle(
+                self._grab.color,
+                Placement(0.0, 0.0, float(width), float(height)),
+                flip=False,
+                premultiplied=True,
+            )
+            self._framebuffer_seen[depth] = clip.id
             if scripts:
                 grabbed = self._layer("framebuffer", depth)
                 grabbed.begin((0.0, 0.0, 0.0, 0.0))
@@ -1505,14 +1523,32 @@ class FrameRenderer:
         # 直前オブジェクトを重ねたときは下の写しをさらに写す 段ごとに合成先を分けないと、
         # 写している最中の絵へ下の写しを描き込んでしまう
         layer = self._layer(f"previous{len(before)}", depth)
-        # 下のクリップにとっての「すぐ下」は、自分より 1 つ前まで
-        self._drawn = before[:-1]
-        try:
-            # 残像は本体とは別に前のフレームを描いて作る ここで描かないと、下のクリップには
-            # 付いている残像が写しにだけ無い
-            self._draw_into(layer, below_track, picture, frame, rate, depth, trail=True)
-        finally:
-            self._drawn = before
+        if (
+            below_clip.source is not None
+            and below_clip.source.kind == "framebuffer"
+            and self._framebuffer_seen.get(depth) == below_clip.id
+        ):
+            # 下がフレームバッファなら、写し取ったときの絵をそのまま使う AviUtl2 で下の四角を
+            # 写したフレームバッファ（拡大率 50・Y -250）を写すと、下の四角が元の大きさで
+            # 自分の位置にだけ出た（#195 の探り po05） 描き直すと、フレームバッファが置いた
+            # 縮めた写しまで写し取られて入る フレームバッファのエフェクトは掛けていない
+            # （測っていない）
+            layer.begin((0.0, 0.0, 0.0, 0.0))
+            layer.draw_handle(
+                self._layer("framebuffer_seen", depth).canvas.color,
+                Placement(0.0, 0.0, float(layer.width), float(layer.height)),
+                flip=False,
+                premultiplied=True,
+            )
+        else:
+            # 下のクリップにとっての「すぐ下」は、自分より 1 つ前まで
+            self._drawn = before[:-1]
+            try:
+                # 残像は本体とは別に前のフレームを描いて作る ここで描かないと、下のクリップには
+                # 付いている残像が写しにだけ無い
+                self._draw_into(layer, below_track, picture, frame, rate, depth, trail=True)
+            finally:
+                self._drawn = before
 
         local_frame = frame - clip.timeline_start
         opacity = clip.opacity.at(local_frame)

@@ -284,7 +284,13 @@ SHAPE = SourceDefinition(
 #: それまでに重ねた画面を、そのまま素材として使う（YMM4 の ``FrameBufferItem``）
 #: 下にある絵へぼかしや色調補正を掛けた帯を作るのに使われる 絵は CPU では作らず、
 #: レンダラが GPU の中で写し取る（:mod:`sashimono.engine.render.renderer`）
-FRAMEBUFFER = SourceDefinition(kind="framebuffer", label="フレームバッファ")
+#: ``transparent`` は何も無い所を透明のまま写す（AviUtl2 のフレームバッファ） 既定の偽は
+#: YMM4 と同じく不透明な黒として写す（#143 反転で周りが白くなる）
+FRAMEBUFFER = SourceDefinition(
+    kind="framebuffer",
+    label="フレームバッファ",
+    parameters=(CheckSpec("transparent", "何も無い所を透明のまま写す", False),),
+)
 
 
 #: 下のトラックを重ね終えた絵へ、クリップのエフェクトを掛ける（AviUtl のフィルタオブジェクト）

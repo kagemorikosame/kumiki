@@ -374,7 +374,7 @@ _PARAMS: dict[str, dict[str, _Param]] = {
     # 光の強さ は写さない（0 でなければ記録に残る） 写し先の brightness は 100% が
     # 元のままの倍率で、光の強さ（0 が既定）をそのまま入れると真っ黒になる
     # 単純図形σ の 磨りガラス矩形 は 32 を渡し、暗い板になっていた（#170）
-    "レンズブラー": {"範囲": _Param("radius")},
+    "レンズブラー": {"範囲": _Param("radius"), "サイズ固定": _Param("fixed_size")},
     "色ずれ": {"ずれ幅": _Param("shift"), "角度": _Param("angle"), "強さ": _Param("strength")},
     "カラーキー": {"色差範囲": _Param("tolerance"), "境界補正": _Param("feather")},
     "ルミナンスキー": {"基準輝度": _Param("threshold"), "輝度範囲": _Param("smoothness")},
@@ -1263,7 +1263,13 @@ def _content(
         # 消えて写しだけが残るが、こちらは下の絵を消せないので数えて残す
         if entry.params.get("フレームバッファをクリア", "0").strip() not in ("", "0"):
             log.note_missing("フレームバッファをクリア")
-        return GeneratedSource(kind="framebuffer"), "", "framebuffer"
+        # 何も無い所は透明のまま写す AviUtl2 で下の四角の上へ写しを半分に縮めて重ねると、
+        # 写しの黒いはずの所が下の四角を隠さなかった（#195 の探り po05）
+        return (
+            GeneratedSource(kind="framebuffer", params={"transparent": True}),
+            "",
+            "framebuffer",
+        )
     if entry.name == _PREVIOUS_OBJECT:
         # AviUtl2 は下のレイヤーの四角を、下の位置を足さずに自分の位置へ同じ大きさで写し、
         # 下に掛けた単色化の赤も写した（#195） 測った物は項目を持たないので、書いてあれば数える

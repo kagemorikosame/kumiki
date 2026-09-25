@@ -197,7 +197,7 @@ def _noise_displacement(r: _Reader) -> Effect | None:
             "perlin",
         ),
         strength=inner.track("Strength", 100.0),
-        threshold=inner.track("Threshold"),
+        threshold=_unmapped_threshold(inner),
         levels=inner.track("Levels", 256.0),
         octaves=inner.count("Octaves", 5),
         offset_x=inner.track("X"),
@@ -210,6 +210,19 @@ def _noise_displacement(r: _Reader) -> Effect | None:
         scale_y=inner.track("ScaleY", 100.0),
         scale_z=inner.track("ScaleZ", 100.0),
     )
+
+
+def _unmapped_threshold(inner: _Reader) -> float:
+    """ノイズで歪めるときのしきい値 効き方が分からないので写さず、使っていれば数える
+
+    YMM4 に横の線を歪めさせると、しきい値 30 でずれがどこも下向きの 23〜155 になり、
+    60 ではどこも 200（移動量いっぱい）だった 小さい値を 0 に切る写し方は、ずれが
+    しきい値の所で跳んで横の帯になった（水の中風 #210）
+    """
+    value = inner.track("Threshold")
+    if value.keyframes or value.static != 0.0:
+        inner.report.note_missing("YMM4 のノイズで歪めるのしきい値（効き方が分からず写さない）")
+    return 0.0
 
 
 def _random_move(r: _Reader) -> Effect | None:
