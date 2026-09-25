@@ -159,7 +159,9 @@ def test_the_faulthandler_is_back_after_a_luajit_error(pytestconfig: pytest.Conf
     # 戻し損ねると、それより後の試験で本物が落ちても何も書き出されない
     if LUAJIT is None:
         pytest.skip("LuaJIT が無い")
-    assert faulthandler.is_enabled()
+    # -p no:faulthandler で走らせると初めから切れていて、戻ったかどうかを確かめられない
+    if not faulthandler.is_enabled():
+        pytest.skip("faulthandler が切れている")
     with _faulthandler_paused(pytestconfig), pytest.raises(Exception):  # noqa: B017
         LUAJIT.execute(b'error("x")')
     assert faulthandler.is_enabled()
