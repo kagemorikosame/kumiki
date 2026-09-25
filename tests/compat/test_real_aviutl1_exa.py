@@ -34,7 +34,7 @@ from sashimono.compat.aviutl.report import CompatibilityReport
 from sashimono.compat.aviutl.runtime import LuaScriptRuntime
 from sashimono.compat.mapped import MappedObject
 from sashimono.core.timebase import FrameRate
-from sashimono.engine.render.scripts import _apply_params
+from sashimono.engine.render.scripts import _apply_params, is_scene_change
 
 ROOT = Path(__file__).resolve().parent.parent / "fixtures" / "aviutl" / "aviutl1"
 FILES = sorted(ROOT.rglob("*.exa")) if ROOT.is_dir() else []
@@ -117,12 +117,14 @@ def test_every_animation_effect_finds_its_script(
     assert lost == []
     # 4 つそろえば 36 個（日本語版 34・英語版 2） 何も読めずに記録も空、という形で
     # 通らないよう、繋がった数そのものを見る
-    # カスタムオブジェクト（中身を作るスクリプト）は数えない 数は下の試験で見る
+    # カスタムオブジェクト（中身を作るスクリプト）とシーンチェンジは数えない 数は下の試験で見る
     connected = [
         e
         for _, item in items
         for e in item.clip.effects
-        if e.kind.startswith("aviutl:") and not is_custom_object_kind(e.kind)
+        if e.kind.startswith("aviutl:")
+        and not is_custom_object_kind(e.kind)
+        and not is_scene_change(e.kind)
     ]
     assert len(connected) == sum(n for folder, n in EFFECTS_IN.items() if folder.is_dir())
 
@@ -357,17 +359,16 @@ def test_the_glass_shows_what_is_below_where_it_is_moved(
 def test_what_is_left_is_only_the_scripted_contents(
     mapped: tuple[list[tuple[Path, MappedObject]], CompatibilityReport],
 ) -> None:
-    """残る穴はスクリプトが中身を作る物と スクリプト制御 だけ
+    """読み込みで残る穴は スクリプト制御 だけ
 
     新しい穴がここへ出たら、回数を数えて埋める順を決め直す
     """
     _, report = mapped
     kinds = {line.split(":", 1)[0] for line in report.missing}
-    # どの穴が出るかは置いた配布物で決まる シーンチェンジは sigma、スクリプト制御は
-    # localfont2 にある カスタムオブジェクトはスクリプトが揃っていれば穴にならない（#147）
+    # どの穴が出るかは置いた配布物で決まる スクリプト制御は localfont2 にある
+    # カスタムオブジェクト（#147）とシーンチェンジ（#196）はスクリプトが揃っていれば
+    # 穴にならない シーンチェンジの 4 本が走らないことは描くときに数える（下の試験）
     expected = set()
-    if SIGMA.is_dir():
-        expected.add("シーンチェンジ")
     if LOCALFONT.is_dir():
         expected.add("フィルタ")
     assert kinds == expected, report.missing
@@ -448,3 +449,92 @@ def test_the_sigma_effects_run(scripts: ScriptCatalog) -> None:
             assert not result.failed, (path.name, result.message)
             ran += 1
     assert ran == 26
+
+
+#: シーンチェンジの配布物（sigma の ``@ディザσ.scn``） どれも ``sigma_dither`` を通して ffi を使う
+SCENE_CHANGES_NEEDING_FFI = frozenset(
+    {"ディザフェードアウトイン", "ディザワイプ(図形)", "ディザワイプ(時計)", "ディザワイプ(直線)"}
+)
+
+
+def test_the_scene_changes_switch_the_scenes_below(
+    scripts: ScriptCatalog, qt_application: object
+) -> None:
+    """配布物のシーンチェンジ 4 本を場面切り替えとして置いて描く（#196）
+
+    赤（0〜30）から青（30〜60）へ切り替える所に 20〜40 で置く 4 本とも ffi が要り、
+    利用者の決定で ffi は許さないので走らない 走らなかったことを名前で数え、真ん中で
+    入れ替えるだけにする（素通し） 以前は中身の無いクリップを置き、何も起きなかった
+    ffi を許すか Python で同じ模様を描けば、ここで「描けた」側へ移る
+    """
+    from collections import Counter
+    from dataclasses import replace
+
+    from sashimono.compat.aviutl.report import global_report
+    from sashimono.core.model import (
+        Clip,
+        GeneratedSource,
+        Project,
+        ProjectSettings,
+        Track,
+        TrackKind,
+    )
+    from sashimono.engine.gpu import GLContextError, OffscreenGLContext
+    from sashimono.engine.render import FrameRenderer
+
+    del scripts, qt_application
+    files = sorted((_require(SIGMA) / "exa" / "scn").glob("*.exa"))
+    assert len(files) == 4
+
+    def fill(colour: tuple[float, float, float, float]) -> GeneratedSource:
+        return GeneratedSource(kind="shape", params={"shape": "background", "color": colour})
+
+    try:
+        context = OffscreenGLContext()
+    except GLContextError as exc:
+        pytest.skip(f"OpenGL コンテキストを作れない: {exc}")
+    settings = ProjectSettings(width=64, height=36, frame_rate=FrameRate(30), sample_rate=48000)
+    passed: list[str] = []
+    drawn: list[str] = []
+    try:
+        for path in files:
+            report = CompatibilityReport()
+            item = map_object(load_exo(path).objects[0], FrameRate(30), report=report)
+            assert item is not None, path.name
+            assert not report.missing, (path.name, report.missing)
+            source = item.clip.source
+            assert source is not None and source.kind == "transition", path.name
+            (script,) = item.clip.effects
+            assert is_scene_change(script.kind), path.name
+            label = script.kind.rpartition(":")[2]
+            base = Project.create(settings)
+            scenes = Track(
+                TrackKind.VIDEO,
+                "V1",
+                (
+                    Clip(timeline_start=0, duration=30, source=fill((1.0, 0.0, 0.0, 1.0))),
+                    Clip(timeline_start=30, duration=30, source=fill((0.0, 0.0, 1.0, 1.0))),
+                ),
+            )
+            change = replace(item.clip, timeline_start=20, duration=20)
+            project = base.with_timeline(
+                replace(base.timeline, tracks=(scenes, Track(TrackKind.VIDEO, "V2", (change,))))
+            )
+            before = Counter(global_report.missing)
+            renderer = FrameRenderer(project, context=context)
+            try:
+                early, late = (renderer.render(frame).copy() for frame in (25, 35))
+            finally:
+                renderer.close()
+            noted = Counter(global_report.missing) - before
+            if noted[f"シーンチェンジのスクリプトが走らない（素通し）: {label}"]:
+                passed.append(label)
+                # 素通しは真ん中（30）で入れ替えるだけ
+                assert early[18, 32, 0] > 200 and early[18, 32, 2] < 30, (label, early[18, 32])
+                assert late[18, 32, 2] > 200 and late[18, 32, 0] < 30, (label, late[18, 32])
+            else:
+                drawn.append(label)
+    finally:
+        context.release()
+    assert sorted(passed) == sorted(SCENE_CHANGES_NEEDING_FFI)
+    assert drawn == []

@@ -97,9 +97,9 @@ uniform float zoom;
 uniform bool inverted;
 uniform bool pattern_only;
 uniform bool key_only;
-uniform int noise_mask;
 uniform vec4 key_color;
 uniform vec4 keep_color;
+uniform int noise_mask;
 uniform bool relative;
 uniform int noise_kind;
 uniform float noise_strength;
@@ -442,12 +442,12 @@ def register_paint_effects() -> None:
                 TrackSpec("opacity", "濃さ", 0, 100, 100, unit="%"),
                 CheckSpec("pattern_only", "模様だけで塗る", False),
                 CheckSpec("key_only", "目印の色の所だけ塗る", False),
-                # 模様を塗らずにノイズの値で薄める（YMM4 の NoiseEffect）
-                SelectSpec("noise_mask", "ノイズで薄める", _NOISE_MASKS, "off"),
                 ColorSpec("key_color", "目印の色", (1.0, 0.0, 1.0, 1.0)),
                 # 不透明度 0 は「渡していない」印 前の版の保存は線の色を持たないので、
                 # 目印からの近さで塗りの所を決める
                 ColorSpec("keep_color", "目印と一緒に描いた線の色", (0.0, 0.0, 0.0, 0.0)),
+                # 模様を塗らずにノイズの値で薄める（YMM4 の NoiseEffect）
+                SelectSpec("noise_mask", "ノイズで薄める", _NOISE_MASKS, "off"),
                 ValueSpec("stops", "色の数", 2, minimum=1, maximum=MAX_STOPS),
                 *_stop_parameters(),
                 SelectSpec("extend", "端の扱い", _EXTEND, "clamp"),
