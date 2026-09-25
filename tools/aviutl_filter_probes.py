@@ -326,7 +326,7 @@ SCENE_PROBES = "sc"
 CLIP_UPPER = "clipping.upper=1"
 
 
-def moving_square(length: int, colour: str = "ffffff") -> list[list[str]]:
+def moving_square(colour: str = "ffffff") -> list[list[str]]:
     """左 -400 から右 400 へ直線で動く四角 時間の進み方を位置で読む"""
     moving = draw()
     moving[1] = "X=-400.00,400.00,直線移動,0"
@@ -358,7 +358,7 @@ def scene_one(first_number: int) -> list[str]:
         "layer=0",
         f"frame=0,{SCENE_LENGTH - 1}",
     ]
-    for index, block in enumerate(moving_square(SCENE_LENGTH)):
+    for index, block in enumerate(moving_square()):
         lines.append(f"[{first_number}.{index}]")
         lines.extend(block)
     return lines
@@ -450,7 +450,7 @@ def probes_third(folder: Path) -> tuple[Probe, ...]:
         )
     )
     # 残像（モーションブラーの残像）がある下の四角
-    moving = moving_square(60)
+    moving = moving_square()
     moving.insert(1, filter_block("モーションブラー", 間隔="1.00", 分解能="10", 残像="1"))
     found.append(Probe("po07_below_afterimage", (moving, previous), length=60))
     # --- 時間制御(オブジェクト) 下の動く四角の時間をどう変えるか 最後に置く ---
@@ -474,7 +474,7 @@ def probes_third(folder: Path) -> tuple[Probe, ...]:
                             "対象レイヤー数=1",
                         ]
                     ],
-                    moving_square(60),
+                    moving_square(),
                 ),
                 length=60,
             )
@@ -600,7 +600,7 @@ def probes_fourth(folder: Path) -> tuple[Probe, ...]:
                             "対象レイヤー数=1",
                         ]
                     ],
-                    moving_square(60),
+                    moving_square(),
                 ),
                 length=60,
             )

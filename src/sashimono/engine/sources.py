@@ -399,7 +399,7 @@ def _draw_text(
         centre_y = height / 2.0 - _number(values, "pos_y", 0.0)
         family = aviutl_font_family(str(values.get("font", AVIUTL_DEFAULT_FONT)))
         groups, framed = _aviutl_lines(tagged, family, size, bold, values, centre_x, centre_y)
-        _paint_groups(painter, groups, values, width, height)
+        _paint_groups(painter, groups, values)
         return framed
 
     text = _revealed(raw, values)
@@ -464,7 +464,7 @@ def _draw_text(
             placed.translate(_bold_drift(plain, placed), 0.0)
         path.addPath(placed)
 
-    _paint_glyphs(painter, path, values, width, height)
+    _paint_glyphs(painter, path, values)
     return None
 
 
@@ -872,30 +872,26 @@ def _draw_vertical_text(
             offset = metrics.horizontalAdvance(character) / 2.0
             path.addText(QPointF(x - offset, baseline), font, character)
 
-    _paint_glyphs(painter, path, values, width, height)
+    _paint_glyphs(painter, path, values)
 
 
 def _paint_glyphs(
     painter: QPainter,
     path: QPainterPath,
     values: dict[str, object],
-    width: int,
-    height: int,
 ) -> None:
     """組み上がった文字の輪郭を、影・縁取り・塗りの順に描く
 
     縦書きでも横書きでも飾りの付け方は同じなので、ここに 1 つだけ置く
     順番は下から影・縁・塗り 入れ替えると縁が影を隠す
     """
-    _paint_layers(painter, [(path, values, None)], width, height)
+    _paint_layers(painter, [(path, values, None)])
 
 
 def _paint_groups(
     painter: QPainter,
     groups: list[_Group],
     values: dict[str, object],
-    width: int,
-    height: int,
 ) -> None:
     """制御文字で色や装飾を変えた字を、見た目ごとに塗る 影・縁・塗りの順は全体で守る"""
     _paint_layers(
@@ -904,8 +900,6 @@ def _paint_groups(
             (path, _redecorated(_recoloured(values, look.color, look.edge), look), clip)
             for path, look, clip in groups
         ],
-        width,
-        height,
     )
 
 
@@ -947,8 +941,6 @@ def _redecorated(values: dict[str, object], look: _Look) -> dict[str, object]:
 def _paint_layers(
     painter: QPainter,
     layers: list[tuple[QPainterPath, dict[str, object], QPainterPath | None]],
-    width: int,
-    height: int,
 ) -> None:
     """影を全部、縁を全部、塗りを全部の順に描く
 

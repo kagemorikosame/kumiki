@@ -231,8 +231,8 @@ def _refuse(kind: Any) -> Any:
     登録し直すだけで、落ちはしない こちらはメニューを出さないので困らない
     """
     if kind._restype_ is _I:
-        return lambda *args: 0
-    return lambda *args: None
+        return lambda *_args: 0
+    return lambda *_args: None
 
 
 def default_plugin_roots() -> tuple[Path, ...]:

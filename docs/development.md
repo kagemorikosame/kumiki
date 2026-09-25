@@ -50,6 +50,17 @@ ruff（書式・規約）→ mypy（strict）→ pytest をまとめて走らせ
 **AI（Claude Code / Codex / Cursor）に実装させた場合も同じ** 実装 → リファクタ →
 `tools/verify.py` まで含めて 1 つの作業とする 「動くコードを書いた」で止めない
 
+時間変換とファイルの錠は、対象のコードや試験を変えた PR と週 1 回の CI で mutation
+testing も走る 条件式や境界値を機械的に変えても試験が落ちなければ、試験の検出力が
+下がったとして CI を落とす 手元で確かめるときは次を使う
+
+```
+.venv\Scripts\python.exe -m pip install -e ".[dev,mutation]"
+$env:PYTHONUTF8 = "1"
+.venv\Scripts\python.exe -m pytest tests/core/test_timebase.py tests/test_locks.py --gremlins
+.venv\Scripts\python.exe tools/check_mutation.py
+```
+
 ---
 
 ## 3. 書き方

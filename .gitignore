@@ -8,6 +8,8 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 .hypothesis/
+.gremlins_cache/
+coverage/gremlins/
 .coverage
 htmlcov/
 

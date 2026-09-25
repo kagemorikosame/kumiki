@@ -41,7 +41,7 @@ class AudioContext:
     duration: int
 
 
-def _volume(samples: np.ndarray, values: dict[str, float], context: AudioContext) -> np.ndarray:
+def _volume(samples: np.ndarray, values: dict[str, float], _context: AudioContext) -> np.ndarray:
     """音量調整 ``音量`` は %（100 で元のまま） ``左右`` は -100..100"""
     gain = max(values.get("volume", 100.0), 0.0) / 100.0
     out = samples * gain
@@ -70,7 +70,7 @@ def _fade(samples: np.ndarray, values: dict[str, float], context: AudioContext) 
     return samples * np.clip(gain, 0.0, 1.0).astype(np.float32)[:, None]
 
 
-def _monaural(samples: np.ndarray, values: dict[str, float], context: AudioContext) -> np.ndarray:
+def _monaural(samples: np.ndarray, values: dict[str, float], _context: AudioContext) -> np.ndarray:
     """モノラル化 ``比率`` は左右を混ぜる量（0 で混ぜない 100 で完全にモノラル）
 
     AviUtl の ``比率`` は **0 が元のまま** 逆に読むと、既定のままで

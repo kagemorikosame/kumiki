@@ -1,0 +1,59 @@
+name: Mutation Testing
+
+# 普通の CI より重いので、対象の核を触る PR と定期実行だけで回す
+# 生き残った mutation は、行を通るだけで結果を確かめていないテストを示す
+on:
+  pull_request:
+    paths:
+      - "src/sashimono/core/timebase.py"
+      - "src/sashimono/core/io/locks.py"
+      - "tests/core/test_timebase.py"
+      - "tests/test_locks.py"
+      - "tests/test_mutation_gate.py"
+      - "tools/check_mutation.py"
+      - "pyproject.toml"
+      - ".github/workflows/mutation.yml"
+  schedule:
+    - cron: "23 18 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mutation:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        id: python
+        with:
+          python-version: "3.14"
+
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: false
+
+      - name: 依存を入れる
+        run: uv pip install --python "${{ steps.python.outputs.python-path }}" -e ".[dev,mutation]"
+
+      - name: テストが不具合を検出できるか
+        env:
+          # pytest-gremlins はソースを既定 encoding で読むため、日本語を含む Windows では明示する
+          PYTHONUTF8: "1"
+        run: python -m pytest tests/core/test_timebase.py tests/test_locks.py --gremlins
+
+      - name: 検出力が下がっていないか
+        run: python tools/check_mutation.py
+
+      - name: mutation の結果を残す
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: mutation-report
+          path: coverage/gremlins/gremlins.json
+          if-no-files-found: warn
