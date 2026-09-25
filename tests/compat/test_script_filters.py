@@ -223,6 +223,8 @@ class TestFilters:
 
     def test_a_filter_the_import_knows_is_called(self) -> None:
         # 読み込みで写せる効果は、スクリプトからも同じ名前で呼べる（表を 1 つにした）
+        # 表が分かれると、読み込みでは写せる効果が obj.effect では未対応として記録されて
+        # 掛からないか、別の効果に化ける（以前の表は 領域拡張 を切り抜きの crop へ写していた）
         (effect,) = _requested('obj.effect("領域拡張", "上", 10)')
         assert effect.kind == "expand_area"
         assert _value(effect, "top") == 10.0
