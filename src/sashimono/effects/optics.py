@@ -639,7 +639,10 @@ uniform float core;
 uniform float twist;
 
 void main() {
-    // 絵を円に巻く 横は真上から時計回りの角度、縦は中心の穴の縁から外への距離
+    // 絵を円に巻く 横は真上から反時計回りの角度、縦は中心の穴の縁から外への距離
+    // YMM4 に左が赤・右が青の横のグラデーションを巻かせると、真上の継ぎ目の左が赤、右が青に
+    // なった（絵の左端が真上で、右へ進むほど反時計回り #198） 時計回りに巻くと左右が裏返る
+    // ねじれも同じ向きに裏返す（配布物のねじれはどれも 0 で、向きは測っていない）
     vec2 centre = object_center();
     vec2 size = object_size();
     vec2 p = v_uv * u_size - centre;
@@ -647,7 +650,7 @@ void main() {
     float inner = max(core, 0.0);
     if (r < inner || r > inner + size.y) { frag_color = vec4(0.0); return; }
     float depth = (r - inner) / size.y;
-    float a = atan(p.x, p.y) + radians(twist) * depth;
+    float a = -(atan(p.x, p.y) + radians(twist) * depth);
     float along = fract(a / (2.0 * PI));
     vec2 corner = centre - size * 0.5;
     frag_color = sample_pixel(corner + vec2(along * size.x, size.y * (1.0 - depth)));
@@ -767,7 +770,9 @@ void main() {
         }
     }
     if (effect_out) {
-        float amount = 1.0 - ease((u_time - (u_duration - span)) / span, easing, easing_mode);
+        // 退場は登場を時間で裏返す 終わりから数えた残りで登場と同じ曲線を引く
+        // （motion の hidden_amount と同じ決まり YMM4 の木製看板テロップで測った #177）
+        float amount = ease((u_duration - u_time) / span, easing, easing_mode);
         if (pattern == 5) keep = min(keep, amount);
         else {
             float value = wipe_value(p);

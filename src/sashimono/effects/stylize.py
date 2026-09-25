@@ -95,6 +95,7 @@ uniform float center_x;
 uniform float center_y;
 uniform float angle;
 uniform float blur;
+uniform float width;
 
 void main() {
     // 中心を通る線の片側を切り落とす（AviUtl の 斜めクリッピング）
@@ -107,6 +108,13 @@ void main() {
     float side = dot(p, vec2(-sin(r), -cos(r)));
     float edge = max(blur * 0.5, 0.5);
     float keep = 1.0 - smoothstep(-edge, edge, side);
+    // 幅が正なら線を真ん中にした幅の帯だけを残し、負なら帯を消して両側を残す AviUtl2 に
+    // 白い四角 300 の真ん中へ幅 100 と -100 で描かせると、98 の帯だけ残る・帯だけ消える（#188）
+    if (abs(width) > 0.0) {
+        float half_width = abs(width) * 0.5;
+        float inside = 1.0 - smoothstep(half_width - edge, half_width + edge, abs(side));
+        keep = width > 0.0 ? inside : 1.0 - inside;
+    }
     vec4 color = texture(u_texture, v_uv);
     frag_color = vec4(color.rgb, color.a * keep);
 }
@@ -824,6 +832,7 @@ def register_stylize_effects() -> None:
                 TrackSpec("center_y", "中心 Y", -4000, 4000, 0, step=1, unit="px"),
                 TrackSpec("angle", "角度", -360, 360, 0, unit="度"),
                 TrackSpec("blur", "ぼかし", 0, 400, 0, unit="px"),
+                TrackSpec("width", "幅", -8000, 8000, 0, step=1, unit="px"),
             ),
             fragment_shader=_CROP_SLANT,
         ),

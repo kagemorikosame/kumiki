@@ -41,6 +41,14 @@ def _seed() -> ValueSpec:
 
 #: 登場・退場の進み具合 1 で隠れきった状態、0 で元の位置
 #: 登場は始まりから ``time`` 秒、退場は終わりの ``time`` 秒 どちらも効くときは強い方
+#: 退場は登場を時間で裏返した動き 終わりから数えた残りで登場と同じ曲線を引く
+#: （YMM4 の木製看板テロップの退場 回転 174 度・Back・Out は、終わりの 4 フレーム前で
+#: 43 度だった 残り 0.22 で 1 - Back_Out(0.22) = 0.25 進み具合を曲線へそのまま渡すと
+#: 183 度まで回り切って上下が逆になる #177） 直線と InOut は対称なので どちらでも同じ
+#: 形を変える動き（移動・拡大・回転・傾き）は曲線の行き過ぎ（Elastic や Back）をそのまま
+#: 使う :func:`hidden_signed` 木製看板テロップの登場（回転 174 度・Elastic・Out）は、
+#: 2 フレーム目で YMM4 が逆向きに 55 度ほど回っていた 0 で止めると回らずに立ったまま
+#: 濃さとぼかしは 0〜1 に収める :func:`hidden_amount` 行き過ぎると 100% を超えた濃さになる
 _IN_OUT = """
 uniform bool effect_in;
 uniform bool effect_out;
@@ -48,15 +56,23 @@ uniform float effect_time;
 uniform int easing;
 uniform int easing_mode;
 
-float hidden_amount() {
+float hidden_signed() {
     float span = max(effect_time, 0.0001);
     float amount = 0.0;
-    if (effect_in) amount = max(amount, 1.0 - ease(u_time / span, easing, easing_mode));
+    if (effect_in && u_time < span) amount = 1.0 - ease(u_time / span, easing, easing_mode);
     if (effect_out) {
-        float left = (u_time - (u_duration - span)) / span;
-        amount = max(amount, ease(left, easing, easing_mode));
+        float remaining = (u_duration - u_time) / span;
+        if (remaining < 1.0) {
+            float leaving = 1.0 - ease(remaining, easing, easing_mode);
+            // 登場と退場が重なる短いクリップは、大きく動いている方を取る
+            if (abs(leaving) > abs(amount)) amount = leaving;
+        }
     }
-    return clamp(amount, 0.0, 1.0);
+    return amount;
+}
+
+float hidden_amount() {
+    return clamp(hidden_signed(), 0.0, 1.0);
 }
 """
 
@@ -286,7 +302,7 @@ void main() {
     if (direction == 1) shift = vec2(0.0, -u_object.w);
     if (direction == 2) shift = vec2(-u_object.z, 0.0);
     if (direction == 3) shift = vec2(u_size.x - u_object.x, 0.0);
-    frag_color = sample_pixel(v_uv * u_size - shift * hidden_amount());
+    frag_color = sample_pixel(v_uv * u_size - shift * hidden_signed());
 }
 """
 )
@@ -304,7 +320,7 @@ void main() {
     // 隠れきった状態の大きさが「拡大率 × 軸の割合」 100% どうしなら大きさは変わらない
     // （YMM4 に描かせて確かめた 0 の軸はその向きに潰れた所から広がる）
     vec2 target = vec2(zoom_x, zoom_y) / 100.0 * (zoom / 100.0);
-    vec2 scale = mix(vec2(1.0), target, hidden_amount());
+    vec2 scale = mix(vec2(1.0), target, hidden_signed());
     if (scale.x <= 0.0001 || scale.y <= 0.0001) { frag_color = vec4(0.0); return; }
     vec2 centre = pivot_point();
     frag_color = sample_pixel(centre + (v_uv * u_size - centre) / scale);
@@ -376,7 +392,7 @@ uniform bool three_d;
     + """
 void main() {
     // 基準の辺を軸に、寝た状態から起き上がる 立体でなければ辺へ向かって潰す
-    float amount = hidden_amount();
+    float amount = hidden_signed();
     vec2 pivot = object_center();
     if (base == 0) pivot.y = u_object.y;
     if (base == 1) pivot.y = u_object.w;
@@ -426,13 +442,15 @@ uniform float angle_y;
 uniform float angle_z;
 uniform bool three_d;
 """
+    + _PIVOT
     + _IN_OUT
     + """
 void main() {
-    float k = hidden_amount();
+    float k = hidden_signed();
     vec3 angles = vec3(0.0, 0.0, angle_z) * k;
     if (three_d) angles.xy = vec2(angle_x, angle_y) * k;
-    vec2 centre = object_center();
+    // 中心点のエフェクトが前にあれば、その点を支点に回る（木製看板テロップは釘の所 #177）
+    vec2 centre = pivot_point();
     frag_color = sample_pixel(centre + untilt(v_uv * u_size - centre, angles));
 }
 """
@@ -442,11 +460,17 @@ _INOUT_OFFSET = _shader(
     """
 uniform float offset_x;
 uniform float offset_y;
+uniform float offset_z;
 """
     + _IN_OUT
     + """
 void main() {
-    frag_color = sample_pixel(v_uv * u_size - vec2(offset_x, offset_y) * hidden_amount());
+    // offset_z は手前へ出す量（YMM4 の Value3） 奥行きの拡大率で大きさだけが変わる
+    // YMM4 に 300 を描かせると 300 の四角が 428、-300 で 230 になった（#198）
+    float k = hidden_signed();
+    vec2 centre = object_center() + vec2(offset_x, offset_y) * k;
+    float scale = depth_scale(-offset_z * k);
+    frag_color = sample_pixel(object_center() + (v_uv * u_size - centre) / scale);
 }
 """
 )
@@ -460,7 +484,7 @@ uniform float angle_y;
     + """
 void main() {
     // 傾きの角度そのものを隠れ具合に比例させる tan を比例させると 90 度近くで跳ねる
-    float k = hidden_amount();
+    float k = hidden_signed();
     vec2 pivot = object_center();
     vec2 point = v_uv * u_size - pivot;
     float tx = tan(radians(clamp(angle_x * k, -89.0, 89.0)));
@@ -1190,6 +1214,7 @@ def register_motion_effects() -> None:
                 TrackSpec("angle_y", "Y 軸", -3600, 3600, 0, unit="度"),
                 TrackSpec("angle_z", "回転", -3600, 3600, 360, unit="度"),
                 CheckSpec("three_d", "立体", False),
+                *_pivot_specs(),
                 *_in_out_specs(),
             ),
             fragment_shader=_INOUT_ROTATE,
@@ -1201,6 +1226,7 @@ def register_motion_effects() -> None:
             parameters=(
                 TrackSpec("offset_x", "X", -4000, 4000, 100, step=1, unit="px"),
                 TrackSpec("offset_y", "Y", -4000, 4000, 0, step=1, unit="px"),
+                TrackSpec("offset_z", "手前へ", -4000, 4000, 0, step=1, unit="px"),
                 *_in_out_specs(),
             ),
             fragment_shader=_INOUT_OFFSET,

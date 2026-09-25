@@ -87,6 +87,16 @@ TEXT = SourceDefinition(
             (("top", "上"), ("middle", "中"), ("bottom", "下")),
             "middle",
         ),
+        # 横の基準 行揃えは行どうしの揃え方で、文字の塊は位置を真ん中にして置く
+        # YMM4 の基準位置（BasePoint）の左右は塊の端を位置に合わせる（左上なら左の端が位置）
+        # 真ん中に置いたまま読むと、左上の 4 文字の H が 130 画素ほど左へずれた（#198）
+        # 既定の ``center`` は今までの置き方のまま 既にある作品の見た目を変えない
+        SelectSpec(
+            "anchor",
+            "横の基準",
+            (("left", "左"), ("center", "中"), ("right", "右")),
+            "center",
+        ),
         TrackSpec("line_spacing", "行間", -50, 200, 0, step=1, unit="px"),
         TrackSpec("letter_spacing", "字間", -20, 100, 0, step=1, unit="px"),
         TrackSpec("border_width", "縁取りの太さ", 0, 64, 0, step=1, unit="px"),
@@ -188,6 +198,13 @@ SHAPE = SourceDefinition(
         TrackSpec("formula_m", "スーパーフォーミュラ M", 0, 100, 4, step=0.1),
         TrackSpec("formula_n", "スーパーフォーミュラ N", 0.05, 100, 1, step=0.05),
         TextSpec("points", "線の点（x,y;x,y 中心から）", "", multiline=False),
+        # 点の数え方 YMM4 のペンは画面の左上から数える（下が正） 画面の大きさは描くときに引く
+        SelectSpec(
+            "points_from",
+            "線の点の基準",
+            (("center", "中心から（上が正）"), ("corner", "画面の左上から（下が正）")),
+            "center",
+        ),
         SelectSpec(
             "line_type", "線の種類", (("straight", "直線"), ("quadratic", "2 次ベジェ")), "straight"
         ),

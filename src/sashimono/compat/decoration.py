@@ -63,19 +63,22 @@ PLAIN = TextDecoration(name="標準文字")
 
 #: AviUtl2 の ``文字装飾`` の値
 #:
-#: 割合は手元の配布エイリアス（``%PROGRAMDATA%\\aviutl2\\Alias``）を
-#: AviUtl2 で表示させた見た目に合わせて決めた 元の実装の数式は公開されて
-#: いないので、これは**近似**であることを承知の上で使う
+#: AviUtl2 v2.1.6a に Arial 100 の H を描かせて測った（#184 ``tools/aviutl_filter_probes.py``）
+#: 縁取り文字は片側 8（大きさ 50 で 4、200 で 16）、細は 4、太は 12、角は細と同じ 4
+#: 影は右と下へ 5 ずれ、薄は同じずれで濃さが半分 前は配布エイリアスの見た目に目で合わせた
+#: 近似（縁取り文字 0.05 など）で、AviUtl2 より片側 2〜3 画素細かった
+#: YMM4 の文字装飾は同じ呼び名でも太さが違うので、:mod:`sashimono.compat.ymm4.decorations` が
+#: 別の表を持つ
 DECORATIONS: dict[str, TextDecoration] = {
     "標準文字": PLAIN,
-    "影付き文字": TextDecoration("影付き文字", shadow=0.06),
-    "影付き文字（薄）": TextDecoration("影付き文字（薄）", shadow=0.06, shadow_opacity=0.5),
-    "縁取り文字": TextDecoration("縁取り文字", border=0.05),
-    "縁取り文字（細）": TextDecoration("縁取り文字（細）", border=0.03),
-    "縁取り文字（太）": TextDecoration("縁取り文字（太）", border=0.09),
-    # 角 は角を丸めない縁 太さは AviUtl2 v2.1.6a で 細 と同じだった（Arial 100 の H が
-    # どちらも 56 から 64 へ広がった #134 見本 tag42） 角の形までは写さない
-    "縁取り文字（角）": TextDecoration("縁取り文字（角）", border=0.03),
+    "影付き文字": TextDecoration("影付き文字", shadow=0.05),
+    "影付き文字（薄）": TextDecoration("影付き文字（薄）", shadow=0.05, shadow_opacity=0.5),
+    "縁取り文字": TextDecoration("縁取り文字", border=0.08),
+    "縁取り文字（細）": TextDecoration("縁取り文字（細）", border=0.04),
+    "縁取り文字（太）": TextDecoration("縁取り文字（太）", border=0.12),
+    # 角 は角を丸めない縁 太さは 細 と同じだった（制御文字の番号 6 と、設定欄の名前の
+    # どちらで描かせても 4） 角の形までは写さない
+    "縁取り文字（角）": TextDecoration("縁取り文字（角）", border=0.04),
 }
 
 
