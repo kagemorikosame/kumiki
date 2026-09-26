@@ -84,6 +84,7 @@ from sashimono.ui.timeline.drop import (
     preview_drop,
     spot_at,
 )
+from sashimono.ui.timeline.group_reach import draw_group_reach
 from sashimono.ui.timeline.keyframes import draw_keyframes, keyframe_at
 from sashimono.ui.timeline.layout import TimelineLayout, TrackBand
 from sashimono.ui.timeline.painter import (
@@ -638,6 +639,10 @@ class TimelineView(QWidget):
                 painter, band, dense, self._layout, width, selected, sound_only, editing
             )
 
+        # グループ制御の受け持ちは、クリップの上に薄く重ねる（中身が隠れない濃さ）
+        draw_group_reach(
+            painter, self._layout, timeline, (width, self.height()), set(self._selection)
+        )
         self._draw_drag_preview(painter)
         self._paint_snap(painter)
         self._work_area.paint_tracks(
