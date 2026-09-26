@@ -8,12 +8,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from fractions import Fraction
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QIcon, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QIcon, QMouseEvent, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
@@ -64,7 +64,15 @@ from sashimono.core.model import (
     draws_picture,
     plays_sound,
 )
-from sashimono.effects import CheckSpec, ParameterSpec, TrackSpec, registry
+from sashimono.effects import (
+    CheckSpec,
+    FileSpec,
+    GridSpec,
+    ParameterSpec,
+    TextSpec,
+    TrackSpec,
+    registry,
+)
 from sashimono.effects.blending import BLEND_MODES
 from sashimono.effects.sources import source_registry
 from sashimono.engine.gpu import BlendMode
@@ -72,7 +80,7 @@ from sashimono.ui.inspector.header import ClipHeader, identify_clip
 from sashimono.ui.inspector.widgets import ParameterEditor, TrackEditor, create_editor
 from sashimono.ui.theme import Colors
 
-__all__ = ["InspectorPanel"]
+__all__ = ["InspectorPanel", "KeyframeControls"]
 
 #: 合成方法の表示名
 BLEND_LABELS = {
@@ -154,6 +162,11 @@ class InspectorPanel(QWidget):
     preview_requested = Signal(object)
     #: グラフエディタで開くパラメータが選ばれた
     curve_selected = Signal(object)
+    #: キーフレームを打った・消した・前後へ飛んだ値 グラフエディタに同じ値を出す
+    #: （開いていなければ開かない 押すたびに窓が開くと、打つだけの人の邪魔になる）
+    param_focused = Signal(object)
+    #: 再生位置を動かしたい（◀ ▶ で前後のキーへ） 引数はタイムラインのフレーム
+    seek_requested = Signal(int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -164,6 +177,8 @@ class InspectorPanel(QWidget):
         self._frame = 0
         #: パラメータごとの入力欄 プロジェクトが変わったときに値を入れ直す
         self._editors: dict[tuple[str, str], ParameterEditor] = {}
+        #: パラメータごとのキーフレームの ◀ ◆ ▶ 再生位置が動くたびに見た目を直す
+        self._key_controls: dict[tuple[str, str], KeyframeControls] = {}
         #: 前の版のファイルで、クリップがまだ持っていない描画・音声の欄 既定の値で見せ、
         #: 触ったときに :class:`AddEffect` で足してから値を入れる（1 回の取り消しで戻る）
         #: 開いただけで足すと、見ただけのクリップまで変更が入り、保存を促される
@@ -251,6 +266,7 @@ class InspectorPanel(QWidget):
         ぶんなら十分に速い
         """
         self._editors.clear()
+        self._key_controls.clear()
         self._virtual.clear()
         while self._body_layout.count():
             item = self._body_layout.takeAt(0)
@@ -371,9 +387,22 @@ class InspectorPanel(QWidget):
         if spec is None:  # pragma: no cover - 固定の項目の定義は必ずある
             return
         path = ParamPath.of_effect(clip.id, effect.id, name)
-        value = effect.params.get(name)
+        self._param_row(section, label, spec, path, effect.params.get(name))
+
+    def _param_row(
+        self,
+        section: _Section,
+        label: str,
+        spec: ParameterSpec,
+        path: ParamPath,
+        value: ParamValue | None,
+    ) -> None:
+        """パラメータ 1 つの行 名前（ダブルクリックで初期値）・入力欄・キーフレームの ◀ ◆ ▶"""
         section.add_row(
-            label, self._make_editor(spec, path, value), self._keyframe_button(path, value)
+            label,
+            self._make_editor(spec, path, value),
+            self._keyframe_controls(spec, path, value),
+            reset=self._resetter(spec, path),
         )
 
     def _fixed_header(self, section: _Section, clip: Clip, effects: Sequence[Effect]) -> None:
@@ -420,22 +449,24 @@ class InspectorPanel(QWidget):
 
         opacity_spec = TrackSpec("opacity", "不透明度", 0, 1, 1, step=0.01)
         opacity_path = ParamPath.of_clip(clip.id, "opacity")
-        section.add_row(
-            "不透明度",
-            self._make_editor(opacity_spec, opacity_path, clip.opacity),
-            self._keyframe_button(opacity_path, clip.opacity),
-        )
+        self._param_row(section, "不透明度", opacity_spec, opacity_path, clip.opacity)
         if transform is not None:
             self._effect_row(section, clip, transform, "scale", "拡大率")
             self._effect_row(section, clip, transform, "rotation", "回転角")
         # フィルタは下の絵を置き換えるだけで、合成方法も切り抜きも使わない 出しておくと、
         # 選んでも何も変わらない欄を触らせることになる
         if not clip.is_filter:
-            section.add_row("合成モード", self._blend_editor(section, clip))
+            section.add_row(
+                "合成モード",
+                self._blend_editor(section, clip),
+                reset=lambda: self._reset_clip(clip, "blend_mode", BlendMode.NORMAL, "合成モード"),
+            )
         if flip is not None:
             self._effect_row(section, clip, flip, "horizontal", "左右反転")
         if not clip.is_filter:
-            self._clip_check(section, clip, "clip_to_below", "クリッピング", clip.clip_to_below)
+            self._clip_check(
+                section, clip, "clip_to_below", "クリッピング", clip.clip_to_below, resettable=True
+            )
         if self._native_capable(clip):
             # 前の版で置いた物は画面に収めて描いている 見た目を変えずに開くため、勝手には
             # 切り替えない 本人が素材の画素の大きさ（YMM4 の拡大率 100%）へ揃えたいときの道
@@ -459,7 +490,13 @@ class InspectorPanel(QWidget):
         value: bool,
         *,
         tooltip: str = "",
+        resettable: bool = False,
     ) -> None:
+        """クリップ自身の入り切り ``resettable`` なら名前のダブルクリックで切る（初期値）
+
+        「画素で置く」は戻せる項目にしない 置いたときの値（入）と前の版の値（切）が
+        違い、どちらが初期値かが決まらない
+        """
         editor = create_editor(CheckSpec(name, label, False))
         editor.setObjectName(f"clip_{name}")
         editor.setToolTip(tooltip)
@@ -467,7 +504,8 @@ class InspectorPanel(QWidget):
         editor.value_changed.connect(
             lambda state: self._emit(SetClipProperty(clip.id, name, bool(state)))
         )
-        section.add_row(label, editor)
+        reset = (lambda: self._reset_clip(clip, name, False, label)) if resettable else None
+        section.add_row(label, editor, reset=reset)
 
     def _native_capable(self, clip: Clip) -> bool:
         """素材の画素の大きさで置けるクリップか（素材の絵を描くもの）"""
@@ -541,7 +579,12 @@ class InspectorPanel(QWidget):
         speed.value_changed.connect(
             lambda value: self._set_linked(clip, "speed", _fraction(value, 100), "再生速度を変更")
         )
-        section.add_row("再生速度", speed)
+        speed.reset_requested.connect(lambda: self._reset_linked(clip, "speed", Fraction(1)))
+        section.add_row(
+            "再生速度",
+            speed,
+            reset=lambda: self._reset_linked(clip, "speed", Fraction(1)),
+        )
 
         media = self._project.find_media(clip.media_id) if self._project and clip.media_id else None
         # 上限は素材の長さ 分からない素材は 10 時間まで（スライダーが整数で持てる範囲）
@@ -563,7 +606,20 @@ class InspectorPanel(QWidget):
                 clip, "source_in", _fraction(value, 1), "再生開始位置を変更"
             )
         )
-        section.add_row("再生開始位置", start)
+        start.reset_requested.connect(lambda: self._reset_linked(clip, "source_in", Fraction(0)))
+        section.add_row(
+            "再生開始位置",
+            start,
+            reset=lambda: self._reset_linked(clip, "source_in", Fraction(0)),
+        )
+
+    def _reset_linked(self, clip: Clip, name: str, value: Fraction) -> None:
+        """再生速度・再生開始位置を初期値へ戻す 相手にも入れる（:meth:`_set_linked`）"""
+        current = self._clip() if self._clip_id == clip.id else None
+        if getattr(current or clip, name) == value:
+            return
+        label = "再生速度" if name == "speed" else "再生開始位置"
+        self._set_linked(clip, name, value, f"{label}を初期値に戻す")
 
     def _set_linked(self, clip: Clip, name: str, value: Fraction, label: str) -> None:
         """クリップ自身の値を、選んだほかのクリップとリンクした相手にも入れる"""
@@ -609,10 +665,7 @@ class InspectorPanel(QWidget):
             )
         for spec in definition.parameters:
             path = ParamPath.of_source(clip.id, spec.name)
-            value = clip.source.params.get(spec.name)
-            section.add_row(
-                spec.label, self._make_editor(spec, path, value), self._keyframe_button(path, value)
-            )
+            self._param_row(section, spec.label, spec, path, clip.source.params.get(spec.name))
         return section
 
     def _build_effect_section(
@@ -643,10 +696,7 @@ class InspectorPanel(QWidget):
 
         for spec in definition.parameters:
             path = ParamPath.of_effect(clip.id, effect.id, spec.name, after=after)
-            value = effect.params.get(spec.name)
-            section.add_row(
-                spec.label, self._make_editor(spec, path, value), self._keyframe_button(path, value)
-            )
+            self._param_row(section, spec.label, spec, path, effect.params.get(spec.name))
         return section
 
     def _make_editor(
@@ -656,36 +706,57 @@ class InspectorPanel(QWidget):
         editor.set_value(value)
         editor.value_changed.connect(lambda new: self._on_value_changed(path, new))
         editor.value_previewed.connect(lambda new: self._on_value_previewed(path, new))
-        self._editors[(str(path.effect_id or path.target.value), spec.name)] = editor
+        editor.reset_requested.connect(lambda: self._reset(spec, path))
+        self._editors[_editor_key(path)] = editor
         return editor
 
-    def _keyframe_button(self, path: ParamPath, value: ParamValue | None) -> QWidget | None:
-        """キーフレームの打点ボタン 数値パラメータにだけ付く"""
-        if not isinstance(value, AnimatedValue) and value is not None:
-            return None
+    def _keyframe_controls(
+        self, spec: ParameterSpec, path: ParamPath, value: ParamValue | None
+    ) -> KeyframeControls | None:
+        """キーフレームの ◀ ◆ ▶ 時間で動かせる値（数のスライダー）にだけ付く
 
-        animated = value if isinstance(value, AnimatedValue) else AnimatedValue()
-        button = QToolButton()
-        button.setText("◆" if animated.is_animated else "◇")
-        button.setToolTip("キーフレームを打つ / 右クリックで解除")
-        button.setFixedWidth(24)
-        button.setAutoRaise(True)
-        if animated.is_animated:
-            button.setStyleSheet(f"color: {Colors.ACCENT.name()};")
-        button.clicked.connect(lambda: self._toggle_keyframe(path, animated))
-        button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        button.customContextMenuRequested.connect(lambda _: self._keyframe_menu(path, animated))
-        return button
+        ◆ は再生位置にキーを打つ・そこにあるキーを消す ◀ ▶ は前後のキーへ再生位置を
+        動かす（利用者の決定） キーの値は隣の入力欄で直す（再生位置のキーの値が変わる）
+        """
+        if not isinstance(spec, TrackSpec):
+            return None
+        base = spec.coerce(value)
+        controls = KeyframeControls(path)
+        controls.toggled.connect(lambda: self._toggle_keyframe(path, base))
+        controls.stepped.connect(lambda direction: self._step_to_key(path, direction))
+        controls.menu_requested.connect(lambda: self._keyframe_menu(path, base))
+        self._key_controls[_editor_key(path)] = controls
+        return controls
 
     # --- 操作 ---
+
+    def _local_frame(self, clip: Clip) -> int | None:
+        """再生位置をクリップの頭から数えたフレーム（キーフレームの持ち方） 外なら ``None``
+
+        キーフレームはクリップの頭から数える 再生位置（タイムラインのフレーム）のまま
+        打つと、頭が 0 より後ろのクリップでは、打った所と違う（多くはクリップの外の）
+        時刻に点が入り、曲線にもタイムラインにも出ないまま値だけが変わる
+        """
+        local = self._frame - clip.timeline_start
+        return local if 0 <= local < clip.duration else None
+
+    def _key_frame(self, clip: Clip) -> int:
+        """値を直したときにキーを入れるフレーム 再生位置がクリップの外なら近い端"""
+        return min(max(self._frame - clip.timeline_start, 0), max(clip.duration - 1, 0))
+
+    def _animated_of(self, path: ParamPath, base: AnimatedValue) -> AnimatedValue:
+        """今の値 まだクリップに無い欄（:attr:`_virtual`）は作ったときの値 ``base`` を使う"""
+        current = self._current_value(path)
+        return current if isinstance(current, AnimatedValue) else base
 
     def _on_value_changed(self, path: ParamPath, value: ParamValue) -> None:
         current = self._current_value(path)
         animating = isinstance(current, AnimatedValue) and current.is_animated
-        if animating and isinstance(value, AnimatedValue):
-            # アニメーション中の値を触ったら、その位置のキーフレームを動かす
+        clip = self._clip()
+        if animating and isinstance(value, AnimatedValue) and clip is not None:
+            # アニメーション中の値を触ったら、再生位置のキーフレームの値を変える（無ければ打つ）
             # 静的値で上書きすると、打ったキーフレームが黙って消える
-            self._emit(SetKeyframe(path, self._frame, value.static))
+            self._emit(SetKeyframe(path, self._key_frame(clip), value.static))
             return
         self._emit(SetParam(path, value))
 
@@ -706,14 +777,46 @@ class InspectorPanel(QWidget):
             return None
         return resolve_param(self._project, path)
 
-    def _toggle_keyframe(self, path: ParamPath, animated: AnimatedValue) -> None:
-        existing = next((k for k in animated.keyframes if k.frame == self._frame), None)
-        if existing is not None:
-            self._emit(RemoveKeyframe(path, self._frame))
-        else:
-            self._emit(SetKeyframe(path, self._frame, animated.at(self._frame)))
+    def _toggle_keyframe(self, path: ParamPath, base: AnimatedValue) -> None:
+        """再生位置にキーがあれば消し、無ければ今の値で打つ
 
-    def _keyframe_menu(self, path: ParamPath, animated: AnimatedValue) -> None:
+        選んだほかのクリップには当てない（主の 1 本だけ） まとめて当てると、ほかの
+        クリップのキーの値が主のクリップの値に書き換わる
+        """
+        clip = self._clip()
+        local = self._local_frame(clip) if clip is not None else None
+        if local is None:
+            return
+        animated = self._animated_of(path, base)
+        if any(k.frame == local for k in animated.keyframes):
+            command: Command = RemoveKeyframe(path, local)
+            label = "キーフレームを削除"
+        else:
+            command = SetKeyframe(path, local, animated.at(local))
+            label = "キーフレームを打つ"
+        self._send([command], label)
+        self.param_focused.emit(path)
+
+    def _step_to_key(self, path: ParamPath, direction: int) -> None:
+        """前（``-1``）か次（``1``）のキーへ再生位置を動かす クリップの外のキーは見ない"""
+        clip = self._clip()
+        current = self._current_value(path)
+        if clip is None or not isinstance(current, AnimatedValue):
+            return
+        local = self._frame - clip.timeline_start
+        frames = [k.frame for k in current.keyframes if 0 <= k.frame < clip.duration]
+        if direction < 0:
+            target = max((f for f in frames if f < local), default=None)
+        else:
+            target = min((f for f in frames if f > local), default=None)
+        if target is None:
+            return
+        self.seek_requested.emit(clip.timeline_start + target)
+        self.param_focused.emit(path)
+
+    def _keyframe_menu(self, path: ParamPath, base: AnimatedValue) -> None:
+        animated = self._animated_of(path, base)
+        clip = self._clip()
         menu = QMenu(self)
         curve = menu.addAction("グラフエディタで開く")
         clear = menu.addAction("アニメーションを解除")
@@ -722,8 +825,63 @@ class InspectorPanel(QWidget):
         chosen = menu.exec(self.cursor().pos())
         if chosen is curve:
             self.curve_selected.emit(path)
-        elif chosen is clear:
-            self._emit(ClearKeyframes(path, self._frame))
+        elif chosen is clear and clip is not None:
+            # 解除した後に残す値は再生位置の値 キーはクリップの頭から数えるので、
+            # 再生位置もクリップの頭から数えて渡す
+            self._emit(ClearKeyframes(path, self._key_frame(clip)))
+
+    # --- 初期値へ戻す ---
+
+    def _resetter(self, spec: ParameterSpec, path: ParamPath) -> Callable[[], None] | None:
+        """名前のダブルクリックで初期値へ戻す手 戻せない項目（文字・ファイル・格子）は ``None``
+
+        文字やファイルの場所は、戻すと打った中身や選んだ素材が消える ダブルクリックは
+        うっかり起きやすいので、打ち直しの利かない物には付けない
+        """
+        if isinstance(spec, TextSpec | FileSpec | GridSpec):
+            return None
+        return lambda: self._reset(spec, path)
+
+    def _reset(self, spec: ParameterSpec, path: ParamPath) -> None:
+        """パラメータを初期値へ戻す（取り消せる）
+
+        キーフレームのある数の値は、再生位置のキーの値だけを初期値にする（そこにキーが
+        無ければ初期値のキーを打つ） ほかのキーは残す（利用者の決定） アニメーションごと
+        消すと、1 か所を戻したいだけでも打ったキーが全部消える
+        """
+        current = self._current_value(path)
+        clip = self._clip()
+        label = f"{spec.label}を初期値に戻す"
+        if (
+            isinstance(spec, TrackSpec)
+            and isinstance(current, AnimatedValue)
+            and current.is_animated
+            and clip is not None
+        ):
+            frame = self._key_frame(clip)
+            here = next((k for k in current.keyframes if k.frame == frame), None)
+            if here is not None and here.value == spec.default:
+                return
+            self._emit(SetKeyframe(path, frame, spec.default), label)
+            return
+        default = spec.default_value()
+        pending = path.effect_id is not None and path.effect_id in self._virtual
+        if (current is None and pending) or spec.coerce(current) == default:
+            # もう初期値（まだクリップに無い欄は初期値のまま） 同じ値を入れると、戻しても
+            # 何も変わらない取り消しの段が積まれる
+            return
+        self._emit(SetParam(path, default), label)
+
+    def _reset_clip(self, clip: Clip, name: str, value: object, label: str) -> None:
+        """クリップ自身の値（合成モード・クリッピング）を初期値へ戻す
+
+        今の値はプロジェクトから引き直す 行を作ったときのクリップで比べると、作った後に
+        変えた値を「もう初期値」と見誤ることがある
+        """
+        current = self._clip() if self._clip_id == clip.id else None
+        if getattr(current or clip, name) == value:
+            return
+        self._emit(SetClipProperty(clip.id, name, value), f"{label}を初期値に戻す")
 
     def _show_effect_menu(self) -> None:
         clip = self._clip()
@@ -869,12 +1027,22 @@ class InspectorPanel(QWidget):
         if clip is None:
             return
 
+        local = self._frame - clip.timeline_start
         for (owner, name), editor in self._editors.items():
             if not isinstance(editor, TrackEditor):
                 continue
             value = self._lookup(clip, owner, name)
             if isinstance(value, AnimatedValue) and value.is_animated:
-                editor.set_animated_value(value.at(self._frame - clip.timeline_start))
+                editor.set_animated_value(value.at(local))
+        inside = 0 <= local < clip.duration
+        for (owner, name), controls in self._key_controls.items():
+            value = self._lookup(clip, owner, name)
+            frames = (
+                [k.frame for k in value.keyframes if 0 <= k.frame < clip.duration]
+                if isinstance(value, AnimatedValue)
+                else []
+            )
+            controls.show_state(frames, local, inside=inside)
 
     def _lookup(self, clip: Clip, owner: str, name: str) -> ParamValue | None:
         if owner == "clip":
@@ -1041,8 +1209,16 @@ class _Section(QFrame):
         self._grid.addWidget(container, 0, 0, 1, 3)
         self._row = 1
 
-    def add_row(self, label: str, editor: QWidget, extra: QWidget | None = None) -> None:
-        text = QLabel(label)
+    def add_row(
+        self,
+        label: str,
+        editor: QWidget,
+        extra: QWidget | None = None,
+        *,
+        reset: Callable[[], None] | None = None,
+    ) -> None:
+        """1 行足す ``reset`` を渡すと、名前のダブルクリックで初期値へ戻す"""
+        text = _RowLabel(label, reset)
         text.setStyleSheet(f"color: {Colors.TEXT_MUTED.name()}; border: none;")
         text.setFixedWidth(96)
         text.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -1102,3 +1278,121 @@ class _Section(QFrame):
             lambda: self.action_requested.emit(RemoveEffect(clip_id, effect.id, after=self._after))
         )
         return button
+
+
+def _editor_key(path: ParamPath) -> tuple[str, str]:
+    """入力欄と ◀ ◆ ▶ を引く鍵（エフェクトの ID か持ち主の種類, 名前）"""
+    return str(path.effect_id or path.target.value), path.name
+
+
+class _RowLabel(QLabel):
+    """行の名前 ダブルクリックで初期値へ戻す（戻せる項目だけ）
+
+    戻すのを名前のダブルクリックにしたのは、入力欄のダブルクリックがすでに別の意味を
+    持つから（数値欄は数字を選んで打ち直す・色は 1 回目の押下で色の窓が開く）
+    数のスライダーは入力欄の側でもダブルクリックで戻す（:class:`TrackEditor`）
+    """
+
+    def __init__(self, text: str, reset: Callable[[], None] | None) -> None:
+        super().__init__(text)
+        self._reset = reset
+        if reset is not None:
+            self.setToolTip(f"{text}（ダブルクリックで初期値に戻す）")
+
+    @property
+    def resettable(self) -> bool:
+        return self._reset is not None
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt の命名規約
+        if self._reset is not None and event.button() == Qt.MouseButton.LeftButton:
+            self._reset()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
+
+#: キーフレームの ◀ ◆ ▶ のボタン 1 つの幅（画素） 3 つ並べて設定パネルの幅
+#: （320 画素）に数値欄とスライダーが収まる幅
+_KEY_BUTTON_WIDTH = 20
+
+
+class KeyframeControls(QWidget):
+    """1 つの値のキーフレームの操作 ◀（前のキーへ）◆（打つ・消す）▶（次のキーへ）
+
+    ◆ は再生位置にキーがあれば塗りつぶし（押すと消す）、無ければ白抜き（押すと打つ）
+    その値にキーが 1 つでもあればアクセント色、無ければ薄い色 右クリックで
+    グラフエディタで開く・アニメーションを解除
+    自分ではプロジェクトを変えない 押されたことを知らせるだけ
+    """
+
+    #: ◆ が押された
+    toggled = Signal()
+    #: ◀（``-1``）か ▶（``1``）が押された
+    stepped = Signal(int)
+    #: ◆ の右クリック
+    menu_requested = Signal()
+
+    def __init__(self, path: ParamPath) -> None:
+        super().__init__()
+        self.path = path
+        self.setObjectName("keyframe_controls")
+        self.setStyleSheet("border: none;")
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        self.previous = self._button("◀", "前のキーへ再生位置を動かす")
+        self.toggle = self._button("◇", "")
+        self.next = self._button("▶", "次のキーへ再生位置を動かす")
+        self.previous.clicked.connect(lambda: self.stepped.emit(-1))
+        self.next.clicked.connect(lambda: self.stepped.emit(1))
+        self.toggle.clicked.connect(self.toggled.emit)
+        self.toggle.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.toggle.customContextMenuRequested.connect(lambda _: self.menu_requested.emit())
+        for button in (self.previous, self.toggle, self.next):
+            layout.addWidget(button)
+        self.show_state((), 0, inside=True)
+
+    def _button(self, text: str, tip: str) -> QToolButton:
+        button = QToolButton(self)
+        button.setText(text)
+        button.setToolTip(tip)
+        button.setAutoRaise(True)
+        button.setFixedWidth(_KEY_BUTTON_WIDTH)
+        return button
+
+    def show_state(self, frames: Sequence[int], local: int, *, inside: bool) -> None:
+        """キーの位置（クリップの頭から数えたフレーム）と再生位置 ``local`` で見た目を決める
+
+        ``inside`` が偽（再生位置がクリップの外）なら ◆ を押せなくする 外に打った
+        キーは描く所が無く、曲線にもタイムラインにも出ない
+        """
+        here = local in frames
+        self.toggle.setText("◆" if here else "◇")
+        colour = Colors.ACCENT if frames else Colors.TEXT_MUTED
+        self.toggle.setStyleSheet(_key_style(colour))
+        self.toggle.setEnabled(inside)
+        if not inside:
+            tip = "再生位置がクリップの外なので打てません"
+        elif here:
+            tip = "再生位置のキーを消す（右クリックでグラフエディタ・解除）"
+        elif frames:
+            tip = "再生位置にキーを打つ（右クリックでグラフエディタ・解除）"
+        else:
+            tip = "再生位置にキーを打つ 打つとこの値が時間で動くようになる"
+        self.toggle.setToolTip(tip)
+        for button in (self.previous, self.next):
+            button.setStyleSheet(_key_style(Colors.TEXT))
+        self.previous.setEnabled(any(f < local for f in frames))
+        self.next.setEnabled(any(f > local for f in frames))
+
+
+def _key_style(colour: QColor) -> str:
+    """◀ ◆ ▶ の見た目 押せないときは枠の色まで薄くする
+
+    色を決め打ちにすると、押せないボタンも押せるボタンと同じ色で描かれ、飛べるキーが
+    無いことが見えない 全体のスタイルの左右 10 画素の余白も外す（20 画素の幅に字が入らない）
+    """
+    return (
+        f"QToolButton {{ color: {colour.name()}; padding: 0px; border: none; }}"
+        f" QToolButton:disabled {{ color: {Colors.BORDER.name()}; }}"
+    )

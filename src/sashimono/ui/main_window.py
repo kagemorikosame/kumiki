@@ -399,6 +399,9 @@ class MainWindow(QMainWindow):
         # （渡さないと、最初の編集まで何本も選んだときのまとめ当てが効かない）
         self._inspector.set_project(self.view_project)
         self._graph = GraphEditor(self)
+        # グラフエディタも起動直後にプロジェクトを持たせる 持たせないと、開いた作品で最初の
+        # 編集をするまで、キーフレームのあるクリップを選んでも曲線を引けない
+        self._graph.set_project(self.view_project)
         self._subtitles = SubtitlePanel(project, self._analyzer, self)
         self._chat = ChatPanel(self, self)
         self._playback = PlaybackController(project, self)
@@ -862,6 +865,9 @@ class MainWindow(QMainWindow):
         self._inspector.commands_requested.connect(self.execute_all)
         self._inspector.preview_requested.connect(self._preview_command)
         self._inspector.curve_selected.connect(self._show_curve)
+        # ◆ や ◀ ▶ を押した値を、グラフエディタにも出す（開いていなければ開かない）
+        self._inspector.param_focused.connect(self._graph.set_path)
+        self._inspector.seek_requested.connect(self._seek)
         self._graph.commands_requested.connect(self.execute_all)
         self._graph.seek_requested.connect(self._seek)
 
@@ -1681,8 +1687,9 @@ class MainWindow(QMainWindow):
         ordered = (selected, *(c for c in chosen if c != selected)) if selected else ()
         self._inspector.set_selection(tuple(c for c in ordered if c is not None))
         self._preview.set_selection(selected)
-        if selected is None:
-            self._graph.set_path(None)
+        # グラフエディタも選んだクリップに付いていく 付いていかないと、キーフレームを入れた
+        # クリップを選んでもグラフエディタが何も出さず、◆ の右クリックの奥からしか開けない
+        self._graph.set_clip(selected)
 
     def _show_curve(self, path: ParamPath) -> None:
         self._graph.set_path(path)

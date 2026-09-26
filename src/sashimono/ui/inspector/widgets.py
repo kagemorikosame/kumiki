@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
@@ -95,6 +95,9 @@ class ParameterEditor(QWidget):
     value_changed = Signal(object)
     #: ドラッグ中の途中経過 プレビューだけ更新する
     value_previewed = Signal(object)
+    #: 初期値へ戻したい（数値のスライダーのダブルクリック） 戻し方はパネルが決める
+    #: （キーフレームのある値は再生位置のキーだけを戻す）
+    reset_requested = Signal()
 
     def __init__(self, spec: ParameterSpec, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -141,7 +144,13 @@ class TrackEditor(ParameterEditor):
         else:
             self._slider.setRange(int(low), int(high))
         self._slider.valueChanged.connect(self._on_slider)
+        self._slider.sliderPressed.connect(self._on_press)
         self._slider.sliderReleased.connect(self._on_release)
+        # スライダーのダブルクリックで初期値に戻す 数値欄のダブルクリックは今までどおり
+        # 数字を選ぶ（打ち直す）ために残す
+        self._slider.installEventFilter(self)
+        #: 掴んだときの値 動かさずに離したときに、同じ値の変更を履歴へ積まないため
+        self._pressed_at: float | None = None
 
         self._number = QDoubleSpinBox(self)
         # 桁数は範囲より先に決める Qt は範囲も値も今の桁数へ丸めるので、後から決めると
@@ -191,13 +200,34 @@ class TrackEditor(ParameterEditor):
         # 細かく、元の値を流すと、画面の数字とプレビュー・保存の値が食い違う
         # 桁が上限で足りないほど細かい端でも範囲の外へ出さない
         number = self._spec.clamp(self._number.value())
+        if not self._slider.isSliderDown():
+            # 溝を押した・矢印キーで動かした 掴んでいないので離したときの知らせが来ない
+            # プレビューだけにすると、絵は変わったのに履歴にも保存にも残らず、次に
+            # 選び直したときに元の値へ戻る
+            self._emit(AnimatedValue(static=number))
+            return
         # ドラッグ中は履歴に残さない 1 回のドラッグで数十の取り消し段ができると
         # 元の値まで戻すのに数十回押すことになる
         self._preview(AnimatedValue(static=number))
 
+    def _on_press(self) -> None:
+        self._pressed_at = self._number.value()
+
     def _on_release(self) -> None:
         # 確定もプレビューと同じ、数値欄に出ている値にそろえる
-        self._emit(AnimatedValue(static=self._spec.clamp(self._number.value())))
+        number = self._spec.clamp(self._number.value())
+        pressed, self._pressed_at = self._pressed_at, None
+        if pressed is not None and number == self._spec.clamp(pressed):
+            # 掴んで動かさずに離した（ダブルクリックの 1 回目も） 同じ値を確定すると、
+            # 戻しても何も変わらない取り消しの段が積まれる
+            return
+        self._emit(AnimatedValue(static=number))
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802 - Qt の命名規約
+        if watched is self._slider and event.type() == QEvent.Type.MouseButtonDblClick:
+            self.reset_requested.emit()
+            return True
+        return super().eventFilter(watched, event)
 
     def _to_slider(self, number: float) -> int:
         """仕様の値をスライダーの位置へ 範囲の外は端へ寄せる"""

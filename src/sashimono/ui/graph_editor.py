@@ -4,6 +4,11 @@
 曲線を見ないと調整できない 値の時間変化を線として見せ、点をつまんで動かせる
 ようにする
 
+選んだクリップに付いてくる（:meth:`GraphEditor.set_clip`） 前は設定パネルの ◆ の
+右クリックの「グラフエディタで開く」でしか値を渡せず、キーフレームを入れたクリップを
+選んでグラフエディタを開いても「パラメータを選んでください」のままで何も触れなかった
+いまはクリップを選ぶとキーフレームのある最初の値を出し、上の欄でほかの値へ切り替えられる
+
 自分ではプロジェクトを書き換えない 操作はコマンドとして外へ出す
 """
 
@@ -24,12 +29,62 @@ from sashimono.core.commands import (
     SetKeyframe,
     resolve_param,
 )
-from sashimono.core.model import AnimatedValue, Interpolation, Keyframe, Project
+from sashimono.core.model import AnimatedValue, Clip, ClipId, Interpolation, Keyframe, Project
 from sashimono.effects import ParameterSpec, TrackSpec, registry
 from sashimono.effects.sources import source_registry
 from sashimono.ui.theme import Colors
 
-__all__ = ["GraphEditor"]
+__all__ = ["GraphEditor", "curve_choices"]
+
+#: クリップ自身の値で、グラフにできる物（不透明度だけ）
+_OPACITY = TrackSpec("opacity", "不透明度", 0, 1, 1, step=0.01)
+
+
+def curve_choices(clip: Clip) -> list[tuple[str, ParamPath, bool]]:
+    """``clip`` のグラフにできる値 ``(表示名, 在りか, キーフレームがあるか)`` の並び
+
+    数のスライダー（:class:`TrackSpec`）の値だけ 並びは設定パネルと同じ
+    （不透明度 → 中身 → エフェクト → 後の場面のエフェクト）
+    """
+
+    def animated(value: object) -> bool:
+        return isinstance(value, AnimatedValue) and value.is_animated
+
+    choices: list[tuple[str, ParamPath, bool]] = [
+        (
+            f"クリップ: {_OPACITY.label}",
+            ParamPath.of_clip(clip.id, "opacity"),
+            animated(clip.opacity),
+        )
+    ]
+    source = source_registry.get(clip.source.kind) if clip.source is not None else None
+    if source is not None and clip.source is not None:
+        for spec in source.parameters:
+            if isinstance(spec, TrackSpec):
+                choices.append(
+                    (
+                        f"{source.label}: {spec.label}",
+                        ParamPath.of_source(clip.id, spec.name),
+                        animated(clip.source.params.get(spec.name)),
+                    )
+                )
+    for after, effects in ((False, clip.effects), (True, clip.after_effects)):
+        for effect in effects:
+            definition = registry.get(effect.kind)
+            if definition is None:
+                continue
+            owner = f"{definition.label}（後の場面）" if after else definition.label
+            for spec in definition.parameters:
+                if isinstance(spec, TrackSpec):
+                    choices.append(
+                        (
+                            f"{owner}: {spec.label}",
+                            ParamPath.of_effect(clip.id, effect.id, spec.name, after=after),
+                            animated(effect.params.get(spec.name)),
+                        )
+                    )
+    return choices
+
 
 #: 補間方法の表示名
 INTERPOLATION_LABELS: dict[Interpolation, str] = {
@@ -92,11 +147,20 @@ class GraphEditor(QWidget):
         super().__init__(parent)
         self._project: Project | None = None
         self._path: ParamPath | None = None
+        #: 選んでいるクリップ（:meth:`set_clip`） 値の選び直しはこのクリップの中で行う
+        self._clip_id: ClipId | None = None
         self._frame = 0
         self._dragging: int | None = None
 
         self._title = QLabel("パラメータを選んでください", self)
         self._title.setStyleSheet(f"color: {Colors.TEXT_MUTED.name()};")
+
+        #: 曲線を出す値を選ぶ欄 並びは :func:`curve_choices` キーフレームのある値に ◆ を付ける
+        self._params = QComboBox(self)
+        self._params.setToolTip("曲線を出す値 ◆ はキーフレームのある値")
+        self._params.currentIndexChanged.connect(self._on_param_chosen)
+        #: 欄の項目ごとの在りか（先頭は「選んでいない」の ``None``）
+        self._choice_paths: list[ParamPath | None] = []
 
         self._interpolation = QComboBox(self)
         for kind, label in INTERPOLATION_LABELS.items():
@@ -106,7 +170,8 @@ class GraphEditor(QWidget):
 
         header = QHBoxLayout()
         header.setContentsMargins(8, 4, 8, 4)
-        header.addWidget(self._title, 1)
+        header.addWidget(self._title)
+        header.addWidget(self._params, 1)
         header.addWidget(QLabel("補間", self))
         header.addWidget(self._interpolation)
 
@@ -123,11 +188,78 @@ class GraphEditor(QWidget):
 
     def set_project(self, project: Project) -> None:
         self._project = project
+        if self._path is not None and self._spec() is None:
+            # 出していた値が無くなった（エフェクトを外した・クリップを消した・取り消した）
+            # 残すと、無い値の空の曲線のまま触れなくなる
+            self._path = self._first_animated()
         self._refresh()
 
     def set_path(self, path: ParamPath | None) -> None:
         self._path = path
+        if path is not None:
+            self._clip_id = path.clip_id
         self._refresh()
+
+    def set_clip(self, clip_id: ClipId | None) -> None:
+        """選んだクリップ（設定パネルが出している 1 本） キーフレームのある最初の値を出す
+
+        同じクリップの値を出していれば、それを続けて出す 選び直すたびに先頭の値へ戻ると、
+        2 つ目の値の曲線を直している途中で、タイムラインを押すたびに別の値へ飛ぶ
+        """
+        self._clip_id = clip_id
+        if clip_id is None:
+            self._path = None
+        elif self._path is None or self._path.clip_id != clip_id or self._spec() is None:
+            self._path = self._first_animated()
+        self._refresh()
+
+    @property
+    def path(self) -> ParamPath | None:
+        """いま曲線を出している値"""
+        return self._path
+
+    def choices(self) -> list[str]:
+        """値を選ぶ欄に並んでいる表示名（先頭の「選んでいない」を除く）"""
+        return [self._params.itemText(i) for i in range(1, self._params.count())]
+
+    def choose(self, index: int) -> None:
+        """値を選ぶ欄の ``index`` 番目（:meth:`choices` の並び）を選ぶ"""
+        self._params.setCurrentIndex(index + 1)
+
+    def _clip(self) -> Clip | None:
+        if self._project is None or self._clip_id is None:
+            return None
+        located = self._project.timeline.locate_clip(self._clip_id)
+        return located[1] if located is not None else None
+
+    def _first_animated(self) -> ParamPath | None:
+        clip = self._clip()
+        if clip is None:
+            return None
+        return next((path for _, path, animated in curve_choices(clip) if animated), None)
+
+    def _fill_choices(self) -> None:
+        """値を選ぶ欄を今のクリップで作り直す 選んでいる値を選んだ形にする"""
+        clip = self._clip()
+        choices = curve_choices(clip) if clip is not None else []
+        self._params.blockSignals(True)
+        try:
+            self._params.clear()
+            self._choice_paths = [None]
+            self._params.addItem("値を選ぶ" if choices else "クリップを選んでください")
+            for label, path, animated in choices:
+                self._params.addItem(f"◆ {label}" if animated else label)
+                self._choice_paths.append(path)
+            index = self._choice_paths.index(self._path) if self._path in self._choice_paths else 0
+            self._params.setCurrentIndex(index)
+            self._params.setEnabled(bool(choices))
+        finally:
+            self._params.blockSignals(False)
+
+    def _on_param_chosen(self, index: int) -> None:
+        if 0 <= index < len(self._choice_paths):
+            self._path = self._choice_paths[index]
+            self._refresh()
 
     def set_frame(self, frame: int) -> None:
         self._frame = frame
@@ -137,9 +269,12 @@ class GraphEditor(QWidget):
             self._show_interpolation(value)
 
     def _refresh(self) -> None:
+        self._fill_choices()
         spec = self._spec()
         value = self._value()
-        self._title.setText(self._describe(spec))
+        described = self._describe(spec)
+        self._title.setText(described)
+        self._title.setVisible(bool(described))
 
         animated = isinstance(value, AnimatedValue) and value.is_animated
         self._interpolation.setEnabled(animated)
@@ -177,13 +312,13 @@ class GraphEditor(QWidget):
 
     def _describe(self, spec: TrackSpec | None) -> str:
         if self._path is None or spec is None:
+            if self._clip() is not None:
+                # キーフレームが 1 つも無いクリップ 打ち方を言わないと、なぜ曲線が出ないのか
+                # 分からない
+                return "キーフレームは設定パネルの ◆ で打てます"
             return "パラメータを選んでください"
-        owner = {
-            ParamTarget.EFFECT: "エフェクト",
-            ParamTarget.SOURCE: "内容",
-            ParamTarget.CLIP: "クリップ",
-        }[self._path.target]
-        return f"{owner}: {spec.label}"
+        # どの値かは隣の欄が出している 同じ名前を 2 度並べると、幅の狭いドックで欄が潰れる
+        return ""
 
     def _clip_start(self) -> int:
         """クリップ先頭のフレーム キーフレームはここからの相対で持つ"""
@@ -202,13 +337,12 @@ class GraphEditor(QWidget):
         """編集対象の仕様 数値スライダー以外はグラフにできない"""
         if self._project is None or self._path is None:
             return None
-        if self._path.target is ParamTarget.CLIP:
-            return TrackSpec(self._path.name, "不透明度", 0, 1, 1, step=0.01)
-
         located = self._project.timeline.locate_clip(self._path.clip_id)
         if located is None:
             return None
         _, clip = located
+        if self._path.target is ParamTarget.CLIP:
+            return _OPACITY if self._path.name == _OPACITY.name else None
 
         # エフェクトと生成オブジェクトは別の型だが、spec() の形は同じ
         # 欲しいのはパラメータ仕様だけなので、ここで 1 本にまとめる
@@ -218,7 +352,10 @@ class GraphEditor(QWidget):
                 source = source_registry.get(clip.source.kind)
                 spec = source.spec(self._path.name) if source is not None else None
         else:
-            effect = next((e for e in clip.effects if e.id == self._path.effect_id), None)
+            # 場面切り替えの後の場面のエフェクトは別の列にある 前の列だけを探すと、
+            # 後の場面の値を選んでも曲線が出ない
+            stack = clip.after_effects if self._path.after else clip.effects
+            effect = next((e for e in stack if e.id == self._path.effect_id), None)
             definition = registry.get(effect.kind) if effect is not None else None
             spec = definition.spec(self._path.name) if definition is not None else None
 
