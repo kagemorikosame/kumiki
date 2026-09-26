@@ -38,7 +38,7 @@ from sashimono.ui.main_window import MainWindow
 from sashimono.ui.media_pool import MEDIA_MIME
 from sashimono.ui.theme import Colors
 from sashimono.ui.timeline import TimelineView
-from sashimono.ui.timeline.add_menu import AddSources
+from sashimono.ui.timeline.add_menu import LAYER_ADD_TEXT, AddSources
 from tests.conftest import make_clip
 
 #: 置き場を持たない出どころ 試験から本人の AviUtl2 やテンプレートの置き場を読まない
@@ -182,6 +182,30 @@ class TestTrackAddButton:
         added = view.project.timeline.tracks[-1]
         assert (added.name, added.kind) == ("レイヤー 1", TrackKind.MIXED)
 
+    def test_a_mixed_project_adds_a_layer_without_a_menu(
+        self, view: TimelineView, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 選べるのがレイヤーだけなのにメニューを出すと、押すたびに 1 手余計に掛かる（利用者の要望）
+        settings = replace(view.project.settings, layer_mode=LayerMode.MIXED)
+        view.set_project(replace(view.project, settings=settings))
+        labels = _wire(view)
+        opened: list[QPoint] = []
+
+        class Recorder(QMenu):
+            def exec(self, position: QPoint) -> None:  # type: ignore[override]
+                opened.append(position)
+
+        monkeypatch.setattr(view, "build_track_add_menu", lambda: Recorder())
+        before = len(view.project.timeline.tracks)
+        rect = view.track_add_button()
+        assert rect is not None
+        QTest.mouseClick(view, Qt.MouseButton.LeftButton, pos=rect.center())
+        assert opened == []
+        assert len(view.project.timeline.tracks) == before + 1
+        added = view.project.timeline.tracks[-1]
+        assert added.kind is TrackKind.MIXED
+        assert len(labels) == 1, "取り消し 1 回で戻る 1 つの操作にする"
+
     def test_a_video_track_goes_on_top_and_audio_at_the_bottom(self, view: TimelineView) -> None:
         # 映像は並びの末尾ほど手前 足したトラックが間に挟まると、重なり順が変わる
         _wire(view)
@@ -261,6 +285,19 @@ class TestTrackMenu:
         menu = view.build_context_menu(_point(view, "A1", 100))
         _find(menu, "トラックを追加", "音声トラック").trigger()
         assert [t.name for t in view.project.timeline.audio_tracks()] == ["A1", "A2"]
+
+    def test_a_mixed_project_adds_a_layer_straight_from_the_menu(self, view: TimelineView) -> None:
+        # 中身が 1 つのサブメニューを開かせると、右クリックから足すのに 1 手余計に掛かる
+        settings = replace(view.project.settings, layer_mode=LayerMode.MIXED)
+        view.set_project(replace(view.project, settings=settings))
+        _wire(view)
+        menu = view.build_context_menu(_point(view, "A1", 100))
+        action = _find(menu, LAYER_ADD_TEXT)
+        assert action.menu() is None, "サブメニューではなく直に足す項目"
+        assert "トラックを追加" not in _texts(menu)
+        action.trigger()
+        added = view.project.timeline.tracks[-1]
+        assert added.kind is TrackKind.MIXED
 
     def test_only_an_empty_track_can_be_removed(self, view: TimelineView) -> None:
         # クリップごと消せると、見えていない所のクリップまで黙って消える

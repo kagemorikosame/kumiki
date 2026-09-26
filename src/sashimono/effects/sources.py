@@ -11,7 +11,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sashimono.core.model import FILTER_KIND, GeneratedSource, ParamValue
+from sashimono.core.model import (
+    FILTER_KIND,
+    GROUP_AS_ONE,
+    GROUP_KIND,
+    GROUP_LAYERS,
+    GeneratedSource,
+    ParamValue,
+)
 from sashimono.effects.easing import EASING_KINDS, EASING_MODES
 from sashimono.effects.spec import (
     CheckSpec,
@@ -28,6 +35,7 @@ from sashimono.effects.spec import (
 __all__ = [
     "FILTER",
     "FRAMEBUFFER",
+    "GROUP",
     "PREVIOUS_OBJECT",
     "SHAPE",
     "TEXT",
@@ -301,6 +309,19 @@ FRAMEBUFFER = SourceDefinition(
 FILTER = SourceDefinition(kind=FILTER_KIND, label="フィルタ")
 
 
+#: 手前のレイヤーのオブジェクトを、1 本ずつ自分の配置と不透明度とエフェクトで動かす
+#: （AviUtl の拡張編集のグループ制御） 自分では何も描かない 掛け方は
+#: :mod:`sashimono.engine.render.groups` 対象レイヤー数の既定は AviUtl と同じ 1
+GROUP = SourceDefinition(
+    kind=GROUP_KIND,
+    label="グループ制御",
+    parameters=(
+        ValueSpec(GROUP_LAYERS, "対象レイヤー数（0 で手前の全部）", 1, minimum=0, maximum=1000),
+        CheckSpec(GROUP_AS_ONE, "1 枚の絵として扱う（重なりが透けない）", False),
+    ),
+)
+
+
 #: すぐ下に重ねたクリップの絵を、自分の位置へ写す（AviUtl の ``直前オブジェクト``）
 #: 写すのは下のクリップのエフェクトを掛けた絵で、下のクリップの描画の欄（反転・配置）と
 #: 不透明度・合成方法は写さない 置く位置・大きさは自分の描画の欄で決める
@@ -354,4 +375,6 @@ class SourceRegistry:
         return kind in self._definitions
 
 
-source_registry = SourceRegistry((TEXT, SHAPE, FRAMEBUFFER, FILTER, TRANSITION, PREVIOUS_OBJECT))
+source_registry = SourceRegistry(
+    (TEXT, SHAPE, FRAMEBUFFER, FILTER, GROUP, TRANSITION, PREVIOUS_OBJECT)
+)

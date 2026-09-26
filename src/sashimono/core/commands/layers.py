@@ -217,6 +217,8 @@ def media_placements(
     picture: Clip | None,
     sound: Clip | None,
     more_sounds: Sequence[Clip] = (),
+    *,
+    split: bool = False,
 ) -> list[tuple[TrackKind, Clip]]:
     """素材の絵のクリップと音のクリップを、方式に合わせて置く種類とクリップの組にする
 
@@ -236,6 +238,11 @@ def media_placements(
     クリップと音ごとの音だけのクリップに分ける どちらも置く側が付けたリンクのまま
     （絵と音がすべて一緒に動くため） 返す並びは絵・1 本目の音・2 本目の音… の順で、
     置く側はこの順に次のレイヤーへ並べる
+
+    ``split`` は混合の方式で、音声が 1 本の動画も絵と音を別のクリップに分けるか
+    （本人の設定 利用者の要望で既定は分ける） 音声が 2 本以上あれば ``split`` を
+    見ずに分ける（2 本目以降を 1 本のクリップに入れる所が無い）
+    互換の読み込みは 1 本にまとめる（YMM4 と AviUtl のアイテムは 1 本で絵と音を持つ）ので渡さない
     """
     sounds = [s for s in (sound, *more_sounds) if s is not None]
     if not places_mixed(project):
@@ -244,7 +251,7 @@ def media_placements(
             placements.append((TrackKind.VIDEO, picture))
         placements.extend((TrackKind.AUDIO, s) for s in sounds)
         return placements
-    if len(sounds) > 1:
+    if len(sounds) > 1 or (split and picture is not None and sounds):
         return _split_on_layers(picture, sounds)
     base = picture if picture is not None else sound
     if base is None:

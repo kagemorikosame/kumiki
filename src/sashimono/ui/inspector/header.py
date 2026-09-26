@@ -159,7 +159,7 @@ def _track_name(project: Project, track: Track) -> str:
 
 def _band_color(project: Project, track: Track, clip: Clip) -> QColor:
     """タイムラインのクリップの枠と同じ色 レイヤーは描く・鳴らすかで選ぶ（painter と同じ）"""
-    if clip.is_filter:
+    if clip.is_filter or clip.is_group:
         return Colors.FILTER_CLIP_BORDER
     if track.kind is TrackKind.MIXED:
         sound_only = not project.draws_picture(track, clip) and project.plays_sound(track, clip)

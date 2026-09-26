@@ -52,7 +52,7 @@ class TestAnalyzerAfterForget:
 
         analyzer = MediaAnalyzer(store)
         try:
-            analyzer._running.add(("waveform", media.id))
+            analyzer._running.add(("waveform", media.id, None))
             analyzer.forget(media.id)
             assert analyzer._publish("waveform", media.id, waveform) is False
             assert analyzer.waveform(media) is None

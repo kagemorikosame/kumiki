@@ -21,8 +21,16 @@ SUFFIX = ".peaks.npz"
 FORMAT_VERSION = 2
 
 
-def waveform_key(path: Path, sample_rate: int, channels: int) -> str:
-    return media_key(path, extra=f"wf{FORMAT_VERSION}:{sample_rate}:{channels}")
+def waveform_key(path: Path, sample_rate: int, channels: int, *, stream: int | None = None) -> str:
+    """控えの鍵 ``stream`` は 2 本目以降の音声ストリームの番号（1 本目は ``None``）
+
+    1 本目は番号を鍵に入れない ストリームを区別する前に作った控えは 1 本目の波形で、
+    鍵を変えると作り直しになる 2 本目以降は番号を入れないと、どの音も 1 本目の控えを引く
+    """
+    extra = f"wf{FORMAT_VERSION}:{sample_rate}:{channels}"
+    if stream is not None:
+        extra = f"{extra}:s{stream}"
+    return media_key(path, extra=extra)
 
 
 def save_waveform(store: CacheStore, key: str, waveform: Waveform) -> Path:

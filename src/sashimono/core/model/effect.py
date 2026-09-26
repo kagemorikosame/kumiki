@@ -156,6 +156,45 @@ class AnimatedValue:
             static=self.static, keyframes=tuple(sorted(keyframes, key=lambda k: k.frame))
         )
 
+    def split_at(self, cut: int) -> tuple[AnimatedValue, AnimatedValue]:
+        """クリップを頭から ``cut`` フレームの所で割ったときの（前, 後ろ）の値
+
+        キーはクリップの頭から数えるので、後ろのクリップのキーは ``cut`` だけ前へずらす
+        ずらさないと、後ろのクリップにも前と同じ位置付近に同じキーが入り、タイムライン上の
+        動きが割る前と変わる（利用者の報告）
+
+        割る所をまたぐ区間は、形を変えない点を足して切る（:meth:`with_keyframe_at`）
+        前は最後のフレーム（``cut - 1``）に、後ろは頭（0）に足す どちらのフレームの値も
+        割る前と同じになる（イージングとベジェは曲線を切るので形も同じ 名前付きの曲線だけは
+        切れる形ではないので、その区間の形が少し変わる）
+        それぞれの範囲の外に出たキーは捨てる 残すと、描く所の無い点がグラフだけに残る
+        キーが片側にしか無ければ、もう片側は端の値の動かない値にする
+        """
+        if not self.keyframes:
+            return self, self
+        last = cut - 1
+        if all(k.frame <= last for k in self.keyframes):
+            before = self
+        elif all(k.frame > last for k in self.keyframes):
+            before = AnimatedValue(static=self.at(0))
+        else:
+            cut_before = self.with_keyframe_at(last)
+            before = AnimatedValue(
+                static=self.static,
+                keyframes=tuple(k for k in cut_before.keyframes if k.frame <= last),
+            )
+        if all(k.frame >= cut for k in self.keyframes):
+            after_keys = self.keyframes
+        elif all(k.frame < cut for k in self.keyframes):
+            return before, AnimatedValue(static=self.at(cut))
+        else:
+            after_keys = tuple(k for k in self.with_keyframe_at(cut).keyframes if k.frame >= cut)
+        after = AnimatedValue(
+            static=self.static,
+            keyframes=tuple(replace(k, frame=k.frame - cut) for k in after_keys),
+        )
+        return before, after
+
     def _surrounding(self, frame: float) -> tuple[Keyframe, Keyframe]:
         """``frame`` を挟む 2 つのキーフレームを返す"""
         # キーフレーム数は多くても数十なので線形探索で十分 ここが重くなったら

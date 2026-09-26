@@ -91,6 +91,7 @@ from sashimono.core.io import (
 )
 from sashimono.core.model import (
     ClipId,
+    EffectId,
     GeneratedSource,
     LayerMode,
     MediaId,
@@ -392,13 +393,18 @@ class MainWindow(QMainWindow):
         self._transport = TransportBar(project.rate, self)
         self._timeline = TimelineView(project, self._analyzer, self)
         self._timeline.set_value_lines(self._preferences.value_lines)
-        self._timeline.set_split_audio(self._preferences.split_audio_streams)
+        self._timeline.set_split_audio(self._preferences.splits_media)
+        self._timeline.set_snap(self._preferences.timeline_snap, self._preferences.snap_distance)
         self._media_pool = MediaPoolWidget(project, self)
         self._inspector = InspectorPanel(self)
         # 設定パネルは選んだクリップを引くためにプロジェクトを持つ 起動直後にも渡す
         # （渡さないと、最初の編集まで何本も選んだときのまとめ当てが効かない）
         self._inspector.set_project(self.view_project)
+        self._inspector.set_double_click_reset(self._preferences.double_click_reset)
         self._graph = GraphEditor(self)
+        # グラフエディタも起動直後にプロジェクトを持たせる 持たせないと、開いた作品で最初の
+        # 編集をするまで、キーフレームのあるクリップを選んでも曲線を引けない
+        self._graph.set_project(self.view_project)
         self._subtitles = SubtitlePanel(project, self._analyzer, self)
         self._chat = ChatPanel(self, self)
         self._playback = PlaybackController(project, self)
@@ -480,6 +486,8 @@ class MainWindow(QMainWindow):
 
         timeline_dock = self._dock("タイムライン", "timeline")
         self._scene_bar = SceneBar()
+        self._scene_bar.set_snap(self._preferences.timeline_snap)
+        self._scene_bar.snap_toggled.connect(self._set_snap)
         timeline_panel = QWidget()
         timeline_layout = QVBoxLayout(timeline_panel)
         timeline_layout.setContentsMargins(0, 0, 0, 0)
@@ -782,7 +790,10 @@ class MainWindow(QMainWindow):
         self._media_pool.set_view_mode(preferences.media_view)
         self._chat.apply_preferences(preferences)
         self._timeline.set_value_lines(preferences.value_lines)
-        self._timeline.set_split_audio(preferences.split_audio_streams)
+        self._timeline.set_split_audio(preferences.splits_media)
+        self._timeline.set_snap(preferences.timeline_snap, preferences.snap_distance)
+        self._scene_bar.set_snap(preferences.timeline_snap)
+        self._inspector.set_double_click_reset(preferences.double_click_reset)
         apply_dock_tabs(self, preferences.dock_tabs)
         self._preview.set_proxies(self._proxies.store if preferences.use_proxy else None)
         self._preview.set_prefetch_bytes(preferences.prefetch_bytes())
@@ -862,6 +873,13 @@ class MainWindow(QMainWindow):
         self._inspector.commands_requested.connect(self.execute_all)
         self._inspector.preview_requested.connect(self._preview_command)
         self._inspector.curve_selected.connect(self._show_curve)
+        # ◆ や ◀ ▶ を押した値を、グラフエディタにも出す（開いていなければ開かない）
+        self._inspector.param_focused.connect(self._graph.set_path)
+        self._inspector.seek_requested.connect(self._seek)
+        # 触ったのが部分フィルタなら、プレビューにその範囲の枠を出す
+        self._inspector.effect_focused.connect(
+            lambda effect_id: self._preview.set_region_effect(EffectId(effect_id))
+        )
         self._graph.commands_requested.connect(self.execute_all)
         self._graph.seek_requested.connect(self._seek)
 
@@ -1455,7 +1473,7 @@ class MainWindow(QMainWindow):
             media,
             at_frame=retime_frame(frame, before, project.rate),
             track_id=TrackId(track_id) if track_id else None,
-            split_audio=self._preferences.split_audio_streams,
+            split_audio=self._preferences.splits_media,
         )
         label = f"配置: {media[0].name}" if len(media) == 1 else f"配置: {len(media)} 件"
         self.execute_all(commands, label)
@@ -1505,7 +1523,7 @@ class MainWindow(QMainWindow):
         self, project: Project, media: MediaItem, spot: DropSpot | None
     ) -> list[Command]:
         """読み込んだ素材 1 本を置くコマンド 落とされた位置が無ければ末尾へ並べる"""
-        split = self._preferences.split_audio_streams
+        split = self._preferences.splits_media
         if spot is None:
             return insert_media(project, media, at_frame=None, split_audio=split)
         return place_media(
@@ -1525,6 +1543,11 @@ class MainWindow(QMainWindow):
         """一覧の上のボタンで表示を切り替えた 好みの設定に書いて、次に開いたときも同じにする"""
         self._remember_preferences(replace(self._preferences, media_view=mode))
 
+    def _set_snap(self, enabled: bool) -> None:
+        """タイムラインの上の〔磁石〕 次に開いたときも同じにする"""
+        self._timeline.set_snap(enabled, self._preferences.snap_distance)
+        self._remember_preferences(replace(self._preferences, timeline_snap=enabled))
+
     def _remember_preferences(self, preferences: Preferences) -> None:
         """設定画面の外で選んだ好みを覚える 次に開いたときも同じにする"""
         self._preferences = preferences
@@ -1540,9 +1563,7 @@ class MainWindow(QMainWindow):
             return
         self._match_project_to([media])
         self.execute_all(
-            insert_media(
-                self.view_project, media, split_audio=self._preferences.split_audio_streams
-            ),
+            insert_media(self.view_project, media, split_audio=self._preferences.splits_media),
             f"配置: {media.name}",
         )
 
@@ -1683,8 +1704,9 @@ class MainWindow(QMainWindow):
         ordered = (selected, *(c for c in chosen if c != selected)) if selected else ()
         self._inspector.set_selection(tuple(c for c in ordered if c is not None))
         self._preview.set_selection(selected)
-        if selected is None:
-            self._graph.set_path(None)
+        # グラフエディタも選んだクリップに付いていく 付いていかないと、キーフレームを入れた
+        # クリップを選んでもグラフエディタが何も出さず、◆ の右クリックの奥からしか開けない
+        self._graph.set_clip(selected)
 
     def _show_curve(self, path: ParamPath) -> None:
         self._graph.set_path(path)
@@ -2329,9 +2351,9 @@ class MainWindow(QMainWindow):
         return self.view_project
 
     @property
-    def split_audio_streams(self) -> bool:
+    def splits_media(self) -> bool:
         """AI が素材を置くときも、画面から置くときと同じ設定に従う"""
-        return self._preferences.split_audio_streams
+        return self._preferences.splits_media
 
     def set_active_scene(self, scene_id: SceneId | None) -> None:
         self.open_scene(scene_id)

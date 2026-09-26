@@ -31,6 +31,7 @@ __all__ = [
     "has_outline",
     "is_generated",
     "media_pixel_size",
+    "placed_rect",
     "transform_values",
 ]
 
@@ -93,7 +94,8 @@ def has_outline(clip: Clip) -> bool:
     （下の絵や入れ子の合成をそのまま使う） 枠を出すと、掴んでも枠のとおりには動かない
     直前オブジェクトの絵は下のクリップ次第で、自分の中身から大きさを出せない
     """
-    if clip.scene_id is not None or clip.is_filter:
+    if clip.scene_id is not None or clip.is_filter or clip.is_group:
+        # グループ制御も自分の絵を持たない（受け持つクリップを動かすだけ）
         return False
     source = clip.source
     return source is None or source.kind not in ("framebuffer", "transition", "previous_object")
@@ -159,7 +161,27 @@ def clip_outline(
         return None
     width, height = canvas if canvas is not None else project.settings.resolution
     local = frame - clip.timeline_start
+    placed = placed_rect(project, clip, (width, height), extent)
+    if placed is None:
+        return None
+    rect, space, offset = placed
+    # 描く側（EffectProcessor.pixel_scale）と同じく横の比 1 つで縮める
+    scale = canvas_scale(project.settings.resolution, (width, height))[0]
+    return _follow_effects(clip, local, rect, space, offset, scale)
 
+
+def placed_rect(
+    project: Project, clip: Clip, canvas: tuple[int, int], extent: Extent | None
+) -> tuple[Box, tuple[float, float], Point] | None:
+    """エフェクトを掛ける前に絵を置いた矩形・エフェクトを掛ける入れ物の大きさ・入れ物のずれ
+
+    どれも合成の画素 フィルタのクリップは下の絵全体（画面いっぱい）に掛けるので、
+    画面そのものを置いた矩形とする（原点は画面の中央 部分フィルタの範囲の原点と同じ）
+    出せなければ ``None``（生成オブジェクトで ``extent`` が無い・素材の大きさが分からない）
+    """
+    width, height = canvas
+    if clip.is_filter:
+        return (0.0, 0.0, float(width), float(height)), (float(width), float(height)), (0.0, 0.0)
     if is_generated(clip):
         if extent is None:
             return None
@@ -202,10 +224,7 @@ def clip_outline(
         space = (float(width), float(height))
         offset = (0.0, 0.0)
         rect = (left, top, left + placed_width, top + placed_height)
-
-    # 描く側（EffectProcessor.pixel_scale）と同じく横の比 1 つで縮める
-    scale = canvas_scale(project.settings.resolution, (width, height))[0]
-    return _follow_effects(clip, local, rect, space, offset, scale)
+    return rect, space, offset
 
 
 def _follow_effects(

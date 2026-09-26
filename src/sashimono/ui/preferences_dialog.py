@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFormLayout,
     QLabel,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -41,8 +42,9 @@ from sashimono.ui.project_settings_dialog import LAYER_MODE_CHOICES
 from sashimono.ui.workspace import (
     DOCK_TABS_BOTTOM,
     DOCK_TABS_TOP,
-    MULTI_AUDIO_FIRST,
-    MULTI_AUDIO_SPLIT,
+    MEDIA_SPLIT,
+    MEDIA_TOGETHER,
+    SNAP_DISTANCES,
     Preferences,
 )
 
@@ -249,20 +251,20 @@ class PreferencesDialog(QDialog):
             "新規作成の窓でもプロジェクトごとに選べる 開いたプロジェクトの方式は変えない"
         )
         form.addRow("新しいプロジェクトの置き方", self._new_project_layers)
-        self._multi_audio = QComboBox(self)
-        self._multi_audio.addItem("音声ごとにレイヤーを分ける（既定）", MULTI_AUDIO_SPLIT)
-        self._multi_audio.addItem("1 本目だけ映像と一緒に置く", MULTI_AUDIO_FIRST)
-        self._multi_audio.setCurrentIndex(
-            max(0, self._multi_audio.findData(preferences.multi_audio))
+        self._media_split = QComboBox(self)
+        self._media_split.addItem("映像と音声を別のレイヤーに分ける（既定）", MEDIA_SPLIT)
+        self._media_split.addItem("1 本のクリップにまとめる", MEDIA_TOGETHER)
+        self._media_split.setCurrentIndex(
+            max(0, self._media_split.findData(preferences.media_split))
         )
-        self._multi_audio.setToolTip(
-            "ゲームの録画のマイクの声のように、音声が 2 本以上ある動画を置いたとき "
-            "分けると、置いたレイヤーに映像、その次のレイヤーから音声を 1 本ずつ並べ、"
-            "足りなければレイヤーを足す（映像と音声のトラックを分ける方式では音声トラックを"
-            "音声ごとに使う） どれも一緒に動く 1 本目だけにすると 2 本目以降は置かない "
-            "音声が 1 本の動画はどちらでも変わらない"
+        self._media_split.setToolTip(
+            "音声のある動画を置いたとき 分けると、置いたレイヤーに映像、その次のレイヤーから"
+            "音声を 1 本ずつ並べ（ゲームの録画のマイクの声のように音声が何本あっても）、"
+            "足りなければレイヤーを足す どれも一緒に動く（映像と音声のトラックを分ける方式では"
+            "音声トラックを音声ごとに使う） まとめると映像と音声を 1 本のクリップで持ち、"
+            "音声が 2 本以上あれば 1 本目だけを置く"
         )
-        form.addRow("音声が複数ある動画の置き方", self._multi_audio)
+        form.addRow("動画の映像と音声", self._media_split)
         self._dock_tabs = QComboBox(self)
         self._dock_tabs.addItem("上（既定）", DOCK_TABS_TOP)
         self._dock_tabs.addItem("下", DOCK_TABS_BOTTOM)
@@ -297,6 +299,30 @@ class PreferencesDialog(QDialog):
             "音付きの動画は右クリックでどちらの線を出すか切り替える"
         )
         form.addRow(self._value_lines)
+
+        self._double_click_reset = QCheckBox("設定パネルの名前のダブルクリックで初期値に戻す", self)
+        self._double_click_reset.setChecked(preferences.double_click_reset)
+        self._double_click_reset.setToolTip(
+            "オブジェクト設定の行の名前（数の値はスライダーも）をダブルクリックすると、"
+            "その値を初期値に戻す キーフレームのある値は再生位置のキーだけを戻す "
+            "戻しても取り消せる"
+        )
+        form.addRow(self._double_click_reset)
+
+        self._timeline_snap = QCheckBox("タイムラインで近くの位置へ吸い付く（磁石）", self)
+        self._timeline_snap.setChecked(preferences.timeline_snap)
+        self._timeline_snap.setToolTip(
+            "クリップを動かす・端を伸び縮みさせる・置くときに、ほかのクリップの頭と終わり・"
+            "再生位置・キーフレーム・書き出し範囲の端へ吸い付く タイムラインの上の〔磁石〕と同じ "
+            "動かしている途中で Shift を押している間は吸い付かない"
+        )
+        form.addRow(self._timeline_snap)
+        self._snap_distance = QSpinBox(self)
+        self._snap_distance.setRange(*SNAP_DISTANCES)
+        self._snap_distance.setSuffix(" px")
+        self._snap_distance.setValue(preferences.snap_distance)
+        self._snap_distance.setToolTip("画面の画素で数える 拡大しても縮小しても同じ近さで吸い付く")
+        form.addRow("吸い付く距離", self._snap_distance)
 
         self._all_plugins = QCheckBox("AviUtl2 の汎用プラグインを全部読んで探す", self)
         self._all_plugins.setChecked(preferences.all_aviutl_plugins)
@@ -438,6 +464,9 @@ class PreferencesDialog(QDialog):
             preview_handles=self._preview_handles.isChecked(),
             keyframe_drag=str(self._keyframe_drag.currentData()),
             value_lines=self._value_lines.isChecked(),
+            double_click_reset=self._double_click_reset.isChecked(),
+            timeline_snap=self._timeline_snap.isChecked(),
+            snap_distance=self._snap_distance.value(),
             new_project_layers=str(self._new_project_layers.currentData()),
-            multi_audio=str(self._multi_audio.currentData()),
+            media_split=str(self._media_split.currentData()),
         )

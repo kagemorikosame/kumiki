@@ -10,10 +10,10 @@ from __future__ import annotations
 import functools
 import time
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum, auto
 
-from PySide6.QtCore import QPoint, QPointF, QRect, Qt, Signal
+from PySide6.QtCore import QPoint, QPointF, QRect, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QAction,
     QColor,
@@ -29,7 +29,7 @@ from PySide6.QtGui import (
     QResizeEvent,
     QWheelEvent,
 )
-from PySide6.QtWidgets import QGridLayout, QMenu, QWidget
+from PySide6.QtWidgets import QApplication, QGridLayout, QMenu, QWidget
 
 from sashimono.core.clipboard import ClipboardContent, copy_clips, cut_commands, paste_commands
 from sashimono.core.commands import (
@@ -40,6 +40,7 @@ from sashimono.core.commands import (
     MoveClips,
     RemoveClip,
     RemoveClips,
+    RenameTrack,
     SetTrackHeights,
     SetTrackState,
     SplitClip,
@@ -53,6 +54,7 @@ from sashimono.core.commands.edit import (
     MIN_TRACK_HEIGHT,
     shifted_track,
 )
+from sashimono.core.commands.layers import places_mixed
 from sashimono.core.model import (
     Clip,
     ClipId,
@@ -65,6 +67,8 @@ from sashimono.core.model import (
     Track,
     TrackId,
     TrackKind,
+    heard_stream,
+    new_group_id,
 )
 from sashimono.engine.cache import MediaAnalyzer
 from sashimono.ui.media_pool import media_ids_in
@@ -81,6 +85,7 @@ from sashimono.ui.timeline.drop import (
     preview_drop,
     spot_at,
 )
+from sashimono.ui.timeline.group_reach import draw_group_reach
 from sashimono.ui.timeline.keyframes import draw_keyframes, keyframe_at
 from sashimono.ui.timeline.layout import TimelineLayout, TrackBand
 from sashimono.ui.timeline.painter import (
@@ -98,9 +103,12 @@ from sashimono.ui.timeline.painter import (
     draw_track_header,
     track_add_button_rect,
     track_button_rects,
+    track_name_rect,
 )
 from sashimono.ui.timeline.painter import draw_clip as paint_clip
+from sashimono.ui.timeline.snap import DEFAULT_SNAP_DISTANCE, nearest_snap, snap_targets
 from sashimono.ui.timeline.track_drag import TrackDragger
+from sashimono.ui.timeline.track_name import TrackNameEditor
 from sashimono.ui.timeline.value_line import ValueGrab, ValueLineEditor
 from sashimono.ui.timeline.work_area import WorkAreaEditor
 from sashimono.ui.timeline.zoom_scrollbar import ZoomScrollBar
@@ -113,6 +121,13 @@ ZOOM_STEP = 1.25
 #: 全トラックの高さを 1 段で変える量（画素） 細かいと何度も回すことになり、
 #: 粗いと最小（28）から最大（240）までが数段で終わって合わせにくい
 HEIGHT_STEP = 12
+
+#: 押している間だけ磁石を切るキー 動かしている途中で押す（押してから掴むと、範囲で選ぶ
+#: 操作になる） Alt は離したときに窓のメニューへ移ってしまい、Ctrl は選び足しに使っている
+SNAP_OFF_MODIFIER = Qt.KeyboardModifier.ShiftModifier
+
+#: 吸い付いた所の縦の線を出しておく長さ（ミリ秒） 一瞬だけ出して、吸い付いたと分かれば足りる
+SNAP_LINE_MS = 600
 
 #: 境目を掴める幅（上下それぞれ、画素） 狭いと掴めず、広いと名前の行の
 #: ボタンに食い込む（最小の高さ 28 のトラックでもボタンが押せる幅にしてある）
@@ -263,11 +278,27 @@ class TimelineView(QWidget):
         #: 開いているシーン（メインなら ``None``） 〔追加〕→〔シーン〕から自分自身を外す
         self._open_scene: SceneId | None = None
         self._add_button_hovered = False
+        #: ヘッダで書き換えている名前の入力欄（:meth:`begin_rename`） 無ければ ``None``
+        self._name_editor: TrackNameEditor | None = None
+        #: 磁石（吸着 :meth:`set_snap`） 既定は入（設定の既定と同じ）
+        self._snap_enabled = True
+        self._snap_distance = DEFAULT_SNAP_DISTANCE
+        #: 動かしている途中に押しているキー（マウスとドラッグの知らせから）
+        self._drag_modifiers = Qt.KeyboardModifier.NoModifier
+        #: 吸い付く先の覚え（プロジェクト・動かしている物・再生位置, フレームの並び）
+        #: マウスが動くたびに全クリップを舐めないため
+        self._snap_cache: tuple[object, list[int]] | None = None
+        #: 吸い付いた所に出す縦の線 少しして消す（:data:`SNAP_LINE_MS`）
+        self._snap_line: int | None = None
+        self._snap_timer = QTimer(self)
+        self._snap_timer.setSingleShot(True)
+        self._snap_timer.setInterval(SNAP_LINE_MS)
+        self._snap_timer.timeout.connect(self._hide_snap)
         #: 書き出し範囲の Shift+ドラッグと、その帯 ほかのドラッグとは別に持つ
         self._work_area = WorkAreaEditor(self._request)
         #: ファイルや素材を引いてきている間の、落ちる所の目安 引いていなければ ``None``
         self._drop_preview: DropPreview | None = None
-        #: 音声が何本もある素材を音ごとに分けて置くか（:meth:`set_split_audio`）
+        #: 動画の映像と音声を分けて置くか（:meth:`set_split_audio`）
         #: 既定は設定の既定と同じ 窓が渡す前に落とされても、落とした後と同じ目安を出す
         self._split_audio = True
         #: ヘッダを掴んでトラックの順を入れ替えるドラッグ
@@ -307,7 +338,7 @@ class TimelineView(QWidget):
         self.update()
 
     def set_split_audio(self, split: bool) -> None:
-        """音声が何本もある素材を音ごとに分けて置くか 設定（:attr:`Preferences.multi_audio`）から
+        """動画の映像と音声を分けて置くか 設定（:attr:`Preferences.media_split`）から
 
         落とす前の目安を、窓が実際に置くのと同じ置き方で求めるため 目安だけ設定を
         見ないと、目安に無いレイヤーが落とした後に増える
@@ -580,6 +611,8 @@ class TimelineView(QWidget):
         start_frame, end_frame = self._layout.visible_range(width)
         scale = self._layout.pixels_per_frame
         selected = self._highlighted()
+        # 設定パネルが出している 1 本 選んだ仲間と見分けて描く（主の選択は最後に選んだ物）
+        editing = self.selected_clip
         media: dict[MediaId, MediaItem] | None = None
         for band in self._layout.bands(timeline):
             if band.bottom <= Metrics.RULER_HEIGHT or band.top >= self.height():
@@ -593,7 +626,9 @@ class TimelineView(QWidget):
                     continue
                 rect = clip_rect_for(clip, band, self._layout, width)
                 if rect is not None:
-                    self._paint_detailed(painter, band, clip, rect, clip.id in selected)
+                    self._paint_detailed(
+                        painter, band, clip, rect, clip.id in selected, clip.id == editing
+                    )
             sound_only = None
             if dense and band.track.kind is TrackKind.MIXED:
                 # 素材の引き表は、細い帯のあるレイヤーが出たときに 1 度だけ作って使い回す
@@ -601,9 +636,16 @@ class TimelineView(QWidget):
                 if media is None:
                     media = {item.id: item for item in self._project.media}
                 sound_only = self._sound_only(band.track, media)
-            draw_dense_clips(painter, band, dense, self._layout, width, selected, sound_only)
+            draw_dense_clips(
+                painter, band, dense, self._layout, width, selected, sound_only, editing
+            )
 
+        # グループ制御の受け持ちは、クリップの上に薄く重ねる（中身が隠れない濃さ）
+        draw_group_reach(
+            painter, self._layout, timeline, (width, self.height()), set(self._selection)
+        )
         self._draw_drag_preview(painter)
+        self._paint_snap(painter)
         self._work_area.paint_tracks(
             painter, self._layout, width, self.height(), timeline.work_area
         )
@@ -699,7 +741,13 @@ class TimelineView(QWidget):
         ]
 
     def _paint_detailed(
-        self, painter: QPainter, band: TrackBand, clip: Clip, rect: QRect, selected: bool
+        self,
+        painter: QPainter,
+        band: TrackBand,
+        clip: Clip,
+        rect: QRect,
+        selected: bool,
+        editing: bool = False,
     ) -> None:
         media = self._project.find_media(clip.media_id) if clip.media_id is not None else None
         scene = self._project.find_scene(clip.scene_id) if clip.scene_id is not None else None
@@ -711,12 +759,17 @@ class TimelineView(QWidget):
             self._project.rate,
             media=media,
             filmstrip=self._analyzer.filmstrip(media) if media is not None else None,
-            waveform=self._analyzer.waveform(media) if media is not None else None,
+            # 鳴らす音の波形を出す 素材だけで引くと、音声が何本もある動画を音ごとに分けて
+            # 置いたとき、どのレイヤーにも 1 本目の波形が出る
+            waveform=self._analyzer.waveform(media, heard_stream(band.track, clip))
+            if media is not None
+            else None,
             selected=selected,
             clip_rect=rect,
             scene_name=scene.name
             if scene is not None
             else ("（消えたシーン）" if clip.scene_id else None),
+            editing=editing,
         )
         draw_keyframes(painter, clip, self._layout, rect, selected=selected)
         self._value_lines.paint(
@@ -1018,6 +1071,8 @@ class TimelineView(QWidget):
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt の命名規約
         position = event.position().toPoint()
+        # 磁石を一時的に切るキーは動かしている途中で見る 端で送り直すときも同じ物を使う
+        self._drag_modifiers = event.modifiers()
         if self._drag_to(position):
             horizontal, vertical = self._edge_scroll_axes()
             self._edge_scroll.follow(
@@ -1111,25 +1166,99 @@ class TimelineView(QWidget):
         self._drag.moved = True
         frame = self._layout.frame_at(position.x())
 
+        located = (
+            self._project.timeline.locate_clip(self._drag.clip_id)
+            if self._drag.clip_id is not None
+            else None
+        )
         if self._drag.kind is DragKind.MOVE_CLIP:
             floor = self._group_floor() if self._drag.group else 0
-            self._drag.preview_start = max(floor, frame - self._drag.grab_offset)
+            start = max(floor, frame - self._drag.grab_offset)
+            if located is not None:
+                # 頭と終わりのどちらかが近くの位置へ吸い付く
+                start += self._snap_shift((start, start + located[1].duration))
+            self._drag.preview_start = max(floor, start)
             band = self._layout.band_at(self._project.timeline, position.y())
             if band is not None and not band.track.locked:
                 self._drag.preview_track = band.track.id
-        elif self._drag.clip_id is not None:
-            located = self._project.timeline.locate_clip(self._drag.clip_id)
-            if located is not None:
-                _, clip = located
-                if self._drag.kind is DragKind.TRIM_HEAD:
-                    self._drag.preview_head_delta = min(
-                        frame - clip.timeline_start, clip.duration - 1
-                    )
-                else:
-                    self._drag.preview_tail_delta = max(
-                        frame - clip.timeline_end, -(clip.duration - 1)
-                    )
+        elif located is not None:
+            _, clip = located
+            if self._drag.kind is DragKind.TRIM_HEAD:
+                frame += self._snap_shift((frame,))
+                self._drag.preview_head_delta = min(frame - clip.timeline_start, clip.duration - 1)
+            else:
+                frame += self._snap_shift((frame,))
+                self._drag.preview_tail_delta = max(frame - clip.timeline_end, -(clip.duration - 1))
         self.update()
+
+    # --- 磁石（吸着） ---
+
+    def set_snap(self, enabled: bool, distance: int = DEFAULT_SNAP_DISTANCE) -> None:
+        """近くの位置へ吸い付くか・吸い付く距離（画面の画素） 設定とツールバーのボタンから"""
+        self._snap_enabled = enabled
+        self._snap_distance = max(1, distance)
+        self._snap_cache = None
+
+    @property
+    def snap_enabled(self) -> bool:
+        return self._snap_enabled
+
+    @property
+    def snap_line(self) -> int | None:
+        """いま吸い付いた所を示している線のフレーム 出していなければ ``None``"""
+        return self._snap_line
+
+    def _snap_shift(self, edges: tuple[int, ...]) -> int:
+        """``edges`` を近くの吸い付く先へずらす量 吸い付かなければ 0
+
+        Shift を押している間は吸い付かない（一時的に切る） 動かしている途中で押しても効く
+        押す前から押していると囲んで選ぶ・範囲で選ぶ操作になるので、掴んでから押す
+        """
+        held = self._drag_modifiers | QApplication.keyboardModifiers()
+        if not self._snap_enabled or held & SNAP_OFF_MODIFIER:
+            return 0
+        found = nearest_snap(
+            edges, self._snap_targets(), self._snap_distance / self._layout.pixels_per_frame
+        )
+        self._show_snap(found[1] if found is not None else None)
+        return found[0] if found is not None else 0
+
+    def _snap_targets(self) -> list[int]:
+        """吸い付く先 動かしている物（選んだ物とリンクした相手）は除く 同じ中身の間は覚える"""
+        if self._drag.kind is DragKind.MOVE_CLIP:
+            moving = frozenset(member.id for _, member in self._moving_members())
+        elif self._drag.kind in (DragKind.TRIM_HEAD, DragKind.TRIM_TAIL):
+            moving = frozenset(self._trimmable_selection())
+        else:
+            moving = frozenset()
+        key = (self._project, moving, self._playhead)
+        if self._snap_cache is None or self._snap_cache[0] != key:
+            targets = snap_targets(self._project, self._playhead, exclude=moving)
+            self._snap_cache = (key, targets)
+        return self._snap_cache[1]
+
+    def _show_snap(self, frame: int | None) -> None:
+        """吸い付いた所に縦の線を出す 離した後も一瞬残して、吸い付いたことを見せる"""
+        if frame is None:
+            return
+        self._snap_line = frame
+        self._snap_timer.start()
+        self.update()
+
+    def _hide_snap(self) -> None:
+        self._snap_line = None
+        self.update()
+
+    def _paint_snap(self, painter: QPainter) -> None:
+        if self._snap_line is None:
+            return
+        x = int(self._layout.frame_to_x(self._snap_line))
+        if x < Metrics.TRACK_HEADER_WIDTH or x > self.width():
+            return
+        painter.save()
+        painter.setPen(QPen(Colors.SNAP_LINE, 1))
+        painter.drawLine(x, Metrics.RULER_HEIGHT, x, self.height())
+        painter.restore()
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt の命名規約
         del event
@@ -1349,6 +1478,7 @@ class TimelineView(QWidget):
                 toggle.setCheckable(True)
                 toggle.setChecked(bool(getattr(track, attribute)))
             _action(menu, f"{name} の高さを戻す", functools.partial(self._reset_height, track.id))
+            _action(menu, f"{name} の名前を変更…", functools.partial(self.begin_rename, track.id))
         self._work_area.add_menu_actions(
             menu, self._layout, position, self._project.timeline.work_area
         )
@@ -1358,11 +1488,66 @@ class TimelineView(QWidget):
         return menu
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt の命名規約
-        hit = self._clip_at(event.position().toPoint())
+        position = event.position().toPoint()
+        if self._rename_at(position):
+            return
+        hit = self._clip_at(position)
         if hit is not None and hit[1].scene_id is not None:
             self.scene_open_requested.emit(str(hit[1].scene_id))
             return
         super().mouseDoubleClickEvent(event)
+
+    # --- トラックの名前 ---
+
+    def _rename_at(self, position: QPoint) -> bool:
+        """ヘッダの名前の所のダブルクリックなら、名前の入力欄を出して真を返す
+
+        M・S・L のボタンの上は除く 続けて押しただけで名前の入力になると、ミュートを
+        2 回切り替えたつもりの操作が名前の変更に化ける
+        """
+        if position.x() >= Metrics.TRACK_HEADER_WIDTH or position.y() < Metrics.RULER_HEIGHT:
+            return False
+        if self._track_button_at(position) is not None:
+            return False
+        if self._resize_band_at(position) is not None:
+            return False
+        band = self._layout.band_at(self._project.timeline, position.y())
+        if band is None:
+            return False
+        return self.begin_rename(band.track.id) is not None
+
+    def begin_rename(self, track_id: TrackId) -> TrackNameEditor | None:
+        """ヘッダの名前の所に入力欄を重ねて出す 見えていないトラックなら ``None``
+
+        決めた名前は :meth:`rename_track` へ渡る 入力欄はビューの子にして、ヘッダの
+        名前と同じ所へ置く 別の窓で尋ねると、どのトラックの名前なのかが隠れる
+        """
+        band = next(
+            (b for b in self._layout.bands(self._project.timeline) if b.track.id == track_id),
+            None,
+        )
+        if band is None or band.bottom <= Metrics.RULER_HEIGHT or band.top >= self.height():
+            return None
+        if self._name_editor is not None and not self._name_editor.done:
+            self._name_editor.commit()
+        editor = TrackNameEditor(self, track_id, band.track.name)
+        editor.setGeometry(track_name_rect(band).adjusted(-4, -3, 4, 3))
+        editor.committed.connect(lambda track, name: self.rename_track(TrackId(track), name))
+        editor.show()
+        editor.setFocus()
+        editor.selectAll()
+        self._name_editor = editor
+        return editor
+
+    def rename_track(self, track_id: TrackId, name: str) -> bool:
+        """トラックの名前を変える（取り消せる） 変わらなければ何も出さずに偽"""
+        if self._project.timeline.find_track(track_id) is None:
+            return False
+        command = RenameTrack(track_id, name)
+        if command.apply(self._project) is self._project:
+            return False
+        self._request([command], command.label)
+        return True
 
     def group_selected(self) -> bool:
         """選んでいるクリップを束ねる 2 本以上要る"""
@@ -1374,8 +1559,13 @@ class TimelineView(QWidget):
         return True
 
     def ungroup_selected(self) -> bool:
+        """グループを解く 置いた動画の映像と音のつながり（リンク）も一緒に外す
+
+        利用者から見ると、置いた映像と音は一緒に動く「グループ」で、解けば別々に動かせて
+        ほしい（利用者の要望） リンクだけ残すと、グループ解除を押しても映像と音が離れない
+        """
         if not self._selection_has_group():
-            self.status_message.emit("グループに入っているクリップを選んでください")
+            self.status_message.emit("グループかリンクに入っているクリップを選んでください")
             return False
         command = UngroupClips(self._selection)
         self._request([command], command.label)
@@ -1385,7 +1575,9 @@ class TimelineView(QWidget):
         timeline = self._project.timeline
         for clip_id in self._selection:
             located = timeline.locate_clip(clip_id)
-            if located is not None and located[1].group_id is not None:
+            if located is not None and (
+                located[1].group_id is not None or located[1].link_group is not None
+            ):
                 return True
         return False
 
@@ -1482,7 +1674,28 @@ class TimelineView(QWidget):
                 else "選んだクリップは再生ヘッドの位置にありません"
             )
             return
-        self._request([SplitClip(clip.id, frame) for clip in targets], "再生ヘッドで分割")
+        # グループの 2 本以上を割るときは、後ろの片割れどうしを新しいグループにまとめる
+        # 全部の命令へ同じ組を渡す（取り消しは 1 回で全部戻る）
+        split_ids = {clip.id for clip in targets}
+        for clip in targets:
+            if clip.link_group is not None:
+                split_ids.update(
+                    member.id
+                    for _, member in self._project.timeline.linked_clips(clip.link_group)
+                    if member.contains(frame)
+                )
+        counts: dict[GroupId, int] = {}
+        for track in self._project.timeline.tracks:
+            for clip in track.clips:
+                if clip.id in split_ids and clip.group_id is not None:
+                    counts[clip.group_id] = counts.get(clip.group_id, 0) + 1
+        new_groups = tuple(
+            (group, new_group_id()) for group, count in sorted(counts.items()) if count >= 2
+        )
+        self._request(
+            [SplitClip(clip.id, frame, new_groups=new_groups) for clip in targets],
+            "再生ヘッドで分割",
+        )
 
     def delete_selected(self, *, ripple: bool = False) -> None:
         if not self._selection:
@@ -1912,10 +2125,17 @@ class TimelineView(QWidget):
             draw_track_add_button(painter, rect, hovered=self._add_button_hovered)
 
     def _press_add_button(self, position: QPoint) -> bool:
-        """「＋ トラック追加」の上なら、足す種類のメニューをボタンの下に出して真を返す"""
+        """「＋ トラック追加」の上なら、足す種類のメニューをボタンの下に出して真を返す
+
+        混合の方式ではメニューを出さずにレイヤーを 1 本足す 足せるのはレイヤーだけで、
+        選ぶ物が 1 つしか無いメニューは押す手間が 1 回増えるだけ（利用者の要望）
+        """
         rect = self.track_add_button()
         if rect is None or not rect.contains(position):
             return False
+        if places_mixed(self._project):
+            self._add_menus.add_track(TrackKind.MIXED)
+            return True
         self.build_track_add_menu().exec(self.mapToGlobal(rect.bottomLeft()))
         return True
 
@@ -1923,7 +2143,10 @@ class TimelineView(QWidget):
         rect = self.track_add_button()
         hovered = rect is not None and rect.contains(position)
         if hovered:
-            self.setToolTip(f"{ADD_TRACK_BUTTON_TEXT}（映像・音声・エフェクト）")
+            kinds = (
+                "レイヤーを 1 本足す" if places_mixed(self._project) else "映像・音声・エフェクト"
+            )
+            self.setToolTip(f"{ADD_TRACK_BUTTON_TEXT}（{kinds}）")
         if hovered != self._add_button_hovered:
             self._add_button_hovered = hovered
             self.update()
@@ -1939,6 +2162,12 @@ class TimelineView(QWidget):
         return spot_at(
             self._layout, self._painted_timeline(), position, real=self._project.timeline
         )
+
+    def _snapped_spot(self, position: QPointF) -> DropSpot:
+        """落とす先 置く頭を近くの位置へ吸い付かせる（磁石） 目安と落とした所で同じ物を使う"""
+        spot = self.drop_spot_at(position)
+        shift = self._snap_shift((spot.frame,))
+        return replace(spot, frame=max(0, spot.frame + shift)) if shift else spot
 
     @property
     def drop_guide(self) -> DropGuide | None:
@@ -1964,7 +2193,7 @@ class TimelineView(QWidget):
         mime = event.mimeData()
         # 目安を消す前に位置を求める 消してから求めると、見えていた並び（仮の行の入った
         # もの）と違う並びで読み、見ていたのと違うトラックへ落ちる
-        spot = self.drop_spot_at(event.position())
+        spot = self._snapped_spot(event.position())
         self._set_drop_guide(None)
         track = str(spot.track_id) if spot.track_id is not None else ""
         # 素材一覧から来た物を先に見る 一覧の行にファイルの URL が付いていても、
@@ -1984,6 +2213,7 @@ class TimelineView(QWidget):
             self.files_dropped.emit(paths, spot.frame, track)
 
     def _track_drag(self, event: QDragMoveEvent) -> None:
+        self._drag_modifiers = event.modifiers()
         mime = event.mimeData()
         if not accepts(mime):
             event.ignore()
@@ -1991,7 +2221,7 @@ class TimelineView(QWidget):
             return
         event.setDropAction(Qt.DropAction.CopyAction)
         event.accept()
-        spot = self.drop_spot_at(event.position())
+        spot = self._snapped_spot(event.position())
         self._set_drop_guide(DropGuide(spot, tuple(media_ids_in(mime))))
 
     def _set_drop_guide(self, guide: DropGuide | None) -> None:

@@ -11,18 +11,22 @@ from dataclasses import dataclass, replace
 
 from sashimono.core.commands.base import Command
 from sashimono.core.model import (
+    AnimatedValue,
     Blending,
     Clip,
     ClipId,
+    Effect,
     GroupId,
     LayerMode,
     MediaId,
     MediaItem,
+    ParamValue,
     Project,
     Track,
     TrackId,
     TrackKind,
     Transcript,
+    default_track_name,
     new_clip_id,
     new_group_id,
 )
@@ -39,6 +43,7 @@ __all__ = [
     "RemoveMedia",
     "RemoveTrack",
     "RenameProject",
+    "RenameTrack",
     "RippleCut",
     "SetBlending",
     "SetLayerMode",
@@ -449,6 +454,12 @@ class SplitClip(Command):
 
     clip_id: ClipId
     frame: int
+    #: 右側（後ろ）の片割れを移すグループ（元のグループ, 新しいグループ）の組
+    #: グループの何本かをまとめて割るとき、呼ぶ側が 1 つの新しいグループを決めて、同じ組を
+    #: 全部の割る命令へ渡す 渡さなければ右側も元のグループに残る（1 本だけ割ったとき）
+    #: 右側を元のグループに残すと、割った後もグループ全体が 1 つのままで、前と後ろを
+    #: 別々に選べない（利用者の報告）
+    new_groups: tuple[tuple[GroupId, GroupId], ...] = ()
 
     @property
     def label(self) -> str:
@@ -480,19 +491,79 @@ class SplitClip(Command):
             if track is None:
                 continue
             left_duration = self.frame - target.timeline_start
-            left = replace(target, duration=left_duration)
+            # キーフレームはクリップの頭から数える 後ろは割った所を頭にして数え直す
+            # （:meth:`AnimatedValue.split_at`） そのまま写すと、後ろのクリップにも前と同じ
+            # 位置付近に同じキーが入り、割っただけで動きが変わる
+            before, after = _split_animation(target, left_duration)
+            left = replace(before, duration=left_duration)
             right = replace(
-                target,
+                after,
                 id=new_clip_id(),
                 timeline_start=self.frame,
                 duration=target.timeline_end - self.frame,
                 # 右側は、左側が消費したソース時間の分だけ後ろから始まる
                 source_in=target.source_in + left_duration * rate.frame_duration * target.speed,
                 link_group=right_group,
+                group_id=dict(self.new_groups).get(target.group_id, target.group_id)
+                if target.group_id is not None
+                else None,
             )
             others = tuple(c for c in track.clips if c.id != target.id)
             timeline = timeline.replace_track(track.with_clips((*others, left, right)))
         return project.with_timeline(timeline)
+
+
+def _split_animation(clip: Clip, cut: int) -> tuple[Clip, Clip]:
+    """``clip`` の時間で動く値（不透明度・エフェクト・中身）を、頭から ``cut`` の所で分けた前後
+
+    長さと位置は変えない（割る側が決める） キーの無い値はそのまま両方へ渡す
+    """
+
+    def pair(value: ParamValue) -> tuple[ParamValue, ParamValue]:
+        if isinstance(value, AnimatedValue) and value.keyframes:
+            return value.split_at(cut)
+        return value, value
+
+    def params(
+        values: dict[str, ParamValue],
+    ) -> tuple[dict[str, ParamValue], dict[str, ParamValue]]:
+        split = {name: pair(value) for name, value in values.items()}
+        return (
+            {name: halves[0] for name, halves in split.items()},
+            {name: halves[1] for name, halves in split.items()},
+        )
+
+    def effects(stack: tuple[Effect, ...]) -> tuple[tuple[Effect, ...], tuple[Effect, ...]]:
+        halves = [params(effect.params) for effect in stack]
+        return (
+            tuple(replace(e, params=h[0]) for e, h in zip(stack, halves, strict=True)),
+            tuple(replace(e, params=h[1]) for e, h in zip(stack, halves, strict=True)),
+        )
+
+    opacity_before, opacity_after = clip.opacity.split_at(cut)
+    effects_before, effects_after = effects(clip.effects)
+    after_before, after_after = effects(clip.after_effects)
+    source_before = source_after = clip.source
+    if clip.source is not None:
+        params_before, params_after = params(clip.source.params)
+        source_before = replace(clip.source, params=params_before)
+        source_after = replace(clip.source, params=params_after)
+    return (
+        replace(
+            clip,
+            opacity=opacity_before,
+            effects=effects_before,
+            after_effects=after_before,
+            source=source_before,
+        ),
+        replace(
+            clip,
+            opacity=opacity_after,
+            effects=effects_after,
+            after_effects=after_after,
+            source=source_after,
+        ),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -568,6 +639,37 @@ class SetTrackState(Command):
             locked=track.locked if self.locked is None else self.locked,
         )
         return project.with_timeline(project.timeline.replace_track(updated))
+
+
+@dataclass(frozen=True, slots=True)
+class RenameTrack(Command):
+    """トラック（レイヤー）の名前を変える
+
+    前後の空白は落とす 空にしたら、その位置の既定の名前（``V2`` ``レイヤー 3`` など
+    :func:`~sashimono.core.model.default_track_name`）へ戻す 空の名前を残すと、見出しに
+    種類の名前しか出ず、どのレイヤーなのかを並びの位置で数えることになる
+    ほかのトラックと同じ名前も断らない（本人が付けた名前で、並びが違えば見分けられる）
+    既定へ戻すときだけは、ほかのトラックの名前と重ならない番号まで進める
+    """
+
+    track_id: TrackId
+    name: str
+
+    @property
+    def label(self) -> str:
+        return "トラックの名前を変更"
+
+    def apply(self, project: Project) -> Project:
+        track = _require_track(project, self.track_id)
+        name = self.name.strip()
+        if not name:
+            timeline = project.timeline
+            same = [t.id for t in timeline.tracks if t.kind is track.kind]
+            others = {t.name for t in timeline.tracks if t.id != track.id}
+            name = default_track_name(track.kind, same.index(track.id) + 1, others)
+        if name == track.name:
+            return project
+        return project.with_timeline(project.timeline.replace_track(replace(track, name=name)))
 
 
 #: トラックの高さ（画素） 下はトラック名とボタンが 1 行で収まる高さ、上は
@@ -898,20 +1000,24 @@ def _cut_clip(
     tail = clip.timeline_end - end
     if head <= 0 and tail <= 0:
         return []
+    # 残る部分のキーフレームは、割るとき（:class:`SplitClip`）と同じく分けて数え直す
+    # そのまま写すと、後ろに残った部分の動きが削った長さだけ前へずれる
     if head > 0 and tail <= 0:
-        return [replace(clip, duration=head)]
+        return [replace(_split_animation(clip, head)[0], duration=head)]
 
     # 範囲より後ろに残る部分 素材のどこから始まるかを計算し直す
     consumed = (end - clip.timeline_start) * rate.frame_duration * clip.speed
     right = replace(
-        clip,
+        _split_animation(clip, end - clip.timeline_start)[1],
         id=new_clip_id() if head > 0 else clip.id,
         timeline_start=start,
         duration=tail,
         source_in=clip.source_in + consumed,
         link_group=_regroup(clip.link_group, regrouped) if head > 0 else clip.link_group,
     )
-    return [replace(clip, duration=head), right] if head > 0 else [right]
+    if head <= 0:
+        return [right]
+    return [replace(_split_animation(clip, head)[0], duration=head), right]
 
 
 def _regroup(group: GroupId | None, regrouped: dict[GroupId, GroupId]) -> GroupId | None:

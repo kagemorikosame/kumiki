@@ -83,7 +83,7 @@ def insert_media(
     media: MediaItem,
     *,
     at_frame: int | None = None,
-    split_audio: bool = True,
+    split_audio: bool = False,
 ) -> list[Command]:
     """素材をメディアプールへ入れ、タイムラインの末尾（または指定位置）へ置く
 
@@ -92,10 +92,13 @@ def insert_media(
     混合の方式（:func:`~sashimono.core.commands.layers.places_mixed`）では 1 本の
     クリップにして、範囲の空いたレイヤーへ置く
 
-    ``split_audio`` は音声ストリームが 2 本以上ある素材の置き方（本人の設定
-    ``Preferences.multi_audio`` から渡す） 真なら音ごとに別のトラックへ置き、
-    混合の方式では絵のレイヤーの次のレイヤーから音を 1 本ずつ並べる（Issue #27 の要望）
-    偽なら 1 本目の音だけを置く 既定を真にするのは設定の既定と揃えるため
+    ``split_audio`` は映像と音声を分けて置くか（本人の設定 ``Preferences.media_split`` から
+    渡す） 真なら音ごとに別のトラックへ置き、混合の方式でも音声が 1 本の動画を含めて、
+    絵のレイヤーの次のレイヤーから音を 1 本ずつ並べる（Issue #27 の要望）
+    偽なら 1 本目の音だけを置き、混合の方式では絵と音を 1 本のクリップにまとめる
+    コアの既定は偽（前の版の置き方） 本人の設定の既定（分ける）は、置く入口（画面・AI）が
+    設定を読んで必ず渡す 既定を真にすると、渡し忘れた入口と互換の読み込みや道具で、
+    同じ動画が置き方によってレイヤーの数を変える
     """
     start = project.duration if at_frame is None else max(0, at_frame)
     return _place(
@@ -113,7 +116,7 @@ def place_media(
     *,
     at_frame: int,
     track_id: TrackId | None = None,
-    split_audio: bool = True,
+    split_audio: bool = False,
 ) -> list[Command]:
     """素材を、落とした位置（フレームとトラック）から順に並べて置く
 
@@ -126,8 +129,8 @@ def place_media(
     重なりで断られて何も置かれない
     映像と音声を持つ素材は、落とした側の種類だけがそのトラックへ入り、
     もう片方は合う種類の空いたトラックへ入る
-    混合の方式では 1 本のクリップで、落としたレイヤーが空いていればそこへ入る
-    音声が何本もある素材の置き方（``split_audio``）は :func:`insert_media` と同じ
+    混合の方式では落としたレイヤーが空いていれば絵がそこへ入る（まとめる設定なら 1 本のクリップ）
+    映像と音声の置き方（``split_audio``）は :func:`insert_media` と同じ
     """
     commands: list[Command] = []
     cursor = max(0, at_frame)
@@ -210,7 +213,8 @@ def _place(
     # 置いたときに付ける物を片方の方式にだけ足し忘れる
     first_sound = sounds[0] if sounds else None
     previous: Track | None = None
-    for kind, clip in media_placements(project, picture, first_sound, sounds[1:]):
+    placements = media_placements(project, picture, first_sound, sounds[1:], split=split_audio)
+    for kind, clip in placements:
         if kind is TrackKind.MIXED and previous is not None:
             track = layer_after(project, previous, clip.timeline_start, clip.timeline_end, commands)
         else:

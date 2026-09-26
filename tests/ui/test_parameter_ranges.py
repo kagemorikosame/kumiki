@@ -17,6 +17,17 @@ from sashimono.ui.inspector.widgets import create_editor
 INT_MAX = 2**31 - 1
 
 
+def _drag(slider: QSlider, *positions: int) -> None:
+    """つまみを掴んで ``positions`` へ順に動かし、離す（途中はプレビュー、離して確定）
+
+    掴まずに値だけ変えると、溝を押した・矢印キーで動かしたのと同じく、その場で確定になる
+    """
+    slider.setSliderDown(True)
+    for position in positions:
+        slider.setValue(position)
+    slider.setSliderDown(False)
+
+
 def _every_builtin_spec() -> list[ParameterSpec]:
     specs: list[ParameterSpec] = []
     for effect in registry.all():
@@ -62,9 +73,9 @@ def test_a_fine_lower_end_is_not_rounded_out_of_the_range(qt_application: QAppli
     changed: list[float] = []
     editor.value_previewed.connect(lambda value: previewed.append(value.static))
     editor.value_changed.connect(lambda value: changed.append(value.static))
-    slider.setValue(slider.maximum() // 2)
-    slider.setValue(slider.minimum())
-    slider.sliderReleased.emit()
+    # 掴んだ所と同じ値で離すと確定しない（何も変わらない段を積まない） 違う値から始める
+    editor.set_value(AnimatedValue(static=5.0))
+    _drag(slider, slider.maximum() // 2, slider.minimum())
     assert previewed[-1] == changed[-1] == box.value() == 0.004
     assert all(spec.minimum <= value <= spec.maximum for value in previewed + changed)
 
@@ -94,9 +105,10 @@ def test_a_fine_slider_step_sends_the_number_the_box_shows(qt_application: QAppl
     changed: list[float] = []
     editor.value_previewed.connect(lambda value: previewed.append(value.static))
     editor.value_changed.connect(lambda value: changed.append(value.static))
+    # 掴んだ所と同じ値で離すと確定しない（何も変わらない段を積まない） 違う値から始める
+    editor.set_value(AnimatedValue(static=10.0**6))
     for position in (1, 12345, slider.maximum() // 3):
-        slider.setValue(position)
-        slider.sliderReleased.emit()
+        _drag(slider, position)
         assert previewed[-1] == box.value()
         assert changed[-1] == box.value()
 
@@ -136,8 +148,7 @@ def test_the_slider_ends_of_a_huge_range_are_the_spec_ends(
         slider.minimum(),
         (slider.minimum() + slider.maximum()) // 2,
     ):
-        slider.setValue(position)
-        slider.sliderReleased.emit()
+        _drag(slider, position)
     assert previewed[0] == maximum
     assert previewed[1] == minimum
     assert changed[:2] == [maximum, minimum]

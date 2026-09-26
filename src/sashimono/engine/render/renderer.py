@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 from collections import OrderedDict
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from fractions import Fraction
@@ -36,6 +36,10 @@ from sashimono.core.model import (
     Project,
     Timeline,
     Track,
+    TrackId,
+    controlling_groups,
+    group_as_one,
+    group_reaches,
 )
 from sashimono.core.timebase import FrameRate, seconds_to_frame
 from sashimono.effects.easing import ease
@@ -58,6 +62,7 @@ from sashimono.engine.gpu import (
 )
 from sashimono.engine.gpu.projection import project
 from sashimono.engine.motion_shapes import TrailPaths
+from sashimono.engine.render.groups import grouped
 from sashimono.engine.render.invalidate import image_paths
 from sashimono.engine.render.outline import canvas_scale, is_generated, media_pixel_size
 from sashimono.engine.render.script_bake import ScriptEffectBaker
@@ -487,6 +492,9 @@ class FrameRenderer:
         #: 段ごと（:meth:`_compose_tracks`）に作り直す 入れ子のシーンや場面切り替えの中の
         #: クリップを、外の直前オブジェクトの相手にしないため
         self._drawn: list[tuple[Track, Clip]] = []
+        #: いま重ねているタイムラインの絵を描くトラックの並び（描かない物も含む）
+        #: グループ制御が受け持つ本数を数える（:meth:`_compose_timeline`）
+        self._picture_order: tuple[Track, ...] = ()
         #: 段ごとに、最後に写し取ったフレームバッファのクリップ 写し取った絵は
         #: ``framebuffer_seen`` の合成先にある（:meth:`_draw_previous` が下の写しに使う）
         self._framebuffer_seen: dict[int, str] = {}
@@ -627,7 +635,14 @@ class FrameRenderer:
         映像トラックと混合トラックを、並びの順（先頭が一番奥）に重ねる
         （:class:`~sashimono.core.model.Timeline` の重なり順）
         """
-        self._compose_tracks(list(timeline.active_picture_tracks()), frame, depth)
+        # グループ制御が受け持つ本数は、描かないトラックも含めた並びで数える（AviUtl は
+        # 非表示のレイヤーも番号として数える） 入れ子のシーンでは中の並びへ差し替えて戻す
+        outer = self._picture_order
+        self._picture_order = timeline.picture_tracks()
+        try:
+            self._compose_tracks(list(timeline.active_picture_tracks()), frame, depth)
+        finally:
+            self._picture_order = outer
 
     def _compose_tracks(
         self,
@@ -675,7 +690,33 @@ class FrameRenderer:
     ) -> None:
         """:meth:`_compose_tracks` が選んだクリップを下から重ねる"""
         below: Compositor | None = None
+        drawn_tracks = {track.id for track in tracks}
+        #: 1 枚の絵にまとめて描いたトラック 外の重ねでは描かない
+        bundled: set[TrackId] = set()
         for position, (index, track, clip) in enumerate(visible):
+            if track.id in bundled:
+                continue
+            if clip.is_group:
+                # グループ制御は自分では描かない 1 本ずつに掛ける物は、受け持つクリップを
+                # 描くときに当てる 1 枚にまとめる物は、ここで受け持つトラックを 1 枚に描いて
+                # から掛ける 下の形も残さない（上のクリップの切り抜きの相手にならない）
+                if group_as_one(clip):
+                    targets = [
+                        other
+                        for other in tracks
+                        if group_reaches(self._picture_order, track.id, clip, other.id)
+                    ]
+                    groups = [
+                        (group_track, group)
+                        for group_track, group in controlling_groups(
+                            self._picture_order, track.id, frame
+                        )
+                        if group_track.id in drawn_tracks and not group_as_one(group)
+                    ]
+                    bundled.update(other.id for other in targets)
+                    self._draw_group(track, clip, targets, groups, frame, rate, depth)
+                below = None
+                continue
             if clip.source is not None and clip.source.kind == "transition":
                 self._draw_transition(tracks[:index], clip, frame, rate, depth)
                 below = None
@@ -686,10 +727,18 @@ class FrameRenderer:
                 self._draw_filter(track, clip, frame, rate, depth)
                 below = None
                 continue
+            groups = [
+                (group_track, group)
+                for group_track, group in controlling_groups(self._picture_order, track.id, frame)
+                if group_track.id in drawn_tracks and not group_as_one(group)
+            ]
+            original = clip
+            if groups:
+                clip = grouped(original, groups, frame)
             if clip.clip_to_below:
                 self._draw_clipped(track, clip, frame, rate, depth, below)
             else:
-                self._draw_trail(track, clip, frame, rate, depth)
+                self._draw_trail(track, original, frame, rate, depth, groups)
                 self._draw_clip(track, clip, frame, rate, depth)
             above = visible[position + 1][2] if position + 1 < len(visible) else None
             # すぐ上のクリップがこのクリップの形で切り抜くなら、形を取っておく
@@ -703,14 +752,21 @@ class FrameRenderer:
             self._drawn.append((track, clip))
 
     def _draw_trail(
-        self, track: Track, clip: Clip, frame: int, rate: FrameRate, depth: int
+        self,
+        track: Track,
+        clip: Clip,
+        frame: int,
+        rate: FrameRate,
+        depth: int,
+        groups: Sequence[tuple[Track, Clip]] = (),
     ) -> None:
         """残像（``after_image``）を積んだクリップの、前のフレームの絵を薄くして先に描く
 
         1 フレーム前ほど濃く、強さの累乗で薄れる クリップの頭より前は描かない
         エフェクトはフレームごとに独立して描けるので、前のフレームを描き直せば済む
         """
-        trail = next((e for e in clip.effects if e.enabled and e.kind == "after_image"), None)
+        current = grouped(clip, groups, frame)
+        trail = next((e for e in current.effects if e.enabled and e.kind == "after_image"), None)
         if trail is None:
             return
         local_frame = frame - clip.timeline_start
@@ -719,16 +775,16 @@ class FrameRenderer:
         fade = min(max(keep / 100.0, 0.0), 0.99)
         samples = trail.params.get("samples")
         count = int(samples) if isinstance(samples, int | float) else 12
-        others = tuple(e for e in clip.effects if e.kind != "after_image")
         for back in range(min(count, local_frame), 0, -1):
             weight = fade**back
             if weight < 0.02:
                 continue
             earlier = frame - back
+            sample = grouped(clip, groups, earlier)
             faded = replace(
-                clip,
-                effects=others,
-                opacity=AnimatedValue(clip.opacity.at(earlier - clip.timeline_start) * weight),
+                sample,
+                effects=tuple(e for e in sample.effects if e.kind != "after_image"),
+                opacity=AnimatedValue(sample.opacity.at(earlier - sample.timeline_start) * weight),
             )
             self._draw_clip(track, faded, earlier, rate, depth)
 
@@ -1345,13 +1401,7 @@ class FrameRenderer:
         local_frame = frame - clip.timeline_start
         scene_frame = seconds_to_frame(clip.picture_time(local_frame, rate), rate)
 
-        width, height = self._compositor.width, self._compositor.height
-        nested = self._nested.get(depth + 1)
-        if nested is None:
-            nested = Compositor(width, height, encoded=self._encoded)
-            self._nested[depth + 1] = nested
-        nested.resize(width, height)
-
+        nested = self._nested_layer(depth + 1)
         outer = self._compositor
         self._compositor = nested
         try:
@@ -1359,7 +1409,53 @@ class FrameRenderer:
             self._compose_timeline(scene.timeline, scene_frame, depth=depth + 1)
         finally:
             self._compositor = outer
+        self._draw_nested(track, clip, nested, local_frame, rate)
 
+    def _nested_layer(self, depth: int) -> Compositor:
+        """入れ子の絵（シーン・1 枚にまとめるグループ制御）を描く合成先 深さごとに使い回す"""
+        width, height = self._compositor.width, self._compositor.height
+        nested = self._nested.get(depth)
+        if nested is None:
+            nested = Compositor(width, height, encoded=self._encoded)
+            self._nested[depth] = nested
+        nested.resize(width, height)
+        return nested
+
+    def _draw_group(
+        self,
+        track: Track,
+        group: Clip,
+        targets: list[Track],
+        groups: list[tuple[Track, Clip]],
+        frame: int,
+        rate: FrameRate,
+        depth: int,
+    ) -> None:
+        """「1 枚の絵として扱う」グループ制御 受け持つトラックを 1 枚に重ねてから掛ける
+
+        入れ子のシーンと同じ道で描く（透明から始めた合成先へ重ね、その絵へエフェクトと
+        不透明度を掛けて外へ重ねる） 1 本ずつに掛けると、重なった半透明どうしが透けて、
+        下の物が上の物越しに見える
+        """
+        if depth >= MAX_SCENE_DEPTH or not targets:
+            return
+        nested = self._nested_layer(depth + 1)
+        outer = self._compositor
+        self._compositor = nested
+        try:
+            nested.begin((0.0, 0.0, 0.0, 0.0))
+            self._compose_tracks(targets, frame, depth + 1)
+        finally:
+            self._compositor = outer
+        group = grouped(group, groups, frame)
+        self._draw_nested(track, group, nested, frame - group.timeline_start, rate)
+
+    def _draw_nested(
+        self, track: Track, clip: Clip, nested: Compositor, local_frame: int, rate: FrameRate
+    ) -> None:
+        """入れ子に描いた 1 枚の絵へ、`clip` のエフェクトと不透明度を掛けて今の合成先へ重ねる"""
+        outer = self._compositor
+        width, height = outer.width, outer.height
         gpu_effects, scripts = split_effects(clip.effects)
         full = Placement(0.0, 0.0, float(width), float(height))
         opacity = clip.opacity.at(local_frame)

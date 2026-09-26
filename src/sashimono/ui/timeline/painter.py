@@ -33,6 +33,7 @@ from sashimono.core.model import (
     Track,
     TrackKind,
     draws_picture,
+    heard_stream,
     plays_sound,
 )
 from sashimono.core.timebase import FrameRate, format_timecode
@@ -65,6 +66,7 @@ __all__ = [
     "track_add_button_rect",
     "track_button_rects",
     "track_name_rect",
+    "voice_label",
 ]
 
 #: 目盛りの間隔として使える値（フレーム数の基準となる秒数）
@@ -309,11 +311,16 @@ def draw_clip(
     selected: bool,
     clip_rect: QRect,
     scene_name: str | None = None,
+    editing: bool = False,
 ) -> None:
     """クリップ 1 個を描く
 
     ``clip_rect`` は画面に見えている部分に切り詰めた矩形 クリップ全体の矩形を
     渡すと、長いクリップで画面外まで描こうとして無駄が出る
+
+    ``editing`` はオブジェクト設定が今出しているクリップか グループやリンクの仲間は
+    一緒に選ばれて同じ白い枠が付くが、設定パネルが直すのはそのうちの 1 本だけ
+    太い枠と内側の色の線、名前の帯の色で、その 1 本を仲間と見分けられるようにする
     """
     picture, sound = clip_content(band.track, clip, media)
     # 色は絵を描くかで決める レイヤーの BGM やナレーションを映像の色で塗ると、
@@ -321,7 +328,8 @@ def draw_clip(
     is_video = picture or not sound
     body = Colors.VIDEO_CLIP if is_video else Colors.AUDIO_CLIP
     border = Colors.VIDEO_CLIP_BORDER if is_video else Colors.AUDIO_CLIP_BORDER
-    if clip.is_filter:
+    if clip.is_filter or clip.is_group:
+        # グループ制御もフィルタと同じく自分の絵を持たず、ほかのクリップへ掛ける物
         body, border = Colors.FILTER_CLIP, Colors.FILTER_CLIP_BORDER
 
     painter.save()
@@ -341,7 +349,15 @@ def draw_clip(
         if sound_rect is not None and waveform is not None:
             _draw_waveform(painter, sound_rect, clip, layout, rate, waveform)
 
-    _draw_clip_label(painter, clip_rect, clip, media, scene_name)
+    _draw_clip_label(
+        painter,
+        clip_rect,
+        clip,
+        media,
+        scene_name,
+        editing=editing,
+        voice=voice_label(band.track, clip, media),
+    )
     if clip.group_id is not None:
         # 束ねたクリップの下端に、グループごとの色の線を引く 同じ色の線どうしが
         # 同じグループ 選ばなくても、どれとどれが一緒に動くのかが分かる
@@ -351,9 +367,21 @@ def draw_clip(
             QColor.fromHsv(hue, 170, 235),
         )
 
-    painter.setPen(QPen(Colors.SELECTION if selected else border, 2 if selected else 1))
-    painter.drawRect(clip_rect.adjusted(0, 0, -1, -1))
+    if editing:
+        # 外に選んだ印（白）を太く、内側に色の線を引く 色だけを変えると、白い枠の
+        # 仲間と並んだときに線の太さが同じで見落とす
+        painter.setPen(QPen(Colors.SELECTION, EDITING_BORDER))
+        painter.drawRect(clip_rect.adjusted(1, 1, -2, -2))
+        painter.setPen(QPen(Colors.EDITING, 2))
+        painter.drawRect(clip_rect.adjusted(4, 4, -5, -5))
+    else:
+        painter.setPen(QPen(Colors.SELECTION if selected else border, 2 if selected else 1))
+        painter.drawRect(clip_rect.adjusted(0, 0, -1, -1))
     painter.restore()
+
+
+#: 設定パネルが出しているクリップの外枠の太さ（画素） 選んだだけの枠は 2
+EDITING_BORDER = 3
 
 
 def clip_content(track: Track, clip: Clip, media: MediaItem | None) -> tuple[bool, bool]:
@@ -424,8 +452,12 @@ def draw_dense_clips(
     width: int,
     selected: Collection[ClipId],
     sound_only: Callable[[Clip], bool] | None = None,
+    editing: ClipId | None = None,
 ) -> None:
     """名前も入らない細いクリップを、色の帯としてまとめて塗る
+
+    ``editing`` はオブジェクト設定が今出しているクリップ（:func:`draw_clip` と同じ）
+    細い帯でも、選んだ白い枠の内側に色の枠を重ねて仲間と見分けられるようにする
 
     ``sound_only`` はレイヤー（混合）で音だけのクリップか レイヤーは 1 本の中に絵と音の
     クリップが混ざるので、音だけの物を音声の色で塗る 渡さなければトラックの種類で決める
@@ -451,6 +483,7 @@ def draw_dense_clips(
     runs: list[list[int]] = []
     edges: list[tuple[int, int]] = []
     marked: list[tuple[int, int]] = []
+    focused: tuple[int, int] | None = None
     for clip in clips:
         left = max(header, int(header + (clip.timeline_start - scroll) * scale))
         right = max(left + 1, min(width, int(header + (clip.timeline_end - scroll) * scale)))
@@ -465,6 +498,8 @@ def draw_dense_clips(
             edges.append((left, colour))
         if clip.id in selected:
             marked.append((left, right))
+        if clip.id == editing:
+            focused = (left, right)
 
     # 塗りを全部済ませてから線を引く 交互にすると、あとの帯が前の線を塗りつぶす
     for left, right, enabled, colour in runs:
@@ -477,6 +512,11 @@ def draw_dense_clips(
         painter.setBrush(Qt.BrushStyle.NoBrush)
         for left, right in marked:
             painter.drawRect(left, top, max(2, right - left), height - 1)
+    if focused is not None:
+        left, right = focused
+        painter.setPen(QPen(Colors.EDITING, 2))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(left + 2, top + 2, max(1, right - left - 4), height - 5)
 
 
 def _is_hex(text: str) -> bool:
@@ -489,11 +529,21 @@ def _draw_clip_label(
     clip: Clip,
     media: MediaItem | None,
     scene_name: str | None = None,
+    *,
+    editing: bool = False,
+    voice: str | None = None,
 ) -> None:
     label_rect = QRect(rect.left(), rect.top(), rect.width(), Metrics.CLIP_LABEL_HEIGHT)
-    painter.fillRect(label_rect, QColor(0, 0, 0, 90))
+    # 設定パネルが出しているクリップは名前の帯を色で塗る 枠が画面の外に切れていても
+    # 名前の見えている所で見分けられる
+    shade = QColor(Colors.EDITING) if editing else QColor(0, 0, 0, 90)
+    if editing:
+        shade.setAlpha(170)
+    painter.fillRect(label_rect, shade)
 
     name = f"シーン: {scene_name}" if clip.scene_id is not None else _clip_name(clip, media)
+    if voice is not None:
+        name = f"{name}  {voice}"
     if clip.speed != 1:
         name = f"{name}  ×{float(clip.speed):g}"
     painter.setPen(QPen(Colors.CLIP_LABEL, 1))
@@ -505,6 +555,22 @@ def _draw_clip_label(
         Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
         name,
     )
+
+
+def voice_label(track: Track, clip: Clip, media: MediaItem | None) -> str | None:
+    """音声が何本もある素材の音を鳴らすクリップに添える「音声 N」 ほかは ``None``
+
+    音ごとに分けて置くと、どのレイヤーのクリップも同じ素材の名前になり、どれがゲームの
+    音でどれがマイクの声なのかを波形の形で見分けるしかなかった（利用者の画面の 4 本）
+    番号は素材の音声ストリームの並びで 1 から数える（ffprobe の番号は映像を含むので使わない）
+    """
+    if media is None or len(media.audio_streams) < 2 or not clip_content(track, clip, media)[1]:
+        return None
+    stream = heard_stream(track, clip)
+    numbers = [s.index for s in media.audio_streams]
+    # 素材に無い番号は、デコーダと同じく 1 本目として数える
+    number = numbers.index(stream) + 1 if stream in numbers else 1
+    return f"音声 {number}"
 
 
 def _clip_name(clip: Clip, media: MediaItem | None) -> str:

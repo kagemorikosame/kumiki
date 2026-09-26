@@ -1,10 +1,11 @@
-"""音声ストリームが 2 本以上ある素材の置き方（Issue #27 の流れ）
+"""動画の映像と音声の置き方（Issue #27 の流れ）
 
 利用者の要望は「レイヤー 1 に映像、レイヤー 2 以降に音声が入り、トラックが無ければ
 自動で足す」 1 本目の音だけを置くと、2 本目以降（ゲームの録画のマイクの声など）は
-タイムラインのどこにも無く、鳴らす手段が無い
+タイムラインのどこにも無く、鳴らす手段が無い 音声が 1 本の動画も同じく映像と音声を
+2 つのレイヤーに分ける
 
-設定（``split_audio``）で今までどおり 1 本目だけを映像と一緒に置くこともできる
+設定（``split_audio``）で今までどおり 1 本目だけを映像と一緒に 1 本のクリップで置くこともできる
 """
 
 from __future__ import annotations
@@ -99,7 +100,7 @@ def _only_clip(track: Track) -> Clip:
 class TestMixedLayers:
     def test_the_picture_and_each_voice_get_their_own_layer(self, two_voices: MediaItem) -> None:
         # 1 本のクリップにまとめると、2 本目の声がどこにも置かれず鳴らない
-        placed = _apply(_mixed(), insert_media(_mixed(), two_voices))
+        placed = _apply(_mixed(), insert_media(_mixed(), two_voices, split_audio=True))
         layers = placed.timeline.tracks
         assert [t.kind for t in layers] == [TrackKind.MIXED] * 3
         assert [t.name for t in layers] == ["レイヤー 1", "レイヤー 2", "レイヤー 3"]
@@ -120,7 +121,7 @@ class TestMixedLayers:
 
     def test_every_part_is_linked_together(self, two_voices: MediaItem) -> None:
         # 組が別れていると、絵を動かしたときに声だけ元の位置に残って口がずれる
-        commands = insert_media(_mixed(), two_voices)
+        commands = insert_media(_mixed(), two_voices, split_audio=True)
         groups = {c.clip.link_group for c in commands if isinstance(c, AddClip)}
         assert len(groups) == 1
         assert None not in groups
@@ -132,7 +133,7 @@ class TestMixedLayers:
 
     def test_each_voice_has_the_fixed_volume_and_fade(self, two_voices: MediaItem) -> None:
         # 固定の欄が無いと、置いた直後に 2 本目の声だけ音量をいじれない
-        placed = _apply(_mixed(), insert_media(_mixed(), two_voices))
+        placed = _apply(_mixed(), insert_media(_mixed(), two_voices, split_audio=True))
         for layer in placed.timeline.tracks[1:]:
             clip = _only_clip(layer)
             assert [e.kind for e in clip.effects if e.fixed] == list(SOUND_FIXED)
@@ -147,7 +148,7 @@ class TestMixedLayers:
         project = _mixed(
             Track(TrackKind.MIXED, "レイヤー 1"), busy, Track(TrackKind.MIXED, "レイヤー 3")
         )
-        placed = _apply(project, insert_media(project, two_voices, at_frame=0))
+        placed = _apply(project, insert_media(project, two_voices, at_frame=0, split_audio=True))
         names = [t.name for t in placed.timeline.tracks]
         assert names == ["レイヤー 1", "レイヤー 2", "レイヤー 3", "レイヤー 4"]
         first, _, third, fourth = placed.timeline.tracks
@@ -162,7 +163,7 @@ class TestMixedLayers:
             Track(TrackKind.MIXED, "レイヤー 1"),
             Track(TrackKind.MIXED, "レイヤー 2", clips=(text,)),
         )
-        placed = _apply(project, insert_media(project, two_voices, at_frame=0))
+        placed = _apply(project, insert_media(project, two_voices, at_frame=0, split_audio=True))
         tracks = placed.timeline.tracks
         # 絵は範囲で絵を描く一番手前（レイヤー 2）より手前の新しいレイヤー 3 へ入る
         assert [t.name for t in tracks] == [f"レイヤー {n}" for n in range(1, 6)]
@@ -174,7 +175,7 @@ class TestMixedLayers:
         # 何回も取り消すことになると、途中で止めた人に声だけのレイヤーが残る
         document = Document(_mixed())
         with document.checkpoint("配置"):
-            for command in insert_media(document.project, two_voices):
+            for command in insert_media(document.project, two_voices, split_audio=True):
                 document.execute(command)
         placed = document.project
         assert len(placed.timeline.tracks) == 3
@@ -185,12 +186,12 @@ class TestMixedLayers:
 
     def test_the_tracks_are_added_by_commands(self, two_voices: MediaItem) -> None:
         # モデルを直に書き換えると、取り消しの履歴に載らない
-        commands = insert_media(_mixed(), two_voices)
+        commands = insert_media(_mixed(), two_voices, split_audio=True)
         assert sum(isinstance(c, AddTrack) for c in commands) == 3
 
     def test_sound_only_media_splits_too(self, two_tracks_only: MediaItem) -> None:
         # 絵の無い素材で 2 本目を捨てると、吹き替えのもう一方の言語が消える
-        placed = _apply(_mixed(), insert_media(_mixed(), two_tracks_only))
+        placed = _apply(_mixed(), insert_media(_mixed(), two_tracks_only, split_audio=True))
         clips = [_only_clip(t) for t in placed.timeline.tracks]
         assert [c.audio_stream for c in clips] == [0, 1]
         assert not any(c.show_picture for c in clips)
@@ -201,7 +202,10 @@ class TestMixedLayers:
         # 落とした時だけ 1 本にまとまると、入口によって置かれ方が変わる
         layer = Track(TrackKind.MIXED, "レイヤー 1")
         project = _mixed(layer)
-        placed = _apply(project, place_media(project, [two_voices], at_frame=30, track_id=layer.id))
+        placed = _apply(
+            project,
+            place_media(project, [two_voices], at_frame=30, track_id=layer.id, split_audio=True),
+        )
         tracks = placed.timeline.tracks
         assert len(tracks) == 3
         assert _only_clip(tracks[0]).show_picture
@@ -226,7 +230,7 @@ class TestMixedLayers:
 class TestSeparatedTracks:
     def test_each_voice_gets_its_own_audio_track(self, two_voices: MediaItem) -> None:
         # 1 本目だけを音声トラックへ置くと、分ける方式でも 2 本目の声が鳴らない
-        placed = _apply(_separated(), insert_media(_separated(), two_voices))
+        placed = _apply(_separated(), insert_media(_separated(), two_voices, split_audio=True))
         kinds = [t.kind for t in placed.timeline.tracks]
         assert kinds == [TrackKind.VIDEO, TrackKind.AUDIO, TrackKind.AUDIO]
         video, first, second = (_only_clip(t) for t in placed.timeline.tracks)
@@ -239,7 +243,7 @@ class TestSeparatedTracks:
         # 空いている音声トラックを飛ばして新しく作ると、置くたびにトラックが増える
         a1, a2 = Track(TrackKind.AUDIO, "A1"), Track(TrackKind.AUDIO, "A2")
         project = _separated(Track(TrackKind.VIDEO, "V1"), a1, a2)
-        placed = _apply(project, place_media(project, [two_voices], at_frame=0))
+        placed = _apply(project, place_media(project, [two_voices], at_frame=0, split_audio=True))
         assert len(placed.timeline.tracks) == 3
         assert [_only_clip(t).stream_index for t in placed.timeline.tracks[1:]] == [1, 2]
 
@@ -249,11 +253,46 @@ class TestSeparatedTracks:
         assert [t.kind for t in placed.timeline.tracks] == [TrackKind.VIDEO, TrackKind.AUDIO]
 
 
-class TestSingleStreamUnchanged:
-    def test_one_voice_is_still_one_clip(self, video_media: MediaItem) -> None:
-        # 音が 1 本の素材まで分けると、今までの作品の置き方が変わる
-        placed = _apply(_mixed(), insert_media(_mixed(), video_media))
+class TestSingleStream:
+    """音声が 1 本の動画も、既定では映像と音声を 2 つのレイヤーに分ける（利用者の要望）"""
+
+    def test_one_voice_goes_to_its_own_layer(self, video_media: MediaItem) -> None:
+        # 1 本にまとめると、音だけ動かしたい・音だけ消したいときに分ける手間が要る
+        placed = _apply(_mixed(), insert_media(_mixed(), video_media, split_audio=True))
+        picture_layer, sound_layer = placed.timeline.tracks
+        picture, sound = _only_clip(picture_layer), _only_clip(sound_layer)
+        assert [t.name for t in placed.timeline.tracks] == ["レイヤー 1", "レイヤー 2"]
+        # 絵のクリップが音も持つと、同じ音が 2 回鳴る
+        assert picture.show_picture and picture.audio_stream is None
+        assert not sound.show_picture
+        assert sound.audio_stream == video_media.audio_streams[0].index
+        assert placed.plays_sound(sound_layer, sound)
+        assert not placed.plays_sound(picture_layer, picture)
+        assert [e.kind for e in sound.effects if e.fixed] == list(SOUND_FIXED)
+
+    def test_the_two_parts_move_together(self, video_media: MediaItem) -> None:
+        # リンクが無いと、映像を動かしても音が元の位置に残って口がずれる
+        placed = _apply(_mixed(), insert_media(_mixed(), video_media, split_audio=True))
+        picture, sound = (_only_clip(t) for t in placed.timeline.tracks)
+        assert picture.link_group is not None
+        assert picture.link_group == sound.link_group
+        moved = MoveClip(picture.id, 45).apply(placed)
+        assert [_only_clip(t).timeline_start for t in moved.timeline.tracks] == [45, 45]
+
+    def test_dropping_splits_too(self, video_media: MediaItem) -> None:
+        # 落とした時だけ 1 本にまとまると、入口によって置かれ方が変わる
+        layer = Track(TrackKind.MIXED, "レイヤー 1")
+        project = _mixed(layer)
+        commands = place_media(
+            project, [video_media], at_frame=0, track_id=layer.id, split_audio=True
+        )
+        assert sum(isinstance(c, AddClip) for c in commands) == 2
+
+    def test_the_setting_keeps_one_clip(self, video_media: MediaItem) -> None:
+        # 分けない設定を選んだのに分かれると、YMM4 のように 1 本で持ちたい人が困る
+        placed = _apply(_mixed(), insert_media(_mixed(), video_media, split_audio=False))
         (layer,) = placed.timeline.tracks
         clip = _only_clip(layer)
         assert clip.show_picture
         assert clip.audio_stream == video_media.audio_streams[0].index
+        assert clip.link_group is None

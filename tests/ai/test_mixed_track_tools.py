@@ -101,9 +101,23 @@ class TestMixedMode:
         assert added.name == "テロップ"
         assert added.solo
 
-    def test_place_media_makes_one_clip(self, video_media: MediaItem) -> None:
-        # 映像と音声の 2 本に分けて置くと、混合の作品で音声トラックが増える
+    def test_place_media_splits_onto_layers(self, video_media: MediaItem) -> None:
+        # 本人の設定（既定は分ける）を見ずに 1 本で置くと、画面から置いた物と形が変わる
+        # 分けても音声トラックは作らない（混合の作品に別の種類のトラックが増える）
         host = _mixed_host(video_media)
+        run(host, "place_media", media_id=str(video_media.id))
+        picture_layer, sound_layer = host.document.project.timeline.tracks
+        assert picture_layer.kind is sound_layer.kind is TrackKind.MIXED
+        (picture,), (sound,) = picture_layer.clips, sound_layer.clips
+        assert picture.audio_stream is None
+        assert sound.audio_stream == video_media.audio_streams[0].index
+        assert picture.link_group is not None
+        assert picture.link_group == sound.link_group
+
+    def test_place_media_makes_one_clip_when_told(self, video_media: MediaItem) -> None:
+        # 分けない設定を選んだ人の作品で AI だけ分けると、頼み方でレイヤーの数が変わる
+        host = _mixed_host(video_media)
+        host.split_audio = False
         run(host, "place_media", media_id=str(video_media.id))
         (layer,) = host.document.project.timeline.tracks
         assert layer.kind is TrackKind.MIXED
