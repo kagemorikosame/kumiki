@@ -36,6 +36,7 @@ from sashimono.core.model import (
     Project,
     Timeline,
     Track,
+    controlling_groups,
 )
 from sashimono.core.timebase import FrameRate, seconds_to_frame
 from sashimono.effects.easing import ease
@@ -58,6 +59,7 @@ from sashimono.engine.gpu import (
 )
 from sashimono.engine.gpu.projection import project
 from sashimono.engine.motion_shapes import TrailPaths
+from sashimono.engine.render.groups import grouped
 from sashimono.engine.render.invalidate import image_paths
 from sashimono.engine.render.outline import canvas_scale, is_generated, media_pixel_size
 from sashimono.engine.render.script_bake import ScriptEffectBaker
@@ -487,6 +489,9 @@ class FrameRenderer:
         #: 段ごと（:meth:`_compose_tracks`）に作り直す 入れ子のシーンや場面切り替えの中の
         #: クリップを、外の直前オブジェクトの相手にしないため
         self._drawn: list[tuple[Track, Clip]] = []
+        #: いま重ねているタイムラインの絵を描くトラックの並び（描かない物も含む）
+        #: グループ制御が受け持つ本数を数える（:meth:`_compose_timeline`）
+        self._picture_order: tuple[Track, ...] = ()
         #: 段ごとに、最後に写し取ったフレームバッファのクリップ 写し取った絵は
         #: ``framebuffer_seen`` の合成先にある（:meth:`_draw_previous` が下の写しに使う）
         self._framebuffer_seen: dict[int, str] = {}
@@ -627,7 +632,14 @@ class FrameRenderer:
         映像トラックと混合トラックを、並びの順（先頭が一番奥）に重ねる
         （:class:`~sashimono.core.model.Timeline` の重なり順）
         """
-        self._compose_tracks(list(timeline.active_picture_tracks()), frame, depth)
+        # グループ制御が受け持つ本数は、描かないトラックも含めた並びで数える（AviUtl は
+        # 非表示のレイヤーも番号として数える） 入れ子のシーンでは中の並びへ差し替えて戻す
+        outer = self._picture_order
+        self._picture_order = timeline.picture_tracks()
+        try:
+            self._compose_tracks(list(timeline.active_picture_tracks()), frame, depth)
+        finally:
+            self._picture_order = outer
 
     def _compose_tracks(
         self,
@@ -675,7 +687,13 @@ class FrameRenderer:
     ) -> None:
         """:meth:`_compose_tracks` が選んだクリップを下から重ねる"""
         below: Compositor | None = None
+        drawn_tracks = {track.id for track in tracks}
         for position, (index, track, clip) in enumerate(visible):
+            if clip.is_group:
+                # グループ制御は自分では描かない 受け持つクリップを描くときに当てる
+                # 下の形も残さない（上のクリップの切り抜きの相手にならない）
+                below = None
+                continue
             if clip.source is not None and clip.source.kind == "transition":
                 self._draw_transition(tracks[:index], clip, frame, rate, depth)
                 below = None
@@ -686,6 +704,13 @@ class FrameRenderer:
                 self._draw_filter(track, clip, frame, rate, depth)
                 below = None
                 continue
+            groups = [
+                (group_track, group)
+                for group_track, group in controlling_groups(self._picture_order, track.id, frame)
+                if group_track.id in drawn_tracks
+            ]
+            if groups:
+                clip = grouped(clip, groups, frame)
             if clip.clip_to_below:
                 self._draw_clipped(track, clip, frame, rate, depth, below)
             else:

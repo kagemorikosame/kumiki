@@ -58,7 +58,7 @@ from sashimono.core.model import (
     TrackKind,
 )
 from sashimono.effects.definition import EffectDefinition, registry
-from sashimono.effects.sources import SHAPE, TEXT, TRANSITION, source_registry
+from sashimono.effects.sources import GROUP, SHAPE, TEXT, TRANSITION, source_registry
 
 if TYPE_CHECKING:
     from sashimono.ui.timeline.view import TimelineView
@@ -229,6 +229,13 @@ class TimelineAddMenus:
             ),
         )
         _action(add, "フィルタ", functools.partial(self.place_filter, frame, track_id))
+        _action(
+            add,
+            "グループ制御",
+            functools.partial(
+                self.place_source, GROUP.create(), "グループ制御を追加", frame, track_id
+            ),
+        )
         add.addSeparator()
         custom = add.addMenu("カスタムオブジェクト")
         _lazily(custom, functools.partial(self._fill_custom_objects, custom, frame, track_id))

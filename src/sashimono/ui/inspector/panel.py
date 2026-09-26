@@ -473,8 +473,8 @@ class InspectorPanel(QWidget):
             self._effect_row(section, clip, transform, "scale", "拡大率")
             self._effect_row(section, clip, transform, "rotation", "回転角")
         # フィルタは下の絵を置き換えるだけで、合成方法も切り抜きも使わない 出しておくと、
-        # 選んでも何も変わらない欄を触らせることになる
-        if not clip.is_filter:
+        # 選んでも何も変わらない欄を触らせることになる グループ制御も自分の絵を持たない
+        if not (clip.is_filter or clip.is_group):
             section.add_row(
                 "合成モード",
                 self._blend_editor(section, clip),
@@ -484,7 +484,7 @@ class InspectorPanel(QWidget):
             )
         if flip is not None:
             self._effect_row(section, clip, flip, "horizontal", "左右反転")
-        if not clip.is_filter:
+        if not (clip.is_filter or clip.is_group):
             self._clip_check(
                 section, clip, "clip_to_below", "クリッピング", clip.clip_to_below, resettable=True
             )
@@ -676,6 +676,15 @@ class InspectorPanel(QWidget):
             return None
 
         section = _Section(definition.label)
+        if clip.is_group:
+            # 自分では描かないので、何を動かすのかをここで言う
+            section.add_note(
+                "手前に描くレイヤー（混合の方式では番号の大きい側）の対象レイヤー数ぶんの、"
+                "同じ時間にある物を"
+                " 1 つずつ、上の描画の X・Y・拡大率・回転角・不透明度で動かし、"
+                "下に積んだエフェクトを掛けます 位置と拡大と回転は画面の中央（X・Y の所）を"
+                "中心に掛かります"
+            )
         if clip.is_filter:
             # 設定の項目を持たないので、何もしない箱に見える 何に効くのかをここで言う
             section.add_note(

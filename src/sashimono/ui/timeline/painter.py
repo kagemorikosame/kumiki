@@ -328,7 +328,8 @@ def draw_clip(
     is_video = picture or not sound
     body = Colors.VIDEO_CLIP if is_video else Colors.AUDIO_CLIP
     border = Colors.VIDEO_CLIP_BORDER if is_video else Colors.AUDIO_CLIP_BORDER
-    if clip.is_filter:
+    if clip.is_filter or clip.is_group:
+        # グループ制御もフィルタと同じく自分の絵を持たず、ほかのクリップへ掛ける物
         body, border = Colors.FILTER_CLIP, Colors.FILTER_CLIP_BORDER
 
     painter.save()

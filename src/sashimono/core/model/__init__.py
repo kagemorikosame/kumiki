@@ -35,14 +35,18 @@ from sashimono.core.model.media import AudioStreamInfo, MediaItem, VideoStreamIn
 from sashimono.core.model.project import Blending, LayerMode, Project, ProjectSettings, Scene
 from sashimono.core.model.timeline import (
     FILTER_KIND,
+    GROUP_KIND,
+    GROUP_LAYERS,
     Clip,
     GeneratedSource,
     Marker,
     Timeline,
     Track,
     TrackKind,
+    controlling_groups,
     default_track_name,
     draws_picture,
+    group_layers,
     heard_stream,
     plays_sound,
 )
@@ -50,6 +54,8 @@ from sashimono.core.model.transcript import Transcript, TranscriptSegment, Word
 
 __all__ = [
     "FILTER_KIND",
+    "GROUP_KIND",
+    "GROUP_LAYERS",
     "AnimatedValue",
     "AudioStreamInfo",
     "Blending",
@@ -79,8 +85,10 @@ __all__ = [
     "TranscriptSegment",
     "VideoStreamInfo",
     "Word",
+    "controlling_groups",
     "default_track_name",
     "draws_picture",
+    "group_layers",
     "heard_stream",
     "new_clip_id",
     "new_effect_id",

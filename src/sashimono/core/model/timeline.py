@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterator
+from collections.abc import Collection, Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from fractions import Fraction
@@ -28,14 +28,18 @@ from sashimono.core.timebase import FrameRate
 
 __all__ = [
     "FILTER_KIND",
+    "GROUP_KIND",
+    "GROUP_LAYERS",
     "Clip",
     "GeneratedSource",
     "Marker",
     "Timeline",
     "Track",
     "TrackKind",
+    "controlling_groups",
     "default_track_name",
     "draws_picture",
+    "group_layers",
     "plays_sound",
 ]
 
@@ -58,6 +62,20 @@ __all__ = [
 #: 並べればよい 音声トラックに置いて下の音全体に掛ける使い方も、同じ種類のまま
 #: ミキサが読めば足せる（いまは映像だけ）
 FILTER_KIND = "filter"
+
+#: 下のレイヤーのオブジェクトをまとめて動かす生成オブジェクトの種類（AviUtl の拡張編集の
+#: グループ制御） 自分では何も描かず、置いたトラックより手前（並びの後ろ）の
+#: :data:`GROUP_LAYERS` 本のトラックの、同じ時刻に描くクリップ 1 本ずつへ、自分の配置
+#: （位置・拡大・回転）と不透明度とエフェクトを掛ける 掛け方は :func:`controlling_groups`
+#: と :mod:`sashimono.engine.render.groups`
+#:
+#: 混合の方式ではレイヤーの番号が大きい側（画面では下に並ぶ 描くと手前）を受け持つ
+#: AviUtl と同じ向き 分ける方式の映像トラックでも同じく並びの後ろ（画面では上の V）を持つ
+#: どちらも「自分より手前に描くトラック」で、描く順の決まりが 1 つで済む
+GROUP_KIND = "group_control"
+
+#: グループ制御の「対象レイヤー数」の項目の名前 0 なら手前のすべて
+GROUP_LAYERS = "layers"
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,6 +255,11 @@ class Clip:
     def is_filter(self) -> bool:
         """下のトラックの絵へエフェクトを掛けるクリップか（:data:`FILTER_KIND`）"""
         return self.source is not None and self.source.kind == FILTER_KIND
+
+    @property
+    def is_group(self) -> bool:
+        """下のレイヤーのオブジェクトを動かすグループ制御か（:data:`GROUP_KIND`）"""
+        return self.source is not None and self.source.kind == GROUP_KIND
 
     def contains(self, frame: int) -> bool:
         return self.timeline_start <= frame < self.timeline_end
@@ -524,6 +547,41 @@ def plays_sound(track: Track, clip: Clip, media: MediaItem | None) -> bool:
     # 素材に無い番号は鳴らさない デコーダは無い番号を頼まれると先頭の音へ逃げるので、
     # 手で直したファイルや差し替えた素材で、選んでいない言語が鳴る
     return media is None or any(s.index == clip.audio_stream for s in media.audio_streams)
+
+
+def group_layers(clip: Clip) -> int:
+    """グループ制御が受け持つトラックの本数 0 なら手前のすべて 壊れた値も 0 より小さくしない"""
+    value = clip.source.params.get(GROUP_LAYERS) if clip.source is not None else None
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return 1
+    return max(0, int(value))
+
+
+def controlling_groups(
+    tracks: Sequence[Track], track_id: TrackId, frame: int
+) -> list[tuple[Track, Clip]]:
+    """``track_id`` のトラックの ``frame`` の絵を動かすグループ制御 近い物から
+
+    ``tracks`` は描くトラックの並び（奥から手前 :meth:`Timeline.picture_tracks`）
+    数えるのはこの並びの本数 描いていない（ミュートした）トラックの本数も数えるよう、
+    呼ぶ側は描くかどうかで間引く前の並びを渡し、描かないグループ制御は ``enabled`` と
+    同じく呼ぶ側が外す（AviUtl は非表示のレイヤーも番号として数える）
+    グループ制御がグループ制御を受け持つこともある（入れ子） 近い物から並べて返すので、
+    呼ぶ側は近い物から順に当てる（内側のグループの動きを、外側のグループがさらに動かす）
+    """
+    position = next((index for index, track in enumerate(tracks) if track.id == track_id), None)
+    if position is None:
+        return []
+    found: list[tuple[Track, Clip]] = []
+    for index in range(position - 1, -1, -1):
+        track = tracks[index]
+        clip = track.clip_at(frame)
+        if clip is None or not clip.enabled or not clip.is_group:
+            continue
+        reach = group_layers(clip)
+        if reach == 0 or position - index <= reach:
+            found.append((track, clip))
+    return found
 
 
 def heard_stream(track: Track, clip: Clip) -> int | None:

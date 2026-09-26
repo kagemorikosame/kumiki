@@ -9,14 +9,22 @@ from __future__ import annotations
 
 import time
 from collections.abc import Collection
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QKeyEvent, QMouseEvent, QOpenGLContext, QPainter, QPen
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
 from sashimono.core.commands import Command
-from sashimono.core.model import Clip, ClipId, EffectId, MediaId, Project, Track
+from sashimono.core.model import (
+    Clip,
+    ClipId,
+    EffectId,
+    MediaId,
+    Project,
+    Track,
+    controlling_groups,
+)
 from sashimono.engine.cache.proxy import ProxyStore
 from sashimono.engine.gpu import CurrentGLContext, fit_placement
 from sashimono.engine.render import (
@@ -30,6 +38,7 @@ from sashimono.engine.render import (
     image_spans,
 )
 from sashimono.engine.render.background import BackgroundPrefetch
+from sashimono.engine.render.groups import grouped
 from sashimono.engine.render.outline import (
     Outline,
     Point,
@@ -659,9 +668,31 @@ class PreviewWidget(QOpenGLWidget):
         extent = self._extent_of(clip)
         if is_generated(clip) and extent is None:
             return None
-        return clip_outline(
-            self._project, clip, self._frame, canvas=self.canvas_size(), extent=extent
+        shown = self._grouped(clip)
+        outline = clip_outline(
+            self._project, shown, self._frame, canvas=self.canvas_size(), extent=extent
         )
+        if outline is not None and shown is not clip:
+            # グループ制御で動かした物の枠は、描いた所に出す ただ掴んで動かすのはクリップ自身の
+            # 配置なので、グループで拡大・回転していると指と絵の動きが合わない 点線にして知らせる
+            outline = replace(outline, approximate=True)
+        return outline
+
+    def _grouped(self, clip: Clip) -> Clip:
+        """グループ制御を当てた、描くときと同じクリップ 受け持つグループが無ければそのまま"""
+        located = self._project.timeline.locate_clip(clip.id)
+        if located is None:
+            return clip
+        timeline = self._project.timeline
+        drawn = {track.id for track in timeline.active_picture_tracks()}
+        groups = [
+            (track, group)
+            for track, group in controlling_groups(
+                timeline.picture_tracks(), located[0].id, self._frame
+            )
+            if track.id in drawn
+        ]
+        return grouped(clip, groups, self._frame)
 
     def _extent_of(
         self, clip: Clip
@@ -693,7 +724,7 @@ class PreviewWidget(QOpenGLWidget):
         chosen = next((e for e in effects if e.id == self._region_effect), effects[0])
         frame = region_frame(
             self._project,
-            clip,
+            self._grouped(clip),
             chosen.id,
             self._frame,
             canvas=self.canvas_size(),

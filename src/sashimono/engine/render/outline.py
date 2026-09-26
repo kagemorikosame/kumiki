@@ -94,7 +94,8 @@ def has_outline(clip: Clip) -> bool:
     （下の絵や入れ子の合成をそのまま使う） 枠を出すと、掴んでも枠のとおりには動かない
     直前オブジェクトの絵は下のクリップ次第で、自分の中身から大きさを出せない
     """
-    if clip.scene_id is not None or clip.is_filter:
+    if clip.scene_id is not None or clip.is_filter or clip.is_group:
+        # グループ制御も自分の絵を持たない（受け持つクリップを動かすだけ）
         return False
     source = clip.source
     return source is None or source.kind not in ("framebuffer", "transition", "previous_object")
