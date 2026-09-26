@@ -11,7 +11,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sashimono.core.model import FILTER_KIND, GROUP_KIND, GROUP_LAYERS, GeneratedSource, ParamValue
+from sashimono.core.model import (
+    FILTER_KIND,
+    GROUP_AS_ONE,
+    GROUP_KIND,
+    GROUP_LAYERS,
+    GeneratedSource,
+    ParamValue,
+)
 from sashimono.effects.easing import EASING_KINDS, EASING_MODES
 from sashimono.effects.spec import (
     CheckSpec,
@@ -310,6 +317,7 @@ GROUP = SourceDefinition(
     label="グループ制御",
     parameters=(
         ValueSpec(GROUP_LAYERS, "対象レイヤー数（0 で手前の全部）", 1, minimum=0, maximum=1000),
+        CheckSpec(GROUP_AS_ONE, "1 枚の絵として扱う（重なりが透けない）", False),
     ),
 )
 

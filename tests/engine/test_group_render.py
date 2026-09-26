@@ -17,6 +17,7 @@ import pytest
 from sashimono.core.commands import AddClip, AddMedia, AddTrack
 from sashimono.core.commands.fixed import TRANSFORM_EFFECT_KIND, with_fixed_items
 from sashimono.core.model import (
+    GROUP_AS_ONE,
     GROUP_KIND,
     GROUP_LAYERS,
     AnimatedValue,
@@ -167,3 +168,33 @@ def test_layers_past_the_reach_stay_put(gl_context: OffscreenGLContext, picture:
 def test_the_group_itself_draws_nothing(gl_context: OffscreenGLContext, picture: MediaItem) -> None:
     image = _render(gl_context, picture, _group(pos_x=40.0))
     assert image[:, :, :3].max() == 0
+
+
+def _as_one(group: Clip) -> Clip:
+    assert group.source is not None
+    return replace(group, source=group.source.with_param(GROUP_AS_ONE, True))
+
+
+def test_as_one_picture_hides_the_lower_object_under_the_upper(
+    gl_context: OffscreenGLContext, picture: MediaItem
+) -> None:
+    # 1 枚の絵として扱うと、重ねた 2 つを 1 枚にしてから半分に薄める 重なった所は上の物だけが
+    # 薄く出る（下の物が透けない） 1 本ずつだと、上の物越しに下の物が見える
+    group = replace(_group(layers=2), opacity=AnimatedValue(0.5))
+    lower, upper = _object(picture, pos_x=-12.0), _object(picture, pos_x=12.0)
+    reference = _render(gl_context, picture, lower, upper)
+    together = _render(gl_context, picture, _as_one(group), lower, upper)
+    separate = _render(gl_context, picture, group, lower, upper)
+    expected = (reference[:, :, :3] * 0.5).astype(np.int16)
+    assert np.abs(together[:, :, :3] - expected).max() <= 3
+    # 1 本ずつなら重なった所で下の物が透けて、1 枚にした絵と違う
+    assert np.abs(separate[:, :, :3] - together[:, :, :3]).max() > 20
+
+
+def test_as_one_moves_the_whole_picture(gl_context: OffscreenGLContext, picture: MediaItem) -> None:
+    # 配置は 1 枚の絵に掛かる 位置の動きは 1 本ずつに掛けたときと同じ所へ出る
+    together = _render(
+        gl_context, picture, _as_one(_group(pos_x=40.0, scale=200.0)), _object(picture, pos_x=10.0)
+    )
+    direct = _render(gl_context, picture, _object(picture, pos_x=60.0, scale=200.0))
+    _same(together, direct)

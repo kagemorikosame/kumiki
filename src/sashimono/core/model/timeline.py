@@ -28,6 +28,7 @@ from sashimono.core.timebase import FrameRate
 
 __all__ = [
     "FILTER_KIND",
+    "GROUP_AS_ONE",
     "GROUP_KIND",
     "GROUP_LAYERS",
     "Clip",
@@ -39,7 +40,9 @@ __all__ = [
     "controlling_groups",
     "default_track_name",
     "draws_picture",
+    "group_as_one",
     "group_layers",
+    "group_reaches",
     "plays_sound",
 ]
 
@@ -76,6 +79,11 @@ GROUP_KIND = "group_control"
 
 #: グループ制御の「対象レイヤー数」の項目の名前 0 なら手前のすべて
 GROUP_LAYERS = "layers"
+
+#: グループ制御の「1 枚の絵として扱う」の項目の名前 真なら受け持つトラックのその時刻の絵を
+#: 1 枚に重ねてから、グループの配置・不透明度・エフェクトを掛ける（重なった半透明が透けない）
+#: 偽（既定）なら 1 本ずつに掛ける
+GROUP_AS_ONE = "as_one"
 
 
 @dataclass(frozen=True, slots=True)
@@ -555,6 +563,26 @@ def group_layers(clip: Clip) -> int:
     if isinstance(value, bool) or not isinstance(value, int | float):
         return 1
     return max(0, int(value))
+
+
+def group_as_one(clip: Clip) -> bool:
+    """グループ制御が受け持つ物を 1 枚の絵にしてから掛けるか（:data:GROUP_AS_ONE）"""
+    return clip.source is not None and clip.source.params.get(GROUP_AS_ONE) is True
+
+
+def group_reaches(
+    tracks: Sequence[Track], group_track: TrackId, group: Clip, track_id: TrackId
+) -> bool:
+    """`group_track` に置いた `group` が `track_id` のトラックを受け持つか
+
+    `tracks` は :func:controlling_groups と同じ並び（描かない物も含む）
+    """
+    ids = [track.id for track in tracks]
+    if group_track not in ids or track_id not in ids:
+        return False
+    distance = ids.index(track_id) - ids.index(group_track)
+    reach = group_layers(group)
+    return distance > 0 and (reach == 0 or distance <= reach)
 
 
 def controlling_groups(

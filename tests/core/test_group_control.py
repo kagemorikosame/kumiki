@@ -109,3 +109,25 @@ def test_it_survives_saving(tmp_path: Path) -> None:
     loaded = load_project(path).timeline.tracks[0].clips[0]
     assert loaded.is_group
     assert group_layers(loaded) == 3
+
+
+def test_as_one_is_off_by_default_and_survives_saving(tmp_path: Path) -> None:
+    # 既定は 1 本ずつに掛ける（今までの動き） 入れた状態は保存に残る
+    from sashimono.core.model import GROUP_AS_ONE, group_as_one, group_reaches
+
+    assert not group_as_one(Clip(timeline_start=0, duration=1, source=GROUP.create()))
+    group = _group(layers=2)
+    assert group.source is not None
+    group = replace(group, source=group.source.with_param(GROUP_AS_ONE, True))
+    base = Project.create(ProjectSettings(layer_mode=LayerMode.MIXED))
+    tracks = _layers(group, _text(), _text(), _text())
+    project = base.with_timeline(replace(base.timeline, tracks=tracks))
+    assert [group_reaches(tracks, tracks[0].id, group, t.id) for t in tracks] == [
+        False,
+        True,
+        True,
+        False,
+    ]
+    path = tmp_path / "まとめる.sme"
+    save_project(project, path)
+    assert group_as_one(load_project(path).timeline.tracks[0].clips[0])
