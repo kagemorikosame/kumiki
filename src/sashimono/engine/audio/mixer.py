@@ -148,9 +148,7 @@ class AudioMixer:
                 continue
 
             stream = clip.audio_stream if track.kind is TrackKind.MIXED else clip.stream_index
-            samples = self._read_clip(
-                clip, begin - clip_start, end - begin, rate, depth, stream=stream
-            )
+            samples = self._read_clip(clip, begin - clip_start, end - begin, depth, stream=stream)
             if samples is None:
                 continue
             samples = _apply_effects(
@@ -165,7 +163,6 @@ class AudioMixer:
         clip: Clip,
         offset_samples: int,
         count: int,
-        rate: FrameRate,
         depth: int = 0,
         *,
         stream: int | None,

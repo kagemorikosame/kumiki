@@ -42,6 +42,12 @@ dev = [
     # 配る zip を作る（tools/build_package.py） 使う人の機械には入らない
     "pyinstaller>=6.22",
 ]
+mutation = [
+    # Windows で動く mutation testing mutmut は fork が要るため WSL の外では動かない
+    "pytest-gremlins==1.9.0",
+    # 生成例が変わると mutation の基準値も動くため、この検査だけは版を固定する
+    "hypothesis==6.168.1",
+]
 
 [project.scripts]
 sashimono = "sashimono.app:main"
@@ -65,8 +71,24 @@ line-length = 100
 src = ["src", "tests"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "N", "C4", "PTH"]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "N", "C4", "PTH", "ARG"]
 ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.per-file-ignores]
+# fixture と偽物の callback は、呼ぶ側の署名に合わせるため使わない引数を持つ
+"tests/**/*.py" = ["ARG"]
+
+[tool.pytest-gremlins]
+# 過去のレビューで境界値と状態遷移の指摘が繰り返された、外部機器なしで試せる核から始める
+# 全体を一度に対象にすると数時間になり、PR の検査として待てなくなる
+paths = [
+    "src/sashimono/core/timebase.py",
+    "src/sashimono/core/io/locks.py",
+]
+operators = ["comparison", "boundary", "boolean", "arithmetic", "return"]
+workers = 2
+cache = true
+report = ["console", "json"]
 
 [tool.mypy]
 python_version = "3.12"

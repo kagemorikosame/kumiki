@@ -321,7 +321,7 @@ def _handlers(call: _Call) -> dict[str, Any]:
         "push_result_function": refuse("関数を返すモジュール"),
         "deprecated_push_result_meta_table": refuse("メタテーブルを返すモジュール"),
         "push_result_meta_table": refuse("メタテーブルを返すモジュール"),
-        "get_param_meta_table": lambda i, m: None,
+        "get_param_meta_table": lambda _i, _m: None,
         "get_param_type": lambda i: _type(call.arg(i)) if 0 <= i < len(call.args) else -1,
     }
 
