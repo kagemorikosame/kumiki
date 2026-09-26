@@ -38,6 +38,7 @@ from sashimono.ui.scene_bar import SceneBar
 from sashimono.ui.timeline import TimelineView
 from sashimono.ui.timeline.layout import TimelineLayout
 from sashimono.ui.timeline.snap import nearest_snap, snap_targets
+from sashimono.ui.timeline.view import DragKind
 from sashimono.ui.workspace import Preferences, PreferenceStore
 
 _LEFT = Qt.MouseButton.LeftButton
@@ -141,6 +142,21 @@ class TestTargets:
     def test_the_nearest_within_reach_wins(self) -> None:
         assert nearest_snap((62, 122), [0, 60, 125], 4.0) == (-2, 60)
         assert nearest_snap((70,), [0, 60, 125], 4.0) is None
+
+    @pytest.mark.parametrize("kind", [DragKind.MOVE_CLIP, DragKind.TRIM_HEAD])
+    def test_a_locked_selection_stays_a_target(self, made: Made, kind: DragKind) -> None:
+        # 選んでいてもロックで動かない物まで外すと、その物の端へ吸着できない
+        locked, moving = _text(100), _text(300)
+        project = _project((locked,), (moving,))
+        tracks = (replace(project.timeline.tracks[0], locked=True), project.timeline.tracks[1])
+        project = project.with_timeline(replace(project.timeline, tracks=tracks))
+        view, _ = _open(made, project)
+        view.set_selection((locked.id, moving.id))
+        view._drag.kind = kind
+        view._drag.clip_id = moving.id
+        targets = view._snap_targets()
+        assert {100, 160} <= set(targets)
+        assert 300 not in targets and 360 not in targets
 
 
 class TestDragging:
