@@ -68,6 +68,7 @@ from sashimono.core.model import (
     TrackId,
     TrackKind,
     heard_stream,
+    new_group_id,
 )
 from sashimono.engine.cache import MediaAnalyzer
 from sashimono.ui.media_pool import media_ids_in
@@ -1560,8 +1561,13 @@ class TimelineView(QWidget):
         return True
 
     def ungroup_selected(self) -> bool:
+        """グループを解く 置いた動画の映像と音のつながり（リンク）も一緒に外す
+
+        利用者から見ると、置いた映像と音は一緒に動く「グループ」で、解けば別々に動かせて
+        ほしい（利用者の要望） リンクだけ残すと、グループ解除を押しても映像と音が離れない
+        """
         if not self._selection_has_group():
-            self.status_message.emit("グループに入っているクリップを選んでください")
+            self.status_message.emit("グループかリンクに入っているクリップを選んでください")
             return False
         command = UngroupClips(self._selection)
         self._request([command], command.label)
@@ -1571,7 +1577,9 @@ class TimelineView(QWidget):
         timeline = self._project.timeline
         for clip_id in self._selection:
             located = timeline.locate_clip(clip_id)
-            if located is not None and located[1].group_id is not None:
+            if located is not None and (
+                located[1].group_id is not None or located[1].link_group is not None
+            ):
                 return True
         return False
 
@@ -1668,7 +1676,28 @@ class TimelineView(QWidget):
                 else "選んだクリップは再生ヘッドの位置にありません"
             )
             return
-        self._request([SplitClip(clip.id, frame) for clip in targets], "再生ヘッドで分割")
+        # グループの 2 本以上を割るときは、後ろの片割れどうしを新しいグループにまとめる
+        # 全部の命令へ同じ組を渡す（取り消しは 1 回で全部戻る）
+        split_ids = {clip.id for clip in targets}
+        for clip in targets:
+            if clip.link_group is not None:
+                split_ids.update(
+                    member.id
+                    for _, member in self._project.timeline.linked_clips(clip.link_group)
+                    if member.contains(frame)
+                )
+        counts: dict[GroupId, int] = {}
+        for track in self._project.timeline.tracks:
+            for clip in track.clips:
+                if clip.id in split_ids and clip.group_id is not None:
+                    counts[clip.group_id] = counts.get(clip.group_id, 0) + 1
+        new_groups = tuple(
+            (group, new_group_id()) for group, count in sorted(counts.items()) if count >= 2
+        )
+        self._request(
+            [SplitClip(clip.id, frame, new_groups=new_groups) for clip in targets],
+            "再生ヘッドで分割",
+        )
 
     def delete_selected(self, *, ripple: bool = False) -> None:
         if not self._selection:

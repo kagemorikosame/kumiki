@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <!-- タイムラインの磁石（吸着）が入のときの印 U の字の磁石 色はアクセント（#7f8cf0） -->
+  <path d="M5 3 H9 V12 A3 3 0 0 0 15 12 V3 H19 V12 A7 7 0 0 1 5 12 Z" fill="#7f8cf0"/>
+  <rect x="5" y="3" width="4" height="4" fill="#e8eefc"/>
+  <rect x="15" y="3" width="4" height="4" fill="#e8eefc"/>
+</svg>

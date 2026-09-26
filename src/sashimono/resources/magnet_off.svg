@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <!-- タイムラインの磁石（吸着）が切のときの印 入の印と同じ形を薄い灰色で -->
+  <path d="M5 3 H9 V12 A3 3 0 0 0 15 12 V3 H19 V12 A7 7 0 0 1 5 12 Z" fill="#5a5a62"/>
+  <rect x="5" y="3" width="4" height="4" fill="#8b8b93"/>
+  <rect x="15" y="3" width="4" height="4" fill="#8b8b93"/>
+</svg>

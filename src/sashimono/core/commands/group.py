@@ -61,6 +61,11 @@ class UngroupClips(Command):
     """束ねを解く 渡したクリップが属する束ねは、ほかのメンバーごと解く
 
     一部だけを外すと、残ったメンバーが 1 本だけの束ねになることがある
+
+    置いた動画の映像と音のリンク（:attr:Clip.link_group）も同じく解く 画面ではリンクも
+    一緒に動く組に見え、グループ解除で外れないと、映像と音を別々に動かせない（利用者の要望）
+    リンクとグループを 1 つの仕組みにまとめなかったのは、リンクが「同じ素材の絵と音」として
+    読み込み・変換・AI の道具からも見られているため 解くときだけ両方を外す
     """
 
     clip_ids: tuple[ClipId, ...]
@@ -72,15 +77,27 @@ class UngroupClips(Command):
     def apply(self, project: Project) -> Project:
         timeline = project.timeline
         groups: set[GroupId] = set()
+        links: set[GroupId] = set()
         for clip_id in self.clip_ids:
             located = timeline.locate_clip(clip_id)
             if located is None:
                 raise KeyError(f"クリップが見つからない: {clip_id}")
             if located[1].group_id is not None:
                 groups.add(located[1].group_id)
-        if not groups:
-            raise ValueError("グループに入っているクリップがない")
-        members = tuple(
-            clip.id for track in timeline.tracks for clip in track.clips if clip.group_id in groups
-        )
-        return _set_group(project, members, None)
+            if located[1].link_group is not None:
+                links.add(located[1].link_group)
+        if not groups and not links:
+            raise ValueError("グループにもリンクにも入っているクリップがない")
+        for track in timeline.tracks:
+            if not any(c.group_id in groups or c.link_group in links for c in track.clips):
+                continue
+            clips = tuple(
+                replace(
+                    clip,
+                    group_id=None if clip.group_id in groups else clip.group_id,
+                    link_group=None if clip.link_group in links else clip.link_group,
+                )
+                for clip in track.clips
+            )
+            timeline = timeline.replace_track(replace(track, clips=clips))
+        return project.with_timeline(timeline)

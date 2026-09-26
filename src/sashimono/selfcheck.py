@@ -67,6 +67,7 @@ def run_self_check() -> list[CheckResult]:
         ("AviUtl スクリプト（Lua）", _lua, False),
         ("音の出口", _sound, True),
         ("スクリプト置き場", _script_roots, False),
+        ("同梱の絵（アイコン・ボタンの印）", _bundled_files, False),
         ("追加機能の導入（pip）", _pip, False),
     ]
     results = []
@@ -82,6 +83,16 @@ def run_self_check() -> list[CheckResult]:
             continue
         results.append(CheckResult(name, True, detail, optional))
     return results
+
+
+def _bundled_files() -> str:
+    """同梱の絵が揃っているか 積み忘れた物があれば名前を挙げて落とす"""
+    from sashimono.resources import BUNDLED_FILES, path_to
+
+    missing = [name for name in BUNDLED_FILES if not path_to(name).is_file()]
+    if missing:
+        raise FileNotFoundError("見つからない: " + "、".join(missing))
+    return f"{len(BUNDLED_FILES)} 個"
 
 
 def format_results(results: list[CheckResult]) -> str:

@@ -1014,3 +1014,13 @@ class TestTheEntryDoesNotNeedQt:
         assert completed.returncode == 1, completed.stderr
         assert shown.exists(), "結果の窓が出ていない"
         assert "[NG] Qt" in shown.read_text(encoding="utf-8")
+
+
+def test_the_bundled_pictures_are_collected(builder: ModuleType) -> None:
+    """同梱の絵（アイコン・磁石の印）を積む引数が組み立てに入っている
+
+    抜けると、配る版でボタンの印が黙って消える 揃っているかは自己診断（同梱の絵）も見る
+    """
+    arguments = builder.pyinstaller_arguments(Path("work"), Path("dist"))
+    index = arguments.index("--collect-data")
+    assert arguments[index + 1] == "sashimono.resources"

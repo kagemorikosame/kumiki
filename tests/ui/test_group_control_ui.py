@@ -51,7 +51,8 @@ def test_the_panel_shows_the_reach_and_hides_blending(
         headings = [s.heading for s in panel.findChildren(_Section)]
         assert "グループ制御" in headings
         names = {label.text() for label in panel.findChildren(_RowLabel)}
-        assert "対象レイヤー数（0 で手前の全部）" in names
+        # 名前の列は狭いので短くし、0 の意味は補足に書く
+        assert "対象レイヤー数" in names
         assert {"X", "Y", "拡大率", "回転角", "不透明度"} <= names
         assert "合成モード" not in names
         assert "クリッピング" not in names

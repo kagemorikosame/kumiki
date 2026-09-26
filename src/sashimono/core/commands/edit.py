@@ -454,6 +454,12 @@ class SplitClip(Command):
 
     clip_id: ClipId
     frame: int
+    #: 右側（後ろ）の片割れを移すグループ（元のグループ, 新しいグループ）の組
+    #: グループの何本かをまとめて割るとき、呼ぶ側が 1 つの新しいグループを決めて、同じ組を
+    #: 全部の割る命令へ渡す 渡さなければ右側も元のグループに残る（1 本だけ割ったとき）
+    #: 右側を元のグループに残すと、割った後もグループ全体が 1 つのままで、前と後ろを
+    #: 別々に選べない（利用者の報告）
+    new_groups: tuple[tuple[GroupId, GroupId], ...] = ()
 
     @property
     def label(self) -> str:
@@ -498,6 +504,9 @@ class SplitClip(Command):
                 # 右側は、左側が消費したソース時間の分だけ後ろから始まる
                 source_in=target.source_in + left_duration * rate.frame_duration * target.speed,
                 link_group=right_group,
+                group_id=dict(self.new_groups).get(target.group_id, target.group_id)
+                if target.group_id is not None
+                else None,
             )
             others = tuple(c for c in track.clips if c.id != target.id)
             timeline = timeline.replace_track(track.with_clips((*others, left, right)))

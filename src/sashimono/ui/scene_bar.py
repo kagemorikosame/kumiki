@@ -6,10 +6,13 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Signal, SignalInstance
+from PySide6.QtCore import QSize, Signal, SignalInstance
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QPushButton, QWidget
 
 from sashimono.core.model import Project, SceneId
+from sashimono.resources import MAGNET_ICONS, path_to
+from sashimono.ui.theme import Colors
 
 __all__ = ["MAIN_SCENE_LABEL", "SceneBar"]
 
@@ -63,14 +66,20 @@ class SceneBar(QWidget):
             layout.addWidget(button)
         layout.addStretch(1)
         # 磁石はタイムライン全体の操作の癖 シーンの操作から離して右端に置く
-        self._snap_button = QPushButton("磁石", self)
+        # 文字だけのボタンは入と切が見分けにくかった（利用者の報告） 印を入と切で描き分け、
+        # 入は押し込まれた地とアクセント色の縁、切は薄い灰色にする
+        self._snap_button = QPushButton(self)
+        self._snap_button.setObjectName("snap_button")
+        self._snap_button.setAccessibleName("磁石（吸着）")
         self._snap_button.setCheckable(True)
-        self._snap_button.setChecked(True)
-        self._snap_button.setToolTip(
-            "クリップを動かす・伸び縮みさせる・置くときに、ほかのクリップの端・再生位置・"
-            "キーフレーム・書き出し範囲の端へ吸い付く 動かしている途中で Shift を押している間は"
-            "吸い付かない"
+        self._snap_button.setIconSize(QSize(18, 18))
+        self._snap_button.setStyleSheet(
+            "QPushButton#snap_button { padding: 2px 6px; }"
+            f"QPushButton#snap_button:checked {{ background-color: {Colors.TAB_SELECTED.name()};"
+            f" border: 1px solid {Colors.ACCENT.name()}; }}"
         )
+        self._snap_button.setChecked(True)
+        self._show_snap_state(True)
         self._snap_button.toggled.connect(self._on_snap_toggled)
         layout.addWidget(self._snap_button)
 
@@ -112,8 +121,21 @@ class SceneBar(QWidget):
             self._updating = False
 
     def _on_snap_toggled(self, checked: bool) -> None:
+        self._show_snap_state(checked)
         if not self._updating:
             self.snap_toggled.emit(checked)
+
+    def _show_snap_state(self, enabled: bool) -> None:
+        """印と補足を入・切に合わせる 補足に今の状態と一時的に切るキーを書く"""
+        on, off = MAGNET_ICONS
+        self._snap_button.setIcon(QIcon(str(path_to(on if enabled else off))))
+        state = "入" if enabled else "切"
+        self._snap_button.setToolTip(
+            f"磁石（吸着）: {state} 押すと切り替わる\n"
+            "入のときは、クリップを動かす・伸び縮みさせる・置くときに、ほかのクリップの端・"
+            "再生位置・キーフレーム・書き出し範囲の端へ吸い付く\n"
+            "動かしている途中で Shift を押している間は一時的に吸い付かない"
+        )
 
     def _on_index_changed(self, index: int) -> None:
         if self._updating or index < 0:

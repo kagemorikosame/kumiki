@@ -15,6 +15,7 @@ from fractions import Fraction
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QIcon, QMouseEvent, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFrame,
     QGridLayout,
@@ -696,8 +697,28 @@ class InspectorPanel(QWidget):
             )
         for spec in definition.parameters:
             path = ParamPath.of_source(clip.id, spec.name)
-            self._param_row(section, spec.label, spec, path, clip.source.params.get(spec.name))
+            value = clip.source.params.get(spec.name)
+            if clip.is_group:
+                self._group_row(section, spec, path, value)
+                continue
+            self._param_row(section, spec.label, spec, path, value)
         return section
+
+    def _group_row(
+        self, section: _Section, spec: ParameterSpec, path: ParamPath, value: ParamValue | None
+    ) -> None:
+        """グループ制御の行 名前の列（96 画素）に長い名前を置くと頭しか見えないので短くし、
+        入り切りは欄の中に言葉を添える 前は「1 枚の絵として扱う」の名前が切れて四角だけが並び、
+        設定パネルにあるのに見つけられなかった（利用者の報告）"""
+        editor = self._make_editor(spec, path, value)
+        editor.setToolTip(spec.label)
+        if isinstance(spec, CheckSpec):
+            box = editor.findChild(QCheckBox)
+            if box is not None:
+                box.setText(spec.label)
+            section.add_row("重ね方", editor, reset=self._resetter(spec, path))
+            return
+        section.add_row("対象レイヤー数", editor, reset=self._resetter(spec, path))
 
     def _build_effect_section(
         self, clip: Clip, effect: Effect, index: int, *, after: bool = False
@@ -1340,8 +1361,8 @@ class _RowLabel(QLabel):
     def __init__(self, text: str, reset: Callable[[], None] | None) -> None:
         super().__init__(text)
         self._reset = reset
-        if reset is not None:
-            self.setToolTip(f"{text}（ダブルクリックで初期値に戻す）")
+        # 名前の列は狭く、長い名前は頭しか見えない 補足で全部を読めるようにする
+        self.setToolTip(f"{text}（ダブルクリックで初期値に戻す）" if reset is not None else text)
 
     @property
     def resettable(self) -> bool:
