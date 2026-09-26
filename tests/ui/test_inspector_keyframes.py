@@ -22,13 +22,16 @@ import pytest
 import shiboken6
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QMouseEvent
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QAbstractSlider,
     QApplication,
     QComboBox,
+    QDoubleSpinBox,
     QSlider,
     QStyle,
     QStyleOptionSlider,
+    QWidget,
 )
 
 from sashimono.core.commands import Command, Document, ParamPath
@@ -150,7 +153,7 @@ def _label(panel: InspectorPanel, text: str) -> _RowLabel:
 
 
 def _mouse(
-    widget: _RowLabel | QSlider,
+    widget: QWidget,
     kind: QEvent.Type,
     point: QPoint,
     buttons: Qt.MouseButton = Qt.MouseButton.LeftButton,
@@ -431,6 +434,34 @@ class TestHoldingTheSlider:
         _double_click(slider)
         assert harness.labels == ["不透明度を初期値に戻す"]
         assert harness.opacity(clip) == AnimatedValue(static=1.0)
+
+    def test_holding_on_the_groove_is_one_step(self, panel: InspectorPanel) -> None:
+        # 溝を押したままにすると、見た目によっては押した所へ飛び、ほかの見た目では 1 目盛りずつ
+        # 進み続ける どちらでも離したときに 1 段だけ積む 進むたびに積むと、長押し 1 回で
+        # 取り消しが何段も要る
+        harness, clip = _open(panel, AnimatedValue(static=0.2))
+        slider = self._slider(panel)
+        slider.window().show()
+        point = QPoint(slider.width() - 3, slider.height() // 2)
+        _mouse(slider, QEvent.Type.MouseButtonPress, point)
+        QTest.qWait(700)
+        _mouse(slider, QEvent.Type.MouseButtonRelease, point, Qt.MouseButton.NoButton)
+        assert harness.labels == ["opacity を変更"]
+        assert harness.opacity(clip).static > 0.2
+
+    def test_holding_a_spin_arrow_is_one_step(self, panel: InspectorPanel) -> None:
+        # 数値欄の増減のボタンの長押しも同じ 1 段ずつ積むと、戻すのに何回も押すことになる
+        harness, clip = _open(panel, AnimatedValue(static=0.2))
+        box = _opacity_editor(panel).findChild(QDoubleSpinBox)
+        assert box is not None
+        box.window().show()
+        up = QPoint(box.width() - 4, 3)
+        _mouse(box, QEvent.Type.MouseButtonPress, up)
+        QTest.qWait(900)
+        _mouse(box, QEvent.Type.MouseButtonRelease, up, Qt.MouseButton.NoButton)
+        assert harness.labels == ["opacity を変更"]
+        # 増えるか減るかはボタンの並べ方（見た目）次第 動いたことだけを見る
+        assert abs(harness.opacity(clip).static - 0.2) > 0.02
 
 
 class TestSlider:
