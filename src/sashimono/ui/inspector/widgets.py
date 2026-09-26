@@ -7,8 +7,10 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QObject, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QPointF, Qt, Signal
+from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QColorDialog,
     QComboBox,
@@ -151,6 +153,11 @@ class TrackEditor(ParameterEditor):
         self._slider.installEventFilter(self)
         #: 掴んだときの値 動かさずに離したときに、同じ値の変更を履歴へ積まないため
         self._pressed_at: float | None = None
+        #: 2 回目の押下（ダブルクリック）の位置と、そのときの値 動かさずに離したら初期値へ戻し、
+        #: 動かしたらふつうのドラッグにする（:meth:`eventFilter`）
+        self._double: tuple[QPointF, float] | None = None
+        #: 2 回目の押下を動かさずに離した 離したときの確定をせず、初期値へ戻す
+        self._resetting = False
 
         self._number = QDoubleSpinBox(self)
         # 桁数は範囲より先に決める Qt は範囲も値も今の桁数へ丸めるので、後から決めると
@@ -200,7 +207,7 @@ class TrackEditor(ParameterEditor):
         # 細かく、元の値を流すと、画面の数字とプレビュー・保存の値が食い違う
         # 桁が上限で足りないほど細かい端でも範囲の外へ出さない
         number = self._spec.clamp(self._number.value())
-        if not self._slider.isSliderDown():
+        if not self._slider.isSliderDown() and self._double is None:
             # 溝を押した・矢印キーで動かした 掴んでいないので離したときの知らせが来ない
             # プレビューだけにすると、絵は変わったのに履歴にも保存にも残らず、次に
             # 選び直したときに元の値へ戻る
@@ -214,6 +221,10 @@ class TrackEditor(ParameterEditor):
         self._pressed_at = self._number.value()
 
     def _on_release(self) -> None:
+        if self._resetting:
+            # ダブルクリック 押した所へ動いた分は確定せず、初期値へ戻す（:meth:`eventFilter`）
+            self._pressed_at = None
+            return
         # 確定もプレビューと同じ、数値欄に出ている値にそろえる
         number = self._spec.clamp(self._number.value())
         pressed, self._pressed_at = self._pressed_at, None
@@ -224,9 +235,35 @@ class TrackEditor(ParameterEditor):
         self._emit(AnimatedValue(static=number))
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802 - Qt の命名規約
-        if watched is self._slider and event.type() == QEvent.Type.MouseButtonDblClick:
+        """スライダーのダブルクリックで初期値へ戻す 押したまま動かせばふつうのドラッグ
+
+        2 回目の押下はダブルクリックとして届く ここで握りつぶすと、クリックの直後に
+        押したまま動かして値を合わせる操作（利用者の言う長押しの調整）で、つまみが
+        掴めずに値が初期値へ飛んだ 押下はスライダーへ通し、動かさずに離したときだけ戻す
+        """
+        if watched is not self._slider or not isinstance(event, QMouseEvent):
+            return super().eventFilter(watched, event)
+        kind = event.type()
+        if kind == QEvent.Type.MouseButtonDblClick:
+            if event.button() == Qt.MouseButton.LeftButton:
+                self._double = (event.position(), self._number.value())
+        elif kind == QEvent.Type.MouseMove and self._double is not None:
+            moved = (event.position() - self._double[0]).manhattanLength()
+            if moved >= QApplication.startDragDistance():
+                self._double = None
+        elif kind == QEvent.Type.MouseButtonRelease and self._double is not None:
+            _, before = self._double
+            self._double = None
+            # 掴んだ扱いをここで解く 離したときの確定（:meth:`_on_release`）は飛ばす
+            self._resetting = True
+            try:
+                self._slider.setSliderDown(False)
+            finally:
+                self._resetting = False
+            # 押した所へ動いた表示を元へ戻してから初期値を頼む 頼んだ値がもう初期値で
+            # 何も変わらなくても、確定していない押した所の値が出続けない
+            self._apply(before)
             self.reset_requested.emit()
-            return True
         return super().eventFilter(watched, event)
 
     def _to_slider(self, number: float) -> int:

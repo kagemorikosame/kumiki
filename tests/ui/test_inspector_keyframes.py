@@ -20,9 +20,16 @@ from pathlib import Path
 
 import pytest
 import shiboken6
-from PySide6.QtCore import QEvent, QPointF, Qt
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QMouseEvent
-from PySide6.QtWidgets import QAbstractSlider, QApplication, QComboBox, QSlider
+from PySide6.QtWidgets import (
+    QAbstractSlider,
+    QApplication,
+    QComboBox,
+    QSlider,
+    QStyle,
+    QStyleOptionSlider,
+)
 
 from sashimono.core.commands import Command, Document, ParamPath
 from sashimono.core.model import (
@@ -82,9 +89,9 @@ class _Harness:
         self._show(self.document.project)
 
     def _show(self, project: Project) -> None:
-        # 作り直した前の部品は後で消える 消えるまで待たないと、探したときに前の部品が当たる
+        # ここでは前の部品を消さない 押された部品の知らせの中から呼ばれるので、消すと
+        # 押された部品がその場で無くなってプロセスごと落ちる 探す前に消す（:func:`_settle`）
         self.panel.set_project(project)
-        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
     def _seek(self, frame: int) -> None:
         self.seeks.append(frame)
@@ -117,7 +124,18 @@ def _open(panel: InspectorPanel, opacity: AnimatedValue | None = None) -> tuple[
     return harness, clip
 
 
+def _settle() -> None:
+    """作り直した前の部品を消す 消えるまで待たないと、探したときに前の部品が当たる"""
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
+def _opacity_editor(panel: InspectorPanel) -> TrackEditor:
+    _settle()
+    return next(e for e in panel.findChildren(TrackEditor) if e.spec.name == "opacity")
+
+
 def _controls(panel: InspectorPanel, clip: Clip) -> KeyframeControls:
+    _settle()
     path = ParamPath.of_clip(clip.id, "opacity")
     found = [c for c in panel.findChildren(KeyframeControls) if c.path == path]
     assert len(found) == 1, "不透明度の ◀ ◆ ▶ が無い"
@@ -125,21 +143,61 @@ def _controls(panel: InspectorPanel, clip: Clip) -> KeyframeControls:
 
 
 def _label(panel: InspectorPanel, text: str) -> _RowLabel:
+    _settle()
     found = [label for label in panel.findChildren(_RowLabel) if label.text() == text]
     assert found, f"{text} の行が無い"
     return found[0]
 
 
-def _double_click(widget: _RowLabel | QSlider) -> None:
-    event = QMouseEvent(
-        QEvent.Type.MouseButtonDblClick,
-        QPointF(4, 4),
-        QPointF(4, 4),
-        Qt.MouseButton.LeftButton,
-        Qt.MouseButton.LeftButton,
-        Qt.KeyboardModifier.NoModifier,
+def _mouse(
+    widget: _RowLabel | QSlider,
+    kind: QEvent.Type,
+    point: QPoint,
+    buttons: Qt.MouseButton = Qt.MouseButton.LeftButton,
+) -> None:
+    position = QPointF(point)
+    QApplication.sendEvent(
+        widget,
+        QMouseEvent(
+            kind,
+            position,
+            widget.mapToGlobal(position),
+            Qt.MouseButton.LeftButton,
+            buttons,
+            Qt.KeyboardModifier.NoModifier,
+        ),
     )
-    QApplication.sendEvent(widget, event)
+
+
+def _handle(slider: QSlider) -> QPoint:
+    """つまみの真ん中 溝を押すと値が飛ぶので、掴む試験はここを押す"""
+    option = QStyleOptionSlider()
+    slider.initStyleOption(option)
+    return (
+        slider.style()
+        .subControlRect(
+            QStyle.ComplexControl.CC_Slider, option, QStyle.SubControl.SC_SliderHandle, slider
+        )
+        .center()
+    )
+
+
+def _double_click(widget: _RowLabel | QSlider) -> None:
+    """2 回目の押下（ダブルクリック）を送って、動かさずに離す"""
+    point = _handle(widget) if isinstance(widget, QSlider) else QPoint(4, 4)
+    _mouse(widget, QEvent.Type.MouseButtonDblClick, point)
+    _mouse(widget, QEvent.Type.MouseButtonRelease, point, Qt.MouseButton.NoButton)
+
+
+def _drag(slider: QSlider, first: QEvent.Type, distance: int) -> None:
+    """つまみを押したまま左へ ``distance`` 画素動かして離す"""
+    start = _handle(slider)
+    _mouse(slider, first, start)
+    for step in range(0, distance + 1, 5):
+        _mouse(slider, QEvent.Type.MouseMove, start - QPoint(step, 0))
+    _mouse(
+        slider, QEvent.Type.MouseButtonRelease, start - QPoint(distance, 0), Qt.MouseButton.NoButton
+    )
 
 
 def _animated(*keys: tuple[int, float]) -> AnimatedValue:
@@ -218,7 +276,7 @@ class TestJumping:
         harness, clip = _open(panel, _animated((10, 0.3), (50, 0.9)))
         panel.set_frame(START + 30)
         _controls(panel, clip).next.click()
-        editor = next(e for e in panel.findChildren(TrackEditor) if e.spec.name == "opacity")
+        editor = _opacity_editor(panel)
         editor.value_changed.emit(AnimatedValue(static=0.25))
         keys = harness.opacity(clip).keyframes
         assert [(k.frame, k.value) for k in keys] == [(10, 0.3), (50, 0.25)]
@@ -254,7 +312,7 @@ class TestReset:
     def test_double_clicking_the_slider_resets_too(self, panel: InspectorPanel) -> None:
         # 数の欄は数字を打ち直すのにダブルクリックを使う スライダーのダブルクリックで戻す
         harness, clip = _open(panel, AnimatedValue(static=0.4))
-        editor = next(e for e in panel.findChildren(TrackEditor) if e.spec.name == "opacity")
+        editor = _opacity_editor(panel)
         slider = editor.findChild(QSlider)
         assert slider is not None
         _double_click(slider)
@@ -313,7 +371,7 @@ class TestTheResetSetting:
         label = _label(panel, "不透明度")
         assert not label.resettable
         _double_click(label)
-        editor = next(e for e in panel.findChildren(TrackEditor) if e.spec.name == "opacity")
+        editor = _opacity_editor(panel)
         slider = editor.findChild(QSlider)
         assert slider is not None
         _double_click(slider)
@@ -337,11 +395,49 @@ class TestTheResetSetting:
             dialog.deleteLater()
 
 
+class TestHoldingTheSlider:
+    """押したまま動かす調整（利用者の言う長押し）と、ダブルクリックで戻すのを両立させる"""
+
+    def _slider(self, panel: InspectorPanel) -> QSlider:
+        editor = _opacity_editor(panel)
+        slider = editor.findChild(QSlider)
+        assert slider is not None
+        return slider
+
+    def test_pressing_and_dragging_adjusts_the_value(self, panel: InspectorPanel) -> None:
+        harness, clip = _open(panel, AnimatedValue(static=0.8))
+        _drag(self._slider(panel), QEvent.Type.MouseButtonPress, 40)
+        assert harness.labels == ["opacity を変更"]
+        assert harness.opacity(clip).static < 0.8
+
+    def test_a_press_right_after_a_click_still_drags(self, panel: InspectorPanel) -> None:
+        # クリックの直後の押下はダブルクリックとして届く 前はそれを握りつぶして初期値へ
+        # 戻していたので、クリックしてから押したまま動かすと、つまみが動かず値が 1.0 へ飛んだ
+        harness, clip = _open(panel, AnimatedValue(static=0.8))
+        slider = self._slider(panel)
+        _mouse(slider, QEvent.Type.MouseButtonPress, _handle(slider))
+        _mouse(slider, QEvent.Type.MouseButtonRelease, _handle(slider), Qt.MouseButton.NoButton)
+        assert harness.labels == [], "掴んで離しただけでは何も積まない"
+        _drag(slider, QEvent.Type.MouseButtonDblClick, 40)
+        assert harness.labels == ["opacity を変更"]
+        assert harness.opacity(clip).static < 0.8
+
+    def test_a_still_double_click_resets(self, panel: InspectorPanel) -> None:
+        # 動かさない 2 回目の押下は、今までどおり初期値へ戻す（1 回の取り消しで戻る）
+        harness, clip = _open(panel, AnimatedValue(static=0.4))
+        slider = self._slider(panel)
+        _mouse(slider, QEvent.Type.MouseButtonPress, _handle(slider))
+        _mouse(slider, QEvent.Type.MouseButtonRelease, _handle(slider), Qt.MouseButton.NoButton)
+        _double_click(slider)
+        assert harness.labels == ["不透明度を初期値に戻す"]
+        assert harness.opacity(clip) == AnimatedValue(static=1.0)
+
+
 class TestSlider:
     def test_clicking_the_groove_is_kept(self, panel: InspectorPanel) -> None:
         # 溝を押した分はプレビューにしか出ず、履歴にも保存にも残らなかった
         harness, clip = _open(panel, AnimatedValue(static=0.4))
-        editor = next(e for e in panel.findChildren(TrackEditor) if e.spec.name == "opacity")
+        editor = _opacity_editor(panel)
         slider = editor.findChild(QSlider)
         assert slider is not None
         slider.triggerAction(QAbstractSlider.SliderAction.SliderPageStepAdd)
@@ -351,7 +447,7 @@ class TestSlider:
     def test_grabbing_without_moving_adds_no_step(self, panel: InspectorPanel) -> None:
         # 掴んで離しただけ（ダブルクリックの 1 回目も）で同じ値の段が積まれていた
         harness, _ = _open(panel, AnimatedValue(static=0.4))
-        editor = next(e for e in panel.findChildren(TrackEditor) if e.spec.name == "opacity")
+        editor = _opacity_editor(panel)
         slider = editor.findChild(QSlider)
         assert slider is not None
         slider.setSliderDown(True)
