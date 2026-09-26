@@ -9,6 +9,7 @@ on:
       - "src/sashimono/core/io/locks.py"
       - "tests/core/test_timebase.py"
       - "tests/test_locks.py"
+      - "tests/conftest.py"
       - "tests/test_mutation_gate.py"
       - "tools/check_mutation.py"
       - "pyproject.toml"
