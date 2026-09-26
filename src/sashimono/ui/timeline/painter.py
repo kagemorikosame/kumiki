@@ -33,6 +33,7 @@ from sashimono.core.model import (
     Track,
     TrackKind,
     draws_picture,
+    heard_stream,
     plays_sound,
 )
 from sashimono.core.timebase import FrameRate, format_timecode
@@ -65,6 +66,7 @@ __all__ = [
     "track_add_button_rect",
     "track_button_rects",
     "track_name_rect",
+    "voice_label",
 ]
 
 #: 目盛りの間隔として使える値（フレーム数の基準となる秒数）
@@ -346,7 +348,15 @@ def draw_clip(
         if sound_rect is not None and waveform is not None:
             _draw_waveform(painter, sound_rect, clip, layout, rate, waveform)
 
-    _draw_clip_label(painter, clip_rect, clip, media, scene_name, editing=editing)
+    _draw_clip_label(
+        painter,
+        clip_rect,
+        clip,
+        media,
+        scene_name,
+        editing=editing,
+        voice=voice_label(band.track, clip, media),
+    )
     if clip.group_id is not None:
         # 束ねたクリップの下端に、グループごとの色の線を引く 同じ色の線どうしが
         # 同じグループ 選ばなくても、どれとどれが一緒に動くのかが分かる
@@ -520,6 +530,7 @@ def _draw_clip_label(
     scene_name: str | None = None,
     *,
     editing: bool = False,
+    voice: str | None = None,
 ) -> None:
     label_rect = QRect(rect.left(), rect.top(), rect.width(), Metrics.CLIP_LABEL_HEIGHT)
     # 設定パネルが出しているクリップは名前の帯を色で塗る 枠が画面の外に切れていても
@@ -530,6 +541,8 @@ def _draw_clip_label(
     painter.fillRect(label_rect, shade)
 
     name = f"シーン: {scene_name}" if clip.scene_id is not None else _clip_name(clip, media)
+    if voice is not None:
+        name = f"{name}  {voice}"
     if clip.speed != 1:
         name = f"{name}  ×{float(clip.speed):g}"
     painter.setPen(QPen(Colors.CLIP_LABEL, 1))
@@ -541,6 +554,22 @@ def _draw_clip_label(
         Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
         name,
     )
+
+
+def voice_label(track: Track, clip: Clip, media: MediaItem | None) -> str | None:
+    """音声が何本もある素材の音を鳴らすクリップに添える「音声 N」 ほかは ``None``
+
+    音ごとに分けて置くと、どのレイヤーのクリップも同じ素材の名前になり、どれがゲームの
+    音でどれがマイクの声なのかを波形の形で見分けるしかなかった（利用者の画面の 4 本）
+    番号は素材の音声ストリームの並びで 1 から数える（ffprobe の番号は映像を含むので使わない）
+    """
+    if media is None or len(media.audio_streams) < 2 or not clip_content(track, clip, media)[1]:
+        return None
+    stream = heard_stream(track, clip)
+    numbers = [s.index for s in media.audio_streams]
+    # 素材に無い番号は、デコーダと同じく 1 本目として数える
+    number = numbers.index(stream) + 1 if stream in numbers else 1
+    return f"音声 {number}"
 
 
 def _clip_name(clip: Clip, media: MediaItem | None) -> str:

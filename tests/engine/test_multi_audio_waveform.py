@@ -34,6 +34,7 @@ from sashimono.engine.audio import AudioMixer, Waveform
 from sashimono.engine.cache import CacheStore, MediaAnalyzer, load_waveform, waveform_key
 from sashimono.engine.decode import probe_media
 from sashimono.ui.timeline import TimelineView
+from sashimono.ui.timeline.painter import voice_label
 from tests.media_fixtures import libx264_available
 
 #: 音ごとの大きさ（dB） 無音は ``None`` 並びは素材の音声ストリームの順
@@ -186,6 +187,27 @@ def test_each_layer_sounds_its_own_voice(media: MediaItem) -> None:
     assert streams == [s.index for s in media.audio_streams]
     assert peaks[0] < 1e-3
     assert sorted(range(len(peaks)), key=lambda n: -peaks[n]) == _expected_order()
+
+
+def test_each_voice_layer_says_which_voice_it_is(media: MediaItem) -> None:
+    # 名前が素材の名前だけだと、4 本の音のレイヤーがどれも同じ名前で、どれが何の音か
+    # 波形の形でしか見分けられない
+    project = _placed(media)
+    labels = [
+        voice_label(track, clip, media) for track in project.timeline.tracks for clip in track.clips
+    ]
+    assert labels == [None, "音声 1", "音声 2", "音声 3", "音声 4"]
+
+
+def test_a_single_voice_gets_no_number(video_media: MediaItem) -> None:
+    # 音が 1 本しか無い素材に番号を付けると、どのクリップの名前も長くなるだけ
+    project = _placed(video_media)
+    labels = [
+        voice_label(track, clip, video_media)
+        for track in project.timeline.tracks
+        for clip in track.clips
+    ]
+    assert labels == [None, None]
 
 
 class _Recording(MediaAnalyzer):
