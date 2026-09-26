@@ -587,6 +587,8 @@ class TimelineView(QWidget):
         start_frame, end_frame = self._layout.visible_range(width)
         scale = self._layout.pixels_per_frame
         selected = self._highlighted()
+        # 設定パネルが出している 1 本 選んだ仲間と見分けて描く（主の選択は最後に選んだ物）
+        editing = self.selected_clip
         media: dict[MediaId, MediaItem] | None = None
         for band in self._layout.bands(timeline):
             if band.bottom <= Metrics.RULER_HEIGHT or band.top >= self.height():
@@ -600,7 +602,9 @@ class TimelineView(QWidget):
                     continue
                 rect = clip_rect_for(clip, band, self._layout, width)
                 if rect is not None:
-                    self._paint_detailed(painter, band, clip, rect, clip.id in selected)
+                    self._paint_detailed(
+                        painter, band, clip, rect, clip.id in selected, clip.id == editing
+                    )
             sound_only = None
             if dense and band.track.kind is TrackKind.MIXED:
                 # 素材の引き表は、細い帯のあるレイヤーが出たときに 1 度だけ作って使い回す
@@ -608,7 +612,9 @@ class TimelineView(QWidget):
                 if media is None:
                     media = {item.id: item for item in self._project.media}
                 sound_only = self._sound_only(band.track, media)
-            draw_dense_clips(painter, band, dense, self._layout, width, selected, sound_only)
+            draw_dense_clips(
+                painter, band, dense, self._layout, width, selected, sound_only, editing
+            )
 
         self._draw_drag_preview(painter)
         self._work_area.paint_tracks(
@@ -706,7 +712,13 @@ class TimelineView(QWidget):
         ]
 
     def _paint_detailed(
-        self, painter: QPainter, band: TrackBand, clip: Clip, rect: QRect, selected: bool
+        self,
+        painter: QPainter,
+        band: TrackBand,
+        clip: Clip,
+        rect: QRect,
+        selected: bool,
+        editing: bool = False,
     ) -> None:
         media = self._project.find_media(clip.media_id) if clip.media_id is not None else None
         scene = self._project.find_scene(clip.scene_id) if clip.scene_id is not None else None
@@ -728,6 +740,7 @@ class TimelineView(QWidget):
             scene_name=scene.name
             if scene is not None
             else ("（消えたシーン）" if clip.scene_id else None),
+            editing=editing,
         )
         draw_keyframes(painter, clip, self._layout, rect, selected=selected)
         self._value_lines.paint(
