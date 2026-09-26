@@ -40,6 +40,7 @@ from sashimono.core.commands import (
     MoveClips,
     RemoveClip,
     RemoveClips,
+    RenameTrack,
     SetTrackHeights,
     SetTrackState,
     SplitClip,
@@ -100,9 +101,11 @@ from sashimono.ui.timeline.painter import (
     draw_track_header,
     track_add_button_rect,
     track_button_rects,
+    track_name_rect,
 )
 from sashimono.ui.timeline.painter import draw_clip as paint_clip
 from sashimono.ui.timeline.track_drag import TrackDragger
+from sashimono.ui.timeline.track_name import TrackNameEditor
 from sashimono.ui.timeline.value_line import ValueGrab, ValueLineEditor
 from sashimono.ui.timeline.work_area import WorkAreaEditor
 from sashimono.ui.timeline.zoom_scrollbar import ZoomScrollBar
@@ -265,6 +268,8 @@ class TimelineView(QWidget):
         #: 開いているシーン（メインなら ``None``） 〔追加〕→〔シーン〕から自分自身を外す
         self._open_scene: SceneId | None = None
         self._add_button_hovered = False
+        #: ヘッダで書き換えている名前の入力欄（:meth:`begin_rename`） 無ければ ``None``
+        self._name_editor: TrackNameEditor | None = None
         #: 書き出し範囲の Shift+ドラッグと、その帯 ほかのドラッグとは別に持つ
         self._work_area = WorkAreaEditor(self._request)
         #: ファイルや素材を引いてきている間の、落ちる所の目安 引いていなければ ``None``
@@ -1355,6 +1360,7 @@ class TimelineView(QWidget):
                 toggle.setCheckable(True)
                 toggle.setChecked(bool(getattr(track, attribute)))
             _action(menu, f"{name} の高さを戻す", functools.partial(self._reset_height, track.id))
+            _action(menu, f"{name} の名前を変更…", functools.partial(self.begin_rename, track.id))
         self._work_area.add_menu_actions(
             menu, self._layout, position, self._project.timeline.work_area
         )
@@ -1364,11 +1370,66 @@ class TimelineView(QWidget):
         return menu
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt の命名規約
-        hit = self._clip_at(event.position().toPoint())
+        position = event.position().toPoint()
+        if self._rename_at(position):
+            return
+        hit = self._clip_at(position)
         if hit is not None and hit[1].scene_id is not None:
             self.scene_open_requested.emit(str(hit[1].scene_id))
             return
         super().mouseDoubleClickEvent(event)
+
+    # --- トラックの名前 ---
+
+    def _rename_at(self, position: QPoint) -> bool:
+        """ヘッダの名前の所のダブルクリックなら、名前の入力欄を出して真を返す
+
+        M・S・L のボタンの上は除く 続けて押しただけで名前の入力になると、ミュートを
+        2 回切り替えたつもりの操作が名前の変更に化ける
+        """
+        if position.x() >= Metrics.TRACK_HEADER_WIDTH or position.y() < Metrics.RULER_HEIGHT:
+            return False
+        if self._track_button_at(position) is not None:
+            return False
+        if self._resize_band_at(position) is not None:
+            return False
+        band = self._layout.band_at(self._project.timeline, position.y())
+        if band is None:
+            return False
+        return self.begin_rename(band.track.id) is not None
+
+    def begin_rename(self, track_id: TrackId) -> TrackNameEditor | None:
+        """ヘッダの名前の所に入力欄を重ねて出す 見えていないトラックなら ``None``
+
+        決めた名前は :meth:`rename_track` へ渡る 入力欄はビューの子にして、ヘッダの
+        名前と同じ所へ置く 別の窓で尋ねると、どのトラックの名前なのかが隠れる
+        """
+        band = next(
+            (b for b in self._layout.bands(self._project.timeline) if b.track.id == track_id),
+            None,
+        )
+        if band is None or band.bottom <= Metrics.RULER_HEIGHT or band.top >= self.height():
+            return None
+        if self._name_editor is not None and not self._name_editor.done:
+            self._name_editor.commit()
+        editor = TrackNameEditor(self, track_id, band.track.name)
+        editor.setGeometry(track_name_rect(band).adjusted(-4, -3, 4, 3))
+        editor.committed.connect(lambda track, name: self.rename_track(TrackId(track), name))
+        editor.show()
+        editor.setFocus()
+        editor.selectAll()
+        self._name_editor = editor
+        return editor
+
+    def rename_track(self, track_id: TrackId, name: str) -> bool:
+        """トラックの名前を変える（取り消せる） 変わらなければ何も出さずに偽"""
+        if self._project.timeline.find_track(track_id) is None:
+            return False
+        command = RenameTrack(track_id, name)
+        if command.apply(self._project) is self._project:
+            return False
+        self._request([command], command.label)
+        return True
 
     def group_selected(self) -> bool:
         """選んでいるクリップを束ねる 2 本以上要る"""

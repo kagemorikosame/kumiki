@@ -23,6 +23,7 @@ from sashimono.core.model import (
     TrackId,
     TrackKind,
     Transcript,
+    default_track_name,
     new_clip_id,
     new_group_id,
 )
@@ -39,6 +40,7 @@ __all__ = [
     "RemoveMedia",
     "RemoveTrack",
     "RenameProject",
+    "RenameTrack",
     "RippleCut",
     "SetBlending",
     "SetLayerMode",
@@ -568,6 +570,37 @@ class SetTrackState(Command):
             locked=track.locked if self.locked is None else self.locked,
         )
         return project.with_timeline(project.timeline.replace_track(updated))
+
+
+@dataclass(frozen=True, slots=True)
+class RenameTrack(Command):
+    """トラック（レイヤー）の名前を変える
+
+    前後の空白は落とす 空にしたら、その位置の既定の名前（``V2`` ``レイヤー 3`` など
+    :func:`~sashimono.core.model.default_track_name`）へ戻す 空の名前を残すと、見出しに
+    種類の名前しか出ず、どのレイヤーなのかを並びの位置で数えることになる
+    ほかのトラックと同じ名前も断らない（本人が付けた名前で、並びが違えば見分けられる）
+    既定へ戻すときだけは、ほかのトラックの名前と重ならない番号まで進める
+    """
+
+    track_id: TrackId
+    name: str
+
+    @property
+    def label(self) -> str:
+        return "トラックの名前を変更"
+
+    def apply(self, project: Project) -> Project:
+        track = _require_track(project, self.track_id)
+        name = self.name.strip()
+        if not name:
+            timeline = project.timeline
+            same = [t.id for t in timeline.tracks if t.kind is track.kind]
+            others = {t.name for t in timeline.tracks if t.id != track.id}
+            name = default_track_name(track.kind, same.index(track.id) + 1, others)
+        if name == track.name:
+            return project
+        return project.with_timeline(project.timeline.replace_track(replace(track, name=name)))
 
 
 #: トラックの高さ（画素） 下はトラック名とボタンが 1 行で収まる高さ、上は
