@@ -99,10 +99,10 @@ class PlainAnalyzer(MediaAnalyzer):
             return None
         return self._source.filmstrip(media)
 
-    def waveform(self, media: MediaItem) -> Waveform | None:
+    def waveform(self, media: MediaItem, stream: int | None = None) -> Waveform | None:
         if self._source is None or not self._show_waveforms:
             return None
-        return self._source.waveform(media)
+        return self._source.waveform(media, stream)
 
 
 def make_media(directory: Path, seconds: int = MEDIA_SECONDS) -> tuple[MediaItem, MediaItem]:

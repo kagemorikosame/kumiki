@@ -40,8 +40,8 @@ class StubAnalyzer(MediaAnalyzer):
     def __init__(self, waveform: Waveform | None = None) -> None:
         self._stub = waveform
 
-    def waveform(self, media: MediaItem) -> Waveform | None:
-        del media
+    def waveform(self, media: MediaItem, stream: int | None = None) -> Waveform | None:
+        del media, stream
         return self._stub
 
     def close(self) -> None:

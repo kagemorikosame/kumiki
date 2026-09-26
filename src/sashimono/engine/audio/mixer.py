@@ -20,6 +20,7 @@ from sashimono.core.model import (
     Timeline,
     Track,
     TrackKind,
+    heard_stream,
 )
 from sashimono.core.timebase import FrameRate
 from sashimono.effects.audio import AudioContext
@@ -147,7 +148,7 @@ class AudioMixer:
             if begin >= end or not self._project.plays_sound(track, clip):
                 continue
 
-            stream = clip.audio_stream if track.kind is TrackKind.MIXED else clip.stream_index
+            stream = heard_stream(track, clip)
             samples = self._read_clip(clip, begin - clip_start, end - begin, depth, stream=stream)
             if samples is None:
                 continue

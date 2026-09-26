@@ -524,3 +524,16 @@ def plays_sound(track: Track, clip: Clip, media: MediaItem | None) -> bool:
     # 素材に無い番号は鳴らさない デコーダは無い番号を頼まれると先頭の音へ逃げるので、
     # 手で直したファイルや差し替えた素材で、選んでいない言語が鳴る
     return media is None or any(s.index == clip.audio_stream for s in media.audio_streams)
+
+
+def heard_stream(track: Track, clip: Clip) -> int | None:
+    """``track`` に置いた ``clip`` が鳴らす音声ストリームの番号 音を持たなければ ``None``
+
+    音声トラックは :attr:`Clip.stream_index`、混合トラックは :attr:`Clip.audio_stream`
+    混合トラックの ``stream_index`` は絵のストリームを指す 音を鳴らす所（ミキサ）と
+    波形を描く所が同じ決まりで番号を選ぶため、ここ 1 か所に置く 別々に選ぶと、
+    鳴っている音と違う音の波形が出る
+    """
+    if track.kind is TrackKind.MIXED:
+        return clip.audio_stream
+    return clip.stream_index

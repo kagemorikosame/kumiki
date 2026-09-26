@@ -65,6 +65,7 @@ from sashimono.core.model import (
     Track,
     TrackId,
     TrackKind,
+    heard_stream,
 )
 from sashimono.engine.cache import MediaAnalyzer
 from sashimono.ui.media_pool import media_ids_in
@@ -711,7 +712,11 @@ class TimelineView(QWidget):
             self._project.rate,
             media=media,
             filmstrip=self._analyzer.filmstrip(media) if media is not None else None,
-            waveform=self._analyzer.waveform(media) if media is not None else None,
+            # 鳴らす音の波形を出す 素材だけで引くと、音声が何本もある動画を音ごとに分けて
+            # 置いたとき、どのレイヤーにも 1 本目の波形が出る
+            waveform=self._analyzer.waveform(media, heard_stream(band.track, clip))
+            if media is not None
+            else None,
             selected=selected,
             clip_rect=rect,
             scene_name=scene.name

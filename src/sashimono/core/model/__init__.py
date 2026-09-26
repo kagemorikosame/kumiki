@@ -43,6 +43,7 @@ from sashimono.core.model.timeline import (
     TrackKind,
     default_track_name,
     draws_picture,
+    heard_stream,
     plays_sound,
 )
 from sashimono.core.model.transcript import Transcript, TranscriptSegment, Word
@@ -80,6 +81,7 @@ __all__ = [
     "Word",
     "default_track_name",
     "draws_picture",
+    "heard_stream",
     "new_clip_id",
     "new_effect_id",
     "new_group_id",
