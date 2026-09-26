@@ -28,6 +28,7 @@ from sashimono.core.model import (
     GeneratedSource,
     Keyframe,
     Project,
+    TrackKind,
 )
 from sashimono.effects import registry
 from sashimono.effects.region import PARTIAL_FILTER, REGION_BLUR
@@ -133,6 +134,16 @@ class TestTheFrame:
         # 中心は (160 - 40, 90 - 30)
         assert found[3].corners[0] == pytest.approx((100.0, 50.0))
         assert found[3].corners[2] == pytest.approx((140.0, 70.0))
+
+    def test_a_sound_only_clip_has_no_region_frame(self, make_widget: MakeWidget) -> None:
+        # 絵を出さない音声クリップに枠を残すと、見えない範囲を動かせてしまう
+        visible = _with(_clip(_media()), _region())
+        project, _ = _project(visible)
+        hidden = replace(visible, show_picture=False)
+        track = replace(project.timeline.tracks[0], kind=TrackKind.MIXED, clips=(hidden,))
+        project = project.with_timeline(replace(project.timeline, tracks=(track,)))
+        widget = make_widget(project, hidden.id)
+        assert widget._region() is None
 
     def test_the_last_touched_region_is_shown(self, make_widget: MakeWidget) -> None:
         # 2 つ積んだとき、設定パネルで触った方の枠を出す

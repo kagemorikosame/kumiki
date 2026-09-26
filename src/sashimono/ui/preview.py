@@ -716,6 +716,8 @@ class PreviewWidget(QOpenGLWidget):
         track, clip = located
         if not clip.enabled or not clip.timeline_start <= self._frame < clip.timeline_end:
             return None
+        if not self._project.draws_picture(track, clip):
+            return None
         if all(t.id != track.id for t in self._project.timeline.active_picture_tracks()):
             return None
         effects = region_effects(clip)

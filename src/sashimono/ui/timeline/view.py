@@ -1225,10 +1225,18 @@ class TimelineView(QWidget):
 
     def _snap_targets(self) -> list[int]:
         """吸い付く先 動かしている物（選んだ物とリンクした相手）は除く 同じ中身の間は覚える"""
-        moving = frozenset(member.id for _, member in self._moving_members()) | frozenset(
-            self._selection
+        dragging = self._drag.kind in (
+            DragKind.MOVE_CLIP,
+            DragKind.TRIM_HEAD,
+            DragKind.TRIM_TAIL,
         )
-        if self._drag.clip_id is not None:
+        moving = (
+            frozenset(member.id for _, member in self._moving_members())
+            | frozenset(self._selection)
+            if dragging
+            else frozenset()
+        )
+        if dragging and self._drag.clip_id is not None:
             located = self._project.timeline.locate_clip(self._drag.clip_id)
             if located is not None:
                 moving |= {located[1].id}

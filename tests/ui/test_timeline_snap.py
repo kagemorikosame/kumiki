@@ -41,6 +41,7 @@ from sashimono.ui.timeline.snap import nearest_snap, snap_targets
 from sashimono.ui.workspace import Preferences, PreferenceStore
 
 _LEFT = Qt.MouseButton.LeftButton
+type Made = tuple[list[TimelineView], MediaAnalyzer]
 
 
 def _text(start: int, duration: int = 60, opacity: AnimatedValue | None = None) -> Clip:
@@ -57,18 +58,19 @@ def _project(*layers: tuple[Clip, ...], media: tuple[MediaItem, ...] = ()) -> Pr
 
 
 @pytest.fixture
-def made(qt_application: QApplication) -> Iterator[list[TimelineView]]:
+def made(qt_application: QApplication) -> Iterator[Made]:
     del qt_application
     views: list[TimelineView] = []
     analyzer = MediaAnalyzer(sample_rate=48000, channels=2)
-    yield views
+    yield views, analyzer
     for view in views:
         view.deleteLater()
     analyzer.close()
 
 
-def _open(made: list[TimelineView], project: Project) -> tuple[TimelineView, list[list[Command]]]:
-    view = TimelineView(project, MediaAnalyzer(sample_rate=48000, channels=2))
+def _open(made: Made, project: Project) -> tuple[TimelineView, list[list[Command]]]:
+    views, analyzer = made
+    view = TimelineView(project, analyzer)
     view.resize(1000, 300)
     # 1 フレーム 2 画素 吸い付く距離 8 画素は 4 フレーム
     view._layout = TimelineLayout(pixels_per_frame=2.0)
@@ -82,7 +84,7 @@ def _open(made: list[TimelineView], project: Project) -> tuple[TimelineView, lis
         view.set_project(updated)
 
     view.commands_requested.connect(apply)
-    made.append(view)
+    views.append(view)
     return view, received
 
 
@@ -142,14 +144,14 @@ class TestTargets:
 
 
 class TestDragging:
-    def test_a_moved_clip_snaps_to_the_end_of_another(self, made: list[TimelineView]) -> None:
+    def test_a_moved_clip_snaps_to_the_end_of_another(self, made: Made) -> None:
         # 頭を 62 へ落とすと、上のレイヤーのクリップの終わり 60 へ吸い付く
         view, _ = _open(made, _project((_text(0),), (_text(200),)))
         _drag(view, _point(view, 1, 220), _point(view, 1, 82))
         assert _start(view, 1) == 60
         assert view.snap_line == 60
 
-    def test_shift_while_dragging_turns_it_off(self, made: list[TimelineView]) -> None:
+    def test_shift_while_dragging_turns_it_off(self, made: Made) -> None:
         view, _ = _open(made, _project((_text(0),), (_text(200),)))
         _drag(
             view,
@@ -159,13 +161,13 @@ class TestDragging:
         )
         assert _start(view, 1) == 62
 
-    def test_the_toolbar_setting_turns_it_off(self, made: list[TimelineView]) -> None:
+    def test_the_toolbar_setting_turns_it_off(self, made: Made) -> None:
         view, _ = _open(made, _project((_text(0),), (_text(200),)))
         view.set_snap(False)
         _drag(view, _point(view, 1, 220), _point(view, 1, 82))
         assert _start(view, 1) == 62
 
-    def test_the_end_snaps_to_the_playhead(self, made: list[TimelineView]) -> None:
+    def test_the_end_snaps_to_the_playhead(self, made: Made) -> None:
         # 終わりの端を伸ばして、再生位置 150 の近く（148）で離す
         view, _ = _open(made, _project((_text(0),), (_text(200),)))
         view.set_playhead(150, follow=False)
@@ -173,16 +175,18 @@ class TestDragging:
         _drag(view, edge, _point(view, 0, 148))
         assert view.project.timeline.tracks[0].clips[0].timeline_end == 150
 
-    def test_a_keyframe_attracts_too(self, made: list[TimelineView]) -> None:
+    def test_a_keyframe_attracts_too(self, made: Made) -> None:
         keyed = _text(0, duration=120, opacity=AnimatedValue(1.0, keyframes=(Keyframe(90, 0.5),)))
         view, _ = _open(made, _project((keyed,), (_text(300),)))
         _drag(view, _point(view, 1, 320), _point(view, 1, 112))
         assert _start(view, 1) == 90
 
 
-def test_dropping_media_snaps_the_start(made: list[TimelineView], video_media: MediaItem) -> None:
+def test_dropping_media_snaps_the_start(made: Made, video_media: MediaItem) -> None:
     # 素材を引いてきて置くときも、置く頭が近くの端へ吸い付く
-    view, _ = _open(made, _project((_text(0),), (), media=(video_media,)))
+    target = _text(0)
+    view, _ = _open(made, _project((target,), (), media=(video_media,)))
+    view.set_selection((target.id,))
     mime = QMimeData()
     mime.setData(MEDIA_MIME, str(video_media.id).encode("utf-8"))
     view.dragMoveEvent(
