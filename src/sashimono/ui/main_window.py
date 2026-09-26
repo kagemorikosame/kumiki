@@ -398,6 +398,7 @@ class MainWindow(QMainWindow):
         # 設定パネルは選んだクリップを引くためにプロジェクトを持つ 起動直後にも渡す
         # （渡さないと、最初の編集まで何本も選んだときのまとめ当てが効かない）
         self._inspector.set_project(self.view_project)
+        self._inspector.set_double_click_reset(self._preferences.double_click_reset)
         self._graph = GraphEditor(self)
         # グラフエディタも起動直後にプロジェクトを持たせる 持たせないと、開いた作品で最初の
         # 編集をするまで、キーフレームのあるクリップを選んでも曲線を引けない
@@ -786,6 +787,7 @@ class MainWindow(QMainWindow):
         self._chat.apply_preferences(preferences)
         self._timeline.set_value_lines(preferences.value_lines)
         self._timeline.set_split_audio(preferences.splits_media)
+        self._inspector.set_double_click_reset(preferences.double_click_reset)
         apply_dock_tabs(self, preferences.dock_tabs)
         self._preview.set_proxies(self._proxies.store if preferences.use_proxy else None)
         self._preview.set_prefetch_bytes(preferences.prefetch_bytes())

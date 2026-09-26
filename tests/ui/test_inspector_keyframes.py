@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 import shiboken6
@@ -39,6 +40,8 @@ from sashimono.effects.sources import TEXT
 from sashimono.engine.gpu import BlendMode
 from sashimono.ui.inspector.panel import InspectorPanel, KeyframeControls, _RowLabel
 from sashimono.ui.inspector.widgets import TrackEditor
+from sashimono.ui.preferences_dialog import PreferencesDialog
+from sashimono.ui.workspace import Preferences, PreferenceStore
 
 #: クリップの頭 0 より後ろに置く 0 に置くと、再生位置とクリップの中の時刻が同じになり、
 #: 取り違えても試験が通る
@@ -297,6 +300,41 @@ class TestReset:
         # 打った文字は戻すと消える うっかり起きやすいダブルクリックでは戻さない
         _open(panel)
         assert not _label(panel, "文字").resettable
+
+
+class TestTheResetSetting:
+    """ダブルクリックで戻すのは好みが分かれる（うっかり戻るのが嫌な人がいる） 設定で切れる"""
+
+    def test_turning_it_off_really_stops_it(self, panel: InspectorPanel) -> None:
+        # 切っても効いたままなら、設定がある方が質が悪い
+        harness, clip = _open(panel, AnimatedValue(static=0.4))
+        panel.set_double_click_reset(False)
+        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        label = _label(panel, "不透明度")
+        assert not label.resettable
+        _double_click(label)
+        editor = next(e for e in panel.findChildren(TrackEditor) if e.spec.name == "opacity")
+        slider = editor.findChild(QSlider)
+        assert slider is not None
+        _double_click(slider)
+        _double_click(_label(panel, "合成モード"))
+        assert harness.labels == []
+        assert harness.opacity(clip) == AnimatedValue(static=0.4)
+
+    def test_it_is_on_by_default_and_kept(self, tmp_path: Path) -> None:
+        assert Preferences().double_click_reset
+        store = PreferenceStore(tmp_path / "preferences.json")
+        store.save(Preferences(double_click_reset=False))
+        assert not store.load().double_click_reset
+
+    def test_the_dialog_carries_it(self, qt_application: QApplication) -> None:
+        # 画面が値を返さないと、設定を開いて OK を押しただけで既定へ戻る
+        del qt_application
+        dialog = PreferencesDialog(Preferences(double_click_reset=False))
+        try:
+            assert not dialog.preferences().double_click_reset
+        finally:
+            dialog.deleteLater()
 
 
 class TestSlider:

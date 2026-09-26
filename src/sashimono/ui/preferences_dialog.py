@@ -298,6 +298,15 @@ class PreferencesDialog(QDialog):
         )
         form.addRow(self._value_lines)
 
+        self._double_click_reset = QCheckBox("設定パネルの名前のダブルクリックで初期値に戻す", self)
+        self._double_click_reset.setChecked(preferences.double_click_reset)
+        self._double_click_reset.setToolTip(
+            "オブジェクト設定の行の名前（数の値はスライダーも）をダブルクリックすると、"
+            "その値を初期値に戻す キーフレームのある値は再生位置のキーだけを戻す "
+            "戻しても取り消せる"
+        )
+        form.addRow(self._double_click_reset)
+
         self._all_plugins = QCheckBox("AviUtl2 の汎用プラグインを全部読んで探す", self)
         self._all_plugins.setChecked(preferences.all_aviutl_plugins)
         self._all_plugins.setToolTip(
@@ -438,6 +447,7 @@ class PreferencesDialog(QDialog):
             preview_handles=self._preview_handles.isChecked(),
             keyframe_drag=str(self._keyframe_drag.currentData()),
             value_lines=self._value_lines.isChecked(),
+            double_click_reset=self._double_click_reset.isChecked(),
             new_project_layers=str(self._new_project_layers.currentData()),
             media_split=str(self._media_split.currentData()),
         )

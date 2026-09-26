@@ -183,6 +183,8 @@ class InspectorPanel(QWidget):
         #: 触ったときに :class:`AddEffect` で足してから値を入れる（1 回の取り消しで戻る）
         #: 開いただけで足すと、見ただけのクリップまで変更が入り、保存を促される
         self._virtual: dict[EffectId, tuple[ClipId, Effect]] = {}
+        #: ダブルクリックで初期値へ戻すか（設定 :attr:`Preferences.double_click_reset`）
+        self._double_click_reset = True
 
         #: 何のクリップの設定を見ているか（種類・名前・トラック）
         self._title = ClipHeader(self)
@@ -239,6 +241,20 @@ class InspectorPanel(QWidget):
         self._selection = tuple(clip_ids)
         self._clip_id = primary
         self._rebuild()
+
+    def set_double_click_reset(self, enabled: bool) -> None:
+        """名前（数はスライダーも）のダブルクリックで初期値へ戻すか 設定から
+
+        切ったら本当に戻さない 行の説明（補足）からも消すので、作り直す
+        """
+        if enabled == self._double_click_reset:
+            return
+        self._double_click_reset = enabled
+        self._rebuild()
+
+    def _if_resettable(self, reset: Callable[[], None]) -> Callable[[], None] | None:
+        """ダブルクリックで戻す手 設定で切ってあれば ``None``（行に付けない）"""
+        return reset if self._double_click_reset else None
 
     def set_frame(self, frame: int) -> None:
         """再生位置 キーフレームの打点とアニメーション中の表示値に使う"""
@@ -459,7 +475,9 @@ class InspectorPanel(QWidget):
             section.add_row(
                 "合成モード",
                 self._blend_editor(section, clip),
-                reset=lambda: self._reset_clip(clip, "blend_mode", BlendMode.NORMAL, "合成モード"),
+                reset=self._if_resettable(
+                    lambda: self._reset_clip(clip, "blend_mode", BlendMode.NORMAL, "合成モード")
+                ),
             )
         if flip is not None:
             self._effect_row(section, clip, flip, "horizontal", "左右反転")
@@ -505,7 +523,7 @@ class InspectorPanel(QWidget):
             lambda state: self._emit(SetClipProperty(clip.id, name, bool(state)))
         )
         reset = (lambda: self._reset_clip(clip, name, False, label)) if resettable else None
-        section.add_row(label, editor, reset=reset)
+        section.add_row(label, editor, reset=self._if_resettable(reset) if reset else None)
 
     def _native_capable(self, clip: Clip) -> bool:
         """素材の画素の大きさで置けるクリップか（素材の絵を描くもの）"""
@@ -583,7 +601,7 @@ class InspectorPanel(QWidget):
         section.add_row(
             "再生速度",
             speed,
-            reset=lambda: self._reset_linked(clip, "speed", Fraction(1)),
+            reset=self._if_resettable(lambda: self._reset_linked(clip, "speed", Fraction(1))),
         )
 
         media = self._project.find_media(clip.media_id) if self._project and clip.media_id else None
@@ -610,13 +628,13 @@ class InspectorPanel(QWidget):
         section.add_row(
             "再生開始位置",
             start,
-            reset=lambda: self._reset_linked(clip, "source_in", Fraction(0)),
+            reset=self._if_resettable(lambda: self._reset_linked(clip, "source_in", Fraction(0))),
         )
 
     def _reset_linked(self, clip: Clip, name: str, value: Fraction) -> None:
         """再生速度・再生開始位置を初期値へ戻す 相手にも入れる（:meth:`_set_linked`）"""
         current = self._clip() if self._clip_id == clip.id else None
-        if getattr(current or clip, name) == value:
+        if not self._double_click_reset or getattr(current or clip, name) == value:
             return
         label = "再生速度" if name == "speed" else "再生開始位置"
         self._set_linked(clip, name, value, f"{label}を初期値に戻す")
@@ -840,7 +858,7 @@ class InspectorPanel(QWidget):
         """
         if isinstance(spec, TextSpec | FileSpec | GridSpec):
             return None
-        return lambda: self._reset(spec, path)
+        return self._if_resettable(lambda: self._reset(spec, path))
 
     def _reset(self, spec: ParameterSpec, path: ParamPath) -> None:
         """パラメータを初期値へ戻す（取り消せる）
@@ -849,6 +867,8 @@ class InspectorPanel(QWidget):
         無ければ初期値のキーを打つ） ほかのキーは残す（利用者の決定） アニメーションごと
         消すと、1 か所を戻したいだけでも打ったキーが全部消える
         """
+        if not self._double_click_reset:
+            return
         current = self._current_value(path)
         clip = self._clip()
         label = f"{spec.label}を初期値に戻す"
@@ -879,7 +899,7 @@ class InspectorPanel(QWidget):
         変えた値を「もう初期値」と見誤ることがある
         """
         current = self._clip() if self._clip_id == clip.id else None
-        if getattr(current or clip, name) == value:
+        if not self._double_click_reset or getattr(current or clip, name) == value:
             return
         self._emit(SetClipProperty(clip.id, name, value), f"{label}を初期値に戻す")
 

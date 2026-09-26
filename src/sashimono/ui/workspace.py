@@ -272,6 +272,10 @@ class Preferences:
     #: 見て気付く サムネイルや波形に線が重なるのが目障りな人、クリップの真ん中を掴んで動かす
     #: つもりで線を掴んでしまう人は切れるようにする
     value_lines: bool = True
+    #: 設定パネルで、行の名前（数はスライダーも）のダブルクリックで値を初期値へ戻す
+    #: 既定は入（利用者の要望） 初期値を覚えていなくても戻せ、戻しても取り消せる
+    #: 行の名前を続けて押しがちで、うっかり戻るのが嫌な人は切れるようにする
+    double_click_reset: bool = True
     #: 新しく作るプロジェクトのトラックの方式（:class:`~sashimono.core.model.LayerMode`）
     #: 新規作成の窓の初期値と、起動した直後の空のプロジェクトに使う
     #: 既定は混合（YMM4・AviUtl と同じ 1 本のレイヤーに何でも置く 利用者の決定）
@@ -364,6 +368,7 @@ class PreferenceStore:
                 data.get("keyframe_drag"), KEYFRAME_DRAG_MODES, plain.keyframe_drag
             ),
             value_lines=_flag(data.get("value_lines"), plain.value_lines),
+            double_click_reset=_flag(data.get("double_click_reset"), plain.double_click_reset),
             new_project_layers=_choice(
                 data.get("new_project_layers"), LayerMode.ALL, plain.new_project_layers
             ),
