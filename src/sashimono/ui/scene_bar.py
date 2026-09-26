@@ -24,6 +24,8 @@ class SceneBar(QWidget):
     rename_requested = Signal()
     remove_requested = Signal()
     place_requested = Signal()
+    #: 磁石（タイムラインの吸着）を入れた・切った
+    snap_toggled = Signal(bool)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -60,6 +62,17 @@ class SceneBar(QWidget):
         ):
             layout.addWidget(button)
         layout.addStretch(1)
+        # 磁石はタイムライン全体の操作の癖 シーンの操作から離して右端に置く
+        self._snap_button = QPushButton("磁石", self)
+        self._snap_button.setCheckable(True)
+        self._snap_button.setChecked(True)
+        self._snap_button.setToolTip(
+            "クリップを動かす・伸び縮みさせる・置くときに、ほかのクリップの端・再生位置・"
+            "キーフレーム・書き出し範囲の端へ吸い付く 動かしている途中で Shift を押している間は"
+            "吸い付かない"
+        )
+        self._snap_button.toggled.connect(self._on_snap_toggled)
+        layout.addWidget(self._snap_button)
 
     def _button(self, text: str, tip: str, signal: SignalInstance) -> QPushButton:
         button = QPushButton(text, self)
@@ -85,6 +98,22 @@ class SceneBar(QWidget):
         self._remove_button.setEnabled(editing_scene)
         # 開いているシーン自身は置けない 置ける候補が無いのに押せると、押してから断られる
         self._place_button.setEnabled(any(scene.id != active for scene in project.scenes))
+
+    @property
+    def snap_button(self) -> QPushButton:
+        return self._snap_button
+
+    def set_snap(self, enabled: bool) -> None:
+        """磁石のボタンの状態を合わせる 知らせは出さない（窓が決めた状態を映すだけ）"""
+        self._updating = True
+        try:
+            self._snap_button.setChecked(enabled)
+        finally:
+            self._updating = False
+
+    def _on_snap_toggled(self, checked: bool) -> None:
+        if not self._updating:
+            self.snap_toggled.emit(checked)
 
     def _on_index_changed(self, index: int) -> None:
         if self._updating or index < 0:

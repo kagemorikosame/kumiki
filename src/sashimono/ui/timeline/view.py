@@ -10,10 +10,10 @@ from __future__ import annotations
 import functools
 import time
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum, auto
 
-from PySide6.QtCore import QPoint, QPointF, QRect, Qt, Signal
+from PySide6.QtCore import QPoint, QPointF, QRect, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QAction,
     QColor,
@@ -29,7 +29,7 @@ from PySide6.QtGui import (
     QResizeEvent,
     QWheelEvent,
 )
-from PySide6.QtWidgets import QGridLayout, QMenu, QWidget
+from PySide6.QtWidgets import QApplication, QGridLayout, QMenu, QWidget
 
 from sashimono.core.clipboard import ClipboardContent, copy_clips, cut_commands, paste_commands
 from sashimono.core.commands import (
@@ -104,6 +104,7 @@ from sashimono.ui.timeline.painter import (
     track_name_rect,
 )
 from sashimono.ui.timeline.painter import draw_clip as paint_clip
+from sashimono.ui.timeline.snap import DEFAULT_SNAP_DISTANCE, nearest_snap, snap_targets
 from sashimono.ui.timeline.track_drag import TrackDragger
 from sashimono.ui.timeline.track_name import TrackNameEditor
 from sashimono.ui.timeline.value_line import ValueGrab, ValueLineEditor
@@ -118,6 +119,13 @@ ZOOM_STEP = 1.25
 #: 全トラックの高さを 1 段で変える量（画素） 細かいと何度も回すことになり、
 #: 粗いと最小（28）から最大（240）までが数段で終わって合わせにくい
 HEIGHT_STEP = 12
+
+#: 押している間だけ磁石を切るキー 動かしている途中で押す（押してから掴むと、範囲で選ぶ
+#: 操作になる） Alt は離したときに窓のメニューへ移ってしまい、Ctrl は選び足しに使っている
+SNAP_OFF_MODIFIER = Qt.KeyboardModifier.ShiftModifier
+
+#: 吸い付いた所の縦の線を出しておく長さ（ミリ秒） 一瞬だけ出して、吸い付いたと分かれば足りる
+SNAP_LINE_MS = 600
 
 #: 境目を掴める幅（上下それぞれ、画素） 狭いと掴めず、広いと名前の行の
 #: ボタンに食い込む（最小の高さ 28 のトラックでもボタンが押せる幅にしてある）
@@ -270,6 +278,20 @@ class TimelineView(QWidget):
         self._add_button_hovered = False
         #: ヘッダで書き換えている名前の入力欄（:meth:`begin_rename`） 無ければ ``None``
         self._name_editor: TrackNameEditor | None = None
+        #: 磁石（吸着 :meth:`set_snap`） 既定は入（設定の既定と同じ）
+        self._snap_enabled = True
+        self._snap_distance = DEFAULT_SNAP_DISTANCE
+        #: 動かしている途中に押しているキー（マウスとドラッグの知らせから）
+        self._drag_modifiers = Qt.KeyboardModifier.NoModifier
+        #: 吸い付く先の覚え（プロジェクト・動かしている物・再生位置, フレームの並び）
+        #: マウスが動くたびに全クリップを舐めないため
+        self._snap_cache: tuple[object, list[int]] | None = None
+        #: 吸い付いた所に出す縦の線 少しして消す（:data:`SNAP_LINE_MS`）
+        self._snap_line: int | None = None
+        self._snap_timer = QTimer(self)
+        self._snap_timer.setSingleShot(True)
+        self._snap_timer.setInterval(SNAP_LINE_MS)
+        self._snap_timer.timeout.connect(self._hide_snap)
         #: 書き出し範囲の Shift+ドラッグと、その帯 ほかのドラッグとは別に持つ
         self._work_area = WorkAreaEditor(self._request)
         #: ファイルや素材を引いてきている間の、落ちる所の目安 引いていなければ ``None``
@@ -617,6 +639,7 @@ class TimelineView(QWidget):
             )
 
         self._draw_drag_preview(painter)
+        self._paint_snap(painter)
         self._work_area.paint_tracks(
             painter, self._layout, width, self.height(), timeline.work_area
         )
@@ -1042,6 +1065,8 @@ class TimelineView(QWidget):
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt の命名規約
         position = event.position().toPoint()
+        # 磁石を一時的に切るキーは動かしている途中で見る 端で送り直すときも同じ物を使う
+        self._drag_modifiers = event.modifiers()
         if self._drag_to(position):
             horizontal, vertical = self._edge_scroll_axes()
             self._edge_scroll.follow(
@@ -1135,25 +1160,101 @@ class TimelineView(QWidget):
         self._drag.moved = True
         frame = self._layout.frame_at(position.x())
 
+        located = (
+            self._project.timeline.locate_clip(self._drag.clip_id)
+            if self._drag.clip_id is not None
+            else None
+        )
         if self._drag.kind is DragKind.MOVE_CLIP:
             floor = self._group_floor() if self._drag.group else 0
-            self._drag.preview_start = max(floor, frame - self._drag.grab_offset)
+            start = max(floor, frame - self._drag.grab_offset)
+            if located is not None:
+                # 頭と終わりのどちらかが近くの位置へ吸い付く
+                start += self._snap_shift((start, start + located[1].duration))
+            self._drag.preview_start = max(floor, start)
             band = self._layout.band_at(self._project.timeline, position.y())
             if band is not None and not band.track.locked:
                 self._drag.preview_track = band.track.id
-        elif self._drag.clip_id is not None:
+        elif located is not None:
+            _, clip = located
+            if self._drag.kind is DragKind.TRIM_HEAD:
+                frame += self._snap_shift((frame,))
+                self._drag.preview_head_delta = min(frame - clip.timeline_start, clip.duration - 1)
+            else:
+                frame += self._snap_shift((frame,))
+                self._drag.preview_tail_delta = max(frame - clip.timeline_end, -(clip.duration - 1))
+        self.update()
+
+    # --- 磁石（吸着） ---
+
+    def set_snap(self, enabled: bool, distance: int = DEFAULT_SNAP_DISTANCE) -> None:
+        """近くの位置へ吸い付くか・吸い付く距離（画面の画素） 設定とツールバーのボタンから"""
+        self._snap_enabled = enabled
+        self._snap_distance = max(1, distance)
+        self._snap_cache = None
+
+    @property
+    def snap_enabled(self) -> bool:
+        return self._snap_enabled
+
+    @property
+    def snap_line(self) -> int | None:
+        """いま吸い付いた所を示している線のフレーム 出していなければ ``None``"""
+        return self._snap_line
+
+    def _snap_shift(self, edges: tuple[int, ...]) -> int:
+        """``edges`` を近くの吸い付く先へずらす量 吸い付かなければ 0
+
+        Shift を押している間は吸い付かない（一時的に切る） 動かしている途中で押しても効く
+        押す前から押していると囲んで選ぶ・範囲で選ぶ操作になるので、掴んでから押す
+        """
+        held = self._drag_modifiers | QApplication.keyboardModifiers()
+        if not self._snap_enabled or held & SNAP_OFF_MODIFIER:
+            return 0
+        found = nearest_snap(
+            edges, self._snap_targets(), self._snap_distance / self._layout.pixels_per_frame
+        )
+        self._show_snap(found[1] if found is not None else None)
+        return found[0] if found is not None else 0
+
+    def _snap_targets(self) -> list[int]:
+        """吸い付く先 動かしている物（選んだ物とリンクした相手）は除く 同じ中身の間は覚える"""
+        moving = frozenset(member.id for _, member in self._moving_members()) | frozenset(
+            self._selection
+        )
+        if self._drag.clip_id is not None:
             located = self._project.timeline.locate_clip(self._drag.clip_id)
             if located is not None:
-                _, clip = located
-                if self._drag.kind is DragKind.TRIM_HEAD:
-                    self._drag.preview_head_delta = min(
-                        frame - clip.timeline_start, clip.duration - 1
-                    )
-                else:
-                    self._drag.preview_tail_delta = max(
-                        frame - clip.timeline_end, -(clip.duration - 1)
-                    )
+                moving |= {located[1].id}
+                moving |= {member.id for _, member in self._linked_partners(located[1])}
+        key = (self._project, moving, self._playhead)
+        if self._snap_cache is None or self._snap_cache[0] != key:
+            targets = snap_targets(self._project, self._playhead, exclude=moving)
+            self._snap_cache = (key, targets)
+        return self._snap_cache[1]
+
+    def _show_snap(self, frame: int | None) -> None:
+        """吸い付いた所に縦の線を出す 離した後も一瞬残して、吸い付いたことを見せる"""
+        if frame is None:
+            return
+        self._snap_line = frame
+        self._snap_timer.start()
         self.update()
+
+    def _hide_snap(self) -> None:
+        self._snap_line = None
+        self.update()
+
+    def _paint_snap(self, painter: QPainter) -> None:
+        if self._snap_line is None:
+            return
+        x = int(self._layout.frame_to_x(self._snap_line))
+        if x < Metrics.TRACK_HEADER_WIDTH or x > self.width():
+            return
+        painter.save()
+        painter.setPen(QPen(Colors.SNAP_LINE, 1))
+        painter.drawLine(x, Metrics.RULER_HEIGHT, x, self.height())
+        painter.restore()
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt の命名規約
         del event
@@ -2030,6 +2131,12 @@ class TimelineView(QWidget):
             self._layout, self._painted_timeline(), position, real=self._project.timeline
         )
 
+    def _snapped_spot(self, position: QPointF) -> DropSpot:
+        """落とす先 置く頭を近くの位置へ吸い付かせる（磁石） 目安と落とした所で同じ物を使う"""
+        spot = self.drop_spot_at(position)
+        shift = self._snap_shift((spot.frame,))
+        return replace(spot, frame=max(0, spot.frame + shift)) if shift else spot
+
     @property
     def drop_guide(self) -> DropGuide | None:
         """ドラッグ中に出している目安 引いていなければ ``None``"""
@@ -2054,7 +2161,7 @@ class TimelineView(QWidget):
         mime = event.mimeData()
         # 目安を消す前に位置を求める 消してから求めると、見えていた並び（仮の行の入った
         # もの）と違う並びで読み、見ていたのと違うトラックへ落ちる
-        spot = self.drop_spot_at(event.position())
+        spot = self._snapped_spot(event.position())
         self._set_drop_guide(None)
         track = str(spot.track_id) if spot.track_id is not None else ""
         # 素材一覧から来た物を先に見る 一覧の行にファイルの URL が付いていても、
@@ -2074,6 +2181,7 @@ class TimelineView(QWidget):
             self.files_dropped.emit(paths, spot.frame, track)
 
     def _track_drag(self, event: QDragMoveEvent) -> None:
+        self._drag_modifiers = event.modifiers()
         mime = event.mimeData()
         if not accepts(mime):
             event.ignore()
@@ -2081,7 +2189,7 @@ class TimelineView(QWidget):
             return
         event.setDropAction(Qt.DropAction.CopyAction)
         event.accept()
-        spot = self.drop_spot_at(event.position())
+        spot = self._snapped_spot(event.position())
         self._set_drop_guide(DropGuide(spot, tuple(media_ids_in(mime))))
 
     def _set_drop_guide(self, guide: DropGuide | None) -> None:

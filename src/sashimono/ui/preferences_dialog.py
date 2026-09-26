@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFormLayout,
     QLabel,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -43,6 +44,7 @@ from sashimono.ui.workspace import (
     DOCK_TABS_TOP,
     MEDIA_SPLIT,
     MEDIA_TOGETHER,
+    SNAP_DISTANCES,
     Preferences,
 )
 
@@ -307,6 +309,21 @@ class PreferencesDialog(QDialog):
         )
         form.addRow(self._double_click_reset)
 
+        self._timeline_snap = QCheckBox("タイムラインで近くの位置へ吸い付く（磁石）", self)
+        self._timeline_snap.setChecked(preferences.timeline_snap)
+        self._timeline_snap.setToolTip(
+            "クリップを動かす・端を伸び縮みさせる・置くときに、ほかのクリップの頭と終わり・"
+            "再生位置・キーフレーム・書き出し範囲の端へ吸い付く タイムラインの上の〔磁石〕と同じ "
+            "動かしている途中で Shift を押している間は吸い付かない"
+        )
+        form.addRow(self._timeline_snap)
+        self._snap_distance = QSpinBox(self)
+        self._snap_distance.setRange(*SNAP_DISTANCES)
+        self._snap_distance.setSuffix(" px")
+        self._snap_distance.setValue(preferences.snap_distance)
+        self._snap_distance.setToolTip("画面の画素で数える 拡大しても縮小しても同じ近さで吸い付く")
+        form.addRow("吸い付く距離", self._snap_distance)
+
         self._all_plugins = QCheckBox("AviUtl2 の汎用プラグインを全部読んで探す", self)
         self._all_plugins.setChecked(preferences.all_aviutl_plugins)
         self._all_plugins.setToolTip(
@@ -448,6 +465,8 @@ class PreferencesDialog(QDialog):
             keyframe_drag=str(self._keyframe_drag.currentData()),
             value_lines=self._value_lines.isChecked(),
             double_click_reset=self._double_click_reset.isChecked(),
+            timeline_snap=self._timeline_snap.isChecked(),
+            snap_distance=self._snap_distance.value(),
             new_project_layers=str(self._new_project_layers.currentData()),
             media_split=str(self._media_split.currentData()),
         )

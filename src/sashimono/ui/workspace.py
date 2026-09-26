@@ -39,6 +39,7 @@ __all__ = [
     "MEDIA_SPLIT_MODES",
     "MEDIA_TOGETHER",
     "MIN_PREFETCH_MB",
+    "SNAP_DISTANCES",
     "PreferenceStore",
     "Preferences",
     "ShortcutStore",
@@ -276,6 +277,12 @@ class Preferences:
     #: 既定は入（利用者の要望） 初期値を覚えていなくても戻せ、戻しても取り消せる
     #: 行の名前を続けて押しがちで、うっかり戻るのが嫌な人は切れるようにする
     double_click_reset: bool = True
+    #: タイムラインの磁石 クリップを動かす・端を伸び縮みさせる・置くときに、ほかのクリップの
+    #: 端・再生位置・キーフレーム・書き出し範囲の端へ吸い付く 既定は入（利用者の決定）
+    #: 1 コマずつ自由に置きたい人は、タイムラインの上の〔磁石〕で切れる（Shift で一時的にも）
+    timeline_snap: bool = True
+    #: 吸い付く距離（画面の画素） 画面の倍率で変わらない指の感覚で決める
+    snap_distance: int = 8
     #: 新しく作るプロジェクトのトラックの方式（:class:`~sashimono.core.model.LayerMode`）
     #: 新規作成の窓の初期値と、起動した直後の空のプロジェクトに使う
     #: 既定は混合（YMM4・AviUtl と同じ 1 本のレイヤーに何でも置く 利用者の決定）
@@ -369,6 +376,8 @@ class PreferenceStore:
             ),
             value_lines=_flag(data.get("value_lines"), plain.value_lines),
             double_click_reset=_flag(data.get("double_click_reset"), plain.double_click_reset),
+            timeline_snap=_flag(data.get("timeline_snap"), plain.timeline_snap),
+            snap_distance=_snap_distance(data.get("snap_distance"), plain.snap_distance),
             new_project_layers=_choice(
                 data.get("new_project_layers"), LayerMode.ALL, plain.new_project_layers
             ),
@@ -386,6 +395,17 @@ class PreferenceStore:
             json.dumps(asdict(preferences), ensure_ascii=False, indent=2), encoding="utf-8"
         )
         temporary.replace(self.path)
+
+
+#: 吸い付く距離として受け付ける範囲（画面の画素）
+SNAP_DISTANCES = (2, 40)
+
+
+def _snap_distance(value: object, default: int) -> int:
+    """吸い付く距離 範囲の外や壊れた値は既定へ戻す（0 では吸い付かず、大きすぎると動かせない）"""
+    if not isinstance(value, int) or isinstance(value, bool):
+        return default
+    return value if SNAP_DISTANCES[0] <= value <= SNAP_DISTANCES[1] else default
 
 
 def _flag(value: object, default: bool) -> bool:

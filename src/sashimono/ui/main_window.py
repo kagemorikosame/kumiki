@@ -394,6 +394,7 @@ class MainWindow(QMainWindow):
         self._timeline = TimelineView(project, self._analyzer, self)
         self._timeline.set_value_lines(self._preferences.value_lines)
         self._timeline.set_split_audio(self._preferences.splits_media)
+        self._timeline.set_snap(self._preferences.timeline_snap, self._preferences.snap_distance)
         self._media_pool = MediaPoolWidget(project, self)
         self._inspector = InspectorPanel(self)
         # 設定パネルは選んだクリップを引くためにプロジェクトを持つ 起動直後にも渡す
@@ -485,6 +486,8 @@ class MainWindow(QMainWindow):
 
         timeline_dock = self._dock("タイムライン", "timeline")
         self._scene_bar = SceneBar()
+        self._scene_bar.set_snap(self._preferences.timeline_snap)
+        self._scene_bar.snap_toggled.connect(self._set_snap)
         timeline_panel = QWidget()
         timeline_layout = QVBoxLayout(timeline_panel)
         timeline_layout.setContentsMargins(0, 0, 0, 0)
@@ -788,6 +791,8 @@ class MainWindow(QMainWindow):
         self._chat.apply_preferences(preferences)
         self._timeline.set_value_lines(preferences.value_lines)
         self._timeline.set_split_audio(preferences.splits_media)
+        self._timeline.set_snap(preferences.timeline_snap, preferences.snap_distance)
+        self._scene_bar.set_snap(preferences.timeline_snap)
         self._inspector.set_double_click_reset(preferences.double_click_reset)
         apply_dock_tabs(self, preferences.dock_tabs)
         self._preview.set_proxies(self._proxies.store if preferences.use_proxy else None)
@@ -1537,6 +1542,11 @@ class MainWindow(QMainWindow):
     def _on_pool_view_changed(self, mode: str) -> None:
         """一覧の上のボタンで表示を切り替えた 好みの設定に書いて、次に開いたときも同じにする"""
         self._remember_preferences(replace(self._preferences, media_view=mode))
+
+    def _set_snap(self, enabled: bool) -> None:
+        """タイムラインの上の〔磁石〕 次に開いたときも同じにする"""
+        self._timeline.set_snap(enabled, self._preferences.snap_distance)
+        self._remember_preferences(replace(self._preferences, timeline_snap=enabled))
 
     def _remember_preferences(self, preferences: Preferences) -> None:
         """設定画面の外で選んだ好みを覚える 次に開いたときも同じにする"""
