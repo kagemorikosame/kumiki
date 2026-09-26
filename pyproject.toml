@@ -45,6 +45,8 @@ dev = [
 mutation = [
     # Windows で動く mutation testing mutmut は fork が要るため WSL の外では動かない
     "pytest-gremlins>=1.9,<2",
+    # 生成例が変わると mutation の基準値も動くため、この検査だけは版を固定する
+    "hypothesis==6.168.1",
 ]
 
 [project.scripts]

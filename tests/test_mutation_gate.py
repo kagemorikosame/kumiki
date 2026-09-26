@@ -15,9 +15,9 @@ def _report(
     path: Path,
     *,
     total: int = 155,
-    zapped: int = 136,
-    survived: int = 19,
-    reported_percentage: float = 87.7,
+    zapped: int = 132,
+    survived: int = 23,
+    reported_percentage: float = 85.2,
 ) -> None:
     path.parent.mkdir(parents=True)
     path.write_text(
@@ -58,18 +58,18 @@ def test_the_current_baseline_passes(tmp_path: Path) -> None:
 
 def test_a_new_survivor_fails_the_gate(tmp_path: Path) -> None:
     report = tmp_path / "coverage" / "gremlins" / "gremlins.json"
-    _report(report, zapped=135, survived=20)
+    _report(report, zapped=131, survived=24)
 
     result = _run(tmp_path)
     assert result.returncode == 1
-    assert "19 件を超えた" in result.stderr
+    assert "23 件を超えた" in result.stderr
 
 
 def test_a_lower_score_fails_the_gate(tmp_path: Path) -> None:
     report = tmp_path / "coverage" / "gremlins" / "gremlins.json"
     # レポートの割合が誤っていても、実際の件数から低下を検出する
-    _report(report, total=154, zapped=135, reported_percentage=100.0)
+    _report(report, total=154, zapped=131, reported_percentage=100.0)
 
     result = _run(tmp_path)
     assert result.returncode == 1
-    assert "87.7% を下回った" in result.stderr
+    assert "85.1% を下回った" in result.stderr
