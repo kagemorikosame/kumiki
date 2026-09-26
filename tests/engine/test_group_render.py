@@ -24,6 +24,7 @@ from sashimono.core.model import (
     Clip,
     Effect,
     GeneratedSource,
+    Keyframe,
     MediaItem,
     Project,
     ProjectSettings,
@@ -91,14 +92,16 @@ def _group(layers: int = 1, effects: tuple[Effect, ...] = (), **values: float) -
     return _placed(clip, **values)
 
 
-def _render(context: OffscreenGLContext, media: MediaItem, *clips: Clip) -> np.ndarray:
+def _render(
+    context: OffscreenGLContext, media: MediaItem, *clips: Clip, frame: int = 0
+) -> np.ndarray:
     project = AddMedia(media).apply(Project.create(SETTINGS))
     for index, clip in enumerate(clips):
         track = Track(kind=TrackKind.VIDEO, name=f"V{index + 1}")
         project = AddClip(track.id, clip).apply(AddTrack(track).apply(project))
     renderer = FrameRenderer(project, context=context)
     try:
-        return renderer.render(0).astype(np.int16)
+        return renderer.render(frame).astype(np.int16)
     finally:
         renderer.close()
 
@@ -198,3 +201,43 @@ def test_as_one_moves_the_whole_picture(gl_context: OffscreenGLContext, picture:
     )
     direct = _render(gl_context, picture, _object(picture, pos_x=60.0, scale=200.0))
     _same(together, direct)
+
+
+def _moving_x(clip: Clip) -> Clip:
+    motion = AnimatedValue(
+        keyframes=(Keyframe(frame=0, value=-80.0), Keyframe(frame=9, value=80.0))
+    )
+    effects = tuple(
+        effect.with_param("pos_x", motion)
+        if effect.fixed and effect.kind == TRANSFORM_EFFECT_KIND
+        else effect
+        for effect in clip.effects
+    )
+    return replace(clip, effects=effects)
+
+
+def test_the_trail_reads_the_group_at_each_sample(
+    gl_context: OffscreenGLContext, picture: MediaItem
+) -> None:
+    # 現在位置でグループを止めてから残像を描くと、過去の絵まで現在位置に重なる
+    trail = registry.require("after_image").create(strength=90.0, samples=10)
+    own = _object(picture)
+    own = replace(own, effects=(trail, *own.effects))
+    grouped = _render(gl_context, picture, _moving_x(_group()), own, frame=9)
+    direct = _render(gl_context, picture, _moving_x(own), frame=9)
+    _same(grouped, direct)
+
+
+def test_an_outer_group_moves_an_as_one_group(
+    gl_context: OffscreenGLContext, picture: MediaItem
+) -> None:
+    # 内側だけを別の合成先へ描いても、その合成結果へ外側の制御を掛ける
+    nested = _render(
+        gl_context,
+        picture,
+        _group(pos_x=40.0),
+        _as_one(_group()),
+        _object(picture, pos_x=10.0),
+    )
+    direct = _render(gl_context, picture, _object(picture, pos_x=50.0))
+    _same(nested, direct)

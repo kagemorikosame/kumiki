@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 from collections import OrderedDict
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from fractions import Fraction
@@ -706,8 +706,15 @@ class FrameRenderer:
                         for other in tracks
                         if group_reaches(self._picture_order, track.id, clip, other.id)
                     ]
+                    groups = [
+                        (group_track, group)
+                        for group_track, group in controlling_groups(
+                            self._picture_order, track.id, frame
+                        )
+                        if group_track.id in drawn_tracks and not group_as_one(group)
+                    ]
                     bundled.update(other.id for other in targets)
-                    self._draw_group(track, clip, targets, frame, rate, depth)
+                    self._draw_group(track, clip, targets, groups, frame, rate, depth)
                 below = None
                 continue
             if clip.source is not None and clip.source.kind == "transition":
@@ -725,12 +732,13 @@ class FrameRenderer:
                 for group_track, group in controlling_groups(self._picture_order, track.id, frame)
                 if group_track.id in drawn_tracks and not group_as_one(group)
             ]
+            original = clip
             if groups:
-                clip = grouped(clip, groups, frame)
+                clip = grouped(original, groups, frame)
             if clip.clip_to_below:
                 self._draw_clipped(track, clip, frame, rate, depth, below)
             else:
-                self._draw_trail(track, clip, frame, rate, depth)
+                self._draw_trail(track, original, frame, rate, depth, groups)
                 self._draw_clip(track, clip, frame, rate, depth)
             above = visible[position + 1][2] if position + 1 < len(visible) else None
             # すぐ上のクリップがこのクリップの形で切り抜くなら、形を取っておく
@@ -744,14 +752,21 @@ class FrameRenderer:
             self._drawn.append((track, clip))
 
     def _draw_trail(
-        self, track: Track, clip: Clip, frame: int, rate: FrameRate, depth: int
+        self,
+        track: Track,
+        clip: Clip,
+        frame: int,
+        rate: FrameRate,
+        depth: int,
+        groups: Sequence[tuple[Track, Clip]] = (),
     ) -> None:
         """残像（``after_image``）を積んだクリップの、前のフレームの絵を薄くして先に描く
 
         1 フレーム前ほど濃く、強さの累乗で薄れる クリップの頭より前は描かない
         エフェクトはフレームごとに独立して描けるので、前のフレームを描き直せば済む
         """
-        trail = next((e for e in clip.effects if e.enabled and e.kind == "after_image"), None)
+        current = grouped(clip, groups, frame)
+        trail = next((e for e in current.effects if e.enabled and e.kind == "after_image"), None)
         if trail is None:
             return
         local_frame = frame - clip.timeline_start
@@ -760,16 +775,16 @@ class FrameRenderer:
         fade = min(max(keep / 100.0, 0.0), 0.99)
         samples = trail.params.get("samples")
         count = int(samples) if isinstance(samples, int | float) else 12
-        others = tuple(e for e in clip.effects if e.kind != "after_image")
         for back in range(min(count, local_frame), 0, -1):
             weight = fade**back
             if weight < 0.02:
                 continue
             earlier = frame - back
+            sample = grouped(clip, groups, earlier)
             faded = replace(
-                clip,
-                effects=others,
-                opacity=AnimatedValue(clip.opacity.at(earlier - clip.timeline_start) * weight),
+                sample,
+                effects=tuple(e for e in sample.effects if e.kind != "after_image"),
+                opacity=AnimatedValue(sample.opacity.at(earlier - sample.timeline_start) * weight),
             )
             self._draw_clip(track, faded, earlier, rate, depth)
 
@@ -1411,6 +1426,7 @@ class FrameRenderer:
         track: Track,
         group: Clip,
         targets: list[Track],
+        groups: list[tuple[Track, Clip]],
         frame: int,
         rate: FrameRate,
         depth: int,
@@ -1431,6 +1447,7 @@ class FrameRenderer:
             self._compose_tracks(targets, frame, depth + 1)
         finally:
             self._compositor = outer
+        group = grouped(group, groups, frame)
         self._draw_nested(track, group, nested, frame - group.timeline_start, rate)
 
     def _draw_nested(

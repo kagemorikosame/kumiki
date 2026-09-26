@@ -49,7 +49,7 @@ def group_reach(
     found: list[GroupReach] = []
     for band in bands:
         for clip in clips_in_range(band.track, start, end):
-            if not clip.is_group:
+            if not clip.enabled or not clip.is_group:
                 continue
             left = int(max(layout.frame_to_x(clip.timeline_start), Metrics.TRACK_HEADER_WIDTH))
             right = int(min(layout.frame_to_x(clip.timeline_end), width))

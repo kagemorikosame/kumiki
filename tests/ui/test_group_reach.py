@@ -133,3 +133,14 @@ def test_the_tint_is_painted(views: list[TimelineView]) -> None:
     inside = image.pixelColor(int(view.view_layout.frame_to_x(40)), y)
     outside = image.pixelColor(int(view.view_layout.frame_to_x(100)), y)
     assert inside != outside
+
+
+def test_a_disabled_group_has_no_reach(views: list[TimelineView]) -> None:
+    # 描画へ効かないグループの範囲を残すと、有効な制御に見える
+    disabled = replace(_group(1), enabled=False)
+    view = _view(
+        views,
+        Track(TrackKind.MIXED, "レイヤー 1", (disabled,)),
+        Track(TrackKind.MIXED, "レイヤー 2", (_text(),)),
+    )
+    assert _reach(view) == []
