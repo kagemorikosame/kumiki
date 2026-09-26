@@ -64,6 +64,7 @@ if TYPE_CHECKING:
     from sashimono.ui.timeline.view import TimelineView
 
 __all__ = [
+    "LAYER_ADD_TEXT",
     "LAYER_CHOICES",
     "TRACK_CHOICES",
     "AddSources",
@@ -85,6 +86,9 @@ TRACK_CHOICES: tuple[tuple[str, TrackKind, bool], ...] = (
 #: エフェクト用のレイヤーも出さない（利用者の要望 分けない方式では普通のレイヤーに何でも
 #: 置く） フィルタは普通のレイヤーへ置け、置き先も普通のレイヤーから選ばれる
 LAYER_CHOICES: tuple[tuple[str, TrackKind, bool], ...] = (("レイヤー", TrackKind.MIXED, False),)
+
+#: 混合の方式の右クリックで、レイヤーを 1 本足す項目
+LAYER_ADD_TEXT = "レイヤーを追加"
 
 #: カスタムオブジェクト（中身を作るスクリプト）の分類 エフェクトの一覧には出さない
 #: クリップに掛けると、今の絵を捨てて別の物を描くので、掛けたつもりの絵が消える
@@ -245,9 +249,16 @@ class TimelineAddMenus:
         menu.setToolTipsVisible(True)
 
     def add_track_items(self, menu: QMenu, track: Track | None) -> None:
-        """トラックを足す・消す トラックの外（最後のトラックの下）でも足せる"""
+        """トラックを足す・消す トラックの外（最後のトラックの下）でも足せる
+
+        混合の方式では種類を選ぶサブメニューを出さず、レイヤーを足す項目を直に置く
+        選べるのがレイヤー 1 つだけのサブメニューは、開く手間が増えるだけ（利用者の要望）
+        """
         menu.addSeparator()
-        menu.addMenu(self.track_add_menu(menu, title="トラックを追加"))
+        if places_mixed(self._project):
+            _action(menu, LAYER_ADD_TEXT, functools.partial(self.add_track, TrackKind.MIXED))
+        else:
+            menu.addMenu(self.track_add_menu(menu, title="トラックを追加"))
         if track is None:
             return
         name = track.name or "トラック"

@@ -53,6 +53,7 @@ from sashimono.core.commands.edit import (
     MIN_TRACK_HEIGHT,
     shifted_track,
 )
+from sashimono.core.commands.layers import places_mixed
 from sashimono.core.model import (
     Clip,
     ClipId,
@@ -1917,10 +1918,17 @@ class TimelineView(QWidget):
             draw_track_add_button(painter, rect, hovered=self._add_button_hovered)
 
     def _press_add_button(self, position: QPoint) -> bool:
-        """「＋ トラック追加」の上なら、足す種類のメニューをボタンの下に出して真を返す"""
+        """「＋ トラック追加」の上なら、足す種類のメニューをボタンの下に出して真を返す
+
+        混合の方式ではメニューを出さずにレイヤーを 1 本足す 足せるのはレイヤーだけで、
+        選ぶ物が 1 つしか無いメニューは押す手間が 1 回増えるだけ（利用者の要望）
+        """
         rect = self.track_add_button()
         if rect is None or not rect.contains(position):
             return False
+        if places_mixed(self._project):
+            self._add_menus.add_track(TrackKind.MIXED)
+            return True
         self.build_track_add_menu().exec(self.mapToGlobal(rect.bottomLeft()))
         return True
 
@@ -1928,7 +1936,10 @@ class TimelineView(QWidget):
         rect = self.track_add_button()
         hovered = rect is not None and rect.contains(position)
         if hovered:
-            self.setToolTip(f"{ADD_TRACK_BUTTON_TEXT}（映像・音声・エフェクト）")
+            kinds = (
+                "レイヤーを 1 本足す" if places_mixed(self._project) else "映像・音声・エフェクト"
+            )
+            self.setToolTip(f"{ADD_TRACK_BUTTON_TEXT}（{kinds}）")
         if hovered != self._add_button_hovered:
             self._add_button_hovered = hovered
             self.update()
