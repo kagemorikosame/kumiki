@@ -1,4 +1,4 @@
-"""音声が複数ある動画の置き方の設定が、置く入口のすべてに効くこと（Issue #27 の流れ）
+"""動画の映像と音声の置き方の設定が、置く入口のすべてに効くこと（Issue #27 の流れ）
 
 入口はファイルのドロップ・メニューからの読み込み・素材一覧からのドラッグ・素材一覧の
 〔タイムラインへ置く〕・AI の置く道具・ドラッグ中の目安 1 つでも設定を見ないと、
@@ -38,8 +38,8 @@ from sashimono.ui.media_pool import MEDIA_MIME
 from sashimono.ui.preferences_dialog import PreferencesDialog
 from sashimono.ui.timeline import TimelineView
 from sashimono.ui.workspace import (
-    MULTI_AUDIO_FIRST,
-    MULTI_AUDIO_SPLIT,
+    MEDIA_SPLIT,
+    MEDIA_TOGETHER,
     Preferences,
     PreferenceStore,
 )
@@ -102,7 +102,7 @@ def window(qt_application: QApplication, monkeypatch: pytest.MonkeyPatch) -> Ite
 
 def _choose(window: MainWindow, mode: str) -> None:
     """設定画面で OK を押したときと同じ道で設定を当てる"""
-    window._apply_preferences(replace(window._preferences, multi_audio=mode))
+    window._apply_preferences(replace(window._preferences, media_split=mode))
 
 
 def _layers(window: MainWindow) -> int:
@@ -131,7 +131,7 @@ def _file_drop(window: MainWindow, path: Path) -> None:
     assert window.wait_for_imports()
 
 
-_EXPECTED = [(MULTI_AUDIO_SPLIT, 3), (MULTI_AUDIO_FIRST, 1)]
+_EXPECTED = [(MEDIA_SPLIT, 3), (MEDIA_TOGETHER, 1)]
 
 
 class TestEveryEntrance:
@@ -168,15 +168,13 @@ class TestEveryEntrance:
         window._insert_media_by_id(str(media.id))
         assert _layers(window) == layers
 
-    @pytest.mark.parametrize(
-        ("mode", "expected"), [(MULTI_AUDIO_SPLIT, True), (MULTI_AUDIO_FIRST, False)]
-    )
+    @pytest.mark.parametrize(("mode", "expected"), [(MEDIA_SPLIT, True), (MEDIA_TOGETHER, False)])
     def test_the_assistant_reads_the_same_setting(
         self, window: MainWindow, mode: str, expected: bool
     ) -> None:
         # AI の置く道具が設定を見ないと、頼み方によってレイヤーの数が変わる
         _choose(window, mode)
-        assert window.split_audio_streams is expected
+        assert window.splits_media is expected
 
     def test_one_undo_takes_back_the_split(self, window: MainWindow) -> None:
         # 足したレイヤーが取り消しで残ると、何も無いレイヤーが並んだままになる
@@ -189,7 +187,7 @@ class TestEveryEntrance:
 
 
 class TestTheDropGuide:
-    @pytest.mark.parametrize(("mode", "added"), [(MULTI_AUDIO_SPLIT, 3), (MULTI_AUDIO_FIRST, 1)])
+    @pytest.mark.parametrize(("mode", "added"), [(MEDIA_SPLIT, 3), (MEDIA_TOGETHER, 1)])
     def test_the_guide_matches_the_drop(self, window: MainWindow, mode: str, added: int) -> None:
         # 目安だけ設定を見ないと、目安に無いレイヤーが落とした後に増える
         _choose(window, mode)
@@ -216,26 +214,43 @@ class TestTheDropGuide:
 class TestThePreference:
     def test_the_default_splits_and_is_kept(self, tmp_path: Path) -> None:
         # 利用者の要望 既定は分ける 1 本目だけを選んだ人は次の起動でもそのまま
-        assert Preferences().multi_audio == MULTI_AUDIO_SPLIT
-        assert Preferences().split_audio_streams
+        assert Preferences().media_split == MEDIA_SPLIT
+        assert Preferences().splits_media
         store = PreferenceStore(tmp_path / "preferences.json")
-        store.save(Preferences(multi_audio=MULTI_AUDIO_FIRST))
+        store.save(Preferences(media_split=MEDIA_TOGETHER))
         loaded = store.load()
-        assert loaded.multi_audio == MULTI_AUDIO_FIRST
-        assert not loaded.split_audio_streams
+        assert loaded.media_split == MEDIA_TOGETHER
+        assert not loaded.splits_media
 
     def test_an_unknown_value_falls_back_to_split(self, tmp_path: Path) -> None:
         # 知らない値のまま持つと、どちらの置き方にもならない値が設定画面に残る
         path = tmp_path / "preferences.json"
+        path.write_text('{"media_split": "layered"}', encoding="utf-8")
+        assert PreferenceStore(path).load().media_split == MEDIA_SPLIT
         path.write_text('{"multi_audio": "layered"}', encoding="utf-8")
-        assert PreferenceStore(path).load().multi_audio == MULTI_AUDIO_SPLIT
+        assert PreferenceStore(path).load().media_split == MEDIA_SPLIT
 
-    @pytest.mark.parametrize("mode", [MULTI_AUDIO_SPLIT, MULTI_AUDIO_FIRST])
+    @pytest.mark.parametrize(("old", "new"), [("first", MEDIA_TOGETHER), ("split", MEDIA_SPLIT)])
+    def test_the_old_setting_is_carried_over(self, tmp_path: Path, old: str, new: str) -> None:
+        # 前の版の「音声が複数ある動画の置き方」を読まないと、1 本目だけ（分けない）を選んでいた
+        # 人の置き方が、更新しただけで黙って分ける側へ変わる
+        path = tmp_path / "preferences.json"
+        path.write_text(f'{{"multi_audio": "{old}"}}', encoding="utf-8")
+        assert PreferenceStore(path).load().media_split == new
+
+    def test_the_new_name_wins_over_the_old_one(self, tmp_path: Path) -> None:
+        # 新しい版で保存した後も古い名前が残る（前の版で開いて保存したファイル）
+        # 古い方を優先すると、設定画面で選び直しても元へ戻る
+        path = tmp_path / "preferences.json"
+        path.write_text('{"multi_audio": "first", "media_split": "split"}', encoding="utf-8")
+        assert PreferenceStore(path).load().media_split == MEDIA_SPLIT
+
+    @pytest.mark.parametrize("mode", [MEDIA_SPLIT, MEDIA_TOGETHER])
     def test_the_dialog_carries_it(self, qt_application: QApplication, mode: str) -> None:
         # 画面が値を返さないと、設定を開いて OK を押しただけで選んだ置き方が既定へ戻る
         del qt_application
-        dialog = PreferencesDialog(Preferences(multi_audio=mode))
+        dialog = PreferencesDialog(Preferences(media_split=mode))
         try:
-            assert dialog.preferences().multi_audio == mode
+            assert dialog.preferences().media_split == mode
         finally:
             dialog.deleteLater()

@@ -522,6 +522,9 @@ class TestDroppingOnLayers:
         # 前は帯が無く、どこへ引いても「トラックの無い所」になって新しいレイヤーを作っていた
         project = _project(_layer(1), _layer(2), media=(video_media,))
         view, _ = _open(made, analyzer, project)
+        # 映像と音声を 1 本にまとめる設定で、引いたレイヤーへそのまま入ることを見る
+        # （分ける設定は、下の試験と tests/ui/test_multi_audio_entrances.py）
+        view.set_split_audio(False)
         second = project.timeline.tracks[1]
         point = _point(view, "レイヤー 2", 40)
         # 中身は変数に持っておく 渡しただけだと、イベントより先に捨てられて落ちる
@@ -535,6 +538,23 @@ class TestDroppingOnLayers:
         assert added.track_id == second.id
         assert not preview.new_tracks
         assert view.drop_spot_at(QPointF(point)).track_id == second.id
+
+    def test_the_guide_shows_the_picture_under_the_pointer_and_the_sound_after_it(
+        self, made: list[TimelineArea], analyzer: MediaAnalyzer, video_media: MediaItem
+    ) -> None:
+        # 既定（分ける）では、絵が引いたレイヤーへ、音がその次のレイヤーへ入る目安を出す
+        # 目安が 1 本だけだと、落とした後に音のレイヤーが目安に無い所へ増える
+        project = _project(_layer(1), _layer(2), media=(video_media,))
+        view, _ = _open(made, analyzer, project)
+        first, second = project.timeline.tracks
+        mime = _media_mime(video_media)
+        point = _point(view, "レイヤー 1", 40)
+        view.dragMoveEvent(QDragMoveEvent(point, Qt.DropAction.CopyAction, mime, _LEFT, _NONE))
+        preview = view.drop_preview
+        assert preview is not None
+        picture, sound = [c for c in preview.commands if isinstance(c, AddClip)]
+        assert picture.track_id == first.id and picture.clip.show_picture
+        assert sound.track_id == second.id and not sound.clip.show_picture
 
 
 # --- 値の線 ---

@@ -268,7 +268,7 @@ class TimelineView(QWidget):
         self._work_area = WorkAreaEditor(self._request)
         #: ファイルや素材を引いてきている間の、落ちる所の目安 引いていなければ ``None``
         self._drop_preview: DropPreview | None = None
-        #: 音声が何本もある素材を音ごとに分けて置くか（:meth:`set_split_audio`）
+        #: 動画の映像と音声を分けて置くか（:meth:`set_split_audio`）
         #: 既定は設定の既定と同じ 窓が渡す前に落とされても、落とした後と同じ目安を出す
         self._split_audio = True
         #: ヘッダを掴んでトラックの順を入れ替えるドラッグ
@@ -308,7 +308,7 @@ class TimelineView(QWidget):
         self.update()
 
     def set_split_audio(self, split: bool) -> None:
-        """音声が何本もある素材を音ごとに分けて置くか 設定（:attr:`Preferences.multi_audio`）から
+        """動画の映像と音声を分けて置くか 設定（:attr:`Preferences.media_split`）から
 
         落とす前の目安を、窓が実際に置くのと同じ置き方で求めるため 目安だけ設定を
         見ないと、目安に無いレイヤーが落とした後に増える

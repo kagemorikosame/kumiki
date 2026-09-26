@@ -477,7 +477,7 @@ def _import_media(host: EditorHost, arguments: dict[str, Any]) -> object:
         if not path.exists():
             raise ToolError(f"ファイルがありません: {path}")
         media = host.probe(path)
-        batch = insert_media(project, media, at_frame=None, split_audio=host.split_audio_streams)
+        batch = insert_media(project, media, at_frame=None, split_audio=host.splits_media)
         for command in batch:
             project = command.apply(project)
         commands.extend(batch)
@@ -542,7 +542,7 @@ def _place_media(host: EditorHost, arguments: dict[str, Any]) -> object:
         project,
         media,
         at_frame=int(at_frame) if at_frame is not None else None,
-        split_audio=host.split_audio_streams,
+        split_audio=host.splits_media,
     )
     if not commands:
         raise ToolError(f"{media.name} は長さが無いので置けません")

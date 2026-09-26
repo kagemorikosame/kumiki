@@ -392,7 +392,7 @@ class MainWindow(QMainWindow):
         self._transport = TransportBar(project.rate, self)
         self._timeline = TimelineView(project, self._analyzer, self)
         self._timeline.set_value_lines(self._preferences.value_lines)
-        self._timeline.set_split_audio(self._preferences.split_audio_streams)
+        self._timeline.set_split_audio(self._preferences.splits_media)
         self._media_pool = MediaPoolWidget(project, self)
         self._inspector = InspectorPanel(self)
         # 設定パネルは選んだクリップを引くためにプロジェクトを持つ 起動直後にも渡す
@@ -782,7 +782,7 @@ class MainWindow(QMainWindow):
         self._media_pool.set_view_mode(preferences.media_view)
         self._chat.apply_preferences(preferences)
         self._timeline.set_value_lines(preferences.value_lines)
-        self._timeline.set_split_audio(preferences.split_audio_streams)
+        self._timeline.set_split_audio(preferences.splits_media)
         apply_dock_tabs(self, preferences.dock_tabs)
         self._preview.set_proxies(self._proxies.store if preferences.use_proxy else None)
         self._preview.set_prefetch_bytes(preferences.prefetch_bytes())
@@ -1455,7 +1455,7 @@ class MainWindow(QMainWindow):
             media,
             at_frame=retime_frame(frame, before, project.rate),
             track_id=TrackId(track_id) if track_id else None,
-            split_audio=self._preferences.split_audio_streams,
+            split_audio=self._preferences.splits_media,
         )
         label = f"配置: {media[0].name}" if len(media) == 1 else f"配置: {len(media)} 件"
         self.execute_all(commands, label)
@@ -1505,7 +1505,7 @@ class MainWindow(QMainWindow):
         self, project: Project, media: MediaItem, spot: DropSpot | None
     ) -> list[Command]:
         """読み込んだ素材 1 本を置くコマンド 落とされた位置が無ければ末尾へ並べる"""
-        split = self._preferences.split_audio_streams
+        split = self._preferences.splits_media
         if spot is None:
             return insert_media(project, media, at_frame=None, split_audio=split)
         return place_media(
@@ -1540,9 +1540,7 @@ class MainWindow(QMainWindow):
             return
         self._match_project_to([media])
         self.execute_all(
-            insert_media(
-                self.view_project, media, split_audio=self._preferences.split_audio_streams
-            ),
+            insert_media(self.view_project, media, split_audio=self._preferences.splits_media),
             f"配置: {media.name}",
         )
 
@@ -2329,9 +2327,9 @@ class MainWindow(QMainWindow):
         return self.view_project
 
     @property
-    def split_audio_streams(self) -> bool:
+    def splits_media(self) -> bool:
         """AI が素材を置くときも、画面から置くときと同じ設定に従う"""
-        return self._preferences.split_audio_streams
+        return self._preferences.splits_media
 
     def set_active_scene(self, scene_id: SceneId | None) -> None:
         self.open_scene(scene_id)

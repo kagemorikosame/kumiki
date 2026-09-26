@@ -35,10 +35,10 @@ __all__ = [
     "DOCK_TAB_POSITIONS",
     "LAYOUT_VERSION",
     "MAX_PREFETCH_MB",
+    "MEDIA_SPLIT",
+    "MEDIA_SPLIT_MODES",
+    "MEDIA_TOGETHER",
     "MIN_PREFETCH_MB",
-    "MULTI_AUDIO_FIRST",
-    "MULTI_AUDIO_MODES",
-    "MULTI_AUDIO_SPLIT",
     "PreferenceStore",
     "Preferences",
     "ShortcutStore",
@@ -152,10 +152,15 @@ DOCK_TABS_TOP = "top"
 DOCK_TABS_BOTTOM = "bottom"
 DOCK_TAB_POSITIONS = (DOCK_TABS_TOP, DOCK_TABS_BOTTOM)
 
-#: 音声が何本もある動画の置き方 :attr:`Preferences.multi_audio` の値
-MULTI_AUDIO_SPLIT = "split"
-MULTI_AUDIO_FIRST = "first"
-MULTI_AUDIO_MODES = (MULTI_AUDIO_SPLIT, MULTI_AUDIO_FIRST)
+#: 動画の映像と音声の置き方 :attr:`Preferences.media_split` の値
+MEDIA_SPLIT = "split"
+MEDIA_TOGETHER = "together"
+MEDIA_SPLIT_MODES = (MEDIA_SPLIT, MEDIA_TOGETHER)
+
+#: 前の版の設定の名前（``multi_audio`` 音声が 2 本以上ある動画だけの置き方）の値と、
+#: 今の値の対応 分けない（``first``）を選んでいた人は、音声が 1 本の動画も分けない側へ写す
+#: 読まないと、分けないと決めていた人の置き方が黙って分ける側へ変わる
+_LEGACY_MULTI_AUDIO = {"split": MEDIA_SPLIT, "first": MEDIA_TOGETHER}
 
 #: プレビューの画質を自動で落とし始める縦の画素数
 #: 1080p までは等倍で 60fps に入るので、落とす値打ちが無い
@@ -273,17 +278,20 @@ class Preferences:
     #: 映像と音声を別のトラックに分けて並べる方が慣れている人は切り替えられる
     #: モデルの既定（分ける）とは別に持つ 古いファイルと試験の動きを変えないため
     new_project_layers: str = LayerMode.MIXED
-    #: 音声ストリームが 2 本以上ある動画（ゲームの録画のマイクの声など）の置き方
-    #: 音ごとに別のトラックへ分ける（``split``）か、1 本目だけを映像と一緒に置くか（``first``）
-    #: 既定は分ける（利用者の要望 レイヤー 1 に映像、レイヤー 2 以降に音 Issue #27）
-    #: 1 本目だけだと 2 本目以降がタイムラインのどこにも無く、鳴らす手段に気付けない
-    #: レイヤーが増えるのを嫌う人・1 本目しか使わない人は切り替えられる
-    multi_audio: str = MULTI_AUDIO_SPLIT
+    #: 動画の映像と音声の置き方 映像と音声を別のトラックへ分けて置く（``split``）か、
+    #: 1 本のクリップにまとめる（``together``）か 分けると、混合の方式では置いたレイヤーに
+    #: 映像、その次のレイヤーから音声を 1 本ずつ並べ、どれも一緒に動く（リンク）
+    #: まとめると、音声が 2 本以上ある動画（ゲームの録画のマイクの声など）は 1 本目だけを置く
+    #: 既定は分ける（利用者の要望 音声が 1 本でも映像と音声を別のレイヤーに置き、
+    #: 音声が複数あればレイヤー 1 に映像、レイヤー 2 以降に音 Issue #27）
+    #: 1 本にまとめると 2 本目以降の音がタイムラインのどこにも無く、鳴らす手段に気付けない
+    #: レイヤーが増えるのを嫌う人・YMM4 のように 1 本で持ちたい人は切り替えられる
+    media_split: str = MEDIA_SPLIT
 
     @property
-    def split_audio_streams(self) -> bool:
+    def splits_media(self) -> bool:
         """素材を置く所（:func:`~sashimono.core.commands.insert_media`）へ渡す値"""
-        return self.multi_audio == MULTI_AUDIO_SPLIT
+        return self.media_split == MEDIA_SPLIT
 
     def prefetch_bytes(self) -> int:
         """先読みに使えるバイト数 切ってあれば 0
@@ -359,7 +367,11 @@ class PreferenceStore:
             new_project_layers=_choice(
                 data.get("new_project_layers"), LayerMode.ALL, plain.new_project_layers
             ),
-            multi_audio=_choice(data.get("multi_audio"), MULTI_AUDIO_MODES, plain.multi_audio),
+            media_split=_choice(
+                data.get("media_split"),
+                MEDIA_SPLIT_MODES,
+                _LEGACY_MULTI_AUDIO.get(str(data.get("multi_audio")), plain.media_split),
+            ),
         )
 
     def save(self, preferences: Preferences) -> None:

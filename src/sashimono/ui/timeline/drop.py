@@ -96,7 +96,7 @@ class DropPreview:
         return frozenset(c.track.id for c in self.commands if isinstance(c, AddTrack))
 
 
-def preview_drop(project: Project, guide: DropGuide, *, split_audio: bool = True) -> DropPreview:
+def preview_drop(project: Project, guide: DropGuide, *, split_audio: bool = False) -> DropPreview:
     """``split_audio`` は窓が置くときと同じ値を渡す（:func:`place_media`）"""
     media = [
         item for media_id in guide.media_ids if (item := project.find_media(media_id)) is not None

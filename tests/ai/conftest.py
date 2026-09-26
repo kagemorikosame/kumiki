@@ -47,11 +47,11 @@ class FakeHost:
         self.stub_waveform: Waveform | None = None
         self.probe_result: MediaItem | None = None
         self.transcription = "起こしは走っていません"
-        #: 本人の設定の「音声が複数ある動画の置き方」 既定は設定と同じく分ける
+        #: 本人の設定の「動画の映像と音声」 既定は設定と同じく分ける
         self.split_audio = True
 
     @property
-    def split_audio_streams(self) -> bool:
+    def splits_media(self) -> bool:
         return self.split_audio
 
     @property

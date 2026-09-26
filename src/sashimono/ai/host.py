@@ -99,8 +99,9 @@ class EditorHost(Protocol):
         ...
 
     @property
-    def split_audio_streams(self) -> bool:
-        """音声が何本もある素材を、音ごとに別のトラックへ置くか（本人の設定）
+    def splits_media(self) -> bool:
+        """動画の映像と音声を別のトラックへ分けて置くか 音声が何本もあれば音ごとに分ける
+        （本人の設定 :attr:`~sashimono.ui.workspace.Preferences.media_split`）
 
         AI が置いた素材も画面から置いた素材と同じ置き方にする 食い違うと、同じ動画でも
         頼み方によってレイヤーの数が変わる
