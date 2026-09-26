@@ -91,6 +91,7 @@ from sashimono.core.io import (
 )
 from sashimono.core.model import (
     ClipId,
+    EffectId,
     GeneratedSource,
     LayerMode,
     MediaId,
@@ -870,6 +871,10 @@ class MainWindow(QMainWindow):
         # ◆ や ◀ ▶ を押した値を、グラフエディタにも出す（開いていなければ開かない）
         self._inspector.param_focused.connect(self._graph.set_path)
         self._inspector.seek_requested.connect(self._seek)
+        # 触ったのが部分フィルタなら、プレビューにその範囲の枠を出す
+        self._inspector.effect_focused.connect(
+            lambda effect_id: self._preview.set_region_effect(EffectId(effect_id))
+        )
         self._graph.commands_requested.connect(self.execute_all)
         self._graph.seek_requested.connect(self._seek)
 

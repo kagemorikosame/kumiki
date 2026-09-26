@@ -167,6 +167,9 @@ class InspectorPanel(QWidget):
     param_focused = Signal(object)
     #: 再生位置を動かしたい（◀ ▶ で前後のキーへ） 引数はタイムラインのフレーム
     seek_requested = Signal(int)
+    #: 触ったエフェクト（値を変えた・組を押した） プレビューが部分フィルタの範囲の枠を
+    #: どのエフェクトについて出すかを決めるのに使う
+    effect_focused = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -705,6 +708,7 @@ class InspectorPanel(QWidget):
             after=after,
         )
         section.action_requested.connect(self._emit)
+        section.pressed.connect(lambda: self.effect_focused.emit(str(effect.id)))
 
         if definition is None:
             # 定義の無いエフェクトは触らせない 値の意味が分からないまま
@@ -768,6 +772,8 @@ class InspectorPanel(QWidget):
         return current if isinstance(current, AnimatedValue) else base
 
     def _on_value_changed(self, path: ParamPath, value: ParamValue) -> None:
+        if path.effect_id is not None:
+            self.effect_focused.emit(str(path.effect_id))
         current = self._current_value(path)
         animating = isinstance(current, AnimatedValue) and current.is_animated
         clip = self._clip()
@@ -779,6 +785,8 @@ class InspectorPanel(QWidget):
         self._emit(SetParam(path, value))
 
     def _on_value_previewed(self, path: ParamPath, value: ParamValue) -> None:
+        if path.effect_id is not None:
+            self.effect_focused.emit(str(path.effect_id))
         pending = self._virtual.get(path.effect_id) if path.effect_id is not None else None
         if pending is not None:
             # まだ無い欄は、値を入れた欄を足した絵で見せる 値だけ変えようとすると、
@@ -1175,6 +1183,8 @@ class _Section(QFrame):
     """1 つの見出しと、その下のパラメータ行"""
 
     action_requested = Signal(object)
+    #: 組の地（見出しや行の間）が押された どのエフェクトを見ているかを知らせるため
+    pressed = Signal()
 
     def __init__(
         self,
@@ -1228,6 +1238,10 @@ class _Section(QFrame):
         container.setLayout(header)
         self._grid.addWidget(container, 0, 0, 1, 3)
         self._row = 1
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt の命名規約
+        self.pressed.emit()
+        super().mousePressEvent(event)
 
     def add_row(
         self,

@@ -16,7 +16,7 @@ from PySide6.QtGui import QColor, QKeyEvent, QMouseEvent, QOpenGLContext, QPaint
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
 from sashimono.core.commands import Command
-from sashimono.core.model import Clip, ClipId, MediaId, Project, Track
+from sashimono.core.model import Clip, ClipId, EffectId, MediaId, Project, Track
 from sashimono.engine.cache.proxy import ProxyStore
 from sashimono.engine.gpu import CurrentGLContext, fit_placement
 from sashimono.engine.render import (
@@ -35,8 +35,10 @@ from sashimono.engine.render.outline import (
     Point,
     canvas_scale,
     clip_outline,
+    has_outline,
     is_generated,
 )
+from sashimono.engine.render.region_outline import RegionFrame, region_effects, region_frame
 from sashimono.ui.preview_handles import (
     KEYFRAME_DRAG_AT_PLAYHEAD,
     Grip,
@@ -50,6 +52,13 @@ from sashimono.ui.preview_handles import (
     start_values,
     transform_commands,
     turn_between,
+    value_commands,
+)
+from sashimono.ui.region_handles import (
+    edge_points,
+    region_changes,
+    region_hit_test,
+    region_turn,
 )
 
 __all__ = ["GRIP_SIZE", "KNOB_LENGTH", "ROTATE_REACH", "SLOW_FRAME_MS", "PreviewWidget"]
@@ -91,6 +100,20 @@ class _Drag:
     #: 回した角度の合計（度） 1 回ごとの差を足す 押した所との差では半周で跳ぶ
     turned: float = 0.0
     commands: list[Command] = field(default_factory=list)
+    #: 部分フィルタの範囲を掴んでいれば、そのエフェクトと掴んだ時点の枠
+    region: tuple[EffectId, RegionFrame] | None = None
+
+
+#: 範囲の掴み所の色 クリップの枠（水色）と見分ける 再生ヘッド（赤）とも離す
+_REGION_COLOR = QColor(255, 170, 60)
+
+#: 範囲を掴んだドラッグを取り消しの一覧に出すときの名前
+_REGION_LABELS = {
+    Grip.MOVE: "プレビューで範囲を移動",
+    Grip.SCALE: "プレビューで範囲の大きさを変更",
+    Grip.EDGE: "プレビューで範囲の大きさを変更",
+    Grip.ROTATE: "プレビューで範囲を回転",
+}
 
 
 #: 先読みの 1 コマにこれ以上掛かるなら、先読みそのものをやめる（ミリ秒）
@@ -185,6 +208,9 @@ class PreviewWidget(QOpenGLWidget):
         #: キーフレームのある値を動かしたときの決まり（設定）
         self._keyframe_drag = KEYFRAME_DRAG_AT_PLAYHEAD
         self._drag: _Drag | None = None
+        #: 範囲の枠を出す部分フィルタ（設定パネルで最後に触った物） 選んだクリップに無ければ、
+        #: そのクリップの最初の範囲を出す
+        self._region_effect: EffectId | None = None
         #: 掴んだ途中の絵を頼んでいる最中 その頼みで届く中身は掴むのをやめる理由にならない
         self._showing_drag = False
         # 押していない間も矢印の形を変えるため 掴める所が見えるように
@@ -486,6 +512,7 @@ class PreviewWidget(QOpenGLWidget):
         # 3 つの道（走り係の絵・貯めた絵・その場で描いた絵）のどれを通っても枠を重ねる
         # 道ごとに描くと、先読みが当たったコマだけ枠が消える
         self._paint_overlay()
+        self._paint_region()
 
     def _paint_picture(self, width: int, height: int) -> None:
         """絵を出す **コンテキストが current な所（paintGL）で呼ぶこと**"""
@@ -528,6 +555,31 @@ class PreviewWidget(QOpenGLWidget):
     @property
     def selection(self) -> ClipId | None:
         return self._selection
+
+    def set_region_effect(self, effect_id: EffectId | None) -> None:
+        """範囲の枠を出すエフェクト（設定パネルで触った物） 範囲を持たない物なら今のまま
+
+        範囲を持たないエフェクトを触っただけで枠を消すと、ぼかしの強さを直しながら範囲を
+        見比べる、ができない
+        """
+        located = (
+            self._project.timeline.locate_clip(self._selection)
+            if self._selection is not None
+            else None
+        )
+        if located is None or effect_id is None:
+            return
+        if all(effect.id != effect_id for effect in region_effects(located[1])):
+            return
+        if effect_id != self._region_effect:
+            self._region_effect = effect_id
+            self.update()
+
+    @property
+    def region_effect(self) -> EffectId | None:
+        """いま範囲の枠を出しているエフェクト 出していなければ ``None``"""
+        found = self._region()
+        return found[2] if found is not None else None
 
     def set_handles_enabled(self, enabled: bool) -> None:
         """外枠を出して直接動かすか（設定） 切ったら枠も掴む所も出さない"""
@@ -601,16 +653,53 @@ class PreviewWidget(QOpenGLWidget):
         生成オブジェクトの入れ物は画面の側のレンダラに作らせる（GL は使わない）
         別のスレッドの先読みが出したコマでは、画面の側はまだ何も作っていない
         """
-        if not clip.timeline_start <= self._frame < clip.timeline_end:
+        if not clip.timeline_start <= self._frame < clip.timeline_end or not has_outline(clip):
+            # 枠を出さない物（フィルタ・シーン・グループ制御）の絵を作りに行かない
             return None
-        extent = None
-        if is_generated(clip):
-            if self._renderer is None:
-                return None
-            extent = self._renderer.object_extent(clip, self._frame)
+        extent = self._extent_of(clip)
+        if is_generated(clip) and extent is None:
+            return None
         return clip_outline(
             self._project, clip, self._frame, canvas=self.canvas_size(), extent=extent
         )
+
+    def _extent_of(
+        self, clip: Clip
+    ) -> tuple[tuple[float, float, float, float], tuple[int, int]] | None:
+        """生成オブジェクトの入れ物（外枠と範囲の枠を出すため） フィルタは画面そのもの"""
+        if not is_generated(clip) or clip.is_filter or self._renderer is None:
+            return None
+        return self._renderer.object_extent(clip, self._frame)
+
+    def _region(self) -> tuple[Track, Clip, EffectId, RegionFrame] | None:
+        """範囲の枠を出す相手 選んだクリップに範囲のエフェクトが無ければ ``None``
+
+        クリップの外枠（:meth:`_selected`）と違い、フィルタのクリップでも出す 画面全体に
+        掛けるフィルタで、隠したい所だけを範囲で選ぶのが一番よく使う形
+        """
+        if self._selection is None or not self._handles_enabled or self._playing:
+            return None
+        located = self._project.timeline.locate_clip(self._selection)
+        if located is None:
+            return None
+        track, clip = located
+        if not clip.enabled or not clip.timeline_start <= self._frame < clip.timeline_end:
+            return None
+        if all(t.id != track.id for t in self._project.timeline.active_picture_tracks()):
+            return None
+        effects = region_effects(clip)
+        if not effects:
+            return None
+        chosen = next((e for e in effects if e.id == self._region_effect), effects[0])
+        frame = region_frame(
+            self._project,
+            clip,
+            chosen.id,
+            self._frame,
+            canvas=self.canvas_size(),
+            extent=self._extent_of(clip),
+        )
+        return None if frame is None else (track, clip, chosen.id, frame)
 
     def _selected(self) -> tuple[Track, Clip, Outline] | None:
         """外枠を出す相手 いまのコマに絵を描いていなければ ``None``"""
@@ -685,6 +774,68 @@ class PreviewWidget(QOpenGLWidget):
         finally:
             painter.end()
 
+    def _region_corners(self, frame: RegionFrame) -> list[Point]:
+        corners = []
+        for corner in frame.corners:
+            shown = self.to_widget(corner)
+            corners.append((shown.x(), shown.y()))
+        return corners
+
+    def _paint_region(self) -> None:
+        """部分モザイク・ぼかしと部分フィルタの範囲の枠と掴む所を重ねる（再生中は描かない）
+
+        クリップの枠と色を分ける（橙） 同じ色だと、どちらを掴んでいるのか分からない
+        楕円の範囲も外接する四角で出す 掴む所（角と辺の真ん中）は四角の方が分かりやすい
+        """
+        found = self._region()
+        if found is None:
+            return
+        track, _, _, frame = found
+        corners = self._region_corners(frame)
+        polygon = [QPointF(x, y) for x, y in corners]
+        painter = QPainter(self)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            under = QPen(QColor(0, 0, 0, 160), 3)
+            line = QPen(QColor(160, 160, 160) if track.locked else _REGION_COLOR, 1.5)
+            for pen in (under, line):
+                pen.setStyle(Qt.PenStyle.CustomDashLine)
+                pen.setDashPattern([6.0 * 1.5 / pen.widthF(), 3.0 * 1.5 / pen.widthF()])
+            painter.setPen(under)
+            painter.drawPolygon(polygon)
+            painter.setPen(line)
+            painter.drawPolygon(polygon)
+            if track.locked:
+                return
+            knob = rotation_knob(corners, KNOB_LENGTH)
+            if knob is not None:
+                painter.setPen(QPen(_REGION_COLOR, 1))
+                painter.drawLine(QPointF(*knob[0]), QPointF(*knob[1]))
+                painter.setBrush(_REGION_COLOR)
+                painter.drawEllipse(QPointF(*knob[1]), GRIP_SIZE / 2.0, GRIP_SIZE / 2.0)
+            painter.setBrush(_REGION_COLOR)
+            painter.setPen(QPen(QColor(0, 0, 0), 1))
+            half = GRIP_SIZE / 2.0
+            for x, y in (*corners, *edge_points(corners)):
+                painter.drawRect(QRectF(x - half, y - half, GRIP_SIZE, GRIP_SIZE))
+        finally:
+            painter.end()
+
+    def _hit_region(
+        self, position: QPointF
+    ) -> tuple[Hit, Track, Clip, EffectId, RegionFrame] | None:
+        found = self._region()
+        if found is None:
+            return None
+        track, clip, effect_id, frame = found
+        hit = region_hit_test(
+            self._region_corners(frame),
+            (position.x(), position.y()),
+            grip=GRIP_SIZE,
+            knob=KNOB_LENGTH,
+        )
+        return None if hit is None else (hit, track, clip, effect_id, frame)
+
     def _hit(self, position: QPointF) -> tuple[Hit, Track, Clip, Outline] | None:
         found = self._selected()
         if found is None:
@@ -708,6 +859,28 @@ class PreviewWidget(QOpenGLWidget):
             super().mousePressEvent(event)
             return
         position = event.position()
+        # 範囲を先に見る 範囲はクリップの枠の中にあることが多く、枠を先に見ると範囲を掴めない
+        region = self._hit_region(position)
+        if region is not None:
+            hit, track, clip, effect_id, frame = region
+            if track.locked:
+                return
+            self._begin_drag(
+                _Drag(
+                    hit=hit,
+                    clip_id=clip.id,
+                    project=self._project,
+                    press=self.to_canvas(position),
+                    last=self.to_canvas(position),
+                    start=dict(frame.values),
+                    corners=frame.corners,
+                    pivot=frame.corners[0],
+                    frame=self._frame,
+                    region=(effect_id, frame),
+                )
+            )
+            event.accept()
+            return
         found = self._hit(position)
         if found is None:
             # 選んだクリップの枠の外 そこに描かれている一番手前のクリップを選び直す
@@ -763,6 +936,10 @@ class PreviewWidget(QOpenGLWidget):
         current = self.to_canvas(event.position())
         modifiers = event.modifiers()
         shift = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
+        if drag.region is not None:
+            self._drag_region(drag, current, modifiers)
+            event.accept()
+            return
         if drag.hit.grip is Grip.MOVE:
             changes = moved_values(
                 drag.start, drag.press, current, one_axis=shift, scale=self.canvas_scale()
@@ -800,7 +977,8 @@ class PreviewWidget(QOpenGLWidget):
         drag = self._end_drag()
         assert drag is not None
         if drag.commands:
-            self.commands_requested.emit(list(drag.commands), _LABELS[drag.hit.grip])
+            labels = _REGION_LABELS if drag.region is not None else _LABELS
+            self.commands_requested.emit(list(drag.commands), labels[drag.hit.grip])
         else:
             # 動かしてから元の所へ戻した 見せていた途中の絵を元のプロジェクトへ戻す
             self.preview_requested.emit([])
@@ -814,6 +992,43 @@ class PreviewWidget(QOpenGLWidget):
             return
         super().keyPressEvent(event)
 
+    def _drag_region(self, drag: _Drag, current: Point, modifiers: Qt.KeyboardModifier) -> None:
+        """範囲を掴んで動かした途中 値は掴んだ時点の枠から毎回出し直す"""
+        assert drag.region is not None
+        effect_id, frame = drag.region
+        if drag.hit.grip is Grip.ROTATE:
+            drag.turned += region_turn(frame, drag.last, current)
+        drag.last = current
+        changes = region_changes(
+            frame,
+            drag.hit,
+            drag.press,
+            current,
+            turned=drag.turned,
+            one_axis=bool(modifiers & Qt.KeyboardModifier.ShiftModifier),
+            symmetric=bool(modifiers & Qt.KeyboardModifier.AltModifier),
+            snap=bool(modifiers & Qt.KeyboardModifier.ShiftModifier),
+        )
+        located = drag.project.timeline.locate_clip(drag.clip_id)
+        effect = (
+            next((e for e in located[1].effects if e.id == effect_id), None)
+            if located is not None
+            else None
+        )
+        if located is None or effect is None:
+            return
+        clip = located[1]
+        # キーのある値は再生位置（クリップの中に収めた時刻）のキーを動かす 設定パネルの ◆ と同じ
+        local = min(max(drag.frame - clip.timeline_start, 0), max(clip.duration - 1, 0))
+        drag.commands = value_commands(
+            clip.id, effect, changes, local, keyframes=self._keyframe_drag
+        )
+        self._showing_drag = True
+        try:
+            self.preview_requested.emit(list(drag.commands))
+        finally:
+            self._showing_drag = False
+
     def _cancel_drag(self) -> None:
         drag = self._end_drag()
         if drag is not None and drag.commands:
@@ -821,6 +1036,26 @@ class PreviewWidget(QOpenGLWidget):
 
     def _hover(self, position: QPointF) -> None:
         """掴める所の上で矢印の形を変える 何が起きるかを押す前に分かるように"""
+        region = self._hit_region(position) if self._handles_enabled else None
+        if region is not None and not region[1].locked:
+            grip = region[0].grip
+            if grip is Grip.MOVE:
+                self.setCursor(Qt.CursorShape.SizeAllCursor)
+            elif grip is Grip.ROTATE:
+                self.setCursor(Qt.CursorShape.CrossCursor)
+            elif grip is Grip.EDGE:
+                self.setCursor(
+                    Qt.CursorShape.SizeVerCursor
+                    if region[0].corner in (0, 2)
+                    else Qt.CursorShape.SizeHorCursor
+                )
+            else:
+                self.setCursor(
+                    Qt.CursorShape.SizeFDiagCursor
+                    if region[0].corner in (0, 2)
+                    else Qt.CursorShape.SizeBDiagCursor
+                )
+            return
         found = self._hit(position) if self._handles_enabled else None
         if found is None or found[1].locked:
             self.unsetCursor()

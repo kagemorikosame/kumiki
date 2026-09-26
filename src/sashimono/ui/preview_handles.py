@@ -30,6 +30,7 @@ __all__ = [
     "ROTATION_STEP",
     "Grip",
     "Hit",
+    "clamp_value",
     "fixed_transform",
     "hit_test",
     "inside",
@@ -41,6 +42,7 @@ __all__ = [
     "start_values",
     "transform_commands",
     "turn_between",
+    "value_commands",
 ]
 
 #: キーフレームのある値を動かしたら、再生ヘッドの所へ点を打つ（利用者の決定の既定）
@@ -67,12 +69,15 @@ class Grip(Enum):
     SCALE = "scale"
     #: 枠の外の角の近くと、回転の掴み所 回す
     ROTATE = "rotate"
+    #: 辺の真ん中（部分フィルタの範囲だけ） その向きの大きさだけを変える
+    EDGE = "edge"
 
 
 @dataclass(frozen=True, slots=True)
 class Hit:
     grip: Grip
-    #: 角を掴んだときの角の番号（左上・右上・右下・左下） それ以外は -1
+    #: 角を掴んだときの角の番号（左上・右上・右下・左下） 辺なら辺の番号（上・右・下・左）
+    #: それ以外は -1
     corner: int = -1
 
 
@@ -250,10 +255,31 @@ def transform_commands(
     if effect is None:
         effect = fixed_effect(TRANSFORM_EFFECT_KIND)
         commands.append(AddEffect(clip.id, effect))
+    commands.extend(value_commands(clip.id, effect, changes, local, keyframes=keyframes))
+    if len(commands) == 1 and isinstance(commands[0], AddEffect):
+        # 値が何も変わらないなら、配置を足すだけの段を積まない
+        return []
+    return commands
+
+
+def value_commands(
+    clip_id: ClipId,
+    effect: Effect,
+    changes: dict[str, float],
+    local: int,
+    *,
+    keyframes: str = KEYFRAME_DRAG_AT_PLAYHEAD,
+) -> list[Command]:
+    """``effect`` の数の値を ``changes`` にする命令 ``local`` はクリップの頭から数えた時刻
+
+    配置（:func:`transform_commands`）と部分フィルタの範囲で同じ決まりを使う
+    キーフレームのある値は、既定では ``local`` へ点を打つ（設定パネルの ◆ と同じ時刻）
+    """
+    commands: list[Command] = []
     for name, wanted in changes.items():
         # 設定パネルと同じ範囲に収める 範囲の外の値は、パネルで開いたときに端へ丸められる
-        value = _clamp(name, wanted)
-        path = ParamPath.of_effect(clip.id, effect.id, name)
+        value = clamp_value(effect.kind, name, wanted)
+        path = ParamPath.of_effect(clip_id, effect.id, name)
         current = effect.params.get(name)
         if isinstance(current, AnimatedValue) and current.is_animated:
             delta = value - current.at(local)
@@ -263,7 +289,9 @@ def transform_commands(
                 continue
             if keyframes == KEYFRAME_DRAG_SHIFT_ALL:
                 commands.extend(
-                    SetKeyframe(path, point.frame, _clamp(name, point.value + delta))
+                    SetKeyframe(
+                        path, point.frame, clamp_value(effect.kind, name, point.value + delta)
+                    )
                     for point in current.keyframes
                 )
             else:
@@ -271,10 +299,9 @@ def transform_commands(
             continue
         if isinstance(current, AnimatedValue) and current.static == value:
             continue
+        if current is None and value == _default(effect.kind, name):
+            continue
         commands.append(SetParam(path, AnimatedValue(value)))
-    if len(commands) == 1 and isinstance(commands[0], AddEffect):
-        # 値が何も変わらないなら、配置を足すだけの段を積まない
-        return []
     return commands
 
 
@@ -314,9 +341,20 @@ def _dot(a: Point, b: Point) -> float:
 
 
 def _clamp(name: str, value: float) -> float:
-    """定義の範囲に収める 0 や負の拡大率は絵を消し、戻す手掛かりも無くなる"""
-    definition = registry.get(TRANSFORM_EFFECT_KIND)
+    """配置の定義の範囲に収める 0 や負の拡大率は絵を消し、戻す手掛かりも無くなる"""
+    return clamp_value(TRANSFORM_EFFECT_KIND, name, value)
+
+
+def clamp_value(kind: str, name: str, value: float) -> float:
+    """``kind`` のエフェクトの ``name`` の定義の範囲に収める"""
+    definition = registry.get(kind)
     spec = definition.spec(name) if definition is not None else None
     if isinstance(spec, TrackSpec):
         return min(max(value, spec.minimum), spec.maximum)
     return value
+
+
+def _default(kind: str, name: str) -> float | None:
+    definition = registry.get(kind)
+    spec = definition.spec(name) if definition is not None else None
+    return spec.default if isinstance(spec, TrackSpec) else None
