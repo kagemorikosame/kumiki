@@ -166,8 +166,13 @@ class TrackEditor(ParameterEditor):
         #: つまみの上を押したか つまみを押して動かさずに離したら、値は変えない（押した所へ
         #: 数画素飛んだ分も戻す） 溝を押して離したら、飛んだ所で確定する
         self._on_handle = False
-        #: 押してから、ドラッグと見なす距離より動かしたか
+        #: 押してから、ドラッグと見なす距離より動かしたか（溝を押したときだけに使う）
         self._moved = False
+        #: スライダーが押下を受け終えた時点の値（押した所へ飛んだ後） 離したときにこれと
+        #: 同じなら「動かしていない」 動かしたかをマウスの距離で決めると、つまみを掴んで
+        #: 数画素だけ動かす細かい合わせ（初期値の近くでよくやる）が、動かしていない扱いに
+        #: なって捨てられた
+        self._after_press: float | None = None
         #: 2 回目の押下（ダブルクリック）で押している 動かさずに離したら初期値へ戻し、
         #: 動かしたらふつうのドラッグにする
         self._double = False
@@ -239,6 +244,9 @@ class TrackEditor(ParameterEditor):
         if not self._held:
             # マウス以外（キーボードや試験）で掴んだ マウスなら押下で取ってある
             self._pressed_at = self._number.value()
+            return
+        # 押した所へ飛ぶ見た目では、この知らせは飛んだ後に来る
+        self._after_press = self._number.value()
 
     def _on_release(self) -> None:
         if self._skip_release:
@@ -284,6 +292,7 @@ class TrackEditor(ParameterEditor):
             self._press_position = event.position()
             self._on_handle = self._handle_at(event.position())
             self._moved = False
+            self._after_press = None
             self._double = kind == QEvent.Type.MouseButtonDblClick
             self._skip_release = False
         elif kind == QEvent.Type.MouseMove and self._held and self._press_position is not None:
@@ -293,11 +302,12 @@ class TrackEditor(ParameterEditor):
         elif kind == QEvent.Type.MouseButtonRelease and left and self._held:
             self._held = False
             before = self._pressed_at if self._pressed_at is not None else self._number.value()
-            if self._double and not self._moved:
+            still = self._still()
+            if self._double and still:
                 # 動かさないダブルクリック 押した所へ動いた分は確定せず、初期値を頼む
                 self._finish_without_commit(before)
                 self.reset_requested.emit()
-            elif self._on_handle and not self._moved:
+            elif self._on_handle and still:
                 # つまみを押して離しただけ 押した瞬間に数画素飛んだ分も戻す
                 self._finish_without_commit(before)
             elif not self._slider.isSliderDown():
@@ -320,6 +330,17 @@ class TrackEditor(ParameterEditor):
             number = self._spec.clamp(self._number.value())
             if number != self._spec.clamp(before):
                 self._emit(AnimatedValue(static=number))
+
+    def _still(self) -> bool:
+        """押してから離すまで値を動かしていないか
+
+        つまみを掴んでいれば、押下を受け終えた時の値（押した所へ飛んだ後）と今の値で比べる
+        1 画素でも値が動けば動かした扱い 溝を押した見た目（掴んでいない）では、押している間に
+        値が進むので、マウスを動かしたかで見る
+        """
+        if self._after_press is not None:
+            return self._spec.clamp(self._number.value()) == self._spec.clamp(self._after_press)
+        return not self._moved
 
     def _finish_without_commit(self, before: float) -> None:
         """確定せずに押す前の値へ戻す 掴んだ扱いを解いたときの知らせでも確定させない"""

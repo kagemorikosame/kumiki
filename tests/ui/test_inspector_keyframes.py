@@ -435,6 +435,25 @@ class TestHoldingTheSlider:
         assert harness.labels == ["不透明度を初期値に戻す"]
         assert harness.opacity(clip) == AnimatedValue(static=1.0)
 
+    @pytest.mark.parametrize("start", [1.0, 0.5])
+    def test_a_small_drag_near_the_default_is_kept(
+        self, panel: InspectorPanel, start: float
+    ) -> None:
+        # つまみを掴んで数画素だけ動かす細かい合わせ（初期値の 1.0 の近くでよくやる）を、
+        # マウスの動いた距離がドラッグの距離に足りないからと「動かしていない」扱いにして
+        # 捨てていた 離すと値が元へ戻り、何度やっても変わらなかった（利用者の報告）
+        harness, clip = _open(panel, AnimatedValue(static=start))
+        slider = self._slider(panel)
+        handle = _handle(slider)
+        _mouse(slider, QEvent.Type.MouseButtonPress, handle)
+        for step in (1, 2, 3):
+            _mouse(slider, QEvent.Type.MouseMove, handle - QPoint(step, 0))
+        _mouse(
+            slider, QEvent.Type.MouseButtonRelease, handle - QPoint(3, 0), Qt.MouseButton.NoButton
+        )
+        assert harness.labels == ["opacity を変更"]
+        assert harness.opacity(clip).static < start
+
     def test_holding_on_the_groove_is_one_step(self, panel: InspectorPanel) -> None:
         # 溝を押したままにすると、見た目によっては押した所へ飛び、ほかの見た目では 1 目盛りずつ
         # 進み続ける どちらでも離したときに 1 段だけ積む 進むたびに積むと、長押し 1 回で
